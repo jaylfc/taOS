@@ -656,7 +656,7 @@ class TestDeployRegistryRegistration:
 
         def fake_register_agent(name, **kwargs):
             pass
-        monkeypatch.setattr(app.state.taosmd_agent_registry, "register_agent", fake_register_agent)
+        monkeypatch.setattr(tm_agents, "register_agent", fake_register_agent)
 
         async def fake_deploy(req):
             return {"success": True, "name": req.name, "ip": "10.0.0.42",
@@ -713,7 +713,7 @@ class TestDeployRegistryRegistration:
 
         def fake_register_agent(name, **kwargs):
             pass
-        monkeypatch.setattr(app.state.taosmd_agent_registry, "register_agent", fake_register_agent)
+        monkeypatch.setattr(tm_agents, "register_agent", fake_register_agent)
 
         async def fake_deploy(req):
             return {"success": True, "name": req.name, "ip": "10.0.0.42",
@@ -774,7 +774,7 @@ class TestDeployRegistryRegistration:
 
         def fake_register_agent(name, **kwargs):
             pass
-        monkeypatch.setattr(app.state.taosmd_agent_registry, "register_agent", fake_register_agent)
+        monkeypatch.setattr(tm_agents, "register_agent", fake_register_agent)
 
         async def fake_deploy(req):
             return {"success": True, "name": req.name, "ip": "10.0.0.42",
@@ -840,12 +840,6 @@ class TestDeployUsesAppScopedTaosmdRegistry:
         assert post_count == pre_count + 1
         names = {r["name"] for r in app.state.taosmd_agent_registry.list_agents()}
         assert "scopedreg" in names
-
-@pytest.mark.asyncio
-class TestAgentArchiveLifecycle:
-    """Agent archive creates snapshot; abort on snapshot failure; restore works; purge works."""
-
-
 
     async def test_archive_creates_snapshot_not_rename(self, client, monkeypatch):
         """DELETE /api/agents/{name} archives via snapshot; no rename called."""

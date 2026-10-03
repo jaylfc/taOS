@@ -25,7 +25,7 @@ async def test_legacy_agent_migrated_on_startup(tmp_path, monkeypatch):
 
     # Patch register_agent before importing create_app so the module-level
     # reference in migrations.persona_v2 picks up the mock.
-    with patch("taosmd.agents.register_agent", side_effect=lambda name: calls.append(name)):
+    with patch("taosmd.agents.AgentRegistry.register_agent", side_effect=lambda name: calls.append(name)):
         from tinyagentos.app import create_app
 
         app = create_app(data_dir=data_dir)
@@ -59,9 +59,9 @@ async def test_migration_is_idempotent_across_restarts(tmp_path, monkeypatch):
         nonlocal call_count
         call_count += 1
         if call_count > 1:
-            raise AgentExistsError(f"{name} already registered")
+            raise AgentExistsError(f"{name} already registered"    )
 
-    with patch("taosmd.agents.register_agent", side_effect=_register):
+    with patch("taosmd.agents.AgentRegistry.register_agent", side_effect=_register):
         from tinyagentos.app import create_app
 
         # First startup
