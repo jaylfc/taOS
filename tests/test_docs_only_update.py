@@ -106,14 +106,15 @@ async def test_update_check_hides_docs_only_diff(client, monkeypatch):
     import tinyagentos.routes.settings as s
 
     class _FakeProc:
-        def __init__(self, out=b""):
+        def __init__(self, out=b"", returncode=0):
             self._out = out
+            self.returncode = returncode
 
         async def communicate(self):
             return self._out, b""
 
     async def fake_resolve(store, project_dir):
-        return "dev"
+        return "master"
 
     async def fake_exec(*args, **kwargs):
         if args[1] == "rev-parse":
@@ -123,6 +124,8 @@ async def test_update_check_hides_docs_only_diff(client, monkeypatch):
             return _FakeProc(b"bbb2222\n")
         if args[1] == "log":
             return _FakeProc(b"abc def\n")
+        if args[1] == "fetch":
+            return _FakeProc(b"", returncode=0)
         return _FakeProc()
 
     async def fake_strictly_ahead(project_dir, local_sha, remote_sha):
@@ -148,10 +151,17 @@ async def test_update_check_hides_docs_only_diff(client, monkeypatch):
         AsyncMock(return_value=False),
         raising=False,
     )
+    monkeypatch.setattr(
+        "tinyagentos.update_preflight.check_preflight",
+        lambda project_dir: [],
+        raising=False,
+    )
 
     r = await client.get("/api/settings/update-check")
     assert r.status_code == 200
     assert r.json()["has_updates"] is False
+    # Preflight ran and passed (no preflight_errors in response means clean preflight)
+    # The docs-only check correctly suppressed the update
 
 
 @pytest.mark.asyncio
