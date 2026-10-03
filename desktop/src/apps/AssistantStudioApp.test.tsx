@@ -274,9 +274,15 @@ describe("AssistantStudioApp theming", () => {
         for (const cls of Array.from(el.classList)) {
           if (PALETTE_RE.test(cls)) offenders.add(cls);
         }
-        // Inline colour literals bypass the class system entirely.
+        // Inline colour literals bypass the class system entirely. Every CSS
+        // colour notation, not just hex/rgb: jsdom rewrites hex/hsl/hwb to rgb()
+        // only on some properties (color, background) and keeps the source text
+        // on others (box-shadow, custom properties), while lab/lch/oklab/oklch/
+        // color() are never rewritten at all.
         const style = el.getAttribute("style") || "";
-        if (/#[0-9a-fA-F]{3,8}\b|\brgba?\(/.test(style)) offenders.add(`style="${style}"`);
+        if (/#[0-9a-fA-F]{3,8}\b|\b(rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(/.test(style)) {
+          offenders.add(`style="${style}"`);
+        }
       }
     };
     scan();
