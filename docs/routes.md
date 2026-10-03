@@ -405,7 +405,7 @@ Under `/api/agents/{agent_name}/desktop/`:
 
 ## Compile order
 
-Run `python3 scripts/build-routes-doc.py` to compile these into `docs/routes.md`. Source files, in order: `01-project-tasks.md`, `02-agent-api.md`, `03-device-bearer.md`, `04-project-invite.md`, `05-os-events.md`, `06-lora-studio.md`, `07-decisions-return.md`, `08-config-save-restore.md`, `09-agent-memory.md`, `10-cluster-admin.md`, `11-select-decision.md`, `12-share-routes.md`, `13-admin-gates.md`, `14-agent-desktop.md`, `15-decision-note.md`, `16-agent-notifications.md`, `16-device-v1.md`. Device API v1 is now its own file, [docs/device-api-v1.md](docs/device-api-v1.md).
+Run `python3 scripts/build-routes-doc.py` to compile these into `docs/routes.md`. Source files, in order: `01-project-tasks.md`, `02-agent-api.md`, `03-device-bearer.md`, `04-project-invite.md`, `05-os-events.md`, `06-lora-studio.md`, `07-decisions-return.md`, `08-config-save-restore.md`, `09-agent-memory.md`, `10-cluster-admin.md`, `11-select-decision.md`, `12-share-routes.md`, `13-admin-gates.md`, `14-agent-desktop.md`, `15-decision-note.md`, `16-agent-notifications.md`, `16-device-v1.md`. Device API v1 is now its own file, [../device-api-v1.md](../device-api-v1.md).
 
 ---
 
@@ -456,4 +456,4 @@ Publishes a `decision.note` event on the owner's `user:<id>` channel so open sur
 
 ## Device API v1
 
-The full spec now lives in [docs/device-api-v1.md](docs/device-api-v1.md); routes under `/api/devices` are bearer-authenticated.
+The full spec now lives in [../device-api-v1.md](../device-api-v1.md); routes under `/api/devices` are bearer-authenticated.

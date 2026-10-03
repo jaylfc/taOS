@@ -1,3 +1,3 @@
 ## Device API v1
 
-The full spec now lives in [docs/device-api-v1.md](docs/device-api-v1.md); routes under `/api/devices` are bearer-authenticated.
+The full spec now lives in [../device-api-v1.md](../device-api-v1.md); routes under `/api/devices` are bearer-authenticated.
