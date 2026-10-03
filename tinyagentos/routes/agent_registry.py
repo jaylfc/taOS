@@ -103,6 +103,7 @@ _ALLOWED_SCOPES = frozenset({
     "decisions_read", "decisions_write",
     "observatory_control",
     "notifications_write",
+    "memory_read",
 })
 
 

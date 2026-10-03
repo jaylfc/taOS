@@ -79,6 +79,8 @@ function baseResponses(activity = makeActivity(), overrides: Record<string, { ok
     "/api/scheduler/stats": { ok: true, body: schedulerStatsBody() },
     "/api/scheduler/tasks?limit=8": { ok: true, body: { tasks: [] } },
     "/api/cluster/workers": { ok: true, body: [] },
+    // Model Activity feed (#208): its own panel inside the Activity app.
+    "/api/activity/models?limit=200": { ok: true, body: { events: [], count: 0, event_types: [] } },
     ...overrides,
   };
 }

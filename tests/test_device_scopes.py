@@ -61,6 +61,8 @@ def _body(method, path=""):
         return {}
     if path == "/api/chat/messages":
         return {"json": {"channel_id": "nope", "content": "hi"}}
+    if path == "/api/device/v1/voice":
+        return {"content": b"\x00\x00" * 10}
     if path.endswith("/files/upload"):
         # multipart: the route validates the file before its handler runs
         return {"files": {"file": ("a.txt", b"hi", "text/plain")}}
@@ -82,8 +84,10 @@ def test_every_classified_path_has_a_known_scope():
     for m, rx, scope in _DEVICE_BEARER_PATHS:
         assert scope in ALL_SCOPES, (m, rx.pattern)
         assert device_scope_for(m, _concrete(rx)) == scope
-        # the legacy set must cover every path that shipped to old tokens
-        assert scope in LEGACY_SCOPES, (m, rx.pattern)
+        # Paths that shipped before S1 are in the legacy set; paths added after
+        # (voice) deliberately are not: test_legacy_null_scope_token_gate pins
+        # that a legacy token is refused on every path outside LEGACY_SCOPES.
+        assert scope in LEGACY_SCOPES or scope in ("voice:stt", "voice:tts"), (m, rx.pattern)
     assert device_scope_for("GET", "/api/share/destinations") == "library:ingest"
     assert device_scope_for("GET", "/api/settings") is None
     assert device_scope_for("POST", "/api/decisions") is None
@@ -193,12 +197,20 @@ async def test_migration_adds_nullable_column(tmp_path):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("platform", ["ios", "watchos", "android"])
 @pytest.mark.parametrize("method,path,scope", _all_gate_cases())
-async def test_legacy_null_scope_token_reaches_every_path(dapp, platform, method, path, scope):
+async def test_legacy_null_scope_token_gate(dapp, platform, method, path, scope):
+    """A NULL-scope legacy token reaches every path whose scope is in LEGACY_SCOPES
+    and is refused 403 device_scope_missing on every other classified path
+    (voice, added after S1: legacy tokens never silently gain new scopes)."""
+    from tinyagentos.device_scopes import LEGACY_SCOPES
     tok = await _raw_legacy(dapp, platform)
     async with _client(dapp) as c:
         r = await c.request(method, path, headers=_bearer(tok), **_body(method, path))
     assert r.status_code != 401, (path, r.text)
-    assert not _refused(r), (path, r.text)
+    if scope in LEGACY_SCOPES:
+        assert not _refused(r), (path, r.text)
+    else:
+        assert r.status_code == 403, (path, r.text)
+        assert r.json()["detail"] == {"error": "device_scope_missing", "scope": scope}, path
 
 
 @pytest.mark.asyncio

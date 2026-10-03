@@ -344,6 +344,18 @@ review yet — wait for (or retrigger) a real review; do not merge on the
 stub. A lead may waive a known rate-limit/stub false positive by applying the
 `bot-review-allow` label (see below).
 
+The gate also self-heals its own stale red. `pull_request` and
+`pull_request_review` are separate runs producing separate check suites on one head SHA, so the
+pre-review FAIL used to survive next to the later SUCCESS and the required-check rollup stayed
+FAILURE, leaving `mergeStateStatus` BLOCKED and `gh pr merge --auto` unable to fire. Once the
+gate passes on a `pull_request_review` event, a separate `reconcile-stale-runs` job
+(`scripts/rerun_failed_bot_review_runs.py`, with `actions: write` scoped to that job only, and
+checking out `ref: ${{ github.event.pull_request.base.sha }}` so the helper always comes from
+the base branch) re-runs the failed `pull_request` runs of this workflow for that same SHA --
+this workflow only, that SHA only, `conclusion=failure` only, `event=pull_request` only. So a
+red that predates the review clears itself once the review lands; a genuine stub verdict stays
+red, because the re-run re-reads review state and reaches the same verdict.
+
 Enforcement parity is a GitHub-side branch-protection setting, not in-repo config:
 `bot-review-gate` is REQUIRED on `master` but only ADVISORY on `dev` (absent from dev's
 `required_status_checks.contexts`), so a red check can merge through dev and block only at the

@@ -1,5 +1,24 @@
 # Model Activity Feed — Design Spec
 
+> **Superseded (2026-09-29).** This April 2026 design was not implemented as
+> written. It proposed rkllama webhooks, a `POST /api/events/model` receiver,
+> `GET /api/events/model` history, a JSONL store at
+> `data/events/model-activity.jsonl`, a `loaded_by` attribution field and a
+> `/api/ps`-backed current-state panel. None of those paths or fields exist in
+> the tree today.
+>
+> What shipped instead is issue #208's feed: `tinyagentos/model_activity.py`
+> holds a bounded in-process ring buffer (no JSONL, no database), the load /
+> unload / evict / shrink events come from `CoreAwareModelScheduler` rather than
+> from an rkllama webhook, the request events come from the LLM gateway's proxy
+> hooks, each event is attributed to a request principal (`owner`) instead of a
+> webhook's `loaded_by`, and the UI is the Model Activity panel inside the
+> existing Activity app.
+>
+> Read the rest of this document as background on the problem it aimed at, not
+> as the current contract. `docs/agent-coordination.md` ("Model Activity feed")
+> describes the surface that exists.
+
 ## Overview
 
 Add a real-time event feed to the Activity app showing model load/unload events with caller attribution. Operators can see exactly what loaded each model, when, and why — critical for debugging memory usage on resource-constrained devices like RK3588.

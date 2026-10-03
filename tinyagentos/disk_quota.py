@@ -171,10 +171,15 @@ class DiskQuotaMonitor:
         await self._maybe_notify(agent_name, prev_state, new_state, used_gib, quota_gib, percent)
         self._last_state[agent_name] = new_state
 
-        if new_state == "hard" and agent is not None and not agent.get("paused"):
-            agent["paused"] = True
-            agent["paused_by_restart"] = False
-            logger.warning("disk_quota: pausing agent %s — disk full", agent_name)
+        if new_state == "hard" and agent is not None:
+            if not agent.get("paused"):
+                agent["paused"] = True
+                agent["paused_by_restart"] = False
+                logger.warning("disk_quota: pausing agent %s — disk full", agent_name)
+            elif agent.get("paused_by_restart"):
+                # Agent is paused only by restart; claim the pause for disk quota
+                agent["paused_by_restart"] = False
+                logger.warning("disk_quota: claiming pause for agent %s — disk full", agent_name)
 
         ts = time.time()
         if agent is not None:

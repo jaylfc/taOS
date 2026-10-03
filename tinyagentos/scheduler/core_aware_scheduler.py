@@ -41,6 +41,12 @@ import logging
 import time
 from typing import Any, Callable, Optional
 
+from tinyagentos.model_activity import (
+    MODEL_EVICT,
+    MODEL_LOAD,
+    MODEL_SHRINK,
+    MODEL_UNLOAD,
+)
 from tinyagentos.scheduler.loaded_model import (
     LoadedModel,
     PriorityClass,
@@ -52,6 +58,20 @@ from tinyagentos.scheduler.resource_shape import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Model Activity feed mapping
+# ---------------------------------------------------------------------------
+
+#: scheduler internal event name -> Model Activity event type.  Events not in
+#: this map stay internal to the scheduler's own ``events`` list.
+_ACTIVITY_EVENT_TYPES = {
+    "model_loaded": MODEL_LOAD,
+    "model_unloaded": MODEL_UNLOAD,
+    "model_evicted": MODEL_EVICT,
+    "model_shrunk": MODEL_SHRINK,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -142,11 +162,16 @@ class CoreAwareModelScheduler:
         max_wait_ms: int = 500,
         reload_fn: Optional[Callable[[LoadedModel, str], Any]] = None,
         evict_fn: Optional[Callable[[LoadedModel], Any]] = None,
+        activity_feed: Any = None,
     ):
         self._shape_lookup = shape_lookup or get_default_shape
         self.max_wait_ms = max_wait_ms
         self._reload_fn = reload_fn
         self._evict_fn = evict_fn
+        # Optional Model Activity ring buffer (#208).  When set, every lifecycle
+        # event below is mirrored into it; when None the scheduler behaves
+        # exactly as before.  Wire with set_activity_feed() for late binding.
+        self._activity_feed: Any = activity_feed
         # Registry: model_id -> LoadedModel
         self._residents: dict[str, LoadedModel] = {}
         # Event bus: list of (event_name, dict) tuples appended in order.
@@ -178,7 +203,9 @@ class CoreAwareModelScheduler:
         """Remove a model from the resident registry and return it."""
         model = self._residents.pop(model_id, None)
         if model is not None:
-            self._emit("model_unloaded", {"model_id": model_id})
+            # backend travels with the event: the registry entry is already
+            # gone by the time the Model Activity hook runs.
+            self._emit("model_unloaded", {"model_id": model_id, "backend": model.backend})
         return model
 
     # -----------------------------------------------------------------------
@@ -494,6 +521,7 @@ class CoreAwareModelScheduler:
             "model_id": model.model_id,
             "priority": model.priority,
             "tp_mode": model.tp_mode,
+            "backend": model.backend,
         })
         if self._evict_fn is not None:
             if asyncio.iscoroutinefunction(self._evict_fn):
@@ -571,3 +599,27 @@ class CoreAwareModelScheduler:
 
     def _emit(self, event: str, data: dict) -> None:
         self.events.append((event, data))
+        feed = self._activity_feed
+        if feed is None:
+            return
+        activity_type = _ACTIVITY_EVENT_TYPES.get(event)
+        if activity_type is None:
+            return
+        model_id = data.get("model_id", "")
+        resident = self._residents.get(model_id)
+        try:
+            feed.record(
+                activity_type,
+                model=model_id,
+                # On unload/evict the registry entry is already gone, so the
+                # emitter carries the backend in the event data instead.
+                backend=data.get("backend") or getattr(resident, "backend", "") or "",
+                reason=data.get("priority") or None,
+                detail=dict(data),
+            )
+        except Exception:  # noqa: BLE001 - telemetry must never break a load
+            logger.warning("scheduler: model activity record failed for %s", event, exc_info=True)
+
+    def set_activity_feed(self, feed: Any) -> None:
+        """Attach (or detach with None) the Model Activity ring buffer."""
+        self._activity_feed = feed

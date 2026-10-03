@@ -12,7 +12,8 @@
  *    redeploy, which crashes lazy imports (ChunkLoadError) and forces a reload
  *    loop. Always fetch the current index when online; fall back to cache only
  *    when the network fails (offline / mid-restart).
- *  - stale-while-revalidate for static manifests and icons
+ *  - stale-while-revalidate for the pre-paint boot script, static manifests
+ *    and icons
  *  - passes everything else through (/api/*, /ws/*, ...)
  *
  * No app logic, no postMessage, no polling. The reconnect / version
@@ -29,6 +30,13 @@ const STATIC_CACHE = `taos-static-${VERSION}`;
 const PRECACHE_URLS = [
   "/desktop/",
   "/desktop/index.html",
+  // The pre-paint reduce-effects script (#58). It is a blocking <script> in the
+  // shell's <head>, so it is on the critical path of every launch: precached,
+  // an offline launch still applies the saved preference instead of flashing
+  // the full effects, and an online launch is answered from Cache Storage
+  // without waiting on a round-trip. Served stale-while-revalidate below, so a
+  // redeployed boot.js is picked up by the background refresh.
+  "/desktop/boot.js",
   "/chat-pwa",
   "/static/manifest-desktop.json",
   "/static/manifest-chat.json",

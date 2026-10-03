@@ -848,6 +848,29 @@ async def loaded_models(request: Request):
                                 "expires_at": m.get("expires_at"),
                                 "details": m.get("details", {}) or {},
                             })
+                elif backend_type == "llama-swap":
+                    # /running lists what llama-swap holds in memory; /v1/models
+                    # lists every configured model, loaded or not.
+                    resp = await client.get(f"{base}/running", timeout=5)
+                    running = resp.json().get("running") if resp.status_code == 200 else None
+                    for m in running if isinstance(running, list) else []:
+                        model_id = m.get("model") if isinstance(m, dict) else None
+                        if not isinstance(model_id, str) or not model_id:
+                            continue
+                        if m.get("state") == "stopping":  # being unloaded
+                            continue
+                        loaded.append({
+                            "name": model_id,
+                            "backend": backend_name,
+                            "backend_type": backend_type,
+                            "backend_url": backend_url,
+                            "purpose": _infer_purpose(model_id),
+                            "size_mb": None,
+                            "vram_mb": None,
+                            "ram_mb": None,
+                            "expires_at": None,
+                            "details": {},
+                        })
                 elif backend_type in ("llama-cpp", "vllm", "openai", "exo", "mlx", "anthropic"):
                     resp = await client.get(f"{base}/v1/models", timeout=5)
                     if resp.status_code == 200:

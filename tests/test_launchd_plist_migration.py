@@ -509,3 +509,86 @@ exit 0
             f"Helper plist was deleted despite bootstrap failure! "
             f"Script stdout: {result.stdout}, stderr: {result.stderr}, returncode: {result.returncode}"
         )
+
+class TestFlaglessPlistNotMigrated:
+    """A plist with no --host/--port must NOT be migrated.
+
+    Bare uvicorn without --host/--port binds 127.0.0.1:8000. Migrating it with
+    the TAOS_HOST=0.0.0.0/TAOS_PORT=6969 defaults would WIDEN exposure, so the
+    plist is left alone and the caller is told to re-run the installer.
+    """
+
+    def test_flagless_plist_returns_none_and_warns(self, tmp_path, monkeypatch):
+        """migrate_launchd_plist returns None and apply surfaces a warning naming the plist."""
+        import asyncio
+        from tinyagentos.launchd_migration import apply_launchd_migration, migrate_launchd_plist
+
+        plist = {
+            "Label": "com.tinyagentos.controller",
+            "ProgramArguments": [
+                "/tmp/test/.venv/bin/python",
+                "-m",
+                "uvicorn",
+                "tinyagentos.app:create_app",
+            ],
+            "WorkingDirectory": "/tmp/test",
+            "RunAtLoad": True,
+            "KeepAlive": True,
+            "EnvironmentVariables": {"PYTHONUNBUFFERED": "1"},
+        }
+        original = plistlib.dumps(plist, fmt=plistlib.FMT_XML)
+
+        assert migrate_launchd_plist(original, install_dir="/tmp/test") is None, (
+            "flagless plist must not be migrated: defaulting to "
+            "TAOS_HOST=0.0.0.0/TAOS_PORT=6969 would widen exposure beyond "
+            "uvicorn's 127.0.0.1:8000 default"
+        )
+
+        plist_path = tmp_path / "com.tinyagentos.controller.plist"
+        plist_path.write_bytes(original)
+        monkeypatch.setattr("tinyagentos.launchd_migration.PLIST_PATH", plist_path)
+        monkeypatch.setattr(
+            "tinyagentos.launchd_migration.HELPER_PLIST_PATH",
+            tmp_path / "com.tinyagentos.plist-reload.plist",
+        )
+        monkeypatch.setattr("sys.platform", "darwin")
+
+        success, warning = asyncio.run(apply_launchd_migration("/tmp/test"))
+
+        assert success is True
+        assert warning is not None, "a skipped flagless plist must surface a warning"
+        assert str(plist_path) in warning, f"warning must name the plist: {warning}"
+        assert plist_path.read_bytes() == original, "flagless plist was modified on disk"
+
+
+class TestApplyLaunchdMigrationPrepFailure:
+    """If the post-replace prep fails, the original plist must be restored."""
+
+    def test_reload_prep_failure_restores_original_plist(self, tmp_path, monkeypatch):
+        """A failing _write_reload_helper leaves the ORIGINAL bytes on disk."""
+        import asyncio
+        from tinyagentos.launchd_migration import apply_launchd_migration
+
+        plist_path = tmp_path / "com.tinyagentos.controller.plist"
+        original = _make_old_uvicorn_plist(install_dir="/tmp/test")
+        plist_path.write_bytes(original)
+
+        monkeypatch.setattr("tinyagentos.launchd_migration.PLIST_PATH", plist_path)
+        monkeypatch.setattr(
+            "tinyagentos.launchd_migration.HELPER_PLIST_PATH",
+            tmp_path / "com.tinyagentos.plist-reload.plist",
+        )
+        monkeypatch.setattr("sys.platform", "darwin")
+
+        with patch(
+            "tinyagentos.launchd_migration._write_reload_helper",
+            side_effect=OSError("simulated reload prep failure"),
+        ):
+            success, warning = asyncio.run(apply_launchd_migration("/tmp/test"))
+
+        assert plist_path.read_bytes() == original, (
+            "a new-format plist with no reload scheduled is seen as migrated by "
+            "later updates and never retried, so the original must be restored"
+        )
+        assert success is True
+        assert warning is not None, f"prep failure must surface a warning, got {warning}"

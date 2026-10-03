@@ -1,0 +1,2 @@
+### Fixed
+- Worker can now rejoin the cluster after a controller generation bump without a process restart. When registration fails with a 409 "stale_generation" error, the controller now echoes its current generation, and the worker adopts it monotonically (only if higher than its current generation) before retrying registration.

@@ -551,3 +551,111 @@ async def test_neither_audio_nor_transcript_is_logged(gw, daemon, caplog):
         resp = await post(c)
     assert resp.status_code == 200
     assert "SECRET-TRANSCRIPT-9f2" not in caplog.text
+
+
+# --- OpenAI streaming: stream=true -----------------------------------------
+
+
+def sse_events(text: str) -> list[dict]:
+    """The JSON payloads of an SSE body; every frame must be exactly ``data: <json>``."""
+    assert text.endswith("\n\n")
+    frames = text[:-2].split("\n\n")
+    for f in frames:
+        assert f.startswith("data: ") and "\n" not in f, f
+    return [json.loads(f[len("data: "):]) for f in frames]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [b"true", b"TRUE", b" True "])
+async def test_stream_true_is_delta_then_done_over_sse(gw, daemon, value):
+    c, data_dir, _ = gw
+    write_manifest(data_dir, daemon.port)
+    plain = await post(c)
+    resp = await post(c, extra=[("stream", value, None)])
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    events = sse_events(resp.text)
+    assert events == [{"type": "transcript.text.delta", "delta": "hello world"},
+                      {"type": "transcript.text.done", "text": "hello world"}]
+    assert events[-1]["text"] == plain.json()["text"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [None, b"false", b"False", b""])
+async def test_stream_false_or_absent_is_unchanged(gw, daemon, value):
+    c, data_dir, _ = gw
+    write_manifest(data_dir, daemon.port)
+    extra = [] if value is None else [("stream", value, None)]
+    resp = await post(c, extra=extra)
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("application/json")
+    assert resp.json() == {"text": "hello world"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [b"yes", b"1", b"maybe", b"tru"])
+async def test_invalid_stream_value_is_400(gw, daemon, value):
+    c, data_dir, _ = gw
+    write_manifest(data_dir, daemon.port)
+    resp = await post(c, extra=[("stream", value, None)])
+    assert resp.status_code == 400
+    assert resp.headers["content-type"].startswith("application/json")
+    assert daemon.requests == []
+
+
+@pytest.mark.asyncio
+async def test_stream_true_with_response_format_text_is_400(gw, daemon):
+    c, data_dir, _ = gw
+    write_manifest(data_dir, daemon.port)
+    resp = await post(c, extra=[("stream", b"true", None), ("response_format", b"text", None)])
+    assert resp.status_code == 400
+    assert daemon.requests == []
+    ok = await post(c, extra=[("stream", b"true", None), ("response_format", b"json", None)])
+    assert ok.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_stream_true_errors_before_streaming_are_json(gw, daemon):
+    c, data_dir, _ = gw
+    stream = [("stream", b"true", None)]
+    no_manifest = await post(c, model=stt.STT_ALIAS, extra=stream)
+    assert no_manifest.status_code == 409 and code(no_manifest) == "stt_not_installed"
+    write_manifest(data_dir, daemon.port)
+    unknown = await post(c, model="nope", extra=stream)
+    assert unknown.status_code == 403  # not on the key's allow-list
+    bad_wav = await post(c, wav=b"not a wav", extra=stream)
+    assert bad_wav.status_code == 400
+    daemon.status = 503
+    daemon.body = json.dumps({"error": "loading"}).encode()
+    down = await post(c, extra=stream)
+    assert down.status_code == 503
+    for r in (no_manifest, unknown, bad_wav, down):
+        assert r.headers["content-type"].startswith("application/json")
+        assert "error" in r.json()
+
+
+@pytest.mark.asyncio
+async def test_the_stream_field_does_not_reach_the_daemon_and_transcript_is_not_logged(gw, daemon, caplog):
+    c, data_dir, _ = gw
+    write_manifest(data_dir, daemon.port)
+    daemon.body = json.dumps({"text": "SECRET-TRANSCRIPT-9f2"}).encode()
+    with caplog.at_level(0):
+        resp = await post(c, extra=[("stream", b"true", None)])
+    assert resp.status_code == 200
+    assert "SECRET-TRANSCRIPT-9f2" in resp.text
+    assert "SECRET-TRANSCRIPT-9f2" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_sse_parses_with_the_openai_sdk_event_types(gw, daemon):
+    pytest.importorskip("openai")
+    from pydantic import TypeAdapter
+    from openai.types.audio import TranscriptionStreamEvent
+    c, data_dir, _ = gw
+    write_manifest(data_dir, daemon.port)
+    resp = await post(c, extra=[("stream", b"true", None)])
+    adapter = TypeAdapter(TranscriptionStreamEvent)
+    parsed = [adapter.validate_python(e) for e in sse_events(resp.text)]
+    assert [type(p).__name__ for p in parsed] == ["TranscriptionTextDeltaEvent",
+                                                  "TranscriptionTextDoneEvent"]
+    assert parsed[0].delta == parsed[1].text == "hello world"

@@ -27,7 +27,7 @@ function okJson(body: unknown, status = 200) {
 function vocabHit(url: unknown, projectScopes: string[] = SERVER_PROJECT_SCOPES) {
   if (!String(url).startsWith("/api/agents/scope-vocabulary")) return null;
   return okJson({
-    valid_scopes: [...projectScopes, "memory_read", "memory_write", "a2a_send"].sort(),
+    valid_scopes: [...projectScopes, "memory_read", "a2a_send"].sort(),
     project_scopes: projectScopes,
   });
 }

@@ -1,0 +1,4 @@
+### Fixed
+- Store update detection now compares the cached upstream registry tag against the PINNED IMAGE TAG (`install.image`) instead of the manifest's `version:` field, so apps whose pin is already the newest upstream (code-server: catalog `4.96.0`, image `4.135.0`; uptime-kuma: `1.0.0`, `1.23`) no longer sit in Updates with a badge nothing can clear. The pin travels with the cached upstream state and is reported as `upstream_pinned_version`; the Store badge shows `v<pin> → v<upstream>`.
+- Upstream tag selection skips pre-release tags (`-rc`, `-beta`, `-alpha`) unless the pinned tag is itself a pre-release, so a release candidate no longer flags a GA pin as updatable.
+- A transient registry failure keeps the last known upstream version (and its pin) instead of wiping it, so a short network outage no longer makes a real update disappear from the Store.

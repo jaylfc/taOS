@@ -234,6 +234,7 @@ _ADAPTERS: dict[str, BackendAdapter] = {
     "hailo-ollama": OllamaCompatAdapter(),
     "ollama": OllamaCompatAdapter(),
     "llama-cpp": OpenAICompatAdapter(),
+    "llama-swap": OpenAICompatAdapter(),
     "vllm": OpenAICompatAdapter(),
     "exo": OpenAICompatAdapter(),
     "mlx": OpenAICompatAdapter(),

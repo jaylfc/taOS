@@ -569,6 +569,58 @@ class TestNonRestartPauseSettersClearRestartMarker:
         assert agent["paused"] is True
         assert agent["paused_by_restart"] is False
 
+    @pytest.mark.asyncio
+    async def test_hard_quota_on_a_restart_paused_agent_claims_the_pause(self, tmp_path, monkeypatch):
+        """Hard quota on an agent already paused by restart must claim the pause
+        (clear paused_by_restart) and keep paused=True. Subsequent resume must
+        not send /resume and must leave paused=True."""
+        from tinyagentos.disk_quota import DiskQuotaMonitor
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock
+        import tinyagentos.restart_orchestrator as ro
+
+        # Agent already paused by restart, then hard quota trips
+        config = SimpleNamespace(agents=[{"name": "quota-restart-agent", "paused": True, "paused_by_restart": True, "disk_quota_gib": 10}])
+        backend = MagicMock()
+        notifications = SimpleNamespace(emit_event=AsyncMock())
+        monitor = DiskQuotaMonitor(config, backend, notifications)
+
+        agent = config.agents[0]
+
+        async def mock_sample_usage(container_name):
+            return 15.0  # 150% of 10 GiB quota = hard
+
+        monkeypatch.setattr(monitor, "_sample_usage", mock_sample_usage)
+        await monitor._scan_one("quota-restart-agent", "taos-agent-quota-restart-agent")
+
+        # The hard quota must claim the pause: paused stays True, paused_by_restart becomes False
+        assert agent["paused"] is True
+        assert agent["paused_by_restart"] is False
+
+        # Now simulate boot-time resume: run resume_agents_from_notes with a stub
+        # that would succeed. Since the agent is no longer paused_by_restart,
+        # no /resume POST should be sent and paused must stay True.
+        state = SimpleNamespace(
+            config=config,
+            data_dir=tmp_path,
+            notifications=SimpleNamespace(add=AsyncMock()),
+            _background_tasks=set(),
+        )
+
+        posted = {"called": False}
+
+        async def fake_post(host, port, note):
+            posted["called"] = True
+            return True
+
+        monkeypatch.setattr(ro, "_post_resume", fake_post)
+        await ro.resume_agents_from_notes(state)
+
+        # No /resume POST should have been sent
+        assert posted["called"] is False
+        # Agent must remain paused (user must act to clear the disk)
+        assert agent["paused"] is True
+
     def test_failure_handler_pause_clears_restart_marker(self, tmp_path):
         """scheduler/failure_handler.py pause must set paused_by_restart=False."""
         from tinyagentos.scheduler.failure_handler import _pause_and_notify

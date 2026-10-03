@@ -13,17 +13,12 @@ name: Guard discrimination gate
 # introduction: 2 guards in 1 file, about 1 minute including app fixtures.
 # The job is capped at 15 minutes.
 #
-# NOT a required check at introduction: branch protection decides that, and
-# it has not been changed. See scripts/check_non_discriminating.py.
+# No paths filter: a required check must run on every PR, otherwise it would
+# stay in "expected" state for PRs outside the filter. See scripts/check_non_discriminating.py.
 
 on:
   pull_request:
     branches: [master, dev]
-    paths:
-      - "tests/**"
-      - "tinyagentos/**"
-      - "scripts/check_non_discriminating.py"
-      - ".github/workflows/guard-discrimination-gate.yml"
 
 jobs:
   guard-discrimination:

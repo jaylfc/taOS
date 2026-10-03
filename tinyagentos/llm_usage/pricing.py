@@ -29,7 +29,9 @@ from tinyagentos.llm_usage.usage import Usage
 _DATA = Path(__file__).resolve().parent / "data" / "model_prices.json"
 
 #: taOS backend types that run on hardware the user owns: genuinely free per token.
-LOCAL_BACKENDS = frozenset({"llama-cpp", "vllm", "exo", "mlx", "ollama", "rkllama", "hailo-ollama"})
+LOCAL_BACKENDS = frozenset({
+    "llama-cpp", "llama-swap", "vllm", "exo", "mlx", "ollama", "rkllama", "hailo-ollama",
+})
 
 #: taOS backend type -> the provider name used by the price table.
 PRICE_PROVIDER = {

@@ -252,6 +252,67 @@ class TestApproveDisplayNameNormalization:
         await auth_store.close()
         await grants.close()
 
+    @pytest.mark.parametrize("scope", ["project_notes", "project_doc_review"])
+    @pytest.mark.asyncio
+    async def test_approve_route_side_project_bound_scope_requires_project_id(
+        self, scope, client, monkeypatch, tmp_path
+    ):
+        """Granting a scope the ROUTES authorize with check_agent_scope_for_project
+        needs a picked project_id, exactly like project_tasks.
+
+        project_notes and project_doc_review are guarded route-side by
+        check_agent_scope_for_project, which matches only a grant whose project_id
+        equals the requested project. Approved with no picker value they would be
+        written global (project_id=None), so the operator sees a successful
+        approval and the agent cannot reach the route the scope exists for. The
+        agent-named project on the request must not stand in for the picker's.
+        """
+        from tinyagentos.agent_registry_store import (
+            AgentRegistryStore,
+            load_or_create_signing_keypair,
+        )
+        from tinyagentos.auth_requests_store import AuthRequestsStore
+        from tinyagentos.agent_grants_store import AgentGrantsStore
+
+        registry = AgentRegistryStore(tmp_path / "reg.db")
+        await registry.init()
+        auth_store = AuthRequestsStore(tmp_path / "auth.db")
+        await auth_store.init()
+        grants = AgentGrantsStore(tmp_path / "grants.db")
+        await grants.init()
+        priv, pub = load_or_create_signing_keypair(tmp_path / "keys")
+
+        record = await auth_store.create(
+            identity_claim="grok",
+            framework="grok",
+            requested_scopes=[scope],
+            requested_skills=None,
+            reason="",
+            duration_secs=None,
+            project_id="prj-agent-named",
+        )
+
+        monkeypatch.setattr(client._transport.app.state, "agent_registry", registry)
+        monkeypatch.setattr(client._transport.app.state, "auth_requests", auth_store)
+        monkeypatch.setattr(client._transport.app.state, "agent_grants", grants)
+        monkeypatch.setattr(
+            client._transport.app.state, "agent_registry_keypair", (priv, pub)
+        )
+
+        resp = await client.post(
+            f"/api/agents/auth-requests/{record['id']}/approve",
+            json={"granted_scopes": [scope]},
+        )
+        assert resp.status_code == 400, resp.text
+        assert "project_id" in resp.text
+
+        # Refused means refused: no identity, no inert global grant.
+        assert await registry.list_all() == []
+
+        await registry.close()
+        await auth_store.close()
+        await grants.close()
+
     @pytest.mark.asyncio
     async def test_approve_preserves_name_without_at(
         self, client, monkeypatch, tmp_path

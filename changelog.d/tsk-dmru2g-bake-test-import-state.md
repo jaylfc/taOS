@@ -1,0 +1,2 @@
+### Fixed
+- Fixed flaky concurrent test by tracking import state with a boolean flag and moving the test synchronization point from the first `incus launch` to the first `curl` call, making the test's verdict independent of coroutine scheduling

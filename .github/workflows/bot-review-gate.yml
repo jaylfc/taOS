@@ -19,6 +19,16 @@ name: Bot review gate
 #                              (DEFECT 1 fix: those payloads lack
 #                              pull_request.number, which made argparse crash
 #                              with exit 2 on every comment).
+#                              Its second step re-runs this workflow's own failed
+#                              pull_request runs for the same head SHA once the
+#                              gate has PASSED on a pull_request_review event
+#                              (DEFECT 4 fix, tsk-dzd77m): the two events create
+#                              separate check suites on one SHA, so the earlier
+#                              pre-review FAILURE survived next to the later
+#                              SUCCESS, the rollup stayed FAILURE and
+#                              mergeStateStatus stayed BLOCKED, and
+#                              `gh pr merge --auto` never fired. See
+#                              scripts/rerun_failed_bot_review_runs.py.
 #   re-run-on-stub-comment   -- runs on issue_comment events but ONLY when a
 #                              CodeRabbit bot posts a stub comment on a PR.
 #                              It re-runs bot-review-gate for the PR's head
@@ -127,6 +137,67 @@ jobs:
           # #2493). The script reconciles (PATCH stale, POST when absent) when
           # the verdict is terminal.
           python scripts/check_bot_review.py "${{ github.event.pull_request.number }}" --head-sha "${PR_HEAD}"
+
+  reconcile-stale-runs:
+    # DEFECT 4 (tsk-dzd77m, measured on #3394 runs 37080299756 /
+    # 37080574868 and #3400). `pull_request` and `pull_request_review` are
+    # SEPARATE workflow runs producing SEPARATE check suites on the SAME
+    # head SHA. The pull_request run fires on open, before CodeRabbit has
+    # reviewed, so it fails; the pull_request_review run that fires after
+    # the review passes. GitHub keeps BOTH check runs named
+    # `bot-review-gate`, and the required-check rollup keys off ANY of
+    # them, so the rollup stays FAILURE and mergeStateStatus stays BLOCKED
+    # forever: `gh pr merge --auto` never fires on a PR whose first gate
+    # run predates the bot review. Only an admin merge (scripts/gate_merge.sh)
+    # got through.
+    #
+    # So once the gate has PASSED on a pull_request_review event, re-run the
+    # failed pull_request runs of THIS workflow for the SAME head SHA. The
+    # re-run re-reads review state from the API at run time, so it reaches
+    # the same verdict as the run that just passed.
+    #
+    # Three deliberate constraints:
+    #   - `if: github.event_name == 'pull_request_review'` -- only the
+    #     post-review event reconciles. Re-running from the pull_request
+    #     path would let a re-run re-trigger itself.
+    #   - `needs: bot-review-gate` ensures this only runs after the gate has
+    #     passed. A failed gate must stay red.
+    #   - The helper exits 0 even when a re-run POST is refused: this run is
+    #     not itself a required check, but it still must not recreate the
+    #     BLOCKED condition the step exists to remove.
+    #   - needs: bot-review-gate + default success() means the re-run step
+    #     has no always(); a failed gate stays red and the helper does not
+    #     fire. A future "make it resilient" edit must not silently add one.
+    #
+    # Neither trigger is dropped and check_bot_review.py is not weakened:
+    # the fast red on open stays, it is just reconciled once the review has
+    # actually landed. See scripts/rerun_failed_bot_review_runs.py.
+    #
+    # FIRST-MERGE CAVEAT: the helper script must already exist on the base
+    # branch for this step to run, because the checkout uses
+    # `ref: ${{ github.event.pull_request.base.sha }}`. The first PR merged
+    # after this change ships is therefore the first one that can be healed.
+    if: github.event_name == 'pull_request_review'
+    needs: bot-review-gate
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Re-run failed pre-review gate runs on this head SHA
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: python scripts/rerun_failed_bot_review_runs.py --head-sha "${PR_HEAD}"
 
   re-run-on-stub-comment:
     # Closes the timing hole (DEFECT 2): issue_comment events run against the

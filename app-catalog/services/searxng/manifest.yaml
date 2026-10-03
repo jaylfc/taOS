@@ -2,7 +2,10 @@ id: searxng
 name: SearXNG
 type: service
 category: infrastructure
-version: 2024.12.0
+# Display only: the image is deliberately NOT pinned (JAY RULING 2026-10-02),
+# so `install.image` tracks upstream `latest` and `version` just records the
+# release this catalog entry was last checked against.
+version: 2026.10.2-19ffbcd30
 description: "Privacy-respecting metasearch engine — powers AI search tools like Perplexica"
 homepage: https://github.com/searxng/searxng
 license: AGPL-3.0
@@ -13,7 +16,11 @@ requires:
 
 install:
   method: docker
-  image: searxng/searxng:2024.12.0
+  # Floating tag on purpose: SearXNG is never version-pinned, so every install
+  # and every Store update must resolve the current upstream release. The
+  # installer gives an untagged/`:latest` image `pull_policy: always`, so
+  # `docker compose up` pulls the newest image before starting the container.
+  image: searxng/searxng:latest
   volumes:
     - ./settings.yml:/etc/searxng/settings.yml:ro
   # 8080 is the container-internal port; the host port is allocated from the
@@ -25,6 +32,15 @@ install:
         # SearXNG settings — JSON format is enabled so agents can query
         # the engine programmatically (?format=json).
         use_default_settings: true
+
+        # Measured from a home IP (dev Pi, 2026-10-02): google / duckduckgo /
+        # brave / startpage / qwant / yahoo return 0 results or a CAPTCHA, so a
+        # default install answers every query with nothing. Bing works from the
+        # same IP but ships disabled upstream, so turn it on here; upstream
+        # stays the source of every other engine setting.
+        engines:
+          - name: bing
+            disabled: false
 
         search:
           formats:

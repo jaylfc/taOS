@@ -631,6 +631,52 @@ class TestLoadedModelsImageBackends:
         assert resp.json()["loaded"] == []
 
 
+@pytest.fixture
+def app_with_llama_swap_backend(tmp_path):
+    config = {
+        "server": {"host": "0.0.0.0", "port": 6969},
+        "backends": [
+            {"name": "swap", "type": "llama-swap", "url": "http://localhost:8080", "priority": 1}
+        ],
+        "qmd": {"url": "http://localhost:7832"},
+        "agents": [],
+        "metrics": {"poll_interval": 30, "retention_days": 30},
+    }
+    (tmp_path / "config.yaml").write_text(yaml.dump(config))
+    (tmp_path / ".setup_complete").touch()
+    return create_app(data_dir=tmp_path)
+
+
+@pytest.mark.asyncio
+@pytest.mark.guards("tinyagentos.routes.models:loaded_models",
+                    replace=[('if m.get("state") == "stopping":', "if False:")])
+async def test_llama_swap_loaded_models_come_from_running(app_with_llama_swap_backend):
+    """llama-swap: /running (not /v1/models) is what is in memory. Body shape
+    as llama-swap v261 returns it; "stopping" is on its way out."""
+    app = app_with_llama_swap_backend
+    running = MagicMock(status_code=200)
+    running.json.return_value = {"running": [
+        {"model": "qwen-chat", "state": "ready", "cmd": "llama-server", "proxy": "",
+         "ttl": 300, "name": "Qwen chat", "description": ""},
+        {"model": "old", "state": "stopping"},
+        {"state": "ready"},
+    ]}
+
+    async with await _make_auth_client(app) as c:
+        with patch.object(app.state, "http_client") as mock_http:
+            mock_http.get = AsyncMock(return_value=running)
+            resp = await c.get("/api/models/loaded")
+            urls = [call.args[0] for call in mock_http.get.call_args_list]
+    await app.state.metrics.close()
+    await app.state.qmd_client.close()
+    await app.state.http_client.aclose()
+
+    assert resp.status_code == 200
+    assert urls == ["http://localhost:8080/running"]
+    assert [(e["name"], e["backend"], e["backend_type"]) for e in resp.json()["loaded"]] == [
+        ("qwen-chat", "swap", "llama-swap")]
+
+
 @pytest.mark.asyncio
 class TestDeleteModel:
     async def test_delete_removes_all_model_suffixes(self, models_app, models_client):

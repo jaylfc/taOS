@@ -101,6 +101,11 @@ def register_all_routers(app):
     from tinyagentos.routes.device_pair_requests import router as device_pair_requests_router
     app.include_router(device_pair_requests_router)
 
+    # Device voice (S6/S6b): device-bearer only, so CSRF-exempt like the pair
+    # routes (the bearer is not an ambient cookie credential).
+    from tinyagentos.routes.device_voice import router as device_voice_router
+    app.include_router(device_voice_router)
+
     from tinyagentos.routes.observatory import router as observatory_router
     app.include_router(observatory_router, dependencies=_csrf)
 
@@ -269,6 +274,11 @@ def register_all_routers(app):
 
     from tinyagentos.routes.activity import router as activity_router
     app.include_router(activity_router, dependencies=_csrf)
+
+    # Model Activity feed (#208): ring-buffer snapshot + SSE stream. Owned by
+    # routes/model_activity.py; the buffer itself is app.state.model_activity.
+    from tinyagentos.routes.model_activity import router as model_activity_router
+    app.include_router(model_activity_router, dependencies=_csrf)
 
     from tinyagentos.routes.frameworks import router as frameworks_router
     app.include_router(frameworks_router, dependencies=_csrf)

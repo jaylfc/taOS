@@ -887,6 +887,21 @@ class TestDeletedRequireDocDoesNotSatisfy:
         assert "routes" in names
 
 
+def _make_gateable_trees(repo: Path, *extra: str) -> None:
+    """Give a fixture repo the trees the gate's own config (or its token regex)
+    points at.
+
+    Layer A0 (tsk-s73zth) resolves every name the config carries against the
+    repo being measured and refuses to evaluate any rule when one of them is
+    gone, so a fixture that runs the real gate over a real diff must contain
+    the trees its config names -- the four token-regex prefixes, plus any extra
+    tree one of its globs hangs off. Without them the fixture would go green
+    (or red) for a config error instead of for the behaviour under test.
+    """
+    for tree in ("scripts", "tinyagentos", "docs", "desktop", *extra):
+        (repo / tree).mkdir(parents=True, exist_ok=True)
+
+
 class TestGitHooksTrailerEnforcement:
     """End-to-end tests for the pre-commit / commit-msg hook split.
 
@@ -910,9 +925,9 @@ class TestGitHooksTrailerEnforcement:
     def _setup_repo(self, tmp_path: Path) -> Path:
         repo = tmp_path / "repo"
         repo.mkdir()
+        _make_gateable_trees(repo)
 
         scripts_dir = repo / "scripts"
-        scripts_dir.mkdir()
         (scripts_dir / "check_doc_gate.py").write_text(
             (REPO_ROOT / "scripts" / "check_doc_gate.py").read_text()
         )
@@ -921,7 +936,6 @@ class TestGitHooksTrailerEnforcement:
         )
 
         docs_dir = repo / "docs"
-        docs_dir.mkdir()
         (docs_dir / "doc-gate.toml").write_text(
             '[gate]\ntrailer = "Docs-Reviewed:"\n\n[[rules]]\n'
             'name = "test-rule"\non_modify = true\n'
@@ -1188,6 +1202,8 @@ class TestEndToEndPinOnlyWorkflowBump:
     def _setup_repo(self, tmp_path: Path) -> tuple[Path, Path]:
         repo = tmp_path / "repo"
         repo.mkdir()
+        # The contributor-skill rule requires a doc under this skill dir.
+        _make_gateable_trees(repo, ".claude/skills/taos-development-skill")
         wf_dir = repo / ".github" / "workflows"
         wf_dir.mkdir(parents=True)
         (wf_dir / "ci.yml").write_text(
@@ -1195,7 +1211,6 @@ class TestEndToEndPinOnlyWorkflowBump:
             "    steps:\n      - uses: actions/checkout@v4\n"
         )
         docs_dir = repo / "docs"
-        docs_dir.mkdir()
         config_path = docs_dir / "doc-gate.toml"
         config_path.write_text(self.CONTRIBUTOR_CONFIG)
         subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
@@ -1326,12 +1341,21 @@ class TestTrailerScopedToItsCommit:
     def _setup(self, tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
         repo = tmp_path / "repo"
         repo.mkdir()
+        # require_doc names the changelog and the coordination doc; the trigger
+        # and require_doc globs hang off changelog.d/, tinyagentos/routes/,
+        # desktop/src/ and .github/workflows/.
+        _make_gateable_trees(
+            repo, "changelog.d", "tinyagentos/routes", "desktop/src",
+            ".github/workflows",
+        )
+        (repo / "CHANGELOG.md").write_text("# Changelog\n")
+        (repo / "docs" / "agent-coordination.md").write_text("# Coordination\n")
         _git(repo, "init", "-q", "-b", "main")
         _git(repo, "config", "user.email", "dev@example.com")
         _git(repo, "config", "user.name", "dev")
         _git(repo, "config", "commit.gpgsign", "false")
         cfg = repo / "docs" / "doc-gate.toml"
-        cfg.parent.mkdir()
+        cfg.parent.mkdir(exist_ok=True)
         cfg.write_text(SCOPED_TRAILER_CONFIG_TOML)
         _commit_files(repo, "initial", {
             "tinyagentos/routes/foo.py": "# foo\n",
@@ -1652,6 +1676,7 @@ class TestNewAppDirOnlyTriggersAppsRule:
     def _setup_repo(self, tmp_path: Path) -> tuple[Path, Path]:
         repo = tmp_path / "repo"
         repo.mkdir()
+        _make_gateable_trees(repo)
 
         (repo / "desktop" / "src" / "apps" / "ProjectsApp").mkdir(parents=True)
         (repo / "desktop" / "src" / "apps" / "ProjectsApp" / "ProjectsApp.tsx").write_text(

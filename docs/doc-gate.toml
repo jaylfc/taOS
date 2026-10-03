@@ -26,11 +26,19 @@ trailer = "Docs-Reviewed:"
 # and skills are scanned without a config edit. Nested READMEs under app
 # trees are deliberately NOT scanned: their relative `scripts/` links point
 # inside their own directory and would false-positive against the repo root.
+#
+# Every entry here must EXIST. Layer A0 of scripts/check_doc_gate.py resolves
+# each one before any check runs and exits non-zero naming it, because a scan
+# target that has been renamed away measures nothing while still reading
+# "doc-gate: clean". That is why the local-only, gitignored AGENT_HANDOFF.md
+# playbook is NOT listed: it is absent from every checkout but the author's, so
+# listing it would fail the gate for everyone else. The public guide that
+# replaced it, docs/agent-onboarding.md, is scanned instead.
 referenced_paths_scan = [
     "README.md",
     "CONTRIBUTING.md",
     "docs/agent-coordination.md",
-    "docs/AGENT_HANDOFF.md",
+    "docs/agent-onboarding.md",
     "docs/RELEASING.md",
     "docs/contributor-pitfalls.md",
     "docs/agent-manual/*.md",
