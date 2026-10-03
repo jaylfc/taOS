@@ -282,10 +282,6 @@ async def _fetch_docker_hub_tags(
             if not isinstance(next_url, str):
                 next_url = None
             page_count += 1
-            # Validate next_url is a string
-            if not isinstance(next_url, str):
-                next_url = None
-            page_count += 1
             
         return tags
     except Exception as exc:  # network error, timeout, bad JSON
@@ -299,34 +295,6 @@ async def _fetch_docker_hub_tags(
 # --------------------------------------------------------------------------- #
 # Test: Security fix for Docker Hub pagination
 # --------------------------------------------------------------------------- #
-
-if __name__ == "__main__":
-    # Run a simple test to verify the security fix
-    import asyncio
-    import sys
-    
-    async def test_external_next_url():
-        """Test that the security fix stops pagination at external hosts."""
-        from unittest.mock import AsyncMock, MagicMock
-        
-        # Mock client that returns page 1 with next pointing to external host
-        mock_client = AsyncMock()
-        mock_response1 = MagicMock()
-        mock_response1.status_code = 200
-        mock_response1.json.return_value = {
-            "results": [{"name": "1.0.0"}],
-            "next": "https://evil.example/v2/x?page=2"
-        }
-        mock_client.get.return_value = mock_response1
-        
-        tags = await _fetch_docker_hub_tags("test/repo", client=mock_client)
-        
-        # Verify only one request was made (security fix prevents following evil next)
-        assert mock_client.get.call_count == 1, f"Expected 1 request, got {mock_client.get.call_count}"
-        assert tags == ["1.0.0"], f"Expected ['1.0.0'], got {tags}"
-        print("✓ Security fix test passed")
-    
-    asyncio.run(test_external_next_url())
 
 
 async def _fetch_registry_v2_tags(

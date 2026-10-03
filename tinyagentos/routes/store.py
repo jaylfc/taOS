@@ -128,7 +128,7 @@ def _update_fields(
         if baseline_tag and upstream_version:
             baseline_shape = upstream_versions.tag_shape(baseline_tag)
             upstream_shape = upstream_versions.tag_shape(upstream_version)
-            # Shapes don't match or either is not version-shaped
+            # Different tag shapes cannot be compared: report unknown.
             if baseline_shape != upstream_shape:
                 upstream_update = None
             else:

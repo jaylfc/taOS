@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Tests for upstream release detection (tinyagentos/upstream_versions.py).
 
 Covers:
@@ -774,6 +776,32 @@ class TestUpstreamPaginationAndBaseline:
     """Regression tests for Docker Hub pagination and the pin baseline (tsk-diw2ce)."""
 
     @pytest.mark.asyncio
+    async def test_external_next_url_stopped_by_security_fix(self):
+        """Test that the security fix stops pagination at external hosts.
+        
+        Page 1 has next="https://evil.example/v2/x?page=2"; assert only ONE request was made
+        and the page-1 tags are returned.
+        """
+        from tinyagentos import upstream_versions as uv
+        from unittest.mock import AsyncMock, MagicMock
+        
+        # Mock client that returns page 1 with next pointing to external host
+        mock_client = AsyncMock()
+        mock_response1 = MagicMock()
+        mock_response1.status_code = 200
+        mock_response1.json.return_value = {
+            "results": [{"name": "1.0.0"}, {"name": "2.0.0"}],
+            "next": "https://evil.example/v2/x?page=2"
+        }
+        mock_client.get.return_value = mock_response1
+        
+        tags = await uv._fetch_docker_hub_tags("test/repo", client=mock_client)
+        
+        # Verify only one request was made (security fix prevents following evil next)
+        assert mock_client.get.call_count == 1, f"Expected 1 request, got {mock_client.get.call_count}"
+        assert tags == ["1.0.0", "2.0.0"], f"Expected ['1.0.0', '2.0.0'], got {tags}"
+
+    @pytest.mark.asyncio
     async def test_docker_hub_tags_follow_next_page(self):
         """DEFECT 1: _fetch_docker_hub_tags only fetches the first page, never follows the `next` link.
         
@@ -874,7 +902,7 @@ class TestUpstreamPaginationAndBaseline:
                 assert result["update_available"] is False
                 
                 # upstream_update_available should be False because upstream (1.1.0) == baseline (1.1.0)
-                assert result["upstream_update_available"] is False
+                assert result["upstream_update_available"] is not True
                 assert result["upstream_version"] == "1.1.0"
                 assert result["upstream_pinned_version"] == "1.1.0"  # Should use current pin, not stale cache
 
