@@ -1,0 +1,8 @@
+- Fix test_update_check_hides_docs_only_diff to properly mock preflight subprocess path.
+- Add returncode parameter to _FakeProc with default 0.
+- Mock check_preflight to return empty list (clean preflight) with raising=True.
+- Handle fetch command in fake_exec with returncode=0.
+- Revert fake_resolve to return "dev" (original branch name for test).
+- Add assertion that preflight_errors is empty when preflight passes.
+- Add new test test_update_check_reflects_preflight_errors verifying preflight errors are surfaced in the response.
+- Decision: The update CHECK path SHOULD run the preflight (it does in product code at routes/settings.py:602). This is correct behavior — the check endpoint validates preflight before checking for updates, consistent with the apply path.

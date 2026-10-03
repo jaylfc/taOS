@@ -595,7 +595,23 @@ async def check_for_updates(request: Request):
     import re
     from tinyagentos import __version__
     from tinyagentos.auto_update import changes_are_docs_only, remote_is_strictly_ahead, branch_is_diverged
+    from tinyagentos.update_preflight import check_preflight
     project_dir = str(Path(__file__).parent.parent.parent)
+
+    # Pre-flight validation to prevent confusing errors or partial updates
+    preflight_issues = await asyncio.to_thread(check_preflight, project_dir)
+    if preflight_issues:
+        return {
+            "has_updates": False,
+            "diverged": False,
+            "diverged_message": None,
+            "current_version": __version__,
+            "new_version": None,
+            "current_commit": None,
+            "new_commit": None,
+            "preflight_errors": preflight_issues,
+            "fetch_error": None,
+        }
 
     # Track the user's selected branch (Updates → Advanced selector), or the
     # checked-out branch when unset — never a hard-coded master, otherwise a
@@ -611,7 +627,20 @@ async def check_for_updates(request: Request):
         stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
         cwd=project_dir,
     )
-    await fetch_proc.communicate()
+    fetch_out, _ = await fetch_proc.communicate()
+    if fetch_proc.returncode != 0:
+        # Surface fetch failure as an error field, never as 'unknown'
+        return {
+            "has_updates": False,
+            "diverged": False,
+            "diverged_message": None,
+            "current_version": __version__,
+            "new_version": None,
+            "current_commit": None,
+            "new_commit": None,
+            "preflight_errors": [],
+            "fetch_error": (fetch_out.decode() if fetch_out else "unknown error").strip()[:300],
+        }
 
     async def _rev_parse(ref: str) -> str:
         p = await asyncio.create_subprocess_exec(
@@ -1111,6 +1140,22 @@ async def apply_update(request: Request):
     """Pull latest TinyAgentOS code from GitHub."""
     import asyncio
     project_dir = Path(__file__).parent.parent.parent
+
+    # Pre-flight validation to prevent confusing errors or partial updates
+    from tinyagentos.update_preflight import check_preflight
+
+    preflight_issues = await asyncio.to_thread(check_preflight, project_dir)
+    if preflight_issues:
+        # REFUSE: check_for_updates returns 200 with preflight_errors: [...] and has_updates false;
+        # apply_update returns 409 with the messages and does NOT touch the tree
+        return JSONResponse(
+            {
+                "error": "Update blocked by preflight validation",
+                "preflight_errors": preflight_issues,
+                "message": "The update cannot proceed due to preflight validation errors. See preflight_errors for details.",
+            },
+            status_code=409,
+        )
 
     # The desktop rebuild leaves the tree dirty in three ways, and a dirty
     # tracked file makes the next git pull --ff-only refuse to overwrite the
