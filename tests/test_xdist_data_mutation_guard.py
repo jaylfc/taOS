@@ -25,70 +25,7 @@ sys.path.insert(0, {src!r})
 import tinyagentos.app as _app_mod
 _app_mod.PROJECT_DIR = Path({pytester_path!r})
 
-_DATA_MUTATIONS: list[str] = []
-_XDIST_CONTROLLER_MUTATIONS: list[str] = []
-
-
-def _collect_data_mtimes() -> dict[str, tuple[float, int]]:
-    data_dir = _app_mod.PROJECT_DIR / "data"
-    snapshot: dict[str, tuple[float, int]] = {{}}
-    if not data_dir.is_dir():
-        return snapshot
-    for path in data_dir.rglob("*"):
-        if path.is_file():
-            try:
-                st = path.stat()
-                snapshot[str(path)] = (st.st_mtime_ns, st.st_size)
-            except OSError:
-                pass
-    return snapshot
-
-
-@pytest.fixture(autouse=True, scope="function")
-def _guard_data_dir_mutation(request):
-    before = _collect_data_mtimes()
-    yield
-    after = _collect_data_mtimes()
-    mutated = []
-    for path, mt in after.items():
-        if path not in before or mt != before[path]:
-            mutated.append(path)
-    for path in before:
-        if path not in after:
-            mutated.append(f"{{path}} (deleted)")
-    if mutated:
-        if hasattr(request.config, "workerinput"):
-            _DATA_MUTATIONS.extend(mutated)
-        else:
-            raise RuntimeError(
-                f"PROJECT_DIR/data was mutated during test {{request.node.nodeid}}. The following "
-                f"files were created or modified: {{', '.join(sorted(mutated))}}. "
-                "Tests must not write into the repo's data directory."
-            )
-
-
-def pytest_testnodedown(node, error):
-    _XDIST_CONTROLLER_MUTATIONS.extend(node.workeroutput.get("data_mutations", []))
-
-
-def pytest_sessionfinish(session, exitstatus):
-    if hasattr(session.config, "workeroutput"):
-        if _DATA_MUTATIONS:
-            session.config.workeroutput["data_mutations"] = list(set(_DATA_MUTATIONS))
-    else:
-        if _XDIST_CONTROLLER_MUTATIONS:
-            print(
-                "PROJECT_DIR/data was mutated during the xdist session. The following "
-                f"files were created or modified: {{', '.join(sorted(set(_XDIST_CONTROLLER_MUTATIONS)))}}. "
-                "Tests must not write into the repo's data directory."
-            )
-            session.exitstatus = pytest.ExitCode.TESTS_FAILED
-        elif _DATA_MUTATIONS:
-            raise RuntimeError(
-                "PROJECT_DIR/data was mutated during the session. The following "
-                f"files were created or modified: {{', '.join(sorted(set(_DATA_MUTATIONS)))}}. "
-                "Tests must not write into the repo's data directory."
-            )
+pytest_plugins = ["tests._data_guard_plugin"]
 """
 
 
@@ -130,7 +67,9 @@ def test_serial_without_xdist_does_not_internalerror(tmp_path, pytester):
     """Serial run with xdist disabled must not INTERNALERROR on the unknown hook."""
     src = str(Path(__file__).resolve().parent.parent)
     conftest_path = Path(__file__).resolve().parent / "conftest.py"
+    plugin_path = Path(__file__).resolve().parent / "_data_guard_plugin.py"
     conftest_content = conftest_path.read_text()
+    plugin_content = plugin_path.read_text()
     conftest_with_syspath = (
         f"import sys\n"
         f"sys.path.insert(0, {src!r})\n"
@@ -138,6 +77,7 @@ def test_serial_without_xdist_does_not_internalerror(tmp_path, pytester):
         + conftest_content
     )
     pytester.makepyfile(conftest=conftest_with_syspath)
+    pytester.makepyfile(_data_guard_plugin=plugin_content)
     pytester.makepyfile(test_pass="""
 def test_trivial():
     assert True
