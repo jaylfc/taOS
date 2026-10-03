@@ -59,7 +59,7 @@ async def test_migration_is_idempotent_across_restarts(tmp_path, monkeypatch):
         nonlocal call_count
         call_count += 1
         if call_count > 1:
-            raise AgentExistsError(f"{name} already registered"    )
+            raise AgentExistsError(f"{name} already registered")
 
     with patch("taosmd.agents.AgentRegistry.register_agent", side_effect=_register):
         from tinyagentos.app import create_app

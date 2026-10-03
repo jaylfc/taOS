@@ -633,7 +633,6 @@ class TestDeployRegistryRegistration:
 
     async def test_deploy_creates_registry_row(self, client, app, monkeypatch):
         import re
-        import taosmd.agents as tm_agents
         from unittest.mock import AsyncMock, MagicMock
 
         app.state.archive = MagicMock(
@@ -688,7 +687,6 @@ class TestDeployRegistryRegistration:
         """Display names are not unique; a second deploy with the same name is
         a NEW agent (suffixed slug) and must get its own canonical_id, never
         inherit the first agent's identity."""
-        import taosmd.agents as tm_agents
         from unittest.mock import AsyncMock, MagicMock
 
         app.state.archive = MagicMock(
@@ -754,7 +752,6 @@ class TestDeployRegistryRegistration:
     async def test_reserved_name_registration_rejected_as_400(self, client, app, monkeypatch):
         """A name the registry rejects (reserved prefix) is a user error: the
         deploy must return 400 with the registry's message and add no agent."""
-        import taosmd.agents as tm_agents
         from unittest.mock import AsyncMock, MagicMock
 
         app.state.archive = MagicMock(
@@ -805,7 +802,6 @@ class TestDeployUsesAppScopedTaosmdRegistry:
     module-level global, so multiple create_app() calls do not share state."""
 
     async def test_deploy_registers_into_app_scoped_registry(self, client, app, tmp_path, monkeypatch):
-        import taosmd.agents as tm_agents
         from unittest.mock import AsyncMock, MagicMock
 
         app.state.archive = MagicMock(
@@ -843,9 +839,6 @@ class TestDeployUsesAppScopedTaosmdRegistry:
 
 @pytest.mark.asyncio
 class TestAgentArchiveLifecycle:
-    """Agent archive creates snapshot; abort on snapshot failure; restore works; purge works."""
-
-
 
     async def test_archive_creates_snapshot_not_rename(self, client, monkeypatch):
         """DELETE /api/agents/{name} archives via snapshot; no rename called."""
