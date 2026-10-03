@@ -212,6 +212,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     import importlib
     _tm_agents = importlib.import_module("taosmd.agents")
     _tm_agents._default_registry = _tm_agents.AgentRegistry(data_dir)
+    agent_registry = _tm_agents.AgentRegistry(data_dir)
+    # App-scoped consumers must use app.state.agent_registry.
     config_path = data_dir / "config.yaml"
     # Copy example config on first run
     if not config_path.exists():
@@ -783,9 +785,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # taosmd.  Idempotent — safe to run on every startup.
         try:
             from tinyagentos.migrations import migrate_persona_v2
-            import importlib
-            _tm_agents = importlib.import_module("taosmd.agents")
-            migrate_persona_v2(config.agents, register_fn=_tm_agents.register_agent)
+            migrate_persona_v2(config.agents, register_fn=agent_registry.register_agent)
             if config.config_path and config.config_path.exists():
                 await save_config_locked(config, config.config_path)
         except Exception:
@@ -1861,9 +1861,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.copilot_ticket_store = None
     app.state.copilot_hub = None
     app.state.vapid_keypair = None
-    # agent_registry and its keypair are created by the lifespan; None here
-    # ensures attribute-existence checks work during the pre-startup window.
-    app.state.agent_registry = agent_registry_store
+    # App-scoped taosmd agent registry for in-app consumers (deploy route,
+    # persona migration). CLI entry points still rely on the global rebind
+    # above; in-app consumers must use app.state.agent_registry.
+    app.state.agent_registry = agent_registry
     app.state.agent_registry_keypair = agent_registry_keypair
     app.state.agent_model_keys = agent_model_key_store
     app.state.auth_requests = auth_requests_store
