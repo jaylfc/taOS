@@ -185,15 +185,34 @@ class TestUpdatePreflight:
     def test_valid_branch_name_check_ref_format(self, tmp_path):
         """Tracked branch 'feature/x' must not yield invalid_tracked_branch;
         'a..b' must."""
-        from tinyagentos.update_preflight import _run_cmd
+        from tinyagentos.update_preflight import check_preflight
 
-        # Valid branch name
-        rc, _ = _run_cmd(["git", "check-ref-format", "--branch", "feature/x"], cwd=tmp_path)
-        assert rc == 0
+        with patch("tinyagentos.update_preflight._ls_remote_heads") as mock_ls_remote:
+            mock_ls_remote.return_value = (True, True)
+            with patch("tinyagentos.update_preflight._get_fetch_refspecs") as mock_get_specs:
+                mock_get_specs.return_value = ["+refs/heads/*:refs/remotes/origin/*"]
+                with patch("tinyagentos.update_preflight._find_foreign_owned_files") as mock_foreign:
+                    mock_foreign.return_value = (0, [])
+                    with patch("tinyagentos.update_preflight._run_cmd") as mock_run_cmd:
+                        def run_cmd_side_effect(cmd, *args, **kwargs):
+                            if cmd[:3] == ["git", "rev-parse", "--abbrev-ref"]:
+                                return 0, "feature/x"
+                            elif cmd[:3] == ["git", "check-ref-format", "--branch"]:
+                                if cmd[-1] == "feature/x":
+                                    return 0, ""
+                                elif cmd[-1] == "a..b":
+                                    return 128, "fatal: 'a..b' is not a valid branch name"
+                            return -1, "unexpected"
 
-        # Invalid branch name
-        rc, _ = _run_cmd(["git", "check-ref-format", "--branch", "a..b"], cwd=tmp_path)
-        assert rc != 0
+                        mock_run_cmd.side_effect = run_cmd_side_effect
+                        issues = check_preflight(tmp_path)
+                        bad = [i for i in issues if i.code == "invalid_tracked_branch"]
+                        assert bad == []
+
+                        mock_run_cmd.side_effect = lambda cmd, *a, **kw: (128, "fatal: 'a..b' is not a valid branch name") if cmd[:3] == ["git", "check-ref-format", "--branch"] else (0, "a..b")
+                        issues = check_preflight(tmp_path)
+                        bad = [i for i in issues if i.code == "invalid_tracked_branch"]
+                        assert len(bad) == 1
 
     def test_writable_file_not_counted_as_foreign(self, tmp_path):
         """A writable file under a non-pruned dir must not be counted as foreign."""
@@ -284,8 +303,8 @@ class TestUpdatePreflight:
 
         Writable access is simulated by patching ``os.access`` so foreign.txt
         reports not writable. This test fails without the str->Path coercion
-        with ``AttributeError: 'str' object has no attribute 'rglob'``, and
-        also fails if the scan never runs or the str is not normalised.
+        because the walk branch never runs, and also fails if the scan never
+        runs or the str is not normalised.
         """
         repo = tmp_path / "repo"
         repo.mkdir()

@@ -92,19 +92,19 @@ def _covers_ref(ref: str, refspecs: List[str]) -> bool:
     return False
 
 
-def _find_foreign_owned_files(project_dir: Path, excluded_prefixes: tuple[str, ...] = (".venv", "node_modules")) -> tuple[int, List[str]]:
+def _find_foreign_owned_files(project_dir: Path) -> tuple[int, List[str]]:
     """Find files not writable by the current effective user.
 
-    Excludes files under excluded prefixes, files in data dirs (./data),
-    __pycache__/, and venv dirs. When running as root, returns (0, [])
-    because root can write any file.
+    Excludes files under .venv, venv, node_modules, data, __pycache__,
+    and .git trees. When running as root, returns (0, []) because root
+    can write any file.
     """
     if os.geteuid() == 0:
         return 0, []
 
     count = 0
     paths = []
-    prune_dirs = {".venv", "venv", "node_modules", "data", "__pycache__"}
+    prune_dirs = {".venv", "venv", "node_modules", "data", "__pycache__", ".git"}
 
     for root, dirs, files in os.walk(project_dir):
         dirs[:] = [d for d in dirs if d not in prune_dirs]
@@ -163,6 +163,15 @@ def check_preflight(project_dir: str | os.PathLike) -> List[PreflightIssue]:
         return issues
 
     rc, _ = _run_cmd(["git", "check-ref-format", "--branch", branch], project_dir)
+    if rc < 0:
+        issues.append(
+            PreflightIssue(
+                code="invalid_tracked_branch",
+                message=f"Cannot validate tracked branch '{branch}' (git check-ref-format failed).",
+                repair="Ensure git is installed and accessible, then set a valid tracked branch via 'taosctl set-update-channel <branch>'.",
+            )
+        )
+        return issues
     if rc != 0:
         issues.append(
             PreflightIssue(
@@ -175,9 +184,7 @@ def check_preflight(project_dir: str | os.PathLike) -> List[PreflightIssue]:
 
     # 1. Check if tracked branch exists on origin
     remote_reachable, branch_exists = _ls_remote_heads("origin", branch, project_dir)
-    if not remote_reachable:
-        pass
-    elif not branch_exists:
+    if remote_reachable and not branch_exists:
         issues.append(
             PreflightIssue(
                 code="branch_not_on_origin",
@@ -225,7 +232,7 @@ def check_preflight(project_dir: str | os.PathLike) -> List[PreflightIssue]:
             PreflightIssue(
                 code="foreign_owned_files",
                 message=f"{count} file(s) are not writable by the service user (including: {paths_str}).",
-                repair="Change file ownership to the service user (e.g., chown -R <user>:<group> .).",
+                repair="Make the files writable by the service user (e.g., chmod -R u+w . or chown -R <user>:<group> .).",
             )
         )
 
