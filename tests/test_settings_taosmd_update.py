@@ -224,7 +224,7 @@ def _update_route_patches():
             ),
         ),
         patch("tinyagentos.routes.system._do_restart", new=_fake_restart),
-        patch("tinyagentos.restart_orchestrator.write_pending_restart"),
+        patch("tinyagentos.routes.settings.write_pending_restart"),
         patch(
             "tinyagentos.routes.settings._announce_taosmd_restart",
             new=AsyncMock(return_value=True),

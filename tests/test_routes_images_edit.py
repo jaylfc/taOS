@@ -44,9 +44,20 @@ def _request_with_catalog(catalog):
     return SimpleNamespace(app=SimpleNamespace(state=app_state), state=req_state)
 
 
-def test_edit_routes_registered():
+def test_edit_routes_registered(tmp_path):
     """The three edit endpoints + the capabilities probe exist on the app."""
-    app = create_app()
+    import yaml
+    from tinyagentos.app import create_app
+    cfg = {
+        "server": {"host": "0.0.0.0", "port": 6969},
+        "backends": [],
+        "qmd": {"url": "http://localhost:7832"},
+        "agents": [],
+        "metrics": {"poll_interval": 30, "retention_days": 30},
+    }
+    (tmp_path / "config.yaml").write_text(yaml.dump(cfg))
+    (tmp_path / ".setup_complete").touch()
+    app = create_app(data_dir=tmp_path)
     paths = {getattr(r, "path", "") for r in app.routes}
     assert "/api/images/edit" in paths
     assert "/api/images/remove-bg" in paths
