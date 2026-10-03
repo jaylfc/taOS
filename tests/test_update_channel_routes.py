@@ -149,6 +149,7 @@ class TestUpdateCheckFollowsTrackedBranch:
 
         resolve_calls = []
         refs_seen = []
+        captured_proc = None
 
         async def fake_resolve(store, project_dir):
             resolve_calls.append(True)
@@ -163,10 +164,11 @@ class TestUpdateCheckFollowsTrackedBranch:
                 return self._out, b""
 
         async def fake_exec(*args, **kwargs):
-            # args = ("git", <subcommand>, ...). Record any ref argument so we
-            # can assert the resolved branch flowed into the git comparison.
             refs_seen.extend(a for a in args if isinstance(a, str))
-            return _FakeProc(b"deadbeef\n")
+            proc = _FakeProc(b"deadbeef\n")
+            nonlocal captured_proc
+            captured_proc = proc
+            return proc
 
         async def fake_strictly_ahead(project_dir, local_sha, remote_sha):
             return False
@@ -180,13 +182,15 @@ class TestUpdateCheckFollowsTrackedBranch:
         )
         monkeypatch.setattr(
             "tinyagentos.update_preflight.check_preflight",
-            lambda project_dir: [],
+            lambda *a, **k: [],
             raising=False,
         )
 
         r = await client.get("/api/settings/update-check")
         assert r.status_code == 200
         assert resolve_calls, "check_for_updates did not resolve the tracked branch"
+        assert captured_proc is not None, "fake_exec was never called"
+        assert captured_proc.returncode == 0
         # The resolved branch must reach the git ref comparison.
         assert "origin/my-feature" in refs_seen
         assert "my-feature" in refs_seen  # git fetch origin <branch>
