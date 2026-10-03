@@ -118,8 +118,20 @@ def _require_session(request: Request) -> str:
     locked a logged-in user out). A request that still arrives tagged as an
     unverified registry JWT is refused with 403 rather than served as anonymous;
     everything else with no session is a 401.
+
+    A deployer-minted per-agent local token (TAOS_LOCAL_TOKEN) is resolved by
+    the middleware as the primary admin user with ``request.state.agent_name``
+    set. That is the agent's identity, not a user credential, so it is refused
+    with 403 here; otherwise an agent would get admin on this route and could
+    read or write any user's config via ?user_id=. The unbound host local token
+    (no agent_name) keeps working as the admin.
     """
     if getattr(request.state, "via", None) == "registry_jwt_candidate":
+        raise HTTPException(
+            status_code=403,
+            detail="Agent tokens cannot read or modify dispatcher config",
+        )
+    if getattr(request.state, "agent_name", None):
         raise HTTPException(
             status_code=403,
             detail="Agent tokens cannot read or modify dispatcher config",

@@ -5,3 +5,4 @@
 - Dispatcher config PUT: unknown fields and mistyped values are rejected (422) instead of being silently ignored or coerced, and `boards` / `eligible_agents` are de-duplicated and capped at 200 ids.
 - Dispatcher config: an admin targeting a user that does not exist gets a 404 instead of writing an orphan row, and a non-admin may name their own id in `?user_id=`.
 - Dispatcher config: a config that has never been saved reports `updated_at: null` rather than a synthetic timestamp.
+- Dispatcher config: a deployer-minted per-agent local token (`TAOS_LOCAL_TOKEN`) is refused with 403 on GET and PUT. It was previously resolved as the admin user, which let a deployed agent read or write any user's dispatcher config via `?user_id=`.

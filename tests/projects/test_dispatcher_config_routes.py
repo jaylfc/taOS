@@ -611,6 +611,43 @@ async def test_admin_local_token_can_read_and_write_config(app):
 
 
 @pytest.mark.asyncio
+async def test_per_agent_local_token_cannot_read_or_write_config(app):
+    """A deployer-minted per-agent local token is refused with 403.
+
+    The middleware resolves it as the primary (admin) user with
+    request.state.agent_name set, so without a route-level refusal an agent
+    would get admin on config CRUD and could read or write ANY user's config
+    via ?user_id=. Same rule as the LLM gateway: an agent-bound local token is
+    the agent's identity, not a user credential.
+    """
+    async with app.router.lifespan_context(app):
+        await _ensure_user(app, "admin", "adminpass123", is_admin=True)
+        victim = await _ensure_user(app, "testuser", "testpass123")
+        victim_id = victim["id"]
+        agent_token = app.state.auth.mint_agent_local_token("some-agent")
+        body = {
+            "enabled": True,
+            "boards": [],
+            "eligible_agents": [],
+            "max_concurrent_per_agent": 1,
+            "poll_seconds": 45,
+            "lease_seconds": 900,
+        }
+        async with _bearer_client(app, agent_token) as c:
+            r = await c.get("/api/dispatcher/config")
+            assert r.status_code == 403, f"Expected 403, got {r.status_code}: {r.text}"
+            r = await c.get(f"/api/dispatcher/config?user_id={victim_id}")
+            assert r.status_code == 403, f"Expected 403, got {r.status_code}: {r.text}"
+            r = await c.put(f"/api/dispatcher/config?user_id={victim_id}", json=body)
+            assert r.status_code == 403, f"Expected 403, got {r.status_code}: {r.text}"
+            r = await c.put("/api/dispatcher/config", json=body)
+            assert r.status_code == 403, f"Expected 403, got {r.status_code}: {r.text}"
+
+        cfg = await app.state.dispatcher_store.get_config(victim_id)
+        assert cfg.updated_at is None, "a per-agent local token wrote another user's config"
+
+
+@pytest.mark.asyncio
 async def test_agent_token_cannot_write_config(app):
     """An agent registry JWT alone is not a credential for config CRUD -> 401.
 
