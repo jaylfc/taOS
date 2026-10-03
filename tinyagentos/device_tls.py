@@ -7,6 +7,7 @@ import hashlib
 from pathlib import Path
 
 from cryptography import x509
+from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
@@ -54,7 +55,7 @@ def load_or_create_device_tls_cert(data_dir: Path) -> tuple[Path, Path, str]:
             if key.public_key().public_numbers() == cert.public_key().public_numbers():
                 fp = _fingerprint_from_der(cert.public_bytes(serialization.Encoding.DER))
                 return cert_path, key_path, fp
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, AttributeError, UnsupportedAlgorithm):
             # Cert or key parse failure, fall through to regenerate both
             pass
         # Mismatch or parsing failure, fall through to regenerate both
