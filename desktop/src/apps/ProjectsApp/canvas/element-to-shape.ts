@@ -133,3 +133,21 @@ export function elementToShape(el: CanvasElement, projectSlug: string): any {
     },
   };
 }
+
+// Diagram kinds render as a labelled placeholder on the taos-generic shape
+// until the diagram-render slice converts the real source. The label is the
+// first non-empty line of payload.source (falling back to the kind name) and
+// the badge names the kind, so the element reads as a diagram instead of a
+// blank box.
+const DIAGRAM_KINDS = new Set(["mermaid", "flowchart"]);
+
+export function genericPlaceholder(
+  kind: unknown,
+  payload: unknown,
+): { label: string; badge: string } | null {
+  if (typeof kind !== "string" || !DIAGRAM_KINDS.has(kind)) return null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const source = str((payload as any)?.source);
+  const line = source.split("\n").map((s) => s.trim()).find((s) => s.length > 0);
+  return { label: line ?? kind, badge: kind };
+}
