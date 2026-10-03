@@ -366,7 +366,7 @@ class TestUpdatePreflight:
         branch_issues = [i for i in issues if i.code == "branch_not_on_origin"]
         assert branch_issues == []
         mock_ls_remote.assert_called_once()
-        assert mock_ls_remote.call_args[0][1] == "master"
+        assert mock_ls_remote.call_args.args[1] == "master"
 
     def test_check_preflight_without_branch_uses_rev_parse_fallback(self, tmp_path):
         """When branch is omitted, the rev-parse fallback must still be used."""
@@ -382,9 +382,11 @@ class TestUpdatePreflight:
                         mock_run_cmd.return_value = (0, "local-only\n")
                         issues = check_preflight(tmp_path)
 
-        branch_issues = [i for i in issues if i.code == "branch_not_on_origin"]
-        assert len(branch_issues) == 1
-        assert "local-only" in branch_issues[0].message
+                        assert any(c.args[0][:4] == ["git", "rev-parse", "--abbrev-ref", "HEAD"] for c in mock_run_cmd.call_args_list)
+
+                        branch_issues = [i for i in issues if i.code == "branch_not_on_origin"]
+                        assert len(branch_issues) == 1
+                        assert "local-only" in branch_issues[0].message
 
     def test_root_user_can_write_all_files(self, tmp_path):
         """When running as root (geteuid==0), _find_foreign_owned_files must

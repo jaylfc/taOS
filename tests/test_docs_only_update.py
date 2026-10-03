@@ -153,7 +153,7 @@ async def test_update_check_hides_docs_only_diff(client, monkeypatch):
     )
     monkeypatch.setattr(
         "tinyagentos.update_preflight.check_preflight",
-        lambda project_dir: [],
+        lambda project_dir, branch=None: [],
         raising=True,
     )
 
@@ -210,7 +210,7 @@ async def test_update_check_reflects_preflight_errors(client, monkeypatch):
     )
     monkeypatch.setattr(
         "tinyagentos.update_preflight.check_preflight",
-        lambda project_dir: [
+        lambda project_dir, branch=None: [
             PreflightIssue(
                 code="branch_not_on_origin",
                 message="Tracked branch 'dev' not found on origin",
