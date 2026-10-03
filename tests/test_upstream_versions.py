@@ -94,9 +94,47 @@ class FakeRegistryClient:
 
 
 def _docker_hub_client(fixture: str, status: int = 200) -> FakeRegistryClient:
-    return FakeRegistryClient({
-        "hub.docker.com/v2/repositories/": _FakeResponse(status, _load_fixture(fixture)),
-    })
+    """Create a mock client for Docker Hub API with full pagination support.
+    
+    This mock is designed to work with the current fixture files, which contain
+    only the first page's data. The function creates a mock that will respond to
+    pagination requests by returning the same data again (simulating an empty
+    second page).
+    """
+    data = _load_fixture(fixture)
+    
+    # First page response
+    first_page_response = _FakeResponse(status, data)
+    
+    # Create a routes dict with the first page URL
+    routes = {}
+    
+    # If the data has a 'next' URL, add a route for it that returns empty results
+    # This simulates that there are no more tags to fetch
+    if isinstance(data, dict) and data.get("next"):
+        next_url = data["next"]
+        if isinstance(next_url, str):
+            # Create a second page response with empty results
+            second_page_data = {
+                "count": 0,
+                "next": None,
+                "previous": next_url,
+                "results": [],
+            }
+            routes[next_url] = _FakeResponse(status, second_page_data)
+    
+    # Add the first page route with the query parameters
+    # The URL should match what fetch_registry_tags will request
+    # It should include the query parameters: ordering=last_updated&page_size=100
+    from tinyagentos.upstream_versions import _DOCKER_HUB_TAGS, _hub_path
+    
+    # Use the same path that's used in the test fixture
+    path = "searxng/searxng"
+    repo = _hub_path(path)
+    first_page_url = _DOCKER_HUB_TAGS.format(path=repo)
+    routes[first_page_url] = first_page_response
+    
+    return FakeRegistryClient(routes)
 
 
 # --------------------------------------------------------------------------- #
@@ -751,3 +789,108 @@ class TestRealManifestsAreNotPermanentUpdates:
         assert entry["update_available"] is True
         assert entry["upstream_update_available"] is True
         assert entry["upstream_pinned_version"] == "4.135.0"
+
+
+class TestRedProof:
+    """Tests that currently FAIL against the bugs, before they are fixed."""
+
+    @pytest.mark.asyncio
+    async def test_docker_hub_tags_follow_next_page(self):
+        """DEFECT 1: _fetch_docker_hub_tags only fetches the first page, never follows the `next` link.
+        
+        If the newest eligible tag is on a later page, check_upstream selects from an incomplete
+        list and the warmer caches an older tag (or None) as a successful check.
+        FIX: follow `next` and accumulate valid tag names across pages (bounded page count,
+        e.g. 10), keep the existing response validation and the return-None-on-failed-request
+        behaviour.
+        """
+        import httpx
+        from unittest.mock import AsyncMock
+        
+        from tinyagentos import upstream_versions as uv
+        
+        # Mock the first page response (with page 2 in the next field)
+        first_page_response = {
+            "count": 47,
+            "next": "https://hub.docker.com/v2/repositories/test/repo/tags?ordering=last_updated&page=2",
+            "previous": None,
+            "results": [
+                {"name": "2026.10.2", "id": "1", "size": 100},
+                {"name": "2026.10.1", "id": "2", "size": 100},
+            ]
+        }
+        
+        # Mock the second page response (with None in the next field)
+        second_page_response = {
+            "count": 47,
+            "next": None,
+            "previous": "https://hub.docker.com/v2/repositories/test/repo/tags?ordering=last_updated&page=1",
+            "results": [
+                {"name": "2026.10.3", "id": "3", "size": 100},  # Newest eligible tag!
+                {"name": "2026.10.0", "id": "4", "size": 100},
+            ]
+        }
+        
+        # Track which URLs were requested
+        requested_urls = []
+        
+        # Create a mock client that returns different responses for different URLs
+        async def mock_get(url, params=None, headers=None):
+            requested_urls.append(url)
+            if "page=2" in url:
+                return httpx.Response(200, json=second_page_response)
+            else:
+                return httpx.Response(200, json=first_page_response)
+        
+        async def mock_aclose():
+            pass
+        
+        mock_client = AsyncMock()
+        mock_client.get = mock_get
+        mock_client.aclose = mock_aclose
+        
+        # This should fetch tags from BOTH pages and return ["2026.10.3", "2026.10.2", "2026.10.1", "2026.10.0"]
+        # but currently only returns ["2026.10.2", "2026.10.1"] from page 1
+        tags = await uv._fetch_docker_hub_tags("test/repo", client=mock_client)
+        
+        # Verify both pages were requested
+        assert len(requested_urls) >= 2, f"Expected at least 2 requests, got {len(requested_urls)}: {requested_urls}"
+        
+        # The newest eligible tag (2026.10.3) is on page 2, so it should be in the results
+        assert tags is not None
+        assert "2026.10.3" in tags  # This should be present after the fix
+        # Also should have the other tags
+        assert "2026.10.2" in tags
+        assert "2026.10.1" in tags
+        assert "2026.10.0" in tags
+
+    def test_baseline_prefers_current_pin(self):
+        """DEFECT 2: the recorded `pinned_version` from the cache is preferred over the app's
+        CURRENT image pin, so after a same-shape catalog bump the stale recorded pin can
+        make an update look already applied or still pending.
+        
+        FIX: use upstream_versions.pinned_tag(app) as the comparison baseline first,
+        fall back to the recorded pin, then app.version; when the upstream tag's shape
+        differs from the baseline's, report the upstream status as unknown rather than
+        comparing.
+        """
+        from tinyagentos.routes.store import _upstream_baseline
+        from unittest.mock import MagicMock, patch
+        
+        # Create a mock app with current pin = 1.1.0
+        app = MagicMock()
+        app.id = "test-app"
+        app.version = "2.0.0"  # Catalog version (not the image pin)
+        app.install = {"method": "docker", "image": "test/repo:1.1.0"}
+        
+        # Simulate upstream_versions.pinned_tag(app) returning "1.1.0"
+        with patch('tinyagentos.routes.store.upstream_versions.pinned_tag', return_value="1.1.0"):
+            # Simulate cache info with old pinned_version = "1.0.0"
+            info = {"pinned_version": "1.0.0"}
+            
+            # With the current implementation, _upstream_baseline returns "1.0.0" (from cache)
+            # With the fix, it should return "1.1.0" (from upstream_versions.pinned_tag)
+            baseline = _upstream_baseline(app, info)
+            
+            # After the fix, baseline should be "1.1.0" (current pin), not "1.0.0" (stale cache)
+            assert baseline == "1.1.0", f"Expected baseline to be '1.1.0' (current pin), but got '{baseline}'"

@@ -86,9 +86,15 @@ def _upstream_baseline(app: Any, info: dict[str, Any]) -> str:
     forever. Falls back to the manifest's ``version:`` when the app
     has no usable image pin.
     """
+    # Use upstream_versions.pinned_tag(app) as the comparison baseline first
+    baseline = upstream_versions.pinned_tag(app)
+    if isinstance(baseline, str) and baseline:
+        return baseline
+    # Fall back to the recorded pin
     recorded = info.get("pinned_version")
     if isinstance(recorded, str) and recorded:
         return recorded
+    # Fall back to app.version
     return upstream_versions.pinned_tag(app) or app.version
 
 
