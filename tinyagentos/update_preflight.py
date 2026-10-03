@@ -13,7 +13,6 @@ import os
 import subprocess
 from pathlib import Path
 from typing import NamedTuple, List
-from tinyagentos.auto_update import resolve_tracked_branch
 
 
 class PreflightIssue(NamedTuple):
@@ -123,13 +122,17 @@ def _find_foreign_owned_files(project_dir: Path) -> tuple[int, List[str]]:
     return count, paths
 
 
-def check_preflight(project_dir: str | os.PathLike) -> List[PreflightIssue]:
+def check_preflight(project_dir: str | os.PathLike, branch: str | None = None) -> List[PreflightIssue]:
     """Perform all preflight checks and return a list of problems found.
 
     Args:
         project_dir: The taOS project directory (where .git/ lives).
             A ``str`` or ``os.PathLike`` is accepted and normalised to a
             ``Path`` internally, so callers may pass either.
+        branch: The tracked update channel branch to validate. When supplied
+            and non-empty, this is used directly. When omitted, the checked-out
+            branch is resolved via ``git rev-parse --abbrev-ref HEAD`` with a
+            fallback to ``master``.
 
     Returns:
         List of PreflightIssue objects. Empty list means no problems.
@@ -139,13 +142,7 @@ def check_preflight(project_dir: str | os.PathLike) -> List[PreflightIssue]:
     issues: List[PreflightIssue] = []
 
     # Resolve the tracked branch that this install will update
-    branch = ""
-    try:
-        from tinyagentos.config import get_config_store
-        settings_store = get_config_store()
-        branch = resolve_tracked_branch(settings_store, project_dir)
-    except Exception:
-        # Try to get from git status if config store fails
+    if not branch:
         rc, out = _run_cmd(["git", "rev-parse", "--abbrev-ref", "HEAD"], project_dir)
         if rc == 0:
             branch = out.strip() if out else ""
