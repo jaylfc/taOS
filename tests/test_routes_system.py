@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -518,3 +519,96 @@ class TestDoRestartDarwinLaunchd:
 
         assert found_bootstrap, "Expected launchctl bootstrap of helper plist"
         assert exit_calls == [0], f"Expected os._exit(0), got {exit_calls}"
+
+
+class TestDoRestartLaunchdBootstrapTimeout:
+    """A hung launchctl bootstrap must not block the execv fallback."""
+
+    class _HangingProc:
+        """Stub subprocess whose communicate() never returns."""
+
+        def __init__(self):
+            self.returncode = None
+            self.killed = False
+
+        async def communicate(self):
+            await asyncio.sleep(3600)
+
+        def kill(self):
+            self.killed = True
+
+        async def wait(self):
+            return 0
+
+    @pytest.mark.asyncio
+    async def test_hung_launchctl_bootstrap_falls_through_to_execv(self, tmp_path, monkeypatch):
+        """launchctl that sleeps forever is killed and the execv fallback still runs."""
+        import asyncio
+        import os
+        import sys
+        import time
+
+        proc = self._HangingProc()
+        execv_calls = []
+        exit_calls = []
+
+        def fake_exit(code):
+            exit_calls.append(code)
+            raise SystemExit(code)
+
+        def fake_execv(path, argv):
+            execv_calls.append((path, argv))
+            raise SystemExit(0)
+
+        monkeypatch.setattr(os, "_exit", fake_exit)
+        monkeypatch.setattr(os, "execv", fake_execv)
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.delenv("INVOCATION_ID", raising=False)
+        monkeypatch.setattr(
+            system_routes, "LAUNCHCTL_BOOTSTRAP_TIMEOUT", 0.05, raising=False
+        )
+
+        _orig_exists = os.path.exists
+
+        def fake_exists(path):
+            if str(path) in ("/run/systemd/system", "/.dockerenv"):
+                return False
+            return _orig_exists(path)
+
+        monkeypatch.setattr(os.path, "exists", fake_exists)
+
+        monkeypatch.setattr(
+            "tinyagentos.launchd_migration.PLIST_PATH",
+            tmp_path / "com.tinyagentos.controller.plist",
+        )
+        monkeypatch.setattr(
+            "tinyagentos.launchd_migration.HELPER_PLIST_PATH",
+            tmp_path / "com.tinyagentos.plist-reload.plist",
+        )
+
+        from tinyagentos.launchd_migration import _pending_launchd_reload_path
+
+        flag_path = _pending_launchd_reload_path()
+        flag_path.parent.mkdir(parents=True, exist_ok=True)
+        flag_path.write_text("1")
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            return proc
+
+        app_state = MagicMock()
+        app_state.notifications = None
+
+        started = time.monotonic()
+        with patch(
+            "asyncio.create_subprocess_exec", side_effect=fake_create_subprocess_exec
+        ):
+            with pytest.raises(SystemExit):
+                await asyncio.wait_for(
+                    system_routes._do_restart(app_state), timeout=15
+                )
+        elapsed = time.monotonic() - started
+
+        assert proc.killed, "hung launchctl was not killed after the timeout"
+        assert execv_calls, "the execv fallback was never reached"
+        assert exit_calls == [], f"os._exit must not be taken, got {exit_calls}"
+        assert elapsed < 10, f"fallback took {elapsed:.1f}s, timeout did not fire"

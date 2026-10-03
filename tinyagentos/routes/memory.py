@@ -30,7 +30,9 @@ from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from tinyagentos.agent_token_auth import check_agent_scope
 from tinyagentos.otel.trace_context import build_trace_context_headers
+from tinyagentos.routes.delegation import _resolve_agent_name
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +105,20 @@ async def memory_browse(
     conversation_id: str | None = None,
 ):
     """Browse memory chunks via qmd serve GET /browse."""
+    # Check if this is a registry-JWT agent request (not a human session)
+    agent_canonical_id = await check_agent_scope(request, "memory_read")
+    
+    # For registry-JWT agents, restrict to own namespace
+    if agent_canonical_id is not None:
+        # If an agent name was provided in the query, ensure it matches the calling agent's own
+        # First resolve the canonical_id to the config agent name
+        agent_config_name = await _resolve_agent_name(request, agent_canonical_id) or agent_canonical_id
+        
+        if agent is not None and agent != agent_config_name:
+            raise HTTPException(status_code=403, detail="Agent can only browse its own memory")
+        # Use the resolved config agent name for the agent namespace
+        agent = agent_config_name
+    
     http_client = request.app.state.http_client
     params: dict = {"limit": limit, "offset": offset}
     if collection:
@@ -174,6 +190,20 @@ async def memory_search(request: Request, body: SearchRequest):
     Aggregating across agents is a separate concern that belongs in a
     future ``/api/memory/all`` endpoint, gated by user permission.
     """
+    # Check if this is a registry-JWT agent request (not a human session)
+    agent_canonical_id = await check_agent_scope(request, "memory_read")
+    
+    # For registry-JWT agents, restrict to own namespace
+    if agent_canonical_id is not None:
+        # If an agent name was provided in the body, ensure it matches the calling agent's own
+        # First resolve the canonical_id to the config agent name
+        agent_config_name = await _resolve_agent_name(request, agent_canonical_id) or agent_canonical_id
+        
+        if body.agent is not None and body.agent != agent_config_name:
+            raise HTTPException(status_code=403, detail="Agent can only search its own memory")
+        # Use the resolved config agent name for the agent namespace
+        body.agent = agent_config_name
+    
     db_path = _agent_db_path(request, body.agent)
     search_fn = _qmd_vsearch if body.mode == "semantic" else _qmd_search
 
@@ -197,6 +227,20 @@ async def memory_collections(
     request: Request, agent_name: str, conversation_id: str | None = None,
 ):
     """List memory collections for an agent via qmd serve GET /collections."""
+    # Check if this is a registry-JWT agent request (not a human session)
+    agent_canonical_id = await check_agent_scope(request, "memory_read")
+    
+    # For registry-JWT agents, restrict to own namespace
+    if agent_canonical_id is not None:
+        # First resolve the canonical_id to the config agent name
+        agent_config_name = await _resolve_agent_name(request, agent_canonical_id) or agent_canonical_id
+        
+        # Ensure the agent is requesting collections for itself only
+        if agent_name != agent_config_name:
+            raise HTTPException(status_code=403, detail="Agent can only access its own collections")
+        # Use the resolved config agent name
+        agent_name = agent_config_name
+    
     http_client = request.app.state.http_client
     params: dict = {"dbPath": _agent_db_path(request, agent_name)}
     headers = build_trace_context_headers(conversation_id=conversation_id)
@@ -219,6 +263,12 @@ async def memory_delete_chunk(
     Routes to the per-agent index when ``agent`` is set, otherwise to
     the default user index.
     """
+    # For registry-JWT agents, DELETE is not allowed even with memory_read
+    # This route remains human-only as per the spec
+    agent_canonical_id = await check_agent_scope(request, "memory_read")
+    if agent_canonical_id is not None:
+        raise HTTPException(status_code=403, detail="Memory deletion is human-only")
+    
     http_client = request.app.state.http_client
     payload: dict = {"hash": content_hash, "dbPath": _agent_db_path(request, agent)}
     headers = build_trace_context_headers(conversation_id=conversation_id)

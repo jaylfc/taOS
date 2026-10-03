@@ -25,6 +25,11 @@ The file format is::
       ]
     }
 
+Each entry is also live-probed as its mapped backend type at its
+``health_url`` origin (loopback only), else (or if rejected)
+``http://localhost:<port>``, so a
+running server is reported live and a stopped one as ``stopped`` per port.
+
 When the file is absent the worker simply reports an empty available-models
 list -- no error, no behaviour change for deployments that do not use the
 feature.

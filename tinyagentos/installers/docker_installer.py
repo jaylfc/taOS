@@ -113,6 +113,24 @@ class DockerInstaller(AppInstaller):
             os.chmod(full_path, 0o600)
 
     @staticmethod
+    def _is_floating_tag(image: str) -> bool:
+        """True when an image reference carries no usable version pin.
+
+        A floating tag (``:latest``, or no tag at all) means "whatever upstream
+        ships right now", so the compose service must re-pull on every
+        ``up`` instead of reusing whatever happens to be cached locally. A
+        digest-pinned reference (``repo@sha256:...``) is an exact pin even
+        though it has no colon tag, so it never floats.
+        """
+        ref = image.split("@", 1)[0]
+        # Only the part after the final slash can hold a tag; a registry host
+        # may itself contain a colon (e.g. ``localhost:5000/app``).
+        name = ref.rsplit("/", 1)[-1]
+        if ":" not in name:
+            return True
+        return name.rsplit(":", 1)[1] == "latest"
+
+    @staticmethod
     def _is_named_volume(source: str) -> bool:
         """True when a compose volume source is a named volume (not a host path).
 
@@ -181,6 +199,13 @@ class DockerInstaller(AppInstaller):
             "image": install_config["image"],
             "restart": "unless-stopped",
         }
+        # `docker compose pull` in install() already refreshes a floating tag,
+        # but `up -d` alone reuses the local cache for one. Pin
+        # pull_policy: always so an unpinned image is pulled before the
+        # container starts -- that is what makes every install and every Store
+        # update land on the current upstream release.
+        if self._is_floating_tag(str(install_config["image"])):
+            service["pull_policy"] = "always"
         named_volumes: dict[str, None] = {}
         if "volumes" in install_config:
             service["volumes"] = install_config["volumes"]

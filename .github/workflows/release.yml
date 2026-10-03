@@ -1,0 +1,112 @@
+name: Release
+
+# Pushing a version tag IS the release. beta.54 and beta.55 were tagged on
+# master but the separate `gh release create` step was skipped, so GitHub showed
+# no release for 16 days and the in-app update check (which reads
+# /releases/latest, tinyagentos/github_releases.py) kept offering beta.53.
+# This workflow removes that manual step: the tag push publishes the release
+# with the CHANGELOG section as its body and attaches the prebuilt desktop
+# bundle.
+#
+# A release created with GITHUB_TOKEN does NOT fire `release: published`
+# events, so ci.yml's per-version bundle attach never runs for it. The bundle
+# is therefore built and attached here, from the tagged commit.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+# ONE group for every tag: runs are serialised, so two tags pushed close
+# together cannot race each other for /releases/latest. The "Mark latest" step
+# additionally refuses to promote a tag older than the newest published one.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the tag matches the release commit's version
+        run: |
+          version=$(python3 -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          if [ "v${version}" != "${TAG}" ]; then
+            echo "::error::tag ${TAG} is on a commit whose pyproject version is ${version}; refusing to publish"
+            exit 1
+          fi
+
+      - name: Extract release notes from CHANGELOG.md
+        run: python3 scripts/changelog_section.py "${TAG}" CHANGELOG.md > release-notes.md
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Build desktop bundle
+        run: |
+          cd desktop
+          npm ci --silent
+          npm run build
+          cd ..
+          tar -C static -czf desktop-bundle.tar.gz desktop
+          git rev-parse HEAD:desktop > desktop-tree.txt
+          sha256sum desktop-bundle.tar.gz | awk '{print $1}' > desktop-bundle.sha256
+
+      - name: Publish the GitHub Release (assets first, then public)
+        run: |
+          # Created as a DRAFT so the bundle is attached before anyone can see the
+          # release: a failed upload must never leave a public "latest" release
+          # without its bundle. Betas are our normal releases: never --prerelease,
+          # or /releases/latest (the in-app update check) skips it.
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "release ${TAG} already exists; repairing notes and flags"
+            gh release edit "${TAG}" --notes-file release-notes.md --title "${TAG}" --prerelease=false
+          else
+            gh release create "${TAG}" --verify-tag --draft --title "${TAG}" \
+              --notes-file release-notes.md
+          fi
+          gh release upload "${TAG}" desktop-bundle.tar.gz desktop-tree.txt desktop-bundle.sha256 --clobber
+          gh release edit "${TAG}" --draft=false --latest=false
+
+      - name: Mark latest only if this is the newest published version
+        id: latest
+        # Explicit bash = -eo pipefail: a failed `gh api` must fail the step, not
+        # feed an empty list to newest_release_tag.py and silently skip --latest.
+        shell: bash
+        run: |
+          pip install --quiet packaging
+          newest=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name' \
+            | python3 scripts/newest_release_tag.py)
+          if [ -z "${newest}" ]; then
+            echo "::error::no published release found (expected at least ${TAG})"
+            exit 1
+          fi
+          if [ "${newest}" = "${TAG}" ]; then
+            gh release edit "${TAG}" --latest
+            echo "is_newest=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::${TAG} is older than ${newest}; published but NOT marked latest"
+            echo "is_newest=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify /releases/latest now names this tag
+        if: steps.latest.outputs.is_newest == 'true'
+        run: |
+          latest=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)
+          if [ "${latest}" != "${TAG}" ]; then
+            echo "::error::/releases/latest is ${latest}, expected ${TAG}; the in-app update check will not offer this release"
+            exit 1
+          fi
+          echo "releases/latest = ${latest}"

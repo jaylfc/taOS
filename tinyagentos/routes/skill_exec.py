@@ -160,17 +160,47 @@ async def _skill_list_files(args: dict, request: Request) -> dict:
 async def _skill_web_search(args: dict, request: Request) -> dict:
     """Search the web via SearXNG (if available)."""
     import httpx
+    import os
 
     query = args.get("query", "")
     max_results = args.get("max_results", 5)
+
+    base_url = os.environ.get("TAOS_SEARXNG_URL", "").strip()
+    if not base_url:
+        store = getattr(request.app, "state", None)
+        installed_apps = getattr(store, "installed_apps", None) if store else None
+        if installed_apps is not None:
+            try:
+                runtime = await installed_apps.get_runtime_location("searxng")
+                if runtime and runtime.get("runtime_port"):
+                    host = runtime.get("runtime_host", "127.0.0.1")
+                    base_url = f"http://{host}:{runtime['runtime_port']}"
+            except Exception:
+                pass
+
+    if not base_url:
+        base_url = "http://localhost:8888"
+
+    base_url = base_url.rstrip("/")
+
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(
-                f"http://localhost:8888/search?q={query}&format=json"
+                base_url + "/search",
+                params={"q": query, "format": "json"},
             )
             if resp.status_code == 200:
                 data = resp.json()
-                return {"results": data.get("results", [])[:max_results]}
+                results = data.get("results", [])[:max_results]
+                if not results and data.get("unresponsive_engines"):
+                    return {
+                        "results": [],
+                        "error": (
+                            "Web search returned zero results: unresponsive engines: "
+                            + ", ".join(data.get("unresponsive_engines", []))
+                        ),
+                    }
+                return {"results": results}
     except Exception:
         pass
     return {"error": "Web search not configured. Install SearXNG."}

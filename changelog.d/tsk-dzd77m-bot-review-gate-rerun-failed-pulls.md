@@ -1,0 +1,3 @@
+### Fixed
+
+- bot-review-gate: when the gate passes on a `pull_request_review` event it now re-runs its own failed `pull_request` runs for the same head SHA (`scripts/rerun_failed_bot_review_runs.py`). The two events create separate check suites on one SHA, so a pre-review FAILURE used to survive beside the later SUCCESS, the required-check rollup stayed FAILURE, `mergeStateStatus` stayed BLOCKED and `gh pr merge --auto` never fired. Neither trigger is dropped and `check_bot_review.py` is unchanged.

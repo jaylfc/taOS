@@ -60,4 +60,13 @@ describe("built sw.js is a self-contained classic worker", () => {
     expect(sw).not.toMatch(/assets\/[\w.-]+\.js/);
     expect(sw).not.toMatch(/\bimport\s*\(/);
   });
+
+  it("precaches the pre-paint boot script", () => {
+    // jaylfc review on #3226: /desktop/boot.js is a blocking <script> in the
+    // shell's <head> and the desktop route serves it `no-store`, so without a
+    // precache an offline PWA launch skips the saved reduce-effects preference
+    // (the #58 flash) and every online launch pays a blocking round-trip on the
+    // critical path. The built worker must list it in PRECACHE_URLS.
+    expect(sw).toContain("/desktop/boot.js");
+  });
 });

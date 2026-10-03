@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import ipaddress
 import json
 import logging
 import os
@@ -7,7 +8,7 @@ import platform
 import socket
 import time
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 import httpx
 import psutil
 
@@ -149,6 +150,234 @@ def _collect_resources(
     return resources
 
 
+# Probe candidates every worker checks. Both the standard upstream ports AND
+# the TAOS-namespaced ones: install-worker.sh installs a TAOS-bundled Ollama
+# on 21434 to avoid colliding with any existing user Ollama on 11434; we want
+# to detect both so the user's pre-existing backends are first-class citizens
+# alongside the bundled one. TAOS_EXTRA_BACKENDS and the worker manifest add
+# more (#3232).
+_DEFAULT_PROBE_CANDIDATES: tuple[tuple[str, str], ...] = (
+    ("rkllama", "http://localhost:7833"),
+    ("rkllama", "http://localhost:8080"),         # legacy port; existing installs
+    ("hailo-ollama", "http://localhost:7836"),    # Hailo-10H NPU LLM (taOS remap; upstream 8000 banned)
+    ("ollama", "http://localhost:11434"),         # user / system Ollama (default port)
+    ("ollama", "http://localhost:21434"),         # TAOS-bundled Ollama (taos-ollama.service)
+    ("llama-cpp", "http://localhost:8000"),
+    ("llama-cpp", "http://localhost:18080"),      # TAOS-bundled llama.cpp (future)
+    ("vllm", "http://localhost:8000"),
+    ("vllm", "http://localhost:18000"),           # TAOS-bundled vLLM (future)
+    ("sd-cpp", "http://localhost:7864"),
+    ("exo", "http://localhost:52415"),           # exo distributed inference (default port)
+)
+
+# Types an extra/manifest candidate may declare: the local servers whose API
+# detect_backends can probe (/api/tags, /sdapi/v1/sd-models, /v1/models,
+# llama-swap's /running). llama-swap has no default candidate: its default
+# port 8080 is also llama.cpp's and rkllama's legacy one, so it is configured.
+_PROBEABLE_TYPES = frozenset({
+    "rkllama", "ollama", "hailo-ollama", "llama-cpp", "llama-swap", "vllm", "exo", "mlx",
+    "sd-cpp",
+})
+# Types detected by /v1/models alone, which a llama-swap server also answers.
+_OPENAI_MODELS_TYPES = frozenset({"llama-cpp", "vllm", "exo", "mlx"})
+_MAX_EXTRA_BACKENDS = 16
+# Total time one candidate may take. httpx timeouts are per read, so a server
+# trickling bytes could otherwise hold the probe (and the heartbeat, which the
+# controller marks offline after 30 s) indefinitely. Up to three sequential
+# requests at a 3 s timeout each fit inside it.
+_PROBE_DEADLINE_S = 10.0
+
+# Each candidate is an outbound request on every heartbeat, so it is held to
+# loopback or a private LAN. Explicit ranges, not ipaddress.is_private (which
+# also admits documentation/benchmark ranges); link-local is excluded because
+# it hosts cloud metadata services.
+_LOOPBACK_NETS = tuple(map(ipaddress.ip_network, ("127.0.0.0/8", "::1/128")))
+_LAN_NETS = tuple(map(ipaddress.ip_network, (
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7",
+)))
+_DENIED_ADDRESSES = {ipaddress.ip_address("fd00:ec2::254")}  # AWS IPv6 metadata
+
+_warned_probe_entries: set[str] = set()
+
+
+def _warn_probe_entry_once(message: str) -> None:
+    # detect_backends runs every heartbeat; log each distinct problem once.
+    if message not in _warned_probe_entries:
+        _warned_probe_entries.add(message)
+        logger.warning(message)
+
+
+def _normalize_probe_url(url: str, *, loopback_only: bool = False) -> str:
+    """Reduce *url* to ``scheme://host[:port]`` or raise ValueError.
+
+    The host must be ``localhost`` or a literal loopback IP, or (unless
+    *loopback_only*) a literal private-LAN IP. Hostnames are never resolved:
+    what a name resolves to can change after it is checked.
+    """
+    try:
+        parts = urlsplit(url.strip())
+        port = parts.port
+    except ValueError as exc:
+        raise ValueError(f"malformed URL: {exc}") from None
+    if parts.scheme not in ("http", "https"):
+        raise ValueError("scheme must be http or https")
+    if parts.username is not None or parts.path not in ("", "/") or parts.query or parts.fragment:
+        raise ValueError("must be a base URL (no credentials, path, query or fragment)")
+    host = (parts.hostname or "").lower()
+    if host == "localhost":
+        return f"{parts.scheme}://localhost" + (f":{port}" if port is not None else "")
+    try:
+        if "%" in host:
+            raise ValueError
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        raise ValueError("host must be localhost or a literal IP address") from None
+    mapped = getattr(addr, "ipv4_mapped", None)
+    checked = mapped if mapped is not None else addr
+    nets = _LOOPBACK_NETS if loopback_only else _LOOPBACK_NETS + _LAN_NETS
+    if checked in _DENIED_ADDRESSES or not any(checked in n for n in nets):
+        raise ValueError("host is not a loopback address" if loopback_only
+                         else "host is not a loopback or LAN address")
+    host_fmt = f"[{addr.compressed}]" if addr.version == 6 else addr.compressed
+    return f"{parts.scheme}://{host_fmt}" + (f":{port}" if port is not None else "")
+
+
+def _parse_extra_backends(raw: str) -> list[tuple[str, str]]:
+    """Parse ``TAOS_EXTRA_BACKENDS="type=url,..."``; bad entries are skipped
+    with a warning, never raised."""
+    out: list[tuple[str, str]] = []
+    for entry in filter(None, (e.strip() for e in raw.split(","))):
+        backend_type, sep, url = (s.strip() for s in entry.partition("="))
+        backend_type = backend_type.lower()
+        try:
+            if not sep or not backend_type or not url:
+                raise ValueError("expected type=url")
+            if backend_type not in _PROBEABLE_TYPES:
+                raise ValueError(f"type must be one of {', '.join(sorted(_PROBEABLE_TYPES))}")
+            out.append((backend_type, _normalize_probe_url(url)))
+        except ValueError as exc:
+            _warn_probe_entry_once(f"TAOS_EXTRA_BACKENDS: skipping {entry!r}: {exc}")
+    if len(out) > _MAX_EXTRA_BACKENDS:
+        _warn_probe_entry_once(
+            f"TAOS_EXTRA_BACKENDS: {len(out)} entries, only the first "
+            f"{_MAX_EXTRA_BACKENDS} are probed"
+        )
+    return out[:_MAX_EXTRA_BACKENDS]
+
+
+def _manifest_entry_url(m: dict) -> str | None:
+    """The one URL a manifest entry declares: its ``health_url`` origin
+    (loopback only, since the manifest describes this machine), else
+    ``http://localhost:<port>``. A rejected health_url falls back to the
+    port. None when it declares neither validly."""
+    health_url, port = m.get("health_url"), m.get("port")
+    if isinstance(health_url, str) and health_url.strip():
+        try:
+            parts = urlsplit(health_url.strip())
+            origin = _normalize_probe_url(f"{parts.scheme}://{parts.netloc}", loopback_only=True)
+            # The entry is reported under its declared port, so a health_url
+            # on another port would split it across two backends.
+            if port not in (None, 0) and urlsplit(origin).port != port:
+                raise ValueError(f"its port does not match the declared port {port!r}")
+            return origin
+        except ValueError as exc:
+            _warn_probe_entry_once(
+                f"worker manifest: ignoring health_url of {m.get('model_id')!r}: {exc}"
+            )
+    if port in (None, 0):
+        return None
+    if isinstance(port, bool) or not isinstance(port, int) or not 0 < port < 65536:
+        _warn_probe_entry_once(
+            f"worker manifest: ignoring port {port!r} of {m.get('model_id')!r}: "
+            "not a TCP port number"
+        )
+        return None
+    return f"http://localhost:{port}"
+
+
+# llama-swap's GET /running is {"running": [{"model": <id>, "state": ..., ...}]}
+# (internal/server/api.go handleRunning, verified against llama-swap v261). It
+# lists every process not stopped: "starting", "ready" or "stopping" (the
+# last is excluded below). Plain
+# llama.cpp serves /v1/models but no /running, which is how the two differ.
+_LLAMA_SWAP_UNLOADING_STATES = frozenset({"stopping", "stopped", "shutdown"})
+
+
+def _parse_llama_swap_running(body) -> list[dict] | None:
+    """Models a llama-swap ``/running`` reply holds in memory (starting or
+    ready), or None when *body* is not that reply. Bad entries are skipped."""
+    if not isinstance(body, dict) or not isinstance(body.get("running"), list):
+        return None
+    out = []
+    for entry in body["running"]:
+        if not isinstance(entry, dict):
+            continue
+        model, state = entry.get("model"), entry.get("state")
+        if not isinstance(model, str) or not model:
+            continue
+        if isinstance(state, str) and state in _LLAMA_SWAP_UNLOADING_STATES:
+            continue
+        out.append({"name": model, "size_mb": 0})
+    return out
+
+
+def _is_local_llama_swap_model(m) -> bool:
+    """A /v1/models entry served by this llama-swap. Peer entries
+    (``meta.llamaswap.type == "peer"``) run on another machine, and selectors
+    may point at peers; builds without that metadata list local models only."""
+    if not isinstance(m, dict) or not isinstance(m.get("id"), str) or not m["id"]:
+        return False
+    meta = m.get("meta")
+    info = meta.get("llamaswap") if isinstance(meta, dict) else None
+    kind = info.get("type") if isinstance(info, dict) else None
+    return kind is None or kind == "model"
+
+
+async def _probe_llama_swap(client: httpx.AsyncClient,
+                            base_url: str) -> tuple[list[dict], list[dict]] | None:
+    """(models, loaded_models) from one ``/running`` and one ``/v1/models``,
+    or None when *base_url* is not a llama-swap server: without /running it
+    is some other OpenAI-compatible server (plain llama.cpp), which its own
+    type reports."""
+    try:
+        resp = await client.get(f"{base_url}/running")
+        loaded = _parse_llama_swap_running(resp.json()) if resp.status_code == 200 else None
+        if loaded is None:
+            return None
+        resp = await client.get(f"{base_url}/v1/models")
+        data = resp.json() if resp.status_code == 200 else None
+        if not isinstance(data, dict) or not isinstance(data.get("data"), list):
+            return None
+        models = [{"name": m["id"], "size_mb": 0}
+                  for m in data["data"] if _is_local_llama_swap_model(m)]
+        return models, loaded
+    except Exception:
+        return None
+
+
+def _candidate_key(backend_type: str, url: str) -> tuple:
+    """Identity of a normalized candidate: localhost and loopback IPs are one host."""
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    try:
+        loopback = host == "localhost" or ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        loopback = False
+    return (backend_type, parts.scheme, "loopback" if loopback else host, parts.port)
+
+
+def _dedupe_candidates(candidates: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Drop repeated candidates, keeping the first (default) spelling."""
+    seen: set[tuple] = set()
+    out = []
+    for backend_type, url in candidates:
+        key = _candidate_key(backend_type, url)
+        if key not in seen:
+            seen.add(key)
+            out.append((backend_type, url))
+    return out
+
+
 class WorkerAgent:
     def __init__(
         self,
@@ -190,158 +419,151 @@ class WorkerAgent:
         declarations are not the source of truth anywhere.
         """
         from tinyagentos.scheduler.backend_catalog import BACKEND_CAPABILITIES
+        from tinyagentos.worker import worker_manifest
 
-        # Probe both the standard upstream ports AND the TAOS-namespaced
-        # ones. install-worker.sh installs a TAOS-bundled Ollama on
-        # 21434 to avoid colliding with any existing user Ollama on
-        # 11434; we want to detect both so the user's pre-existing
-        # backends are first-class citizens alongside the bundled one.
-        candidates = [
-            ("rkllama", "http://localhost:7833"),
-            ("rkllama", "http://localhost:8080"),         # legacy port; existing installs
-            ("hailo-ollama", "http://localhost:7836"),    # Hailo-10H NPU LLM (taOS remap; upstream 8000 banned)
-            ("ollama", "http://localhost:11434"),         # user / system Ollama (default port)
-            ("ollama", "http://localhost:21434"),         # TAOS-bundled Ollama (taos-ollama.service)
-            ("llama-cpp", "http://localhost:8000"),
-            ("llama-cpp", "http://localhost:18080"),      # TAOS-bundled llama.cpp (future)
-            ("vllm", "http://localhost:8000"),
-            ("vllm", "http://localhost:18000"),           # TAOS-bundled vLLM (future)
-            ("sd-cpp", "http://localhost:7864"),
-            ("exo", "http://localhost:52415"),           # exo distributed inference (default port)
-        ]
-
-        backends = []
-        async with httpx.AsyncClient(timeout=3) as client:
-            for backend_type, base_url in candidates:
-                models = await self._probe_models(client, backend_type, base_url)
-                if models is None:
-                    continue  # backend not running here
-                loaded_models = await self._probe_loaded_models(client, backend_type, base_url)
-                kv_quant = await self._probe_kv_quant(client, backend_type, base_url)
-                _port = urlparse(base_url).port
-                backends.append({
-                    "name": f"{backend_type}:{_port}" if _port is not None else backend_type,
-                    "type": backend_type,
-                    "url": base_url,
-                    "capabilities": sorted(BACKEND_CAPABILITIES.get(backend_type, set())),
-                    "models": models,
-                    # Subset of `models` that are actually resident in NPU/GPU/CPU
-                    # memory right now, so Activity's Loaded Models widget reflects
-                    # real residency rather than the full catalog of downloads.
-                    "loaded_models": loaded_models,
-                    "status": "ok",
-                    # Per-backend KV quant support, used by the worker to build
-                    # its cluster-level kv_cache_quant_support advertisement.
-                    "kv_quant_support": kv_quant,
-                })
-
-        # Enrich each backend with available models from the local worker
-        # manifest.  The manifest declares which models this machine *can*
-        # run (per the GPU catalog), independently of what is currently
-        # loaded.  The controller then sees both "loaded" and "available"
-        # states so the cluster-wide view reflects total capacity.
-        from tinyagentos.worker.worker_manifest import (
-            load_manifest,
-            SOFTWARE_TO_BACKEND_TYPE,
-        )
-
-        # The manifest is external input: a malformed file or entry must
-        # degrade to "no manifest" (logged), never crash detect_backends()
-        # and take the whole worker down with it.
+        # The manifest declares which models this machine *can* run,
+        # independently of what is loaded. It is external input: a malformed
+        # file or entry must degrade to "no manifest" (logged), never crash
+        # detect_backends() and take the whole worker down with it.
+        declared: list[tuple[str, str | None, dict]] = []  # (type, probe url, entry)
         try:
-            manifest = load_manifest()
-            probed_types: set[str] = {b["type"] for b in backends}
-            if manifest.get("models"):
-                for backend in backends:
-                    backend_type = backend["type"]
-                    # Use loaded_models (resident in memory, per /api/ps) rather
-                    # than the full models catalog so "loaded" status reflects
-                    # real residency, not merely-on-disk.
-                    probed_loaded_names = {
-                        m.get("name", "") for m in backend.get("loaded_models", [])
-                    }
-                    available = []
-                    for m in manifest["models"]:
-                        if not isinstance(m, dict):
-                            continue
-                        if SOFTWARE_TO_BACKEND_TYPE.get(m.get("software", "")) != backend_type:
-                            continue
-                        model_id = m.get("model_id")
-                        if not model_id:
-                            logger.warning(
-                                "skipping worker-manifest entry without model_id: %r", m
-                            )
-                            continue
-                        status = "loaded" if model_id in probed_loaded_names else "available"
-                        available.append({
-                            "model_id": model_id,
-                            "capability": m.get("capability", ""),
-                            "software": m.get("software", ""),
-                            "port": m.get("port", 0),
-                            "vram_required_gb": m.get("vram_required_gb", 0.0),
-                            "health_url": m.get("health_url", ""),
-                            "status": status,
-                        })
-                    if available:
-                        backend["available_models"] = available
-
-            # Emit synthetic backend entries for manifest-declared software
-            # types that have no running (probed) backend counterpart.  This
-            # decouples availability from liveness: a stopped-but-installed
-            # backend declared in the manifest still advertises its available
-            # models to the controller so the cluster view reflects total
-            # capacity, not just currently-running backends.
-            declared_entries: dict[str, list[dict]] = {}
-            for m in manifest.get("models", []):
+            manifest = worker_manifest.load_manifest()
+            for m in manifest.get("models") or []:
                 if not isinstance(m, dict):
                     continue
-                sw = m.get("software", "")
-                if not sw:
-                    continue
-                bt = SOFTWARE_TO_BACKEND_TYPE.get(sw)
+                bt = worker_manifest.SOFTWARE_TO_BACKEND_TYPE.get(m.get("software", ""))
                 if not bt:
                     continue  # unknown software type, silently skip
-                if bt in probed_types:
-                    continue  # already covered by the probed backend above
-                declared_entries.setdefault(bt, []).append(m)
+                if not m.get("model_id"):
+                    logger.warning("skipping worker-manifest entry without model_id: %r", m)
+                    continue
+                declared.append((bt, _manifest_entry_url(m), m))
+        except Exception:  # noqa: BLE001 - manifest must never brick the worker
+            logger.warning("worker-manifest enrichment failed; continuing without it",
+                           exc_info=True)
+            declared = []
 
-            for bt, entries in declared_entries.items():
-                available = []
-                for m in entries:
-                    model_id = m.get("model_id")
-                    if not model_id:
-                        logger.warning(
-                            "skipping worker-manifest entry without model_id: %r", m
-                        )
-                        continue
-                    available.append({
-                        "model_id": model_id,
-                        "capability": m.get("capability", ""),
-                        "software": m.get("software", ""),
-                        "port": m.get("port", 0),
-                        "vram_required_gb": m.get("vram_required_gb", 0.0),
-                        "health_url": m.get("health_url", ""),
-                        "status": "available",
-                    })
-                if available:
-                    backends.append({
-                        # Synthetic entry: no probed instance, so name is the
-                        # bare type (not type:port like live backends).  The
-                        # url is None because there is no reachable endpoint.
-                        "name": bt,
-                        "type": bt,
-                        "url": None,
-                        "capabilities": sorted(BACKEND_CAPABILITIES.get(bt, set())),
-                        "models": [],
-                        "loaded_models": [],
-                        "status": "stopped",
-                        # No probed backend → KV quant support is unknown.
-                        # Empty dict means "no data" rather than over-reporting
-                        # fp16.  detect_kv_quant_support() adds the fp16
-                        # baseline anyway.
-                        "kv_quant_support": {},
-                        "available_models": available,
-                    })
+        candidates = _dedupe_candidates(
+            list(_DEFAULT_PROBE_CANDIDATES)
+            + _parse_extra_backends(os.environ.get("TAOS_EXTRA_BACKENDS", ""))
+            + [(bt, url) for bt, url, _ in declared if url and bt in _PROBEABLE_TYPES]
+        )
+
+        async def probe(client: httpx.AsyncClient, backend_type: str, base_url: str):
+            if backend_type == "llama-swap":
+                probed = await _probe_llama_swap(client, base_url)
+                if probed is None:
+                    return None
+                models, loaded_models = probed
+            else:
+                models = await self._probe_models(client, backend_type, base_url)
+                if models is None:
+                    return None  # backend not running here
+                loaded_models = await self._probe_loaded_models(client, backend_type, base_url)
+            kv_quant = await self._probe_kv_quant(client, backend_type, base_url)
+            _port = urlparse(base_url).port
+            return {
+                "name": f"{backend_type}:{_port}" if _port is not None else backend_type,
+                "type": backend_type,
+                "url": base_url,
+                "capabilities": sorted(BACKEND_CAPABILITIES.get(backend_type, set())),
+                "models": models,
+                # Subset of `models` that are actually resident in NPU/GPU/CPU
+                # memory right now, so Activity's Loaded Models widget reflects
+                # real residency rather than the full catalog of downloads.
+                "loaded_models": loaded_models,
+                "status": "ok",
+                # Per-backend KV quant support, used by the worker to build
+                # its cluster-level kv_cache_quant_support advertisement.
+                "kv_quant_support": kv_quant,
+            }
+
+        # Probed concurrently so dead candidates cost one timeout in total,
+        # not one each (the heartbeat must beat the controller's 30 s
+        # offline cutoff). LAN candidates get a short connect timeout.
+        async def probe_by_deadline(client: httpx.AsyncClient, backend_type: str, base_url: str):
+            try:
+                return await asyncio.wait_for(probe(client, backend_type, base_url),
+                                              _PROBE_DEADLINE_S)
+            except asyncio.TimeoutError:
+                _warn_probe_entry_once(
+                    f"probe of {backend_type} at {base_url} took over "
+                    f"{_PROBE_DEADLINE_S:g} s; treating it as down"
+                )
+                return None
+
+        async with httpx.AsyncClient(timeout=3) as local_client, \
+                httpx.AsyncClient(timeout=httpx.Timeout(3.0, connect=1.0)) as lan_client:
+            results = await asyncio.gather(*(
+                probe_by_deadline(
+                    local_client if _candidate_key(bt, url)[2] == "loopback" else lan_client,
+                    bt, url)
+                for bt, url in candidates
+            ))
+        backends = [b for b in results if b is not None]
+        # A llama-swap server also answers the /v1/models probe of the generic
+        # types; when one sits on a candidate's endpoint, report it once.
+        swap_endpoints = {_candidate_key(b["type"], b["url"])[1:]
+                          for b in backends if b["type"] == "llama-swap"}
+        backends = [b for b in backends
+                    if b["type"] not in _OPENAI_MODELS_TYPES
+                    or _candidate_key(b["type"], b["url"])[1:] not in swap_endpoints]
+
+        # Attach declared models to live backends so the controller sees both
+        # "loaded" and "available" states. An entry that declares a port or
+        # health_url belongs to the backend on that port only; one that
+        # declares neither applies to every live backend of its type.
+        # Anything left unmatched becomes a synthetic stopped entry, one per
+        # declared (type, port), so availability is decoupled from liveness.
+        def _available(m: dict, status: str) -> dict:
+            return {
+                "model_id": m["model_id"],
+                "capability": m.get("capability", ""),
+                "software": m.get("software", ""),
+                "port": m.get("port", 0),
+                "vram_required_gb": m.get("vram_required_gb", 0.0),
+                "health_url": m.get("health_url", ""),
+                "status": status,
+            }
+
+        try:
+            live = {_candidate_key(b["type"], b["url"]): b for b in backends}
+            stopped: dict[tuple, tuple[str, str | None, list[dict]]] = {}
+            for bt, url, m in declared:
+                if url is not None:
+                    match = live.get(_candidate_key(bt, url))
+                    targets = [match] if match else []
+                else:
+                    targets = [b for b in backends if b["type"] == bt]
+                for b in targets:
+                    # loaded_models (resident in memory, per /api/ps), not the
+                    # on-disk catalog, decides "loaded".
+                    resident = {x.get("name", "") for x in b.get("loaded_models", [])}
+                    status = "loaded" if m["model_id"] in resident else "available"
+                    b.setdefault("available_models", []).append(_available(m, status))
+                if not targets:
+                    key = _candidate_key(bt, url) if url else (bt,)
+                    stopped.setdefault(key, (bt, url, []))[2].append(_available(m, "available"))
+
+            for bt, url, available in stopped.values():
+                port = urlsplit(url).port if url else None
+                backends.append({
+                    # Synthetic entry: no probed instance, so the url is None
+                    # because there is no reachable endpoint.
+                    "name": f"{bt}:{port}" if port is not None else bt,
+                    "type": bt,
+                    "url": None,
+                    "capabilities": sorted(BACKEND_CAPABILITIES.get(bt, set())),
+                    "models": [],
+                    "loaded_models": [],
+                    "status": "stopped",
+                    # No probed backend → KV quant support is unknown.
+                    # Empty dict means "no data" rather than over-reporting
+                    # fp16.  detect_kv_quant_support() adds the fp16
+                    # baseline anyway.
+                    "kv_quant_support": {},
+                    "available_models": available,
+                })
         except Exception:  # noqa: BLE001 - manifest must never brick the worker
             logger.warning("worker-manifest enrichment failed; continuing without it",
                            exc_info=True)
@@ -536,6 +758,24 @@ class WorkerAgent:
             caps.add("app-streaming")
         return sorted(caps)
 
+    def _advertised_url(self, backends: list[dict]) -> str:
+        """The URL the controller reaches this worker on: the pinned
+        advertise_url, else TAOS_ADVERTISE_IP (+ worker_port), else the first
+        live loopback backend (the legacy fallback the task router relies on
+        for a co-located worker), else get_worker_url(). Never a LAN backend
+        from TAOS_EXTRA_BACKENDS: that is another machine, and worker-control
+        traffic (with its bearer token) would go there."""
+        if self.advertise_url:
+            return self.advertise_url
+        adv_ip = os.environ.get("TAOS_ADVERTISE_IP", "").strip()
+        if adv_ip:
+            return f"http://{adv_ip}:{self.worker_port}" if self.worker_port else f"http://{adv_ip}"
+        for b in backends:
+            url = b.get("url")
+            if url and _candidate_key(b.get("type", ""), url)[2] == "loopback":
+                return url
+        return self.get_worker_url()
+
     def get_worker_url(self) -> str:
         """Get this worker's reachable URL."""
         # Try to get LAN IP
@@ -595,16 +835,7 @@ class WorkerAgent:
         # (DNAT'd to the LXC), so honour it for both the advertised URL and the
         # host_lan_ip used to match the incus remote to this worker.
         adv_ip = os.environ.get("TAOS_ADVERTISE_IP", "").strip()
-        # Mirror get_worker_url's port handling: include the worker_port when set
-        # so the controller stores a reachable host:port (not a bare host).
-        adv_url = None
-        if adv_ip:
-            adv_url = f"http://{adv_ip}:{self.worker_port}" if self.worker_port else f"http://{adv_ip}"
-        worker_url = (
-            self.advertise_url
-            or adv_url
-            or next((b["url"] for b in backends if b.get("url")), self.get_worker_url())
-        )
+        worker_url = self._advertised_url(backends)
 
         payload = {
             "name": self.name,
@@ -643,6 +874,24 @@ class WorkerAgent:
                 )
                 if _is_repair_rejection(resp):
                     return _NEEDS_REPAIR
+                # taOS #...: handle stale_generation 409 by adopting the echoed
+                # generation monotonically (only if higher than current).
+                if resp.status_code == 409:
+                    try:
+                        error_body = resp.json()
+                        if (
+                            error_body.get("error") == "stale_generation"
+                            and isinstance(error_body.get("generation"), int)
+                        ):
+                            echoed_gen = error_body["generation"]
+                            if self._generation is None or echoed_gen > self._generation:
+                                self._generation = echoed_gen
+                                logger.info(
+                                    f"Adopted controller generation {echoed_gen} from stale_generation 409"
+                                )
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return False
                 resp.raise_for_status()
                 self._registered = True
                 # Capture the controller's current generation from the response
@@ -743,13 +992,7 @@ class WorkerAgent:
                 vram = None
                 vram_sampled_age_ms = None
             adv_ip = os.environ.get("TAOS_ADVERTISE_IP", "").strip()
-            live_url = (
-                self.advertise_url
-                or (f"http://{adv_ip}:{self.worker_port}" if adv_ip and self.worker_port
-                    else f"http://{adv_ip}" if adv_ip
-                    else None)
-                or (backends[0]["url"] if backends else self.get_worker_url())
-            )
+            live_url = self._advertised_url(backends)
             live_host_lan_ip = adv_ip or _detect_lan_ip(self.controller_url)
             path = "/api/cluster/heartbeat"
             payload = {
@@ -795,18 +1038,20 @@ class WorkerAgent:
                     headers=auth_headers,
                 )
                 # Capture the controller's current generation from the response
-                try:
-                    resp_json = resp.json()
-                    gen = resp_json.get("generation")
-                    if gen is not None:
-                        self._generation = gen
-                    elif self._generation is not None:
-                        logger.warning(
-                            "heartbeat response stopped echoing generation - "
-                            "split-brain layer-2 protection may be degraded"
-                        )
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(f"could not read generation from heartbeat response: {exc}")
+                # only on successful responses
+                if resp.status_code == 200:
+                    try:
+                        resp_json = resp.json()
+                        gen = resp_json.get("generation")
+                        if gen is not None:
+                            self._generation = gen
+                        elif self._generation is not None:
+                            logger.warning(
+                                "heartbeat response stopped echoing generation - "
+                                "split-brain layer-2 protection may be degraded"
+                            )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(f"could not read generation from heartbeat response: {exc}")
                 return resp.status_code
         except Exception as exc:  # noqa: BLE001
             # Log before swallowing: a payload-build bug (not just a network

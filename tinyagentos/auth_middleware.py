@@ -13,7 +13,7 @@ from tinyagentos.agent_token_auth import check_agent_identity, _get_keypair, _ge
 from tinyagentos.auth import AuthStoreCorruptError
 from tinyagentos.device_scopes import (
     AGENTS_READ, CHAT_SEND, DECISIONS_ANSWER, FILES_UPLOAD, LIBRARY_INGEST,
-    PUSH_REGISTER,
+    PUSH_REGISTER, VOICE_STT, VOICE_TTS,
 )
 from tinyagentos.device_store import DEVICE_TOKEN_PREFIX
 from tinyagentos.rate_limit import MovingWindowLimiter
@@ -94,6 +94,13 @@ _CONTAINER_REQUEST_ACTION_ROUTES = (
 )
 # Agent self-serve quota lookup.
 _AGENT_CONTAINER_QUOTA_ROUTE = ("GET", re.compile(r"^/api/agents/containers/quota$"))
+# Memory routes: agent tokens may reach these if they have the memory_read scope.
+_MEMORY_ROUTES = (
+    ("GET", re.compile(r"^/api/memory/browse$")),
+    ("POST", re.compile(r"^/api/memory/search$")),
+    ("GET", re.compile(r"^/api/memory/collections/[^/]+$")),
+    ("DELETE", re.compile(r"^/api/memory/chunk/[^/]+$")),
+)
 # Every path that accepts a registry JWT in place of the admin session.  The
 # passthrough is allowlisted to exactly these paths -- a registry JWT must never
 # authenticate any other route (no skeleton key).
@@ -286,6 +293,10 @@ _DEVICE_BEARER_PATHS = (
     ("POST", re.compile(r"^/api/library/ingest$"), LIBRARY_INGEST),
     ("POST", re.compile(rf"^/api/projects/{_SEG}/files/upload$"), FILES_UPLOAD),
     ("POST", re.compile(r"^/api/chat/messages$"), CHAT_SEND),
+    # S6 / S6b: device voice. Device-bearer only; the routes name their own
+    # scope via device_scope(), this entry is what lets the Bearer past the gate.
+    ("POST", re.compile(r"^/api/device/v1/voice$"), VOICE_STT),
+    ("POST", re.compile(r"^/api/device/v1/voice/tts$"), VOICE_TTS),
 )
 
 # Device-bearer routes that are NOT in _DEVICE_BEARER_PATHS because they sit in
@@ -421,6 +432,12 @@ def _is_agent_files_path(method: str, path: str) -> bool:
     may reach.  Strict method + anchored-regex match; the route verifies the
     JWT + grant + project binding."""
     return any(m == method and rx.match(path) for m, rx in _AGENT_FILES_ROUTES)
+
+
+def _is_memory_path(method: str, path: str) -> bool:
+    """True only for the memory routes a memory_read token may reach.
+    The route verifies the JWT + scope grant."""
+    return any(m == method and rx.match(path) for m, rx in _MEMORY_ROUTES)
 
 
 def _is_agent_scope_request_path(method: str, path: str) -> bool:
@@ -835,6 +852,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     or _is_container_request_action_path(request.method, path)
                     or _is_agent_container_quota_path(request.method, path)
                     or _is_agent_skill_exec_path(request.method, path)
+                    or _is_memory_path(request.method, path)
                 )
 
                 if is_allowlisted:

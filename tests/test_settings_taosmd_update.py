@@ -224,13 +224,18 @@ def _update_route_patches():
             ),
         ),
         patch("tinyagentos.routes.system._do_restart", new=_fake_restart),
-        patch("tinyagentos.restart_orchestrator.write_pending_restart"),
+        patch("tinyagentos.routes.settings.write_pending_restart"),
         patch(
             "tinyagentos.routes.settings._announce_taosmd_restart",
             new=AsyncMock(return_value=True),
         ),
         patch.object(settings_mod, "_TAOSMD_VERIFY_RETRIES", 1),
         patch.object(settings_mod, "_TAOSMD_VERIFY_DELAY", 0),
+        # Mock preflight check to pass for taOSmd contract tests
+        patch(
+            "tinyagentos.update_preflight.check_preflight",
+            return_value=[],
+        ),
     )
 
 

@@ -1,0 +1,3 @@
+### Fixed
+
+- Desktop screenshot capture no longer hangs forever if `domToPng` stalls or a slow image blocks rasterisation. Captures are now single-flight, so a new request during an in-flight capture returns a real `capture already in progress` error instead of starting a second rasterisation on top of the first. A 15s overall timeout ensures the caller gets `capture timed out` rather than the server returning 504, and `domToPng` receives its own 10s resource fetch timeout so one slow inline image cannot stall the whole capture. Layout reports remain independent and continue to answer while a capture is running.

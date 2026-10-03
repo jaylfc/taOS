@@ -33,6 +33,7 @@ the name it asks for (``may_use``).
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import math
@@ -314,8 +315,8 @@ class SpeechResponse(StreamingResponse):
     is the normal path and marks the ``Speech`` closed first.
     """
 
-    def __init__(self, speech: Speech, rate: int, **kwargs):
-        super().__init__(stream_pcm(speech, rate), **kwargs)
+    def __init__(self, speech: Speech, rate: int, encoder: "PcmEncoder | None" = None, **kwargs):
+        super().__init__(stream_pcm(speech, rate, encoder), **kwargs)
         self._speech = speech
 
     async def __call__(self, scope, receive, send) -> None:
@@ -326,25 +327,69 @@ class SpeechResponse(StreamingResponse):
                 await self._speech.aclose()
 
 
-async def stream_pcm(speech: Speech, rate: int):
-    """The PCM to send at ``rate``, closing the upstream however the stream ends."""
+class PcmEncoder:
+    """How PCM leaves the route: ``chunk`` frames each piece, ``finish`` is the trailer.
+
+    The base class is the identity (``stream_format=audio``: raw bytes, no
+    trailer). ``finish`` is sent only when the audio ended cleanly, never
+    after a mid-stream daemon failure.
+    """
+
+    def chunk(self, pcm: bytes) -> bytes:
+        return pcm
+
+    def finish(self) -> bytes:
+        return b""
+
+
+class SseEncoder(PcmEncoder):
+    """OpenAI ``stream_format=sse``: ``speech.audio.delta`` per chunk, then ``speech.audio.done``.
+
+    Frames are bare ``data: <json>\n\n`` (no ``event:`` line, no ``[DONE]``),
+    as OpenAI sends them. The published schema requires ``usage`` on the done
+    event; the local engine bills no tokens, so it is all zeros.
+    """
+
+    @staticmethod
+    def _frame(event: dict) -> bytes:
+        return b"data: " + json.dumps(event, separators=(",", ":")).encode() + b"\n\n"
+
+    def chunk(self, pcm: bytes) -> bytes:
+        return self._frame({"type": "speech.audio.delta",
+                            "audio": base64.b64encode(pcm).decode("ascii")})
+
+    def finish(self) -> bytes:
+        return self._frame({"type": "speech.audio.done",
+                            "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}})
+
+
+async def stream_pcm(speech: Speech, rate: int, encoder: PcmEncoder | None = None):
+    """The audio to send at ``rate``, closing the upstream however the stream ends.
+
+    ``encoder`` frames each PCM piece (default: raw PCM). A mid-stream daemon
+    failure ends the stream without the encoder's trailer.
+    """
+    encoder = encoder or PcmEncoder()
     resampler = None if rate == speech.sample_rate else PcmResampler(speech.sample_rate, rate)
     try:
         async for chunk in speech.chunks():
             if resampler is None:
                 if chunk:
-                    yield chunk
+                    yield encoder.chunk(chunk)
                 continue
             # Pure-Python filtering is CPU work: do it off the event loop, a
             # slice at a time so a cancel lands between slices.
             for i in range(0, len(chunk), _SLICE):
                 out = await anyio.to_thread.run_sync(resampler.feed, chunk[i:i + _SLICE])
                 if out:
-                    yield out
+                    yield encoder.chunk(out)
         if resampler is not None:
             tail = await anyio.to_thread.run_sync(resampler.finish)
             if tail:
-                yield tail
+                yield encoder.chunk(tail)
+        trailer = encoder.finish()
+        if trailer:
+            yield trailer
     except httpx.HTTPError:
         # The daemon died or stalled mid-audio (read timeout, dropped
         # connection): the headers are long gone, so end the audio cleanly

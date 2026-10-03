@@ -20,9 +20,20 @@ def _pin_bus_url(monkeypatch):
     monkeypatch.setenv("TAOS_A2A_BUS_URL", _BUS)
 
 
-def test_bus_routes_registered():
+def test_bus_routes_registered(tmp_path):
     """Both read-only bus endpoints are registered; no send/post path exists."""
-    app = create_app()
+    import yaml
+    from tinyagentos.app import create_app
+    cfg = {
+        "server": {"host": "0.0.0.0", "port": 6969},
+        "backends": [],
+        "qmd": {"url": "http://localhost:7832"},
+        "agents": [],
+        "metrics": {"poll_interval": 30, "retention_days": 30},
+    }
+    (tmp_path / "config.yaml").write_text(yaml.dump(cfg))
+    (tmp_path / ".setup_complete").touch()
+    app = create_app(data_dir=tmp_path)
     paths = {getattr(r, "path", "") for r in app.routes}
     assert "/api/a2a/bus/channels" in paths
     assert "/api/a2a/bus/messages" in paths

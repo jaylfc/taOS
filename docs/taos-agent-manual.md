@@ -64,6 +64,7 @@ taOS is a self-hosted operating system for AI agents. It runs on the user's own 
 | Desktop URL | `http://<host>:6969` (or `http://taos.local:6969` with mDNS) |
 | Controller port | 6969 |
 | Browser proxy port | 6970 |
+| Device TLS port | 6974 (`TAOS_DEVICE_TLS_PORT`) |
 | qmd model service | port 7832 |
 | rkllama (NPU models) | port 7833 on new installs; 8080 on installs from before June 2026 |
 | Model routing | LLM gateway `127.0.0.1:4000/v1` (chat+embeddings); LiteLLM 7834 (4000 pre-June 2026) |

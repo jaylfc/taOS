@@ -289,7 +289,8 @@ class TestContactsStore:
 
 
 class TestPeerEnvelope:
-    def test_build_envelope_structure(self):
+    def test_build_envelope_structure(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("TAOS_DATA_DIR", str(tmp_path))
         env = build_envelope(
             from_username="jaylfc",
             to_username="hogne",
@@ -305,7 +306,8 @@ class TestPeerEnvelope:
         assert "sig" in env
         assert len(env["sig"]) == 128  # 64 bytes hex
 
-    def test_build_envelope_no_body(self):
+    def test_build_envelope_no_body(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("TAOS_DATA_DIR", str(tmp_path))
         env = build_envelope(
             from_username="jaylfc",
             to_username="hogne",
@@ -314,7 +316,8 @@ class TestPeerEnvelope:
         assert "body" not in env
         assert env["kind"] == "ack"
 
-    def test_verify_envelope_fresh(self):
+    def test_verify_envelope_fresh(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("TAOS_DATA_DIR", str(tmp_path))
         env = build_envelope(
             from_username="jaylfc",
             to_username="hogne",
@@ -329,7 +332,8 @@ class TestPeerEnvelope:
         assert not ok
         assert "missing required field" in err
 
-    def test_verify_envelope_wrong_kind(self):
+    def test_verify_envelope_wrong_kind(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("TAOS_DATA_DIR", str(tmp_path))
         env = build_envelope(
             from_username="jaylfc",
             to_username="hogne",
@@ -339,7 +343,8 @@ class TestPeerEnvelope:
         assert not ok
         assert "unexpected kind" in err
 
-    def test_verify_envelope_too_old(self):
+    def test_verify_envelope_too_old(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("TAOS_DATA_DIR", str(tmp_path))
         env = build_envelope(
             from_username="jaylfc",
             to_username="hogne",
@@ -351,8 +356,9 @@ class TestPeerEnvelope:
         assert not ok
         assert "too old" in err
 
-    def test_verify_envelope_nan_ts_rejected(self):
+    def test_verify_envelope_nan_ts_rejected(self, monkeypatch, tmp_path):
         """NaN timestamp must be rejected (bypass fix)."""
+        monkeypatch.setenv("TAOS_DATA_DIR", str(tmp_path))
         env = build_envelope(
             from_username="jaylfc",
             to_username="hogne",
@@ -363,8 +369,9 @@ class TestPeerEnvelope:
         assert not ok
         assert "non-finite" in err
 
-    def test_verify_envelope_future_ts_rejected(self):
+    def test_verify_envelope_future_ts_rejected(self, monkeypatch, tmp_path):
         """Timestamp more than 30s in the future must be rejected."""
+        monkeypatch.setenv("TAOS_DATA_DIR", str(tmp_path))
         env = build_envelope(
             from_username="jaylfc",
             to_username="hogne",

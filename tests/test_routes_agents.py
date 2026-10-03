@@ -368,7 +368,13 @@ class TestDeployRouting:
         assert data["worker"] == "alpha"
         assert data["available_on"] == ["alpha", "mid", "zeta"]
 
-    async def test_controller_local_model_falls_through(self, client, app):
+    async def test_controller_local_model_falls_through(self, client, app, tmp_data_dir, monkeypatch):
+        # Root the process-global taosmd agent registry at this test's tmp_path
+        # instead of the repository's data/ directory so registration cannot
+        # trip the xdist data-dir mutation guard on data/agents.json.
+        import taosmd.agents
+        monkeypatch.setattr(taosmd.agents, "_default_registry", taosmd.agents.AgentRegistry(tmp_data_dir))
+
         class _FakeCatalog:
             def all_models(self, capability=None):
                 return [{"name": "local-model", "id": "local-model"}]

@@ -1,0 +1,11 @@
+{
+  "name": "docker-mailserver/docker-mailserver",
+  "tags": [
+    "14.0.0",
+    "13.2.1",
+    "13.2.0",
+    "13.1.0",
+    "latest",
+    "14.0.0-edges"
+  ]
+}

@@ -796,3 +796,237 @@ async def test_daemon_failing_mid_stream_ends_the_audio_cleanly(gw, daemon, monk
         assert resp.content == first
     assert closes == [1]
     assert "SECRET-UTTERANCE-9f2" not in caplog.text
+
+
+# --- OpenAI streaming: stream_format=sse ------------------------------------
+
+
+def sse_events(text: str) -> list[dict]:
+    """The JSON payloads of an SSE body; every frame must be exactly ``data: <json>``."""
+    assert text.endswith("\n\n")
+    frames = text[:-2].split("\n\n")
+    for f in frames:
+        assert f.startswith("data: ") and "\n" not in f, f
+    return [json.loads(f[len("data: "):]) for f in frames]
+
+
+def decode_audio(events) -> bytes:
+    import base64
+    return b"".join(base64.b64decode(e["audio"], validate=True)
+                    for e in events if e["type"] == "speech.audio.delta")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rate", [None, NATIVE, 16000])
+async def test_sse_events_decode_to_exactly_the_audio_format_bytes(gw, daemon, rate):
+    c, data_dir, _, _ = gw
+    write_manifest(data_dir, daemon.port)
+    pcm = pcm_of(sine(1000, NATIVE, 0.3))
+    daemon.pcm_chunks = [pcm[i:i + 3001] for i in range(0, len(pcm), 3001)]
+    extra = {} if rate is None else {"sample_rate": rate}
+    plain = await post(c, **extra)
+    resp = await post(c, stream_format="sse", **extra)
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    assert resp.headers["x-sample-rate"] == plain.headers["x-sample-rate"]
+    assert resp.headers["x-channels"] == "1"
+    events = sse_events(resp.text)
+    assert all(e["type"] == "speech.audio.delta" for e in events[:-1])
+    assert len(events) > 2  # one delta per chunk, not one lump
+    assert events[-1] == {"type": "speech.audio.done",
+                          "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}}
+    assert decode_audio(events) == plain.content
+
+
+@pytest.mark.asyncio
+async def test_stream_format_audio_is_the_unchanged_default(gw, daemon):
+    c, data_dir, _, _ = gw
+    write_manifest(data_dir, daemon.port)
+    daemon.pcm_chunks = [bytes(range(256)) * 3]
+    for extra in ({}, {"stream_format": "audio"}):
+        resp = await post(c, **extra)
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "audio/pcm"
+        assert resp.content == daemon.pcm_chunks[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["json", "SSE", "", None, 1, True, ["sse"]])
+async def test_invalid_stream_format_is_400(gw, daemon, value):
+    c, data_dir, _, _ = gw
+    write_manifest(data_dir, daemon.port)
+    resp = await post(c, stream_format=value)
+    assert resp.status_code == 400
+    assert resp.headers["content-type"].startswith("application/json")
+    assert daemon.requests == []
+
+
+@pytest.mark.asyncio
+async def test_sse_errors_before_streaming_are_json(gw, daemon):
+    c, data_dir, _, _ = gw
+    no_manifest = await post(c, model=tts.TTS_ALIAS, stream_format="sse")
+    assert no_manifest.status_code == 409 and code(no_manifest) == "tts_not_installed"
+    write_manifest(data_dir, daemon.port)
+    daemon.status = 503
+    down = await post(c, stream_format="sse")
+    assert down.status_code == 503
+    for r in (no_manifest, down):
+        assert r.headers["content-type"].startswith("application/json")
+
+
+@pytest.mark.asyncio
+async def test_sse_text_is_never_logged(gw, daemon, caplog):
+    c, data_dir, _ = gw[0], gw[1], None
+    write_manifest(data_dir, daemon.port)
+    with caplog.at_level(0):
+        resp = await post(c, input="SECRET-UTTERANCE-9f2", stream_format="sse")
+    assert resp.status_code == 200
+    assert "SECRET-UTTERANCE-9f2" not in caplog.text
+    assert "SECRET-UTTERANCE-9f2" not in resp.text
+
+
+@pytest.mark.asyncio
+async def test_sse_parses_with_the_openai_schema(gw, daemon):
+    """openai-python has no speech event types yet; validate against the
+    published schema's required fields (SpeechAudioDeltaEvent / DoneEvent)."""
+    c, data_dir, _, _ = gw
+    write_manifest(data_dir, daemon.port)
+    resp = await post(c, stream_format="sse")
+    events = sse_events(resp.text)
+    for e in events[:-1]:
+        assert set(e) == {"type", "audio"} and isinstance(e["audio"], str)
+    done = events[-1]
+    assert set(done) == {"type", "usage"}
+    assert set(done["usage"]) == {"input_tokens", "output_tokens", "total_tokens"}
+    assert all(isinstance(v, int) for v in done["usage"].values())
+
+
+@pytest.mark.asyncio
+async def test_sse_disconnect_before_the_first_chunk_still_closes_the_upstream(gw, daemon, monkeypatch):
+    from starlette.requests import Request
+
+    from tinyagentos.llm_gateway import router as gw_router
+
+    _, data_dir, app, _ = gw
+    write_manifest(data_dir, daemon.port)
+    daemon.endless = True
+    closes = []
+    real_aclose = tts.Speech.aclose
+
+    async def spy(self):
+        closes.append(1)
+        await real_aclose(self)
+
+    async def alive(self):
+        return False
+
+    class Caller:
+        def may_use(self, name):
+            return True
+
+    monkeypatch.setattr(tts.Speech, "aclose", spy)
+    monkeypatch.setattr(Request, "is_disconnected", alive)
+    body = json.dumps({"model": MODEL, "input": "never heard", "stream_format": "sse"}).encode()
+
+    async def request_receive():
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    scope = {"type": "http", "asgi": {"version": "3.0", "spec_version": "2.3"},
+             "http_version": "1.1", "method": "POST", "scheme": "http", "path": URL,
+             "raw_path": URL.encode(), "query_string": b"", "root_path": "",
+             "headers": [(b"content-type", b"application/json")], "app": app}
+    response = await gw_router.audio_speech(Request(scope, request_receive), Caller())
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        await asyncio.sleep(0.05)
+
+    await asyncio.wait_for(response(scope, receive, send), timeout=10)
+    assert closes, "the route must close the upstream even if the SSE body never started"
+    assert await asyncio.to_thread(daemon.closed.wait, 5), "upstream connection was leaked"
+
+
+@pytest.mark.asyncio
+async def test_sse_client_disconnect_mid_stream_closes_the_upstream(gw, daemon, monkeypatch):
+    from tinyagentos.llm_gateway import router as gw_router  # noqa: F401
+
+    _, data_dir, app, key = gw
+    write_manifest(data_dir, daemon.port)
+    daemon.endless = True
+    closes = []
+    real_aclose = tts.Speech.aclose
+
+    async def spy(self):
+        closes.append(1)
+        await real_aclose(self)
+
+    monkeypatch.setattr(tts.Speech, "aclose", spy)
+    body = json.dumps({"model": MODEL, "input": "x", "stream_format": "sse"}).encode()
+    sent_body = []
+    request_sent = False
+
+    async def receive():
+        nonlocal request_sent
+        if not request_sent:
+            request_sent = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        while len(sent_body) < 3:
+            await asyncio.sleep(0.01)
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        if message["type"] == "http.response.body":
+            sent_body.append(message.get("body", b""))
+            if len(sent_body) > 2:
+                raise OSError("client gone")
+
+    scope = {"type": "http", "asgi": {"version": "3.0", "spec_version": "2.4"},
+             "http_version": "1.1", "method": "POST", "scheme": "http", "path": URL,
+             "raw_path": URL.encode(), "query_string": b"", "root_path": "", "app": app,
+             "headers": [(b"content-type", b"application/json"),
+                         (b"content-length", str(len(body)).encode()),
+                         (b"authorization", f"Bearer {key}".encode())],
+             "client": ("127.0.0.1", 5), "server": ("test", 80)}
+    try:
+        await asyncio.wait_for(app(scope, receive, send), timeout=10)
+    except OSError:
+        pass
+    assert 3 <= len(sent_body) < 100
+    assert closes == [1]
+    assert await asyncio.to_thread(daemon.closed.wait, 5), "upstream connection was leaked"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exc", [httpx.ReadTimeout("SECRET-UTTERANCE-9f2"),
+                                 httpx.RemoteProtocolError("SECRET-UTTERANCE-9f2")])
+@pytest.mark.parametrize("rate", [None, 16000])
+async def test_sse_daemon_failing_mid_stream_closes_upstream_and_ends_without_done(
+        gw, daemon, monkeypatch, caplog, exc, rate):
+    c, data_dir, _, _ = gw
+    write_manifest(data_dir, daemon.port)
+    first = pcm_of(sine(1000, NATIVE, 0.2))
+    closes = []
+    real_aclose = tts.Speech.aclose
+
+    async def spy(self):
+        closes.append(1)
+        await real_aclose(self)
+
+    async def broken(self):
+        yield first
+        raise exc
+
+    monkeypatch.setattr(tts.Speech, "aclose", spy)
+    monkeypatch.setattr(tts.Speech, "chunks", broken)
+    extra = {} if rate is None else {"sample_rate": rate}
+    with caplog.at_level(0):
+        resp = await post(c, stream_format="sse", **extra)
+    assert resp.status_code == 200
+    events = sse_events(resp.text)
+    assert events and all(e["type"] == "speech.audio.delta" for e in events)  # no done: truncated
+    if rate is None:
+        assert decode_audio(events) == first
+    assert closes == [1]
+    assert "SECRET-UTTERANCE-9f2" not in caplog.text

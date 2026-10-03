@@ -22,6 +22,10 @@ logger = logging.getLogger(__name__)
 # stays open.
 router = APIRouter()
 
+# Seconds to wait for `launchctl bootstrap` of the one-shot reload helper
+# before killing it and falling through to the execv fallback.
+LAUNCHCTL_BOOTSTRAP_TIMEOUT = 15
+
 
 def _require_admin_or_loopback(request: Request) -> None:
     """Gate for the shutdown drain: the loopback systemd stop hook (no session,
@@ -137,6 +141,7 @@ async def _do_restart(app_state) -> None:
             read_pending_launchd_reload,
         )
         if read_pending_launchd_reload():
+            proc = None
             try:
                 proc = await asyncio.create_subprocess_exec(
                     "launchctl",
@@ -146,10 +151,26 @@ async def _do_restart(app_state) -> None:
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
-                _, stderr = await proc.communicate()
+                # launchctl can hang (a stuck launchd job, a wedged
+                # launchd.lock). Without a timeout the execv fallback below is
+                # never reached and the restart silently stalls.
+                await asyncio.wait_for(
+                    proc.communicate(), timeout=LAUNCHCTL_BOOTSTRAP_TIMEOUT
+                )
                 if proc.returncode == 0:
                     clear_pending_launchd_reload()
                     os._exit(0)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "launchd helper bootstrap timed out after %ss, killing pid",
+                    LAUNCHCTL_BOOTSTRAP_TIMEOUT,
+                )
+                if proc is not None:
+                    try:
+                        proc.kill()
+                        await proc.wait()
+                    except Exception:
+                        pass
             except Exception:
                 pass
             if notif:

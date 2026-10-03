@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import functools
 import importlib
 import inspect
 import json
@@ -122,14 +123,120 @@ def resolve_target(target: str) -> types.FunctionType:
             raise GuardError(f"{target!r}: no attribute {part!r}") from exc
         if isinstance(obj, (staticmethod, classmethod)):
             obj = obj.__func__
+    # Capture the original source (with decorators) before unwrapping
+    original_source = None
+    try:
+        original_source = inspect.getsource(obj)
+    except (OSError, TypeError):
+        pass
+    # Detect caching decorators (lru_cache, cache) that make mutation ineffective:
+    # the wrapper caches results at call time, so swapping __code__ on the
+    # inner function never reaches the mutated code for cached inputs. Every
+    # layer of the decorator stack is checked, not just the outermost: a
+    # functools.wraps decorator stacked on top of lru_cache caches just the same.
+    for layer in _wrapped_chain(obj):
+        if isinstance(layer, functools._lru_cache_wrapper):
+            raise GuardError(
+                f"{target!r} is wrapped with functools.lru_cache/cache; "
+                "mutations cannot invalidate the cache, so the guard is uncheckable"
+            )
     obj = inspect.unwrap(obj)
     if not isinstance(obj, types.FunctionType):
         raise GuardError(f"{target!r} is not a Python function ({type(obj).__name__})")
+    # Attach original source for mutation analysis (includes decorators)
+    if original_source is not None:
+        obj.__nondiscrim_original_source__ = original_source
+    # Check for uncheckable mutation sites in decorators or default arguments
+    _check_uncheckable_target_shapes(obj, target)
     return obj
 
 
+def _wrapped_chain(obj: object) -> list[object]:
+    """*obj* and every object reachable through ``__wrapped__``, outermost first."""
+    chain: list[object] = []
+    seen: set[int] = set()
+    while obj is not None and id(obj) not in seen:
+        chain.append(obj)
+        seen.add(id(obj))
+        obj = getattr(obj, "__wrapped__", None)
+    return chain
+
+
+def _check_uncheckable_target_shapes(func: types.FunctionType, target: str) -> None:
+    """Raise GuardError if the target has mutation sites in decorators or default args."""
+    src = getattr(func, '__nondiscrim_original_source__', None)
+    if src is None:
+        return
+    # A method's source is indented, so it is dedented before parsing; parsing
+    # it as-is raises IndentationError, which used to skip this check for every
+    # method target. A source the gate cannot read is uncheckable, not checked.
+    try:
+        tree = ast.parse(textwrap.dedent(src))
+    except SyntaxError as exc:
+        raise GuardError(
+            f"{target!r} has a source this gate cannot parse ({exc}); "
+            "the guard is uncheckable"
+        ) from exc
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == func.__name__:
+            # Check decorators for mutable sites
+            for dec in node.decorator_list:
+                for child in ast.walk(dec):
+                    if _site_kind(child) is not None:
+                        raise GuardError(
+                            f"{target!r} has a mutable site in a decorator; "
+                            "decorators are evaluated at import time and mutations there "
+                            "cannot affect runtime behavior"
+                        )
+            # Check default argument values for mutable sites
+            if node.args.defaults:
+                for default in node.args.defaults:
+                    for child in ast.walk(default):
+                        if _site_kind(child) is not None:
+                            raise GuardError(
+                                f"{target!r} has a mutable site in a default argument value; "
+                                "default values are evaluated at definition time and mutations there "
+                                "cannot affect runtime behavior"
+                            )
+            if node.args.kw_defaults:
+                for default in node.args.kw_defaults:
+                    if default is not None:
+                        for child in ast.walk(default):
+                            if _site_kind(child) is not None:
+                                raise GuardError(
+                                    f"{target!r} has a mutable site in a keyword-only default argument value; "
+                                    "default values are evaluated at definition time and mutations there "
+                                    "cannot affect runtime behavior"
+                                )
+            break
+
+
 def _function_source(func: types.FunctionType) -> tuple[str, int, str]:
-    """(dedented source, first line number, filename) of *func*."""
+    """(dedented source, first line number, filename) of *func*.
+
+    Uses the original source (with decorators) if available, otherwise falls
+    back to inspect.getsourcelines on the unwrapped function.
+    """
+    original_src = getattr(func, '__nondiscrim_original_source__', None)
+    if original_src is not None:
+        # Parse to find the function node and get its line range
+        try:
+            tree = ast.parse(original_src)
+        except SyntaxError:
+            pass
+        else:
+            for node in tree.body:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == func.__name__:
+                    # Get line range including decorators
+                    if node.decorator_list:
+                        start_line = node.decorator_list[0].lineno
+                    else:
+                        start_line = node.lineno
+                    end_line = node.end_lineno or node.lineno
+                    lines = original_src.splitlines(keepends=True)
+                    src_segment = "".join(lines[start_line - 1:end_line])
+                    return textwrap.dedent(src_segment), start_line, inspect.getsourcefile(func) or "<unknown>"
+    # Fallback: use inspect on the unwrapped function (no decorators)
     try:
         lines, start = inspect.getsourcelines(func)
     except (OSError, TypeError) as exc:
@@ -147,8 +254,18 @@ def _parse_function(src: str, start: int, name: str) -> ast.AST:
 
 
 def _own_scope(node: ast.AST):
-    """Pre-order walk of *node*'s own scope (not nested defs, lambdas, classes)."""
+    """Pre-order walk of *node*'s own scope (not nested defs, lambdas, classes).
+
+    Skips decorators and default argument values because they are evaluated
+    at import/definition time and mutations there cannot affect runtime behavior.
+    """
     for child in ast.iter_child_nodes(node):
+        # Skip decorators (evaluated at import time) - they are direct children of FunctionDef
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and child in node.decorator_list:
+            continue
+        # Skip default argument values (evaluated at definition time) - they are in arguments.defaults/kw_defaults
+        if isinstance(node, ast.arguments) and (child in node.defaults or child in node.kw_defaults):
+            continue
         yield child
         if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
             yield from _own_scope(child)
@@ -171,16 +288,20 @@ def _site_kind(node: ast.AST) -> str | None:
 
 
 def _site_ids(fn: ast.AST) -> list[tuple[str, ast.AST]]:
-    """Stable ids for every mutable site in *fn*, in source order."""
+    """Stable ids for every mutable site in *fn*, in source order.
+
+    IDs are of the form ``kind#N`` where N is the 1-based ordinal of that
+    kind within the function (e.g. ``negate-if#1``, ``negate-if#2``).
+    This is stable across edits that insert lines above the function.
+    """
     sites: list[tuple[str, ast.AST]] = []
-    seen: dict[str, int] = {}
+    counters: dict[str, int] = {}
     for node in _own_scope(fn):
         kind = _site_kind(node)
         if kind is None:
             continue
-        base = f"{kind}@{node.lineno}"
-        seen[base] = seen.get(base, 0) + 1
-        sites.append((base if seen[base] == 1 else f"{base}.{seen[base]}", node))
+        counters[kind] = counters.get(kind, 0) + 1
+        sites.append((f"{kind}#{counters[kind]}", node))
     return sites
 
 
@@ -207,6 +328,23 @@ def _mutate_site(node: ast.AST) -> ast.AST:
     raise GuardError(f"cannot mutate {type(node).__name__}")
 
 
+def _function_header(src: str, func_name: str) -> str:
+    """Return the header portion of a function source (decorators + def line)."""
+    tree = ast.parse(src)
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == func_name:
+            # Get the line range: from first decorator (if any) to the def line
+            if node.decorator_list:
+                start_line = node.decorator_list[0].lineno
+            else:
+                start_line = node.lineno
+            end_line = node.lineno
+            lines = src.splitlines(keepends=True)
+            # lineno is 1-indexed
+            return "".join(lines[start_line - 1:end_line])
+    raise GuardError(f"could not find def {func_name} in its own source")
+
+
 class _Replace(ast.NodeTransformer):
     def __init__(self, target: ast.AST):
         self.target = target
@@ -221,6 +359,14 @@ def _mutant_ast(func: types.FunctionType, mutant: str | tuple[str, str]) -> ast.
     src, start, _ = _function_source(func)
     if isinstance(mutant, tuple):
         old, new = mutant
+        # Check if the replacement targets an uncheckable location (decorator or default arg)
+        header = _function_header(src, func.__name__)
+        if old in header:
+            raise GuardError(
+                f"replace {old!r} targets a decorator or default argument value; "
+                "these are evaluated at import/definition time and mutations there "
+                "cannot affect runtime behavior"
+            )
         count = src.count(old)
         if count != 1:
             raise GuardError(

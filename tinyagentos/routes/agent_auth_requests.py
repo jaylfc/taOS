@@ -107,6 +107,8 @@ VALID_SCOPES = frozenset({
     # project_notes' single-scope read+write surface for a lightweight lists
     # surface scoped to a project.
     "project_lists",
+    # Memory access: read an agent's own memory index.
+    "memory_read",
 })
 
 
@@ -259,7 +261,7 @@ async def _retire_scope_request_notification(request: Request, request_id: str) 
 # project_tasks_create globally. One definition, referenced everywhere.
 _CANVAS_SCOPES = {"canvas_read", "canvas_write"}
 _FILES_SCOPES = {"files_read", "files_write"}
-_PROJECT_SCOPES = {"project_tasks", "project_tasks_create", "project_tasks_update", "project_lists", "project_notes"} | _CANVAS_SCOPES | _FILES_SCOPES
+_PROJECT_SCOPES = {"project_tasks", "project_tasks_create", "project_tasks_update", "project_lists", "project_notes", "project_doc_review"} | _CANVAS_SCOPES | _FILES_SCOPES
 
 
 def _get_approve_lock(request: Request, request_id: str) -> asyncio.Lock:

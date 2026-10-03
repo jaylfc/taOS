@@ -1,0 +1,3 @@
+### Fixed
+
+- The device TLS listener now writes its self-signed certificate and private key through `tinyagentos.atomic_io.atomic_write_bytes` instead of a hand-rolled tempfile plus `os.replace`. The old writer fsynced the temp file but not the parent directory, so a power cut could lose the rename, and `device_tls.py` tripped the class-level atomic-io invariant. The 0o600 mode is passed to the write, not applied with a `chmod` after it, so the private key never exists on disk with a wider mode, not even briefly.

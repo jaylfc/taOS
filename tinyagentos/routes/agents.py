@@ -1254,6 +1254,7 @@ async def pause_agent(request: Request, name: str, user: CurrentUser = Depends(c
     # Persist the flag only once the freeze succeeded (prepare() may already
     # have set it; set it here so it is recorded without an orchestrator too).
     agent["paused"] = True
+    agent["paused_by_restart"] = False
     await save_config_locked(config, config.config_path)
     return {"status": "paused", "name": name, "paused": True, "frozen": True, "report": report}
 

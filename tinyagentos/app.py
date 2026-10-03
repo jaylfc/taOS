@@ -203,6 +203,15 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     from tinyagentos.hardware import get_hardware_profile
 
     data_dir = resolve_data_dir(data_dir)
+    # Root the process-global taosmd agent registry at the app's resolved
+    # data_dir so every consumer (the /api/agents/deploy route, the v2 persona
+    # startup migration, CLI entry points) registers into a single source of
+    # truth instead of the default "data/" process-global default. In tests
+    # this keeps registration inside tmp_path and out of the repository's
+    # data/ directory.
+    import importlib
+    _tm_agents = importlib.import_module("taosmd.agents")
+    _tm_agents._default_registry = _tm_agents.AgentRegistry(data_dir)
     config_path = data_dir / "config.yaml"
     # Copy example config on first run
     if not config_path.exists():
@@ -774,7 +783,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # taosmd.  Idempotent — safe to run on every startup.
         try:
             from tinyagentos.migrations import migrate_persona_v2
-            import taosmd.agents as _tm_agents
+            import importlib
+            _tm_agents = importlib.import_module("taosmd.agents")
             migrate_persona_v2(config.agents, register_fn=_tm_agents.register_agent)
             if config.config_path and config.config_path.exists():
                 await save_config_locked(config, config.config_path)
@@ -999,6 +1009,28 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                 await _asyncio.sleep(600)
 
         _create_supervised_task(_popularity_warm_loop(app), app.state._background_tasks)
+
+        # Upstream release detection for docker-image apps: the warmer
+        # queries each app's container registry (daily TTL per app) so
+        # the Store's Updates tab can surface apps whose catalog pin is
+        # stale. The request path only reads the cache, never the
+        # registry; failures read as "unknown", never as "no update".
+        from tinyagentos import upstream_versions
+        upstream_versions.configure_persistence(data_dir)
+
+        async def _upstream_warm_loop(app: FastAPI) -> None:
+            import asyncio as _asyncio
+            while True:
+                try:
+                    apps = app.state.registry.list_available()
+                    await upstream_versions.warm_upstream_cache(apps)
+                except Exception as _e:
+                    logger.warning("upstream version warm failed: %s", _e)
+                # Hourly pass; warm_upstream_cache skips entries whose
+                # 24h TTL has not expired, so each app is checked ~daily.
+                await _asyncio.sleep(3600)
+
+        _create_supervised_task(_upstream_warm_loop(app), app.state._background_tasks)
 
         # Hourly auto-update checker. Polls the git remote, notifies the
         # user on new commits, optionally applies automatically (user
@@ -1329,6 +1361,13 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await _system_events.init()
         app.state.system_events = _system_events
         app.state.event_bus = EventBus()
+
+        # Model Activity feed (#208): bounded in-process ring buffer that the
+        # scheduler and LLM gateway record into; the Activity app reads it via
+        # GET /api/activity/models and the SSE stream. No init()/close(): it is
+        # pure in-memory state, deliberately not persisted.
+        from tinyagentos.model_activity import ModelActivityFeed
+        app.state.model_activity = ModelActivityFeed()
 
         # Wire NotificationStore → EventBus so SSE clients get instant push.
         # The emitter is best-effort: failures are logged and never break add().
@@ -1862,6 +1901,17 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     # Register all routers (extracted to routes/register_all_routers)
     from tinyagentos.routes import register_all_routers
+    # Device TLS cert: generate on first boot, persist under data dir (0600).
+    # The fingerprint is served to pairing devices so they can pin it.
+    try:
+        from tinyagentos.device_tls import load_or_create_device_tls_cert
+        _cert_path, _key_path, _tls_fp = load_or_create_device_tls_cert(data_dir)
+        app.state.device_tls_cert_path = _cert_path
+        app.state.device_tls_key_path = _key_path
+        app.state.device_tls_fingerprint = _tls_fp
+    except Exception:
+        logger.exception("device TLS cert could not be created")
+
     register_all_routers(app)
 
     # Agent base image prefetch status endpoint

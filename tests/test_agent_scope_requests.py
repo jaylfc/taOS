@@ -355,6 +355,37 @@ async def test_project_scope_requires_project_id_400(client, monkeypatch, tmp_pa
         await env.close()
 
 
+@pytest.mark.parametrize("scope", ["project_notes", "project_doc_review"])
+@pytest.mark.asyncio
+async def test_route_side_project_bound_scope_requires_project_id_400(
+    scope, client, monkeypatch, tmp_path
+):
+    """A scope the ROUTES authorize with check_agent_scope_for_project needs a
+    project binding, so approving it without one must be refused.
+
+    project_notes and project_doc_review are both guarded route-side by
+    check_agent_scope_for_project, which matches only a grant whose project_id
+    EQUALS the requested project. Approving either with no project_id writes a
+    global (project_id=None) grant that can never match: the operator sees a
+    successful approval and the agent has no access to the very routes the scope
+    exists for. Same failure mode as test_project_scope_set_is_a_single_definition.
+    """
+    env = await _wire(client, monkeypatch, tmp_path)
+    try:
+        cid = await _register_active(env)
+        rec = await env.scope_store.create(canonical_id=cid, requested_scopes=[scope])
+        resp = await client.post(
+            f"/api/agents/registry/{cid}/scope-requests/{rec['id']}/approve",
+            json={"granted_scopes": [scope]},
+        )
+        assert resp.status_code == 400, resp.text
+        assert "project_id" in resp.text
+        # Refused means refused: no inert global grant was written.
+        assert await env.grants.list_grants(cid) == []
+    finally:
+        await env.close()
+
+
 @pytest.mark.asyncio
 async def test_non_owner_cannot_approve(client, monkeypatch, tmp_path):
     """A non-admin user who does not own the agent cannot approve."""
@@ -661,6 +692,7 @@ def test_project_scope_set_is_a_single_definition():
         "project_tasks_update",
         "project_lists",
         "project_notes",
+        "project_doc_review",
         "canvas_read",
         "canvas_write",
         "files_read",

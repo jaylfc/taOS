@@ -112,6 +112,11 @@ function AppRow({
       <div className="flex-1 min-w-0">
         <div className="text-[15px] font-semibold text-shell-text leading-tight truncate">{app.name}</div>
         <div className="text-[12.5px] text-shell-text-secondary leading-tight truncate">{subtitleFor(app)}</div>
+        {app.update_available && app.upstream_update_available && app.upstream_version && (
+          <div className="mt-0.5 text-[11px] font-semibold text-amber-300/90 leading-tight truncate">
+            v{app.upstream_pinned_version || app.version} → v{app.upstream_version}
+          </div>
+        )}
         {app.stars ? (
           <div className="mt-0.5 flex items-center gap-1 text-[11px] text-shell-text-tertiary">
             <Star className="w-3 h-3 fill-amber-400 text-amber-400" />

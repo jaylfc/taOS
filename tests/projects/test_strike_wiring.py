@@ -239,3 +239,56 @@ async def test_three_releases_quarantine_via_http(app):
             r = await c.get(f"/api/projects/{project_id}/tasks/{task_id}")
             assert r.status_code == 200, r.text
             assert r.json()["status"] == "quarantined"
+
+
+@pytest.mark.asyncio
+async def test_release_default_still_strikes_and_quarantines_at_three(app):
+    """Omitting strike defaults to True: three releases via HTTP must still
+    quarantine the card."""
+    from tinyagentos.projects.strike_store import StrikeStore
+
+    async with app.router.lifespan_context(app):
+        async with _auth_client(app) as c:
+            project_id, task_id = await _make_project_and_task(c, "strike-default")
+
+            for _ in range(StrikeStore.STRIKE_THRESHOLD):
+                r = await c.post(
+                    f"/api/projects/{project_id}/tasks/{task_id}/claim",
+                    json={"claimer_id": "worker-1"},
+                )
+                assert r.status_code == 200, r.text
+                r = await c.post(
+                    f"/api/projects/{project_id}/tasks/{task_id}/release",
+                    json={"releaser_id": "worker-1"},
+                )
+                assert r.status_code == 200, r.text
+
+            r = await c.get(f"/api/projects/{project_id}/tasks/{task_id}")
+            assert r.status_code == 200, r.text
+            assert r.json()["status"] == "quarantined"
+
+
+@pytest.mark.asyncio
+async def test_release_strike_false_via_http_does_not_quarantine(app):
+    """POSTing strike=false must release without recording strikes or quarantining."""
+    from tinyagentos.projects.strike_store import StrikeStore
+
+    async with app.router.lifespan_context(app):
+        async with _auth_client(app) as c:
+            project_id, task_id = await _make_project_and_task(c, "strike-false")
+
+            for _ in range(StrikeStore.STRIKE_THRESHOLD):
+                r = await c.post(
+                    f"/api/projects/{project_id}/tasks/{task_id}/claim",
+                    json={"claimer_id": "worker-1"},
+                )
+                assert r.status_code == 200, r.text
+                r = await c.post(
+                    f"/api/projects/{project_id}/tasks/{task_id}/release",
+                    json={"releaser_id": "worker-1", "strike": False},
+                )
+                assert r.status_code == 200, r.text
+
+            r = await c.get(f"/api/projects/{project_id}/tasks/{task_id}")
+            assert r.status_code == 200, r.text
+            assert r.json()["status"] == "open"

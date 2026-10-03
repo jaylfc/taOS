@@ -159,7 +159,7 @@ async def _convert_to_lxc(args) -> int:
         return r.returncode
 
     print("Redeploying agents into worker LXC...")
-    agent_cfgs = _load_agents_json()
+    agent_cfgs = _load_agents_json(data_dir / "agents.json")
     failed = await redeploy_agents(agent_cfgs, llm_proxy=llm_proxy, gateway_port=gateway_port)
     if failed:
         print(f"Redeploy failed for: {', '.join(failed)}", file=sys.stderr)

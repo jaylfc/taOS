@@ -371,8 +371,7 @@ class TestMemoryModeFrameworkIsolation:
         import sys
         fake_taosmd = types.ModuleType("taosmd")
         fake_taosmd.agent_rules = lambda: fake_rules
-        sys.modules["taosmd"] = fake_taosmd
-        try:
+        with patch.dict(sys.modules, {"taosmd": fake_taosmd}):
             with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
                  patch("tinyagentos.deployer.exec_in_container", side_effect=mock_exec), \
                  patch("tinyagentos.deployer.push_file", side_effect=fake_push_file), \
@@ -387,8 +386,6 @@ class TestMemoryModeFrameworkIsolation:
                 )
                 result = await deploy_agent(req)
                 assert result["success"] is True
-        finally:
-            sys.modules.pop("taosmd", None)
 
         agents_md_entries = [
             (dst, content) for dst, content in pushed

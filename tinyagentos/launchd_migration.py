@@ -117,6 +117,26 @@ def _extract_host_port_from_args(program_args: list[str]) -> tuple[str | None, s
     return host, port
 
 
+def _is_flagless_uvicorn_plist(plist_bytes: bytes) -> bool:
+    """Check for an un-migrated bare-uvicorn plist with no --host and/or --port.
+
+    Such a plist bound uvicorn's own defaults (127.0.0.1:8000). There is no
+    bind address to carry over, so migrate_launchd_plist leaves it alone rather
+    than widening exposure, and the caller warns instead.
+    """
+    try:
+        plist = plistlib.loads(plist_bytes)
+    except Exception:
+        return False
+    if not _is_tinyagentos_controller_plist(plist):
+        return False
+    program_args = plist.get("ProgramArguments", [])
+    if _is_already_migrated(program_args) or not _is_old_uvicorn_format(program_args):
+        return False
+    host, port = _extract_host_port_from_args(program_args)
+    return host is None or port is None
+
+
 def migrate_launchd_plist(plist_bytes: bytes, install_dir: str) -> bytes | None:
     """Migrate an old bare-uvicorn launchd plist to the new module entrypoint format.
 
@@ -140,6 +160,8 @@ def migrate_launchd_plist(plist_bytes: bytes, install_dir: str) -> bytes | None:
     - Uses plistlib, not regex, for robust XML parsing.
     - Preserves ALL other keys and environment variables unchanged.
     - Extracts --host/--port from old ProgramArguments and sets TAOS_HOST/TAOS_PORT.
+      A plist missing either flag is NOT migrated: there is no bind address to
+      carry over, and guessing would widen exposure.
     - Keeps a .bak copy and writes atomically (caller responsibility).
     """
     try:
@@ -163,10 +185,18 @@ def migrate_launchd_plist(plist_bytes: bytes, install_dir: str) -> bytes | None:
     if not _is_old_uvicorn_format(program_args):
         return None
 
-    # Extract host/port from old args
+    # Extract host/port from old args. Both must be present: a plist without
+    # them ran on uvicorn's own 127.0.0.1:8000 default, and defaulting to
+    # 0.0.0.0:6969 would WIDEN exposure. Leave it alone; the user re-runs the
+    # installer, which writes both flags.
     host, port = _extract_host_port_from_args(program_args)
-    host = host or "0.0.0.0"
-    port = port or "6969"
+    if host is None or port is None:
+        logger.warning(
+            "launchd migration: com.tinyagentos.controller.plist has no --host/--port "
+            "in its ProgramArguments, leaving it unmigrated (re-run the installer to "
+            "set the bind address)"
+        )
+        return None
 
     # Build new ProgramArguments
     venv_python = f"{install_dir}/.venv/bin/python"
@@ -230,7 +260,15 @@ async def apply_launchd_migration(install_dir: str) -> tuple[bool, str | None]:
         new_plist_bytes = migrate_launchd_plist(plist_bytes, install_dir)
 
         if new_plist_bytes is None:
-            # Already migrated or not applicable
+            # Already migrated, not applicable, or skipped for a missing
+            # --host/--port. In that last case say so: the plist still runs the
+            # old bare uvicorn, so the user has to re-run the installer.
+            if _is_flagless_uvicorn_plist(plist_bytes):
+                return True, (
+                    f"launchd migration skipped: {plist_path} has no --host/--port, "
+                    "so it was left unchanged. Re-run the installer to set the bind "
+                    "address."
+                )
             return True, None
 
         # Write atomically: use atomic_write_bytes instead of temp file + rename
@@ -240,11 +278,32 @@ async def apply_launchd_migration(install_dir: str) -> tuple[bool, str | None]:
 
         atomic_write_bytes(plist_path, new_plist_bytes)
 
-        # Write the one-shot reload helper (C1: separate job, no bootout here)
-        _write_reload_helper(plist_path)
+        # The new-format plist is only usable once the reload is scheduled. If
+        # the prep below fails, put the original back from the .bak: a migrated
+        # plist with no reload scheduled is seen as already migrated by every
+        # later update and never retried.
+        try:
+            # Write the one-shot reload helper (C1: separate job, no bootout here)
+            _write_reload_helper(plist_path)
 
-        # Record that a reload is needed
-        write_pending_launchd_reload()
+            # Record that a reload is needed
+            write_pending_launchd_reload()
+        except Exception:
+            try:
+                atomic_write_bytes(plist_path, bak_path.read_bytes())
+                logger.warning(
+                    "launchd migration: reload prep failed, restored the original "
+                    "plist from %s",
+                    bak_path,
+                )
+            except Exception as restore_exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "launchd migration: reload prep failed and the original plist "
+                    "could not be restored from %s: %s",
+                    bak_path,
+                    restore_exc,
+                )
+            raise
 
         logger.info(
             "launchd migration: migrated com.tinyagentos.controller.plist from bare uvicorn "

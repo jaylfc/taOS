@@ -235,7 +235,7 @@ async def test_convert_to_lxc_queries_controller_for_gateway_port_and_redeploys(
     # One agent row.
     monkeypatch.setattr(
         "tinyagentos.cli.worker._load_agents_json",
-        lambda: [
+        lambda path: [
             {
                 "name": "test-agent",
                 "framework": "openclaw",
@@ -312,7 +312,7 @@ async def test_convert_to_lxc_exits_nonzero_when_redeploy_fails(monkeypatch, tmp
 
     monkeypatch.setattr(
         "tinyagentos.cli.worker._load_agents_json",
-        lambda: [{"name": "test-agent", "framework": "openclaw", "model": "gpt-4o", "data_dir": tmp_path}],
+        lambda path: [{"name": "test-agent", "framework": "openclaw", "model": "gpt-4o", "data_dir": tmp_path}],
     )
 
     args = types.SimpleNamespace(controller_url="http://controller:6969", yes=True)

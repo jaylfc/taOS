@@ -106,8 +106,9 @@ async def test_update_check_hides_docs_only_diff(client, monkeypatch):
     import tinyagentos.routes.settings as s
 
     class _FakeProc:
-        def __init__(self, out=b""):
+        def __init__(self, out=b"", returncode=0):
             self._out = out
+            self.returncode = returncode
 
         async def communicate(self):
             return self._out, b""
@@ -123,7 +124,9 @@ async def test_update_check_hides_docs_only_diff(client, monkeypatch):
             return _FakeProc(b"bbb2222\n")
         if args[1] == "log":
             return _FakeProc(b"abc def\n")
-        return _FakeProc()
+        if args[1] == "fetch":
+            return _FakeProc(b"", returncode=0)
+        return _FakeProc(returncode=0)
 
     async def fake_strictly_ahead(project_dir, local_sha, remote_sha):
         return True
@@ -131,27 +134,99 @@ async def test_update_check_hides_docs_only_diff(client, monkeypatch):
     async def fake_docs_only(project_dir, local_sha, remote_sha):
         return True
 
-    monkeypatch.setattr(s, "resolve_tracked_branch", fake_resolve, raising=False)
-    monkeypatch.setattr(_asyncio, "create_subprocess_exec", fake_exec, raising=False)
+    monkeypatch.setattr(s, "resolve_tracked_branch", fake_resolve, raising=True)
+    monkeypatch.setattr(_asyncio, "create_subprocess_exec", fake_exec, raising=True)
     monkeypatch.setattr(
         "tinyagentos.auto_update.remote_is_strictly_ahead",
         fake_strictly_ahead,
-        raising=False,
+        raising=True,
     )
     monkeypatch.setattr(
         "tinyagentos.auto_update.changes_are_docs_only",
         fake_docs_only,
-        raising=False,
+        raising=True,
     )
     monkeypatch.setattr(
         "tinyagentos.auto_update.branch_is_diverged",
         AsyncMock(return_value=False),
-        raising=False,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        "tinyagentos.update_preflight.check_preflight",
+        lambda project_dir, branch=None: [],
+        raising=True,
     )
 
     r = await client.get("/api/settings/update-check")
     assert r.status_code == 200
     assert r.json()["has_updates"] is False
+    # When preflight passes, preflight_errors may be absent or empty list
+    assert r.json().get("preflight_errors", []) == []
+
+
+@pytest.mark.asyncio
+async def test_update_check_reflects_preflight_errors(client, monkeypatch):
+    import asyncio as _asyncio
+
+    import tinyagentos.routes.settings as s
+    from tinyagentos.update_preflight import PreflightIssue
+
+    class _FakeProc:
+        def __init__(self, out=b"", returncode=0):
+            self._out = out
+            self.returncode = returncode
+
+        async def communicate(self):
+            return self._out, b""
+
+    async def fake_resolve(store, project_dir):
+        return "dev"
+
+    async def fake_exec(*args, **kwargs):
+        return _FakeProc(returncode=0)
+
+    async def fake_strictly_ahead(project_dir, local_sha, remote_sha):
+        return True
+
+    async def fake_docs_only(project_dir, local_sha, remote_sha):
+        return True
+
+    monkeypatch.setattr(s, "resolve_tracked_branch", fake_resolve, raising=True)
+    monkeypatch.setattr(_asyncio, "create_subprocess_exec", fake_exec, raising=True)
+    monkeypatch.setattr(
+        "tinyagentos.auto_update.remote_is_strictly_ahead",
+        fake_strictly_ahead,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        "tinyagentos.auto_update.changes_are_docs_only",
+        fake_docs_only,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        "tinyagentos.auto_update.branch_is_diverged",
+        AsyncMock(return_value=False),
+        raising=True,
+    )
+    monkeypatch.setattr(
+        "tinyagentos.update_preflight.check_preflight",
+        lambda project_dir, branch=None: [
+            PreflightIssue(
+                code="branch_not_on_origin",
+                message="Tracked branch 'dev' not found on origin",
+                repair="Push the branch to origin",
+            )
+        ],
+        raising=True,
+    )
+
+    r = await client.get("/api/settings/update-check")
+    assert r.status_code == 200
+    assert r.json()["has_updates"] is False
+    # PreflightIssue NamedTuple serializes as [code, message, repair] list
+    assert r.json()["preflight_errors"] == [
+        ["branch_not_on_origin", "Tracked branch 'dev' not found on origin", "Push the branch to origin"]
+    ]
 
 
 @pytest.mark.asyncio

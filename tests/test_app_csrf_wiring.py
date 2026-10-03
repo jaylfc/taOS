@@ -58,8 +58,7 @@ def app(tmp_path, monkeypatch):
     """
     from tinyagentos.app import create_app
 
-    monkeypatch.setenv("TINYAGENTOS_DATA_DIR", str(tmp_path))
-    built = create_app()
+    built = create_app(data_dir=tmp_path)
     mgr = AuthManager(tmp_path)
     mgr.setup_user(USERNAME, "Bring-up Test", "", PASSWORD)
     built.state.auth = mgr
