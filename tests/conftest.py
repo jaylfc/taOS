@@ -18,8 +18,14 @@ from httpx import ASGITransport, AsyncClient
 from tinyagentos.app import create_app, PROJECT_DIR
 from tinyagentos.routes.desktop import SPA_DIR
 
-# Data-dir mutation guard plugin.
-import tests._data_guard_plugin  # noqa: F401
+# Data-dir mutation guard: defined in tests/_data_guard_plugin.py (shared with
+# tests/test_xdist_data_mutation_guard.py) and re-bound here so pytest registers it.
+from _data_guard_plugin import (  # noqa: F401
+    _collect_data_mtimes,
+    _guard_data_dir_mutation,
+    pytest_sessionfinish,
+    pytest_testnodedown,
+)
 
 
 # ---------------------------------------------------------------------------
