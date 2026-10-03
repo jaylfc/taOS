@@ -1,0 +1,59 @@
+{
+  "count": 18,
+  "next": null,
+  "previous": null,
+  "results": [
+    {
+      "id": "eyJhIjoiMjAyNTEyMDgifQ",
+      "name": "20251208",
+      "repository": 3187764,
+      "creator": 1,
+      "size": 214589134,
+      "last_updated": "2025-12-08T22:03:19.000000Z",
+      "last_pulled": "2026-09-20T09:00:00.000000Z",
+      "full_size": 214589134,
+      "digest": "sha256:1122334455",
+      "status": 1,
+      "last_started": null
+    },
+    {
+      "id": "eyJhIjoiMjAyNTAzMTUifQ",
+      "name": "20250315",
+      "repository": 3187764,
+      "creator": 1,
+      "size": 207845221,
+      "last_updated": "2025-03-15T19:40:02.000000Z",
+      "last_pulled": null,
+      "full_size": 207845221,
+      "digest": "sha256:6677889900",
+      "status": 1,
+      "last_started": null
+    },
+    {
+      "id": "eyJhIjoiMjAyNDExMTUifQ",
+      "name": "20241115",
+      "repository": 3187764,
+      "creator": 1,
+      "size": 201556743,
+      "last_updated": "2024-11-15T12:26:47.000000Z",
+      "last_pulled": "2026-09-01T10:22:00.000000Z",
+      "full_size": 201556743,
+      "digest": "sha256:99aabbccdd",
+      "status": 1,
+      "last_started": null
+    },
+    {
+      "id": "eyJhIjoibGF0ZXN0In0",
+      "name": "latest",
+      "repository": 3187764,
+      "creator": 1,
+      "size": 214589134,
+      "last_updated": "2025-12-08T22:03:19.000000Z",
+      "last_pulled": "2026-10-01T05:30:00.000000Z",
+      "full_size": 214589134,
+      "digest": "sha256:1122334455",
+      "status": 1,
+      "last_started": null
+    }
+  ]
+}

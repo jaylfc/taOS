@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -408,3 +409,206 @@ class TestManagedAiUnits:
         )
         units = await system_routes._managed_ai_units(self._request(tmp_path))
         assert [u for u, _ in units] == ["qmd.service"]
+
+
+class TestDoRestartDarwinLaunchd:
+    """_do_restart must use a separate launchd helper on darwin."""
+
+    @pytest.mark.asyncio
+    async def test_do_restart_darwin_bootstraps_helper_and_exits(self, tmp_path, monkeypatch):
+        """_do_restart on darwin with migration-written=true bootstraps the helper and exits."""
+        import os
+        import sys
+        from pathlib import Path
+        from unittest.mock import patch, MagicMock, AsyncMock
+        import plistlib
+
+        exit_calls = []
+
+        def fake_exit(code):
+            exit_calls.append(code)
+            raise SystemExit(code)
+
+        monkeypatch.setattr(os, "_exit", fake_exit)
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.delenv("INVOCATION_ID", raising=False)
+
+        _orig_exists = os.path.exists
+
+        def fake_exists(path):
+            if str(path) == "/run/systemd/system":
+                return False
+            if str(path) == "/.dockerenv":
+                return False
+            return _orig_exists(path)
+
+        monkeypatch.setattr(os.path, "exists", fake_exists)
+
+        controller_plist = tmp_path / "com.tinyagentos.controller.plist"
+        controller_plist.write_bytes(b"fake plist")
+        helper_plist = tmp_path / "com.tinyagentos.plist-reload.plist"
+
+        monkeypatch.setattr(
+            "tinyagentos.launchd_migration.PLIST_PATH",
+            controller_plist,
+        )
+        monkeypatch.setattr(
+            "tinyagentos.launchd_migration.HELPER_PLIST_PATH",
+            helper_plist,
+        )
+
+        # Write the reload-needed flag
+        from tinyagentos.launchd_migration import _pending_launchd_reload_path
+        flag_path = _pending_launchd_reload_path()
+        flag_path.parent.mkdir(parents=True, exist_ok=True)
+        flag_path.write_text("1")
+
+        # Write the helper plist with expected content
+        uid = os.getuid()
+        script = (
+            f"sleep 1; "
+            f"launchctl bootout gui/{uid} com.tinyagentos.controller; "
+            f"launchctl bootstrap gui/{uid} {controller_plist}; "
+            f"rm {helper_plist}; "
+            f"launchctl bootout gui/{uid} com.tinyagentos.plist-reload"
+        )
+        helper_content = {
+            "Label": "com.tinyagentos.plist-reload",
+            "RunAtLoad": True,
+            "KeepAlive": False,
+            "ProgramArguments": ["/bin/sh", "-c", script],
+        }
+        with open(helper_plist, "wb") as f:
+            plistlib.dump(helper_content, f, fmt=plistlib.FMT_XML)
+
+        subprocess_calls = []
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            subprocess_calls.append(args)
+            mock_proc = MagicMock()
+            mock_proc.returncode = 0
+            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+            mock_proc.wait = AsyncMock()
+            return mock_proc
+
+        app_state = MagicMock()
+        app_state.notifications = None
+
+        with (
+            patch("asyncio.create_subprocess_exec", side_effect=fake_create_subprocess_exec),
+            patch("asyncio.sleep", new_callable=AsyncMock),
+        ):
+            from tinyagentos.routes.system import _do_restart
+            try:
+                await _do_restart(app_state)
+            except SystemExit:
+                pass
+
+        found_bootstrap = False
+        for args in subprocess_calls:
+            if len(args) > 0 and args[0] == "launchctl":
+                if "bootstrap" in args:
+                    found_bootstrap = True
+                    helper_label = "com.tinyagentos.plist-reload"
+                    assert any(helper_label in str(a) for a in args), (
+                        f"Expected helper label in bootstrap args, got: {args}"
+                    )
+                    assert not any(
+                        "com.tinyagentos.controller" in str(a) for a in args
+                    ), f"Should not bootstrap controller directly, got: {args}"
+
+        assert found_bootstrap, "Expected launchctl bootstrap of helper plist"
+        assert exit_calls == [0], f"Expected os._exit(0), got {exit_calls}"
+
+
+class TestDoRestartLaunchdBootstrapTimeout:
+    """A hung launchctl bootstrap must not block the execv fallback."""
+
+    class _HangingProc:
+        """Stub subprocess whose communicate() never returns."""
+
+        def __init__(self):
+            self.returncode = None
+            self.killed = False
+
+        async def communicate(self):
+            await asyncio.sleep(3600)
+
+        def kill(self):
+            self.killed = True
+
+        async def wait(self):
+            return 0
+
+    @pytest.mark.asyncio
+    async def test_hung_launchctl_bootstrap_falls_through_to_execv(self, tmp_path, monkeypatch):
+        """launchctl that sleeps forever is killed and the execv fallback still runs."""
+        import asyncio
+        import os
+        import sys
+        import time
+
+        proc = self._HangingProc()
+        execv_calls = []
+        exit_calls = []
+
+        def fake_exit(code):
+            exit_calls.append(code)
+            raise SystemExit(code)
+
+        def fake_execv(path, argv):
+            execv_calls.append((path, argv))
+            raise SystemExit(0)
+
+        monkeypatch.setattr(os, "_exit", fake_exit)
+        monkeypatch.setattr(os, "execv", fake_execv)
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.delenv("INVOCATION_ID", raising=False)
+        monkeypatch.setattr(
+            system_routes, "LAUNCHCTL_BOOTSTRAP_TIMEOUT", 0.05, raising=False
+        )
+
+        _orig_exists = os.path.exists
+
+        def fake_exists(path):
+            if str(path) in ("/run/systemd/system", "/.dockerenv"):
+                return False
+            return _orig_exists(path)
+
+        monkeypatch.setattr(os.path, "exists", fake_exists)
+
+        monkeypatch.setattr(
+            "tinyagentos.launchd_migration.PLIST_PATH",
+            tmp_path / "com.tinyagentos.controller.plist",
+        )
+        monkeypatch.setattr(
+            "tinyagentos.launchd_migration.HELPER_PLIST_PATH",
+            tmp_path / "com.tinyagentos.plist-reload.plist",
+        )
+
+        from tinyagentos.launchd_migration import _pending_launchd_reload_path
+
+        flag_path = _pending_launchd_reload_path()
+        flag_path.parent.mkdir(parents=True, exist_ok=True)
+        flag_path.write_text("1")
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            return proc
+
+        app_state = MagicMock()
+        app_state.notifications = None
+
+        started = time.monotonic()
+        with patch(
+            "asyncio.create_subprocess_exec", side_effect=fake_create_subprocess_exec
+        ):
+            with pytest.raises(SystemExit):
+                await asyncio.wait_for(
+                    system_routes._do_restart(app_state), timeout=15
+                )
+        elapsed = time.monotonic() - started
+
+        assert proc.killed, "hung launchctl was not killed after the timeout"
+        assert execv_calls, "the execv fallback was never reached"
+        assert exit_calls == [], f"os._exit must not be taken, got {exit_calls}"
+        assert elapsed < 10, f"fallback took {elapsed:.1f}s, timeout did not fire"

@@ -18,7 +18,12 @@ the only way a squash-shaped single commit can waive one rule and still be
 held to the others (a name that matches no rule waives nothing). Multiple
 scoped trailers in one commit union their rule names.
 
-Two layers:
+Three layers:
+  pre-flight  -- (Layer A0) every filesystem location the CONFIG names must
+                 resolve in this repo: the token-regex prefix list, the scan
+                 targets, and every rule target. A name that does not resolve is
+                 dormant config, not a satisfied rule -- it matches nothing,
+                 fails nothing, and the gate reports clean for ever (tsk-s73zth).
   invariants  -- deterministic sanity checks (Layer A). Currently: every
                  scripts/, tinyagentos/, docs/, desktop/ path mentioned in the
                  configured doc set actually exists on disk.
@@ -48,6 +53,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -63,8 +69,9 @@ DEFAULT_TRAILER = "Docs-Reviewed:"
 
 # Exit codes: 0 clean, 1 a doc-gate violation, 2 a CLI/usage error (reserved
 # for argparse, never our own code), 3 a config error (broken, missing, or
-# unparseable config).  3 is kept off 2 so a typo'd flag is never mistaken for
-# a bad config: a misconfigured gate must be distinguishable from both a real
+# unparseable config, or one naming a location this repo does not have).  3 is
+# kept off 2 so a typo'd flag is never mistaken for a bad config: a
+# misconfigured gate must be distinguishable from both a real
 # documentation-drift violation and a usage mistake.  4 is a git infrastructure
 # failure (missing ref, network error, shallow clone, etc.) so it is never
 # confused with a rule violation.
@@ -73,7 +80,15 @@ EXIT_VIOLATION = 1
 EXIT_CONFIG_ERROR = 3
 EXIT_GIT_ERROR = 4
 
-# A path-like token: one of the four known repo prefixes followed by a run of
+# The repo trees a doc path token can start with, and the one place the list
+# lives: the regex below is built from it and Layer A0 resolves every entry, so
+# a tree that is renamed away cannot leave the gate matching nothing (the
+# failure @taOSmobile-dev's port of this gate hit: the list copied unchanged
+# into a repo with neither tinyagentos/ nor desktop/ matched ZERO tokens in
+# every doc and printed clean for ever -- tsk-s73zth).
+PATH_PREFIXES = ("scripts", "tinyagentos", "docs", "desktop")
+
+# A path-like token: one of the known repo prefixes followed by a run of
 # non-whitespace / non-quoting characters. The negative lookbehind stops us
 # matching a prefix that is actually embedded inside a larger path (e.g. the
 # "tinyagentos/" inside "/home/<user>/tinyagentos/data/" in a deploy-layout
@@ -83,7 +98,11 @@ EXIT_GIT_ERROR = 4
 # after a hyphen, and the glob `*` sits BEFORE the match so the glob filter
 # never sees it. `)` and `]` are excluded from the token body so a markdown
 # link's closing bracket ends the token instead of gluing the URL on.
-_TOKEN_RE = re.compile(r"(?<![\w/-])(?:scripts|tinyagentos|docs|desktop)/[^\s`\"'|)\]]+")
+_TOKEN_RE = re.compile(
+    r"(?<![\w/-])(?:"
+    + "|".join(re.escape(prefix) for prefix in PATH_PREFIXES)
+    + r")/[^\s`\"'|)\]]+"
+)
 
 # Chars that mark a token as a glob pattern or a <placeholder> rather than a
 # concrete repo path -- these are never asserted to exist.
@@ -209,11 +228,149 @@ def _validate_config(config: dict) -> None:
                     raise ValueError(f"invariants.required_sections[{i}].headings[{j}] must be a string")
 
 
+# Glob metacharacters, as used by both the pattern resolver and the scan
+# expander: an entry carrying one is a pattern, not a concrete path.
+_GLOB_CHARS = set("*?[]")
+
+# Directories that hold 10^5 generated files and can never be a doc-gate
+# target, skipped when walking the tree to resolve a pattern. VCS and
+# dependency metadata, build caches: none is ever named by this config.
+_PRUNED_DIRS = frozenset({
+    ".git", ".mypy_cache", ".pytest_cache", ".ruff_cache",
+    "__pycache__", "node_modules", ".venv",
+})
+
+
+def _literal_prefix(pattern: str) -> str:
+    """The leading run of path components of `pattern` that carries no glob
+    character: the tree a pattern hangs off. `docs/agent-manual/*.md` ->
+    `docs/agent-manual`; `no_such_tree/**` -> `no_such_tree`; `*.md` -> ``."""
+    parts: list[str] = []
+    for part in pattern.split("/"):
+        if any(c in part for c in _GLOB_CHARS):
+            break
+        parts.append(part)
+    return "/".join(parts)
+
+
+def _matching_files(repo_root: Path, pattern: str) -> list[str]:
+    """Every file under the pattern's literal prefix tree whose repo-relative
+    path the rule engine's own matcher accepts, so "can this pattern ever
+    match" is answered by the same `_glob_match` that decides whether it does.
+    """
+    root = repo_root / _literal_prefix(pattern)
+    if not root.is_dir():
+        return []
+    matches: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in _PRUNED_DIRS]
+        for name in filenames:
+            rel = (Path(dirpath) / name).relative_to(repo_root).as_posix()
+            if _glob_match(rel, pattern):
+                matches.append(rel)
+    return matches
+
+
+def _rule_target_resolves(repo_root: Path, pattern: str) -> bool:
+    """True when a rule's require_doc names a location that exists. A concrete
+    doc must be there (a missing one can never satisfy the rule, which makes
+    the rule unsatisfiable rather than dormant); a glob's literal prefix tree
+    must be a directory, because a pattern whose whole tree is gone can never
+    match, while a pattern that merely matches nothing today
+    (`changelog.d/*.md` between releases) is not dormant."""
+    if any(c in pattern for c in _GLOB_CHARS):
+        return (repo_root / _literal_prefix(pattern)).is_dir()
+    return (repo_root / pattern).exists()
+
+
+def _rule_trigger_resolves(repo_root: Path, pattern: str) -> bool:
+    """True when a rule's when_changed names a tree that exists.
+
+    Deliberately the PARENT directory for a concrete path, not the file: a rule
+    that names a file the current change set is DELETING must still fire to
+    demand its doc update, and by the time the pre-flight runs the file is
+    already gone from the working tree. The tree it sits in is the part that
+    must not vanish."""
+    if any(c in pattern for c in _GLOB_CHARS):
+        return (repo_root / _literal_prefix(pattern)).is_dir()
+    return (repo_root / pattern).parent.is_dir()
+
+
+def check_config_targets_resolve(repo_root: Path, config: dict) -> list[str]:
+    """Layer A0: every filesystem location the CONFIG names must resolve here.
+
+    A config that names a tree, a scan target or a rule target this repo does
+    not have is not a satisfied rule, it is a DORMANT one: it matches nothing,
+    it fails nothing, and the gate reports clean for ever. That is not
+    hypothetical -- it is how @taOSmobile-dev's port of this gate (A2A 3407,
+    their commit 599fdea) went green while measuring nothing, because the
+    token-regex prefix list came across unchanged into a repo with neither
+    tinyagentos/ nor desktop/. So each kind of name is resolved against the
+    working tree and reported BY NAME:
+
+      * every entry of PATH_PREFIXES (the token regex's hardcoded alternation)
+        must be a directory, or the referenced-paths scan is blind to that
+        tree entirely;
+      * every ``invariants.referenced_paths_scan`` entry must resolve to a
+        file, and a glob must match at least one, or the scan reads nothing;
+      * every ``invariants.required_sections`` doc must be a file;
+      * every rule's ``when_changed`` trigger and ``require_doc`` target must
+        resolve, or the rule can never fire and never fails.
+
+    Returns one message per offender, all of them, never just the first.
+    """
+    failures: list[str] = []
+    invariants = config.get("invariants", {})
+
+    for prefix in PATH_PREFIXES:
+        if not (repo_root / prefix).is_dir():
+            failures.append(
+                f"token-regex prefix '{prefix}' is not a directory in the repo: "
+                "no path token in any scanned doc can start with it"
+            )
+
+    for i, entry in enumerate(invariants.get("referenced_paths_scan", [])):
+        if any(c in entry for c in _GLOB_CHARS):
+            if not _matching_files(repo_root, entry):
+                failures.append(
+                    f"invariants.referenced_paths_scan[{i}] '{entry}' matches no "
+                    "file in the repo, so the scan reads nothing"
+                )
+        elif not (repo_root / entry).is_file():
+            failures.append(
+                f"invariants.referenced_paths_scan[{i}] '{entry}' is not a file "
+                "in the repo, so the scan reads nothing"
+            )
+
+    for i, section in enumerate(invariants.get("required_sections", [])):
+        doc = section.get("doc", "")
+        if doc and not (repo_root / doc).is_file():
+            failures.append(
+                f"invariants.required_sections[{i}].doc '{doc}' is not a file in "
+                "the repo, so its required headings are never checked"
+            )
+
+    for i, rule in enumerate(config.get("rules", [])):
+        name = rule.get("name", "?")
+        resolvers = (("when_changed", _rule_trigger_resolves),
+                     ("require_doc", _rule_target_resolves))
+        for field, resolves in resolvers:
+            for j, pattern in enumerate(rule.get(field, [])):
+                if resolves(repo_root, pattern):
+                    continue
+                failures.append(
+                    f"rules[{i}] ({name}).{field}[{j}] '{pattern}' does not "
+                    "resolve in the repo, so the rule can never match anything"
+                )
+    return failures
+
+
 def check_referenced_paths(repo_root: Path, files_to_scan: list[str], config: dict) -> list[str]:
     """Layer A: every scripts/tinyagentos/docs/desktop path token mentioned in
     the configured doc set must exist on disk. A scan-target file that itself
-    does not exist (e.g. a local-only, gitignored doc) is silently skipped
-    rather than treated as a failure.
+    does not exist (e.g. a local-only, gitignored doc) is skipped here rather
+    than treated as a failure; Layer A0 is what now stops a CONFIG from naming
+    one, before this loop runs.
 
     Scan entries may be globs (``docs/agent-manual/*.md``) -- expanded against
     the working tree, so a newly added manual page or skill is scanned without
@@ -224,7 +381,7 @@ def check_referenced_paths(repo_root: Path, files_to_scan: list[str], config: di
     ignore = set(config.get("invariants", {}).get("ignore_tokens", []))
     expanded: list[str] = []
     for rel in files_to_scan:
-        if any(c in "*?[]" for c in rel):
+        if any(c in rel for c in _GLOB_CHARS):
             expanded.extend(
                 sorted(str(p.relative_to(repo_root)) for p in repo_root.glob(rel) if p.is_file())
             )
@@ -805,6 +962,26 @@ def main(argv: list[str] | None = None) -> int:
     except (tomllib.TOMLDecodeError, UnicodeDecodeError, OSError, ValueError) as e:
         print(f"doc-gate: config error: {args.config}: {e}", file=sys.stderr)
         return EXIT_CONFIG_ERROR
+
+    # Layer A0: a config that names a tree, scan target or rule target this
+    # repo does not have is dormant config, not a satisfied rule, and it would
+    # report clean for ever. Resolve every name it carries BEFORE any check
+    # runs, so nothing downstream can be green because it measured nothing.
+    # print-trailer is deliberately exempt: it evaluates no rule, and the
+    # commit-msg hook reads it with `|| echo 'Docs-Reviewed:'` as a fallback.
+    if args.command != "print-trailer":
+        unresolvable = check_config_targets_resolve(REPO_ROOT, config)
+        if unresolvable:
+            for failure in unresolvable:
+                print(f"doc-gate: config error: {args.config}: {failure}", file=sys.stderr)
+            print(
+                f"doc-gate: config error: {args.config}: {len(unresolvable)} "
+                "configured name(s) do not resolve in this repo. Fix the config or "
+                "restore the path -- a name the repo does not have measures nothing "
+                "and would keep reporting clean.",
+                file=sys.stderr,
+            )
+            return EXIT_CONFIG_ERROR
 
     if args.command == "invariants":
         files_to_scan = config.get("invariants", {}).get("referenced_paths_scan", [])

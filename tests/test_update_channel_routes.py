@@ -114,7 +114,7 @@ class TestUpdateChannelRoute:
             return UpdateResult(previous_sha="aaa", new_sha="bbb", recovery_tag="tag1", message="ok")
 
         async def fake_pip_rebuild_restart(project_dir, target_sha):
-            return 0, ""
+            return 0, "", None
 
         monkeypatch.setattr(s, "_remote_branches", fake_lsremote, raising=False)
         monkeypatch.setattr(s, "resolve_tracked_branch", fake_resolve, raising=False)
@@ -149,23 +149,26 @@ class TestUpdateCheckFollowsTrackedBranch:
 
         resolve_calls = []
         refs_seen = []
+        captured_proc = None
 
         async def fake_resolve(store, project_dir):
             resolve_calls.append(True)
             return "my-feature"
 
         class _FakeProc:
-            def __init__(self, out=b""):
+            def __init__(self, out=b"", returncode=0):
                 self._out = out
+                self.returncode = returncode
 
             async def communicate(self):
                 return self._out, b""
 
         async def fake_exec(*args, **kwargs):
-            # args = ("git", <subcommand>, ...). Record any ref argument so we
-            # can assert the resolved branch flowed into the git comparison.
             refs_seen.extend(a for a in args if isinstance(a, str))
-            return _FakeProc(b"deadbeef\n")
+            proc = _FakeProc(b"deadbeef\n")
+            nonlocal captured_proc
+            captured_proc = proc
+            return proc
 
         async def fake_strictly_ahead(project_dir, local_sha, remote_sha):
             return False
@@ -177,10 +180,17 @@ class TestUpdateCheckFollowsTrackedBranch:
             fake_strictly_ahead,
             raising=False,
         )
+        monkeypatch.setattr(
+            "tinyagentos.update_preflight.check_preflight",
+            lambda *a, **k: [],
+            raising=False,
+        )
 
         r = await client.get("/api/settings/update-check")
         assert r.status_code == 200
         assert resolve_calls, "check_for_updates did not resolve the tracked branch"
+        assert captured_proc is not None, "fake_exec was never called"
+        assert captured_proc.returncode == 0
         # The resolved branch must reach the git ref comparison.
         assert "origin/my-feature" in refs_seen
         assert "my-feature" in refs_seen  # git fetch origin <branch>

@@ -520,7 +520,17 @@ function AppCard(props: {
               {app.installed && <Check className="w-3 h-3 text-emerald-400 shrink-0" />}
               {affected > 0 && <span className="bg-yellow-700/30 text-yellow-200 text-[10px] px-1.5 py-0.5 rounded shrink-0">Update</span>}
             </div>
-            <span className="text-[11px] text-shell-text-tertiary leading-none">v{app.version}</span>
+            <span className="flex items-center gap-1.5 text-[11px] text-shell-text-tertiary leading-none">
+              v{app.version}
+              {app.update_available && app.upstream_update_available && app.upstream_version && (
+                <span
+                  className="font-semibold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300"
+                  title={`Newer upstream release v${app.upstream_version} of the pinned docker image (pinned at v${app.upstream_pinned_version || app.version}); updates ship with the next catalog release`}
+                >
+                  v{app.upstream_pinned_version || app.version} → v{app.upstream_version}
+                </span>
+              )}
+            </span>
           </div>
         </div>
         {app.license_class === "non-commercial" && (
@@ -1039,6 +1049,11 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
             license: a.license ? String(a.license) : undefined,
             weights_license: a.weights_license ? String(a.weights_license) : undefined,
             license_class: a.license_class ? String(a.license_class) : undefined,
+            update_available: Boolean(a.update_available),
+            upstream_version: a.upstream_version ? String(a.upstream_version) : null,
+            upstream_pinned_version: a.upstream_pinned_version ? String(a.upstream_pinned_version) : null,
+            upstream_update_available: a.upstream_update_available === true ? true : (a.upstream_update_available === false ? false : null),
+            upstream_checked_at: typeof a.upstream_checked_at === "number" ? a.upstream_checked_at : null,
           }));
           // Merge homelab apps: only add those not already in the catalog
           const catalogIds = new Set(normalized.map((a) => a.id));

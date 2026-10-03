@@ -26,6 +26,7 @@ from tinyagentos.middleware.upload_body_limit import register_upload_cap
 from tinyagentos.safe_archive import ArchiveError, extract_tar_safely
 from tinyagentos.update_runner import switch_to_branch
 from tinyagentos.restart_orchestrator import write_pending_restart
+from tinyagentos.launchd_migration import apply_launchd_migration
 
 logger = logging.getLogger(__name__)
 
@@ -594,7 +595,23 @@ async def check_for_updates(request: Request):
     import re
     from tinyagentos import __version__
     from tinyagentos.auto_update import changes_are_docs_only, remote_is_strictly_ahead, branch_is_diverged
+    from tinyagentos.update_preflight import check_preflight
     project_dir = str(Path(__file__).parent.parent.parent)
+
+    # Pre-flight validation to prevent confusing errors or partial updates
+    preflight_issues = await asyncio.to_thread(check_preflight, project_dir)
+    if preflight_issues:
+        return {
+            "has_updates": False,
+            "diverged": False,
+            "diverged_message": None,
+            "current_version": __version__,
+            "new_version": None,
+            "current_commit": None,
+            "new_commit": None,
+            "preflight_errors": preflight_issues,
+            "fetch_error": None,
+        }
 
     # Track the user's selected branch (Updates → Advanced selector), or the
     # checked-out branch when unset — never a hard-coded master, otherwise a
@@ -610,7 +627,20 @@ async def check_for_updates(request: Request):
         stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
         cwd=project_dir,
     )
-    await fetch_proc.communicate()
+    fetch_out, _ = await fetch_proc.communicate()
+    if fetch_proc.returncode != 0:
+        # Surface fetch failure as an error field, never as 'unknown'
+        return {
+            "has_updates": False,
+            "diverged": False,
+            "diverged_message": None,
+            "current_version": __version__,
+            "new_version": None,
+            "current_commit": None,
+            "new_commit": None,
+            "preflight_errors": [],
+            "fetch_error": (fetch_out.decode() if fetch_out else "unknown error").strip()[:300],
+        }
 
     async def _rev_parse(ref: str) -> str:
         p = await asyncio.create_subprocess_exec(
@@ -864,14 +894,15 @@ async def _install_dependencies(project_dir: Path) -> tuple[int, str]:
     )
 
 
-async def _pip_rebuild_restart(project_dir: Path, target_sha: str) -> tuple[int, str]:
+async def _pip_rebuild_restart(project_dir: Path, target_sha: str) -> tuple[int, str, str | None]:
     """Sync deps, rebuild the SPA, flag the pending restart, trigger restart.
 
-    Returns (returncode, output); non-zero means a step failed.
+    Returns (returncode, output, launchd_warning); non-zero means a step failed.
+    launchd_warning is None on success, or a structured warning message.
     """
     install_returncode, install_output = await _install_dependencies(project_dir)
     if install_returncode != 0:
-        return install_returncode, install_output
+        return install_returncode, install_output, None
 
     # Venv python for the import smoke test below (.venv/bin/python).
     venv_python: Path | None = None
@@ -915,7 +946,7 @@ async def _pip_rebuild_restart(project_dir: Path, target_sha: str) -> tuple[int,
             timeout=60.0,  # imports should be fast; 60s is generous
         )
         if smoke_returncode != 0:
-            return smoke_returncode, smoke_output
+            return smoke_returncode, smoke_output, None
 
     # Force a desktop bundle rebuild on every applied update. The mtime-based
     # staleness check in rebuild_desktop_bundle_if_stale is unreliable when
@@ -938,7 +969,20 @@ async def _pip_rebuild_restart(project_dir: Path, target_sha: str) -> tuple[int,
     if target_sha:
         write_pending_restart(target_sha)
 
-    return 0, ""
+    # macOS: migrate old bare-uvicorn launchd plist to `python -m tinyagentos`
+    # so the LLM gateway agent listener starts and local agent deploys work.
+    # This runs after deps are synced but before the restart is flagged.
+    # Failure is non-fatal: we log a warning and surface it in the update result.
+    launchd_warning = None
+    try:
+        _, launchd_warning = await apply_launchd_migration(str(project_dir))
+    except Exception as e:
+        launchd_warning = f"Launchd migration failed: {e}"
+
+    if launchd_warning:
+        logger.warning("Launchd migration: %s", launchd_warning)
+
+    return 0, "", launchd_warning
 
 
 async def _stash_local_source_changes(project_dir) -> bool:
@@ -1097,6 +1141,22 @@ async def apply_update(request: Request):
     import asyncio
     project_dir = Path(__file__).parent.parent.parent
 
+    # Pre-flight validation to prevent confusing errors or partial updates
+    from tinyagentos.update_preflight import check_preflight
+
+    preflight_issues = await asyncio.to_thread(check_preflight, project_dir)
+    if preflight_issues:
+        # REFUSE: check_for_updates returns 200 with preflight_errors: [...] and has_updates false;
+        # apply_update returns 409 with the messages and does NOT touch the tree
+        return JSONResponse(
+            {
+                "error": "Update blocked by preflight validation",
+                "preflight_errors": preflight_issues,
+                "message": "The update cannot proceed due to preflight validation errors. See preflight_errors for details.",
+            },
+            status_code=409,
+        )
+
     # The desktop rebuild leaves the tree dirty in three ways, and a dirty
     # tracked file makes the next git pull --ff-only refuse to overwrite the
     # local and the Install Update button 500s:
@@ -1206,7 +1266,7 @@ async def apply_update(request: Request):
     sha_out, _ = await sha_proc.communicate()
     new_sha = sha_out.decode().strip() if sha_out else ""
 
-    rc, out = await _pip_rebuild_restart(project_dir, new_sha)
+    rc, out, launchd_warning = await _pip_rebuild_restart(project_dir, new_sha)
     if rc != 0:
         return JSONResponse(
             {
@@ -1270,6 +1330,7 @@ async def apply_update(request: Request):
                 if taosmd_report.get("updated")
                 else ""
             )
+            + (f"{launchd_warning} " if launchd_warning else "")
             + "Restarting now…"
         ),
     }
@@ -1371,7 +1432,7 @@ async def set_update_channel(request: Request, body: UpdateChannel):
     prefs["tracked_branch"] = branch
     await store.save_preference("user", PREF_NAMESPACE, prefs)
 
-    rc, out = await _pip_rebuild_restart(project_dir, result.new_sha)
+    rc, out, launchd_warning = await _pip_rebuild_restart(project_dir, result.new_sha)
     if rc != 0:
         return JSONResponse(
             {"error": f"Switched to {branch} but rebuild failed: {out[:300]}",
@@ -1391,7 +1452,7 @@ async def set_update_channel(request: Request, body: UpdateChannel):
         "branch": branch,
         "snapshot": str(snapshot_path) if snapshot_path else None,
         "recovery_tag": result.recovery_tag,
-        "message": result.message,
+        "message": result.message + (f" {launchd_warning}" if launchd_warning else ""),
     }
 
 

@@ -262,6 +262,7 @@ async def _pause_and_notify(
     agent = _find_agent(config, agent_name)
     if agent is not None:
         agent["paused"] = True
+        agent["paused_by_restart"] = False
         logger.info("failure_handler: agent '%s' marked paused", agent_name)
 
     if notif_store is not None:

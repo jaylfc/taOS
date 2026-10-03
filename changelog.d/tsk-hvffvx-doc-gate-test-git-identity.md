@@ -1,0 +1,2 @@
+### Fixed
+- _git helper in tests/test_doc_gate_preflight.py now passes `-c user.name=doc-gate-test -c user.email=doc-gate-test@example.invalid -c commit.gpgsign=false` to every git call, making the test independent of global git config

@@ -1010,6 +1010,28 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
         _create_supervised_task(_popularity_warm_loop(app), app.state._background_tasks)
 
+        # Upstream release detection for docker-image apps: the warmer
+        # queries each app's container registry (daily TTL per app) so
+        # the Store's Updates tab can surface apps whose catalog pin is
+        # stale. The request path only reads the cache, never the
+        # registry; failures read as "unknown", never as "no update".
+        from tinyagentos import upstream_versions
+        upstream_versions.configure_persistence(data_dir)
+
+        async def _upstream_warm_loop(app: FastAPI) -> None:
+            import asyncio as _asyncio
+            while True:
+                try:
+                    apps = app.state.registry.list_available()
+                    await upstream_versions.warm_upstream_cache(apps)
+                except Exception as _e:
+                    logger.warning("upstream version warm failed: %s", _e)
+                # Hourly pass; warm_upstream_cache skips entries whose
+                # 24h TTL has not expired, so each app is checked ~daily.
+                await _asyncio.sleep(3600)
+
+        _create_supervised_task(_upstream_warm_loop(app), app.state._background_tasks)
+
         # Hourly auto-update checker. Polls the git remote, notifies the
         # user on new commits, optionally applies automatically (user
         # toggle via /api/preferences/auto-update).
@@ -1339,6 +1361,13 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await _system_events.init()
         app.state.system_events = _system_events
         app.state.event_bus = EventBus()
+
+        # Model Activity feed (#208): bounded in-process ring buffer that the
+        # scheduler and LLM gateway record into; the Activity app reads it via
+        # GET /api/activity/models and the SSE stream. No init()/close(): it is
+        # pure in-memory state, deliberately not persisted.
+        from tinyagentos.model_activity import ModelActivityFeed
+        app.state.model_activity = ModelActivityFeed()
 
         # Wire NotificationStore → EventBus so SSE clients get instant push.
         # The emitter is best-effort: failures are logged and never break add().

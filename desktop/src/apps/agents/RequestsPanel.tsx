@@ -33,6 +33,7 @@ export function RequestsPanel() {
   const [requests, setRequests] = useState<ScopeRequestRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  const [actionErr, setActionErr] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("pending");
   const [acting, setActing] = useState<string | null>(null);
   const loadSeq = useRef(0);
@@ -85,6 +86,7 @@ export function RequestsPanel() {
 
   async function act(req: ScopeRequestRow, approve: boolean) {
     setActing(req.id);
+    setActionErr(null);
     try {
       const base =
         `/api/agents/registry/${encodeURIComponent(req.canonical_id)}/scope-requests/${encodeURIComponent(req.id)}`;
@@ -112,7 +114,7 @@ export function RequestsPanel() {
       }
       await load();
     } catch (e: unknown) {
-      setErr(e instanceof Error ? e.message : "Network error");
+      setActionErr(e instanceof Error ? e.message : "Network error");
     } finally {
       setActing(null);
     }
@@ -194,7 +196,9 @@ export function RequestsPanel() {
             <div className="w-12 h-12 rounded-lg flex items-center justify-center bg-shell-surface border border-shell-border mb-3">
               <Clock size={20} className="text-shell-text-tertiary" />
             </div>
-            <p className="text-sm font-medium text-shell-text">No pending requests</p>
+            <p className="text-sm font-medium text-shell-text">
+              {filter === "all" ? "No requests" : "No pending requests"}
+            </p>
             <p className="text-xs text-shell-text-secondary mt-1">
               {filter === "all"
                 ? "No scope requests have been submitted yet."
@@ -202,7 +206,31 @@ export function RequestsPanel() {
             </p>
           </div>
         ) : (
-          <ul className="divide-y divide-white/5" role="list" aria-label="Scope request list">
+          <>
+            {actionErr && (
+              <div className="p-4">
+                <div
+                  className="flex items-start gap-3 rounded-lg border border-red-500/30 bg-red-500/10 p-4"
+                  role="alert"
+                >
+                  <AlertCircle size={18} className="text-red-400 shrink-0 mt-0.5" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm text-red-300 font-medium">Action failed</p>
+                    <p className="text-xs text-red-400 mt-1">{actionErr}</p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setActionErr(null)}
+                    className="border-red-500/30 hover:bg-red-500/10 shrink-0"
+                    aria-label="Dismiss action error"
+                  >
+                    Dismiss
+                  </Button>
+                </div>
+              </div>
+            )}
+            <ul className="divide-y divide-white/5" role="list" aria-label="Scope request list">
             {requests.map((req) => {
               const isPending = req.status === "pending";
               const actingThis = acting === req.id;
@@ -283,9 +311,10 @@ export function RequestsPanel() {
                 </li>
               );
             })}
-          </ul>
-        )}
-      </div>
+           </ul>
+        </>
+      )}
+    </div>
     </section>
   );
 }

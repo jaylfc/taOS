@@ -1005,6 +1005,29 @@ async def test_release_records_strike_and_parks_after_threshold(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_release_with_strike_false_records_no_strike(tmp_path):
+    """Releasing with strike=False must never record a strike or quarantine."""
+    from tinyagentos.projects.strike_store import StrikeStore
+
+    strikes = StrikeStore(tmp_path / "strikes.db")
+    await strikes.init()
+    s = ProjectTaskStore(tmp_path / "tasks.db", strikes=strikes)
+    await s.init()
+    try:
+        task = await s.create_task("prj-1", "Task", "alice")
+        for _ in range(StrikeStore.STRIKE_THRESHOLD):
+            await s.claim_task(task["id"], "worker-1")
+            ok = await s.release_task(task["id"], "worker-1", strike=False)
+            assert ok is True
+        fetched = await s.get_task(task["id"])
+        assert fetched["status"] == "open"
+        assert await strikes.count_strikes(task["id"]) == 0
+    finally:
+        await s.close()
+        await strikes.close()
+
+
+@pytest.mark.asyncio
 async def test_release_without_strikes_store_does_not_record(tmp_path):
     s = await _store(tmp_path)
     task = await s.create_task("prj-1", "Task", "alice")

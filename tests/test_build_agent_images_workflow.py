@@ -228,6 +228,50 @@ def test_extract_step_runs_against_real_install_sh():
         os.unlink(tmp_path)
 
 
+def test_release_list_glob_matches_all_published_tarballs():
+    """List downloaded assets glob must match every published tarball for all base x arch."""
+    wf = load_workflow()
+
+    release_steps = wf["jobs"]["release"]["steps"]
+    list_step = next(s for s in release_steps if s.get("name") == "List downloaded assets")
+    run_line = list_step["run"]
+    # Extract the glob from the ls command (e.g. 'ls -la taos-*-base-linux-*.tar.gz')
+    parts = run_line.strip().split()
+    glob_pattern = parts[-1]
+
+    # Build the expected tarball names from the build matrix
+    matrix = wf["jobs"]["build"]["strategy"]["matrix"]
+    bases = matrix["base"]
+    arches = matrix["arch"]
+
+    alias_map = {}
+    for base in bases:
+        if base == "openclaw":
+            alias_map[base] = "taos-openclaw-base"
+        elif base == "generic":
+            alias_map[base] = "taos-base"
+        elif base == "hermes":
+            alias_map[base] = "taos-hermes-base"
+        else:
+            raise ValueError(f"Unknown base: {base}")
+
+    tarball_names = [
+        f"{alias_map[base]}-linux-{arch}.tar.gz"
+        for base in bases
+        for arch in arches
+    ]
+
+    unmatched = [
+        name for name in tarball_names
+        if not fnmatch.fnmatchcase(name, glob_pattern)
+    ]
+
+    assert not unmatched, (
+        f"List downloaded assets glob {glob_pattern!r} does not match "
+        f"published tarballs: {unmatched}. All tarballs: {tarball_names}"
+    )
+
+
 def test_release_waits_for_build():
     """Release must wait for the build matrix and still publish partial success."""
     wf = load_workflow()

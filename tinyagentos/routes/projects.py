@@ -564,6 +564,7 @@ class ClaimIn(_TaskRequestModelMixin, BaseModel):
 
 class ReleaseIn(_TaskRequestModelMixin, BaseModel):
     releaser_id: str
+    strike: bool = True
 
 
 class CloseIn(_TaskRequestModelMixin, BaseModel):
@@ -1200,6 +1201,15 @@ async def release_task(
     payload: ReleaseIn,
     request: Request,
 ):
+    """Release a claimed task back to the ready pool.
+
+    The request body accepts ``releaser_id`` (required) and ``strike`` (optional,
+    defaults to ``true``).  When ``strike`` is ``false`` the release clears the
+    claim and returns the task to ``open`` without recording a dispatch-failed
+    strike or quarantining the card.  Callers that release a task because the
+    executor killed the run (watchdog, model hang, tooling fault) should set
+    ``strike`` to ``false`` so those innocent exits do not accumulate strikes.
+    """
     pstore = request.app.state.project_store
     auth = await _authorize_task_actor(request, pstore, project_id)
     if isinstance(auth, JSONResponse):
@@ -1212,7 +1222,7 @@ async def release_task(
     existing = await store.get_task(task_id)
     if existing is None or existing["project_id"] != project_id:
         return JSONResponse({"error": "not found"}, status_code=404)
-    ok = await store.release_task(task_id, releaser_id)
+    ok = await store.release_task(task_id, releaser_id, strike=payload.strike)
     if not ok:
         return JSONResponse({"error": "not claimed by releaser"}, status_code=409)
     _beads_mark_dirty(request, project_id)

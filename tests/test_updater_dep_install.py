@@ -280,8 +280,9 @@ async def test_failed_install_does_not_write_pending_restart(monkeypatch):
 
     monkeypatch.setattr(settings_mod, "write_pending_restart", fake_write)
 
-    rc, out = await settings_mod._pip_rebuild_restart(project, "deadbeef")
+    rc, out, warning = await settings_mod._pip_rebuild_restart(project, "deadbeef")
 
     assert rc == 1
     assert out == "install boom"
+    assert warning is None
     assert wrote["called"] is False

@@ -123,6 +123,8 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
   const [taosModel, setTaosModel] = useState<string | undefined>(undefined);
   const [contentTab, setContentTab] = useState<"registry" | "requests">("registry");
   const [pendingRequestCount, setPendingRequestCount] = useState(0);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [ownsAgent, setOwnsAgent] = useState(false);
   const isMobile = useIsMobile();
   const openWindow = useProcessStore((s) => s.openWindow);
 
@@ -188,6 +190,35 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
       // Surface the failure in DevTools so a silent empty-archived list
       // isn't mistaken for "no archived agents". UI keeps prior state.
       console.warn("fetchArchived: network/parse error", err);
+    }
+  }, []);
+
+  const fetchAuthStatus = useCallback(async () => {
+    try {
+      const res = await fetch("/auth/status", { credentials: "include" });
+      if (res.ok) {
+        const data = await res.json();
+        setIsAdmin(!!data?.user?.is_admin);
+      }
+    } catch { /* ignore */ }
+  }, []);
+
+  const fetchRegistry = useCallback(async () => {
+    try {
+      const res = await fetch("/api/agents/registry");
+      if (!res.ok) {
+        setOwnsAgent(false);
+        return;
+      }
+      const ct = res.headers.get("content-type") ?? "";
+      if (!ct.includes("application/json")) {
+        setOwnsAgent(false);
+        return;
+      }
+      const data = await res.json();
+      setOwnsAgent(Array.isArray(data) ? data.length > 0 : false);
+    } catch {
+      setOwnsAgent(false);
     }
   }, []);
 
@@ -297,7 +328,9 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
   useEffect(() => {
     fetchAgents();
     fetchArchived();
-  }, [fetchAgents, fetchArchived]);
+    fetchAuthStatus();
+    fetchRegistry();
+  }, [fetchAgents, fetchArchived, fetchAuthStatus, fetchRegistry]);
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -309,6 +342,12 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
   }, []);
 
   useRefreshOnFocus(fetchAgents);
+
+  useEffect(() => {
+    if (contentTab === "requests" && !isAdmin && !ownsAgent) {
+      setContentTab("registry");
+    }
+  }, [contentTab, isAdmin, ownsAgent]);
 
   async function handleDelete(name: string) {
     if (!window.confirm(`Archive "${name}"? It can be restored later from the Archived section.`)) return;
@@ -667,11 +706,14 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
             <nav
               className="flex items-center gap-1 border-b border-white/5"
               aria-label="Content tabs"
+              role="tablist"
             >
               <button
                 type="button"
+                id="registry-tab-0"
                 role="tab"
                 aria-selected={contentTab === "registry"}
+                aria-controls="registry-panel-0"
                 onClick={() => setContentTab("registry")}
                 className={`text-xs font-medium px-3 py-2 transition-colors ${
                   contentTab === "registry"
@@ -681,32 +723,41 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
               >
                 Registry
               </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={contentTab === "requests"}
-                onClick={() => setContentTab("requests")}
-                className={`text-xs font-medium px-3 py-2 transition-colors relative ${
-                  contentTab === "requests"
-                    ? "text-shell-text border-b-2 border-accent"
-                    : "text-shell-text-secondary hover:text-shell-text"
-                }`}
-              >
-                Requests
-                {pendingRequestCount > 0 && (
-                  <span className="ml-1.5 inline-flex items-center justify-center rounded-full bg-amber-500/20 text-amber-300 text-[10px] px-1.5 py-0.5 min-w-[18px]">
-                    {pendingRequestCount}
-                  </span>
-                )}
-              </button>
+              {(isAdmin || ownsAgent) && (
+                <button
+                  type="button"
+                  id="requests-tab-0"
+                  role="tab"
+                  aria-selected={contentTab === "requests"}
+                  aria-controls="requests-panel-0"
+                  onClick={() => setContentTab("requests")}
+                  className={`text-xs font-medium px-3 py-2 transition-colors relative ${
+                    contentTab === "requests"
+                      ? "text-shell-text border-b-2 border-accent"
+                      : "text-shell-text-secondary hover:text-shell-text"
+                  }`}
+                >
+                  Requests
+                  {pendingRequestCount > 0 && (
+                    <span className="ml-1.5 inline-flex items-center justify-center rounded-full bg-amber-500/20 text-amber-300 text-[10px] px-1.5 py-0.5 min-w-[18px]">
+                      {pendingRequestCount}
+                    </span>
+                  )}
+                </button>
+              )}
             </nav>
             {contentTab === "registry" ? (
-              <>
+              <div id="registry-panel-0" role="tabpanel" aria-labelledby="registry-tab-0">
                 <RegistryPanel />
                 <BaseImagesPanel />
-              </>
+              </div>
             ) : (
-              <div className="mt-3 rounded-lg border border-white/5 bg-white/[0.02] min-h-[200px]">
+              <div
+                id="requests-panel-0"
+                role="tabpanel"
+                aria-labelledby="requests-tab-0"
+                className="mt-3 rounded-lg border border-white/5 bg-white/[0.02] min-h-[200px]"
+              >
                 <RequestsPanel />
               </div>
             )}
@@ -804,11 +855,14 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
             <nav
               className="flex items-center gap-1 border-b border-white/5"
               aria-label="Content tabs"
+              role="tablist"
             >
               <button
                 type="button"
+                id="registry-tab-1"
                 role="tab"
                 aria-selected={contentTab === "registry"}
+                aria-controls="registry-panel-1"
                 onClick={() => setContentTab("registry")}
                 className={`text-xs font-medium px-3 py-2 transition-colors ${
                   contentTab === "registry"
@@ -818,32 +872,41 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
               >
                 Registry
               </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={contentTab === "requests"}
-                onClick={() => setContentTab("requests")}
-                className={`text-xs font-medium px-3 py-2 transition-colors relative ${
-                  contentTab === "requests"
-                    ? "text-shell-text border-b-2 border-accent"
-                    : "text-shell-text-secondary hover:text-shell-text"
-                }`}
-              >
-                Requests
-                {pendingRequestCount > 0 && (
-                  <span className="ml-1.5 inline-flex items-center justify-center rounded-full bg-amber-500/20 text-amber-300 text-[10px] px-1.5 py-0.5 min-w-[18px]">
-                    {pendingRequestCount}
-                  </span>
-                )}
-              </button>
+              {(isAdmin || ownsAgent) && (
+                <button
+                  type="button"
+                  id="requests-tab-1"
+                  role="tab"
+                  aria-selected={contentTab === "requests"}
+                  aria-controls="requests-panel-1"
+                  onClick={() => setContentTab("requests")}
+                  className={`text-xs font-medium px-3 py-2 transition-colors relative ${
+                    contentTab === "requests"
+                      ? "text-shell-text border-b-2 border-accent"
+                      : "text-shell-text-secondary hover:text-shell-text"
+                  }`}
+                >
+                  Requests
+                  {pendingRequestCount > 0 && (
+                    <span className="ml-1.5 inline-flex items-center justify-center rounded-full bg-amber-500/20 text-amber-300 text-[10px] px-1.5 py-0.5 min-w-[18px]">
+                      {pendingRequestCount}
+                    </span>
+                  )}
+                </button>
+              )}
             </nav>
             {contentTab === "registry" ? (
-              <>
+              <div id="registry-panel-1" role="tabpanel" aria-labelledby="registry-tab-1">
                 <RegistryPanel />
                 <BaseImagesPanel />
-              </>
+              </div>
             ) : (
-              <div className="mt-3 rounded-lg border border-white/5 bg-white/[0.02] min-h-[200px]">
+              <div
+                id="requests-panel-1"
+                role="tabpanel"
+                aria-labelledby="requests-tab-1"
+                className="mt-3 rounded-lg border border-white/5 bg-white/[0.02] min-h-[200px]"
+              >
                 <RequestsPanel />
               </div>
             )}

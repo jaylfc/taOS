@@ -9,6 +9,15 @@ export type OsEvent = {
 };
 
 export const LAGGED_KIND = "events.lagged";
+export const HEARTBEAT_KIND = "events.heartbeat";
+
+// Server keepalive interval in seconds. Matches the 10 s keepalive emitted by
+// `tinyagentos/routes/os_events.py`.
+const KEEPALIVE_INTERVAL_MS = 10_000;
+// Watchdog deadline: 2.5x the keepalive interval. Long enough to ride out one
+// missed heartbeat on a jittery network, short enough to detect a dead socket
+// in under half a minute.
+const WATCHDOG_TIMEOUT_MS = KEEPALIVE_INTERVAL_MS * 2.5;
 
 type OsEventHandler = (event: OsEvent) => void;
 
@@ -136,6 +145,8 @@ function handleMessage(msg: MessageEvent) {
   }
   if (!event || typeof event !== "object" || !event.kind) return;
 
+  if (event.kind === HEARTBEAT_KIND) return;
+
   if (event.kind === LAGGED_KIND) {
     subscribers.forEach((sub) => dispatch(sub, event));
     return;
@@ -159,9 +170,42 @@ function handleMessage(msg: MessageEvent) {
 
 function openStream(kinds: Coverage): EventSource {
   const es = new EventSource(streamUrl(kinds));
-  es.onmessage = handleMessage;
+  let watchdog: ReturnType<typeof setTimeout> | null = null;
+
+  const clearWatchdog = () => {
+    if (watchdog !== null) {
+      clearTimeout(watchdog);
+      watchdog = null;
+    }
+  };
+
+  const armWatchdog = () => {
+    clearWatchdog();
+    watchdog = setTimeout(() => {
+      watchdog = null;
+      // Only act if this stream is still the one we care about.
+      if (es !== sharedEs && es !== pendingEs) return;
+      es.close();
+      if (es === pendingEs) {
+        pendingEs = null;
+        pendingKinds = [];
+        if (!sharedEs) reconnectManager.schedule();
+      } else if (es === sharedEs) {
+        sharedEs = null;
+        setStatus(false, true);
+        if (!pendingEs) reconnectManager.schedule();
+      }
+    }, WATCHDOG_TIMEOUT_MS);
+  };
+
+  es.onmessage = (msg: MessageEvent) => {
+    armWatchdog();
+    handleMessage(msg);
+  };
 
   es.onopen = () => {
+    clearWatchdog();
+    armWatchdog();
     reconnectManager.reset();
     if (es === pendingEs) {
       // The widened stream is live, so the narrow one can go now -- not before.
@@ -177,6 +221,7 @@ function openStream(kinds: Coverage): EventSource {
   };
 
   es.onerror = () => {
+    clearWatchdog();
     if (es === pendingEs) {
       // The widened stream failed. If the narrow one is still up it keeps
       // delivering everything it covers, so drop the attempt and let the next

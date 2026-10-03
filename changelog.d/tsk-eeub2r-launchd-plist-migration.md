@@ -1,0 +1,3 @@
+### Fixed
+
+- macOS: Settings update now migrates old bare-uvicorn `com.tinyagentos.controller.plist` (from pre-#3313 installs) to `python -m tinyagentos`. Without this, the LLM gateway agent listener wasn't started, so local agent deploys were refused after updating. The migration preserves all other plist keys and env vars, extracts `--host`/`--port` into `TAOS_HOST`/`TAOS_PORT`, writes atomically with a `.bak` backup, and reloads the launchd agent. Failure is non-fatal (warning logged and surfaced in update result).

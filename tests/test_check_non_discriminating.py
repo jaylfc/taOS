@@ -100,7 +100,7 @@ def test_strong_admin_does_not_free_another_holders_lease():
 
 # Async guard, generated mutant named explicitly.
 @pytest.mark.asyncio
-@pytest.mark.guards("nd_product:check_scope", must_kill=["drop-raise@29"])
+@pytest.mark.guards("nd_product:check_scope", must_kill=["drop-raise#1"])
 async def test_strong_check_scope_rejects_missing_scope():
     with pytest.raises(PermissionError):
         await check_scope({"read"}, "write")
@@ -199,7 +199,7 @@ def test_adhoc_mode_checks_an_undecorated_test(tmp_path):
     assert weak.returncode == 1, weak.stdout + weak.stderr
     # The same test DOES die on a flipped comparison: the gate reports per variant.
     ok = _gate(root, "--guard", node, "--target", "nd_product:authorize",
-               "--must-kill", "flip-cmp@12")
+               "--must-kill", "flip-cmp#1")
     assert ok.returncode == 0, ok.stdout + ok.stderr
 
 
@@ -378,7 +378,7 @@ def _swap(func, mutant):
 def test_mutant_of_a_closure_keeps_its_free_variables():
     check = _closure_factory()
     ids = cnd.list_mutants(check)
-    flip = next(m for m in ids if m.startswith("flip-cmp@"))
+    flip = next(m for m in ids if m.startswith("flip-cmp#"))
     original = _swap(check, flip)
     try:
         assert check("s3") is False and check("x") is True
@@ -389,7 +389,9 @@ def test_mutant_of_a_closure_keeps_its_free_variables():
 
 def test_mutant_of_a_method_using_super():
     target = _Child.allowed
-    original = _swap(target, "negate-if@" + str(target.__code__.co_firstlineno + 1))
+    ids = cnd.list_mutants(target)
+    negate_if = next(m for m in ids if m.startswith("negate-if#"))
+    original = _swap(target, negate_if)
     try:
         assert _Child().allowed("guest") is True   # super() still resolves
     finally:
@@ -413,7 +415,9 @@ def test_async_mutant_stays_a_coroutine():
             raise PermissionError
         return "ok"
 
-    original = _swap(gate, "drop-raise@" + str(gate.__code__.co_firstlineno + 2))
+    ids = cnd.list_mutants(gate)
+    drop_raise = next(m for m in ids if m.startswith("drop-raise#"))
+    original = _swap(gate, drop_raise)
     try:
         assert asyncio.run(gate(True)) == "ok"
     finally:
@@ -428,4 +432,403 @@ def test_generator_gets_no_constant_return_mutants():
 
     ids = cnd.list_mutants(gen)
     assert not any(i.startswith("return-") for i in ids)
-    assert any(i.startswith("negate-if@") for i in ids)
+    assert any(i.startswith("negate-if#") for i in ids)
+
+
+# ── new uncheckable target shapes (ERROR, never NON-DISCRIMINATING) ────────────
+
+def test_lru_cache_target_is_error(tmp_path):
+    """A guard on an lru_cache-wrapped function is uncheckable (ERROR)."""
+    product = '''
+from functools import lru_cache
+
+@lru_cache(maxsize=None)
+def cached_compute(x):
+    if x > 0:
+        return "positive"
+    return "non-positive"
+'''
+    tests = '''
+import pytest
+from nd_product import cached_compute
+
+@pytest.mark.guards("nd_product:cached_compute", replace=[('return "positive"', 'return "negative"')])
+def test_cached_compute_positive():
+    assert cached_compute(1) == "positive"
+'''
+    proc = _gate(_project(tmp_path, tests=tests, product=product))
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    (r,) = _verdicts(proc).values()
+    assert r["verdict"] == "ERROR"
+    assert "lru_cache" in r["reason"].lower() or "cache" in r["reason"].lower()
+
+
+def test_default_argument_edit_is_error(tmp_path):
+    """A replace mutation on a default argument value is uncheckable (ERROR)."""
+    product = '''
+def greet(name, greeting="Hello"):
+    return f"{greeting}, {name}!"
+'''
+    tests = '''
+import pytest
+from nd_product import greet
+
+@pytest.mark.guards("nd_product:greet", replace=[('greeting="Hello"', 'greeting="Hi"')])
+def test_greet_default():
+    assert greet("Alice") == "Hello, Alice!"
+'''
+    proc = _gate(_project(tmp_path, tests=tests, product=product))
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    (r,) = _verdicts(proc).values()
+    assert r["verdict"] == "ERROR"
+    assert "default argument" in r["reason"].lower()
+
+
+def test_default_argument_value_mutation_is_error(tmp_path):
+    """A replace mutation on a default argument value (simple form) is uncheckable (ERROR)."""
+    product = '''
+def compute(x, threshold=10):
+    if x > threshold:
+        return "high"
+    return "low"
+'''
+    tests = '''
+import pytest
+from nd_product import compute
+
+@pytest.mark.guards("nd_product:compute", replace=[("threshold=10", "threshold=20")])
+def test_compute_threshold():
+    assert compute(15) == "high"
+'''
+    proc = _gate(_project(tmp_path, tests=tests, product=product))
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    (r,) = _verdicts(proc).values()
+    assert r["verdict"] == "ERROR"
+    assert "default argument" in r["reason"].lower()
+
+
+def test_decorator_mutation_is_error(tmp_path):
+    """A replace mutation on a decorator is uncheckable (ERROR)."""
+    product = '''
+import functools
+
+def my_decorator(fn):
+    @functools.wraps(fn)
+    def wrapper(x):
+        return fn(x) + 1
+    return wrapper
+
+@my_decorator
+def compute(x):
+    if x > 0:
+        return 10
+    return 20
+'''
+    tests = '''
+import pytest
+from nd_product import compute
+
+@pytest.mark.guards("nd_product:compute", replace=[("@my_decorator", "@staticmethod")])
+def test_compute_decorated():
+    assert compute(1) == 11
+'''
+    proc = _gate(_project(tmp_path, tests=tests, product=product))
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    (r,) = _verdicts(proc).values()
+    assert r["verdict"] == "ERROR"
+    assert "decorator" in r["reason"].lower()
+
+
+def test_lru_cache_target_with_must_kill_is_error(tmp_path):
+    """A guard on an lru_cache-wrapped function with must_kill is uncheckable (ERROR)."""
+    product = '''
+from functools import lru_cache
+
+@lru_cache(maxsize=None)
+def cached_compute(x):
+    if x > 0:
+        return "positive"
+    return "non-positive"
+'''
+    tests = '''
+import pytest
+from nd_product import cached_compute
+
+@pytest.mark.guards("nd_product:cached_compute", must_kill=["negate-if#1"])
+def test_cached_compute_positive():
+    assert cached_compute(1) == "positive"
+'''
+    proc = _gate(_project(tmp_path, tests=tests, product=product))
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    (r,) = _verdicts(proc).values()
+    assert r["verdict"] == "ERROR"
+    assert "lru_cache" in r["reason"].lower() or "cache" in r["reason"].lower()
+
+
+def test_own_scope_excludes_decorator_and_default_mutants(tmp_path):
+    """_own_scope does not yield mutation sites in decorators or default args."""
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    import check_non_discriminating as cnd
+    import ast
+
+    product = '''
+def simple_decorator(fn):
+    return fn
+
+@simple_decorator
+def compute(x, threshold=10):  # simple default, no mutable site
+    if x > threshold:
+        return "high"
+    return "low"
+'''
+    tests = '''
+import pytest
+from nd_product import compute
+
+@pytest.mark.guards("nd_product:compute", must_kill=["negate-if#1"])
+def test_compute():
+    assert compute(15) == "high"
+    assert compute(5) == "low"
+'''
+    # The function has:
+    # - 1 negate-if in body (x > threshold)
+    # - 1 flip-cmp in body (x > threshold)
+    # - NO mutants from decorator or default arg (excluded by _own_scope)
+    root = _project(tmp_path, tests=tests, product=product)
+    
+    # First check list_mutants directly
+    import sys
+    sys.path.insert(0, str(root))
+    import nd_product
+    ids = cnd.list_mutants(nd_product.compute)
+    # Should only have body mutants: return-true, return-false, return-none, negate-if#1, flip-cmp#1
+    assert "negate-if#1" in ids
+    assert "flip-cmp#1" in ids
+    # No other negate-if or flip-cmp from decorator/default
+    negate_ifs = [i for i in ids if i.startswith("negate-if#")]
+    flip_cmps = [i for i in ids if i.startswith("flip-cmp#")]
+    assert len(negate_ifs) == 1, f"Expected 1 negate-if, got {negate_ifs}"
+    assert len(flip_cmps) == 1, f"Expected 1 flip-cmp, got {flip_cmps}"
+    
+    # Now run the gate - should pass because the test kills the only negate-if
+    proc = _gate(root)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    (r,) = _verdicts(proc).values()
+    assert r["verdict"] == "OK"
+
+
+def test_default_arg_with_mutable_site_is_error(tmp_path):
+    """A default argument containing a mutable site (ternary) makes the target uncheckable."""
+    product = '''
+def some_condition():
+    return True
+
+def compute(x, threshold=10 if some_condition() else 20):
+    if x > threshold:
+        return "high"
+    return "low"
+'''
+    tests = '''
+import pytest
+from nd_product import compute
+
+@pytest.mark.guards("nd_product:compute", must_kill=["negate-if#1"])
+def test_compute():
+    assert compute(15) == "high"
+    assert compute(5) == "low"
+'''
+    proc = _gate(_project(tmp_path, tests=tests, product=product))
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    (r,) = _verdicts(proc).values()
+    assert r["verdict"] == "ERROR"
+    assert "default argument" in r["reason"].lower()
+
+
+def test_decorator_with_mutable_site_is_error(tmp_path):
+    """A decorator expression containing a mutable site (ternary) makes the target uncheckable."""
+    product = '''
+def deco1(fn): return fn
+def deco2(fn): return fn
+
+condition = True
+
+@deco1 if condition else deco2
+def compute(x):
+    if x > 0:
+        return "pos"
+    return "neg"
+'''
+    tests = '''
+import pytest
+from nd_product import compute
+
+@pytest.mark.guards("nd_product:compute", must_kill=["negate-if#1"])
+def test_compute():
+    assert compute(1) == "pos"
+    assert compute(-1) == "neg"
+'''
+    proc = _gate(_project(tmp_path, tests=tests, product=product))
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    (r,) = _verdicts(proc).values()
+    assert r["verdict"] == "ERROR"
+    assert "decorator" in r["reason"].lower()
+
+
+METHOD_DEFAULT_SITE = '''
+FLAG = True
+
+class K:
+    def compute(self, x=(1 if FLAG else 2)):
+        if x > 0:
+            return "pos"
+        return "neg"
+'''
+
+
+def test_method_default_arg_with_mutable_site_is_error(tmp_path):
+    """A method is checked too: its indented source must not skip the shape check."""
+    tests = '''
+import pytest
+from nd_product import K
+
+@pytest.mark.guards("nd_product:K.compute", must_kill=["negate-if#1"])
+def test_compute():
+    assert K().compute() == "pos"
+    assert K().compute(-1) == "neg"
+'''
+    proc = _gate(_project(tmp_path, tests=tests, product=METHOD_DEFAULT_SITE))
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    (r,) = _verdicts(proc).values()
+    assert r["verdict"] == "ERROR"
+    assert "default argument" in r["reason"].lower()
+
+
+METHOD_DECORATOR_SITE = '''
+def deco1(fn): return fn
+def deco2(fn): return fn
+
+condition = True
+
+class K:
+    @deco1 if condition else deco2
+    def compute(self, x):
+        if x > 0:
+            return "pos"
+        return "neg"
+'''
+
+
+def test_method_decorator_with_mutable_site_is_error(tmp_path):
+    """A decorated method is checked too: a ternary in its decorator is uncheckable."""
+    tests = '''
+import pytest
+from nd_product import K
+
+@pytest.mark.guards("nd_product:K.compute", must_kill=["negate-if#1"])
+def test_compute():
+    assert K().compute(1) == "pos"
+    assert K().compute(-1) == "neg"
+'''
+    proc = _gate(_project(tmp_path, tests=tests, product=METHOD_DECORATOR_SITE))
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    (r,) = _verdicts(proc).values()
+    assert r["verdict"] == "ERROR"
+    assert "decorator" in r["reason"].lower()
+
+
+def test_method_without_a_definition_time_site_still_checks_out(tmp_path):
+    """The method check is not over-broad: a plain method is still checked."""
+    product = '''
+class K:
+    def compute(self, x, threshold=10):
+        if x > threshold:
+            return "pos"
+        return "neg"
+'''
+    tests = '''
+import pytest
+from nd_product import K
+
+@pytest.mark.guards("nd_product:K.compute", must_kill=["negate-if#1"])
+def test_compute():
+    assert K().compute(15) == "pos"
+    assert K().compute(5) == "neg"
+'''
+    proc = _gate(_project(tmp_path, tests=tests, product=product))
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    (r,) = _verdicts(proc).values()
+    assert r["verdict"] == "OK", r
+    assert r["mutants"] == {"negate-if#1": "killed"}, r
+
+
+def test_lru_cache_under_a_wraps_decorator_is_error(tmp_path):
+    """lru_cache anywhere in the decorator stack caches results, so the guard is uncheckable."""
+    product = '''
+import functools
+
+def deco(fn):
+    @functools.wraps(fn)
+    def wrapper(*a, **kw):
+        return fn(*a, **kw)
+    return wrapper
+
+@deco
+@functools.lru_cache(maxsize=None)
+def cached_compute(x):
+    if x > 0:
+        return "positive"
+    return "non-positive"
+'''
+    tests = '''
+import pytest
+from nd_product import cached_compute
+
+@pytest.mark.guards("nd_product:cached_compute", must_kill=["negate-if#1"])
+def test_cached_compute_positive():
+    assert cached_compute(1) == "positive"
+'''
+    proc = _gate(_project(tmp_path, tests=tests, product=product))
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    (r,) = _verdicts(proc).values()
+    assert r["verdict"] == "ERROR"
+    assert "lru_cache" in r["reason"].lower() or "cache" in r["reason"].lower()
+
+
+def test_must_kill_stable_across_line_insertion(tmp_path_factory):
+    """Stable mutant IDs (kind#ordinal) survive inserting lines above the function."""
+    product_v1 = '''
+def compute(x):
+    if x > 0:
+        return "pos"
+    return "neg"
+'''
+    product_v2 = '''
+# Added comment line
+def compute(x):
+    if x > 0:
+        return "pos"
+    return "neg"
+'''
+    tests = '''
+import pytest
+from nd_product import compute
+
+@pytest.mark.guards("nd_product:compute", must_kill=["negate-if#1"])
+def test_compute_positive():
+    assert compute(1) == "pos"
+    assert compute(-1) == "neg"
+'''
+    # Version 1
+    root1 = _project(tmp_path_factory.mktemp("v1"), tests=tests, product=product_v1)
+    proc1 = _gate(root1)
+    assert proc1.returncode == 0, proc1.stdout + proc1.stderr
+    (r1,) = _verdicts(proc1).values()
+    assert r1["verdict"] == "OK"
+
+    # Version 2 (line added above)
+    root2 = _project(tmp_path_factory.mktemp("v2"), tests=tests, product=product_v2)
+    proc2 = _gate(root2)
+    assert proc2.returncode == 0, proc2.stdout + proc2.stderr
+    (r2,) = _verdicts(proc2).values()
+    assert r2["verdict"] == "OK"

@@ -21,6 +21,7 @@ from httpx import AsyncClient, ASGITransport
 
 from tinyagentos.routes.skill_exec import router
 from tinyagentos.skills import SkillStore
+from tinyagentos.installed_apps import InstalledAppsStore
 
 
 @pytest_asyncio.fixture
@@ -44,10 +45,14 @@ async def app_with_store(tmp_path):
     workspace_root = tmp_path / "agent-workspaces"
     workspace_root.mkdir(parents=True, exist_ok=True)
     app.state.agent_workspaces_dir = workspace_root
+    installed_apps = InstalledAppsStore(tmp_path / "installed_apps.db")
+    await installed_apps.init()
+    app.state.installed_apps = installed_apps
     try:
         yield app
     finally:
         await store.close()
+        await installed_apps.close()
 
 
 @pytest.mark.asyncio
@@ -283,3 +288,121 @@ async def test_skill_exec_image_generation_forwards_seed(app_with_store):
     assert mock_gen.await_count == 2
     assert mock_gen.call_args_list[0].kwargs.get("seed") == 123
     assert mock_gen.call_args_list[1].kwargs.get("seed") == 123
+
+
+@pytest.mark.asyncio
+async def test_web_search_resolves_port_from_install_record(app_with_store):
+    """Install record says port 36130 -> skill requests http://127.0.0.1:36130/search."""
+    store = app_with_store.state.skills
+    await store.assign_skill("agent-alpha", "web_search")
+
+    await app_with_store.state.installed_apps.update_runtime_location(
+        "searxng", "127.0.0.1", 36130
+    )
+
+    captured = {}
+
+    class MockResponse:
+        status_code = 200
+        def json(self):
+            return {"results": [{"title": "r1"}], "unresponsive_engines": []}
+
+    class MockClient:
+        def __init__(self, *args, **kwargs):
+            captured["client_kwargs"] = kwargs
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def get(self, url, **kwargs):
+            captured["url"] = url
+            captured["params"] = kwargs.get("params")
+            return MockResponse()
+
+    with patch("httpx.AsyncClient", MockClient):
+        async with AsyncClient(
+            transport=ASGITransport(app=app_with_store), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/skill-exec/web_search/call",
+                json={"args": {"query": "hello"}},
+            )
+
+    assert resp.status_code == 200
+    assert captured["url"] == "http://127.0.0.1:36130/search"
+    assert captured["params"] == {"q": "hello", "format": "json"}
+
+
+@pytest.mark.asyncio
+async def test_web_search_query_is_url_encoded(app_with_store):
+    """Query 'a&b #c' arrives as encoded params."""
+    store = app_with_store.state.skills
+    await store.assign_skill("agent-alpha", "web_search")
+
+    captured = {}
+
+    class MockResponse:
+        status_code = 200
+        def json(self):
+            return {"results": [{"title": "r1"}], "unresponsive_engines": []}
+
+    class MockClient:
+        def __init__(self, *args, **kwargs):
+            captured["client_kwargs"] = kwargs
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def get(self, url, **kwargs):
+            captured["url"] = url
+            captured["params"] = kwargs.get("params")
+            return MockResponse()
+
+    with patch("httpx.AsyncClient", MockClient):
+        async with AsyncClient(
+            transport=ASGITransport(app=app_with_store), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/skill-exec/web_search/call",
+                json={"args": {"query": "a&b #c"}},
+            )
+
+    assert resp.status_code == 200
+    assert captured["params"] == {"q": "a&b #c", "format": "json"}
+
+
+@pytest.mark.asyncio
+async def test_web_search_surfaces_unresponsive_engines(app_with_store):
+    """Zero results + unresponsive_engines surfaces the engine list."""
+    store = app_with_store.state.skills
+    await store.assign_skill("agent-alpha", "web_search")
+
+    class MockResponse:
+        status_code = 200
+        def json(self):
+            return {"results": [], "unresponsive_engines": ["google", "duckduckgo"]}
+
+    class MockClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def get(self, url, **kwargs):
+            return MockResponse()
+
+    with patch("httpx.AsyncClient", MockClient):
+        async with AsyncClient(
+            transport=ASGITransport(app=app_with_store), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/skill-exec/web_search/call",
+                json={"args": {"query": "test"}},
+            )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "error" in data
+    assert "google" in data["error"]
+    assert "duckduckgo" in data["error"]

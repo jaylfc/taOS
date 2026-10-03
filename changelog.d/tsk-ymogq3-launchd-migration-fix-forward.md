@@ -1,0 +1,3 @@
+### Fixed
+
+- macOS launchd plist migration no longer boots the controller out from inside its own job. The update path writes the migrated plist and a one-shot reload helper, then records that a reload is needed. `_do_restart` bootstraps the helper from a separate launchd job after the HTTP response returns, so the controller stays alive until the new `ProgramArguments` take effect. Backup uses copy-then-replace (not move-before-write), the launchd domain uses the numeric `gui/<uid>` form, and migration warnings are returned as a structured value instead of being detected by substring sniffing.

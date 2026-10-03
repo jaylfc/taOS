@@ -342,7 +342,7 @@ jobs:
           merge-multiple: true
 
       - name: List downloaded assets
-        run: ls -la taos-*-base-linux-*.tar.gz
+        run: ls -la taos-*base-linux-*.tar.gz
 
       - name: Compute build identifier
         id: id

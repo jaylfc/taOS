@@ -1,0 +1,2 @@
+### Added
+- LLM gateway: local text-to-speech route, `POST /api/llm/v1/audio/speech` (OpenAI-shaped), answered by the on-device `taos-ttsd` daemon (Piper en_GB-cori-high). Streams raw PCM16 mono (`audio/pcm`) at the voice's native 22050 Hz, or resampled to 16 kHz for the Orb with `sample_rate: 16000`; any other rate is a 400, and `X-Sample-Rate` always states the rate sent. Local only, same gateway-key auth as speech-to-text, and the input text is never logged or kept.

@@ -9,6 +9,8 @@ from fastapi import APIRouter, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
+from tinyagentos.device_auth import require_device
+
 from tinyagentos.workspace_trash import (
     TrashItemNotFound,
     TrashRestoreConflict,
@@ -64,6 +66,11 @@ async def _authorize_files_actor(
     
     device = getattr(request.state, "_device", None)
     if device:
+        # The auth middleware stashed this device WITHOUT authorising it (it only
+        # lets the Bearer through). This route does not use the device
+        # dependencies, so run the resolver here: it re-checks the token and
+        # enforces the TLS gate and the files:upload scope (HTTPException 401/403).
+        device = await require_device(request)
         if project is not None:
             if project.get("user_id") == device["user_id"]:
                 return ("device_bearer", device["user_id"])

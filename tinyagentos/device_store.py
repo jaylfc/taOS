@@ -2,20 +2,22 @@ from __future__ import annotations
 
 import secrets
 import uuid
+from collections.abc import Iterable
 
 from tinyagentos.base_store import BaseStore
+from tinyagentos.device_scopes import default_scopes, serialize_scopes
 
 DEVICE_TOKEN_PREFIX = "taosdev_"
 
 # Columns returned to internal callers (includes the secret scoped_token).
 _FULL_COLS = (
     "device_id, user_id, platform, push_token, scoped_token, "
-    "display_name, registered_at, last_seen, revoked, blocked"
+    "display_name, registered_at, last_seen, revoked, blocked, scopes"
 )
 # Columns safe to return to the owning user (no scoped_token).
 _SAFE_COLS = (
     "device_id, user_id, platform, push_token, "
-    "display_name, registered_at, last_seen, revoked, blocked"
+    "display_name, registered_at, last_seen, revoked, blocked, scopes"
 )
 
 
@@ -35,7 +37,8 @@ class DeviceStore(BaseStore):
         registered_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
         last_seen INTEGER NOT NULL DEFAULT (strftime('%s','now')),
         revoked INTEGER NOT NULL DEFAULT 0,
-        blocked INTEGER NOT NULL DEFAULT 0
+        blocked INTEGER NOT NULL DEFAULT 0,
+        scopes TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_devices_user ON devices(user_id);
     CREATE INDEX IF NOT EXISTS idx_devices_token ON devices(scoped_token);
@@ -56,22 +59,46 @@ class DeviceStore(BaseStore):
                 "ALTER TABLE devices ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0"
             )
             await self._db.commit()
+        # `scopes` is nullable on purpose: NULL marks a token minted before
+        # scopes existed (resolved by device_scopes.effective_scopes). No
+        # backfill, and never '' as the marker ('' is an explicit empty set).
+        if "scopes" not in cols:
+            await self._db.execute("ALTER TABLE devices ADD COLUMN scopes TEXT")
+            await self._db.commit()
 
     async def register(
-        self, *, user_id: str, platform: str, push_token: str = "", display_name: str = ""
+        self,
+        *,
+        user_id: str,
+        platform: str,
+        push_token: str = "",
+        display_name: str = "",
+        scopes: Iterable[str] | None = None,
     ) -> dict:
         assert self._db is not None
+        # Every new mint stores an explicit list; None means the platform default.
+        stored = serialize_scopes(default_scopes(platform) if scopes is None else scopes)
         device_id = uuid.uuid4().hex
         scoped_token = DEVICE_TOKEN_PREFIX + secrets.token_urlsafe(32)
         await self._db.execute(
             "INSERT INTO devices (device_id, user_id, platform, push_token, "
-            "scoped_token, display_name) VALUES (?, ?, ?, ?, ?, ?)",
-            (device_id, user_id, platform, push_token, scoped_token, display_name),
+            "scoped_token, display_name, scopes) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (device_id, user_id, platform, push_token, scoped_token, display_name, stored),
         )
         await self._db.commit()
         got = await self.get(device_id)
         assert got is not None
         return got
+
+    async def set_scopes(self, device_id: str, scopes: Iterable[str]) -> dict | None:
+        """Replace a device's scope list. Unknown names raise ValueError."""
+        assert self._db is not None
+        stored = serialize_scopes(scopes)
+        await self._db.execute(
+            "UPDATE devices SET scopes = ? WHERE device_id = ?", (stored, device_id)
+        )
+        await self._db.commit()
+        return await self.get(device_id)
 
     async def get(self, device_id: str) -> dict | None:
         assert self._db is not None

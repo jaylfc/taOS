@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse, PlainTextResponse, Response
+from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
 
 from tinyagentos.llm_gateway.auth import GatewayCaller, gateway_caller
 from tinyagentos.llm_gateway.errors import (
@@ -19,7 +21,7 @@ from tinyagentos.llm_gateway.forward import (
     resolve_api_key,
 )
 from tinyagentos.llm_gateway.anthropic import chat_completion_anthropic
-from tinyagentos.llm_gateway import stt
+from tinyagentos.llm_gateway import stt, tts
 from tinyagentos.llm_gateway.resolve import TAOS_DEFAULT, find_routes, model_names, routing_table
 import tinyagentos.llm_gateway.resolve as resolve_mod
 
@@ -177,7 +179,7 @@ _STT_FRAMING_SLACK = 64 * 1024
 _STT_BODY_CAP = stt.MAX_PCM_BYTES + _STT_FRAMING_SLACK
 # The text fields (model, response_format) are a few bytes; this bounds a hostile one.
 _STT_FIELD_CAP = 1024
-_STT_FIELDS = {"file", "model", "response_format"}
+_STT_FIELDS = {"file", "model", "response_format", "stream"}
 
 
 async def _read_capped(request: Request, cap: int) -> bytes:
@@ -280,7 +282,11 @@ async def audio_transcriptions(request: Request, caller: GatewayCaller = Depends
     """OpenAI ``/v1/audio/transcriptions``, answered by the on-device daemon.
 
     Multipart ``file`` (16 kHz mono 16-bit PCM WAV, up to 30 s), ``model`` and
-    an optional ``response_format`` (``json``, the default, or ``text``).
+    an optional ``response_format`` (``json``, the default, or ``text``) and an
+    optional ``stream`` (``true`` answers ``text/event-stream``: one
+    ``transcript.text.delta`` with the whole text, then ``transcript.text.done``;
+    the local model is batch, and ``stream`` needs ``response_format=json`` as
+    OpenAI's streaming models do).
     Local only: nothing here can reach a cloud backend, and neither audio nor
     transcript is logged, traced or kept. See ``stt`` for the rules and the
     model-name proposal.
@@ -293,12 +299,18 @@ async def audio_transcriptions(request: Request, caller: GatewayCaller = Depends
     try:
         requested = fields.get("model", b"").decode("utf-8").strip()
         response_format = fields.get("response_format", b"json").decode("utf-8").strip() or "json"
+        stream_raw = fields.get("stream", b"false").decode("utf-8").strip().lower()
     except UnicodeDecodeError:
         raise bad_request("form fields must be UTF-8") from None
     if not requested:
         raise bad_request("'model' must be a non-empty string")
     if response_format not in ("json", "text"):
         raise bad_request("'response_format' must be 'json' or 'text'")
+    if stream_raw not in ("true", "false", ""):
+        raise bad_request("'stream' must be 'true' or 'false'")
+    stream = stream_raw == "true"
+    if stream and response_format != "json":
+        raise bad_request("'stream' requires 'response_format' to be 'json'")
     if not caller.may_use(requested):
         raise model_not_permitted(requested)
     data_dir = request.app.state.data_dir
@@ -316,6 +328,89 @@ async def audio_transcriptions(request: Request, caller: GatewayCaller = Depends
         # The client is gone: do not spend the daemon on audio nobody awaits.
         return Response(status_code=499)
     text = await stt.transcribe_pcm(pcm, manifest)
+    if stream:
+        # The daemon is batch and has already answered, so every error above
+        # was a plain JSON response; what streams is the finished text.
+        events = (
+            {"type": "transcript.text.delta", "delta": text},
+            {"type": "transcript.text.done", "text": text},
+        )
+        return StreamingResponse(
+            (b"data: " + json.dumps(e, separators=(",", ":")).encode() + b"\n\n" for e in events),
+            media_type="text/event-stream",
+        )
     if response_format == "text":
         return PlainTextResponse(text)
     return JSONResponse({"text": text})
+
+
+# A JSON body of up to MAX_INPUT_CHARS characters, even all \uXXXX escapes (6 bytes
+# each), plus the small fields around it.
+_TTS_BODY_CAP = tts.MAX_INPUT_CHARS * 12 + 16 * 1024
+
+
+@router.post("/audio/speech")
+async def audio_speech(request: Request, caller: GatewayCaller = Depends(gateway_caller)):
+    """OpenAI ``/v1/audio/speech``, answered by the on-device daemon.
+
+    JSON ``model``, ``input`` (the text), optional ``voice`` (``cori``),
+    ``response_format`` (``pcm``, the default and only one) and ``sample_rate``
+    (the voice's native rate, the default, or 16000, resampled here). The reply
+    streams raw PCM16 mono and always says its rate in ``X-Sample-Rate``.
+    ``stream_format`` is ``audio`` (the default, as above) or ``sse``: the same
+    PCM as ``speech.audio.delta`` events (base64) then ``speech.audio.done``.
+    Local only: nothing here can reach a cloud backend, and the input text is
+    never logged, traced or kept. See ``tts`` for the rules.
+    """
+    raw = await _read_capped(request, _TTS_BODY_CAP)
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        raise bad_request("request body must be a JSON object") from None
+    if not isinstance(body, dict):
+        raise bad_request("request body must be a JSON object")
+    requested = body.get("model")
+    if not isinstance(requested, str) or not requested.strip():
+        raise bad_request("'model' must be a non-empty string")
+    requested = requested.strip()
+    text = body.get("input")
+    if not isinstance(text, str) or not text.strip():
+        raise bad_request("'input' must be a non-empty string")
+    if len(text) > tts.MAX_INPUT_CHARS:
+        raise GatewayError(413, f"'input' is over {tts.MAX_INPUT_CHARS} characters",
+                           code="input_too_long")
+    if "voice" in body and body["voice"] != tts.TTS_VOICE:
+        raise bad_request(f"'voice' must be {tts.TTS_VOICE!r} or omitted")
+    if "response_format" in body and body["response_format"] != "pcm":
+        raise bad_request("'response_format' must be 'pcm' or omitted")
+    stream_format = body.get("stream_format", "audio")
+    if stream_format not in ("audio", "sse") or not isinstance(stream_format, str):
+        raise bad_request("'stream_format' must be 'audio' or 'sse'")
+    sample_rate = body.get("sample_rate")
+    if "sample_rate" in body and (
+            sample_rate is None or isinstance(sample_rate, bool) or not isinstance(sample_rate, int)
+            or sample_rate <= 0):
+        raise bad_request("'sample_rate' must be a positive integer or omitted")
+    if not caller.may_use(requested):
+        raise model_not_permitted(requested)
+    data_dir = request.app.state.data_dir
+    try:
+        manifest = tts.load_manifest(data_dir)
+    except GatewayError as exc:
+        # Not installed: no name can match, so an unknown name is a 404, not a 409.
+        if exc.code == "tts_not_installed" and requested != tts.TTS_ALIAS:
+            raise model_not_found(f"model {requested!r} not found") from None
+        raise
+    if requested not in (tts.TTS_ALIAS, manifest["model"]):
+        raise model_not_found(f"model {requested!r} not found")
+    rate = tts.check_sample_rate(sample_rate, manifest["sample_rate"])
+    if await request.is_disconnected():
+        # The client is gone: do not spend the daemon on speech nobody awaits.
+        return Response(status_code=499)
+    speech = await tts.open_speech(text, manifest)
+    sse = stream_format == "sse"
+    return tts.SpeechResponse(
+        speech, rate, tts.SseEncoder() if sse else None,
+        media_type="text/event-stream" if sse else "audio/pcm",
+        headers={"X-Sample-Rate": str(rate), "X-Channels": "1"},
+    )

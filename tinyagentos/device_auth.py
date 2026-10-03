@@ -5,6 +5,8 @@ import time
 from fastapi import HTTPException, Request
 
 from tinyagentos.auth_context import CurrentUser
+from tinyagentos.auth_middleware import device_scope_for
+from tinyagentos.device_scopes import ALL_SCOPES, device_tls_port, effective_scopes
 
 # Only refresh last_seen at most once a minute per device so authenticating on
 # every request does not turn auth into a per-request DB write (write
@@ -24,10 +26,31 @@ def extract_bearer(request) -> str | None:
     return token or None
 
 
+def _on_device_tls_listener(request: Request) -> bool:
+    """True only when the ASGI scope says this request arrived over https on
+    the device TLS port. Deliberately reads the transport's own scope and never
+    X-Forwarded-* headers: a client can forge those, it cannot forge the socket
+    the server accepted it on."""
+    scope = request.scope
+    server = scope.get("server")
+    return bool(
+        scope.get("scheme") == "https"
+        and server
+        and len(server) > 1
+        and server[1] == device_tls_port()
+    )
+
+
 async def require_device(request: Request) -> dict:
     """FastAPI dependency: authenticate the caller as a registered device by
-    its scoped token. 401 if the header is missing or the token is unknown or
-    revoked. Refreshes last_seen (debounced) on success."""
+    its scoped token, then authorise it. 401 if the header is missing or the
+    token is unknown or revoked. 403 `device_tls_required` for an embedded
+    device off the TLS listener, 403 `device_scope_missing` when the route's
+    scope is unclassified or not held by the device. Refreshes last_seen
+    (debounced) only after authorisation passes.
+
+    The route's required scope is the one a `device_scope(...)` dependency set
+    on request.state, else the one classified for method + path."""
     token = extract_bearer(request)
     if not token:
         raise HTTPException(status_code=401, detail="device token required")
@@ -35,9 +58,39 @@ async def require_device(request: Request) -> dict:
     device = await store.get_by_token(token)
     if device is None:
         raise HTTPException(status_code=401, detail="invalid device token")
+
+    # Embedded tokens are only usable over the device TLS listener (S10). Until
+    # that listener exists they are unusable everywhere: intended, fail closed.
+    if device.get("platform") == "embedded" and not _on_device_tls_listener(request):
+        raise HTTPException(status_code=403, detail={"error": "device_tls_required"})
+
+    required = getattr(request.state, "device_required_scope", None)
+    if required is None:
+        required = device_scope_for(request.method, request.url.path)
+    if required is None or required not in effective_scopes(device):
+        # Unclassified path (None) and missing scope are the same refusal.
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "device_scope_missing", "scope": required},
+        )
+
     if time.time() - device["last_seen"] > _TOUCH_INTERVAL_S:
         await store.touch(device["device_id"])
     return device
+
+
+def device_scope(scope: str):
+    """Dependency factory for device routes: require `scope` explicitly instead
+    of deriving it from the path. Validated at definition time so a typo fails
+    at import, not as a runtime 403."""
+    if scope not in ALL_SCOPES:
+        raise ValueError(f"unknown device scope: {scope!r}")
+
+    async def _dep(request: Request) -> dict:
+        request.state.device_required_scope = scope
+        return await require_device(request)
+
+    return _dep
 
 
 async def current_user_or_device(request: Request) -> CurrentUser:

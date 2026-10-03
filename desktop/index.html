@@ -16,7 +16,6 @@
 
     <!-- iOS PWA — full screen, hide native status bar -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="taOS" />
     <link rel="apple-touch-icon" href="/static/icon-180.png" />
 
@@ -53,17 +52,15 @@
     </style>
 
     <!-- Reduce-effects: apply the saved choice before first paint so a low-end
-         device never flashes the full effects on load (#58). First-run GPU
-         auto-detect happens in-app via a frame-rate probe. -->
-    <script>
-      (function () {
-        try {
-          if (localStorage.getItem("taos-reduce-effects") === "on") {
-            document.documentElement.setAttribute("data-perf", "reduced");
-          }
-        } catch (e) {}
-      })();
-    </script>
+         device never flashes the full effects on load (#58). Kept in an
+         external same-origin file (public/boot.js) rather than inline because
+         the app's Content-Security-Policy is `script-src 'self'`, which blocks
+         inline scripts; this blocking script tag still runs before first paint.
+         The root-absolute `/boot.js` is Vite's public-dir convention: with
+         `base: "/desktop/"` the build rewrites it to `/desktop/boot.js` (the
+         emitted shell proves it), so no change is needed here.
+         First-run GPU auto-detect happens in-app via a frame-rate probe. -->
+    <script src="/boot.js"></script>
   </head>
   <body>
     <div id="root"></div>

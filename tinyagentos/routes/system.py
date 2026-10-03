@@ -22,6 +22,10 @@ logger = logging.getLogger(__name__)
 # stays open.
 router = APIRouter()
 
+# Seconds to wait for `launchctl bootstrap` of the one-shot reload helper
+# before killing it and falling through to the execv fallback.
+LAUNCHCTL_BOOTSTRAP_TIMEOUT = 15
+
 
 def _require_admin_or_loopback(request: Request) -> None:
     """Gate for the shutdown drain: the loopback systemd stop hook (no session,
@@ -128,6 +132,54 @@ async def _do_restart(app_state) -> None:
     # 2. Docker
     if os.path.exists("/.dockerenv"):
         os._exit(0)
+
+    # 2b. Darwin launchd helper bootstrap
+    if sys.platform == "darwin":
+        from tinyagentos.launchd_migration import (
+            clear_pending_launchd_reload,
+            HELPER_PLIST_PATH,
+            read_pending_launchd_reload,
+        )
+        if read_pending_launchd_reload():
+            proc = None
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "launchctl",
+                    "bootstrap",
+                    f"gui/{os.getuid()}",
+                    str(HELPER_PLIST_PATH),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                # launchctl can hang (a stuck launchd job, a wedged
+                # launchd.lock). Without a timeout the execv fallback below is
+                # never reached and the restart silently stalls.
+                await asyncio.wait_for(
+                    proc.communicate(), timeout=LAUNCHCTL_BOOTSTRAP_TIMEOUT
+                )
+                if proc.returncode == 0:
+                    clear_pending_launchd_reload()
+                    os._exit(0)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "launchd helper bootstrap timed out after %ss, killing pid",
+                    LAUNCHCTL_BOOTSTRAP_TIMEOUT,
+                )
+                if proc is not None:
+                    try:
+                        proc.kill()
+                        await proc.wait()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            if notif:
+                await notif.add(
+                    title="Launchd reload helper failed",
+                    message="New launch settings will apply after the next login.",
+                    level="warning",
+                    source="system.lifecycle",
+                )
 
     # 3. execv (no service manager — replace ourselves in-place)
     try:

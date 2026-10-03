@@ -44,7 +44,10 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 # F5: the store does not validate the platform, so the whitelist lives here.
-_VALID_PLATFORMS = frozenset({"ios", "watchos", "android"})
+# embedded (ESP32 class) and wearos are pair-request platforms; neither has a
+# push channel, so neither may carry a push token.
+_VALID_PLATFORMS = frozenset({"ios", "watchos", "android", "embedded", "wearos"})
+_NO_PUSH_PLATFORMS = frozenset({"embedded", "wearos"})
 _VERIFY_CODE_DIGITS = 6
 _MAX_DISPLAY_NAME = 200
 
@@ -52,6 +55,9 @@ _MAX_DISPLAY_NAME = 200
 class CreatePairRequest(BaseModel):
     platform: str
     display_name: str = Field(default="", max_length=_MAX_DISPLAY_NAME)
+    # Never stored (pairing mints with no push token); declared only so a
+    # non-empty one on a no-push platform is refused instead of ignored.
+    push_token: str = Field(default="", max_length=4096)
 
 
 def _get_pair_requests_store(request: Request) -> DevicePairRequestsStore:
@@ -105,6 +111,12 @@ async def create_pair_request(request: Request, body: CreatePairRequest):
         raise HTTPException(
             status_code=400,
             detail=f"platform must be one of {sorted(_VALID_PLATFORMS)}",
+        )
+
+    if body.platform in _NO_PUSH_PLATFORMS and body.push_token:
+        raise HTTPException(
+            status_code=400,
+            detail=f"push_token is not accepted for {body.platform} devices",
         )
 
     store = _get_pair_requests_store(request)

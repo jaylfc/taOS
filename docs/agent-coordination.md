@@ -733,6 +733,12 @@ different project, and 403 when the agent lacks the `canvas_read` scope or the
   `tinyagentos/auth_middleware.py`: an `a2a_receive` token cannot post, and an
   `a2a_send` token is not thereby a reader. Do not describe them as one scope
   covering four routes.
+- **memory_read**: read an agent's own memory index via qmd serve.
+  `GET /api/memory/browse`, `POST /api/memory/search`, `GET /api/memory/collections/{agent_name}`.
+  These routes restrict results to the calling agent's OWN memory namespace (its own
+  agent name / canonical_id) — an agent must never read another agent's memory.
+  The DELETE `/api/memory/chunk/{content_hash}` route stays human-only and is not
+  reachable by agent tokens, even with memory_read.
 
 Access is per-project: a token is authorized for a project only when the agent
 holds an active grant + membership there; a request for a project it has no
@@ -1136,9 +1142,9 @@ before any lookup, which discloses nothing.
 Requested scopes are validated against the same closed `VALID_SCOPES` vocabulary
 as the consent flow. The project-bound scopes -- `project_tasks`,
 `project_tasks_create`, `project_tasks_update`, `project_lists`, `project_notes`,
-the canvas scopes (`canvas_read`, `canvas_write`) and the files scopes
-(`files_read`, `files_write`) -- all require an explicit, operator-validated
-`project_id` on approval (see `_PROJECT_SCOPES` in
+`project_doc_review`, the canvas scopes (`canvas_read`, `canvas_write`) and the
+files scopes (`files_read`, `files_write`) -- all require an explicit,
+operator-validated `project_id` on approval (see `_PROJECT_SCOPES` in
 `tinyagentos/routes/agent_auth_requests.py`). Omitting the project picker for
 one of these scopes is rejected with 400; the only way to mint a project-bound
 grant unbound (`project_id=None`) is the explicit `defer_binding` opt-in, and
@@ -1149,7 +1155,12 @@ matches nothing and authorizes nothing until assign-agent later binds it.
 `project_notes` joined this set in the beta.47 promote (#2320): it was
 previously grantable without a `project_id`, which minted an inert note grant
 the operator believed was usable; it now follows the same rule as
-`project_tasks`. `decisions_read` /
+`project_tasks`. `project_doc_review` joined it for the same reason (tsk-66mnhr):
+its routes have always authorized with `check_agent_scope_for_project`, so a
+`project_id`-less approval minted an inert doc-review grant. Existing
+`project_doc_review` grant rows carrying `project_id = None` were already inert
+and are left alone (no rewrite, no revocation); re-approve the scope with a
+project picker to get a usable grant. `decisions_read` /
 `decisions_write` (and the other global scopes) may be granted globally
 (`project_id=None`) or per-project.
 
@@ -1302,6 +1313,29 @@ Route module `tinyagentos/routes/device_pair_requests.py`:
 Approval or denial of a pair request is surfaced to the user through the Decisions app;
 agents must not grant pairing directly.
 
+## Device voice routes (S6 / S6b)
+
+Route module `tinyagentos/routes/device_voice.py`. Device bearer only (a session
+user has no device, so no session is accepted: `401` without a device token);
+embedded tokens are refused `403 device_tls_required` off the TLS listener. Both
+routes call the in-process `llm_gateway.stt` / `llm_gateway.tts` helpers, never
+a cloud backend, and never log or store the text or the audio. Errors are
+`{"detail": {"error": <code>, "message": ...}}`.
+
+- `POST /api/device/v1/voice` (scope `voice:stt`): body is raw PCM16 LE 16 kHz
+  mono (`application/octet-stream` or `audio/pcm`), at most 960000 bytes (30 s)
+  or `413 audio_too_large`; empty or odd length `400 invalid_audio`. Returns
+  `{"text": ...}`. `409 stt_not_installed`, `503 stt_unavailable`.
+- `POST /api/device/v1/voice/tts` (scope `voice:tts`): JSON `{"text", "sample_rate"?}`,
+  text at most 4096 characters (`413 input_too_long`), `sample_rate` omitted =
+  native 22050, `16000` = resampled, anything else `400` (never a silent
+  native answer). Streams PCM16 mono as `audio/pcm` with `X-Sample-Rate` (the
+  rate sent) and `X-Channels: 1`. `409 tts_not_installed`, `503 tts_unavailable`,
+  `502 upstream_error`. A client gone before synthesis starts gets `499` and the
+  daemon is never called.
+
+The full device protocol doc lands with S9.
+
 ## taOSusb Bluetooth pairing: commit/reveal (protocol v2)
 
 `tinyagentos/cluster/ble/proto.py` is shared byte-identical with the taOSusb
@@ -1353,7 +1387,12 @@ subscribe. `503` while `app.state.event_bus` is still starting.
   **The payload never crosses the wire** -- `id` is the event's trace id, so a
   subscriber learns that something changed and must refetch to learn what.
 - A comment frame `:keepalive` is sent every 10 s so proxies do not close an
-  idle stream.
+  idle stream. A data frame `{"kind": "events.heartbeat", "ts": ...}` is sent
+  alongside it so the client can detect a half-open connection that the native
+  EventSource would otherwise never notice. The hook arms a 25 s watchdog
+  (2.5x the keepalive interval) that resets on any frame including the
+  heartbeat; on expiry it closes the stream, marks it stale, and reconnects
+  through the existing backoff.
 - Frames deliberately carry **no SSE `id:` line**. An `id:` is what makes a
   browser send `Last-Event-ID` on reconnect, and this endpoint ignores that
   header: resume is best-effort through the EventBus replay buffer (the last
@@ -1441,6 +1480,65 @@ subscriber's ids and hand that subscriber a replayed event it already handled
 -- a refetch for nothing. Per subscriber, each caller keeps the window it had
 when it owned a stream of its own, and the same window is what makes the
 overlap during a filter widening invisible to callers.
+
+## Model Activity feed (`/api/activity/models`, session-only)
+
+Route module `tinyagentos/routes/model_activity.py`. A ring buffer of
+model-level events on the controller (`app.state.model_activity`, a
+`ModelActivityFeed` from `tinyagentos/model_activity.py`, 500 records by
+default). Two producers feed it:
+
+- `llm_gateway/forward.py` records `request.start` / `request.finish` (with
+  duration, tokens and output token rate) and `model.route` on backend
+  failover. These fire on every gateway request, so the feed is live on any box
+  with `TAOS_LLM_GATEWAY=1`.
+- `CoreAwareModelScheduler` records load / unload / evict / shrink when it is
+  constructed with the feed (`activity_feed=...`, or
+  `set_activity_feed(...)` later). **Today nothing in `create_app` constructs
+  one** -- that wiring is the Phase-1.5 sequential-loading task tracked as
+  #172 -- so on a live box the scheduler half of the feed stays empty until it
+  lands. The hook is at the module's existing event surface and is covered by
+  tests; only the instantiation is missing.
+
+It is an operational window, not a system of record: nothing is persisted, and
+`SystemEventStore` remains the durable log.
+
+Both paths sit behind the session cookie: the paths are NOT in
+`EXEMPT_PATHS`, so `AuthMiddleware` 401s an unauthenticated request before the
+handler runs, and no registry scope reaches them. The route's own
+`get_current_user` dependency is what enforces that, not the middleware: a
+local-token bearer is a valid credential for the middleware (it stamps a
+`user_id`), and the routes still answer `401` to it. The stream answers `503`
+while `app.state.model_activity` is still starting.
+
+Reads are owner-scoped. A gateway event carries the principal that made the
+request as its `owner` (`user:<id>` for a session, an agent's registry name for
+an agent, the gateway master-key label for the admin key), on `model.route` as
+well as on `request.start` / `request.finish`; the scheduler hooks have no owner
+because a load is a controller-level fact, not a caller's. An admin session sees
+the whole ring, while a member session sees only the events its own principal
+owns, so one user cannot read which models another user's agents call, how
+often, or under which agent names. Controller-level events and other
+principals' traffic stay admin-only; the AI-stack manager panel remains the
+member-visible view of what is loaded.
+
+- `GET /api/activity/models`: newest-first history. `?limit=` (1-500, default
+  100), `?model=`, `?worker=`, `?event=`. Answers
+  `{"events": [...], "count": N, "event_types": [...]}`; `event_types` is the
+  vocabulary the UI builds its filter list from.
+- `GET /api/activity/models/stream`: SSE. `?limit=` (0-500, default 50) caps
+  the ring window a new subscriber is caught up with; `0` means live-only,
+  which is the right choice for a caller that already fetched the history and
+  is deduplicating by `seq`. Filter parameters are the same three as above and
+  apply to the live frames as well as the catch-up window. Frames are
+  `id: <seq>` + `data: <event JSON>`, with `:keepalive` every 10 s.
+- Event vocabulary (stable): `model.load`, `model.unload`, `model.evict`,
+  `model.shrink`, `model.route`, `request.start`, `request.finish`. `seq` is
+  monotonic and is the de-dupe key across the catch-up/live seam; `worker` is
+  `"controller"` for local events; `duration_ms`, `tokens_in`, `tokens_out` and
+  `token_rate` are populated on `request.finish`.
+- Telemetry is best-effort at every hook: a feed failure is logged and never
+  fails a model load or an inference request.
 
 ## LoRA Studio routes (session-only, no agent scope)
 
@@ -1692,7 +1790,9 @@ snapshot, not a lock.
   `loaded`. Note the corollary: the non-ollama backends (llama.cpp / vLLM /
   sd-cpp) publish no in-memory probe — their `loaded_models` is empty by design
   — so a model they are actively serving still reads `installed`, following the
-  worker's own `available_models[].status`.
+  worker's own `available_models[].status`. llama-swap does publish one: its
+  `loaded_models` (and the controller's `GET /api/models/loaded` rows for a
+  `llama-swap` provider) come from its `/running` list.
 - `capabilities` -- the union of capabilities across the mesh, each split into
   mutually exclusive buckets: `active_nodes` (serving now), `installed_nodes`
   (present but not serving) and `potential_nodes` (hardware could run it,
@@ -1728,7 +1828,7 @@ registrations and heartbeats.
   always knows which controller instance accepted it.
 - A worker sends that generation back on subsequent requests. A request
   carrying a generation that does not match the controller's current one is
-  rejected -- registration answers `409` with `{"error": "stale_generation"}`
+  rejected -- registration answers `409` with `{"error": "stale_generation", "generation": <current>}`
   (or `"fenced"`), heartbeat answers `404` -- because it means the worker is
   talking to (or was adopted by) **another active controller**. Each rejection
   logs a warning naming the worker and both generations.

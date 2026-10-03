@@ -64,26 +64,64 @@ Do not skip this: a `.gitignore` conflict resolution can quietly drop a
 key-material rule while every test stays green. The gate is the verification, not
 an assumption.
 
-### 5. Tag and create a GitHub Release
+### 5. Tag (the tag push publishes the GitHub Release)
 
 On `master`, after the merge commit:
 
 ```bash
-git tag v1.0.0-beta.N
+git tag -a v1.0.0-beta.N -m "v1.0.0-beta.N"
 git push origin v1.0.0-beta.N
 ```
 
-Create a GitHub Release for that tag. Paste the matching CHANGELOG section as the release body:
+Pushing the tag runs `.github/workflows/release.yml`, which:
+
+1. refuses to publish if the tagged commit's `pyproject.toml` version is not the tag,
+2. takes the release body from the `## [1.0.0-beta.N]` section of `CHANGELOG.md`
+   (`scripts/changelog_section.py`; it fails rather than publish empty or wrong notes),
+3. creates the release as a draft, attaches the prebuilt desktop bundle, then publishes it
+   and marks it latest (only if it is the newest version; runs are serialised),
+4. when the tag is the newest version, fails unless `/releases/latest` now names it.
+   An older tag (a re-run, or a backport) publishes without becoming latest.
+
+**The release is not done until that workflow run is green.** Check it, then, when you
+released the newest version, confirm:
 
 ```bash
-gh release create v1.0.0-beta.N --title "v1.0.0-beta.N" --notes-file <notes> --latest
+gh api repos/jaylfc/taOS/releases/latest --jq .tag_name   # must print v1.0.0-beta.N
 ```
 
-Do NOT pass `--prerelease`: betas are our normal releases here, and the in-app
-update check (`tinyagentos/github_releases.py`) reads `/releases/latest`, which
-skips prereleases. A release created as a prerelease leaves both the GitHub
-"Latest" badge and the update check stuck on the previous version.
-The taos.my changelog page pulls from GitHub Releases, so this is the canonical public record.
+This step exists because beta.54 and beta.55 were tagged without a GitHub Release
+(2026-09-30 to 2026-10-02): the in-app update check (`tinyagentos/github_releases.py`)
+reads `/releases/latest`, which skips tags without a release, so installed hosts kept
+seeing beta.53. The taos.my changelog page also pulls from GitHub Releases.
+
+Do NOT create the release as a prerelease: `/releases/latest` skips prereleases.
+
+**Fallback** if the workflow cannot run (Actions outage), publish by hand from the same
+notes. Nothing else will attach the bundle in an outage (ci.yml's `release: published`
+job needs Actions too), so build and upload it yourself BEFORE making the release public:
+
+```bash
+git checkout v1.0.0-beta.N
+python3 scripts/changelog_section.py v1.0.0-beta.N > notes.md
+(cd desktop && npm ci && npm run build)
+tar -C static -czf desktop-bundle.tar.gz desktop
+git rev-parse HEAD:desktop > desktop-tree.txt
+sha256sum desktop-bundle.tar.gz | awk '{print $1}' > desktop-bundle.sha256
+gh release create v1.0.0-beta.N --verify-tag --draft --title "v1.0.0-beta.N" --notes-file notes.md
+gh release upload v1.0.0-beta.N desktop-bundle.tar.gz desktop-tree.txt desktop-bundle.sha256
+gh release edit v1.0.0-beta.N --draft=false --latest=false
+# Mark latest ONLY if no published release is newer than this tag:
+python3 -m pip install --quiet packaging   # newest_release_tag.py needs it
+newest=$(gh api --paginate "repos/jaylfc/taOS/releases?per_page=100" \
+  --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name' \
+  | python3 scripts/newest_release_tag.py)
+if [ "$newest" = v1.0.0-beta.N ]; then
+  gh release edit v1.0.0-beta.N --latest
+else
+  echo "published, NOT latest: ${newest:-<none>} is newer"
+fi
+```
 
 ## Notes
 

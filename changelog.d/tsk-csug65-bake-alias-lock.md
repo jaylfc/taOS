@@ -1,0 +1,2 @@
+### Fixed
+- `ensure_image_present` now holds a per-(remote, alias) lock across the download, import, and bake section. Concurrent callers that both see the same alias as absent no longer race: the second caller re-checks `is_image_present` after acquiring the lock and returns True without re-downloading or re-baking, preventing the loser's bake cleanup from force-deleting the winner's in-flight temp container.

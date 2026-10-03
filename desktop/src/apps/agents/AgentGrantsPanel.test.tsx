@@ -6,7 +6,7 @@ import {
   revokeAgentProjectGrants,
   type AgentGrant,
 } from "@/lib/agent-grants";
-import { projectsApi } from "@/lib/projects";
+import { projectsApi, type Project } from "@/lib/projects";
 
 vi.mock("@/lib/agent-grants", () => ({
   listAgentGrants: vi.fn(),
@@ -219,6 +219,39 @@ describe("AgentGrantsPanel", () => {
     });
 
     expect(document.activeElement).toBe(first);
+  });
+
+  it("labels a grant on an archived project from the archived page, not its raw id", async () => {
+    vi.mocked(listAgentGrants).mockResolvedValue([
+      makeGrant({ scope: "project_tasks", project_id: "proj-archived" }),
+    ]);
+    // `list()` defaults to active projects only, so the archived project has to
+    // come from an explicit status page; without it the raw id stands in.
+    vi.mocked(projectsApi.list).mockImplementation((status?: string) =>
+      Promise.resolve(
+        status === "archived"
+          ? [
+              {
+                id: "proj-archived",
+                name: "Legacy Project",
+                slug: "legacy",
+                status: "archived",
+              } as Project,
+            ]
+          : [],
+      ),
+    );
+
+    render(<AgentGrantsPanel target={TARGET} onClose={vi.fn()} />);
+    await waitFor(() => screen.getByText("project_tasks"));
+
+    expect(screen.getByText("Legacy Project")).toBeTruthy();
+    expect(screen.queryByText("proj-archived")).toBeNull();
+    expect(vi.mocked(projectsApi.list)).toHaveBeenCalledWith("archived");
+    // The label is cosmetic; revoke still addresses the project by id.
+    expect(
+      screen.getByRole("button", { name: /revoke all on Legacy Project/i }),
+    ).toBeTruthy();
   });
 
   it("still renders grants when the project list fails (labels are cosmetic)", async () => {

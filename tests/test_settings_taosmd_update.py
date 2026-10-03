@@ -231,6 +231,11 @@ def _update_route_patches():
         ),
         patch.object(settings_mod, "_TAOSMD_VERIFY_RETRIES", 1),
         patch.object(settings_mod, "_TAOSMD_VERIFY_DELAY", 0),
+        # Mock preflight check to pass for taOSmd contract tests
+        patch(
+            "tinyagentos.update_preflight.check_preflight",
+            return_value=[],
+        ),
     )
 
 

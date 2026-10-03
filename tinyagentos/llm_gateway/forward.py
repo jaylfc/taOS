@@ -34,6 +34,7 @@ from tinyagentos.llm_gateway.errors import GatewayError, model_not_found, upstre
 from tinyagentos.llm_gateway.resolve import Route
 from tinyagentos.llm_usage.pricing import Cost, cost_of, find_price, price_usage
 from tinyagentos.llm_usage.usage import UNKNOWN, OpenAIStreamUsage, Usage, ensure_stream_usage, from_openai
+from tinyagentos.model_activity import MODEL_ROUTE, REQUEST_FINISH, REQUEST_START
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +184,111 @@ def _conservative_budget_estimate(backend_type: str, model: str, request_text: s
     return max(0.0001, (prompt_tokens + completion_tokens) * 0.00001)
 
 
+# ---------------------------------------------------------------------------
+# Model Activity feed (#208) -- proxy hooks
+#
+# The gateway is where taOS actually proxies an inference request to a backend,
+# so it is the natural source for request lifecycle + token-rate events.  All
+# of it is best-effort telemetry: a feed failure must never fail a request.
+# ---------------------------------------------------------------------------
+
+
+def _activity_feed(state: Any):
+    """The controller's Model Activity ring buffer, or None when unwired."""
+    return getattr(state, "model_activity", None)
+
+
+def _record_request_start(state: Any, route: Route, principal: str) -> float:
+    """Record ``request.start`` and return a monotonic clock for the finish.
+
+    ``principal`` is stamped as the event's ``owner``, which is what the
+    /api/activity/models read surface scopes on. The gateway's caller identity
+    for a session is ``user:<id>`` (``llm_gateway/auth.py``), the same spelling
+    the session dependency produces on the read side.
+    """
+    feed = _activity_feed(state)
+    if feed is not None:
+        try:
+            feed.record(
+                REQUEST_START,
+                model=route.model_name,
+                owner=principal,
+                backend=route.backend_name,
+            )
+        except Exception:  # noqa: BLE001 - telemetry never breaks a request
+            logger.warning("llm_gateway: model activity request.start failed", exc_info=True)
+    return time.monotonic()
+
+
+def _record_request_finish(
+    state: Any,
+    route: Route,
+    principal: str,
+    started: float,
+    *,
+    usage: Usage | None = None,
+    reason: str | None = None,
+) -> None:
+    """Record ``request.finish`` with duration, tokens and output token rate."""
+    feed = _activity_feed(state)
+    if feed is None:
+        return
+    duration_ms = max(0, int((time.monotonic() - started) * 1000))
+    tokens_in = tokens_out = None
+    if usage is not None and usage.known:
+        tokens_in = usage.input_tokens
+        tokens_out = usage.output_tokens
+    token_rate = None
+    if tokens_out is not None and duration_ms > 0:
+        token_rate = round(tokens_out / (duration_ms / 1000.0), 3)
+    try:
+        feed.record(
+            REQUEST_FINISH,
+            model=route.model_name,
+            owner=principal,
+            backend=route.backend_name,
+            duration_ms=duration_ms,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            token_rate=token_rate,
+            reason=reason,
+        )
+    except Exception:  # noqa: BLE001 - telemetry never breaks a request
+        logger.warning("llm_gateway: model activity request.finish failed", exc_info=True)
+
+
+def _record_route_change(
+    state: Any,
+    route: Route,
+    previous: Route | None,
+    attempt: int,
+    principal: str = "",
+) -> None:
+    """Record ``model.route`` when failover moves a model to another backend.
+
+    ``principal`` is stamped as the event's ``owner`` like the request events,
+    so a session that made the failing request keeps its own failover row
+    instead of losing it to the admin-only controller-level bucket.
+    """
+    feed = _activity_feed(state)
+    if feed is None or previous is None:
+        return
+    try:
+        feed.record(
+            MODEL_ROUTE,
+            model=route.model_name,
+            owner=principal or None,
+            backend=route.backend_name,
+            reason="failover",
+            detail={
+                "attempt": attempt,
+                "previous_backend": previous.backend_name,
+            },
+        )
+    except Exception:  # noqa: BLE001 - telemetry never breaks a request
+        logger.warning("llm_gateway: model activity route change failed", exc_info=True)
+
+
 async def _record_trace(
     state: Any,
     principal: str,
@@ -285,22 +391,27 @@ async def _chat_completion_one(
     if api_key:
         headers["authorization"] = f"Bearer {api_key}"
     what = f"the backend for model {route.model_name!r}"
+    started = _record_request_start(state, route, principal)
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT, follow_redirects=False) as client:
             resp = await client.post(url, json=payload, headers=headers)
     except httpx.TimeoutException as exc:
+        _record_request_finish(state, route, principal, started, reason="timeout")
         raise upstream_error(f"{what} timed out") from None
     except httpx.HTTPError as exc:
+        _record_request_finish(state, route, principal, started, reason="unreachable")
         raise upstream_error(f"{what} could not be reached") from None
 
     err = _status_error(resp, route, api_key)
     if err is not None:
+        _record_request_finish(state, route, principal, started, reason=f"http_{resp.status_code}")
         raise err
     try:
         data = resp.json()
     except ValueError:
         data = None
     if not isinstance(data, dict):
+        _record_request_finish(state, route, principal, started, reason="bad_response")
         raise upstream_error(f"{what} returned a response that is not a JSON object")
     _mirror_choices(data, "message")
 
@@ -318,6 +429,7 @@ async def _chat_completion_one(
         await _record_trace(state, principal, route.upstream_model, usage, cost, route.backend_name, request_text, response_text, 0, "success", estimated=False)
         if cost and cost.usd and cost.usd > 0:
             _record_spend(state, principal, cost.usd)
+    _record_request_finish(state, route, principal, started, usage=usage)
     _notify_lifecycle(state, route.backend_name)
     return data
 
@@ -349,96 +461,121 @@ def _event_stream_for_route(
     request_text = json.dumps(body)
 
     async def _gen():
-        api_key = await resolve_api_key(state, route.api_key_ref)
-        headers = {"content-type": "application/json"}
-        if api_key:
-            headers["authorization"] = f"Bearer {api_key}"
-        usage_tracker = OpenAIStreamUsage()
-        completion_text: list[str] = []
-        _buf = b""
-        async with httpx.AsyncClient(timeout=TIMEOUT, follow_redirects=False) as client:
-            try:
-                req = client.build_request("POST", url, json=payload, headers=headers)
-                upstream_resp = await client.send(req, stream=True)
-            except httpx.TimeoutException:
-                raise upstream_error("the backend timed out") from None
-            except httpx.HTTPError:
-                raise upstream_error("the backend could not be reached") from None
-            if not 200 <= upstream_resp.status_code < 300:
-                # Map it exactly like the non-streaming path, BEFORE any byte
-                # is yielded, so a 5xx fails over and nothing unredacted leaks.
+        started = _record_request_start(state, route, principal)
+        finished = False
+
+        def _finish(*, usage=None, reason=None) -> None:
+            """Record request.finish exactly once, on every exit path."""
+            nonlocal finished
+            if finished:
+                return
+            finished = True
+            _record_request_finish(state, route, principal, started, usage=usage, reason=reason)
+
+        async def _pump():
+            api_key = await resolve_api_key(state, route.api_key_ref)
+            headers = {"content-type": "application/json"}
+            if api_key:
+                headers["authorization"] = f"Bearer {api_key}"
+            usage_tracker = OpenAIStreamUsage()
+            completion_text: list[str] = []
+            _buf = b""
+            async with httpx.AsyncClient(timeout=TIMEOUT, follow_redirects=False) as client:
                 try:
-                    err_body = await upstream_resp.aread()
-                except Exception:  # noqa: BLE001 - the status alone decides
-                    err_body = b""
+                    req = client.build_request("POST", url, json=payload, headers=headers)
+                    upstream_resp = await client.send(req, stream=True)
+                except httpx.TimeoutException:
+                    _finish(reason="timeout")
+                    raise upstream_error("the backend timed out") from None
+                except httpx.HTTPError:
+                    _finish(reason="unreachable")
+                    raise upstream_error("the backend could not be reached") from None
+                if not 200 <= upstream_resp.status_code < 300:
+                    # Map it exactly like the non-streaming path, BEFORE any byte
+                    # is yielded, so a 5xx fails over and nothing unredacted leaks.
+                    try:
+                        err_body = await upstream_resp.aread()
+                    except Exception:  # noqa: BLE001 - the status alone decides
+                        err_body = b""
+                    finally:
+                        await upstream_resp.aclose()
+                    _finish(reason=f"http_{upstream_resp.status_code}")
+                    err = _status_error(
+                        httpx.Response(upstream_resp.status_code, content=err_body), route, api_key,
+                    )
+                    raise err if err is not None else upstream_error("the backend failed")
+                try:
+                    if ndjson:
+                        async for out in _ndjson_to_sse(upstream_resp, body.get("model") or route.model_name,
+                                                        completion_text):
+                            yield out
+                    else:
+                        async for raw in upstream_resp.aiter_raw():
+                            if not raw:
+                                continue
+                            _buf += raw
+                            while True:
+                                idx = _buf.find(b"\n\n")
+                                if idx < 0:
+                                    _check_frame_size(len(_buf))
+                                    break
+                                _check_frame_size(idx)
+                                msg = _buf[:idx]
+                                _buf = _buf[idx + 2:]
+                                msg_str = msg.decode("utf-8", errors="replace").strip()
+                                if not msg_str:
+                                    continue
+                                data = msg_str[5:].strip() if msg_str.startswith("data: ") else msg_str
+                                if data == "[DONE]":
+                                    yield (msg_str + "\n\n").encode("utf-8")
+                                    continue
+                                try:
+                                    chunk = json.loads(data)
+                                except ValueError:
+                                    yield (msg_str + "\n\n").encode("utf-8")
+                                    continue
+                                is_usage_only = isinstance(chunk, dict) and isinstance(chunk.get("usage"), dict) and not chunk.get("choices")
+                                if (not is_usage_only and msg_str.startswith("data: ")
+                                        and _mirror_choices(chunk, "delta")):
+                                    # Re-serialised ONLY when a delta gained reasoning_content.
+                                    msg_str = "data: " + json.dumps(chunk)
+                                if caller_asked_for_usage or not is_usage_only:
+                                    yield (msg_str + "\n\n").encode("utf-8")
+                                if is_usage_only or caller_asked_for_usage:
+                                    usage_tracker.feed(chunk)
+                                if not is_usage_only:
+                                    for choice in chunk.get("choices", []):
+                                        delta = choice.get("delta", {})
+                                        content = delta.get("content")
+                                        if isinstance(content, str):
+                                            completion_text.append(content)
                 finally:
                     await upstream_resp.aclose()
-                err = _status_error(
-                    httpx.Response(upstream_resp.status_code, content=err_body), route, api_key,
-                )
-                raise err if err is not None else upstream_error("the backend failed")
-            try:
-                if ndjson:
-                    async for out in _ndjson_to_sse(upstream_resp, body.get("model") or route.model_name,
-                                                    completion_text):
-                        yield out
-                else:
-                    async for raw in upstream_resp.aiter_raw():
-                        if not raw:
-                            continue
-                        _buf += raw
-                        while True:
-                            idx = _buf.find(b"\n\n")
-                            if idx < 0:
-                                _check_frame_size(len(_buf))
-                                break
-                            _check_frame_size(idx)
-                            msg = _buf[:idx]
-                            _buf = _buf[idx + 2:]
-                            msg_str = msg.decode("utf-8", errors="replace").strip()
-                            if not msg_str:
-                                continue
-                            data = msg_str[5:].strip() if msg_str.startswith("data: ") else msg_str
-                            if data == "[DONE]":
-                                yield (msg_str + "\n\n").encode("utf-8")
-                                continue
-                            try:
-                                chunk = json.loads(data)
-                            except ValueError:
-                                yield (msg_str + "\n\n").encode("utf-8")
-                                continue
-                            is_usage_only = isinstance(chunk, dict) and isinstance(chunk.get("usage"), dict) and not chunk.get("choices")
-                            if (not is_usage_only and msg_str.startswith("data: ")
-                                    and _mirror_choices(chunk, "delta")):
-                                # Re-serialised ONLY when a delta gained reasoning_content.
-                                msg_str = "data: " + json.dumps(chunk)
-                            if caller_asked_for_usage or not is_usage_only:
-                                yield (msg_str + "\n\n").encode("utf-8")
-                            if is_usage_only or caller_asked_for_usage:
-                                usage_tracker.feed(chunk)
-                            if not is_usage_only:
-                                for choice in chunk.get("choices", []):
-                                    delta = choice.get("delta", {})
-                                    content = delta.get("content")
-                                    if isinstance(content, str):
-                                        completion_text.append(content)
-            finally:
-                await upstream_resp.aclose()
 
-        usage = usage_tracker.result()
-        response_text = "".join(completion_text)
-        if not usage.known:
-            cost = Cost(None, False, "usage not reported by the backend")
-            await _record_trace(state, principal, route.upstream_model, usage, cost, route.backend_name, request_text, response_text, 0, "success", estimated=True)
-            estimate = _conservative_budget_estimate(route.backend_name, route.upstream_model, request_text, response_text)
-            if estimate > 0:
-                _record_spend(state, principal, estimate)
-        else:
-            cost = cost_of(route.backend_type or route.backend_name, route.upstream_model, usage)
-            await _record_trace(state, principal, route.upstream_model, usage, cost, route.backend_name, request_text, response_text, 0, "success", estimated=False)
-            if cost and cost.usd and cost.usd > 0:
-                _record_spend(state, principal, cost.usd)
-        _notify_lifecycle(state, route.backend_name)
+            usage = usage_tracker.result()
+            response_text = "".join(completion_text)
+            if not usage.known:
+                cost = Cost(None, False, "usage not reported by the backend")
+                await _record_trace(state, principal, route.upstream_model, usage, cost, route.backend_name, request_text, response_text, 0, "success", estimated=True)
+                estimate = _conservative_budget_estimate(route.backend_name, route.upstream_model, request_text, response_text)
+                if estimate > 0:
+                    _record_spend(state, principal, estimate)
+            else:
+                cost = cost_of(route.backend_type or route.backend_name, route.upstream_model, usage)
+                await _record_trace(state, principal, route.upstream_model, usage, cost, route.backend_name, request_text, response_text, 0, "success", estimated=False)
+                if cost and cost.usd and cost.usd > 0:
+                    _record_spend(state, principal, cost.usd)
+            _finish(usage=usage)
+            _notify_lifecycle(state, route.backend_name)
+
+        try:
+            async for chunk in _pump():
+                yield chunk
+        finally:
+            # Covers GeneratorExit (client disconnect), cancellation, a raise
+            # from resolve_api_key, or a mid-stream upstream error: the feed
+            # never keeps a request.start without a matching request.finish.
+            _finish(reason="aborted")
 
     return _gen()
 
@@ -543,6 +680,8 @@ async def _ndjson_to_sse(
 async def _call_with_retry(
     routes: list[Route],
     call_one: Callable[[Route], Awaitable[dict]],
+    state: Any = None,
+    principal: str = "",
 ) -> dict:
     deadline = time.monotonic() + _DEADLINE_SECONDS
     last_exc: GatewayError | None = None
@@ -557,6 +696,8 @@ async def _call_with_retry(
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
+        if attempt > 0:
+            _record_route_change(state, route, ordered[attempt - 1], attempt, principal)
         try:
             return await call_one(route)
         except GatewayError as exc:
@@ -576,6 +717,8 @@ async def _call_with_retry(
 async def _stream_with_retry(
     routes: list[Route],
     stream_one: Callable[[Route], AsyncGenerator[bytes, None]],
+    state: Any = None,
+    principal: str = "",
 ) -> AsyncGenerator[bytes, None]:
     deadline = time.monotonic() + _DEADLINE_SECONDS
     last_exc: GatewayError | None = None
@@ -590,6 +733,9 @@ async def _stream_with_retry(
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
+
+        if attempt > 0:
+            _record_route_change(state, route, ordered[attempt - 1], attempt, principal)
 
         first_byte_sent = False
         try:
@@ -666,7 +812,12 @@ async def chat_completion(routes: list[Route], body: dict, principal: str, state
     cooldown so the next request does not pay the timeout again. Each
     attempt resolves and sends only that backend's own key.
     """
-    return await _call_with_retry(routes, lambda route: _chat_completion_one(route, body, principal, state))
+    return await _call_with_retry(
+        routes,
+        lambda route: _chat_completion_one(route, body, principal, state),
+        state,
+        principal,
+    )
 
 
 async def chat_completion_stream(
@@ -682,7 +833,12 @@ async def chat_completion_stream(
     """
     from fastapi.responses import JSONResponse, StreamingResponse
 
-    gen = _stream_with_retry(routes, lambda route: _event_stream_for_route(route, body, principal, state))
+    gen = _stream_with_retry(
+        routes,
+        lambda route: _event_stream_for_route(route, body, principal, state),
+        state,
+        principal,
+    )
     try:
         first = await gen.__anext__()
     except StopAsyncIteration:

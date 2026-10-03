@@ -51,6 +51,30 @@ function projectLabel(projectId: string | null, projects: Project[]): string {
   return p?.name || p?.slug || projectId;
 }
 
+/**
+ * Resolve the project labels used by the grant groups.
+ *
+ * `projectsApi.list()` defaults to `status="active"`, so a grant that lives on
+ * an archived project would fall back to its raw id. Fetch the archived page
+ * too and merge both by id (active wins on a collision). Both calls are
+ * best-effort: a failure yields an empty page rather than blocking the panel,
+ * and `projectLabel` still falls back to the id.
+ */
+async function loadProjectLabels(): Promise<Project[]> {
+  const [active, archived] = await Promise.all([
+    projectsApi.list("active").catch(() => []),
+    projectsApi.list("archived").catch(() => []),
+  ]);
+  const byId = new Map<string, Project>();
+  for (const list of [active, archived]) {
+    if (!Array.isArray(list)) continue;
+    for (const p of list) {
+      if (p?.id && !byId.has(p.id)) byId.set(p.id, p);
+    }
+  }
+  return [...byId.values()];
+}
+
 export function AgentGrantsPanel({
   target,
   onClose,
@@ -79,7 +103,8 @@ export function AgentGrantsPanel({
     try {
       const [gs, ps] = await Promise.all([
         listAgentGrants(target.canonical_id),
-        projectsApi.list().catch(() => []), // project labels are cosmetic; never block grants on them
+        // project labels are cosmetic; never block grants on them
+        loadProjectLabels().catch(() => []),
       ]);
       if (seq !== loadSeq.current) return;
       setGrants(gs);

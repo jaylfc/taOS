@@ -1,0 +1,2 @@
+### Fixed
+- Doc gate: a config that names a tree, scan target or rule target the repo does not have now fails loudly instead of matching nothing and printing `doc-gate: clean` for ever. A new Layer A0 pre-flight resolves every name the config carries before any rule runs, including the `scripts|tinyagentos|docs|desktop` prefix list hardcoded in the path-token regex, and exits 3 naming each offender. It found one on landing: `docs/doc-gate.toml` still listed the removed `docs/AGENT_HANDOFF.md` as a scan target, so that doc had not been scanned at all.

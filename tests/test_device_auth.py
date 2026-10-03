@@ -12,9 +12,14 @@ def _request(app, auth_header=None):
     if auth_header is not None:
         headers["authorization"] = auth_header
     # Minimal stand-in for a Starlette request: .headers.get + .app.state.
+    # method/url/scope/state: require_device now authorises the route's scope.
     return SimpleNamespace(
         headers=SimpleNamespace(get=lambda k, d=None: headers.get(k.lower(), d)),
         app=SimpleNamespace(state=app.state),
+        method="GET",
+        url=SimpleNamespace(path="/api/decisions"),
+        scope={},
+        state=SimpleNamespace(),
     )
 
 

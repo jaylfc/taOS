@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import React from "react";
 
 // Stub heavy deps
@@ -144,6 +144,115 @@ describe("RequestsPanel", () => {
     render(<RequestsPanel />);
     await waitFor(() => {
       expect(screen.getByRole("alert")).toHaveTextContent("500");
+    });
+    expect(screen.queryByText("No pending requests")).not.toBeInTheDocument();
+  });
+
+  it("failed approve keeps the rows rendered and shows the action error", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => {
+      if (url.startsWith("/api/agents/scope-requests")) {
+        return Promise.resolve({
+          ok: true,
+          headers: { get: () => "application/json" },
+          json: () => Promise.resolve({ requests: MOCK_REQUESTS }),
+        } as unknown as Response);
+      }
+      if (url.includes("/scope-requests/") && url.includes("/approve")) {
+        return Promise.resolve({
+          ok: false,
+          status: 400,
+          headers: { get: () => "application/json" },
+          json: () => Promise.resolve({ detail: "bad request" }),
+        } as unknown as Response);
+      }
+      return Promise.resolve({
+        ok: false,
+        headers: { get: () => "application/json" },
+        json: () => Promise.resolve({}),
+      } as unknown as Response);
+    }));
+    render(<RequestsPanel />);
+    await waitFor(() => {
+      expect(screen.getByText("Agent Alpha")).toBeInTheDocument();
+    });
+    const approveButtons = screen.getAllByRole("button", { name: /approve/i });
+    fireEvent.click(approveButtons[0]);
+    await waitFor(() => {
+      expect(screen.getByText(/bad request/i)).toBeInTheDocument();
+    });
+    expect(screen.getByText("Agent Alpha")).toBeInTheDocument();
+  });
+
+  it("successful retry clears the previous Action failed error", async () => {
+    let approveAttempt = 0;
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => {
+      if (url.startsWith("/api/agents/scope-requests")) {
+        return Promise.resolve({
+          ok: true,
+          headers: { get: () => "application/json" },
+          json: () => Promise.resolve({ requests: MOCK_REQUESTS }),
+        } as unknown as Response);
+      }
+      if (url.includes("/scope-requests/") && url.includes("/approve")) {
+        approveAttempt += 1;
+        if (approveAttempt === 1) {
+          return Promise.resolve({
+            ok: false,
+            status: 400,
+            headers: { get: () => "application/json" },
+            json: () => Promise.resolve({ detail: "transient error" }),
+          } as unknown as Response);
+        }
+        return Promise.resolve({
+          ok: true,
+          headers: { get: () => "application/json" },
+          json: () => Promise.resolve({ status: "accepted" }),
+        } as unknown as Response);
+      }
+      return Promise.resolve({
+        ok: false,
+        headers: { get: () => "application/json" },
+        json: () => Promise.resolve({}),
+      } as unknown as Response);
+    }));
+    render(<RequestsPanel />);
+    await waitFor(() => {
+      expect(screen.getByText("Agent Alpha")).toBeInTheDocument();
+    });
+    const approveButtons = screen.getAllByRole("button", { name: /approve/i });
+    fireEvent.click(approveButtons[0]);
+    await waitFor(() => {
+      expect(screen.getByText(/transient error/i)).toBeInTheDocument();
+    });
+    fireEvent.click(approveButtons[0]);
+    await waitFor(() => {
+      expect(screen.queryByText("Action failed")).not.toBeInTheDocument();
+    });
+  });
+
+  it("filter=all with zero rows does not render 'No pending requests'", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => {
+      if (url.startsWith("/api/agents/scope-requests")) {
+        return Promise.resolve({
+          ok: true,
+          headers: { get: () => "application/json" },
+          json: () => Promise.resolve({ requests: [] }),
+        } as unknown as Response);
+      }
+      return Promise.resolve({
+        ok: false,
+        headers: { get: () => "application/json" },
+        json: () => Promise.resolve({}),
+      } as unknown as Response);
+    }));
+    render(<RequestsPanel />);
+    await waitFor(() => {
+      expect(screen.queryByText("Agent Alpha")).not.toBeInTheDocument();
+    });
+    const allTab = screen.getByRole("tab", { name: /all/i });
+    fireEvent.click(allTab);
+    await waitFor(() => {
+      expect(screen.getByText("No scope requests have been submitted yet.")).toBeInTheDocument();
     });
     expect(screen.queryByText("No pending requests")).not.toBeInTheDocument();
   });

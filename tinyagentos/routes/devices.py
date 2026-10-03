@@ -28,8 +28,11 @@ class RegisterIn(BaseModel):
     @field_validator("platform")
     @classmethod
     def platform_supported(cls, v: str) -> str:
-        if v not in ("ios", "watchos", "android"):
-            raise ValueError("platform must be 'ios', 'watchos', or 'android'")
+        # wearos is allowed here; embedded is deliberately NOT: an embedded
+        # device is paired only through the pairing Decision (owner-approved,
+        # with its scopes), never by a self-service register call.
+        if v not in ("ios", "watchos", "android", "wearos"):
+            raise ValueError("platform must be 'ios', 'watchos', 'android', or 'wearos'")
         return v
 
     @model_validator(mode="after")
@@ -50,6 +53,15 @@ async def register_device(
     body: RegisterIn, request: Request, user: CurrentUser = Depends(current_user)
 ):
     store = request.app.state.device_store
+    # Wear has no push distributor and embedded has no push channel: a
+    # non-empty token would be stored and later misrouted. Empty = absent.
+    # (embedded cannot reach here via RegisterIn today; the check is kept so a
+    # future widening of the platform list cannot reopen it.)
+    if body.platform in ("embedded", "wearos") and body.push_token:
+        return JSONResponse(
+            {"error": f"push_token is not accepted for {body.platform} devices"},
+            status_code=400,
+        )
     # A blocked device (revoked + blocked) may not re-pair under a fresh token.
     # push_token is client-supplied, so a well-behaved client that re-sends the
     # same APNs token is caught; a caller sending a DIFFERENT push token slips

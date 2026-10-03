@@ -111,14 +111,38 @@ class TestIsImagePresent:
 class TestEnsureImagePresent:
     @pytest.mark.asyncio
     async def test_noop_when_already_present(self):
+        launched = []
+
+        async def _launch(*args, **kwargs):
+            launched.append(args)
+            proc = MagicMock()
+            # sweep: incus list
+            if args[:2] == ("incus", "list"):
+                proc.returncode = 0
+                proc.communicate = AsyncMock(return_value=(b"", b""))
+            # is_image_present: incus image list (mocked by is_image_present mock)
+            elif args[:3] == ("incus", "image", "list"):
+                proc.returncode = 0
+                proc.communicate = AsyncMock(return_value=(b"taos-openclaw-base\n", b""))
+            else:
+                raise AssertionError(f"unexpected subprocess launch: {args}")
+            proc.wait = AsyncMock(return_value=proc.returncode)
+            proc.stdout = MagicMock()
+            proc.stdout.close = MagicMock()
+            return proc
+
         with patch(
             "tinyagentos.agent_image.is_image_present", new=AsyncMock(return_value=True)
-        ) as mock_present, \
-             patch("asyncio.create_subprocess_exec", new=AsyncMock()) as mock_launch:
+        ), patch("asyncio.create_subprocess_exec", new=_launch):
             result = await ensure_image_present()
         assert result is True
-        mock_present.assert_awaited_once()
-        mock_launch.assert_not_called()
+        # Only sweep (incus list) should be called, not curl or image import
+        incus_list_calls = [c for c in launched if c[:2] == ("incus", "list")]
+        assert len(incus_list_calls) == 1
+        curl_calls = [c for c in launched if c and c[0] == "curl"]
+        assert len(curl_calls) == 0
+        image_import_calls = [c for c in launched if c[:3] == ("incus", "image", "import")]
+        assert len(image_import_calls) == 0
 
     @pytest.mark.asyncio
     async def test_imports_when_missing(self):

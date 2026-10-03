@@ -454,6 +454,10 @@ async def register_worker(request: Request, body: WorkerRegister):
     )
     ok, reason = await cluster.register_worker(info, generation=body.generation)
     if not ok:
+        if reason == "stale_generation":
+            return JSONResponse(
+                {"error": reason, "generation": cluster.generation}, status_code=409
+            )
         return JSONResponse({"error": reason}, status_code=409)
     await _record_worker_capability(request.app, body.name, body.host_lan_ip, body.hardware)
     if body.pending_storage_backup:

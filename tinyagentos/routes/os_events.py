@@ -148,6 +148,12 @@ async def os_events(request: Request):
                     event = await asyncio.wait_for(merged.get(), timeout=10.0)
                 except asyncio.TimeoutError:
                     yield ":keepalive\n\n"
+                    yield "data: " + json.dumps(
+                        {
+                            "kind": "events.heartbeat",
+                            "ts": time.time(),
+                        }
+                    ) + "\n\n"
                     continue
                 if lag["dropped"]:
                     dropped, lag["dropped"] = lag["dropped"], 0

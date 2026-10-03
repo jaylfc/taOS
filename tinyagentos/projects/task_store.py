@@ -550,7 +550,7 @@ class ProjectTaskStore(ProjectsDBStore):
             )
         return changed
 
-    async def release_task(self, task_id: str, releaser_id: str) -> bool:
+    async def release_task(self, task_id: str, releaser_id: str, *, strike: bool = True) -> bool:
         now = time.time()
         async with self._tx():
             cursor = await self._db.execute(
@@ -572,7 +572,7 @@ class ProjectTaskStore(ProjectsDBStore):
                 task_id, "task.released", releaser_id, "claimed", "open",
                 project_id=existing["project_id"] if existing else "",
             )
-            if self._strikes is not None:
+            if strike and self._strikes is not None:
                 try:
                     count = await self._strikes.record_strike(
                         task_id, "dispatch_failed", actor=releaser_id

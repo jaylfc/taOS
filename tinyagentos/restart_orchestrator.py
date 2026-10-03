@@ -150,13 +150,15 @@ class RestartOrchestrator:
     async def _prepare_agent(self, agent: dict, reason: Reason, data_dir: Path) -> dict:
         name = agent["name"]
         host = agent.get("host", "")
-        port = agent.get("port", 8080)
+        port = agent.get("port")
         t0 = time.monotonic()
 
         note_path = None
         status = "ready"
+        paused = False
+        paused_by_restart = False
 
-        if host:
+        if host and port is not None:
             try:
                 async with httpx.AsyncClient(
                     timeout=httpx.Timeout(connect=10, read=300, write=10, pool=10)
@@ -168,6 +170,19 @@ class RestartOrchestrator:
                     if resp.status_code == 200:
                         data = resp.json()
                         note_path = data.get("note_path")
+                        paused = True
+                        if reason != "pause":
+                            paused_by_restart = True
+                        if agent.get("paused", False) and not agent.get("paused_by_restart", False):
+                            paused_by_restart = False
+                        stale_note = data_dir / "agent-memory" / name / "resume_note.json"
+                        if stale_note.exists():
+                            try:
+                                note = json.loads(stale_note.read_text())
+                                if _is_controller_note(note):
+                                    stale_note.unlink()
+                            except Exception:
+                                pass
                     else:
                         note_path = await self._write_controller_note(agent, reason, data_dir)
             except Exception:
@@ -177,14 +192,15 @@ class RestartOrchestrator:
 
         duration_s = round(time.monotonic() - t0, 2)
 
-        # Mark agent paused in config
-        config = self._app_state.config
-        for a in config.agents:
-            if a["name"] == name:
-                a["paused"] = True
-                break
-        from tinyagentos.config import save_config_locked
-        await save_config_locked(config, config.config_path)
+        if paused:
+            config = self._app_state.config
+            for a in config.agents:
+                if a["name"] == name:
+                    a["paused"] = True
+                    a["paused_by_restart"] = paused_by_restart
+                    break
+            from tinyagentos.config import save_config_locked
+            await save_config_locked(config, config.config_path)
 
         entry = {"status": status, "duration_s": duration_s, "note_path": note_path}
         self._status["agents"][name] = entry
@@ -205,6 +221,12 @@ class RestartOrchestrator:
         }
         await asyncio.to_thread(atomic_write_text, note_path, json.dumps(note, indent=2))
         return str(note_path)
+
+
+def _is_controller_note(note: dict) -> bool:
+    """Return True if the note was written by the controller because it could
+    not pause the agent during prepare."""
+    return "controller-side fallback" in note.get("next_step_hint", "")
 
 
 async def apply_pending_restart_check(app_state) -> None:
@@ -261,6 +283,8 @@ async def apply_pending_restart_check(app_state) -> None:
 
 _RESUME_RETRY_INTERVAL_S = 30
 _RESUME_RETRY_WINDOW_S = 600
+
+_monotonic = time.monotonic
 
 _MAX_CONTEXT_SNAPSHOT_BYTES = 32768
 
@@ -496,6 +520,7 @@ async def _unpause(app_state, agent: dict, note_path: Path | None) -> None:
     # resumed over /resume, so the in-memory flag flips even if persistence
     # fails; the failure is surfaced and the recovery note is kept.
     agent["paused"] = False
+    agent["paused_by_restart"] = False
     from tinyagentos.config import save_config_locked
 
     config = app_state.config
@@ -518,7 +543,7 @@ async def resume_agents_from_notes(app_state) -> None:
     data_dir: Path = app_state.data_dir
     notif = app_state.notifications
 
-    paused = [a for a in config.agents if a.get("paused", False)]
+    paused = [a for a in config.agents if a.get("paused", False) and a.get("paused_by_restart", False)]
     if not paused:
         return
 
@@ -531,13 +556,13 @@ async def resume_agents_from_notes(app_state) -> None:
     for agent in paused:
         name = agent["name"]
         note_path = data_dir / "agent-memory" / name / "resume_note.json"
-        host = agent.get("host", "")
-        port = agent.get("port", 8080)
 
-        if not host:
-            # Nothing to call: the pause flag is the only thing holding the
-            # agent back, so clear it. Keep any note on disk: nothing consumed
-            # it, and it may carry state worth inspecting.
+        host = agent.get("host", "")
+        port = agent.get("port")
+
+        if not host or port is None:
+            # No lifecycle endpoint to call: clear the flag. Keep any note
+            # on disk if one exists (nothing consumed it).
             finalize.append((agent, None))
             resumed.append(name)
             continue
@@ -569,6 +594,7 @@ async def resume_agents_from_notes(app_state) -> None:
         # is surfaced loudly and the recovery notes are kept.
         for agent, _ in finalize:
             agent["paused"] = False
+            agent["paused_by_restart"] = False
         from tinyagentos.config import save_config_locked
 
         try:
@@ -613,9 +639,9 @@ async def _resume_retry_loop(app_state, names: list[str]) -> None:
     notif = app_state.notifications
 
     remaining = set(names)
-    deadline = time.monotonic() + _RESUME_RETRY_WINDOW_S
+    deadline = _monotonic() + _RESUME_RETRY_WINDOW_S
 
-    while remaining and time.monotonic() < deadline:
+    while remaining and _monotonic() < deadline:
         await asyncio.sleep(_RESUME_RETRY_INTERVAL_S)
         # Rebuilt each tick on purpose: agents can be added or removed while
         # the 10-minute window runs, and a stale index would resume a deleted
@@ -627,13 +653,18 @@ async def _resume_retry_loop(app_state, names: list[str]) -> None:
             # exists to remove; log and keep going instead.
             try:
                 agent = by_name.get(name)
-                if agent is None or not agent.get("paused", False):
+                if agent is None or not agent.get("paused_by_restart", False):
+                    remaining.discard(name)
+                    continue
+                host = agent.get("host", "")
+                port = agent.get("port")
+                if not host or port is None:
                     remaining.discard(name)
                     continue
                 note_path = data_dir / "agent-memory" / name / "resume_note.json"
                 note = _load_or_synthesize_note(note_path)
                 _cap_context_snapshot(note)
-                if await _post_resume(agent.get("host", ""), agent.get("port", 8080), note):
+                if await _post_resume(host, port, note):
                     # Per-agent config write is fine here: retry successes are
                     # rare, isolated events (one agent per 30s tick at worst),
                     # unlike the boot pass which batches.
@@ -649,15 +680,42 @@ async def _resume_retry_loop(app_state, names: list[str]) -> None:
                 logger.exception("resume retry for agent %s failed; will retry", name)
 
     if remaining:
+        # If the retry window expires for an agent that WAS paused by the
+        # restart, clear its paused flag anyway and emit one notification
+        # saying it could not be told to resume; never leave a stuck flag
+        # behind. Agents paused by other means keep their flag.
+        by_name = {a["name"]: a for a in config.agents}
+        for name in remaining:
+            agent = by_name.get(name)
+            if agent is not None and agent.get("paused_by_restart", False):
+                agent["paused"] = False
+                agent["paused_by_restart"] = False
+        from tinyagentos.config import save_config_locked
+
+        save_ok = True
+        try:
+            await save_config_locked(config, config.config_path)
+        except Exception:
+            logger.exception("persisting agent unpauses after retry window failed")
+            save_ok = False
+
         # The whole point of this warning is to make the failure visible; a
         # notification-store error must not silently swallow it.
         try:
+            if save_ok:
+                message = (
+                    f"Could not tell these agents to resume after the restart: "
+                    f"{', '.join(sorted(remaining))}. Their paused flags have been cleared."
+                )
+            else:
+                message = (
+                    f"Could not tell these agents to resume after the restart: "
+                    f"{', '.join(sorted(remaining))}. Config write failed; paused flags "
+                    f"cleared in memory but may reappear after the next restart."
+                )
             await notif.add(
-                title="Some agents are still paused",
-                message=(
-                    f"Could not resume after the restart: {', '.join(sorted(remaining))}. "
-                    "They stay paused; check the agent containers, then unpause from the Agents app."
-                ),
+                title="Some agents could not be resumed",
+                message=message,
                 level="warning",
                 source="system.lifecycle",
             )
