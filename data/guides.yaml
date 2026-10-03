@@ -1,0 +1,161 @@
+# Guides — curated model recommendations by hardware tier and use case.
+# Opinionated, community-maintained. Separate from the Store's mechanical
+# compatibility engine. These are human judgments, not resolver output.
+
+hardware_tiers:
+  pi-16gb:
+    label: "Raspberry Pi (16 GB)"
+    description: "ARM-based SBC with 16 GB RAM. Best with small quantised models."
+    icon: "cpu"
+  nvidia-12gb:
+    label: "NVIDIA GPU (12 GB)"
+    description: "Desktop GPU with 12 GB VRAM. Runs mid-size models with GPU acceleration."
+    icon: "monitor"
+  cpu-only:
+    label: "CPU Only"
+    description: "No dedicated GPU. Relies on system RAM for inference."
+    icon: "server"
+
+use_cases:
+  chat:
+    label: "Chat"
+    description: "Conversational AI — assistants, companions, Q&A. Needs good instruction following."
+    icon: "message-circle"
+  coding:
+    label: "Coding"
+    description: "Code generation, completion, and refactoring. Needs strong reasoning."
+    icon: "code"
+  embedding:
+    label: "Embedding"
+    description: "Semantic search, RAG, clustering. Small specialised models."
+    icon: "layers"
+  vision:
+    label: "Vision"
+    description: "Image understanding and multimodal tasks."
+    icon: "image"
+  voice:
+    label: "Voice / TTS"
+    description: "Speech recognition and synthesis."
+    icon: "mic"
+
+# Each recommendation: model name, curated reason, optional note.
+recommendations:
+  pi-16gb:
+    chat:
+      - model: "Qwen3 1.7B (Q4_K_M)"
+        reason: "Best quality for 16 GB RAM. Snappy on ARM with llama.cpp."
+        note: "Fits comfortably with room for context. ~1.2 GB on disk."
+      - model: "Gemma 3 1B (Q4_K_M)"
+        reason: "Google's lightweight champ. Excellent instruction following."
+        note: "~700 MB. Good fallback if Qwen feels slow."
+      - model: "SmolLM2 360M (Q8_0)"
+        reason: "Ultra-light. Runs on anything. Good for simple Q&A."
+        note: "Tiny but surprisingly capable for its size."
+    coding:
+      - model: "Qwen3 1.7B (Q4_K_M)"
+        reason: "Best coding model that fits in 16 GB. Solid for shell scripts and simple Python."
+        note: "Not for large codebases — use cloud models for that."
+      - model: "DeepSeek Coder 1.3B (Q4_K_M)"
+        reason: "Purpose-built for code. Good autocomplete quality."
+        note: "Older model but still competitive at this size."
+    embedding:
+      - model: "BGE Small EN v1.5"
+        reason: "Industry standard for embeddings. 384 dimensions, fast on ARM."
+        note: "~130 MB. Works great for RAG on Pi."
+      - model: "Nomic Embed Text v1.5"
+        reason: "Modern embedding model. 768 dimensions, high quality."
+        note: "~270 MB. Slightly heavier but better semantic matching."
+    vision:
+      - model: "Moondream 2 (Q4_K_M)"
+        reason: "Tiny vision model. Runs on Pi with tolerable speed."
+        note: "~1 GB. Good for basic image description."
+    voice:
+      - model: "Whisper Tiny"
+        reason: "Smallest Whisper variant. Runs on ARM CPU."
+        note: "~75 MB. English only, acceptable accuracy."
+      - model: "Piper TTS (en_US-lessac)"
+        reason: "Lightweight TTS. Designed for embedded devices."
+        note: "~50 MB. Natural-sounding voice."
+
+  nvidia-12gb:
+    chat:
+      - model: "Qwen3 8B (Q4_K_M)"
+        reason: "The sweet spot for 12 GB VRAM. GPT-4-class chat quality."
+        note: "~5 GB VRAM. Leaves room for 8K context."
+      - model: "Llama 3.1 8B (Q4_K_M)"
+        reason: "Meta's flagship. Excellent general assistant."
+        note: "~5 GB VRAM. Strong instruction following."
+      - model: "Mistral 7B v0.3 (Q4_K_M)"
+        reason: "Fast and reliable. Good for multi-turn conversations."
+        note: "~4 GB VRAM. Mature ecosystem."
+      - model: "Gemma 3 4B (Q6_K)"
+        reason: "Google's mid-size. Punches above its weight class."
+        note: "~3.5 GB VRAM. Very fast inference."
+    coding:
+      - model: "Qwen3 8B (Q4_K_M)"
+        reason: "Best all-around coding model for 12 GB. Handles complex tasks."
+        note: "Strong at Python, JS, shell. Good code review too."
+      - model: "DeepSeek Coder V2 Lite (Q4_K_M)"
+        reason: "Purpose-built coding model. Excellent at refactoring and reasoning."
+        note: "~9 GB VRAM. Tight fit but worth it for heavy coding sessions."
+      - model: "Qwen2.5 Coder 7B (Q4_K_M)"
+        reason: "Qwen's coding specialist. Great at following complex instructions."
+        note: "~4.5 GB VRAM. Balanced coding assistant."
+    embedding:
+      - model: "BGE Large EN v1.5"
+        reason: "Top-tier embeddings. 1024 dimensions, excellent semantic quality."
+        note: "~1.3 GB. Worth the space for production RAG."
+      - model: "BGE M3"
+        reason: "Multilingual. 1024 dimensions. Handles 100+ languages."
+        note: "~1.5 GB. Go-to if you need non-English support."
+    vision:
+      - model: "LLaVA 1.6 Mistral 7B (Q4_K_M)"
+        reason: "Best vision model for 12 GB. Detailed image understanding."
+        note: "~5 GB VRAM. Can describe scenes, read text in images."
+      - model: "Florence 2 Base"
+        reason: "Microsoft's vision model. Fast, accurate, task-specific."
+        note: "~500 MB. Good for OCR and object detection."
+    voice:
+      - model: "Whisper Small"
+        reason: "Good accuracy for its size. Multilingual."
+        note: "~500 MB. Runs well on GPU."
+      - model: "Kokoro TTS 82M"
+        reason: "Best quality open-source TTS. Fast on GPU."
+        note: "~160 MB. Natural prosody."
+
+  cpu-only:
+    chat:
+      - model: "Qwen3 4B (Q4_K_M)"
+        reason: "Best balance for CPU inference. Usable speed on modern CPUs."
+        note: "~2.5 GB. Expect 5-10 tokens/sec on a modern i7."
+      - model: "Llama 3.2 3B (Q4_K_M)"
+        reason: "Meta's compact model. Good conversation quality."
+        note: "~2 GB. Runs on most laptops."
+      - model: "Phi-3.5 Mini (Q4_K_M)"
+        reason: "Microsoft's compact powerhouse. Strong reasoning."
+        note: "~2 GB. Surprisingly good at complex questions."
+    coding:
+      - model: "Qwen3 4B (Q4_K_M)"
+        reason: "Best coding model for CPU-only. Handles Python, JS, shell."
+        note: "Decent at smaller tasks. Offload heavy work to cloud."
+      - model: "Phi-3.5 Mini (Q4_K_M)"
+        reason: "Strong reasoning for its size. Good at debugging."
+        note: "Better at analysis than generation at this tier."
+    embedding:
+      - model: "BGE Small EN v1.5"
+        reason: "Fast on CPU. 384 dimensions, good quality."
+        note: "~130 MB. Standard choice for local RAG."
+      - model: "Nomic Embed Text v1.5"
+        reason: "Modern embeddings. Runs fine on CPU."
+        note: "~270 MB. Better quality than BGE Small."
+    vision:
+      - model: "Moondream 2 (Q4_K_M)"
+        reason: "Runs on CPU. Good for basic image tasks."
+        note: "~1 GB. Slow but functional on CPU."
+    voice:
+      - model: "Whisper Tiny"
+        reason: "Runs on CPU. Fast enough for real-time."
+        note: "~75 MB. Good for dictation."
+      - model: "Piper TTS (en_US-lessac)"
+        reason: "Lightweight CPU TTS. Natural voice."
+        note: "~50 MB. Fast on modern CPUs."

@@ -1,0 +1,3 @@
+{"timestamp": 1776025647.6399057, "event_type": "conversation", "agent_name": "research-agent", "app_id": null, "summary": "User asked about deployment", "data": {"role": "user", "content": "How do I deploy taOS on my Orange Pi?"}}
+{"timestamp": 1776025647.6811268, "event_type": "tool_call", "agent_name": "research-agent", "app_id": null, "summary": "Agent searched knowledge base", "data": {"tool": "search_knowledge", "input": {"query": "orange pi deployment"}, "output": {"results": 3}}}
+{"timestamp": 1776025647.7973316, "event_type": "content_view", "agent_name": null, "app_id": "reddit", "summary": "Viewed Reddit thread", "data": {"url": "https://reddit.com/r/selfhosted/123", "title": "Best self-hosted AI setup"}}
