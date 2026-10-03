@@ -31,7 +31,7 @@ are bearer-authenticated (not session-authenticated).
 
 ```json
 {
-  "pair_request_id": "uuid",
+  "pair_request_id": "550e8400-e29b-41d4-a716-446655440000",
   "verify_code": "123456",
   "server_cert_fingerprint": "ab:cd:ef:..."
 }
@@ -57,7 +57,7 @@ fingerprint it computes from its own TLS handshake, and MUST abort with
 
 ```json
 {
-  "pair_request_id": "uuid",
+  "pair_request_id": "550e8400-e29b-41d4-a716-446655440000",
   "status": "pending"
 }
 ```
@@ -70,10 +70,10 @@ admin includes `server_cert_fingerprint` in its metadata for reference.
 
 ```json
 {
-  "pair_request_id": "uuid",
+  "pair_request_id": "550e8400-e29b-41d4-a716-446655440000",
   "status": "accepted",
   "device": {
-    "device_id": "uuid",
+    "device_id": "550e8400-e29b-41d4-a716-446655440001",
     "platform": "ios",
     "display_name": "My Phone",
     "user_id": "admin-uuid",
@@ -89,7 +89,7 @@ admin includes `server_cert_fingerprint` in its metadata for reference.
 
 ```json
 {
-  "pair_request_id": "uuid",
+  "pair_request_id": "550e8400-e29b-41d4-a716-446655440000",
   "status": "denied"
 }
 ```
@@ -98,7 +98,7 @@ An expired request returns the same shape with `"status": "expired"`.
 
 **Error codes:**
 
-- `404` -- unknown `pair_request_id`.
+- `404` -- `pair request not found`.
 
 ## TLS listener
 
