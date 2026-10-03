@@ -1,6 +1,7 @@
 import asyncio
 import os
 import stat
+import subprocess
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -67,11 +68,16 @@ class TestUpdatePreflight:
         test_file = tmp_path / "test_file.py"
         test_file.write_text("test")
 
-        # Mock os.geteuid to simulate non-service user
-        with patch("os.geteuid", return_value=1000):  # Service user
-            # Mock path.stat() to return root ownership
-            mock_stat = MagicMock()
-            mock_stat.st_uid = 0  # root
+        # Mock os.geteuid to simulate a non-root service user.
+        with patch("os.geteuid", return_value=1000):
+            # Report root ownership for the planted file. A real stat_result
+            # is required because pathlib calls S_ISREG on the result.
+            real = os.stat(test_file)
+            mock_stat = os.stat_result(
+                (real.st_mode, real.st_ino, real.st_dev, real.st_nlink,
+                 0, real.st_gid, real.st_size, real.st_atime,
+                 real.st_mtime, real.st_ctime)  # uid=0 (root)
+            )
             with patch("pathlib.Path.stat", return_value=mock_stat):
                 count, paths = _find_foreign_owned_files(tmp_path)
 
@@ -222,13 +228,59 @@ class TestUpdatePreflight:
             assert "refs/tags/*" in refspecs[1]
 
     def test_check_preflight_accepts_str_path(self, tmp_path):
-        """The update-check route passes project_dir as a str; coercion must not crash."""
-        from tinyagentos.update_preflight import check_preflight
+        """The update-check route passes project_dir as a str; coercion must not
+        crash and the foreign-file scan must actually run over a real repo.
+
+        A genuine temp git repository is created with a tracked file plus an
+        untracked file that is foreign to the running user. The preflight is
+        called with ``str(repo)`` exactly as the settings route does, and the
+        asserted issue shows the scan ran rather than an empty short-circuit.
+
+        Ownership is simulated by patching ``os.stat`` (called by ``Path.stat``
+        through the accessor), so every file reports root ownership and is
+        foreign to the non-root service user. This test fails without the
+        coercion fix with ``AttributeError: 'str' object has no attribute
+        'rglob'``, and also fails if the scan never runs or the str is not
+        normalised.
+        """
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        for cmd in (["git", "init", "-q"], ["git", "config", "user.email", "t@t"],
+                    ["git", "config", "user.name", "t"], ["git", "checkout", "-q", "-b", "dev"]):
+            subprocess.run(cmd, cwd=repo, check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        (repo / "code.py").write_text("v1")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["git", "commit", "-qm", "base"], cwd=repo, check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        (repo / "foreign.txt").write_text("owned by others")  # untracked, foreign
+
+        _real_stat = os.stat
+
+        def foreign_stat(path, *args, **kwargs):
+            # Report root ownership for every file -> all files are foreign
+            # to the non-root service user.
+            real = _real_stat(path, *args, **kwargs)
+            return os.stat_result(
+                (real.st_mode, real.st_ino, real.st_dev, real.st_nlink, 0,
+                 real.st_gid, real.st_size, real.st_atime,
+                 real.st_mtime, real.st_ctime)
+            )
 
         with patch("tinyagentos.update_preflight._ls_remote_heads") as mock_ls_remote:
-            mock_ls_remote.return_value = (True, True)  # Remote reachable, branch exists
+            mock_ls_remote.return_value = (True, True)  # remote reachable, branch exists
             with patch("tinyagentos.update_preflight._get_fetch_refspecs") as mock_get_specs:
-                mock_get_specs.return_value = ["+refs/heads/*:refs/remotes/origin/*"]  # default glob
-                # Call with a str path, exactly as the settings route does
-                issues = check_preflight(str(tmp_path))
-                assert issues == []
+                mock_get_specs.return_value = [
+                    "+refs/heads/*:refs/remotes/origin/*",
+                    "+refs/tags/*:refs/tags/*",
+                ]  # realistic two-refspec config
+                with patch("os.geteuid", return_value=1000):  # service user, not root
+                    with patch("os.stat", side_effect=foreign_stat):
+                        from tinyagentos.update_preflight import check_preflight
+
+                        issues = check_preflight(str(repo))
+
+        foreign_issues = [i for i in issues if i.code == "foreign_owned_files"]
+        assert foreign_issues
+        assert "foreign.txt" in foreign_issues[0].message

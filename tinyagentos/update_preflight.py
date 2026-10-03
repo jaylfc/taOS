@@ -202,6 +202,8 @@ def check_preflight(project_dir: str | os.PathLike) -> List[PreflightIssue]:
 
     Args:
         project_dir: The taOS project directory (where .git/ lives).
+            A ``str`` or ``os.PathLike`` is accepted and normalised to a
+            ``Path`` internally, so callers may pass either.
 
     Returns:
         List of PreflightIssue objects. Empty list means no problems.
