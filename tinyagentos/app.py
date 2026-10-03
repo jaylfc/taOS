@@ -203,6 +203,14 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     from tinyagentos.hardware import get_hardware_profile
 
     data_dir = resolve_data_dir(data_dir)
+    # Root the process-global taosmd agent registry at the app's resolved
+    # data_dir so every consumer (the /api/agents/deploy route, the v2 persona
+    # startup migration, CLI entry points) registers into a single source of
+    # truth instead of the default "data/" process-global default. In tests
+    # this keeps registration inside tmp_path and out of the repository's
+    # data/ directory.
+    import taosmd.agents
+    taosmd.agents._default_registry = taosmd.agents.AgentRegistry(data_dir)
     config_path = data_dir / "config.yaml"
     # Copy example config on first run
     if not config_path.exists():
