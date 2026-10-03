@@ -800,7 +800,47 @@ class TestDeployRegistryRegistration:
 
 
 @pytest.mark.asyncio
-class TestAgentArchiveLifecycle:
+class TestDeployUsesAppScopedTaosmdRegistry:
+    """Deploy must register agents via app.state.taosmd_agent_registry, not the
+    module-level global, so multiple create_app() calls do not share state."""
+
+    async def test_deploy_registers_into_app_scoped_registry(self, client, app, tmp_path, monkeypatch):
+        import taosmd.agents as tm_agents
+        from unittest.mock import AsyncMock, MagicMock
+
+        app.state.archive = MagicMock(
+            record=AsyncMock(), query=AsyncMock(return_value=[{}])
+        )
+
+        assert hasattr(app.state, "taosmd_agent_registry"), (
+            "create_app must set app.state.taosmd_agent_registry"
+        )
+        pre_count = len(app.state.taosmd_agent_registry.list_agents())
+
+        async def fake_deploy(req):
+            return {"success": True, "name": req.name, "ip": "10.0.0.42",
+                    "llm_key": "sk-test", "steps": ["deployment_complete"],
+                    "container": f"taos-agent-{req.name}"}
+        monkeypatch.setattr("tinyagentos.deployer.deploy_agent", fake_deploy)
+
+        class _FakeCatalog:
+            def all_models(self, capability=None):
+                return [{"name": "test-model", "id": "test-model"}]
+        app.state.backend_catalog = _FakeCatalog()
+        app.state.cluster_manager._workers.clear()
+
+        resp = await client.post("/api/agents/deploy", json={
+            "name": "ScopedReg",
+            "framework": "openclaw",
+            "model": "test-model",
+        })
+        assert resp.status_code == 200
+
+        post_count = len(app.state.taosmd_agent_registry.list_agents())
+        assert post_count == pre_count + 1
+        names = {r["name"] for r in app.state.taosmd_agent_registry.list_agents()}
+        assert "scopedreg" in names
+
     async def test_archive_creates_snapshot_not_rename(self, client, monkeypatch):
         """DELETE /api/agents/{name} archives via snapshot; no rename called."""
         stopped = []

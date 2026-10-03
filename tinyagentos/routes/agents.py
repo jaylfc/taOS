@@ -742,7 +742,7 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
         # because that mode explicitly opts out of taOSmd.
         if body.memory_mode != "framework":
             try:
-                request.app.state.agent_registry.register_agent(unique_slug)
+                request.app.state.taosmd_agent_registry.register_agent(unique_slug)
             except tm_agents.AgentExistsError:
                 pass  # idempotent — agent already registered, proceed normally
             except Exception as e:
