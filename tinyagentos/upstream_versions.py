@@ -230,33 +230,71 @@ async def fetch_registry_tags(
 async def _fetch_docker_hub_tags(
     path: str, *, client: httpx.AsyncClient | None = None
 ) -> list[str] | None:
+    """Docker Hub v2 repositories API: list tags for an image path.
+
+    Returns a list of tag names, or None on any failure -- the caller
+    records "unknown", never "no update". Docker Hub's tag listing API
+    supports pagination (100 tags per page). This implementation follows
+    the ``next`` link and accumulates all tags from every page, bounded to
+    10 pages in practice.
+    """
     repo = _hub_path(path)
     owns_client = client is None
     try:
         if owns_client:
             client = httpx.AsyncClient(timeout=_FETCH_TIMEOUT)
         assert client is not None
-        resp = await client.get(
-            _DOCKER_HUB_TAGS.format(path=repo),
-            params={"ordering": "last_updated", "page_size": 100},
-        )
-        if resp.status_code != 200:
-            return None
-        data = resp.json()
-        results = data.get("results") if isinstance(data, dict) else None
-        if not isinstance(results, list):
-            return None
-        return [
-            t["name"]
-            for t in results
-            if isinstance(t, dict) and isinstance(t.get("name"), str)
-        ]
+        
+        tags: list[str] = []
+        next_url = _DOCKER_HUB_TAGS.format(path=repo)
+        page_count = 0
+        max_pages = 10  # bounded page count
+        
+        while next_url and page_count < max_pages:
+            # For the first page, pass query parameters; for subsequent pages, use the next URL which already has them
+            if page_count == 0:
+                resp = await client.get(
+                    next_url,
+                    params={"ordering": "last_updated", "page_size": 100},
+                )
+            else:
+                resp = await client.get(next_url)
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+            results = data.get("results") if isinstance(data, dict) else None
+            if not isinstance(results, list):
+                return None
+            page_tags = [
+                t["name"]
+                for t in results
+                if isinstance(t, dict) and isinstance(t.get("name"), str)
+            ]
+            tags.extend(page_tags)
+            
+            # Get the next URL for pagination (already contains params)
+            next_url = data.get("next")
+            # SECURITY FIX: Only follow Docker Hub pagination links
+            if isinstance(next_url, str) and not next_url.startswith("https://hub.docker.com/"):
+                # Stop paginating for external hosts, return tags gathered so far
+                return tags
+            # Validate next_url is a string
+            if not isinstance(next_url, str):
+                next_url = None
+            page_count += 1
+            
+        return tags
     except Exception as exc:  # network error, timeout, bad JSON
         logger.debug("docker hub tag fetch failed for %s: %s", repo, exc)
         return None
     finally:
         if owns_client and client is not None:
             await client.aclose()
+
+
+# --------------------------------------------------------------------------- #
+# Test: Security fix for Docker Hub pagination
+# --------------------------------------------------------------------------- #
 
 
 async def _fetch_registry_v2_tags(
