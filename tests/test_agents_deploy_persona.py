@@ -82,8 +82,7 @@ class TestDeployPersonaFields:
         calls = []
         def fake_register(name, **kwargs):
             calls.append(name)
-        import taosmd.agents as tm_agents
-        monkeypatch.setattr(tm_agents, "register_agent", fake_register)
+        monkeypatch.setattr(app.state.taosmd_agent_registry, "register_agent", fake_register)
         resp = await client.post("/api/agents/deploy", json={"name": "Atlas-reg", "framework": "openclaw"})
         assert resp.status_code == 200
         assert calls == [resp.json()["name"]]
@@ -94,8 +93,7 @@ class TestDeployPersonaFields:
         )
         def fake_register(name, **kwargs):
             raise RuntimeError("taosmd down")
-        import taosmd.agents as tm_agents
-        monkeypatch.setattr(tm_agents, "register_agent", fake_register)
+        monkeypatch.setattr(app.state.taosmd_agent_registry, "register_agent", fake_register)
         before_count = len(app.state.config.agents)
         resp = await client.post("/api/agents/deploy", json={"name": "Atlas-fail", "framework": "openclaw"})
         assert resp.status_code == 500
@@ -108,6 +106,6 @@ class TestDeployPersonaFields:
         import taosmd.agents as tm_agents
         def fake_register(name, **kwargs):
             raise tm_agents.AgentExistsError(name)
-        monkeypatch.setattr(tm_agents, "register_agent", fake_register)
+        monkeypatch.setattr(app.state.taosmd_agent_registry, "register_agent", fake_register)
         resp = await client.post("/api/agents/deploy", json={"name": "Atlas-dup", "framework": "openclaw"})
         assert resp.status_code == 200

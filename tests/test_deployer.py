@@ -1063,8 +1063,8 @@ class TestOpenClawSpliceDeploy:
              patch("tinyagentos.deployer.is_image_present", new_callable=AsyncMock, return_value=False):
             mock_create.return_value = {"success": True, "name": "taos-agent-splice-test"}
             with patch.dict(sys.modules, {"taosmd": fake_taosmd}):
-                 req = _req(name="splice-test", framework="openclaw", data_dir=tmp_path)
-                 result = await deploy_agent(req)
+                req = _req(name="splice-test", framework="openclaw", data_dir=tmp_path)
+                result = await deploy_agent(req)
 
         assert result["success"] is True
         agents_pushed = [(dst, c) for dst, c in pushed if dst == "/root/.openclaw/AGENTS.md"]
