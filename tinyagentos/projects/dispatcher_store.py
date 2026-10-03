@@ -69,15 +69,15 @@ class DispatcherConfig:
     poll_seconds: int = 30
     lease_seconds: int = 900
     updated_by: str = ""
-    updated_at: float = 0.0
+    # None means "never stored": set_config stamps it on write. A synthesised
+    # time.time() here would date a config the user never saved.
+    updated_at: Optional[float] = None
 
     def __post_init__(self):
         if self.boards is None:
             self.boards = []
         if self.eligible_agents is None:
             self.eligible_agents = []
-        if self.updated_at == 0.0:
-            self.updated_at = time.time()
 
     def to_dict(self) -> dict:
         return {
@@ -103,7 +103,7 @@ def _row_to_config(row) -> DispatcherConfig:
         poll_seconds=row[5],
         lease_seconds=row[6],
         updated_by=row[7] if row[7] else "",
-        updated_at=row[8] if row[8] else 0.0,
+        updated_at=row[8] if row[8] else None,
     )
 
 

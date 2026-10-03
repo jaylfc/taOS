@@ -101,8 +101,10 @@ _AGENT_CONTAINER_QUOTA_ROUTE = ("GET", re.compile(r"^/api/agents/containers/quot
 # accept a LiteLLM/Bearer key for agent self-service.
 # Desktop control endpoints (command, screenshot, layout) for the system taOS Agent.
 # Skill-exec endpoints for the system taOS Agent (scope system_agent_exec).
-# Dispatcher config endpoints (GET/PUT /api/dispatcher/config) - agent tokens reach
-# the route but are rejected with 403 (session-only CRUD).
+# NOTE: /api/dispatcher/config is deliberately NOT here. Config CRUD is
+# session-only and refuses agents outright, so nothing there verifies a JWT or a
+# scope grant; listing it would only hand a bare Bearer (valid, stale or
+# garbage) the auth gate and shadow the caller's own session cookie.
 _AGENT_TOKEN_PATHS = (
     _REGISTRY_FEED_PATHS
     | _A2A_BUS_READ_PATHS
@@ -117,7 +119,6 @@ _AGENT_TOKEN_PATHS = (
         "/api/desktop/command",
         "/api/desktop/screenshot",
         "/api/desktop/layout",
-        "/api/dispatcher/config",
     })
 )
 
