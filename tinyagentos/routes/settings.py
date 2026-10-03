@@ -599,7 +599,7 @@ async def check_for_updates(request: Request):
     project_dir = str(Path(__file__).parent.parent.parent)
 
     # Pre-flight validation to prevent confusing errors or partial updates
-    preflight_issues = check_preflight(project_dir)
+    preflight_issues = await asyncio.to_thread(check_preflight, project_dir)
     if preflight_issues:
         return {
             "has_updates": False,
@@ -641,15 +641,6 @@ async def check_for_updates(request: Request):
             "preflight_errors": [],
             "fetch_error": (fetch_out.decode() if fetch_out else "unknown error").strip()[:300],
         }
-
-    async def _rev_parse(ref: str) -> str:
-        p = await asyncio.create_subprocess_exec(
-            "git", "rev-parse", ref,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-            cwd=project_dir,
-        )
-        out, _ = await p.communicate()
-        return out.decode().strip() if out else ""
 
     async def _rev_parse(ref: str) -> str:
         p = await asyncio.create_subprocess_exec(
@@ -1153,7 +1144,7 @@ async def apply_update(request: Request):
     # Pre-flight validation to prevent confusing errors or partial updates
     from tinyagentos.update_preflight import check_preflight
 
-    preflight_issues = check_preflight(project_dir)
+    preflight_issues = await asyncio.to_thread(check_preflight, project_dir)
     if preflight_issues:
         # REFUSE: check_for_updates returns 200 with preflight_errors: [...] and has_updates false;
         # apply_update returns 409 with the messages and does NOT touch the tree

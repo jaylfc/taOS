@@ -6,7 +6,7 @@ partial updates, confusing error messages, or permission issues.
 Checks for:
 1. Tracked branch missing on remote origin
 2. Narrow remote.origin.fetch refspec that excludes the tracked branch
-3. Files owned by non-service user that would block git operations
+3. Files not writable by the service user that would block git operations
 """
 from __future__ import annotations
 import os
@@ -45,12 +45,12 @@ def _run_cmd(cmd: List[str], cwd: Path | None = None) -> tuple[int, str]:
         return -1, f"[ERROR] {e}"
 
 
-def _ls_remote_heads(remote: str, branch: str) -> tuple[bool, bool]:
+def _ls_remote_heads(remote: str, branch: str, project_dir: Path) -> tuple[bool, bool]:
     """Check if branch exists on remote and if remote is reachable.
 
     Returns (remote_reachable, branch_exists).
     """
-    rc, out = _run_cmd(["git", "ls-remote", "--heads", remote, branch])
+    rc, out = _run_cmd(["git", "ls-remote", "--heads", remote, branch], cwd=project_dir)
     if rc != 0:
         # Git ls-remote failed - assume remote is unreachable, not that branch is missing
         return False, False
@@ -93,105 +93,31 @@ def _covers_ref(ref: str, refspecs: List[str]) -> bool:
 
 
 def _find_foreign_owned_files(project_dir: Path, excluded_prefixes: tuple[str, ...] = (".venv", "node_modules")) -> tuple[int, List[str]]:
-    """Find files owned by a user other than the current effective user.
+    """Find files not writable by the current effective user.
 
     Excludes files under excluded prefixes, files in data dirs (./data),
-    and files owned by root (UID 0).
+    __pycache__/, and venv dirs. When running as root, returns (0, [])
+    because root can write any file.
     """
-    from os import geteuid
-    from pwd import getpwuid
-
-    current_uid = geteuid()
-    if current_uid == 0:
-        # Running as root - all files would be foreign
-        return count_and_paths(project_dir, excluded_prefixes)
+    if os.geteuid() == 0:
+        return 0, []
 
     count = 0
     paths = []
+    prune_dirs = {".venv", "venv", "node_modules", "data", "__pycache__"}
 
-    for path in project_dir.rglob("*"):
-        if path.is_file():
-            try:
-                # Skip excluded patterns
-                if any(path.name.startswith(prefix) or f"/{prefix}/" in str(path) or str(path).endswith(f"/{prefix}") for prefix in excluded_prefixes):
-                    continue
-
-                # Skip files in data directory
-                if "data" in path.parts:
-                    continue
-
-                # Skip temporary files and hidden files
-                if path.name.startswith(".") or path.name.endswith(".tmp") or path.name.endswith(".temp"):
-                    continue
-
-                stat = path.stat()
-                if stat.st_uid != current_uid:
-                    count += 1
-                    if len(paths) < 5:
-                        try:
-                            owner = getpwuid(stat.st_uid).pw_name
-                        except (KeyError, ImportError):
-                            owner = str(stat.st_uid)
-                        paths.append(f"{path} (owned by {owner})")
-            except (OSError, PermissionError):
-                # Skip files we can't stat
-                continue
-
-    return count, paths
-
-
-def count_and_paths(root: Path, excluded_prefixes: tuple[str, ...] = (".venv", "node_modules")) -> tuple[int, List[str]]:
-    """Fallback when pwd module is not available."""
-    from os import geteuid
-
-    current_uid = geteuid()
-    if current_uid == 0:
-        return _count_all_files(root, excluded_prefixes)
-
-    return _count_foreign_files_fallback(root, excluded_prefixes, current_uid)
-
-
-def _count_all_files(root: Path, excluded_prefixes: tuple[str, ...]) -> tuple[int, List[str]]:
-    """Count all files excluding excluded patterns."""
-    count = 0
-    paths = []
-
-    for path in root.rglob("*"):
-        if path.is_file():
-            if any(path.name.startswith(prefix) or f"/{prefix}/" in str(path) or str(path).endswith(f"/{prefix}") for prefix in excluded_prefixes):
-                continue
-            if "data" in path.parts:
-                continue
+    for root, dirs, files in os.walk(project_dir):
+        dirs[:] = [d for d in dirs if d not in prune_dirs]
+        for fname in files:
+            path = Path(root) / fname
             if path.name.startswith(".") or path.name.endswith(".tmp") or path.name.endswith(".temp"):
                 continue
-            count += 1
-            if len(paths) < 5:
-                paths.append(str(path))
-
-    return count, paths
-
-
-def _count_foreign_files_fallback(root: Path, excluded_prefixes: tuple[str, ...], current_uid: int) -> tuple[int, List[str]]:
-    """Count files owned by users other than current_uid."""
-    count = 0
-    paths = []
-
-    for path in root.rglob("*"):
-        if path.is_file():
-            if any(path.name.startswith(prefix) or f"/{prefix}/" in str(path) or str(path).endswith(f"/{prefix}") for prefix in excluded_prefixes):
-                continue
-            if "data" in path.parts:
-                continue
-            if path.name.startswith(".") or path.name.endswith(".tmp") or path.name.endswith(".temp"):
-                continue
-
             try:
-                stat = path.stat()
-                if stat.st_uid != current_uid:
+                if not os.access(path, os.W_OK):
                     count += 1
                     if len(paths) < 5:
                         paths.append(str(path))
-            except (OSError, PermissionError):
+            except OSError:
                 continue
 
     return count, paths
@@ -226,7 +152,18 @@ def check_preflight(project_dir: str | os.PathLike) -> List[PreflightIssue]:
         if not branch or branch == "HEAD":
             branch = "master"
 
-    if not branch or not branch.isalnum():
+    if not branch:
+        issues.append(
+            PreflightIssue(
+                code="invalid_tracked_branch",
+                message=f"Cannot determine a valid tracked branch (found: {branch!r}).",
+                repair="Set a valid tracked branch via 'taosctl set-update-channel <branch>'.",
+            )
+        )
+        return issues
+
+    rc, _ = _run_cmd(["git", "check-ref-format", "--branch", branch], project_dir)
+    if rc != 0:
         issues.append(
             PreflightIssue(
                 code="invalid_tracked_branch",
@@ -237,15 +174,9 @@ def check_preflight(project_dir: str | os.PathLike) -> List[PreflightIssue]:
         return issues
 
     # 1. Check if tracked branch exists on origin
-    remote_reachable, branch_exists = _ls_remote_heads("origin", branch)
+    remote_reachable, branch_exists = _ls_remote_heads("origin", branch, project_dir)
     if not remote_reachable:
-        issues.append(
-            PreflightIssue(
-                code="branch_not_on_origin",
-                message=f"Tracked branch '{branch}' is not present on origin (git ls-remote --heads origin {branch} failed).",
-                repair=f"Ensure the branch '{branch}' exists on remote 'origin' (e.g., git push origin {branch}).",
-            )
-        )
+        pass
     elif not branch_exists:
         issues.append(
             PreflightIssue(
@@ -279,11 +210,11 @@ def check_preflight(project_dir: str | os.PathLike) -> List[PreflightIssue]:
             PreflightIssue(
                 code="narrow_fetch_refspec",
                 message=f"Remote.origin.fetch does not cover refs/heads/{branch} (narrow refspec configuration).",
-                repair=f"Auto-repairing: git config --add remote.origin.fetch 'refs/heads/{branch}:refs/remotes/origin/{branch}'",
+                repair=f"Run: git config --add remote.origin.fetch '+refs/heads/{branch}:refs/remotes/origin/{branch}'",
             )
         )
 
-    # 3. Check for foreign-owned files
+    # 3. Check for files not writable by the service user
     count, paths = _find_foreign_owned_files(project_dir)
     if count > 0:
         paths_str = "\n  ".join(paths[:5])
@@ -293,45 +224,9 @@ def check_preflight(project_dir: str | os.PathLike) -> List[PreflightIssue]:
         issues.append(
             PreflightIssue(
                 code="foreign_owned_files",
-                message=f"{count} file(s) are owned by a different user (including: {paths_str}).",
+                message=f"{count} file(s) are not writable by the service user (including: {paths_str}).",
                 repair="Change file ownership to the service user (e.g., chown -R <user>:<group> .).",
             )
         )
 
     return issues
-
-
-def auto_repair_narrow_refspec(project_dir: Path) -> bool:
-    """Auto-repair narrow_fetch_refspec issue by adding the branch refspec.
-
-    Returns True if repaired, False if already OK or cannot repair.
-    """
-    from tinyagentos.config import load_config
-    config = load_config(project_dir / "config.yaml")
-    branch = getattr(config, "tracked_branch", "master")
-
-    if not branch:
-        return False
-
-    refspecs = _get_fetch_refspecs(project_dir)
-    expected_ref = f"refs/heads/{branch}"
-
-    # Check if already covered
-    for refspec in refspecs:
-        if refspec.startswith("+"):
-            refspec = refspec[1:]
-        if ":" in refspec:
-            src = refspec.split(":", 1)[0]
-        else:
-            src = refspec
-
-        if _covers_ref(expected_ref, [refspec]):
-            return True
-
-    # Add the refspec
-    new_refspec = f"refs/heads/{branch}:refs/remotes/origin/{branch}"
-    rc, out = _run_cmd(["git", "config", "--add", "remote.origin.fetch", new_refspec], project_dir)
-    if rc == 0:
-        return True
-    else:
-        return False
