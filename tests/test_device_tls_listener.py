@@ -377,6 +377,118 @@ def test_device_tls_key_created_0600(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# (h) fix-forward tsk-kwa27g: cert/key written through atomic_io, key never
+#     wider than 0o600, and both writes are crash-safe (file + dir fsync)
+# ---------------------------------------------------------------------------
+
+def test_device_tls_key_written_through_atomic_io_with_0600(tmp_path, monkeypatch):
+    """Both files go through atomic_io with mode=0o600 as a write parameter.
+
+    The mode is a parameter of the write rather than a chmod applied after it,
+    so the key cannot exist on disk with a wider mode even for the instant
+    between the write and the chmod. Asserting only the final mode on disk
+    passes on a chmod-after-write regression.
+    """
+    import stat
+
+    from tinyagentos import device_tls
+
+    calls = []
+    real_write = device_tls.atomic_write_bytes
+
+    def spy(path, data, **kwargs):
+        calls.append((path, kwargs.get("mode")))
+        return real_write(path, data, **kwargs)
+
+    monkeypatch.setattr(device_tls, "atomic_write_bytes", spy)
+
+    cert_path, key_path, _ = device_tls.load_or_create_device_tls_cert(tmp_path)
+
+    assert calls == [(cert_path, 0o600), (key_path, 0o600)], (
+        f"expected atomic_write_bytes called with mode=0o600 for both files, got {calls}"
+    )
+    assert stat.S_IMODE(key_path.stat().st_mode) == 0o600, (
+        f"Key file mode should be 0o600, got {oct(stat.S_IMODE(key_path.stat().st_mode))}"
+    )
+
+
+def test_device_tls_creates_no_temp_file_with_a_wider_mode(tmp_path, monkeypatch):
+    """No temp name is ever created with group or other bits set.
+
+    os.open's mode argument is filtered by the umask, so asking for 0o600 can
+    only ever land narrower; asking for 0o644 and chmodding afterwards is the
+    shape this test exists to reject.
+    """
+    import os
+    import stat
+
+    from tinyagentos import device_tls
+
+    created_modes = []
+    chmods = []
+    real_open = os.open
+    real_chmod = os.chmod
+
+    def spy_open(path, flags, mode=0o777, *a, **kw):
+        if flags & os.O_CREAT:
+            created_modes.append(stat.S_IMODE(mode))
+        return real_open(path, flags, mode, *a, **kw)
+
+    def spy_chmod(path, mode, *a, **kw):
+        chmods.append((os.path.basename(str(path)), stat.S_IMODE(mode)))
+        return real_chmod(path, mode, *a, **kw)
+
+    monkeypatch.setattr(os, "open", spy_open)
+    monkeypatch.setattr(os, "chmod", spy_chmod)
+
+    device_tls.load_or_create_device_tls_cert(tmp_path)
+
+    assert created_modes, "expected the temp files to be created with O_CREAT"
+    assert [oct(m) for m in created_modes] == ["0o600", "0o600"], (
+        f"every temp file must be created 0o600, got {[oct(m) for m in created_modes]}"
+    )
+    assert [oct(m) for _name, m in chmods] == ["0o600", "0o600"], (
+        f"the pre-rename chmod must be 0o600, got {chmods}"
+    )
+
+
+def test_device_tls_writes_are_crash_safe(tmp_path, monkeypatch):
+    """Four fsyncs for two files: each temp file, then each parent directory.
+
+    Syncing only the file still loses the rename; syncing only the directory
+    still lets the target come back NUL-filled.
+    """
+    import os
+
+    from tinyagentos import device_tls
+
+    calls = []
+    real_fsync = os.fsync
+
+    def counting_fsync(fd):
+        calls.append(fd)
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", counting_fsync)
+
+    device_tls.load_or_create_device_tls_cert(tmp_path)
+
+    assert len(calls) == 4, (
+        f"expected os.fsync called 4 times, got {len(calls)} -- each of the "
+        "cert and key writes must fsync its temp file and its parent directory"
+    )
+
+
+def test_device_tls_leaves_no_temp_file_behind(tmp_path):
+    """No orphan temp file survives the write (the old writer leaked on failure)."""
+    from tinyagentos.device_tls import load_or_create_device_tls_cert
+
+    load_or_create_device_tls_cert(tmp_path)
+
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["device_tls.crt", "device_tls.key"]
+
+
+# ---------------------------------------------------------------------------
 # Utility
 # ---------------------------------------------------------------------------
 

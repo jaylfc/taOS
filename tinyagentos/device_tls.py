@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import datetime
 import hashlib
-import os
-import tempfile
 from pathlib import Path
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
+
+from tinyagentos.atomic_io import atomic_write_bytes
 
 _CERT_NAME = "device_tls.crt"
 _KEY_NAME = "device_tls.key"
@@ -25,27 +25,20 @@ def _fingerprint_from_der(cert_der: bytes) -> str:
 def _write_file_atomic_0600(path: Path, data: bytes) -> None:
     """Write data to path atomically with mode 0o600.
 
-    Creates a temporary file in the same directory, writes data, then
-    atomically replaces the target. The file is created with 0o600 from
-    the start (no umask window). Any failure to restrict permissions is
-    raised, not swallowed.
+    ``atomic_write_bytes`` is the only writer allowed to promote a temp file
+    (see ``tests/test_config_atomic.py``): every hand-rolled copy of
+    temp-file-plus-replace has dropped the ``fsync`` of the file and of the
+    parent directory, so a power cut could leave the private key truncated or
+    NUL-filled while its metadata looked intact.
+
+    The mode is passed to ``atomic_write_bytes`` rather than applied with a
+    ``chmod`` after the write: the private key must never exist on disk with a
+    wider mode, not even for the instant between the write and the chmod.
+    ``atomic_write_bytes`` therefore creates the temp file 0o600 (os.open's
+    ``mode`` argument, which the umask can only narrow) and chmods it to 0o600
+    before the rename, since os.open honours the umask and chmod does not.
     """
-    dir_fd = os.open(path.parent, os.O_DIRECTORY)
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="wb", dir=path.parent, delete=False, prefix=f".{path.name}.", suffix=".tmp"
-        ) as tmp:
-            tmp_fd = tmp.fileno()
-            # Ensure the temp file is 0o600 from creation
-            os.fchmod(tmp_fd, 0o600)
-            tmp.write(data)
-            tmp.flush()
-            os.fsync(tmp_fd)
-            tmp_name = tmp.name
-        # Atomic replace
-        os.replace(tmp_name, path)
-    finally:
-        os.close(dir_fd)
+    atomic_write_bytes(path, data, mode=0o600)
 
 
 def load_or_create_device_tls_cert(data_dir: Path) -> tuple[Path, Path, str]:
