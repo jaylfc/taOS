@@ -18,6 +18,7 @@ import logging
 import time
 from typing import Any, AsyncGenerator
 
+import anyio
 import httpx
 
 from tinyagentos.llm_gateway.errors import GatewayError, upstream_error, bad_request, rate_limit_error
@@ -624,10 +625,14 @@ async def chat_completion_stream_anthropic(
                 upstream_failed = True
                 raise
             finally:
-                try:
-                    await resp.aclose()
-                finally:
-                    await _settle()
+                # Shielded: on a client disconnect Starlette cancels a scope
+                # that re-raises at every checkpoint, which would cut the
+                # accounting off part way and let the abort go uncharged.
+                with anyio.CancelScope(shield=True):
+                    try:
+                        await resp.aclose()
+                    finally:
+                        await _settle()
 
     outer = _stream_with_retry(anthropic_routes, _stream_one)
     try:

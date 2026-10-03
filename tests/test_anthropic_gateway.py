@@ -1854,3 +1854,64 @@ async def test_stream_mid_stream_read_error_records_spend_and_re_raises(tmp_path
     assert trace_calls, "a stream that errored mid-way must record its trace"
     assert spend_calls and all(c > 0 for c in spend_calls), \
         "a stream that errored mid-way must still be charged"
+
+
+class _BytesThenHang(httpx.AsyncByteStream):
+    """Sends some SSE bytes, then waits forever (until cancelled)."""
+
+    def __init__(self, body: bytes):
+        self._body = body
+
+    async def __aiter__(self):
+        import anyio
+        yield self._body
+        await anyio.Event().wait()
+
+    async def aclose(self) -> None:
+        pass
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_stream_cancelled_scope_still_records_spend(tmp_path_factory):
+    """A client disconnect under Starlette cancels an anyio scope, which
+    re-raises at every checkpoint. The trace store awaits, so unshielded
+    accounting would stop there and the abort would go uncharged."""
+    import anyio
+    from tinyagentos.llm_gateway import forward as _fw
+    from tinyagentos.llm_gateway.anthropic import chat_completion_stream_anthropic
+    from tinyagentos.llm_gateway.forward import _clear_cooldowns
+
+    _clear_cooldowns()
+    app, _session = await _gateway_app(tmp_path_factory)
+    respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(
+        200, stream=_BytesThenHang(_stream_body(DOC_TEXT_STREAM[:4])),
+        headers={"content-type": "text/event-stream"},
+    ))
+
+    trace_calls: list = []
+    spend_calls: list = []
+
+    async def fake_record_trace(*args, **kwargs):
+        await anyio.sleep(0)  # a checkpoint, like the real trace store's await
+        trace_calls.append({"args": args, "kwargs": kwargs})
+
+    def fake_record_spend(state, principal, cost_usd):
+        spend_calls.append(cost_usd)
+
+    received: list[bytes] = []
+    with mock.patch.object(_fw, "_record_trace", side_effect=fake_record_trace), \
+         mock.patch.object(_fw, "_record_spend", side_effect=fake_record_spend):
+        agen = chat_completion_stream_anthropic(
+            [_anthropic_route()], _chat(stream=True), "test-agent", app.state,
+        )
+        with anyio.CancelScope() as scope:
+            async for chunk in agen:
+                received.append(chunk)
+                if len(received) == 2:
+                    scope.cancel()
+
+    assert len(received) == 2
+    assert spend_calls and all(c > 0 for c in spend_calls), \
+        "a cancelled stream must still be charged"
+    assert trace_calls, "a cancelled stream must still record its trace"
