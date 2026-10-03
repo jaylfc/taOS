@@ -234,9 +234,9 @@ async def _fetch_docker_hub_tags(
 
     Returns a list of tag names, or None on any failure -- the caller
     records "unknown", never "no update". Docker Hub's tag listing API
-    supports pagination (100 tags per page, max 10 pages in practice),
-    and this implementation follows the ``next`` link to accumulate all
-    tags from every page.
+    supports pagination (100 tags per page). This implementation follows
+    the ``next`` link and accumulates all tags from every page, bounded to
+    10 pages in practice.
     """
     repo = _hub_path(path)
     owns_client = client is None
@@ -274,9 +274,12 @@ async def _fetch_docker_hub_tags(
             
             # Get the next URL for pagination (already contains params)
             next_url = data.get("next")
+            # Validate next_url is a string
+            if not isinstance(next_url, str):
+                next_url = None
             page_count += 1
             
-        return tags if tags else None
+        return tags
     except Exception as exc:  # network error, timeout, bad JSON
         logger.debug("docker hub tag fetch failed for %s: %s", repo, exc)
         return None
