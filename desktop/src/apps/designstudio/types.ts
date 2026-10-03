@@ -2,7 +2,7 @@
 /*  Design Studio -- shared types                                      */
 /* ------------------------------------------------------------------ */
 
-export type DesignStudioView = "design" | "templates" | "elements" | "magic" | "library";
+export type DesignStudioView = "design" | "templates" | "magic" | "library";
 
 export interface GeneratedImage {
   id: string;
