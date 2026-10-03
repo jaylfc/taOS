@@ -451,6 +451,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     project_element_store = ProjectElementStore(data_dir / "projects.db")
     from tinyagentos.projects.routines_store import RoutineStore
     routine_store = RoutineStore(data_dir / "routines.db")
+    from tinyagentos.projects.dispatcher_store import DispatcherStore
+    dispatcher_store = DispatcherStore(data_dir / "projects.db")
     project_canvas_store = ProjectCanvasStoreImpl(data_dir / "projects.db", broker=project_event_broker)
     doc_review_store = DocReviewStore(data_dir / "projects.db")
     from tinyagentos.projects.notes_store import ProjectNotesStore
@@ -654,6 +656,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await chat_channels.init()
         await peer_outbox_store.init()
         await project_store.init()
+        await dispatcher_store.init()
         await project_invite_store.init()
         await board_audit_store.init()
         await receipt_store.init()
@@ -1548,6 +1551,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await project_task_store.close()
         await project_element_store.close()
         await routine_store.close()
+        await dispatcher_store.close()
         await project_store.close()
         await chat_channels.close()
         await chat_messages.close()
@@ -1742,6 +1746,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.chat_messages = chat_messages
     app.state.chat_channels = chat_channels
     app.state.project_store = project_store
+    app.state.dispatcher_store = dispatcher_store
     app.state.project_invites = project_invite_store
     app.state.board_audit = board_audit_store
     app.state.receipt_store = receipt_store
