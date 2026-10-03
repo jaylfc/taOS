@@ -284,3 +284,108 @@ describe("WebStudioApp confirms before discarding unsaved edits", () => {
     confirmSpy.mockRestore();
   });
 });
+
+describe("WebStudioApp saved-sites list state", () => {
+  it("shows a first-run empty-state card when there are no saved sites", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: true, json: async () => [] })),
+    );
+    render(<WebStudioApp windowId="w1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    const card = await screen.findByTestId("webstudio-empty-state");
+    expect(within(card).getByText("No saved sites yet")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("scopes a list load failure to the sites list, not a stale shared banner", async () => {
+    let listOk = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url === "/api/web/sites") {
+          return listOk
+            ? { ok: true, json: async () => [] }
+            : { ok: false, json: async () => ({}) };
+        }
+        return { ok: true, json: async () => [] };
+      }),
+    );
+    const { container } = render(<WebStudioApp windowId="w1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Could not load sites");
+    // The failure lives inside the "My sites" list, and the first-run empty
+    // state is not shown while the list is actually unknown.
+    const sidebar = container.querySelector("aside") as HTMLElement;
+    expect(sidebar).toContainElement(alert);
+    expect(screen.queryByTestId("webstudio-empty-state")).not.toBeInTheDocument();
+
+    // Leaving Edit and coming back does not resurrect a canvas-level banner.
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+
+    // A successful retry clears it.
+    listOk = true;
+    fireEvent.click(within(screen.getByRole("alert")).getByRole("button", { name: "Retry" }));
+    await screen.findByTestId("webstudio-empty-state");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+});
+
+describe("WebStudioApp save round-trip", () => {
+  it("POSTs /api/web/sites with the site JSON content and the rendered index_html", async () => {
+    const calls: { url: string; init?: RequestInit }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        calls.push({ url, init });
+        if (url === "/api/web/sites" && init?.method === "POST") {
+          return { ok: true, json: async () => ({ id: "site-new" }) };
+        }
+        return { ok: true, json: async () => [] };
+      }),
+    );
+    render(<WebStudioApp windowId="w1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(calls.some((c) => c.url === "/api/web/sites" && c.init?.method === "POST")).toBe(true),
+    );
+    const post = calls.find((c) => c.url === "/api/web/sites" && c.init?.method === "POST")!;
+    const body = JSON.parse(String(post.init!.body)) as {
+      title: string;
+      content: string;
+      index_html: string;
+    };
+    expect(body.title).toBe("Untitled site");
+    const content: unknown = JSON.parse(body.content);
+    expect(isValidSite(content)).toBe(true);
+    expect(body.index_html).toMatch(/^<!doctype html>/i);
+    expect(body.index_html).toContain("</html>");
+  });
+
+  it("rejects an over-5MB site with a clear error before any save request", async () => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => ({
+      ok: true,
+      json: async () => [],
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WebStudioApp windowId="w1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+
+    const heading = screen.getByRole("textbox", { name: "Hero heading" });
+    heading.textContent = "x".repeat(5 * 1024 * 1024 + 1);
+    fireEvent.blur(heading);
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText(/too large to save \(over 5 MB\)/)).toBeInTheDocument();
+    const writes = fetchMock.mock.calls.filter(
+      ([, init]) => init?.method === "POST" || init?.method === "PUT",
+    );
+    expect(writes).toHaveLength(0);
+  });
+});

@@ -44,6 +44,11 @@ export function WebStudioApp(_props: { windowId: string }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // A failure to load the saved-sites list is scoped to that list (shown in
+  // the Edit view's "My sites" sidebar) rather than the shared error banner,
+  // so it never lingers as a stale banner after unrelated actions. It clears
+  // on the next successful load.
+  const [listError, setListError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   // True when the active saved site has a stored rendered index.html the
   // /preview route can serve. Legacy rows (saved before this feature) have an
@@ -58,22 +63,21 @@ export function WebStudioApp(_props: { windowId: string }) {
   const [provenance, setProvenance] = useState<"ai-generated" | "user-uploaded">("user-uploaded");
 
   const loadList = useCallback(async () => {
-    const res = await fetch("/api/web/sites", { credentials: "include" });
-    if (!res.ok) throw new Error("Could not load sites");
-    setSaved((await res.json()) as SavedSite[]);
+    try {
+      const res = await fetch("/api/web/sites", { credentials: "include" });
+      if (!res.ok) throw new Error("Could not load sites");
+      setSaved((await res.json()) as SavedSite[]);
+      setListError(null);
+    } catch (e) {
+      setListError(e instanceof Error ? e.message : "Load failed");
+    }
   }, []);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      try {
-        await loadList();
-        if (!cancelled) setError(null);
-      } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : "Load failed");
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
+      await loadList();
+      if (!cancelled) setLoading(false);
     })();
     return () => {
       cancelled = true;
@@ -241,6 +245,8 @@ export function WebStudioApp(_props: { windowId: string }) {
               loading={loading}
               saving={saving}
               error={error}
+              listError={listError}
+              onRetryList={() => void loadList()}
               onNew={newSite}
               onOpen={openSite}
               onSave={saveSite}
