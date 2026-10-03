@@ -240,6 +240,41 @@ describe("DecisionsApp", () => {
     );
   });
 
+  it("lists withdrawn decisions with their reason under the Withdrawn tab", async () => {
+    const withdrawnDecision = {
+      ...singleSelect,
+      id: "dec-w1",
+      question: "Raise the scope on prj-x?",
+      status: "withdrawn",
+      withdraw_reason: "raised on a misdiagnosis",
+      withdrawn_by: "@taOS-dev",
+      withdrawn_at: Date.now() / 1000,
+    };
+    vi.stubGlobal(
+      "fetch",
+      mockFetch({
+        "GET /api/decisions?status=pending": { ok: true, body: [] },
+        "GET /api/decisions?status=answered": { ok: true, body: [] },
+        "GET /api/decisions?status=withdrawn": { ok: true, body: [withdrawnDecision] },
+        "GET /api/agents/auth-requests?status=pending": { ok: true, body: { requests: [] } },
+      }),
+    );
+    render(<DecisionsApp windowId="w1" />);
+    await flush();
+
+    // Not in the pending inbox.
+    await waitFor(() =>
+      expect(screen.getByText(/no decisions waiting on you/i)).toBeTruthy(),
+    );
+    expect(screen.queryByText(/raise the scope on prj-x/i)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Withdrawn" }));
+    await waitFor(() =>
+      expect(screen.getByText(/raise the scope on prj-x/i)).toBeTruthy(),
+    );
+    expect(screen.getByText(/raised on a misdiagnosis/i)).toBeTruthy();
+  });
+
   it("renders approve/deny actions for an approve_deny decision", async () => {
     const approveDeny = {
       ...singleSelect,

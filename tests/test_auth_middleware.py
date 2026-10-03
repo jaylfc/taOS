@@ -657,6 +657,20 @@ class TestIsAgentDecisionsPath:
         """GET /api/decisions (human session list) must NOT match."""
         assert _is_agent_decisions_path("GET", "/api/decisions") is False
 
+    def test_post_withdraw_allowed(self):
+        """tsk-5dulr5: the asker-side withdraw route admits an agent bearer."""
+        assert _is_agent_decisions_path(
+            "POST", "/api/decisions/dec-abc123/withdraw"
+        ) is True
+
+    def test_withdraw_nested_or_wrong_method_refused(self):
+        assert _is_agent_decisions_path(
+            "POST", "/api/decisions/a/b/withdraw"
+        ) is False
+        assert _is_agent_decisions_path(
+            "GET", "/api/decisions/dec-abc123/withdraw"
+        ) is False
+
 
 class TestAgentDecisionsDispatch:
     """Middleware-layer dispatch tests: prove the agent token is admitted

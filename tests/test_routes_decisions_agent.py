@@ -731,3 +731,122 @@ async def test_agent_cannot_answer_via_human_path(client):
     stored = await app.state.decision_store.get(did)
     assert stored["status"] == "pending"
     assert stored["answer"] is None
+
+
+# ── tsk-5dulr5: asker-side withdraw (agent path) ─────────────────
+
+
+@pytest.mark.asyncio
+async def test_agent_withdraws_own_decision(client, tmp_data_dir):
+    """The asking agent withdraws its own pending decision with a reason: it
+    leaves the pending inbox, stays readable, and leaves an audit entry."""
+    from tinyagentos.trace_store import TraceStoreRegistry
+
+    app = client._transport.app
+    app.state.trace_registry = TraceStoreRegistry(tmp_data_dir)
+    try:
+        pid = await _new_project(client)
+        cid, token = await _mint_agent(app, pid, ("decisions_write",), handle="@asker")
+        async with _agent_client(app, token) as ac:
+            resp = await ac.post("/api/decisions", json=_decision_body(project_id=pid))
+            assert resp.status_code == 200, resp.text
+            did = resp.json()["id"]
+            resp = await ac.post(
+                f"/api/decisions/{did}/withdraw", json={"reason": "raised on a misdiagnosis"}
+            )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["status"] == "withdrawn"
+        assert body["withdraw_reason"] == "raised on a misdiagnosis"
+        assert body["withdrawn_by"] == cid
+
+        pending = (await client.get("/api/decisions?status=pending")).json()["items"]
+        assert all(d["id"] != did for d in pending)
+        got = (await client.get(f"/api/decisions/{did}")).json()
+        assert got["status"] == "withdrawn"
+
+        ts = await app.state.trace_registry.get("taos-governance")
+        events = [
+            e["payload"] for e in await ts.list(kind="governance", limit=200)
+            if isinstance(e.get("payload"), dict) and e["payload"].get("decision_id") == did
+        ]
+        assert len(events) == 1, events
+        assert events[0]["action"] == "decision-withdraw"
+        assert events[0]["actor_user_id"] == cid
+        assert events[0]["canonical_id"] == cid
+        assert events[0]["via"] == "agent"
+    finally:
+        await app.state.trace_registry.close_all()
+        app.state.trace_registry = None
+
+
+@pytest.mark.asyncio
+async def test_agent_cannot_withdraw_others_decision(client):
+    """Refusing direction: agent B (same project, same grant) cannot withdraw
+    agent A's decision. 404 with the scope-mismatch body (no existence
+    oracle), and the decision stays pending."""
+    app = client._transport.app
+    pid = await _new_project(client)
+    _cid_a, token_a = await _mint_agent(app, pid, ("decisions_write",), handle="@agent-a")
+    async with _agent_client(app, token_a) as ac:
+        resp = await ac.post("/api/decisions", json=_decision_body(project_id=pid))
+    assert resp.status_code == 200, resp.text
+    did = resp.json()["id"]
+
+    _cid_b, token_b = await _mint_agent(app, pid, ("decisions_write",), handle="@agent-b")
+    async with _agent_client(app, token_b) as ac:
+        resp = await ac.post(f"/api/decisions/{did}/withdraw", json={"reason": "not mine"})
+    assert resp.status_code == 404, resp.text
+    assert resp.json() == {"error": "not found"}
+    stored = await app.state.decision_store.get(did)
+    assert stored["status"] == "pending"
+    assert stored["withdraw_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_agent_cannot_withdraw_human_raised_decision(client):
+    """A session-raised decision whose body named the agent's handle as
+    from_agent is still not withdrawable by an agent whose canonical id
+    differs; the binding is the authenticated identity."""
+    app = client._transport.app
+    pid = await _new_project(client)
+    _cid, token = await _mint_agent(app, pid, ("decisions_write",), handle="@spoof-target")
+    resp = await client.post(
+        "/api/decisions",
+        json=_decision_body(from_agent="@spoof-target", project_id=pid),
+    )
+    assert resp.status_code == 200, resp.text
+    did = resp.json()["id"]
+    async with _agent_client(app, token) as ac:
+        resp = await ac.post(f"/api/decisions/{did}/withdraw", json={"reason": "x"})
+    assert resp.status_code == 404, resp.text
+    assert (await app.state.decision_store.get(did))["status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_agent_withdraw_answered_409(client):
+    app = client._transport.app
+    pid = await _new_project(client)
+    _cid, token = await _mint_agent(app, pid, ("decisions_write",), handle="@asker-409")
+    async with _agent_client(app, token) as ac:
+        resp = await ac.post("/api/decisions", json=_decision_body(project_id=pid))
+        did = resp.json()["id"]
+    resp = await client.post(f"/api/decisions/{did}/answer", json={"value": "approve"})
+    assert resp.status_code == 200, resp.text
+    async with _agent_client(app, token) as ac:
+        resp = await ac.post(f"/api/decisions/{did}/withdraw", json={"reason": "moot"})
+    assert resp.status_code == 409, resp.text
+    assert (await app.state.decision_store.get(did))["status"] == "answered"
+
+
+@pytest.mark.asyncio
+async def test_agent_withdraw_empty_reason_400(client):
+    app = client._transport.app
+    pid = await _new_project(client)
+    _cid, token = await _mint_agent(app, pid, ("decisions_write",), handle="@asker-400")
+    async with _agent_client(app, token) as ac:
+        resp = await ac.post("/api/decisions", json=_decision_body(project_id=pid))
+        did = resp.json()["id"]
+        resp = await ac.post(f"/api/decisions/{did}/withdraw", json={"reason": "  "})
+    assert resp.status_code == 400, resp.text
+    assert (await app.state.decision_store.get(did))["status"] == "pending"

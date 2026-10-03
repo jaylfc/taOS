@@ -1527,3 +1527,156 @@ async def test_project_create_grant_failure_routes_specific_reply_and_deletes_pr
         "fail" in str(v).lower() for did, v in routed_calls if did == d["id"]
     )
     assert failure_routed, f"no failure reply was routed: {routed_calls}"
+
+
+# --------------------------------------------------------------------------- #
+# tsk-5dulr5: asker-side withdraw (session path)
+# --------------------------------------------------------------------------- #
+
+
+def _member_client(app, username: str = "member"):
+    """A non-admin session client (cookie auth) for a fresh member user."""
+    from httpx import ASGITransport, AsyncClient
+    from taos_test_csrf import csrf_event_hooks
+
+    auth = app.state.auth
+    invite_code = auth.add_user_invite(username, invited_by_username="admin")
+    auth.complete_invite(
+        username=username,
+        invite_code=invite_code,
+        full_name="Member User",
+        email=f"{username}@test.local",
+        password="memberpass1",
+    )
+    uid = auth.find_user(username)["id"]
+    token = auth.create_session(user_id=uid, long_lived=True)
+    return AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
+    )
+
+
+async def _new_pending(client, question="still needed?"):
+    resp = await client.post("/api/decisions", json={
+        "from_agent": "@taOS-dev", "question": question, "type": "approve_deny",
+    })
+    assert resp.status_code == 200, resp.text
+    return resp.json()["id"]
+
+
+async def _governance_events(app, decision_id):
+    ts = await app.state.trace_registry.get("taos-governance")
+    events = await ts.list(kind="governance", limit=200)
+    return [
+        e["payload"] for e in events
+        if isinstance(e.get("payload"), dict)
+        and e["payload"].get("decision_id") == decision_id
+    ]
+
+
+@pytest.mark.asyncio
+async def test_withdraw_session_owner_leaves_pending_keeps_history(client, app, tmp_data_dir):
+    from tinyagentos.trace_store import TraceStoreRegistry
+    app.state.trace_registry = TraceStoreRegistry(tmp_data_dir)
+    try:
+        did = await _new_pending(client)
+        resp = await client.post(
+            f"/api/decisions/{did}/withdraw", json={"reason": "moot: satisfied by dec-other"}
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["status"] == "withdrawn"
+        assert body["withdraw_reason"] == "moot: satisfied by dec-other"
+        assert body["withdrawn_by"] == _admin_uid(app)
+
+        pending = (await client.get("/api/decisions?status=pending")).json()["items"]
+        assert all(d["id"] != did for d in pending)
+        withdrawn = (await client.get("/api/decisions?status=withdrawn")).json()["items"]
+        assert [d["id"] for d in withdrawn] == [did]
+        got = (await client.get(f"/api/decisions/{did}")).json()
+        assert got["status"] == "withdrawn"
+        assert got["withdraw_reason"] == "moot: satisfied by dec-other"
+
+        events = await _governance_events(app, did)
+        assert len(events) == 1, events
+        ev = events[0]
+        assert ev["action"] == "decision-withdraw"
+        assert ev["before_status"] == "pending" and ev["after_status"] == "withdrawn"
+        assert ev["actor_user_id"] == _admin_uid(app)
+        assert ev["canonical_id"] == "@taOS-dev"
+        assert ev["reason"] == "moot: satisfied by dec-other"
+        assert ev["via"] == "session"
+    finally:
+        await app.state.trace_registry.close_all()
+        app.state.trace_registry = None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [{"reason": ""}, {"reason": "   "}, {}])
+async def test_withdraw_requires_reason(client, payload):
+    did = await _new_pending(client)
+    resp = await client.post(f"/api/decisions/{did}/withdraw", json=payload)
+    assert resp.status_code == 400, resp.text
+    got = (await client.get(f"/api/decisions/{did}")).json()
+    assert got["status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_withdraw_answered_decision_409(client):
+    did = await _new_pending(client)
+    resp = await client.post(f"/api/decisions/{did}/answer", json={"value": "approve"})
+    assert resp.status_code == 200, resp.text
+    resp = await client.post(f"/api/decisions/{did}/withdraw", json={"reason": "moot"})
+    assert resp.status_code == 409, resp.text
+    got = (await client.get(f"/api/decisions/{did}")).json()
+    assert got["status"] == "answered"
+    assert got.get("withdraw_reason") is None
+
+
+@pytest.mark.asyncio
+async def test_withdraw_already_withdrawn_409(client):
+    did = await _new_pending(client)
+    resp = await client.post(f"/api/decisions/{did}/withdraw", json={"reason": "moot"})
+    assert resp.status_code == 200, resp.text
+    resp = await client.post(f"/api/decisions/{did}/withdraw", json={"reason": "again"})
+    assert resp.status_code == 409, resp.text
+    # A withdrawn decision cannot be answered afterwards either.
+    resp = await client.post(f"/api/decisions/{did}/answer", json={"value": "approve"})
+    assert resp.status_code == 409, resp.text
+    got = (await client.get(f"/api/decisions/{did}")).json()
+    assert got["status"] == "withdrawn" and got["withdraw_reason"] == "moot"
+
+
+@pytest.mark.asyncio
+async def test_withdraw_by_non_owner_session_refused(client, app):
+    """Refusing direction: a non-admin session user who is not the decision's
+    owner cannot withdraw it (404, no existence oracle), and it stays pending."""
+    did = await _new_pending(client)  # owned by the admin session
+    async with _member_client(app) as mc:
+        resp = await mc.post(f"/api/decisions/{did}/withdraw", json={"reason": "not mine"})
+    assert resp.status_code == 404, resp.text
+    assert resp.json() == {"error": "not found"}
+    got = await app.state.decision_store.get(did)
+    assert got["status"] == "pending"
+    assert got["withdraw_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_withdraw_unknown_decision_404(client):
+    resp = await client.post("/api/decisions/dec-nope/withdraw", json={"reason": "x"})
+    assert resp.status_code == 404, resp.text
+
+
+@pytest.mark.asyncio
+async def test_withdraw_device_bearer_refused(client, app):
+    """A device bearer is a notification surface, not the asker: the withdraw
+    route is not on the device allowlist, so it never authenticates."""
+    admin_uid = _admin_uid(app)
+    device = await _register_device(app, admin_uid)
+    d = await _decision_for_user(app, admin_uid)
+    async with _bearer_only_client(app, device["scoped_token"]) as bc:
+        resp = await bc.post(f"/api/decisions/{d['id']}/withdraw", json={"reason": "x"})
+    assert resp.status_code == 401, resp.text
+    assert (await app.state.decision_store.get(d["id"]))["status"] == "pending"

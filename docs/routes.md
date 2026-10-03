@@ -59,6 +59,8 @@ Files routes key on the project SLUG. `GET .../files/{path}`, `POST .../files/up
 
 `POST /api/decisions` — raise a human-in-the-loop decision. `POST /api/decisions/{id}/answer/agent` — mirror an answer.
 
+`POST /api/decisions/{id}/withdraw`: withdraw its own pending decision as moot (`{"reason": "..."}` required; asker only; 409 once answered/superseded/withdrawn).
+
 ### a2a bus surface
 
 `GET /api/a2a/bus/channels`, `GET /api/a2a/bus/messages`, `GET|POST /api/a2a/bus/stream`. `a2a_receive` cannot post; `a2a_send` isn't thereby a reader.
