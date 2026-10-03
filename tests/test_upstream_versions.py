@@ -18,9 +18,10 @@ Covers:
 from __future__ import annotations
 
 import json
+import httpx
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -96,10 +97,10 @@ class FakeRegistryClient:
 def _docker_hub_client(fixture: str, status: int = 200) -> FakeRegistryClient:
     """Create a mock client for Docker Hub API with full pagination support.
     
-    This mock is designed to work with the current fixture files, which contain
-    only the first page's data. The function creates a mock that will respond to
-    pagination requests by returning the same data again (simulating an empty
-    second page).
+    This mock extracts the repository path from the fixture data's 'next' URL (or
+    from the fixture name if no 'next' URL exists) and routes requests accordingly.
+    It handles pagination by responding to 'next' URL requests with empty results
+    (simulating no more tags). This ensures tests can mock any Docker Hub repository.
     """
     data = _load_fixture(fixture)
     
@@ -128,8 +129,26 @@ def _docker_hub_client(fixture: str, status: int = 200) -> FakeRegistryClient:
     # It should include the query parameters: ordering=last_updated&page_size=100
     from tinyagentos.upstream_versions import _DOCKER_HUB_TAGS, _hub_path
     
-    # Use the same path that's used in the test fixture
-    path = "searxng/searxng"
+    # Determine the repo path from the fixture name or from the next URL
+    if isinstance(data, dict) and data.get("next"):
+        # Extract repo path from the next URL
+        next_url = data["next"]
+        if isinstance(next_url, str):
+            # Extract path from URL like "https://hub.docker.com/v2/repositories/searxng/searxng/tags..."
+            import re
+            match = re.search(r"https://hub\.docker\.com/v2/repositories/([\w/]+)/tags", next_url)
+            if match:
+                path = match.group(1)
+            else:
+                # Fallback to reconstructing from fixture name
+                path = fixture.replace("dockerhub-", "").replace(".json", "")
+        else:
+            # Fallback to reconstructing from fixture name
+            path = fixture.replace("dockerhub-", "").replace(".json", "")
+    else:
+        # Fallback to reconstructing from fixture name
+        path = fixture.replace("dockerhub-", "").replace(".json", "")
+    
     repo = _hub_path(path)
     first_page_url = _DOCKER_HUB_TAGS.format(path=repo)
     routes[first_page_url] = first_page_response
@@ -791,7 +810,7 @@ class TestRealManifestsAreNotPermanentUpdates:
         assert entry["upstream_pinned_version"] == "4.135.0"
 
 
-class TestRedProof:
+class TestUpstreamPaginationAndBaseline:
     """Tests that currently FAIL against the bugs, before they are fixed."""
 
     @pytest.mark.asyncio
@@ -804,11 +823,6 @@ class TestRedProof:
         e.g. 10), keep the existing response validation and the return-None-on-failed-request
         behaviour.
         """
-        import httpx
-        from unittest.mock import AsyncMock
-        
-        from tinyagentos import upstream_versions as uv
-        
         # Mock the first page response (with page 2 in the next field)
         first_page_response = {
             "count": 47,
@@ -863,6 +877,12 @@ class TestRedProof:
         assert "2026.10.2" in tags
         assert "2026.10.1" in tags
         assert "2026.10.0" in tags
+        
+        # Additionally, verify that check_upstream would select 2026.10.3 as the newest tag
+        # This test mocks _docker_hub_tags directly, but we can also verify the selection logic
+        # by checking that 2026.10.3 is the highest version in the combined results
+        expected_tags = {"2026.10.3", "2026.10.2", "2026.10.1", "2026.10.0"}
+        assert set(tags) == expected_tags, f"Expected tags {expected_tags}, got {tags}"
 
     def test_baseline_prefers_current_pin(self):
         """DEFECT 2: the recorded `pinned_version` from the cache is preferred over the app's
@@ -875,8 +895,7 @@ class TestRedProof:
         comparing.
         """
         from tinyagentos.routes.store import _upstream_baseline
-        from unittest.mock import MagicMock, patch
-        
+
         # Create a mock app with current pin = 1.1.0
         app = MagicMock()
         app.id = "test-app"

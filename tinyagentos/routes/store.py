@@ -83,8 +83,8 @@ def _upstream_baseline(app: Any, info: dict[str, Any]) -> str:
     catalog's own revision and drifts from the image it installs
     (code-server ``4.96.0`` vs a pinned ``4.135.0``), which made
     apps whose pin was already the newest upstream claim an update
-    forever. Falls back to the manifest's ``version:`` when the app
-    has no usable image pin.
+    forever. The baseline is the current image pin, falling back to
+    the recorded pin (from the cache), then to the manifest's version.
     """
     # Use upstream_versions.pinned_tag(app) as the comparison baseline first
     baseline = upstream_versions.pinned_tag(app)
@@ -95,7 +95,7 @@ def _upstream_baseline(app: Any, info: dict[str, Any]) -> str:
     if isinstance(recorded, str) and recorded:
         return recorded
     # Fall back to app.version
-    return upstream_versions.pinned_tag(app) or app.version
+    return app.version
 
 
 def _update_fields(
@@ -124,9 +124,22 @@ def _update_fields(
         upstream_version = info["upstream_version"]
         upstream_checked_at = info["upstream_checked_at"]
         upstream_pinned = _upstream_baseline(app, info)
-        upstream_update = upstream_versions.compare_versions(
-            upstream_pinned, upstream_version
-        )
+        # Check if upstream tag shape matches baseline shape
+        # If shapes don't match, report unknown rather than comparing
+        baseline_tag = upstream_pinned
+        if baseline_tag and upstream_version:
+            baseline_shape = upstream_versions.tag_shape(baseline_tag)
+            upstream_shape = upstream_versions.tag_shape(upstream_version)
+            # Shapes don't match or either is not version-shaped
+            if baseline_shape != upstream_shape:
+                upstream_update = None
+            else:
+                upstream_update = upstream_versions.compare_versions(
+                    baseline_tag, upstream_version
+                )
+        else:
+            # Either baseline or upstream is not version-shaped
+            upstream_update = None
 
     update_available = installed and upstream_update is True
     if installed and recorded_version is not None:
