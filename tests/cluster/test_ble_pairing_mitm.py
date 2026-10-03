@@ -36,7 +36,7 @@ from tinyagentos.cluster.ble.transport import Connection, Transport, chunk_size
 from tinyagentos.cluster.manager import ClusterManager
 from tinyagentos.cluster.pairing_store import ClusterPairingStore
 
-from cluster.conftest import FakeBoard
+from cluster.conftest import FakeBoard, FakeTransport
 
 GRIND_LIMIT = 200_000
 
@@ -207,6 +207,80 @@ async def test_mitm_cannot_force_matching_codes_and_steal_the_node_key(cluster, 
     )
     assert started is None, "the handshake with a lying board must be refused"
     assert "commitment" in str(refused)
+    assert await store.get_signing_key(board.name) is None
+    assert cluster.get_worker(board.name) is None
+
+
+@pytest.mark.asyncio
+async def test_label_pin_required_for_confirm(cluster, store, tmp_path):
+    """A session with a label PIN requires the correct PIN to confirm.
+    
+    RED-FIRST: on the current branch confirm() ignores the PIN entirely,
+    so the wrong-PIN call succeeds below. After the fix it must raise
+    PairError(403) and the right-PIN call must succeed.
+    """
+    board = FakeBoard(board_id="PINREQ")
+    original_info = board.info_bytes
+
+    def info_with_pin():
+        frame = json.loads(original_info())
+        frame["label_pin"] = "123456"
+        return json.dumps(frame).encode("utf-8")
+
+    board.info_bytes = info_with_pin
+
+    transport = FakeTransport({"addr1": board})
+    mgr = BlePairingManager(
+        data_dir=tmp_path, cluster_manager=cluster, pairing_store=store,
+        bind_port=6969, transport=transport, llm_gateway_enabled=False,
+    )
+
+    started = await mgr.start("addr1")
+    assert started is not None
+    assert started.get("label_pin") == "123456"
+
+    # Wrong PIN must fail with 403 once label_pin is enforced.
+    with pytest.raises(PairError) as exc_info:
+        await mgr.confirm(started["session"], label_pin="wrong")
+    assert exc_info.value.status == 403
+    assert await store.get_signing_key(board.name) is None
+    assert cluster.get_worker(board.name) is None
+
+
+@pytest.mark.asyncio
+async def test_mitm_without_label_pin_cannot_confirm(cluster, store, tmp_path):
+    """Even if a MITM somehow obtains matching codes, it cannot complete
+    pairing without the board's label PIN.
+
+    The test constructs a session that carries a label PIN and then calls
+    confirm() with the wrong PIN. On the current branch confirm() ignores
+    the PIN entirely, so the call succeeds below; after the fix it must
+    raise PairError(403).
+    """
+    board = FakeBoard(board_id="MITMPIN")
+    original_info = board.info_bytes
+
+    def info_with_pin():
+        frame = json.loads(original_info())
+        frame["label_pin"] = "123456"
+        return json.dumps(frame).encode("utf-8")
+
+    board.info_bytes = info_with_pin
+
+    transport = FakeTransport({"addr1": board})
+    mgr = BlePairingManager(
+        data_dir=tmp_path, cluster_manager=cluster, pairing_store=store,
+        bind_port=6969, transport=transport, llm_gateway_enabled=False,
+    )
+
+    started = await mgr.start("addr1")
+    assert started is not None
+    assert started["code"] == board.responder.current_code()
+
+    # Without the label PIN the confirm must be refused.
+    with pytest.raises(PairError) as exc_info:
+        await mgr.confirm(started["session"])
+    assert exc_info.value.status == 403
     assert await store.get_signing_key(board.name) is None
     assert cluster.get_worker(board.name) is None
 

@@ -1090,7 +1090,9 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
     code: string;
     board_id: string;
     name: string;
+    label_pin?: string;
   } | null>(null);
+  const [pairPin, setPairPin] = useState("");
   const [pairStarting, setPairStarting] = useState(false);
   const [pairConfirming, setPairConfirming] = useState(false);
   const [pairError, setPairError] = useState<string | null>(null);
@@ -1153,7 +1155,9 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
           code: json.code,
           board_id: json.board_id,
           name: json.name,
+          label_pin: json.label_pin || "",
         });
+        setPairPin("");
       } else if (res.status === 409) {
         setPairError("This device isn't pairable right now. It may already be paired, or be pausing after failed attempts. Wait a minute and try again.");
       } else if (res.status === 504) {
@@ -1178,7 +1182,7 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
       const res = await fetch("/api/cluster/ble/pair/confirm", {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ session: pairSession.session }),
+        body: JSON.stringify({ session: pairSession.session, label_pin: pairPin }),
       });
       if (res.ok) {
         const json = await res.json();
@@ -1188,6 +1192,9 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
         setBleDevices([]);
         setBleScanned(false);
         fetchWorkers();
+      } else if (res.status === 403) {
+        const j = await res.json().catch(() => ({}));
+        setPairError(j?.error ? String(j.error) : "Wrong PIN. Check the board label and try again.");
       } else if (res.status === 404) {
         setPairError("Pairing timed out, start again.");
       } else if (res.status === 502) {
@@ -1207,6 +1214,7 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
     if (pairSession) cancelBlePairSession(pairSession.session);
     setPairSession(null);
     setPairError(null);
+    setPairPin("");
   }, [pairSession, cancelBlePairSession]);
 
   const closeAddModal = useCallback(() => {
@@ -1216,6 +1224,7 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
     setAddTab("manual");
     setPairSession(null);
     setPairError(null);
+    setPairPin("");
   }, [addBusy, pairStarting, pairConfirming, pairSession, cancelBlePairSession]);
 
   const handleNodeRevoke = useCallback(
@@ -1733,6 +1742,29 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
                         {pairSession.code.slice(0, 3)} {pairSession.code.slice(3)}
                       </span>
                     </div>
+                    {pairSession.label_pin ? (
+                      <div className="mt-3">
+                        <label className="block text-[10px] uppercase tracking-wide text-shell-text-tertiary mb-1" htmlFor="ble-pair-pin">
+                          Board label PIN
+                        </label>
+                        <input
+                          id="ble-pair-pin"
+                          value={pairPin}
+                          onChange={(e) => setPairPin(e.target.value)}
+                          placeholder="printed on the board label"
+                          autoComplete="off"
+                          onKeyDown={(e) => { if (e.key === "Enter") handleBlePairConfirm(); }}
+                          className="w-full h-9 rounded-md border border-white/10 bg-shell-bg px-2.5 text-sm font-mono tracking-widest text-shell-text focus-visible:outline-none focus-visible:border-accent/40 focus-visible:ring-2 focus-visible:ring-accent/20"
+                        />
+                        <p className="text-[10px] text-shell-text-tertiary mt-1">
+                          The PIN is printed on the board's label at /var/lib/taosusb/id.
+                        </p>
+                      </div>
+                    ) : (
+                      <p className="text-[10px] text-shell-text-tertiary mt-2">
+                        This board does not have a label PIN. If it should, update the board firmware.
+                      </p>
+                    )}
                     {pairError && (
                       <p className="text-[11px] text-red-300 mt-1" role="alert">
                         {pairError}
