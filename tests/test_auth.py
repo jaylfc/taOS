@@ -207,6 +207,32 @@ class TestAuthManager:
         assert list(on_disk) == ["live"]
         assert sessions_file.stat().st_size < size_before
 
+    def test_session_cap_evicts_oldest_for_same_user(self, tmp_path):
+        """Minting past the per-user cap evicts that user's OLDEST session
+        only; other users' sessions and the newest N survive (tsk-wmclfd)."""
+        mgr = AuthManager(tmp_path)
+        mgr.max_sessions_per_user = 3
+        other = mgr.create_session(user_id="uid2")
+        tokens = [mgr.create_session(user_id="uid1") for _ in range(4)]
+
+        oldest, newest = tokens[0], tokens[1:]
+        assert oldest not in mgr._sessions
+        assert mgr.validate_session(oldest) is None
+        for t in newest:
+            assert mgr.validate_session(t) == "uid1"
+        assert mgr.validate_session(other) == "uid2"
+        on_disk = json.loads((tmp_path / ".auth_sessions").read_text())
+        assert sum(1 for e in on_disk.values() if e["user_id"] == "uid1") == 3
+
+    def test_session_cap_keeps_ua_binding(self, tmp_path):
+        """Capped minting must not drop the User-Agent binding of survivors."""
+        mgr = AuthManager(tmp_path)
+        mgr.max_sessions_per_user = 2
+        tokens = [mgr.create_session(user_id="uid1", user_agent="ua-a") for _ in range(3)]
+        assert mgr.validate_session(tokens[-1], user_agent="ua-a") == "uid1"
+        assert mgr.validate_session(tokens[-1], user_agent="ua-b") is None
+        assert mgr.validate_session(tokens[-1]) is None
+
     def test_prune_already_clean_is_noop(self, tmp_path):
         """Pruning an already-clean store (no expired entries) is a no-op."""
         # Create a file with no expired entries (simulating clean state)
