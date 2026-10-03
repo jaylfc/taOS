@@ -12,6 +12,7 @@ import asyncio
 import math
 import time
 from collections.abc import Awaitable, Callable
+from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
@@ -1099,6 +1100,161 @@ class TestClusterLeaseIntegration:
         # 8192 free - 4096 promised to ourselves = 4096 >= 2048.
         assert data["admitted"] is True
         assert data["claimed_mb"] == 4096
+
+
+class TestDefaultLeaseResource:
+    """The resource a lease names when the caller names none (taOS #329).
+
+    A defaulted lease has to land on a resource id the TARGET worker actually
+    advertises -- Apple Silicon advertises `gpu-metal`, a CUDA box `gpu-cuda-N` --
+    so the default comes from that worker's inventory, and only falls back to
+    this controller's own GPU probe for a node the cluster does not know.
+    """
+
+    def test_default_resource_follows_the_metal_probe(self):
+        from tinyagentos.routes.a2a_gpu_lease import _default_resource
+
+        with patch(
+            "tinyagentos.hardware.metal_available", return_value=False
+        ):
+            assert _default_resource() == "gpu-cuda-0"
+        with patch(
+            "tinyagentos.hardware.metal_available", return_value=True
+        ):
+            assert _default_resource() == "gpu-metal"
+
+    @pytest.mark.asyncio
+    async def test_default_resource_comes_from_the_target_worker_not_the_controller(self):
+        """A Linux controller managing a Mac worker must default to the Mac's
+        `gpu-metal`, and vice versa -- the controller's own probe is irrelevant
+        to a remote worker's resource name."""
+        from tinyagentos.routes.a2a_gpu_lease import (
+            _default_resource,
+            _default_resource_for,
+        )
+
+        cm = ClusterManager()
+        for name, url, resources in (
+            ("macmini", "http://10.0.0.20:9000", ["gpu-metal", "cpu-inference"]),
+            ("linstation", "http://10.0.0.9:9000", ["gpu-cuda-0", "cpu-inference"]),
+        ):
+            ok, reason = await cm.register_worker(
+                WorkerInfo(name=name, url=url, resources=resources)
+            )
+            assert ok, reason
+
+        assert _default_resource_for(cm, "macmini") == "gpu-metal"
+        assert _default_resource_for(cm, "linstation") == "gpu-cuda-0"
+        # Unknown node (bus-only coordination): this host's own probe.
+        assert _default_resource_for(cm, "ghost") == _default_resource()
+
+    @pytest.mark.asyncio
+    async def test_defaulted_claim_resolves_on_an_apple_silicon_worker(
+        self, lease_client, bus, app
+    ):
+        """A claim body with no `resource` must still create a lease on a Mac
+        worker, whose inventory is `gpu-metal` + `cpu-inference` -- resolved from
+        that worker, not from the (Linux) controller running the test."""
+        cm = ClusterManager()
+        ok, reason = await cm.register_worker(
+            WorkerInfo(
+                name="macmini",
+                url="http://10.0.0.20:9000",
+                status="online",
+                free_vram_mb=16384,
+                hardware={"gpu": {"vram_mb": 16384}},
+                resources=["gpu-metal", "cpu-inference"],
+            )
+        )
+        assert ok, reason
+        app.state.cluster_manager = cm
+
+        resp = await lease_client.post(
+            "/api/a2a/gpu/claim",
+            json={"node": "macmini", "vram_mb": 6144, "ttl_seconds": 300},
+        )
+        assert resp.status_code == 200, resp.text
+        leases = cm.get_leases()
+        assert len(leases) == 1
+        assert leases[0].resource_id == "macmini:gpu-metal"
+
+    @pytest.mark.asyncio
+    async def test_release_without_resource_survives_an_inventory_change(
+        self, lease_client, bus, app
+    ):
+        """A worker re-registers with a different GPU class between the claim and
+        the release: the release names no resource, so it must find the actor's
+        lease on the node rather than the resource id the inventory implies
+        now -- otherwise the lease stays alive until TTL while the bus says the
+        node is free."""
+        cm = ClusterManager()
+        ok, reason = await cm.register_worker(
+            WorkerInfo(
+                name="linstation",
+                url="http://10.0.0.9:9000",
+                status="online",
+                free_vram_mb=8192,
+                hardware={"gpu": {"vram_mb": 12288}},
+                resources=["gpu-cuda-0"],
+            )
+        )
+        assert ok, reason
+        app.state.cluster_manager = cm
+
+        claim = await lease_client.post(
+            "/api/a2a/gpu/claim",
+            json={"node": "linstation", "vram_mb": 2048, "ttl_seconds": 300},
+        )
+        assert claim.status_code == 200, claim.text
+        lease_id = claim.json()["lease_id"]
+        assert [le.resource_id for le in cm.get_leases()] == ["linstation:gpu-cuda-0"]
+
+        worker = cm.get_worker("linstation")
+        assert worker is not None
+        worker.resources = ["gpu-metal"]
+
+        rel = await lease_client.post("/api/a2a/gpu/release", json={"node": "linstation"})
+        assert rel.status_code == 200, rel.text
+        assert rel.json()["lease_id"] == lease_id
+        assert cm.get_leases() == []
+
+    @pytest.mark.asyncio
+    async def test_release_without_resource_does_not_guess_between_gpus(
+        self, lease_client, bus, app
+    ):
+        """Two of the actor's leases on one node: an unnamed release must not
+        free a reservation the caller did not name."""
+        cm = ClusterManager()
+        ok, reason = await cm.register_worker(
+            WorkerInfo(
+                name="box",
+                url="http://10.0.0.30:9000",
+                status="online",
+                free_vram_mb=16384,
+                hardware={"gpu": {"vram_mb": 16384}},
+                resources=["gpu-cuda-0", "gpu-cuda-1"],
+            )
+        )
+        assert ok, reason
+        app.state.cluster_manager = cm
+
+        for resource in ("gpu-cuda-0", "gpu-cuda-1"):
+            resp = await lease_client.post(
+                "/api/a2a/gpu/claim",
+                json={
+                    "node": "box",
+                    "resource": resource,
+                    "vram_mb": 1024,
+                    "ttl_seconds": 300,
+                },
+            )
+            assert resp.status_code == 200, resp.text
+        assert len(cm.get_leases()) == 2
+
+        rel = await lease_client.post("/api/a2a/gpu/release", json={"node": "box"})
+        assert rel.status_code == 200, rel.text
+        assert rel.json()["lease_id"] is None
+        assert len(cm.get_leases()) == 2
 
 
 @pytest.mark.asyncio
