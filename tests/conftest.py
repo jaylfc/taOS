@@ -45,7 +45,6 @@ def _collect_data_mtimes() -> dict[str, tuple[float, int]]:
     return snapshot
 
 
-_XDIST = bool(os.environ.get("PYTEST_XDIST_WORKER"))
 _DATA_MUTATIONS: list[str] = []
 _XDIST_CONTROLLER_MUTATIONS: list[str] = []
 
@@ -63,7 +62,9 @@ def _guard_data_dir_mutation(request):
         if path not in after:
             mutated.append(f"{path} (deleted)")
     if mutated:
-        if _XDIST:
+        # Detect an xdist worker from the config, not PYTEST_XDIST_WORKER: a nested
+        # pytester run inherits that env var but is not a worker.
+        if hasattr(request.config, "workerinput"):
             _DATA_MUTATIONS.extend(mutated)
         else:
             raise RuntimeError(

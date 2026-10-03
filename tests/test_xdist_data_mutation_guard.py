@@ -27,7 +27,6 @@ _app_mod.PROJECT_DIR = Path({pytester_path!r})
 
 _DATA_MUTATIONS: list[str] = []
 _XDIST_CONTROLLER_MUTATIONS: list[str] = []
-_XDIST = bool(os.environ.get("PYTEST_XDIST_WORKER"))
 
 
 def _collect_data_mtimes() -> dict[str, tuple[float, int]]:
@@ -58,7 +57,7 @@ def _guard_data_dir_mutation(request):
         if path not in after:
             mutated.append(f"{{path}} (deleted)")
     if mutated:
-        if _XDIST:
+        if hasattr(request.config, "workerinput"):
             _DATA_MUTATIONS.extend(mutated)
         else:
             raise RuntimeError(
