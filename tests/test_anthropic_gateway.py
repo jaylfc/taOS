@@ -1739,3 +1739,118 @@ async def test_streaming_unknown_usage_is_recorded_as_estimated(tmp_path_factory
 
     assert any(c["cost_usd"] > 0 for c in spend_calls), \
         "conservative budget estimate should be recorded when usage is unknown"
+
+
+# ---------------------------------------------------------------------------
+# tsk-7qd5nb: an aborted or errored stream is still charged, deterministically.
+# ---------------------------------------------------------------------------
+
+
+def _anthropic_route():
+    from tinyagentos.llm_gateway.resolve import Route
+    return Route(
+        model_name="claude-x",
+        provider="anthropic",
+        upstream_model="claude-x",
+        api_base=UPSTREAM,
+        api_key_ref=ANTHROPIC_KEY,
+        backend_name="claude-cloud",
+    )
+
+
+class _BytesThenReadError(httpx.AsyncByteStream):
+    """Sends some SSE bytes, then the connection drops mid-stream."""
+
+    def __init__(self, body: bytes):
+        self._body = body
+
+    async def __aiter__(self):
+        yield self._body
+        raise httpx.ReadError("connection reset mid-stream")
+
+    async def aclose(self) -> None:
+        pass
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_stream_client_aclose_records_spend_before_aclose_returns(tmp_path_factory):
+    """Closing the OUTER stream generator after a couple of chunks must record
+    the trace and spend before aclose() returns, with no gc or sleep, and
+    charge an estimate since no message_delta usage arrived."""
+    from tinyagentos.llm_gateway import forward as _fw
+    from tinyagentos.llm_gateway.anthropic import chat_completion_stream_anthropic
+    from tinyagentos.llm_gateway.forward import _clear_cooldowns
+
+    _clear_cooldowns()
+    app, _session = await _gateway_app(tmp_path_factory)
+    respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(
+        200, content=_stream_body(DOC_TEXT_STREAM), headers={"content-type": "text/event-stream"}
+    ))
+
+    trace_calls: list = []
+    spend_calls: list = []
+
+    async def fake_record_trace(*args, **kwargs):
+        trace_calls.append({"args": args, "kwargs": kwargs})
+
+    def fake_record_spend(state, principal, cost_usd):
+        spend_calls.append(cost_usd)
+
+    with mock.patch.object(_fw, "_record_trace", side_effect=fake_record_trace), \
+         mock.patch.object(_fw, "_record_spend", side_effect=fake_record_spend):
+        agen = chat_completion_stream_anthropic(
+            [_anthropic_route()], _chat(stream=True), "test-agent", app.state,
+        )
+        await agen.__anext__()
+        await agen.__anext__()
+        assert spend_calls == [] and trace_calls == []
+        await agen.aclose()
+
+        assert trace_calls, "an aborted stream must record its trace before aclose returns"
+        assert spend_calls and all(c > 0 for c in spend_calls), \
+            "an aborted stream must still be charged before aclose returns"
+        last = trace_calls[-1]
+        estimated = last["kwargs"].get("estimated", (last["args"] + (None,) * 11)[10])
+        assert estimated is True, "no message_delta usage arrived, so the charge is an estimate"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_stream_mid_stream_read_error_records_spend_and_re_raises(tmp_path_factory):
+    """A stream that drops with httpx.ReadError after bytes were sent must
+    record spend for what was streamed and still raise."""
+    from tinyagentos.llm_gateway import forward as _fw
+    from tinyagentos.llm_gateway.anthropic import chat_completion_stream_anthropic
+    from tinyagentos.llm_gateway.forward import _clear_cooldowns
+
+    _clear_cooldowns()
+    app, _session = await _gateway_app(tmp_path_factory)
+    respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(
+        200, stream=_BytesThenReadError(_stream_body(DOC_TEXT_STREAM[:4])),
+        headers={"content-type": "text/event-stream"},
+    ))
+
+    trace_calls: list = []
+    spend_calls: list = []
+
+    async def fake_record_trace(*args, **kwargs):
+        trace_calls.append({"args": args, "kwargs": kwargs})
+
+    def fake_record_spend(state, principal, cost_usd):
+        spend_calls.append(cost_usd)
+
+    received: list[bytes] = []
+    with mock.patch.object(_fw, "_record_trace", side_effect=fake_record_trace), \
+         mock.patch.object(_fw, "_record_spend", side_effect=fake_record_spend):
+        agen = chat_completion_stream_anthropic(
+            [_anthropic_route()], _chat(stream=True), "test-agent", app.state,
+        )
+        with pytest.raises(httpx.ReadError):
+            async for chunk in agen:
+                received.append(chunk)
+
+    assert received, "bytes must have reached the caller before the error"
+    assert trace_calls, "a stream that errored mid-way must record its trace"
+    assert spend_calls and all(c > 0 for c in spend_calls), \
+        "a stream that errored mid-way must still be charged"
