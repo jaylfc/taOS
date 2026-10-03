@@ -404,7 +404,7 @@ def test_device_tls_key_written_through_atomic_io_with_0600(tmp_path, monkeypatc
 
     cert_path, key_path, _ = device_tls.load_or_create_device_tls_cert(tmp_path)
 
-    assert calls == [(cert_path, 0o600), (key_path, 0o600)], (
+    assert calls == [(key_path, 0o600), (cert_path, 0o600)], (
         f"expected atomic_write_bytes called with mode=0o600 for both files, got {calls}"
     )
     assert stat.S_IMODE(key_path.stat().st_mode) == 0o600, (
@@ -450,6 +450,65 @@ def test_device_tls_creates_no_temp_file_with_a_wider_mode(tmp_path, monkeypatch
     assert [oct(m) for _name, m in chmods] == ["0o600", "0o600"], (
         f"the pre-rename chmod must be 0o600, got {chmods}"
     )
+
+
+# ---------------------------------------------------------------------------
+# (i) mismatched cert/key detection
+# ---------------------------------------------------------------------------
+
+def test_device_tls_mismatched_cert_key_detection(tmp_path):
+    """When cert and key files exist but don't match, generate new pair."""
+    import datetime
+    from cryptography import x509
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    # Generate and write a cert from one key
+    key1 = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "taOS Orb device TLS")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert1 = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key1.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now)
+        .not_valid_after(now + datetime.timedelta(days=3650))
+        .sign(key1, hashes.SHA256())
+    )
+    cert1_pem = cert1.public_bytes(serialization.Encoding.PEM)
+    key1_pem = key1.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    (tmp_path / "device_tls.crt").write_bytes(cert1_pem)
+    (tmp_path / "device_tls.key").write_bytes(key1_pem)
+
+    # Generate a different key and write it alongside the cert
+    key2 = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    (tmp_path / "device_tls.key").write_bytes(key2.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    ))
+
+    # Call load_or_create_device_tls_cert - it should detect mismatch and generate new pair
+    cert_path, key_path, fp1 = load_or_create_device_tls_cert(tmp_path)
+
+    # Verify it returned a NEW fingerprint (different from cert1)
+    expected_fp1 = _fingerprint_from_der(cert1.public_bytes(serialization.Encoding.DER))
+    assert fp1 != expected_fp1, "Should return new fingerprint after mismatch detection"
+
+    # Verify the stored key now matches the stored cert
+    cert_pem = cert_path.read_bytes()
+    stored_cert = x509.load_pem_x509_certificate(cert_pem)
+    stored_key_pem = key_path.read_bytes()
+    stored_key = serialization.load_pem_private_key(stored_key_pem, password=None)
+    assert stored_key.public_key().public_numbers() == stored_cert.public_key().public_numbers(), \
+        "Stored key should match stored cert after regeneration"
 
 
 def test_device_tls_writes_are_crash_safe(tmp_path, monkeypatch):

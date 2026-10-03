@@ -1,7 +1,10 @@
 # Device API v1
 
 Single source of truth for the firmware repo. All routes under `/api/devices`
-are bearer-authenticated (not session-authenticated).
+are bearer-authenticated **except**:
+
+- `POST /api/devices/pair-requests`
+- `GET /api/devices/pair-requests/{pair_request_id}`
 
 ## Pairing
 
