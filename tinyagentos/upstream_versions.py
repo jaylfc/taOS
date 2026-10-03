@@ -244,12 +244,12 @@ async def _fetch_docker_hub_tags(
         if owns_client:
             client = httpx.AsyncClient(timeout=_FETCH_TIMEOUT)
         assert client is not None
-        
+
         tags: list[str] = []
         next_url = _DOCKER_HUB_TAGS.format(path=repo)
         page_count = 0
         max_pages = 10  # bounded page count
-        
+
         while next_url and page_count < max_pages:
             # For the first page, pass query parameters; for subsequent pages, use the next URL which already has them
             if page_count == 0:
@@ -271,10 +271,10 @@ async def _fetch_docker_hub_tags(
                 if isinstance(t, dict) and isinstance(t.get("name"), str)
             ]
             tags.extend(page_tags)
-            
+
             # Get the next URL for pagination (already contains params)
             next_url = data.get("next")
-            # SECURITY FIX: Only follow Docker Hub pagination links
+            # Only follow next links on hub.docker.com; stop at any other host.
             if isinstance(next_url, str) and not next_url.startswith("https://hub.docker.com/"):
                 # Stop paginating for external hosts, return tags gathered so far
                 return tags
@@ -282,7 +282,7 @@ async def _fetch_docker_hub_tags(
             if not isinstance(next_url, str):
                 next_url = None
             page_count += 1
-            
+
         return tags
     except Exception as exc:  # network error, timeout, bad JSON
         logger.debug("docker hub tag fetch failed for %s: %s", repo, exc)
@@ -290,11 +290,6 @@ async def _fetch_docker_hub_tags(
     finally:
         if owns_client and client is not None:
             await client.aclose()
-
-
-# --------------------------------------------------------------------------- #
-# Test: Security fix for Docker Hub pagination
-# --------------------------------------------------------------------------- #
 
 
 async def _fetch_registry_v2_tags(
