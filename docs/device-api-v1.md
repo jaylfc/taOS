@@ -137,13 +137,13 @@ from its own handshake.
 
 | HTTP status | Detail | Meaning |
 |---|---|---|
-| 400 | `platform must be one of [...]` | Unknown or missing `platform` value. |
+| 400 | `platform must be one of [...]` | Unknown or empty `platform` value. |
 | 400 | `push_token is not accepted for <platform> devices` | Push token supplied for a no-push platform. |
 | 403 | `{"error": "device_tls_required"}` | Embedded bearer on plain HTTP. |
 | 404 | `pair request not found` | Unknown `pair_request_id`. |
 | 409 | `no admin exists to approve pairing requests` | No admin user exists yet (instance not onboarded). |
 | 409 | `{"error": "already answered or not pending"}` | Decision was already answered or is no longer pending (an expired pair request is NOT a 409: approval returns 200 and marks it expired). |
-| 422 | FastAPI validation error | Body field exceeds `max_length` (e.g. `push_token` over 4096 chars). |
+| 422 | FastAPI validation error | Missing required field (e.g. `platform`) or a body field over `max_length` (e.g. `push_token` over 4096 chars). |
 | 429 | `too many pending pair requests (...)` | `DEVICE_PAIR_REQUESTS_PENDING_CAP` reached. |
 
 Clients must match on HTTP status, not on the detail text.
