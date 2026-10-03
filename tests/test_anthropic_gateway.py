@@ -618,77 +618,6 @@ async def test_missing_max_tokens_gets_default(tmp_path_factory):
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_529_fails_over(tmp_path_factory):
-    """Test that a 529 error fails over to another backend."""
-    data_dir = tmp_path_factory.mktemp("anthropic_gateway")
-    from tinyagentos.llm_gateway.auth import configure_gateway_keystore
-    
-    configure_gateway_keystore(data_dir)
-    
-    # Create two Anthropic backends for failover
-    anthropic1_config = {
-        "name": "claude-cloud-1",
-        "type": "anthropic",
-        "url": UPSTREAM,
-        "models": [{"id": "claude-x"}],
-        "api_key": ANTHROPIC_KEY,
-        "priority": 1,
-    }
-    
-    anthropic2_config = {
-        "name": "claude-cloud-2",
-        "type": "anthropic",
-        "url": "https://api.anthropic.org",
-        "models": [{"id": "claude-x"}],
-        "api_key": "sk-ant-testkey-2",
-        "priority": 2,
-    }
-    
-    _write_test_config(data_dir, [anthropic1_config, anthropic2_config])
-    
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setenv("TAOS_LLM_GATEWAY", "1")
-        app = create_app(data_dir=data_dir)
-    
-    state = app.state
-    stores = [state.desktop_settings, state.secrets, state.agent_model_keys]
-    for store in stores:
-        if store._db is not None:
-            await store.close()
-        await store.init()
-    
-    state.auth.setup_user("admin", "Test Admin", "", "testpass")
-    uid = state.auth.find_user("admin")["id"]
-    session = state.auth.create_session(user_id=uid, long_lived=True)
-    state._startup_complete = True
-    
-    # Mock first backend failing with 529
-    respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(
-        529, json={"error": {"message": "Overloaded"}}
-    ))
-    
-    # Mock second backend succeeding
-    respx.post("https://api.anthropic.org/v1/messages").mock(return_value=httpx.Response(
-        200, json=_anthropic_response(), headers={"content-type": "application/json"}
-    ))
-    
-    # Make the request
-    from httpx import ASGITransport, AsyncClient
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://test",
-        cookies={"taos_session": session},
-        event_hooks=csrf_event_hooks(),
-    ) as client:
-        resp = await client.post(BASE + "/chat/completions", json=_chat())
-    
-    # The first backend should have been tried first
-    # Since we have two backends, it might failover to the second
-    # The exact behavior depends on the implementation
-
-
-@pytest.mark.asyncio
-@respx.mock
 async def test_400_does_not_fail_over(tmp_path_factory):
     """Test that a 400 error does NOT fail over (as per OpenAI-compatible spec)."""
     data_dir = tmp_path_factory.mktemp("anthropic_gateway")
@@ -1098,3 +1027,715 @@ async def test_streaming_500_becomes_error_not_empty_stream(tmp_path_factory):
     assert resp.status_code == 502, resp.text
     body = resp.json()
     assert body["error"]["type"] == "api_error"
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_anthropic_route_url_is_used(tmp_path_factory):
+    """Test that the route's configured URL is used for the Anthropic API call."""
+    data_dir = tmp_path_factory.mktemp("anthropic_gateway")
+    from tinyagentos.llm_gateway.auth import configure_gateway_keystore
+    from tinyagentos.llm_gateway.forward import _clear_cooldowns
+
+    configure_gateway_keystore(data_dir)
+    _clear_cooldowns()
+    
+    # Create an Anthropic backend with a custom URL
+    anthropic_config = {
+        "name": "claude-cloud-custom",
+        "type": "anthropic",
+        "url": "https://api.anthropic.org",
+        "models": [{"id": "claude-x"}],
+        "api_key": ANTHROPIC_KEY,
+        "priority": 2,
+    }
+    
+    _write_test_config(data_dir, [anthropic_config])
+    
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("TAOS_LLM_GATEWAY", "1")
+        app = create_app(data_dir=data_dir)
+    
+    state = app.state
+    stores = [state.desktop_settings, state.secrets, state.agent_model_keys]
+    for store in stores:
+        if store._db is not None:
+            await store.close()
+        await store.init()
+    
+    state.auth.setup_user("admin", "Test Admin", "", "testpass")
+    uid = state.auth.find_user("admin")["id"]
+    session = state.auth.create_session(user_id=uid, long_lived=True)
+    state._startup_complete = True
+    
+    # Mock the custom URL, NOT the default Anthropic URL
+    respx.post("https://api.anthropic.org/v1/messages").mock(return_value=httpx.Response(
+        200, json=_anthropic_response(), headers={"content-type": "application/json"}
+    ))
+    
+    # Make the request
+    from httpx import ASGITransport, AsyncClient
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        cookies={"taos_session": session},
+        event_hooks=csrf_event_hooks(),
+    ) as client:
+        resp = await client.post(BASE + "/chat/completions", json=_chat())
+    
+    # Should get 200 from the custom URL
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["choices"][0]["message"]["content"] == "hi"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_anthropic_usage_records_unknown_not_zero(tmp_path_factory):
+    """When Anthropic returns no usage, the response must omit the usage block
+    and the trace must be marked usage_estimated."""
+    data_dir = tmp_path_factory.mktemp("anthropic_gateway")
+    from tinyagentos.llm_gateway.auth import configure_gateway_keystore
+    from tinyagentos.llm_gateway.forward import _clear_cooldowns
+
+    configure_gateway_keystore(data_dir)
+    _clear_cooldowns()
+
+    anthropic_config = {
+        "name": "claude-cloud-no-usage",
+        "type": "anthropic",
+        "url": UPSTREAM,
+        "models": [{"id": "claude-x"}],
+        "api_key": ANTHROPIC_KEY,
+        "priority": 2,
+    }
+
+    _write_test_config(data_dir, [anthropic_config])
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("TAOS_LLM_GATEWAY", "1")
+        app = create_app(data_dir=data_dir)
+
+    state = app.state
+    stores = [state.desktop_settings, state.secrets, state.agent_model_keys]
+    for store in stores:
+        if store._db is not None:
+            await store.close()
+        await store.init()
+
+    state.auth.setup_user("admin", "Test Admin", "", "testpass")
+    uid = state.auth.find_user("admin")["id"]
+    session = state.auth.create_session(user_id=uid, long_lived=True)
+    state._startup_complete = True
+
+    respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(
+        200, json={"id": "msg_01", "type": "message", "role": "assistant", "model": "claude-x",
+                    "content": [{"type": "text", "text": "hi"}], "stop_reason": "end_turn"},
+        headers={"content-type": "application/json"}
+    ))
+
+    from httpx import ASGITransport, AsyncClient
+    from tinyagentos.llm_gateway import forward as _fw
+    trace_calls = []
+    async def fake_record_trace(*args, **kwargs):
+        trace_calls.append({"args": args, "kwargs": kwargs})
+
+    with mock.patch.object(_fw, "_record_trace", side_effect=fake_record_trace):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"taos_session": session},
+            event_hooks=csrf_event_hooks(),
+        ) as client:
+            resp = await client.post(BASE + "/chat/completions", json=_chat())
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "usage" not in body, f"usage block should be omitted when unknown, got {body.get('usage')}"
+
+    assert trace_calls, "no trace was recorded"
+    last = trace_calls[-1]
+    estimated = last.get("kwargs", {}).get("estimated") or (last.get("args") or [None])[10]
+    assert estimated is True, \
+        f"trace should be marked usage_estimated, got {estimated}"
+
+
+# ---------------------------------------------------------------------------
+# RED-FIRST tests for items 1-5. Each MUST FAIL on head and PASS after fix.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_default_anthropic_url_does_not_double_v1(tmp_path_factory):
+    """The default Anthropic URL https://api.anthropic.com/v1 must not become /v1/v1/messages."""
+    data_dir = tmp_path_factory.mktemp("anthropic_gateway")
+    from tinyagentos.llm_gateway.auth import configure_gateway_keystore
+    from tinyagentos.llm_gateway.forward import _clear_cooldowns
+
+    configure_gateway_keystore(data_dir)
+    _clear_cooldowns()
+
+    anthropic_config = {
+        "name": "claude-cloud",
+        "type": "anthropic",
+        "url": "https://api.anthropic.com/v1",
+        "models": [{"id": "claude-x"}],
+        "api_key": ANTHROPIC_KEY,
+        "priority": 2,
+    }
+
+    _write_test_config(data_dir, [anthropic_config])
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("TAOS_LLM_GATEWAY", "1")
+        app = create_app(data_dir=data_dir)
+
+    state = app.state
+    stores = [state.desktop_settings, state.secrets, state.agent_model_keys]
+    for store in stores:
+        if store._db is not None:
+            await store.close()
+        await store.init()
+
+    state.auth.setup_user("admin", "Test Admin", "", "testpass")
+    uid = state.auth.find_user("admin")["id"]
+    session = state.auth.create_session(user_id=uid, long_lived=True)
+    state._startup_complete = True
+
+    respx.post("https://api.anthropic.com/v1/messages").mock(return_value=httpx.Response(
+        200, json=_anthropic_response(), headers={"content-type": "application/json"}
+    ))
+
+    from httpx import ASGITransport, AsyncClient
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        cookies={"taos_session": session},
+        event_hooks=csrf_event_hooks(),
+    ) as client:
+        resp = await client.post(BASE + "/chat/completions", json=_chat())
+
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_timeout_fails_over_to_next_backend(tmp_path_factory):
+    """A timeout on the first Anthropic backend must fail over to the second."""
+    data_dir = tmp_path_factory.mktemp("anthropic_gateway")
+    from tinyagentos.llm_gateway.auth import configure_gateway_keystore
+    from tinyagentos.llm_gateway.forward import _clear_cooldowns
+
+    configure_gateway_keystore(data_dir)
+    _clear_cooldowns()
+
+    anthropic1_config = {
+        "name": "claude-cloud-1",
+        "type": "anthropic",
+        "url": "https://api.anthropic.com/v1",
+        "models": [{"id": "claude-x"}],
+        "api_key": ANTHROPIC_KEY,
+        "priority": 1,
+    }
+
+    anthropic2_config = {
+        "name": "claude-cloud-2",
+        "type": "anthropic",
+        "url": "https://api.anthropic.org",
+        "models": [{"id": "claude-x"}],
+        "api_key": "sk-ant-testkey-2",
+        "priority": 2,
+    }
+
+    _write_test_config(data_dir, [anthropic1_config, anthropic2_config])
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("TAOS_LLM_GATEWAY", "1")
+        app = create_app(data_dir=data_dir)
+
+    state = app.state
+    stores = [state.desktop_settings, state.secrets, state.agent_model_keys]
+    for store in stores:
+        if store._db is not None:
+            await store.close()
+        await store.init()
+
+    state.auth.setup_user("admin", "Test Admin", "", "testpass")
+    uid = state.auth.find_user("admin")["id"]
+    session = state.auth.create_session(user_id=uid, long_lived=True)
+    state._startup_complete = True
+
+    respx.post("https://api.anthropic.com/v1/messages").mock(
+        side_effect=httpx.TimeoutException("timed out")
+    )
+
+    respx.post("https://api.anthropic.org/v1/messages").mock(return_value=httpx.Response(
+        200, json=_anthropic_response(), headers={"content-type": "application/json"}
+    ))
+
+    from httpx import ASGITransport, AsyncClient
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        cookies={"taos_session": session},
+        event_hooks=csrf_event_hooks(),
+    ) as client:
+        resp = await client.post(BASE + "/chat/completions", json=_chat())
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["choices"][0]["message"]["content"] == "hi"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_streaming_fails_over_and_records_usage(tmp_path_factory):
+    """A streaming 529 must fail over to the next backend, use its key,
+    and record usage from the message_delta event."""
+    data_dir = tmp_path_factory.mktemp("anthropic_gateway")
+    from tinyagentos.llm_gateway.auth import configure_gateway_keystore
+
+    configure_gateway_keystore(data_dir)
+
+    from tinyagentos.llm_gateway.forward import _clear_cooldowns
+    _clear_cooldowns()
+
+    anthropic1_config = {
+        "name": "claude-cloud-1",
+        "type": "anthropic",
+        "url": "https://api.anthropic.com/v1",
+        "models": [{"id": "claude-x"}],
+        "api_key": ANTHROPIC_KEY,
+        "priority": 1,
+    }
+
+    anthropic2_config = {
+        "name": "claude-cloud-2",
+        "type": "anthropic",
+        "url": "https://api.anthropic.org",
+        "models": [{"id": "claude-x"}],
+        "api_key": "sk-ant-testkey-2",
+        "priority": 2,
+    }
+
+    _write_test_config(data_dir, [anthropic1_config, anthropic2_config])
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("TAOS_LLM_GATEWAY", "1")
+        app = create_app(data_dir=data_dir)
+
+    state = app.state
+    stores = [state.desktop_settings, state.secrets, state.agent_model_keys]
+    for store in stores:
+        if store._db is not None:
+            await store.close()
+        await store.init()
+
+    state.auth.setup_user("admin", "Test Admin", "", "testpass")
+    uid = state.auth.find_user("admin")["id"]
+    session = state.auth.create_session(user_id=uid, long_lived=True)
+    state._startup_complete = True
+
+    respx.post("https://api.anthropic.com/v1/messages").mock(return_value=httpx.Response(
+        529, json={"error": {"message": "Overloaded"}},
+        headers={"content-type": "application/json"}
+    ))
+
+    stream_events = [
+        {"type": "message_start", "message": {"id": "msg_1", "type": "message", "role": "assistant", "model": "claude-x", "stop_sequence": None, "usage": {"input_tokens": 10}, "content": [], "stop_reason": None}},
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "hi"}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None}, "usage": {"output_tokens": 5}},
+        {"type": "message_stop"},
+    ]
+    respx.post("https://api.anthropic.org/v1/messages").mock(return_value=httpx.Response(
+        200, content=_stream_body(stream_events), headers={"content-type": "text/event-stream"}
+    ))
+
+    from httpx import ASGITransport, AsyncClient
+    from tinyagentos.llm_gateway import forward as _fw
+    from tinyagentos.llm_usage.pricing import Cost
+    trace_calls = []
+    spend_calls = []
+    async def fake_record_trace(*args, **kwargs):
+        trace_calls.append({"args": args, "kwargs": kwargs})
+
+    def fake_record_spend(state, principal, cost_usd):
+        spend_calls.append({"state": state, "principal": principal, "cost_usd": cost_usd})
+
+    with mock.patch.object(_fw, "_record_trace", side_effect=fake_record_trace), \
+         mock.patch.object(_fw, "_record_spend", side_effect=fake_record_spend), \
+         mock.patch("tinyagentos.llm_usage.pricing.cost_of", return_value=Cost(usd=0.001, priced=True, reason="test")):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"taos_session": session},
+            event_hooks=csrf_event_hooks(),
+        ) as client:
+            resp = await client.post(BASE + "/chat/completions", json=_chat(stream=True))
+
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    chunks, done = _openai_frames(resp.read().decode("utf-8"))
+    assert done
+    assert any(c.get("usage", {}).get("completion_tokens") == 5 for c in chunks), \
+        "usage from message_delta should be emitted"
+
+    second_call = [c for c in respx.calls if "api.anthropic.org" in str(c.request.url)][0]
+    assert second_call.request.headers["x-api-key"] == "sk-ant-testkey-2"
+    assert trace_calls, "no trace was recorded for stream"
+    assert any(
+        (c.get("args") or [None])[5] == "claude-cloud-2"
+        for c in trace_calls
+    ), "trace should credit the successful backend"
+    assert any(c["cost_usd"] > 0 for c in spend_calls), \
+        "spend should be recorded for the successful streaming backend"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_spend_recorded_on_successful_backend_after_failover(tmp_path_factory):
+    """After failover, spend must be recorded on the backend that succeeded."""
+    data_dir = tmp_path_factory.mktemp("anthropic_gateway")
+    from tinyagentos.llm_gateway.auth import configure_gateway_keystore
+    from tinyagentos.llm_gateway.forward import _clear_cooldowns
+
+    configure_gateway_keystore(data_dir)
+    _clear_cooldowns()
+
+    anthropic1_config = {
+        "name": "claude-cloud-1",
+        "type": "anthropic",
+        "url": "https://api.anthropic.com/v1",
+        "models": [{"id": "claude-x"}],
+        "api_key": ANTHROPIC_KEY,
+        "priority": 1,
+    }
+
+    anthropic2_config = {
+        "name": "claude-cloud-2",
+        "type": "anthropic",
+        "url": "https://api.anthropic.org",
+        "models": [{"id": "claude-x"}],
+        "api_key": "sk-ant-testkey-2",
+        "priority": 2,
+    }
+
+    _write_test_config(data_dir, [anthropic1_config, anthropic2_config])
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("TAOS_LLM_GATEWAY", "1")
+        app = create_app(data_dir=data_dir)
+
+    state = app.state
+    stores = [state.desktop_settings, state.secrets, state.agent_model_keys]
+    for store in stores:
+        if store._db is not None:
+            await store.close()
+        await store.init()
+
+    state.auth.setup_user("admin", "Test Admin", "", "testpass")
+    uid = state.auth.find_user("admin")["id"]
+    session = state.auth.create_session(user_id=uid, long_lived=True)
+    state._startup_complete = True
+
+    respx.post("https://api.anthropic.com/v1/messages").mock(return_value=httpx.Response(
+        529, json={"error": {"message": "Overloaded"}},
+        headers={"content-type": "application/json"}
+    ))
+
+    respx.post("https://api.anthropic.org/v1/messages").mock(return_value=httpx.Response(
+        200, json=_anthropic_response(), headers={"content-type": "application/json"}
+    ))
+
+    from httpx import ASGITransport, AsyncClient
+    from tinyagentos.llm_gateway import forward as _fw
+    from tinyagentos.llm_usage.pricing import Cost
+    trace_calls = []
+    async def fake_record_trace(*args, **kwargs):
+        trace_calls.append({"args": args, "kwargs": kwargs})
+
+    with mock.patch.object(_fw, "_record_trace", side_effect=fake_record_trace), \
+         mock.patch("tinyagentos.llm_usage.pricing.cost_of", return_value=Cost(usd=0.001, priced=True, reason="test")):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"taos_session": session},
+            event_hooks=csrf_event_hooks(),
+        ) as client:
+            resp = await client.post(BASE + "/chat/completions", json=_chat())
+
+    assert resp.status_code == 200, resp.text
+    assert trace_calls, "no trace was recorded"
+    last = trace_calls[-1]
+    backend_name = last.get("kwargs", {}).get("backend_name") or (last.get("args") or [None])[5]
+    assert backend_name == "claude-cloud-2", \
+        f"trace should credit the successful backend, got {backend_name}"
+
+    spend_calls = []
+    def fake_record_spend(state, principal, cost_usd):
+        spend_calls.append({"state": state, "principal": principal, "cost_usd": cost_usd})
+
+    with mock.patch.object(_fw, "_record_spend", side_effect=fake_record_spend), \
+         mock.patch("tinyagentos.llm_usage.pricing.cost_of", return_value=Cost(usd=0.001, priced=True, reason="test")):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"taos_session": session},
+            event_hooks=csrf_event_hooks(),
+        ) as client:
+            resp = await client.post(BASE + "/chat/completions", json=_chat())
+
+    assert resp.status_code == 200, resp.text
+    assert spend_calls, "no spend was recorded"
+    assert any(c["cost_usd"] > 0 for c in spend_calls), \
+        "spend should be recorded for the successful backend"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_anthropic_failover_skips_non_anthropic_routes(tmp_path_factory):
+    """Anthropic failover must skip non-Anthropic routes."""
+    data_dir = tmp_path_factory.mktemp("anthropic_gateway")
+    from tinyagentos.llm_gateway.auth import configure_gateway_keystore
+
+    configure_gateway_keystore(data_dir)
+
+    from tinyagentos.llm_gateway.forward import _clear_cooldowns
+    _clear_cooldowns()
+
+    anthropic1_config = {
+        "name": "claude-cloud-1",
+        "type": "anthropic",
+        "url": "https://api.anthropic.com/v1",
+        "models": [{"id": "claude-x"}],
+        "api_key": ANTHROPIC_KEY,
+        "priority": 1,
+    }
+
+    anthropic2_config = {
+        "name": "claude-cloud-2",
+        "type": "anthropic",
+        "url": "https://api.anthropic.org",
+        "models": [{"id": "claude-x"}],
+        "api_key": "sk-ant-testkey-2",
+        "priority": 2,
+    }
+
+    openai_config = {
+        "name": "openai-fallback",
+        "type": "openai",
+        "url": "https://api.openai.com/v1",
+        "models": [{"id": "claude-x"}],
+        "api_key": "sk-openai-test",
+        "priority": 3,
+    }
+
+    _write_test_config(data_dir, [anthropic1_config, anthropic2_config, openai_config])
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("TAOS_LLM_GATEWAY", "1")
+        app = create_app(data_dir=data_dir)
+
+    state = app.state
+    stores = [state.desktop_settings, state.secrets, state.agent_model_keys]
+    for store in stores:
+        if store._db is not None:
+            await store.close()
+        await store.init()
+
+    state.auth.setup_user("admin", "Test Admin", "", "testpass")
+    uid = state.auth.find_user("admin")["id"]
+    session = state.auth.create_session(user_id=uid, long_lived=True)
+    state._startup_complete = True
+
+    respx.post("https://api.anthropic.com/v1/messages").mock(return_value=httpx.Response(
+        529, json={"error": {"message": "Overloaded"}},
+        headers={"content-type": "application/json"}
+    ))
+
+    respx.post("https://api.anthropic.org/v1/messages").mock(return_value=httpx.Response(
+        200, json=_anthropic_response(), headers={"content-type": "application/json"}
+    ))
+
+    from httpx import ASGITransport, AsyncClient
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        cookies={"taos_session": session},
+        event_hooks=csrf_event_hooks(),
+    ) as client:
+        resp = await client.post(BASE + "/chat/completions", json=_chat())
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["choices"][0]["message"]["content"] == "hi"
+
+    openai_calls = [c for c in respx.calls if "api.openai.com" in str(c.request.url)]
+    assert not openai_calls, "OpenAI backend should not have been called during Anthropic failover"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_529_fails_over(tmp_path_factory):
+    """Test that a 529 error fails over to another backend, using route 2's key."""
+    data_dir = tmp_path_factory.mktemp("anthropic_gateway")
+    from tinyagentos.llm_gateway.auth import configure_gateway_keystore
+
+    configure_gateway_keystore(data_dir)
+
+    from tinyagentos.llm_gateway.forward import _clear_cooldowns
+    _clear_cooldowns()
+
+    anthropic1_config = {
+        "name": "claude-cloud-1",
+        "type": "anthropic",
+        "url": "https://api.anthropic.com/v1",
+        "models": [{"id": "claude-x"}],
+        "api_key": ANTHROPIC_KEY,
+        "priority": 1,
+    }
+
+    anthropic2_config = {
+        "name": "claude-cloud-2",
+        "type": "anthropic",
+        "url": "https://api.anthropic.org",
+        "models": [{"id": "claude-x"}],
+        "api_key": "sk-ant-testkey-2",
+        "priority": 2,
+    }
+
+    _write_test_config(data_dir, [anthropic1_config, anthropic2_config])
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("TAOS_LLM_GATEWAY", "1")
+        app = create_app(data_dir=data_dir)
+
+    state = app.state
+    stores = [state.desktop_settings, state.secrets, state.agent_model_keys]
+    for store in stores:
+        if store._db is not None:
+            await store.close()
+        await store.init()
+
+    state.auth.setup_user("admin", "Test Admin", "", "testpass")
+    uid = state.auth.find_user("admin")["id"]
+    session = state.auth.create_session(user_id=uid, long_lived=True)
+    state._startup_complete = True
+
+    respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(
+        529, json={"error": {"message": "Overloaded"}}
+    ))
+
+    respx.post("https://api.anthropic.org/v1/messages").mock(return_value=httpx.Response(
+        200, json=_anthropic_response(), headers={"content-type": "application/json"}
+    ))
+
+    from httpx import ASGITransport, AsyncClient
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        cookies={"taos_session": session},
+        event_hooks=csrf_event_hooks(),
+    ) as client:
+        resp = await client.post(BASE + "/chat/completions", json=_chat())
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["choices"][0]["message"]["content"] == "hi"
+    assert body["usage"]["prompt_tokens"] == 3
+    assert body["usage"]["completion_tokens"] == 1
+
+    assert len(respx.calls) >= 2, "Expected at least two calls (route 1 then route 2)"
+    first_calls = [c for c in respx.calls if "api.anthropic.com" in str(c.request.url)]
+    assert first_calls, "route 1 (api.anthropic.com) should have been tried first"
+    second_call = [c for c in respx.calls if "api.anthropic.org" in str(c.request.url)][0]
+    assert second_call.request.headers["x-api-key"] == "sk-ant-testkey-2"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_streaming_unknown_usage_is_recorded_as_estimated(tmp_path_factory):
+    """A stream with no message_delta usage must record usage_estimated=True
+    and a conservative budget estimate."""
+    data_dir = tmp_path_factory.mktemp("anthropic_gateway")
+    from tinyagentos.llm_gateway.auth import configure_gateway_keystore
+    from tinyagentos.llm_gateway.forward import _clear_cooldowns
+
+    configure_gateway_keystore(data_dir)
+    _clear_cooldowns()
+
+    anthropic_config = {
+        "name": "claude-cloud",
+        "type": "anthropic",
+        "url": UPSTREAM,
+        "models": [{"id": "claude-x"}],
+        "api_key": ANTHROPIC_KEY,
+        "priority": 2,
+    }
+
+    _write_test_config(data_dir, [anthropic_config])
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("TAOS_LLM_GATEWAY", "1")
+        app = create_app(data_dir=data_dir)
+
+    state = app.state
+    stores = [state.desktop_settings, state.secrets, state.agent_model_keys]
+    for store in stores:
+        if store._db is not None:
+            await store.close()
+        await store.init()
+
+    state.auth.setup_user("admin", "Test Admin", "", "testpass")
+    uid = state.auth.find_user("admin")["id"]
+    session = state.auth.create_session(user_id=uid, long_lived=True)
+    state._startup_complete = True
+
+    stream_events = [
+        {"type": "message_start", "message": {"id": "msg_1", "type": "message", "role": "assistant", "model": "claude-x", "stop_sequence": None, "content": [], "stop_reason": None}},
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "hi"}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None}},
+        {"type": "message_stop"},
+    ]
+    respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(
+        200, content=_stream_body(stream_events), headers={"content-type": "text/event-stream"}
+    ))
+
+    from httpx import ASGITransport, AsyncClient
+    from tinyagentos.llm_gateway import forward as _fw
+    trace_calls = []
+    spend_calls = []
+    async def fake_record_trace(*args, **kwargs):
+        trace_calls.append({"args": args, "kwargs": kwargs})
+
+    def fake_record_spend(state, principal, cost_usd):
+        spend_calls.append({"state": state, "principal": principal, "cost_usd": cost_usd})
+
+    with mock.patch.object(_fw, "_record_trace", side_effect=fake_record_trace), \
+         mock.patch.object(_fw, "_record_spend", side_effect=fake_record_spend):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"taos_session": session},
+            event_hooks=csrf_event_hooks(),
+        ) as client:
+            resp = await client.post(BASE + "/chat/completions", json=_chat(stream=True))
+
+    assert resp.status_code == 200, resp.text
+    chunks, done = _openai_frames(resp.read().decode("utf-8"))
+    assert done
+    assert not any(c.get("usage") for c in chunks), \
+        "no usage chunk should be emitted when message_delta has no usage"
+
+    assert trace_calls, "no trace was recorded for stream"
+    last = trace_calls[-1]
+    estimated = last.get("kwargs", {}).get("estimated") or (last.get("args") or [None])[10]
+    assert estimated is True, \
+        f"stream trace should be marked usage_estimated, got {estimated}"
+
+    assert any(c["cost_usd"] > 0 for c in spend_calls), \
+        "conservative budget estimate should be recorded when usage is unknown"
