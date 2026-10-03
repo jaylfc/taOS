@@ -124,8 +124,6 @@ def _update_fields(
         upstream_version = info["upstream_version"]
         upstream_checked_at = info["upstream_checked_at"]
         upstream_pinned = _upstream_baseline(app, info)
-        # Check if upstream tag shape matches baseline shape
-        # If shapes don't match, report unknown rather than comparing
         baseline_tag = upstream_pinned
         if baseline_tag and upstream_version:
             baseline_shape = upstream_versions.tag_shape(baseline_tag)

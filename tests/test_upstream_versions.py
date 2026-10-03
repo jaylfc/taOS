@@ -15,14 +15,12 @@ Covers:
 - The real shipped app-catalog manifests: the upstream tag is compared
   against the PINNED IMAGE TAG, not the catalog ``version:`` field.
 """
-from __future__ import annotations
-
 import json
-import httpx
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from tinyagentos import upstream_versions as uv
@@ -95,63 +93,25 @@ class FakeRegistryClient:
 
 
 def _docker_hub_client(fixture: str, status: int = 200) -> FakeRegistryClient:
-    """Create a mock client for Docker Hub API with full pagination support.
+    """Create a mock client for Docker Hub API with simplified route handling.
     
-    This mock extracts the repository path from the fixture data's 'next' URL (or
-    from the fixture name if no 'next' URL exists) and routes requests accordingly.
-    It handles pagination by responding to 'next' URL requests with empty results
-    (simulating no more tags). This ensures tests can mock any Docker Hub repository.
+    This mock uses the original generic route key "hub.docker.com/v2/repositories/"
+    (FakeRegistryClient matches by URL substring). It loads the fixture and creates
+    a shallow copy with "next" set to None to stop pagination.
     """
     data = _load_fixture(fixture)
     
-    # First page response
-    first_page_response = _FakeResponse(status, data)
+    # Create a shallow copy of the fixture data and set "next" to None
+    # This stops pagination so the test only gets the first page
+    first_page_data = data.copy()
+    if isinstance(first_page_data, dict):
+        first_page_data["next"] = None
     
-    # Create a routes dict with the first page URL
-    routes = {}
-    
-    # If the data has a 'next' URL, add a route for it that returns empty results
-    # This simulates that there are no more tags to fetch
-    if isinstance(data, dict) and data.get("next"):
-        next_url = data["next"]
-        if isinstance(next_url, str):
-            # Create a second page response with empty results
-            second_page_data = {
-                "count": 0,
-                "next": None,
-                "previous": next_url,
-                "results": [],
-            }
-            routes[next_url] = _FakeResponse(status, second_page_data)
-    
-    # Add the first page route with the query parameters
-    # The URL should match what fetch_registry_tags will request
-    # It should include the query parameters: ordering=last_updated&page_size=100
-    from tinyagentos.upstream_versions import _DOCKER_HUB_TAGS, _hub_path
-    
-    # Determine the repo path from the fixture name or from the next URL
-    if isinstance(data, dict) and data.get("next"):
-        # Extract repo path from the next URL
-        next_url = data["next"]
-        if isinstance(next_url, str):
-            # Extract path from URL like "https://hub.docker.com/v2/repositories/searxng/searxng/tags..."
-            import re
-            match = re.search(r"https://hub\.docker\.com/v2/repositories/([\w/]+)/tags", next_url)
-            if match:
-                path = match.group(1)
-            else:
-                # Fallback to reconstructing from fixture name
-                path = fixture.replace("dockerhub-", "").replace(".json", "")
-        else:
-            # Fallback to reconstructing from fixture name
-            path = fixture.replace("dockerhub-", "").replace(".json", "")
-    else:
-        # Fallback to reconstructing from fixture name
-        path = fixture.replace("dockerhub-", "").replace(".json", "")
-    
-    repo = _hub_path(path)
-    first_page_url = _DOCKER_HUB_TAGS.format(path=repo)
-    routes[first_page_url] = first_page_response
+    # Create the route with the original generic key
+    first_page_response = _FakeResponse(status, first_page_data)
+    routes = {
+        "hub.docker.com/v2/repositories/": first_page_response
+    }
     
     return FakeRegistryClient(routes)
 
@@ -811,7 +771,7 @@ class TestRealManifestsAreNotPermanentUpdates:
 
 
 class TestUpstreamPaginationAndBaseline:
-    """Tests that currently FAIL against the bugs, before they are fixed."""
+    """Regression tests for Docker Hub pagination and the pin baseline (tsk-diw2ce)."""
 
     @pytest.mark.asyncio
     async def test_docker_hub_tags_follow_next_page(self):
@@ -884,32 +844,65 @@ class TestUpstreamPaginationAndBaseline:
         expected_tags = {"2026.10.3", "2026.10.2", "2026.10.1", "2026.10.0"}
         assert set(tags) == expected_tags, f"Expected tags {expected_tags}, got {tags}"
 
-    def test_baseline_prefers_current_pin(self):
-        """DEFECT 2: the recorded `pinned_version` from the cache is preferred over the app's
-        CURRENT image pin, so after a same-shape catalog bump the stale recorded pin can
-        make an update look already applied or still pending.
+    def test_update_fields_handles_baseline_pinned_version(self):
+        """End-to-end test for _update_fields with baseline pinned version."""
+        from tinyagentos.routes.store import _update_fields
         
-        FIX: use upstream_versions.pinned_tag(app) as the comparison baseline first,
-        fall back to the recorded pin, then app.version; when the upstream tag's shape
-        differs from the baseline's, report the upstream status as unknown rather than
-        comparing.
-        """
-        from tinyagentos.routes.store import _upstream_baseline
-
-        # Create a mock app with current pin = 1.1.0
+        # Test case 1: installed app with pin 1.1.0, cache shows pinned_version 1.0.0, upstream 1.1.0
+        # Should report upstream_update_available is not True and update_available is False
+        # because upstream equals current pin (1.1.0), not newer than baseline (1.0.0)
         app = MagicMock()
         app.id = "test-app"
-        app.version = "2.0.0"  # Catalog version (not the image pin)
+        app.version = "2.0.0"  # Catalog version
         app.install = {"method": "docker", "image": "test/repo:1.1.0"}
         
-        # Simulate upstream_versions.pinned_tag(app) returning "1.1.0"
-        with patch('tinyagentos.routes.store.upstream_versions.pinned_tag', return_value="1.1.0"):
-            # Simulate cache info with old pinned_version = "1.0.0"
-            info = {"pinned_version": "1.0.0"}
-            
-            # With the current implementation, _upstream_baseline returns "1.0.0" (from cache)
-            # With the fix, it should return "1.1.0" (from upstream_versions.pinned_tag)
-            baseline = _upstream_baseline(app, info)
-            
-            # After the fix, baseline should be "1.1.0" (current pin), not "1.0.0" (stale cache)
-            assert baseline == "1.1.0", f"Expected baseline to be '1.1.0' (current pin), but got '{baseline}'"
+        # Mock pinned_tag to return the current image pin
+        with patch('tinyagentos.upstream_versions.pinned_tag', return_value="1.1.0"):
+            # Mock upstream_info to return the cached info
+            with patch('tinyagentos.routes.store.upstream_versions.upstream_info') as mock_upstream_info:
+                mock_upstream_info.return_value = {
+                    "upstream_version": "1.1.0",
+                    "upstream_checked_at": 12345.0,
+                    "pinned_version": "1.0.0",  # Old stale pin from cache
+                }
+                
+                # Call _update_fields with installed=True, recorded_version None (not installed)
+                result = _update_fields(app, True, None)
+                
+                # Since the app is installed (installed=True) but the recorded_version is None
+                # (not from the install), update_available should be False
+                assert result["update_available"] is False
+                
+                # upstream_update_available should be False because upstream (1.1.0) == baseline (1.1.0)
+                assert result["upstream_update_available"] is False
+                assert result["upstream_version"] == "1.1.0"
+                assert result["upstream_pinned_version"] == "1.1.0"  # Should use current pin, not stale cache
+
+    def test_update_fields_handles_different_tag_shapes(self):
+        """End-to-end test for _update_fields with different tag shapes."""
+        from tinyagentos.routes.store import _update_fields
+        
+        # Test case 2: pin is "1.1.0", upstream is "latest-abc" (different tag_shape)
+        # Should report upstream_update_available is None because shapes don't match
+        app = MagicMock()
+        app.id = "test-app"
+        app.version = "2.0.0"  # Catalog version
+        app.install = {"method": "docker", "image": "test/repo:1.1.0"}
+        
+        # Mock pinned_tag to return the current image pin
+        with patch('tinyagentos.upstream_versions.pinned_tag', return_value="1.1.0"):
+            # Mock upstream_info to return different shape upstream version
+            with patch('tinyagentos.routes.store.upstream_versions.upstream_info') as mock_upstream_info:
+                mock_upstream_info.return_value = {
+                    "upstream_version": "latest-abc",  # Different shape (not version-shaped)
+                    "upstream_checked_at": 12345.0,
+                    "pinned_version": "1.0.0",
+                }
+                
+                # Call _update_fields with installed=False
+                result = _update_fields(app, False, None)
+                
+                # upstream_update_available should be None because different tag shapes
+                assert result["upstream_update_available"] is None
+                assert result["update_available"] is False
+                assert result["upstream_version"] == "latest-abc"
