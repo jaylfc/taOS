@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Tests for upstream release detection (tinyagentos/upstream_versions.py).
 
 Covers:
@@ -17,6 +15,8 @@ Covers:
 - The real shipped app-catalog manifests: the upstream tag is compared
   against the PINNED IMAGE TAG, not the catalog ``version:`` field.
 """
+from __future__ import annotations
+
 import json
 from pathlib import Path
 from types import SimpleNamespace
