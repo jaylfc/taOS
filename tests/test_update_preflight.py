@@ -78,7 +78,15 @@ class TestUpdatePreflight:
                  0, real.st_gid, real.st_size, real.st_atime,
                  real.st_mtime, real.st_ctime)  # uid=0 (root)
             )
-            with patch("pathlib.Path.stat", return_value=mock_stat):
+            # Only the planted file reports root ownership; every other path
+            # keeps its real stat, otherwise the scanned directory itself looks
+            # like a regular file and rglob yields nothing (Python 3.12).
+            real_stat = Path.stat
+
+            def fake_stat(self, *a, **k):
+                return mock_stat if self == test_file else real_stat(self, *a, **k)
+
+            with patch.object(Path, "stat", autospec=True, side_effect=fake_stat):
                 count, paths = _find_foreign_owned_files(tmp_path)
 
                 assert count > 0
