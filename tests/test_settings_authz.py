@@ -167,6 +167,10 @@ class TestSettingsAuthzAdminAllowed:
                 new=_fake_restart,
             ),
             patch("tinyagentos.restart_orchestrator.write_pending_restart"),
+            patch(
+                "tinyagentos.update_preflight.check_preflight",
+                return_value=[],
+            ),
         ):
             resp = await client.post("/api/settings/update")
 
