@@ -9,11 +9,11 @@ created or modified during that test.
 """
 
 import pytest
-from tinyagentos.app import PROJECT_DIR
+import tinyagentos.app as _app_mod
 
 
 def _collect_data_mtimes() -> dict[str, tuple[float, int]]:
-    data_dir = PROJECT_DIR / "data"
+    data_dir = _app_mod.PROJECT_DIR / "data"
     snapshot: dict[str, tuple[float, int]] = {}
     if not data_dir.is_dir():
         return snapshot

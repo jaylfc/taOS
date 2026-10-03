@@ -21,11 +21,12 @@ import pytest
 from pathlib import Path
 
 sys.path.insert(0, {src!r})
+sys.path.insert(0, {src + '/tests'!r})
 
 import tinyagentos.app as _app_mod
 _app_mod.PROJECT_DIR = Path({pytester_path!r})
 
-pytest_plugins = ["tests._data_guard_plugin"]
+pytest_plugins = ["_data_guard_plugin"]
 """
 
 
@@ -67,9 +68,7 @@ def test_serial_without_xdist_does_not_internalerror(tmp_path, pytester):
     """Serial run with xdist disabled must not INTERNALERROR on the unknown hook."""
     src = str(Path(__file__).resolve().parent.parent)
     conftest_path = Path(__file__).resolve().parent / "conftest.py"
-    plugin_path = Path(__file__).resolve().parent / "_data_guard_plugin.py"
     conftest_content = conftest_path.read_text()
-    plugin_content = plugin_path.read_text()
     conftest_with_syspath = (
         f"import sys\n"
         f"sys.path.insert(0, {src!r})\n"
@@ -77,7 +76,6 @@ def test_serial_without_xdist_does_not_internalerror(tmp_path, pytester):
         + conftest_content
     )
     pytester.makepyfile(conftest=conftest_with_syspath)
-    pytester.makepyfile(_data_guard_plugin=plugin_content)
     pytester.makepyfile(test_pass="""
 def test_trivial():
     assert True

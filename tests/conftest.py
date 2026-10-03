@@ -19,10 +19,7 @@ from tinyagentos.app import create_app, PROJECT_DIR
 from tinyagentos.routes.desktop import SPA_DIR
 
 # Data-dir mutation guard plugin.
-_data_guard_plugin_path = os.path.join(os.path.dirname(__file__), "_data_guard_plugin.py")
-spec = importlib.util.spec_from_file_location("_data_guard_plugin", _data_guard_plugin_path)
-_data_guard_plugin = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(_data_guard_plugin)
+import tests._data_guard_plugin  # noqa: F401
 
 
 # ---------------------------------------------------------------------------
