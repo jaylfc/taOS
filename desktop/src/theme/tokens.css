@@ -17,6 +17,9 @@
   --color-shell-text: rgba(255, 255, 255, 0.85);
   --color-shell-text-secondary: rgba(255, 255, 255, 0.5);
   --color-shell-text-tertiary: rgba(255, 255, 255, 0.3);
+  --color-shell-text-disabled: rgba(255, 255, 255, 0.15);
+  --color-shell-text-hint: rgba(255, 255, 255, 0.25);
+  --color-shell-text-subtle-hover: rgba(255, 255, 255, 0.4);
 
   /* Traffic lights */
   --color-traffic-close: #ff5f57;

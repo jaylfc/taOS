@@ -37,7 +37,7 @@ export function AttachmentGallery({ attachments }: { attachments: AttachmentReco
         <div className="flex flex-col gap-1">
           {files.map((f) => (
             <a key={f.url} href={f.url} target="_blank" rel="noreferrer"
-               className="flex items-center gap-2 bg-white/5 hover:bg-white/10 rounded px-2 py-1 text-sm max-w-sm">
+               className="flex items-center gap-2 bg-shell-surface-hover hover:bg-shell-border-strong rounded px-2 py-1 text-sm max-w-sm">
               <span aria-hidden>📄</span>
               <span className="truncate">{f.filename}</span>
               <span className="ml-auto text-xs opacity-60">
