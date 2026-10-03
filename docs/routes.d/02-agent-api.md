@@ -4,7 +4,7 @@
 
 ## Scoped allowlist
 
-Agents authenticate with their registry JWT (`Authorization: Bearer`) and reach exactly the routes their granted SCOPES allow, nothing else.
+Agents authenticate with registry JWT (`Authorization: Bearer`) and reach exactly routes their granted SCOPES allow, nothing else.
 
 ### project_tasks (the kanban board)
 
@@ -12,23 +12,23 @@ Granting `project_tasks` also makes the agent a project member.
 
 ### project_tasks_create
 
-`POST /api/projects/{pid}/tasks` — author new cards. SEPARATE scope from `project_tasks`; off by default.
+`POST /api/projects/{pid}/tasks` — author new cards. SEPARATE from `project_tasks`; off by default.
 
 ### project_tasks_update
 
-`PATCH /api/projects/{pid}/tasks/{tid}` — whitelisted fields (title, body, labels, priority), own-or-lead cards only. SEPARATE from `project_tasks`; plain project_tasks token gets 403. The whitelist keys on which fields the body SENDS, so `{"assignee_id": null}` is a 403 like any other assignee edit.
+`PATCH /api/projects/{pid}/tasks/{tid}` — whitelisted fields (title, body, labels, priority), own-or-lead only. SEPARATE from `project_tasks`; plain token gets 403. Whitelist keys on fields body SENDS, so `{"assignee_id": null}` is 403.
 
 ### canvas_read & canvas_write
 
-`GET .../canvas/elements`, `POST|PATCH|DELETE .../canvas/elements/{id}` require `canvas_read` or `canvas_write` scope respectively.
+`GET .../canvas/elements`, `POST|PATCH|DELETE .../canvas/elements/{id}` require `canvas_read`/`canvas_write` respectively.
 
 ### files_read & files_write
 
-Files routes key on the project SLUG. `GET .../files/{path}`, `POST .../files/upload`, `DELETE .../files/{path}`.
+Files routes key on project SLUG. `GET .../files/{path}`, `POST .../files/upload`, `DELETE .../files/{path}`.
 
 ### decisions_write
 
-`POST /api/decisions` — raise a human-in-the-loop decision. `POST /api/decisions/{id}/answer/agent` — mirror an answer.
+`POST /api/decisions` — raise human-in-the-loop decision. `POST /api/decisions/{id}/answer/agent` — mirror answer.
 
 ### a2a bus surface
 
@@ -36,4 +36,4 @@ Files routes key on the project SLUG. `GET .../files/{path}`, `POST .../files/up
 
 ### CONSENT KEY surface
 
-`GET /v1/models` and `POST /v1/chat/completions` are reachable without a session using a CONSENT KEY. No key, no resolution, OpenAI-shaped 401 otherwise. Only those two exact method+path pairs pass the middleware.
+`GET /v1/models` and `POST /v1/chat/completions` reachable without session via CONSENT KEY. No key = no resolution, OpenAI-shaped 401. Only those two exact method+path pairs pass middleware.

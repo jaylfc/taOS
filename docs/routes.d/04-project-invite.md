@@ -8,42 +8,38 @@
 
 Body: `{invite_id, pin, harness, label?}`
 
-- Verifies the PIN (wrong / expired / attempt-capped → 403; already redeemed / revoked → 409)
-- Derives the agent handle `{project_slug}-{harness}[-{label}]`, de-duped against active registry agents in the project
-- Auto-approves via `approve_request_record` (decided_by = the invite's creator), or leaves the request pending (manual mode)
-- Returns a connection bundle plus `{request_id, agent_handle, poll_path}`
-- `project_tasks` is force-included so a successful redeem always yields a project member
+- Verifies PIN (wrong/expired/attempt-capped → 403; redeemed/revoked → 409)
+- Derives handle `{project_slug}-{harness}[-{label}]`, de-duped vs active registry agents
+- Auto-approves via `approve_request_record` (decided_by = invite creator), or leaves pending (manual)
+- Returns connection bundle + `{request_id, agent_handle, poll_path}`
+- `project_tasks` force-included → successful redeem = project member
 
 ### GET /i/{invite_id}
 
-Content-negotiated advert: `Accept: application/json` → the redeem contract (`{method, path, fields}`); browser → a minimal HTML page. No PIN check here; it only advertises the contract.
+Content-negotiated: `Accept: application/json` → redeem contract (`{method, path, fields}`); browser → minimal HTML. No PIN check; only advertises contract.
 
 ## Connection bundle
 
-- `controller.endpoints` — non-loopback LAN IPv4s (priority ordered, operator override first) and the mesh (Tailscale) node IP when joined; optional relay endpoint when `TAOS_CONTROLLER_RELAY_URL` is configured with `https://`
-- `apis` — agent-JWT-reachable surface, scoped exactly to the granted scopes (mirrors the middleware allowlist)
+- `controller.endpoints` — non-loopback LAN IPv4s (priority, override first) + mesh (Tailscale) IP when joined; optional relay when `TAOS_CONTROLLER_RELAY_URL` is `https://`
+- `apis` — agent-JWT surface, scoped to granted scopes (mirrors middleware allowlist)
 - `delivery` — timed-check contract (`poll_path`, `stream_path`, `check_interval_secs`, `cursor: ts`, `filter: mentions+project`)
-- `onboarding` + `guide_markdown` — capability guide (repo + manual links, scoped Projects/Canvas summary, A2A proxy contract, memory + timed checks). `harness=grok` adds secure-form token storage, onboarding polling, and a shared-account warning.
+- `onboarding` + `guide_markdown` — capability guide (repo/manual links, scoped Projects/Canvas, A2A proxy, memory + timed checks). `harness=grok` adds secure-form token storage, onboarding polling, shared-account warning.
 
-See `docs/design/external-agent-project-invite.md` (issue #1780); canvas routes advertise only when that scope was granted.
+See `docs/design/external-agent-project-invite.md` (#1780); canvas routes only when scope granted.
 
 ## Override addresses advertised over HTTP
 
-The operator can set `TAOS_CONTROLLER_CALLBACK_HOST` to control which address the invite bundle advertises for the controller. The following override values are advertised over **HTTP** in the bundle:
+Operator sets `TAOS_CONTROLLER_CALLBACK_HOST`. Advertised over **HTTP**:
 
-- **Tailscale CGNAT IPs** in `100.64.0.0/10` (e.g. `100.78.225.80`)
-- **Tailscale ULA IPs** in `fd7a:115c:a1e0::/48`
-- **Private LAN IPs** (RFC 1918: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`)
-- **Loopback** (`127.0.0.1`, `::1`, `localhost`)
-- **Hostnames** that end with `.local`, `.lan`, `.home.arpa`, or `.ts.net` (MagicDNS)
-- **Single-label hostnames** with no dot (e.g. `taos`, `controller`)
+- Tailscale CGNAT `100.64.0.0/10` (e.g. `100.78.225.80`)
+- Tailscale ULA `fd7a:115c:a1e0::/48`
+- Private LAN (RFC 1918: `10/8`, `172.16/12`, `192.168/16`)
+- Loopback (`127.0.0.1`, `::1`, `localhost`)
+- Hostnames ending `.local`, `.lan`, `.home.arpa`, `.ts.net` (MagicDNS)
+- Single-label (e.g. `taos`, `controller`)
 
-The following override values are **NOT advertised over HTTP** (omitted with a warning):
+**NOT advertised** (omitted with warning): public IPs, public hostnames (e.g. `controller.example.com`), hostnames not matching trusted suffixes.
 
-- Public IP addresses
-- Public hostnames (e.g. `controller.example.com`, `api.mycompany.com`)
-- Any hostname not matching the trusted suffixes above
+Full URL override (e.g. `http://192.168.1.5:6969`) uses scheme/port as-is; LAN IP enum deduplicates vs parsed hostname.
 
-When the override is a full URL (e.g. `http://192.168.1.5:6969`), the scheme and port are used as-is, and the LAN IP enumeration deduplicates against the parsed hostname to avoid advertising the same address twice.
-
-**Relay endpoint** (`TAOS_CONTROLLER_RELAY_URL`): Must be `https://` only. HTTP relay URLs are omitted with a warning, even for private addresses.
+**Relay** (`TAOS_CONTROLLER_RELAY_URL`): `https://` only. HTTP relay URLs omitted with warning.

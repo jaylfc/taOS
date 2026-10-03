@@ -1,29 +1,29 @@
 # Answering a select decision with free text (`other_value`)
 
-<!-- Route module `tinyagentos/routes/decisions.py`. Applies to BOTH answer paths: human `POST /api/decisions/{id}/answer` and the agent mirror `POST /api/decisions/{id}/answer/agent` (scope `decisions_write`) -->
+<!-- Route module `tinyagentos/routes/decisions.py`. Applies to BOTH answer paths: human `POST /api/decisions/{id}/answer` and agent mirror `POST /api/decisions/{id}/answer/agent` (scope `decisions_write`) -->
 
 ## `single_select`
 
-- Send `other_value` and leave `value` empty
-- Sending both is a `400` ("cannot combine value with other_value")
-- The stored answer is the stripped `other_value`
+- Send `other_value`, leave `value` empty
+- Both → `400` ("cannot combine value with other_value")
+- Stored answer = stripped `other_value`
 
 ## `multi_select`
 
-- `value` must still be a list and **every element is still validated against the declared options**
-- The free-text entry is appended, so the stored answer is `[*declared_values, other_value.strip()]`
-- A non-list `value` is a `400`
+- `value` must be list, every element validated against declared options
+- Free-text appended: stored = `[*declared_values, other_value.strip()]`
+- Non-list `value` → `400`
 
 ## Note field
 
-- When present, appended to the text routed to the agent as `<answer> (note: <note>)`
+- When present, appended to text routed to agent as `<answer> (note: <note>)`
 
 ## Without `other_value`
 
-- Strict validation is unchanged: the answer must be one of, or a subset of, the declared options
-- A non-hashable or non-iterable value fails closed as `400` rather than `500`
+- Strict validation unchanged: answer must be one of/subset of declared options
+- Non-hashable/non-iterable → `400` (fails closed, not `500`)
 
 ## Two consequences
 
-- **No per-decision opt-out.** No `allow_other` flag exists; the free-text path is available on EVERY select decision
-- **The agent path gained it too.** An agent holding `decisions_write` can now record arbitrary free text, not only the declared options
+- **No per-decision opt-out.** No `allow_other` flag; free-text path on EVERY select decision
+- **Agent path gained it too.** Agent with `decisions_write` can record arbitrary free text, not only declared options

@@ -5,17 +5,17 @@
 ## SSE stream characteristics
 
 - `?kinds=a,b,c` — comma-separated allowlist of event kinds
-- Omitted, empty, or naming no kind at all (`?kinds=`, `?kinds=%20`, `?kinds=,`) means every kind (empty allowlist = no filter, not silence)
-- Filtering happens as events enter the per-connection buffer, so an unrequested kind can never evict one the subscriber asked for
-- At most 256 events are buffered per connection; past that the OLDEST is dropped and the client gets `{"kind": "events.lagged", "dropped": N}` as a cue to refetch
-- A `:keepalive` comment frame every 10 s keeps proxies from closing an idle stream
-- Frames carry **no** SSE `id:` line; resume is best-effort via the EventBus replay buffer (last 32 events per channel, delivered on subscribe)
-- The payload never crosses the wire: `id` is just the trace id, so a subscriber refetches to learn what changed
+- Omitted/empty/no kind = every kind (empty allowlist = no filter, not silence)
+- Filtering at buffer entry: unrequested kind never evicts requested
+- Max 256 events/conn; oldest dropped → `{"kind": "events.lagged", "dropped": N}` cues refetch
+- `:keepalive` comment every 10s prevents proxy close on idle
+- No SSE `id:` line; resume via EventBus replay (last 32/channel, on subscribe)
+- Payload never on wire: `id` is trace id, subscriber refetches to learn changes
 
 ## Desktop integration
 
-- `desktop/src/hooks/use-os-events.ts`: `useOsEvents(kinds, onEvent)` holds one connection, returns `connected` / `stale`, dedupes by event id, reconnects with backoff, and reopens the stream when `kinds` changes
+- `desktop/src/hooks/use-os-events.ts`: `useOsEvents(kinds, onEvent)` holds one conn, returns `connected`/`stale`, dedupes by event id, reconnects with backoff, reopens on `kinds` change
 
 ## Technical details
 
-- Subscriptions and relay tasks are created INSIDE the response generator, not the handler body: a generator closed before iteration never runs its `finally`; handler-side setup leaked a subscription per client that disconnected before the stream started
+- Subscriptions/relay tasks created INSIDE response generator, not handler: generator closed before iteration never runs `finally`; handler-side setup leaked sub per client disconnecting before stream start

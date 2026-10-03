@@ -8,24 +8,24 @@ Access the kanban board for a project. Granting `project_tasks` also makes the a
 
 ### API endpoints
 
-- `GET /api/projects/{pid}/tasks` — list tasks in a project
-- `GET /api/projects/{pid}/tasks/ready` — list ready tasks
-- `GET /api/projects/{pid}/tasks/{id}` — get a specific task
-- `GET /api/projects/{pid}/tasks/{id}/comments` — list task comments
-- `POST /api/projects/{pid}/tasks/{id}/claim` — claim a task (LEAD-only)
-- `POST /api/projects/{pid}/tasks/{id}/release` — release a claimed task
-- `POST /api/projects/{pid}/tasks/{id}/close` — close a task
-- `POST /api/projects/{pid}/tasks/{id}/reopen` — reopen a closed task
-- `GET /api/projects/tasks/{id}/context` — get task context
+- `GET /api/projects/{pid}/tasks` — list tasks
+- `GET /api/projects/{pid}/tasks/ready` — list ready
+- `GET /api/projects/{pid}/tasks/{id}` — get task
+- `GET /api/projects/{pid}/tasks/{id}/comments` — list comments
+- `POST /api/projects/{pid}/tasks/{id}/claim` — claim (LEAD-only)
+- `POST /api/projects/{pid}/tasks/{id}/release` — release claimed
+- `POST /api/projects/{pid}/tasks/{id}/close` — close
+- `POST /api/projects/{pid}/tasks/{id}/reopen` — reopen
+- `GET /api/projects/tasks/{id}/context` — get context
 
 ### PATCH body semantics
 
-`PATCH /api/projects/{pid}/tasks/{id}` writes exactly the fields sent and returns the stored task. Omitted = unchanged. `assignee_id`, `parent_task_id`, `element_id` accept `null` as a real clear (`element_id` also the legacy `"none"`). `null` elsewhere, an unknown key, or a read-only column (`id`, `created_by`, `claimed_by`) is a `422` — never a `200` echoing an unchanged task.
+`PATCH /api/projects/{pid}/tasks/{id}` writes exactly fields sent, returns stored task. Omitted = unchanged. `assignee_id`, `parent_task_id`, `element_id` accept `null` as real clear (`element_id` also legacy `"none"`). `null` elsewhere, unknown key, or read-only (`id`, `created_by`, `claimed_by`) → `422`, never `200` echo.
 
 ### LEAD-only extensions
 
-- `POST .../tasks/{id}/claimable` — add/remove the `claimable` label (LEAD-only)
-- `POST .../tasks/{id}/unquarantine` — return a quarantined card to the open pool (LEAD-only)
+- `POST .../tasks/{id}/claimable` — add/remove `claimable` label (LEAD-only)
+- `POST .../tasks/{id}/unquarantine` — return quarantined card to open pool (LEAD-only)
 
 ---
 
@@ -33,7 +33,7 @@ Access the kanban board for a project. Granting `project_tasks` also makes the a
 
 ## Scoped allowlist
 
-Agents authenticate with their registry JWT (`Authorization: Bearer`) and reach exactly the routes their granted SCOPES allow, nothing else.
+Agents authenticate with registry JWT (`Authorization: Bearer`) and reach exactly routes their granted SCOPES allow, nothing else.
 
 ### project_tasks (the kanban board)
 
@@ -41,23 +41,23 @@ Granting `project_tasks` also makes the agent a project member.
 
 ### project_tasks_create
 
-`POST /api/projects/{pid}/tasks` — author new cards. SEPARATE scope from `project_tasks`; off by default.
+`POST /api/projects/{pid}/tasks` — author new cards. SEPARATE from `project_tasks`; off by default.
 
 ### project_tasks_update
 
-`PATCH /api/projects/{pid}/tasks/{tid}` — whitelisted fields (title, body, labels, priority), own-or-lead cards only. SEPARATE from `project_tasks`; plain project_tasks token gets 403. The whitelist keys on which fields the body SENDS, so `{"assignee_id": null}` is a 403 like any other assignee edit.
+`PATCH /api/projects/{pid}/tasks/{tid}` — whitelisted fields (title, body, labels, priority), own-or-lead only. SEPARATE from `project_tasks`; plain token gets 403. Whitelist keys on fields body SENDS, so `{"assignee_id": null}` is 403.
 
 ### canvas_read & canvas_write
 
-`GET .../canvas/elements`, `POST|PATCH|DELETE .../canvas/elements/{id}` require `canvas_read` or `canvas_write` scope respectively.
+`GET .../canvas/elements`, `POST|PATCH|DELETE .../canvas/elements/{id}` require `canvas_read`/`canvas_write` respectively.
 
 ### files_read & files_write
 
-Files routes key on the project SLUG. `GET .../files/{path}`, `POST .../files/upload`, `DELETE .../files/{path}`.
+Files routes key on project SLUG. `GET .../files/{path}`, `POST .../files/upload`, `DELETE .../files/{path}`.
 
 ### decisions_write
 
-`POST /api/decisions` — raise a human-in-the-loop decision. `POST /api/decisions/{id}/answer/agent` — mirror an answer.
+`POST /api/decisions` — raise human-in-the-loop decision. `POST /api/decisions/{id}/answer/agent` — mirror answer.
 
 ### a2a bus surface
 
@@ -65,7 +65,7 @@ Files routes key on the project SLUG. `GET .../files/{path}`, `POST .../files/up
 
 ### CONSENT KEY surface
 
-`GET /v1/models` and `POST /v1/chat/completions` are reachable without a session using a CONSENT KEY. No key, no resolution, OpenAI-shaped 401 otherwise. Only those two exact method+path pairs pass the middleware.
+`GET /v1/models` and `POST /v1/chat/completions` reachable without session via CONSENT KEY. No key = no resolution, OpenAI-shaped 401. Only those two exact method+path pairs pass middleware.
 
 ---
 
@@ -73,29 +73,23 @@ Files routes key on the project SLUG. `GET .../files/{path}`, `POST .../files/up
 
 ## Properties
 
-- Device prefix matching: only tokens carrying `taosdev_` match; previously any bearer matched, shadowing valid sessions (401 for a logged-in user's unrelated `Authorization` header)
-- Allowlist is method-and-path anchored: `GET /api/devices`, `DELETE /api/devices/{id}`, `POST /api/decisions` are deliberately NOT on it (session-only)
-- Device identity always comes from the verified bearer, never the path or body; a device is never admin
+- Device prefix matching: only `taosdev_` tokens match; previously any bearer matched, shadowing valid sessions
+- Allowlist is method+path anchored: `GET /api/devices`, `DELETE /api/devices/{id}`, `POST /api/decisions` NOT on it (session-only)
+- Device identity from verified bearer only, never path/body; device never admin
 
 ## Auth model
 
-- Caller sends `Authorization: Bearer <scoped_token>` (issued at `POST /api/devices/register`); browser sessions and agent JWTs are not accepted
-- The path is in `EXEMPT_PATHS` (`tinyagentos/auth_middleware.py`): middleware passes `user_id=None`, `current_user_or_device` resolves the device
-- CSRF: registered on the router (`dependencies=_csrf`) so future unsafe-method routes inherit the double-submit check; GET is exempt as safe
+- Caller sends `Authorization: Bearer <scoped_token>` (issued at `POST /api/devices/register`); browser sessions/agent JWTs rejected
+- Path in `EXEMPT_PATHS` (`auth_middleware.py`): middleware passes `user_id=None`, `current_user_or_device` resolves device
+- CSRF on router (`dependencies=_csrf`) so future unsafe routes inherit double-submit; GET exempt as safe
 
 ## Coverage
 
-- `agent_chat` destinations resolve via the agent registry (exact canonical_id, then a slug lookup bounded to the `-YYYYMMDD-HHMMSS` tail); an agent with no registry row resolves nothing and its DM is omitted
+- `agent_chat` destinations resolve via agent registry (exact canonical_id, then slug lookup bounded to `-YYYYMMDD-HHMMSS` tail); no registry row = nothing resolved, DM omitted
 
 ## Response shape
 
-```json
-{"destinations": [
-  {"kind": "library", "id": "library", "label": "Library"},
-  {"kind": "project_files", "id": "<project-slug>", "label": "<project name>"},
-  {"kind": "agent_chat", "id": "<agent-slug>", "label": "<display name>"}
-]}
-```
+`{"destinations": [{"kind": "library", "id": "library", "label": "Library"}, {"kind": "project_files", "id": "<project-slug>", "label": "<project name>"}, {"kind": "agent_chat", "id": "<agent-slug>", "label": "<display name>"}]}`
 
 ---
 
@@ -107,45 +101,41 @@ Files routes key on the project SLUG. `GET .../files/{path}`, `POST .../files/up
 
 Body: `{invite_id, pin, harness, label?}`
 
-- Verifies the PIN (wrong / expired / attempt-capped → 403; already redeemed / revoked → 409)
-- Derives the agent handle `{project_slug}-{harness}[-{label}]`, de-duped against active registry agents in the project
-- Auto-approves via `approve_request_record` (decided_by = the invite's creator), or leaves the request pending (manual mode)
-- Returns a connection bundle plus `{request_id, agent_handle, poll_path}`
-- `project_tasks` is force-included so a successful redeem always yields a project member
+- Verifies PIN (wrong/expired/attempt-capped → 403; redeemed/revoked → 409)
+- Derives handle `{project_slug}-{harness}[-{label}]`, de-duped vs active registry agents
+- Auto-approves via `approve_request_record` (decided_by = invite creator), or leaves pending (manual)
+- Returns connection bundle + `{request_id, agent_handle, poll_path}`
+- `project_tasks` force-included → successful redeem = project member
 
 ### GET /i/{invite_id}
 
-Content-negotiated advert: `Accept: application/json` → the redeem contract (`{method, path, fields}`); browser → a minimal HTML page. No PIN check here; it only advertises the contract.
+Content-negotiated: `Accept: application/json` → redeem contract (`{method, path, fields}`); browser → minimal HTML. No PIN check; only advertises contract.
 
 ## Connection bundle
 
-- `controller.endpoints` — non-loopback LAN IPv4s (priority ordered, operator override first) and the mesh (Tailscale) node IP when joined; optional relay endpoint when `TAOS_CONTROLLER_RELAY_URL` is configured with `https://`
-- `apis` — agent-JWT-reachable surface, scoped exactly to the granted scopes (mirrors the middleware allowlist)
+- `controller.endpoints` — non-loopback LAN IPv4s (priority, override first) + mesh (Tailscale) IP when joined; optional relay when `TAOS_CONTROLLER_RELAY_URL` is `https://`
+- `apis` — agent-JWT surface, scoped to granted scopes (mirrors middleware allowlist)
 - `delivery` — timed-check contract (`poll_path`, `stream_path`, `check_interval_secs`, `cursor: ts`, `filter: mentions+project`)
-- `onboarding` + `guide_markdown` — capability guide (repo + manual links, scoped Projects/Canvas summary, A2A proxy contract, memory + timed checks). `harness=grok` adds secure-form token storage, onboarding polling, and a shared-account warning.
+- `onboarding` + `guide_markdown` — capability guide (repo/manual links, scoped Projects/Canvas, A2A proxy, memory + timed checks). `harness=grok` adds secure-form token storage, onboarding polling, shared-account warning.
 
-See `docs/design/external-agent-project-invite.md` (issue #1780); canvas routes advertise only when that scope was granted.
+See `docs/design/external-agent-project-invite.md` (#1780); canvas routes only when scope granted.
 
 ## Override addresses advertised over HTTP
 
-The operator can set `TAOS_CONTROLLER_CALLBACK_HOST` to control which address the invite bundle advertises for the controller. The following override values are advertised over **HTTP** in the bundle:
+Operator sets `TAOS_CONTROLLER_CALLBACK_HOST`. Advertised over **HTTP**:
 
-- **Tailscale CGNAT IPs** in `100.64.0.0/10` (e.g. `100.78.225.80`)
-- **Tailscale ULA IPs** in `fd7a:115c:a1e0::/48`
-- **Private LAN IPs** (RFC 1918: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`)
-- **Loopback** (`127.0.0.1`, `::1`, `localhost`)
-- **Hostnames** that end with `.local`, `.lan`, `.home.arpa`, or `.ts.net` (MagicDNS)
-- **Single-label hostnames** with no dot (e.g. `taos`, `controller`)
+- Tailscale CGNAT `100.64.0.0/10` (e.g. `100.78.225.80`)
+- Tailscale ULA `fd7a:115c:a1e0::/48`
+- Private LAN (RFC 1918: `10/8`, `172.16/12`, `192.168/16`)
+- Loopback (`127.0.0.1`, `::1`, `localhost`)
+- Hostnames ending `.local`, `.lan`, `.home.arpa`, `.ts.net` (MagicDNS)
+- Single-label (e.g. `taos`, `controller`)
 
-The following override values are **NOT advertised over HTTP** (omitted with a warning):
+**NOT advertised** (omitted with warning): public IPs, public hostnames (e.g. `controller.example.com`), hostnames not matching trusted suffixes.
 
-- Public IP addresses
-- Public hostnames (e.g. `controller.example.com`, `api.mycompany.com`)
-- Any hostname not matching the trusted suffixes above
+Full URL override (e.g. `http://192.168.1.5:6969`) uses scheme/port as-is; LAN IP enum deduplicates vs parsed hostname.
 
-When the override is a full URL (e.g. `http://192.168.1.5:6969`), the scheme and port are used as-is, and the LAN IP enumeration deduplicates against the parsed hostname to avoid advertising the same address twice.
-
-**Relay endpoint** (`TAOS_CONTROLLER_RELAY_URL`): Must be `https://` only. HTTP relay URLs are omitted with a warning, even for private addresses.
+**Relay** (`TAOS_CONTROLLER_RELAY_URL`): `https://` only. HTTP relay URLs omitted with warning.
 
 ---
 
@@ -154,20 +144,20 @@ When the override is a full URL (e.g. `http://192.168.1.5:6969`), the scheme and
 ## SSE stream characteristics
 
 - `?kinds=a,b,c` — comma-separated allowlist of event kinds
-- Omitted, empty, or naming no kind at all (`?kinds=`, `?kinds=%20`, `?kinds=,`) means every kind (empty allowlist = no filter, not silence)
-- Filtering happens as events enter the per-connection buffer, so an unrequested kind can never evict one the subscriber asked for
-- At most 256 events are buffered per connection; past that the OLDEST is dropped and the client gets `{"kind": "events.lagged", "dropped": N}` as a cue to refetch
-- A `:keepalive` comment frame every 10 s keeps proxies from closing an idle stream
-- Frames carry **no** SSE `id:` line; resume is best-effort via the EventBus replay buffer (last 32 events per channel, delivered on subscribe)
-- The payload never crosses the wire: `id` is just the trace id, so a subscriber refetches to learn what changed
+- Omitted/empty/no kind = every kind (empty allowlist = no filter, not silence)
+- Filtering at buffer entry: unrequested kind never evicts requested
+- Max 256 events/conn; oldest dropped → `{"kind": "events.lagged", "dropped": N}` cues refetch
+- `:keepalive` comment every 10s prevents proxy close on idle
+- No SSE `id:` line; resume via EventBus replay (last 32/channel, on subscribe)
+- Payload never on wire: `id` is trace id, subscriber refetches to learn changes
 
 ## Desktop integration
 
-- `desktop/src/hooks/use-os-events.ts`: `useOsEvents(kinds, onEvent)` holds one connection, returns `connected` / `stale`, dedupes by event id, reconnects with backoff, and reopens the stream when `kinds` changes
+- `desktop/src/hooks/use-os-events.ts`: `useOsEvents(kinds, onEvent)` holds one conn, returns `connected`/`stale`, dedupes by event id, reconnects with backoff, reopens on `kinds` change
 
 ## Technical details
 
-- Subscriptions and relay tasks are created INSIDE the response generator, not the handler body: a generator closed before iteration never runs its `finally`; handler-side setup leaked a subscription per client that disconnected before the stream started
+- Subscriptions/relay tasks created INSIDE response generator, not handler: generator closed before iteration never runs `finally`; handler-side setup leaked sub per client disconnecting before stream start
 
 ---
 
@@ -177,9 +167,9 @@ When the override is a full URL (e.g. `http://192.168.1.5:6969`), the scheme and
 
 ### POST /api/loras/ingest
 
-- Form field `url`, a `civitai.com` / `civitai.red` model page
-- Answers `202` with the pending row; the download runs in a background task
-- `400` for any other host or an unparseable URL
+- Form `url`: `civitai.com` / `civitai.red` model page
+- `202` with pending row; download in background
+- `400` for other host/unparseable URL
 
 ### GET /api/loras
 
@@ -192,23 +182,23 @@ When the override is a full URL (e.g. `http://192.168.1.5:6969`), the scheme and
 
 ### GET /api/loras/{id}/preview/{n}
 
-- Serves stored preview image `n`
-- Path re-checked against the archive root before serving
+- Serves stored preview `n`
+- Path re-checked against archive root before serving
 
 ### DELETE /api/loras/{id}
 
-- Removes the row, the safetensors file and the LoRA directory
-- `400` rather than a delete if a stored path resolves outside the archive root
+- Removes row, safetensors file, LoRA directory
+- `400` if stored path resolves outside archive root
 
 ### POST /api/loras/{id}/retry
 
-- Re-runs a `failed` ingest
-- The `failed → pending` transition is one atomic UPDATE: concurrent retries get one `202` and one `409`, never two download jobs in one directory
+- Re-runs `failed` ingest
+- `failed → pending` is atomic UPDATE: concurrent retries get one `202`, one `409`, never two jobs in one dir
 
 ## Archive layout
 
-- Files land under `models_root()/loras/<slug>/`
-- `GET /api/models` excludes that subtree, so adapters never appear as loadable models
+- Files under `models_root()/loras/<slug>/`
+- `GET /api/models` excludes that subtree, adapters never appear as loadable models
 
 ---
 
@@ -217,13 +207,13 @@ When the override is a full URL (e.g. `http://192.168.1.5:6969`), the scheme and
 ## Grant shaping which decisions come back
 
 - **Global (null-project) grant**: null-project decisions ONLY
-- **Exactly one project grant**: that project's decisions, filtered in the store query
+- **Exactly one project grant**: that project's decisions, filtered in store query
 - **Two or more projects**: fetched by agent, filtered in Python
 
 ### Limit interaction
 
-- The global and single-project paths push the project filter into the store query, so the 500 limit applies AFTER scoping (issue #2194)
-- The two-or-more-project path still fetches up to 500 rows then filters in Python, so an agent with several project grants and more than 500 decisions in total can still lose allowed-project rows to the limit (same shape as the original bug, narrower blast radius)
+- Global/single-project: project filter pushed into store query, 500 limit applies AFTER scoping (#2194)
+- Two-or-more: fetches up to 500 then filters in Python, so agent with several grants and >500 total decisions can lose allowed-project rows to limit (same shape as original bug, narrower blast radius)
 
 ---
 
@@ -239,21 +229,21 @@ When the override is a full URL (e.g. `http://192.168.1.5:6969`), the scheme and
 
 - Body: `{"yaml": "..."}`
 - Optional `?validate_only=true` to check without saving
-- Answers `400` with `details` when validation fails
+- `400` with `details` on validation failure
 
 ### POST /api/restore
 
-- Multipart `file`, restores a backup tarball into the data dir
-- **The path is `/api/restore`, NOT `/api/settings/restore`**, even though the handler sits in `routes/settings.py` beside the `/api/settings/*` routes
-- Upload capped at 64 MB, refused with `413` while the body is still arriving (`tinyagentos/middleware/upload_body_limit.py`, since FastAPI spools a multipart file before the handler runs); the tarball goes through `tinyagentos/safe_archive.py`, so over the shared bomb caps (256 MB declared uncompressed, 64 MB per member, 10000 members) or carrying a member the path-safe tar filter rejects, the restore answers `400` and writes nothing
+- Multipart `file`, restores backup tarball to data dir
+- **Path is `/api/restore`, NOT `/api/settings/restore`** (handler in `routes/settings.py`)
+- Upload capped 64 MB, refused `413` while body arriving (`upload_body_limit.py`); tarball via `safe_archive.py` — over bomb caps (256 MB declared, 64 MB/member, 10000 members) or rejected by path-safe tar filter → `400`, writes nothing
 
 ## Important: both write paths REBUILD `AppConfig` field by field
 
-- A field missing from either rebuild is silently dropped on the next save, wiping whatever the user had set
-- Has happened twice already: `archive`, `archived_agents` and `github_app_id` (#2375) and `lora_ingest_proxy_url` (#2374)
-- Adding a field to `AppConfig` means adding it at BOTH sites in this module
-- `test_save_config_preserves_all_to_dict_keys` compares the whole `to_dict()` key set against what survives a round trip and fails if one is forgotten
-- Never fix such a leak by removing the field from `to_dict()`: `save_config()` serialises from there, so that makes the setting unpersistable
+- Missing field in either rebuild = silently dropped on next save, wiping user setting
+- Happened twice: `archive`, `archived_agents`, `github_app_id` (#2375) and `lora_ingest_proxy_url` (#2374)
+- Adding field to `AppConfig` = add at BOTH sites in this module
+- `test_save_config_preserves_all_to_dict_keys` compares `to_dict()` key set vs round-trip, fails if forgotten
+- Never fix leak by removing from `to_dict()`: `save_config()` serialises from there, making setting unpersistable
 
 ---
 
@@ -263,17 +253,17 @@ When the override is a full URL (e.g. `http://192.168.1.5:6969`), the scheme and
 
 | value | meaning |
 |---|---|
-| `both` | framework-native memory AND taOSmd (the default) |
-| `framework` | the framework's own memory only |
+| `both` | framework-native + taOSmd (default) |
+| `framework` | framework's own memory only |
 | `taosmd` | taOSmd only |
 
 ## Key points
 
-- `framework` is ADVISORY today, not enforced: it tells the agent runtime what to use but does **not** stop the controller from involving taOSmd. A `framework`-mode deploy still registers with taOSmd and splices taOSmd rules into `AGENTS.md`, so a taOSmd outage can still block it.
-- `memory_mode` is OPTIONAL on `PATCH /api/agents/{slug}/memory`; omitting it leaves the stored value alone. Only `memory_plugin` is required.
-- Agents deployed before this field existed are backfilled to `both` by `config.py` on config load, so an older record reads as the default rather than as empty.
-- `POST /api/agents/deploy` takes `memory_mode` (default `both`), persisted on the agent record and injected into the agent's environment as `TAOS_MEMORY_MODE` at deploy time.
-- Deploy validates before any side effect: an unknown `memory_mode` or `memory_plugin` answers `400` naming the valid set, as does a contradictory pair such as `{"memory_plugin": "none", "memory_mode": "taosmd"}`.
+- `framework` is ADVISORY, not enforced: tells runtime what to use but doesn't stop controller from involving taOSmd. `framework`-mode deploy still registers with taOSmd, splices rules into `AGENTS.md`, so taOSmd outage can still block.
+- `memory_mode` OPTIONAL on `PATCH /api/agents/{slug}/memory`; omit = leave stored value. Only `memory_plugin` required.
+- Pre-field agents backfilled to `both` by `config.py` on load.
+- `POST /api/agents/deploy` takes `memory_mode` (default `both`), persisted on record, injected as `TAOS_MEMORY_MODE` at deploy.
+- Deploy validates first: unknown `memory_mode`/`memory_plugin` → `400` naming valid set; contradictory pair (e.g. `{"memory_plugin": "none", "memory_mode": "taosmd"}`) → `400`.
 
 ---
 
@@ -283,26 +273,26 @@ When the override is a full URL (e.g. `http://192.168.1.5:6969`), the scheme and
 
 ### POST /api/cluster/workers/{name}/revoke
 
-- Kills the node's HMAC signing key; register and heartbeat are rejected until it re-pairs (announce/confirm/claim) for a fresh key
+- Kills HMAC signing key; register/heartbeat rejected until re-pair (announce/confirm/claim) for fresh key
 - Answers `{"revoked": true, "changed": <bool>}`
 
 ### POST /api/cluster/workers/{name}/block
 
-- Revokes the key AND refuses re-pairing until an admin unblocks (acts at the pairing gate, not the auth gate)
+- Revokes key AND refuses re-pair until admin unblocks (pairing gate, not auth gate)
 
 ### POST /api/cluster/workers/{name}/unblock
 
-- Clears the blocked flag only; the old signing key stays dead, so the node still has to re-pair
+- Clears blocked flag only; old key stays dead, node must re-pair
 
 ### Other fleet mutations (same admin gate)
 
-`DELETE /api/cluster/workers/{name}`, `POST .../{name}/deploy`, `POST .../{name}/remote`, `POST /api/cluster/move`, `/route`, `/promote-archived`: `403 {"detail": "forbidden"}` unless admin session or host local token. Worker-facing paths (heartbeat, pairing, leases, capabilities) keep their HMAC / possession gates.
+`DELETE /api/cluster/workers/{name}`, `POST .../{name}/deploy`, `POST .../{name}/remote`, `POST /api/cluster/move`, `/route`, `/promote-archived`: `403 {"detail": "forbidden"}` unless admin session or host local token. Worker-facing (heartbeat, pairing, leases, capabilities) keep HMAC/possession gates.
 
 ## Common behaviour
 
-- `404` when the node is absent from the PAIRING store; `503` when the pairing store is unavailable
-- Revoke and block mark the in-memory worker **offline immediately** so the scheduler stops routing to it
-- Blocked devices keep consuming a per-user slot (`list_for_user` returns `revoked=0 OR blocked=1`) until unblocked
+- `404` node absent from PAIRING store; `503` pairing store unavailable
+- Revoke/block mark in-memory worker **offline immediately** so scheduler stops routing
+- Blocked devices consume per-user slot (`list_for_user` → `revoked=0 OR blocked=1`) until unblocked
 
 ---
 
@@ -310,29 +300,29 @@ When the override is a full URL (e.g. `http://192.168.1.5:6969`), the scheme and
 
 ## `single_select`
 
-- Send `other_value` and leave `value` empty
-- Sending both is a `400` ("cannot combine value with other_value")
-- The stored answer is the stripped `other_value`
+- Send `other_value`, leave `value` empty
+- Both → `400` ("cannot combine value with other_value")
+- Stored answer = stripped `other_value`
 
 ## `multi_select`
 
-- `value` must still be a list and **every element is still validated against the declared options**
-- The free-text entry is appended, so the stored answer is `[*declared_values, other_value.strip()]`
-- A non-list `value` is a `400`
+- `value` must be list, every element validated against declared options
+- Free-text appended: stored = `[*declared_values, other_value.strip()]`
+- Non-list `value` → `400`
 
 ## Note field
 
-- When present, appended to the text routed to the agent as `<answer> (note: <note>)`
+- When present, appended to text routed to agent as `<answer> (note: <note>)`
 
 ## Without `other_value`
 
-- Strict validation is unchanged: the answer must be one of, or a subset of, the declared options
-- A non-hashable or non-iterable value fails closed as `400` rather than `500`
+- Strict validation unchanged: answer must be one of/subset of declared options
+- Non-hashable/non-iterable → `400` (fails closed, not `500`)
 
 ## Two consequences
 
-- **No per-decision opt-out.** No `allow_other` flag exists; the free-text path is available on EVERY select decision
-- **The agent path gained it too.** An agent holding `decisions_write` can now record arbitrary free text, not only the declared options
+- **No per-decision opt-out.** No `allow_other` flag; free-text path on EVERY select decision
+- **Agent path gained it too.** Agent with `decisions_write` can record arbitrary free text, not only declared options
 
 ---
 
@@ -343,38 +333,38 @@ When the override is a full URL (e.g. `http://192.168.1.5:6969`), the scheme and
 ### POST /api/shares
 
 - Body: `{resource_type, resource_id, to_username, permission}`
-- Shares a resource with another user by username (resolved via AuthManager); self-share is `400`
-- Duplicate shares (same owner, resource, target, permission) are idempotent
+- Shares resource with user by username (resolved via AuthManager); self-share `400`
+- Duplicate shares (same owner, resource, target, permission) idempotent
 
 ### GET /api/shares?direction=out|in
 
-- `out` (default): shares the user owns; `in`: shares where the user is the target
+- `out` (default): shares user owns; `in`: shares where user is target
 
 ### POST /api/shares/{id}/accept
 
-- Accept a pending share (target user only); afterwards `user_can_access()` returns True for that resource
+- Accept pending share (target only); then `user_can_access()` returns True
 
 ### POST /api/shares/{id}/deny
 
-- Deny a pending share (target user only); the row is kept with `status=denied` for audit
+- Deny pending share (target only); row kept with `status=denied` for audit
 
 ### DELETE /api/shares/{id}
 
-- Revoke a share; owner or admin only (`require_owner_or_admin` against the share's `owner_user_id`)
+- Revoke share; owner or admin only (`require_owner_or_admin` vs share's `owner_user_id`)
 
 ---
 
 # Admin gates on global resources
 
-A session alone doesn't authorize these: non-admin members get `403`; the host local token (`taosctl`, agents) passes. Single-user installs are unaffected.
+Session alone doesn't authorize: non-admin members get `403`; host local token (`taosctl`, agents) passes. Single-user installs unaffected.
 
 | Router | Gated | Open / owner-scoped |
 |---|---|---|
-| secrets | list, get, add, update, delete, `categories` | `GET /api/secrets/agent/{agent}`: the agent's owner (registry `user_id`) or admin |
+| secrets | list, get, add, update, delete, `categories` | `GET /api/secrets/agent/{agent}`: agent's owner (registry `user_id`) or admin |
 | system | `restart/prepare`, `ai-stack/restart`, non-loopback `prepare-shutdown` | loopback `prepare-shutdown`, `restart/status`, `hardware/refresh` |
 | providers | create, patch, delete, `start`, `stop` | `GET /api/providers` (model pickers) with `api_key` stripped for non-admins |
 | mcp | `start`/`stop`/`restart`, uninstall, `config` PUT, `env`, permission attach/detach, `/api/mcp/call` | list, logs, capabilities, permissions list, `config` GET |
-| agent-model-keys | `POST /api/agent-model-keys` mints only for agents the caller owns (admin: any) | |
+| agent-model-keys | `POST /api/agent-model-keys` mints only for agents caller owns (admin: any) | |
 
 ---
 
@@ -394,10 +384,8 @@ Under `/api/agents/{agent_name}/desktop/`:
 ## Key points
 
 - On demand, per agent, retryable. Owner or admin only.
-- Start returns a one-shot VNC password, mode-600 file not argv; a secret
-  left behind fails the start (no password).
-- `status` 500s, records the error, keeps state; `running` is `null` then,
-  not `false`.
+- Start returns one-shot VNC password, mode-600 file not argv; secret left behind fails start.
+- `status` 500s, records error, keeps state; `running` is `null` then, not `false`.
 
 ---
 
@@ -405,7 +393,7 @@ Under `/api/agents/{agent_name}/desktop/`:
 
 ## Compile order
 
-Run `python3 scripts/build-routes-doc.py` to compile these into `docs/routes.md`. Source files, in order: `01-project-tasks.md`, `02-agent-api.md`, `03-device-bearer.md`, `04-project-invite.md`, `05-os-events.md`, `06-lora-studio.md`, `07-decisions-return.md`, `08-config-save-restore.md`, `09-agent-memory.md`, `10-cluster-admin.md`, `11-select-decision.md`, `12-share-routes.md`, `13-admin-gates.md`, `14-agent-desktop.md`, `15-decision-note.md`.
+Run `python3 scripts/build-routes-doc.py` to compile into `docs/routes.md`. Sources in order: `01-project-tasks.md`, `02-agent-api.md`, `03-devive-bearer.md`, `04-project-invite.md`, `05-os-events.md`, `06-lora-studio.md`, `07-decisions-return.md`, `08-config-save-restore.md`, `09-agent-memory.md`, `10-cluster-admin.md`, `11-select-decision.md`, `12-share-routes.md`, `13-admin-gates.md`, `14-agent-desktop.md`, `15-decision-note.md`.
 
 ---
 
@@ -415,39 +403,105 @@ Run `python3 scripts/build-routes-doc.py` to compile these into `docs/routes.md`
 
 Body:
 ```json
-{
-  "text": "string (required, non-empty after strip)",
-  "source": "in_app"
-}
+{"text": "string (required, non-empty after strip)", "source": "in_app"}
 ```
 
-- `text` is REQUIRED and must be non-empty after strip -> 400 otherwise. No default.
-- Ownership: the caller must own the decision or be an admin -> 404 otherwise. Reuses the same ownership rule as `answer_decision`.
-- A device bearer MAY post a note on ANY decision INCLUDING a gate-kind one. A note carries no grant, so the phone notification-surface restriction that applies to `answer_decision` does not apply here.
-- Does NOT change `status`, `answer`, or `answered_at`.
-- Allowed on already-answered or superseded decisions (a note is commentary, not a state transition).
-- Returns the updated decision with `notes` populated (oldest first).
+- `text` REQUIRED, non-empty after strip → `400`. No default.
+- Ownership: caller must own decision or be admin → `404`. Same rule as `answer_decision`.
+- Device bearer MAY post note on ANY decision INCLUDING gate-kind. Note carries no grant, so phone notification restriction on `answer_decision` doesn't apply.
+- Does NOT change `status`, `answer`, `answered_at`.
+- Allowed on answered/superseded decisions (note = commentary, not state transition).
+- Returns updated decision with `notes` (oldest first).
 
 ## Response
 
-The updated decision dict, identical shape to `GET /api/decisions/{id}`, with `notes` appended.
+Updated decision dict, same shape as `GET /api/decisions/{id}`, with `notes` appended.
 
 ## Live update
 
-Publishes a `decision.note` event on the owner's `user:<id>` channel so open surfaces refresh without manual reload.
+Publishes `decision.note` on owner's `user:<id>` channel for live refresh.
 
 ---
 
 # Agent notifications (`notifications_write` grant)
 
-`POST /api/notifications` body: `title` (max 120 chars), `message` (max 1000 chars), `level` (`info`/`warning`), `source` (ignored on agent path), `data.project_id` (optional).
+`POST /api/notifications` body: `title` (max 120), `message` (max 1000), `level` (`info`/`warning`), `source` (ignored), `data.project_id` (optional).
 
-- Admits exactly `POST /api/notifications` for agent registry bearers. `GET` and mark-read stay session-only.
+- Admits exactly `POST /api/notifications` for agent registry bearers. `GET`/mark-read session-only.
 - Verifies JWT + grant + project binding via `check_agent_scope_for_project`.
-- Global grant posts to instance admin(s). Per-project grant posts to that project's owner only.
-- `source` from grant. Store row: `agent:<canonical_id>`. `data.from_agent` stamped to canonical_id.
-- `info`/`warning` only. `error` returns 400.
-- Caps: `title` <= 120, `message` <= 1000, `data` <= 4 KB. Violations return 422.
-- Rate limit: 10 posts per 10 minutes per canonical_id. Exceeding returns 429 `{"error": "rate_limited", "retry_after": N}`.
-- Delivery through `store.add`: SSE and web-push fire.
-- Human path unchanged: `_require_admin` gate, any valid level, source from body.
+- Global grant → instance admin(s). Per-project grant → project owner only.
+- `source` from grant. Store row: `agent:<canonical_id>`. `data.from_agent` = canonical_id.
+- `info`/`warning` only. `error` → `400`.
+- Caps: `title` ≤ 120, `message` ≤ 1000, `data` ≤ 4 KB. Violations → `422`.
+- Rate limit: 10 posts/10min/canonical_id. Exceed → `429 {"error": "rate_limited", "retry_after": N}`.
+- Delivery via `store.add`: SSE and web-push fire.
+- Human path: `_require_admin` gate, any level, source from body.
+
+---
+
+# Device API v1
+
+Single source of truth for the firmware repo. All routes under `/api/devices`
+are bearer-authenticated (not session-authenticated).
+
+## Pairing
+
+### POST /api/devices/pair-requests
+
+**Scope:** public (no session/device bearer). Opaque `pair_request_id` is capability for polling/Decision.
+
+**Length caps:** `platform` required (ios/android/watchos/wearos/embedded/linux/windows/macos; else 400); `display_name` optional max 120; `push_token` optional max 4096.
+
+**Request:** `{"platform": "ios", "display_name": "My Phone", "push_token": "apns-token"}`
+
+**Response 200:** `{"pair_request_id": "uuid", "verify_code": "123456", "server_cert_fingerprint": "ab:cd:ef:..."}`
+
+`server_cert_fingerprint` = SHA-256 colon-hex of controller TLS cert (DER). Cross-check only: device MUST display/pin fingerprint from own handshake, abort with `pair_fingerprint_mismatch` if differs.
+
+**Errors:** `400` invalid platform/too large; `409` no admin; `429` too many pending.
+
+### GET /api/devices/pair-requests/{pair_request_id}
+
+**Scope:** public (capability = path param).
+
+**Pending:** `{"id": "uuid", "status": "pending", "platform": "ios", "display_name": "My Phone", "push_token": "apns-token", "verify_code": null, "device": null, "scoped_token": null, "created_at": "...", "expires_at": "..."}`
+
+`verify_code` only on POST creation; never on poll/Decision. Decision includes `server_cert_fingerprint` in metadata.
+
+**Accepted:** `{"status": "accepted", "device": {"device_id": "uuid", "platform": "ios", "display_name": "My Phone", "user_id": "admin-uuid", "registered_at": 1727640000}, "scoped_token": "taosdev_...", "created_at": "...", "expires_at": "..."}`
+
+`scoped_token` one-time: only on first accepted poll.
+
+**Denied/expired:** `{"status": "denied", "device": null, "scoped_token": null}`
+
+**Error:** `404` unknown `pair_request_id`.
+
+## TLS listener
+
+Embedded (`platform: embedded`) MUST use TLS on **6974** (`TAOS_DEVICE_TLS_PORT`). Plain HTTP 6969 refuses embedded bearers: `{"error": "device_tls_required"}`.
+
+Phones/watches/legacy stay on plain HTTP 6969.
+
+Controller generates self-signed cert on first boot, persists to data dir (`device_tls.crt/key`, 0600). Fingerprint survives restarts; no auto-rotation in v1; re-pair to change pin.
+
+### Device pinning rule
+
+1. Device opens TLS to `:<TAOS_DEVICE_TLS_PORT>`, computes SHA-256 fingerprint of server cert.
+2. Displays fingerprint for manual verification.
+3. Includes POST response `server_cert_fingerprint` in same display.
+4. If differ, device MUST abort locally with `pair_fingerprint_mismatch` (device-side; server never returns this).
+
+`server_cert_fingerprint` in POST is server-side cross-check only; authoritative value is device's handshake computation.
+
+## Errors
+
+| HTTP | Detail | Meaning |
+|---|---|---|
+| 400 | `invalid_platform` | Unknown `platform`. |
+| 400 | `pair_request_too_large` | Body exceeds cap. |
+| 403 | `device_tls_required` | Embedded bearer on plain HTTP. |
+| 404 | `pair_request_not_found` | Unknown `pair_request_id`. |
+| 409 | `no_admin_for_pairing` | No admin user. |
+| 409 | `pair_request_expired` | Approval after TTL. |
+| 409 | `pair_request_already_accepted` | Duplicate approve. |
+| 429 | `pair_request_pending_cap_exceeded` | Too many open. |
