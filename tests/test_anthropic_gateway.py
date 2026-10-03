@@ -1034,8 +1034,10 @@ async def test_anthropic_route_url_is_used(tmp_path_factory):
     """Test that the route's configured URL is used for the Anthropic API call."""
     data_dir = tmp_path_factory.mktemp("anthropic_gateway")
     from tinyagentos.llm_gateway.auth import configure_gateway_keystore
-    
+    from tinyagentos.llm_gateway.forward import _clear_cooldowns
+
     configure_gateway_keystore(data_dir)
+    _clear_cooldowns()
     
     # Create an Anthropic backend with a custom URL
     anthropic_config = {
@@ -1093,8 +1095,10 @@ async def test_anthropic_usage_records_unknown_not_zero(tmp_path_factory):
     and the trace must be marked usage_estimated."""
     data_dir = tmp_path_factory.mktemp("anthropic_gateway")
     from tinyagentos.llm_gateway.auth import configure_gateway_keystore
+    from tinyagentos.llm_gateway.forward import _clear_cooldowns
 
     configure_gateway_keystore(data_dir)
+    _clear_cooldowns()
 
     anthropic_config = {
         "name": "claude-cloud-no-usage",
@@ -1166,8 +1170,10 @@ async def test_default_anthropic_url_does_not_double_v1(tmp_path_factory):
     """The default Anthropic URL https://api.anthropic.com/v1 must not become /v1/v1/messages."""
     data_dir = tmp_path_factory.mktemp("anthropic_gateway")
     from tinyagentos.llm_gateway.auth import configure_gateway_keystore
+    from tinyagentos.llm_gateway.forward import _clear_cooldowns
 
     configure_gateway_keystore(data_dir)
+    _clear_cooldowns()
 
     anthropic_config = {
         "name": "claude-cloud",
@@ -1218,8 +1224,10 @@ async def test_timeout_fails_over_to_next_backend(tmp_path_factory):
     """A timeout on the first Anthropic backend must fail over to the second."""
     data_dir = tmp_path_factory.mktemp("anthropic_gateway")
     from tinyagentos.llm_gateway.auth import configure_gateway_keystore
+    from tinyagentos.llm_gateway.forward import _clear_cooldowns
 
     configure_gateway_keystore(data_dir)
+    _clear_cooldowns()
 
     anthropic1_config = {
         "name": "claude-cloud-1",
@@ -1347,11 +1355,18 @@ async def test_streaming_fails_over_and_records_usage(tmp_path_factory):
 
     from httpx import ASGITransport, AsyncClient
     from tinyagentos.llm_gateway import forward as _fw
+    from tinyagentos.llm_usage.pricing import Cost
     trace_calls = []
+    spend_calls = []
     async def fake_record_trace(*args, **kwargs):
         trace_calls.append({"args": args, "kwargs": kwargs})
 
-    with mock.patch.object(_fw, "_record_trace", side_effect=fake_record_trace):
+    def fake_record_spend(state, principal, cost_usd):
+        spend_calls.append({"state": state, "principal": principal, "cost_usd": cost_usd})
+
+    with mock.patch.object(_fw, "_record_trace", side_effect=fake_record_trace), \
+         mock.patch.object(_fw, "_record_spend", side_effect=fake_record_spend), \
+         mock.patch("tinyagentos.llm_usage.pricing.cost_of", return_value=Cost(usd=0.001, priced=True, reason="test")):
         async with AsyncClient(
             transport=ASGITransport(app=app),
             base_url="http://test",
@@ -1370,6 +1385,12 @@ async def test_streaming_fails_over_and_records_usage(tmp_path_factory):
     second_call = [c for c in respx.calls if "api.anthropic.org" in str(c.request.url)][0]
     assert second_call.request.headers["x-api-key"] == "sk-ant-testkey-2"
     assert trace_calls, "no trace was recorded for stream"
+    assert any(
+        (c.get("args") or [None])[5] == "claude-cloud-2"
+        for c in trace_calls
+    ), "trace should credit the successful backend"
+    assert any(c["cost_usd"] > 0 for c in spend_calls), \
+        "spend should be recorded for the successful streaming backend"
 
 
 @pytest.mark.asyncio
@@ -1378,8 +1399,10 @@ async def test_spend_recorded_on_successful_backend_after_failover(tmp_path_fact
     """After failover, spend must be recorded on the backend that succeeded."""
     data_dir = tmp_path_factory.mktemp("anthropic_gateway")
     from tinyagentos.llm_gateway.auth import configure_gateway_keystore
+    from tinyagentos.llm_gateway.forward import _clear_cooldowns
 
     configure_gateway_keystore(data_dir)
+    _clear_cooldowns()
 
     anthropic1_config = {
         "name": "claude-cloud-1",
@@ -1428,11 +1451,13 @@ async def test_spend_recorded_on_successful_backend_after_failover(tmp_path_fact
 
     from httpx import ASGITransport, AsyncClient
     from tinyagentos.llm_gateway import forward as _fw
+    from tinyagentos.llm_usage.pricing import Cost
     trace_calls = []
     async def fake_record_trace(*args, **kwargs):
         trace_calls.append({"args": args, "kwargs": kwargs})
 
-    with mock.patch.object(_fw, "_record_trace", side_effect=fake_record_trace):
+    with mock.patch.object(_fw, "_record_trace", side_effect=fake_record_trace), \
+         mock.patch("tinyagentos.llm_usage.pricing.cost_of", return_value=Cost(usd=0.001, priced=True, reason="test")):
         async with AsyncClient(
             transport=ASGITransport(app=app),
             base_url="http://test",
@@ -1444,9 +1469,28 @@ async def test_spend_recorded_on_successful_backend_after_failover(tmp_path_fact
     assert resp.status_code == 200, resp.text
     assert trace_calls, "no trace was recorded"
     last = trace_calls[-1]
-    backend_type = last.get("kwargs", {}).get("backend_type") or (last.get("args") or [None])[5]
-    assert backend_type == "claude-cloud-2", \
-        f"trace should credit the successful backend, got {backend_type}"
+    backend_name = last.get("kwargs", {}).get("backend_name") or (last.get("args") or [None])[5]
+    assert backend_name == "claude-cloud-2", \
+        f"trace should credit the successful backend, got {backend_name}"
+
+    spend_calls = []
+    def fake_record_spend(state, principal, cost_usd):
+        spend_calls.append({"state": state, "principal": principal, "cost_usd": cost_usd})
+
+    with mock.patch.object(_fw, "_record_spend", side_effect=fake_record_spend), \
+         mock.patch("tinyagentos.llm_usage.pricing.cost_of", return_value=Cost(usd=0.001, priced=True, reason="test")):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"taos_session": session},
+            event_hooks=csrf_event_hooks(),
+        ) as client:
+            resp = await client.post(BASE + "/chat/completions", json=_chat())
+
+    assert resp.status_code == 200, resp.text
+    assert spend_calls, "no spend was recorded"
+    assert any(c["cost_usd"] > 0 for c in spend_calls), \
+        "spend should be recorded for the successful backend"
 
 
 @pytest.mark.asyncio
@@ -1604,5 +1648,94 @@ async def test_529_fails_over(tmp_path_factory):
     assert body["usage"]["completion_tokens"] == 1
 
     assert len(respx.calls) >= 2, "Expected at least two calls (route 1 then route 2)"
+    first_calls = [c for c in respx.calls if "api.anthropic.com" in str(c.request.url)]
+    assert first_calls, "route 1 (api.anthropic.com) should have been tried first"
     second_call = [c for c in respx.calls if "api.anthropic.org" in str(c.request.url)][0]
     assert second_call.request.headers["x-api-key"] == "sk-ant-testkey-2"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_streaming_unknown_usage_is_recorded_as_estimated(tmp_path_factory):
+    """A stream with no message_delta usage must record usage_estimated=True
+    and a conservative budget estimate."""
+    data_dir = tmp_path_factory.mktemp("anthropic_gateway")
+    from tinyagentos.llm_gateway.auth import configure_gateway_keystore
+    from tinyagentos.llm_gateway.forward import _clear_cooldowns
+
+    configure_gateway_keystore(data_dir)
+    _clear_cooldowns()
+
+    anthropic_config = {
+        "name": "claude-cloud",
+        "type": "anthropic",
+        "url": UPSTREAM,
+        "models": [{"id": "claude-x"}],
+        "api_key": ANTHROPIC_KEY,
+        "priority": 2,
+    }
+
+    _write_test_config(data_dir, [anthropic_config])
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("TAOS_LLM_GATEWAY", "1")
+        app = create_app(data_dir=data_dir)
+
+    state = app.state
+    stores = [state.desktop_settings, state.secrets, state.agent_model_keys]
+    for store in stores:
+        if store._db is not None:
+            await store.close()
+        await store.init()
+
+    state.auth.setup_user("admin", "Test Admin", "", "testpass")
+    uid = state.auth.find_user("admin")["id"]
+    session = state.auth.create_session(user_id=uid, long_lived=True)
+    state._startup_complete = True
+
+    stream_events = [
+        {"type": "message_start", "message": {"id": "msg_1", "type": "message", "role": "assistant", "model": "claude-x", "stop_sequence": None, "content": [], "stop_reason": None}},
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "hi"}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None}},
+        {"type": "message_stop"},
+    ]
+    respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(
+        200, content=_stream_body(stream_events), headers={"content-type": "text/event-stream"}
+    ))
+
+    from httpx import ASGITransport, AsyncClient
+    from tinyagentos.llm_gateway import forward as _fw
+    trace_calls = []
+    spend_calls = []
+    async def fake_record_trace(*args, **kwargs):
+        trace_calls.append({"args": args, "kwargs": kwargs})
+
+    def fake_record_spend(state, principal, cost_usd):
+        spend_calls.append({"state": state, "principal": principal, "cost_usd": cost_usd})
+
+    with mock.patch.object(_fw, "_record_trace", side_effect=fake_record_trace), \
+         mock.patch.object(_fw, "_record_spend", side_effect=fake_record_spend):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"taos_session": session},
+            event_hooks=csrf_event_hooks(),
+        ) as client:
+            resp = await client.post(BASE + "/chat/completions", json=_chat(stream=True))
+
+    assert resp.status_code == 200, resp.text
+    chunks, done = _openai_frames(resp.read().decode("utf-8"))
+    assert done
+    assert not any(c.get("usage") for c in chunks), \
+        "no usage chunk should be emitted when message_delta has no usage"
+
+    assert trace_calls, "no trace was recorded for stream"
+    last = trace_calls[-1]
+    estimated = last.get("kwargs", {}).get("estimated") or (last.get("args") or [None])[10]
+    assert estimated is True, \
+        f"stream trace should be marked usage_estimated, got {estimated}"
+
+    assert any(c["cost_usd"] > 0 for c in spend_calls), \
+        "conservative budget estimate should be recorded when usage is unknown"

@@ -21,7 +21,7 @@ from typing import Any, AsyncGenerator
 import httpx
 
 from tinyagentos.llm_gateway.errors import GatewayError, upstream_error, bad_request, rate_limit_error
-from tinyagentos.llm_usage.usage import from_anthropic
+from tinyagentos.llm_usage.usage import from_anthropic, AnthropicStreamUsage
 from tinyagentos.llm_gateway.forward import _notify_lifecycle
 
 ANTHROPIC_API_BASE = "https://api.anthropic.com"
@@ -59,8 +59,6 @@ def _arguments(tool_input: Any) -> str:
     return json.dumps(tool_input if tool_input is not None else {})
 
 
-
-
 def _redact(text: str, *secrets: str | None) -> str:
     """Redact sensitive values from text."""
     for s in secrets:
@@ -94,6 +92,13 @@ def _convert_tool_choice(tool_choice: dict | str | None) -> dict | str | None:
             fn = tool_choice.get("function", {})
             return {"type": "tool", "name": fn.get("name", "")}
     return tool_choice
+
+
+def _messages_url(route: Any) -> str:
+    base = (getattr(route, "api_base", None) or ANTHROPIC_API_BASE).rstrip("/")
+    if base.endswith("/v1"):
+        base = base[:-3]
+    return f"{base}/v1/messages"
 
 
 async def _openai_to_anthropic(
@@ -226,38 +231,34 @@ async def _call_anthropic(
     api_key_for_redaction: str | None = None,
 ) -> dict:
     """Make HTTP request to Anthropic API with proper error handling and redaction."""
-    base = (route.api_base or ANTHROPIC_API_BASE).rstrip("/")
-    if base.endswith("/v1"):
-        base = base[:-3]
-    url = f"{base}/v1/messages"
-    
+    url = _messages_url(route)
+
     headers = {
         "content-type": "application/json",
         "x-api-key": api_key or "",
         "anthropic-version": ANTHROPIC_VERSION,
     }
-    
-    what = "the Anthropic API"
+
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)) as client:
             resp = await client.post(url, json=request, headers=headers)
     except httpx.TimeoutException as exc:
-        raise upstream_error(f"{what} timed out") from None
+        raise upstream_error(f"the Anthropic API timed out") from exc
     except httpx.HTTPError as exc:
-        raise upstream_error(f"{what} could not be reached") from None
-    
+        raise upstream_error(f"the Anthropic API could not be reached") from exc
+
     err = await _anthropic_status_error(resp, api_key, api_key_for_redaction)
     if err is not None:
         raise err
-    
+
     try:
         data = resp.json()
     except ValueError:
         data = None
-    
+
     if not isinstance(data, dict):
         raise upstream_error("the Anthropic API returned a response that is not a JSON object")
-    
+
     return data
 
 
@@ -338,8 +339,7 @@ class _StreamTranslator:
         self.model = model
         self.id = "chatcmpl-anthropic"
         self.created = int(time.time())
-        self.input_tokens = 0
-        self.output_tokens = 0
+        self.usage_tracker = AnthropicStreamUsage()
         # Anthropic block index -> 0-based OpenAI tool_calls index.
         self.tool_index: dict[int, int] = {}
         self.done = False
@@ -359,7 +359,7 @@ class _StreamTranslator:
             message = event.get("message") or {}
             if message.get("id"):
                 self.id = message["id"]
-            self.input_tokens = int((message.get("usage") or {}).get("input_tokens") or 0)
+            self.usage_tracker.feed(event)
             return [self._chunk({"role": "assistant", "content": ""})]
 
         if kind == "content_block_start":
@@ -400,9 +400,8 @@ class _StreamTranslator:
                 out.append(self._chunk({}, _finish_reason(stop_reason)))
             usage = event.get("usage")
             if isinstance(usage, dict):
-                self.output_tokens = int(usage.get("output_tokens") or 0)
-                input_tokens = int(usage.get("input_tokens") or self.input_tokens)
-                self.input_tokens = input_tokens
+                self.usage_tracker.feed(event)
+                usage_obj = self.usage_tracker.result()
                 out.append({
                     "id": self.id,
                     "object": "chat.completion.chunk",
@@ -410,9 +409,9 @@ class _StreamTranslator:
                     "model": self.model,
                     "choices": [],
                     "usage": {
-                        "prompt_tokens": input_tokens,
-                        "completion_tokens": self.output_tokens,
-                        "total_tokens": input_tokens + self.output_tokens,
+                        "prompt_tokens": usage_obj.input_tokens,
+                        "completion_tokens": usage_obj.output_tokens,
+                        "total_tokens": usage_obj.input_tokens + usage_obj.output_tokens,
                     },
                 })
             return out
@@ -517,16 +516,15 @@ async def chat_completion_stream_anthropic(
         anthropic_request = await _openai_to_anthropic(body, principal, state, api_key, route=route, stream=True)
         translator = _StreamTranslator(body.get("model", "unknown"))
         completion_text: list[str] = []
-
-        base = (route.api_base or ANTHROPIC_API_BASE).rstrip("/")
-        if base.endswith("/v1"):
-            base = base[:-3]
-        url = f"{base}/v1/messages"
+        request_text = json.dumps(body)
+        response_text = ""
+        usage_obj: Usage | None = None
+        stream_done = False
 
         async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)) as client:
             req = client.build_request(
                 "POST",
-                url,
+                _messages_url(route),
                 json=anthropic_request,
                 headers={
                     "content-type": "application/json",
@@ -538,13 +536,20 @@ async def chat_completion_stream_anthropic(
             err = await _anthropic_status_error(resp, api_key)
             if err is not None:
                 raise err
+            exc_to_reraise: Exception | None = None
             try:
                 _buf = ""
                 async for raw in resp.aiter_text():
+                    if stream_done:
+                        break
                     if not raw:
                         continue
                     _buf += raw.replace("\r\n", "\n")
                     while True:
+                        if translator.done:
+                            yield b"data: [DONE]\n\n"
+                            stream_done = True
+                            break
                         idx = _buf.find("\n\n")
                         if idx < 0:
                             break
@@ -561,20 +566,22 @@ async def chat_completion_stream_anthropic(
                             continue
                         for chunk in translator.feed(event):
                             yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
-                        if translator.done:
-                            yield b"data: [DONE]\n\n"
-                            break
-                        for choice in event.get("choices", []):
-                            delta = choice.get("delta", {})
-                            content = delta.get("content")
-                            if isinstance(content, str):
-                                completion_text.append(content)
+                        if event.get("type") == "content_block_delta":
+                            delta = event.get("delta") or {}
+                            if delta.get("type") == "text_delta":
+                                completion_text.append(delta.get("text", ""))
+            except GeneratorExit:
+                pass
+            except Exception as exc:
+                exc_to_reraise = exc
             finally:
                 await resp.aclose()
 
-        request_text = json.dumps(body)
+        if exc_to_reraise is not None:
+            raise exc_to_reraise
+
         response_text = "".join(completion_text)
-        usage_obj = Usage(input_tokens=translator.input_tokens, output_tokens=translator.output_tokens, source="anthropic")
+        usage_obj = translator.usage_tracker.result()
 
         if not usage_obj.known:
             cost = Cost(None, False, "usage not reported by the backend")
