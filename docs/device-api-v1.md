@@ -1,7 +1,7 @@
 # Device API v1
 
 Single source of truth for the firmware repo. All routes under `/api/devices`
-are bearer-authenticated **except**:
+are bearer-authenticated. The following routes are public (no bearer token):
 
 - `POST /api/devices/pair-requests`
 - `GET /api/devices/pair-requests/{pair_request_id}`

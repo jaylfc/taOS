@@ -511,6 +511,43 @@ def test_device_tls_mismatched_cert_key_detection(tmp_path):
         "Stored key should match stored cert after regeneration"
 
 
+def test_device_tls_cert_parsing_failure(tmp_path):
+    """When cert file exists but fails to parse, regenerate new pair."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    # Generate and write a valid key
+    valid_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    key_pem = valid_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    (tmp_path / "device_tls.key").write_bytes(key_pem)
+
+    # Write a corrupted/unparseable cert file
+    (tmp_path / "device_tls.crt").write_bytes(b"This is not a valid cert")
+
+    # Call load_or_create_device_tls_cert - it should detect cert parse failure
+    # and generate new pair
+    cert_path, key_path, fp = load_or_create_device_tls_cert(tmp_path)
+
+    # Verify it returned a NEW fingerprint (different from what would be expected)
+    # since the cert couldn't be parsed
+    cert_pem = cert_path.read_bytes()
+    cert = x509.load_pem_x509_certificate(cert_pem)
+    new_fp = _fingerprint_from_der(cert.public_bytes(serialization.Encoding.DER))
+    assert fp == new_fp, "Should return new fingerprint after cert parse failure"
+
+    # Verify the stored key now matches the stored cert
+    stored_cert = cert
+    stored_key_pem = key_path.read_bytes()
+    stored_key = serialization.load_pem_private_key(stored_key_pem, password=None)
+    assert stored_key.public_key().public_numbers() == stored_cert.public_key().public_numbers(), \
+        "Stored key should match stored cert after regeneration"
+
+
+
 def test_device_tls_writes_are_crash_safe(tmp_path, monkeypatch):
     """Four fsyncs for two files: each temp file, then each parent directory.
 
