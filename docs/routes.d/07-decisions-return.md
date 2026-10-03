@@ -1,14 +1,14 @@
 # What `GET /api/decisions/agent` returns (grant scoping)
 
-<!-- Route module `tinyagentos/routes/decisions.py`, scope `decisions_write`. Lists decisions THIS agent raised; store enforces `from_agent` binding, no cross-agent leakage -->
+<!-- Route module `tinyagentos/routes/decisions.py`, scope `decisions_write`. Lists the decisions THIS agent raised; the store layer enforces the `from_agent` binding, so there is no cross-agent leakage regardless of grants -->
 
 ## Grant shaping which decisions come back
 
 - **Global (null-project) grant**: null-project decisions ONLY
-- **Exactly one project grant**: that project's decisions, filtered in store query
+- **Exactly one project grant**: that project's decisions, filtered in the store query
 - **Two or more projects**: fetched by agent, filtered in Python
 
 ### Limit interaction
 
-- Global/single-project: project filter pushed into store query, 500 limit applies AFTER scoping (#2194)
-- Two-or-more: fetches up to 500 then filters in Python, so agent with several grants and >500 total decisions can lose allowed-project rows to limit (same shape as original bug, narrower blast radius)
+- The global and single-project paths push the project filter into the store query, so the 500 limit applies AFTER scoping (issue #2194)
+- The two-or-more-project path still fetches up to 500 rows then filters in Python, so an agent with several project grants and more than 500 decisions in total can still lose allowed-project rows to the limit (same shape as the original bug, narrower blast radius)

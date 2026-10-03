@@ -6,20 +6,23 @@
 
 Body:
 ```json
-{"text": "string (required, non-empty after strip)", "source": "in_app"}
+{
+  "text": "string (required, non-empty after strip)",
+  "source": "in_app"
+}
 ```
 
-- `text` REQUIRED, non-empty after strip → `400`. No default.
-- Ownership: caller must own decision or be admin → `404`. Same rule as `answer_decision`.
-- Device bearer MAY post note on ANY decision INCLUDING gate-kind. Note carries no grant, so phone notification restriction on `answer_decision` doesn't apply.
-- Does NOT change `status`, `answer`, `answered_at`.
-- Allowed on answered/superseded decisions (note = commentary, not state transition).
-- Returns updated decision with `notes` (oldest first).
+- `text` is REQUIRED and must be non-empty after strip -> 400 otherwise. No default.
+- Ownership: the caller must own the decision or be an admin -> 404 otherwise. Reuses the same ownership rule as `answer_decision`.
+- A device bearer MAY post a note on ANY decision INCLUDING a gate-kind one. A note carries no grant, so the phone notification-surface restriction that applies to `answer_decision` does not apply here.
+- Does NOT change `status`, `answer`, or `answered_at`.
+- Allowed on already-answered or superseded decisions (a note is commentary, not a state transition).
+- Returns the updated decision with `notes` populated (oldest first).
 
 ## Response
 
-Updated decision dict, same shape as `GET /api/decisions/{id}`, with `notes` appended.
+The updated decision dict, identical shape to `GET /api/decisions/{id}`, with `notes` appended.
 
 ## Live update
 
-Publishes `decision.note` on owner's `user:<id>` channel for live refresh.
+Publishes a `decision.note` event on the owner's `user:<id>` channel so open surfaces refresh without manual reload.

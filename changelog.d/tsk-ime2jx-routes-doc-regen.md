@@ -1,2 +1,1 @@
-### Fixed
-- Regenerated docs/routes.md from docs/routes.d/ to fix sync drift and trim compiled output under 21200-char limit for prompt injectability
+- Regenerate docs/routes.md from docs/routes.d/ fragments (tsk-ime2jx). Reverted hand-rewritten source fragments and regenerated the compiled manual via `scripts/build-routes-doc.py`. The previous change compressed all 17 fragments to fit a 21 200-char budget; this restores the original content and lets the size-limit failure (now 25 824 chars) be tracked on a dedicated card. Also fixed the compile-order list in `14-index.md` to include `16-agent-notifications.md` and `16-device-v1.md`, and ensured all fragments end with a trailing newline.

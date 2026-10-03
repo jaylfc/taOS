@@ -1,14 +1,14 @@
 # LoRA Studio routes (session-only, no agent scope)
 
-<!-- Route module `tinyagentos/routes/lora_studio.py`. OWNER routes: behind session cookie + CSRF double-submit on writes, no registry scope reaches them -->
+<!-- Route module `tinyagentos/routes/lora_studio.py`. These are OWNER routes: they sit behind the session cookie plus the CSRF double-submit on writes, and no registry scope reaches them -->
 
 ## API endpoints
 
 ### POST /api/loras/ingest
 
-- Form `url`: `civitai.com` / `civitai.red` model page
-- `202` with pending row; download in background
-- `400` for other host/unparseable URL
+- Form field `url`, a `civitai.com` / `civitai.red` model page
+- Answers `202` with the pending row; the download runs in a background task
+- `400` for any other host or an unparseable URL
 
 ### GET /api/loras
 
@@ -21,20 +21,20 @@
 
 ### GET /api/loras/{id}/preview/{n}
 
-- Serves stored preview `n`
-- Path re-checked against archive root before serving
+- Serves stored preview image `n`
+- Path re-checked against the archive root before serving
 
 ### DELETE /api/loras/{id}
 
-- Removes row, safetensors file, LoRA directory
-- `400` if stored path resolves outside archive root
+- Removes the row, the safetensors file and the LoRA directory
+- `400` rather than a delete if a stored path resolves outside the archive root
 
 ### POST /api/loras/{id}/retry
 
-- Re-runs `failed` ingest
-- `failed → pending` is atomic UPDATE: concurrent retries get one `202`, one `409`, never two jobs in one dir
+- Re-runs a `failed` ingest
+- The `failed → pending` transition is one atomic UPDATE: concurrent retries get one `202` and one `409`, never two download jobs in one directory
 
 ## Archive layout
 
-- Files under `models_root()/loras/<slug>/`
-- `GET /api/models` excludes that subtree, adapters never appear as loadable models
+- Files land under `models_root()/loras/<slug>/`
+- `GET /api/models` excludes that subtree, so adapters never appear as loadable models
