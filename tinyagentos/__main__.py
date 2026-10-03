@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 
 from tinyagentos.app import PROJECT_DIR, create_app, load_config
+from tinyagentos.device_scopes import device_tls_port
 from tinyagentos.logging_config import configure_logging
 
 # Bound uvicorn's graceful-shutdown wait for open connections on SIGTERM.
@@ -55,10 +56,21 @@ def main() -> None:
     if hasattr(app, "state"):
         app.state.main_port = port
 
+    import logging
+    _log = logging.getLogger(__name__)
+
+    tls_port = device_tls_port()
+    if tls_port in {port, proxy_port}:
+        _log.error(
+            "TLS device listener port %d collides with main port %d or proxy port %d; TLS listener disabled",
+            tls_port, port, proxy_port,
+        )
+        tls_port = 0
+
     # LLM gateway agent listener (loopback only): where each agent's
     # 127.0.0.1:4000 proxy device points. The startup reconcile moves any
     # device still on an old LiteLLM port here.
-    gateway_port = _gateway_listener_port(config, taken={port, proxy_port})
+    gateway_port = _gateway_listener_port(config, taken={port, proxy_port, tls_port})
     if hasattr(app, "state"):
         import secrets
 
@@ -85,12 +97,14 @@ def main() -> None:
         # long-lived connections (SSE streams, cluster heartbeats) to close on
         # SIGTERM, so a restart hung the full 45s systemd stop timeout. Bound it
         # so the lifespan shutdown actually runs and the process exits fast.
-        if not _gateway_listener_wanted(gateway_port):
+        if not _gateway_listener_wanted(gateway_port) and not tls_port:
             uvicorn.run(
                 app, host=host, port=port, backlog=128, timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SECS
             )
             return
-        _serve_dual_port(app, host=host, port=port, proxy_port=0, gateway_port=gateway_port)
+        _serve_dual_port(app, host=host, port=port, proxy_port=0,
+                         gateway_port=gateway_port if _gateway_listener_wanted(gateway_port) else 0,
+                         tls_port=tls_port)
         return
 
     # Advertise the proxy port to the frontend (see proxy_config route) so it
@@ -99,7 +113,8 @@ def main() -> None:
         app.state.browser_proxy_port = proxy_port
 
     _serve_dual_port(app, host=host, port=port, proxy_port=proxy_port,
-                     gateway_port=gateway_port if _gateway_listener_wanted(gateway_port) else 0)
+                     gateway_port=gateway_port if _gateway_listener_wanted(gateway_port) else 0,
+                     tls_port=tls_port)
 
 
 def _gateway_listener_port(config, *, taken: set) -> int:
@@ -128,11 +143,11 @@ def _gateway_listener_wanted(gateway_port: int) -> bool:
     return bool(gateway_port)
 
 
-def _serve_dual_port(app, *, host: str, port: int, proxy_port: int, gateway_port: int = 0) -> None:
+def _serve_dual_port(app, *, host: str, port: int, proxy_port: int, gateway_port: int = 0, tls_port: int = 0) -> None:
     """Run the main app and the browser-proxy origin concurrently.
 
-    ``uvicorn.run`` is blocking and we need two servers, so we drive two
-    ``uvicorn.Server`` instances under one event loop.
+    ``uvicorn.run`` is blocking and we need two or three servers, so we drive
+    two or three ``uvicorn.Server`` instances under one event loop.
 
     The proxy-origin app shares the main app's ``app.state`` object (see
     ``create_browser_proxy_app``), which the main app's lifespan populates
@@ -177,6 +192,22 @@ def _serve_dual_port(app, *, host: str, port: int, proxy_port: int, gateway_port
             host="127.0.0.1", port=gateway_port, backlog=128, lifespan="off",
             timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SECS,
         )
+    tls_config = None
+    if tls_port:
+        _tls_cert = getattr(app.state, "device_tls_cert_path", None)
+        _tls_key = getattr(app.state, "device_tls_key_path", None)
+        if _tls_cert and _tls_key:
+            tls_config = uvicorn.Config(
+                app, host=host, port=tls_port, backlog=128,
+                ssl_certfile=_tls_cert, ssl_keyfile=_tls_key,
+                lifespan="off",
+                timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SECS,
+            )
+        else:
+            _log.error(
+                "TLS device listener enabled on port %d but cert/key not found; TLS listener disabled",
+                tls_port,
+            )
     # Two uvicorn servers under one loop each install their OWN SIGTERM handler,
     # and the second registration silently overrides the first -- so on SIGTERM
     # only the proxy server got should_exit, the main server never did, and the
@@ -193,9 +224,10 @@ def _serve_dual_port(app, *, host: str, port: int, proxy_port: int, gateway_port
 
     main_server = _NoSignalServer(main_config)
     proxy_server = _NoSignalServer(proxy_config) if proxy_config is not None else None
+    tls_server = _NoSignalServer(tls_config) if tls_config is not None else None
     sidecars = (_NoSignalServer(gateway_config),) if gateway_config is not None else ()
 
-    started = asyncio.run(_serve_until_first_exit(main_server, proxy_server, sidecars=sidecars))
+    started = asyncio.run(_serve_until_first_exit(main_server, proxy_server, sidecars=sidecars, tls_server=tls_server))
     if not started:
         _log.error(
             "Main server failed to start on %s:%d -- check lifespan errors above",
@@ -205,15 +237,12 @@ def _serve_dual_port(app, *, host: str, port: int, proxy_port: int, gateway_port
         raise SystemExit(3)
 
 
-async def _serve_sidecar(server) -> None:
-    """Serve a non-essential server (the LLM gateway agent listener).
+async def _serve_sidecar(server, *, name: str) -> None:
+    """Serve a non-essential server (LLM gateway agent listener, TLS device listener).
 
     Its failure, including uvicorn's ``sys.exit(1)`` on a port already in use,
     is logged and swallowed here, inside the coroutine, so it can never take
-    the controller down. Agents then have no LLM path until the next start
-    (there is no LiteLLM any more): the cutover only repoints once the listener
-    has answered with this start's identity nonce, so a different process that
-    holds the port is never mistaken for it.
+    the controller down.
     """
     import logging
 
@@ -221,13 +250,14 @@ async def _serve_sidecar(server) -> None:
         await server.serve()
     except (Exception, SystemExit) as exc:  # noqa: BLE001 - never fatal
         logging.getLogger(__name__).error(
-            "llm gateway agent listener stopped (%s); agents have no LLM path "
-            "until it is back",
+            "%s listener stopped (%s); %s",
+            name,
             type(exc).__name__,
+            "agents have no LLM path until it is back" if name == "llm gateway agent" else "embedded devices will be unable to connect",
         )
 
 
-async def _serve_until_first_exit(main_server, proxy_server=None, *, sidecars=()) -> bool:
+async def _serve_until_first_exit(main_server, proxy_server=None, *, sidecars=(), tls_server=None) -> bool:
     """Drive both servers; on shutdown signal exit BOTH gracefully.
 
     ``proxy_server`` may be None (single-port mode). ``sidecars`` are served
@@ -250,9 +280,13 @@ async def _serve_until_first_exit(main_server, proxy_server=None, *, sidecars=()
     loop = asyncio.get_running_loop()
 
     essential = [main_server] + ([proxy_server] if proxy_server is not None else [])
+    # tls_server is non-essential (like sidecars): its failure is logged but
+    # does not take the controller down. It is still included in the shutdown
+    # fan-out so it stops gracefully when the main server stops.
+    all_servers = (*essential, *([tls_server] if tls_server is not None else []), *sidecars)
 
     def _request_shutdown() -> None:
-        for server in (*essential, *sidecars):
+        for server in all_servers:
             server.should_exit = True
 
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -263,17 +297,25 @@ async def _serve_until_first_exit(main_server, proxy_server=None, *, sidecars=()
             pass
 
     tasks = [(asyncio.create_task(s.serve()), s) for s in essential]
-    side = [(asyncio.create_task(_serve_sidecar(s)), s) for s in sidecars]
+    tls_task = None
+    if tls_server is not None:
+        tls_task = (asyncio.create_task(_serve_sidecar(tls_server, name="TLS device")), tls_server)
+    side = [(asyncio.create_task(_serve_sidecar(s, name="llm gateway agent")), s) for s in sidecars]
 
     done, pending = await asyncio.wait(
         {t for t, _ in tasks},
         return_when=asyncio.FIRST_COMPLETED,
     )
 
-    # Ask the survivors (sidecars included) to stop gracefully, then await
-    # each with a bound so a stuck graceful shutdown cannot hang the process;
-    # only cancel as a last resort.
-    for task, server in (*tasks, *side):
+    # Ask the survivors (sidecars and tls_server included) to stop gracefully,
+    # then await each with a bound so a stuck graceful shutdown cannot hang
+    # the process; only cancel as a last resort.
+    all_server_tasks = list(tasks)
+    if tls_task is not None:
+        all_server_tasks.append(tls_task)
+    all_server_tasks.extend(side)
+
+    for task, server in all_server_tasks:
         if not task.done():
             server.should_exit = True
             try:

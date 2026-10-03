@@ -203,6 +203,15 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     from tinyagentos.hardware import get_hardware_profile
 
     data_dir = resolve_data_dir(data_dir)
+    # Root the process-global taosmd agent registry at the app's resolved
+    # data_dir so every consumer (the /api/agents/deploy route, the v2 persona
+    # startup migration, CLI entry points) registers into a single source of
+    # truth instead of the default "data/" process-global default. In tests
+    # this keeps registration inside tmp_path and out of the repository's
+    # data/ directory.
+    import importlib
+    _tm_agents = importlib.import_module("taosmd.agents")
+    _tm_agents._default_registry = _tm_agents.AgentRegistry(data_dir)
     config_path = data_dir / "config.yaml"
     # Copy example config on first run
     if not config_path.exists():
@@ -774,7 +783,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # taosmd.  Idempotent — safe to run on every startup.
         try:
             from tinyagentos.migrations import migrate_persona_v2
-            import taosmd.agents as _tm_agents
+            import importlib
+            _tm_agents = importlib.import_module("taosmd.agents")
             migrate_persona_v2(config.agents, register_fn=_tm_agents.register_agent)
             if config.config_path and config.config_path.exists():
                 await save_config_locked(config, config.config_path)
@@ -1891,6 +1901,17 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     # Register all routers (extracted to routes/register_all_routers)
     from tinyagentos.routes import register_all_routers
+    # Device TLS cert: generate on first boot, persist under data dir (0600).
+    # The fingerprint is served to pairing devices so they can pin it.
+    try:
+        from tinyagentos.device_tls import load_or_create_device_tls_cert
+        _cert_path, _key_path, _tls_fp = load_or_create_device_tls_cert(data_dir)
+        app.state.device_tls_cert_path = _cert_path
+        app.state.device_tls_key_path = _key_path
+        app.state.device_tls_fingerprint = _tls_fp
+    except Exception:
+        logger.exception("device TLS cert could not be created")
+
     register_all_routers(app)
 
     # Agent base image prefetch status endpoint

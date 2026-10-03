@@ -166,7 +166,7 @@ class TestSettingsAuthzAdminAllowed:
                 "tinyagentos.routes.system._do_restart",
                 new=_fake_restart,
             ),
-            patch("tinyagentos.restart_orchestrator.write_pending_restart"),
+            patch("tinyagentos.routes.settings.write_pending_restart"),
             patch(
                 "tinyagentos.update_preflight.check_preflight",
                 return_value=[],

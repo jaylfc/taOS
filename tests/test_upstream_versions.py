@@ -20,8 +20,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from tinyagentos import upstream_versions as uv
@@ -94,9 +95,27 @@ class FakeRegistryClient:
 
 
 def _docker_hub_client(fixture: str, status: int = 200) -> FakeRegistryClient:
-    return FakeRegistryClient({
-        "hub.docker.com/v2/repositories/": _FakeResponse(status, _load_fixture(fixture)),
-    })
+    """Create a mock client for Docker Hub API with simplified route handling.
+    
+    This mock uses the original generic route key "hub.docker.com/v2/repositories/"
+    (FakeRegistryClient matches by URL substring). It loads the fixture and creates
+    a shallow copy with "next" set to None to stop pagination.
+    """
+    data = _load_fixture(fixture)
+    
+    # Create a shallow copy of the fixture data and set "next" to None
+    # This stops pagination so the test only gets the first page
+    first_page_data = data.copy()
+    if isinstance(first_page_data, dict):
+        first_page_data["next"] = None
+    
+    # Create the route with the original generic key
+    first_page_response = _FakeResponse(status, first_page_data)
+    routes = {
+        "hub.docker.com/v2/repositories/": first_page_response
+    }
+    
+    return FakeRegistryClient(routes)
 
 
 # --------------------------------------------------------------------------- #
@@ -751,3 +770,167 @@ class TestRealManifestsAreNotPermanentUpdates:
         assert entry["update_available"] is True
         assert entry["upstream_update_available"] is True
         assert entry["upstream_pinned_version"] == "4.135.0"
+
+
+class TestUpstreamPaginationAndBaseline:
+    """Regression tests for Docker Hub pagination and the pin baseline (tsk-diw2ce)."""
+
+    @pytest.mark.asyncio
+    async def test_external_next_url_stopped_by_security_fix(self):
+        """Test that the security fix stops pagination at external hosts.
+        
+        Page 1 has next="https://evil.example/v2/x?page=2"; assert only ONE request was made
+        and the page-1 tags are returned.
+        """
+        from tinyagentos import upstream_versions as uv
+        from unittest.mock import AsyncMock, MagicMock
+        
+        # Mock client that returns page 1 with next pointing to external host
+        mock_client = AsyncMock()
+        mock_response1 = MagicMock()
+        mock_response1.status_code = 200
+        mock_response1.json.return_value = {
+            "results": [{"name": "1.0.0"}, {"name": "2.0.0"}],
+            "next": "https://evil.example/v2/x?page=2"
+        }
+        mock_client.get.return_value = mock_response1
+        
+        tags = await uv._fetch_docker_hub_tags("test/repo", client=mock_client)
+        
+        # Verify only one request was made (security fix prevents following evil next)
+        assert mock_client.get.call_count == 1, f"Expected 1 request, got {mock_client.get.call_count}"
+        assert tags == ["1.0.0", "2.0.0"], f"Expected ['1.0.0', '2.0.0'], got {tags}"
+
+    @pytest.mark.asyncio
+    async def test_docker_hub_tags_follow_next_page(self):
+        """DEFECT 1: _fetch_docker_hub_tags only fetches the first page, never follows the `next` link.
+        
+        If the newest eligible tag is on a later page, check_upstream selects from an incomplete
+        list and the warmer caches an older tag (or None) as a successful check.
+        FIX: follow `next` and accumulate valid tag names across pages (bounded page count,
+        e.g. 10), keep the existing response validation and the return-None-on-failed-request
+        behaviour.
+        """
+        # Mock the first page response (with page 2 in the next field)
+        first_page_response = {
+            "count": 47,
+            "next": "https://hub.docker.com/v2/repositories/test/repo/tags?ordering=last_updated&page=2",
+            "previous": None,
+            "results": [
+                {"name": "2026.10.2", "id": "1", "size": 100},
+                {"name": "2026.10.1", "id": "2", "size": 100},
+            ]
+        }
+        
+        # Mock the second page response (with None in the next field)
+        second_page_response = {
+            "count": 47,
+            "next": None,
+            "previous": "https://hub.docker.com/v2/repositories/test/repo/tags?ordering=last_updated&page=1",
+            "results": [
+                {"name": "2026.10.3", "id": "3", "size": 100},  # Newest eligible tag!
+                {"name": "2026.10.0", "id": "4", "size": 100},
+            ]
+        }
+        
+        # Track which URLs were requested
+        requested_urls = []
+        
+        # Create a mock client that returns different responses for different URLs
+        async def mock_get(url, params=None, headers=None):
+            requested_urls.append(url)
+            if "page=2" in url:
+                return httpx.Response(200, json=second_page_response)
+            else:
+                return httpx.Response(200, json=first_page_response)
+        
+        async def mock_aclose():
+            pass
+        
+        mock_client = AsyncMock()
+        mock_client.get = mock_get
+        mock_client.aclose = mock_aclose
+        
+        # This should fetch tags from BOTH pages and return ["2026.10.3", "2026.10.2", "2026.10.1", "2026.10.0"]
+        # but currently only returns ["2026.10.2", "2026.10.1"] from page 1
+        tags = await uv._fetch_docker_hub_tags("test/repo", client=mock_client)
+        
+        # Verify both pages were requested
+        assert len(requested_urls) >= 2, f"Expected at least 2 requests, got {len(requested_urls)}: {requested_urls}"
+        
+        # The newest eligible tag (2026.10.3) is on page 2, so it should be in the results
+        assert tags is not None
+        assert "2026.10.3" in tags  # This should be present after the fix
+        # Also should have the other tags
+        assert "2026.10.2" in tags
+        assert "2026.10.1" in tags
+        assert "2026.10.0" in tags
+        
+        # Additionally, verify that check_upstream would select 2026.10.3 as the newest tag
+        # This test mocks _docker_hub_tags directly, but we can also verify the selection logic
+        # by checking that 2026.10.3 is the highest version in the combined results
+        expected_tags = {"2026.10.3", "2026.10.2", "2026.10.1", "2026.10.0"}
+        assert set(tags) == expected_tags, f"Expected tags {expected_tags}, got {tags}"
+
+    def test_update_fields_handles_baseline_pinned_version(self):
+        """End-to-end test for _update_fields with baseline pinned version."""
+        from tinyagentos.routes.store import _update_fields
+        
+        # Test case 1: installed app with pin 1.1.0, cache shows pinned_version 1.0.0, upstream 1.1.0
+        # Should report upstream_update_available is not True and update_available is False
+        # because upstream equals current pin (1.1.0), not newer than baseline (1.0.0)
+        app = MagicMock()
+        app.id = "test-app"
+        app.version = "2.0.0"  # Catalog version
+        app.install = {"method": "docker", "image": "test/repo:1.1.0"}
+        
+        # Mock pinned_tag to return the current image pin
+        with patch('tinyagentos.upstream_versions.pinned_tag', return_value="1.1.0"):
+            # Mock upstream_info to return the cached info
+            with patch('tinyagentos.routes.store.upstream_versions.upstream_info') as mock_upstream_info:
+                mock_upstream_info.return_value = {
+                    "upstream_version": "1.1.0",
+                    "upstream_checked_at": 12345.0,
+                    "pinned_version": "1.0.0",  # Old stale pin from cache
+                }
+                
+                # Call _update_fields with installed=True, recorded_version None (not installed)
+                result = _update_fields(app, True, None)
+                
+                # Since the app is installed (installed=True) but the recorded_version is None
+                # (not from the install), update_available should be False
+                assert result["update_available"] is False
+                
+                # upstream_update_available should be False because upstream (1.1.0) == baseline (1.1.0)
+                assert result["upstream_update_available"] is not True
+                assert result["upstream_version"] == "1.1.0"
+                assert result["upstream_pinned_version"] == "1.1.0"  # Should use current pin, not stale cache
+
+    def test_update_fields_handles_different_tag_shapes(self):
+        """End-to-end test for _update_fields with different tag shapes."""
+        from tinyagentos.routes.store import _update_fields
+        
+        # Test case 2: pin is "1.1.0", upstream is "latest-abc" (different tag_shape)
+        # Should report upstream_update_available is None because shapes don't match
+        app = MagicMock()
+        app.id = "test-app"
+        app.version = "2.0.0"  # Catalog version
+        app.install = {"method": "docker", "image": "test/repo:1.1.0"}
+        
+        # Mock pinned_tag to return the current image pin
+        with patch('tinyagentos.upstream_versions.pinned_tag', return_value="1.1.0"):
+            # Mock upstream_info to return different shape upstream version
+            with patch('tinyagentos.routes.store.upstream_versions.upstream_info') as mock_upstream_info:
+                mock_upstream_info.return_value = {
+                    "upstream_version": "latest-abc",  # Different shape (not version-shaped)
+                    "upstream_checked_at": 12345.0,
+                    "pinned_version": "1.0.0",
+                }
+                
+                # Call _update_fields with installed=False
+                result = _update_fields(app, False, None)
+                
+                # upstream_update_available should be None because different tag shapes
+                assert result["upstream_update_available"] is None
+                assert result["update_available"] is False
+                assert result["upstream_version"] == "latest-abc"
