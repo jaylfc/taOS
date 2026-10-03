@@ -209,8 +209,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     # truth instead of the default "data/" process-global default. In tests
     # this keeps registration inside tmp_path and out of the repository's
     # data/ directory.
-    import taosmd.agents
-    taosmd.agents._default_registry = taosmd.agents.AgentRegistry(data_dir)
+    import importlib
+    _tm_agents = importlib.import_module("taosmd.agents")
+    _tm_agents._default_registry = _tm_agents.AgentRegistry(data_dir)
     config_path = data_dir / "config.yaml"
     # Copy example config on first run
     if not config_path.exists():
@@ -782,7 +783,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # taosmd.  Idempotent — safe to run on every startup.
         try:
             from tinyagentos.migrations import migrate_persona_v2
-            import taosmd.agents as _tm_agents
+            import importlib
+            _tm_agents = importlib.import_module("taosmd.agents")
             migrate_persona_v2(config.agents, register_fn=_tm_agents.register_agent)
             if config.config_path and config.config_path.exists():
                 await save_config_locked(config, config.config_path)

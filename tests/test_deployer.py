@@ -792,16 +792,13 @@ class TestDeployAgent:
             mock_create.return_value = {"success": True, "name": "taos-agent-octest"}
 
             import types
+            import sys
             fake_taosmd = types.ModuleType("taosmd")
             fake_taosmd.agent_rules = lambda: fake_rules
 
-            import sys
-            sys.modules["taosmd"] = fake_taosmd
-            try:
+            with patch.dict(sys.modules, {"taosmd": fake_taosmd}):
                 req = _req(name="octest", framework="openclaw", data_dir=tmp_path)
                 result = await deploy_agent(req)
-            finally:
-                sys.modules.pop("taosmd", None)
 
         assert result["success"] is True
         agents_md_entries = [(dst, content) for dst, content in pushed if dst == "/root/.openclaw/AGENTS.md"]
@@ -846,16 +843,13 @@ class TestDeployAgent:
             mock_create.return_value = {"success": True, "name": "taos-agent-hermestest"}
 
             import types
+            import sys
             fake_taosmd = types.ModuleType("taosmd")
             fake_taosmd.agent_rules = lambda: fake_rules
 
-            import sys
-            sys.modules["taosmd"] = fake_taosmd
-            try:
+            with patch.dict(sys.modules, {"taosmd": fake_taosmd}):
                 req = _req(name="hermestest", framework="hermes", data_dir=tmp_path)
                 result = await deploy_agent(req)
-            finally:
-                sys.modules.pop("taosmd", None)
 
         assert result["success"] is True
         agents_md_entries = [(dst, content) for dst, content in pushed if dst == "/root/.hermes/AGENTS.md"]
@@ -1068,12 +1062,9 @@ class TestOpenClawSpliceDeploy:
              patch("tinyagentos.deployer.add_proxy_device", new_callable=AsyncMock, return_value={"success": True, "output": ""}), \
              patch("tinyagentos.deployer.is_image_present", new_callable=AsyncMock, return_value=False):
             mock_create.return_value = {"success": True, "name": "taos-agent-splice-test"}
-            sys.modules["taosmd"] = fake_taosmd
-            try:
-                req = _req(name="splice-test", framework="openclaw", data_dir=tmp_path)
-                result = await deploy_agent(req)
-            finally:
-                sys.modules.pop("taosmd", None)
+            with patch.dict(sys.modules, {"taosmd": fake_taosmd}):
+                 req = _req(name="splice-test", framework="openclaw", data_dir=tmp_path)
+                 result = await deploy_agent(req)
 
         assert result["success"] is True
         agents_pushed = [(dst, c) for dst, c in pushed if dst == "/root/.openclaw/AGENTS.md"]
@@ -1115,12 +1106,9 @@ class TestOpenClawSpliceDeploy:
              patch("tinyagentos.deployer.add_proxy_device", new_callable=AsyncMock, return_value={"success": True, "output": ""}), \
              patch("tinyagentos.deployer.is_image_present", new_callable=AsyncMock, return_value=False):
             mock_create.return_value = {"success": True, "name": "taos-agent-append-test"}
-            sys.modules["taosmd"] = fake_taosmd
-            try:
+            with patch.dict(sys.modules, {"taosmd": fake_taosmd}):
                 req = _req(name="append-test", framework="openclaw", data_dir=tmp_path)
                 result = await deploy_agent(req)
-            finally:
-                sys.modules.pop("taosmd", None)
 
         assert result["success"] is True
         agents_pushed = [(dst, c) for dst, c in pushed if dst == "/root/.openclaw/AGENTS.md"]
@@ -1134,7 +1122,8 @@ class TestOpenClawSpliceDeploy:
 class TestBackgroundDeploy:
     @pytest.mark.asyncio
     async def test_deploy_endpoint_returns_immediately(self, client, monkeypatch, tmp_path):
-        import taosmd.agents as tm_agents
+        import importlib
+        tm_agents = importlib.import_module("taosmd.agents")
         monkeypatch.setattr(tm_agents, "_default_registry", tm_agents.AgentRegistry(tmp_path))
         resp = await client.post("/api/agents/deploy", json={
             "name": "bg-test",
@@ -1148,7 +1137,8 @@ class TestBackgroundDeploy:
 
     @pytest.mark.asyncio
     async def test_deploy_status_endpoint(self, client, monkeypatch, tmp_path):
-        import taosmd.agents as tm_agents
+        import importlib
+        tm_agents = importlib.import_module("taosmd.agents")
         monkeypatch.setattr(tm_agents, "_default_registry", tm_agents.AgentRegistry(tmp_path))
         await client.post("/api/agents/deploy", json={
             "name": "status-test",
@@ -1166,7 +1156,8 @@ class TestBackgroundDeploy:
 
     @pytest.mark.asyncio
     async def test_deploy_failure_emits_notification(self, client, app, monkeypatch, tmp_path):
-        import taosmd.agents as tm_agents
+        import importlib
+        tm_agents = importlib.import_module("taosmd.agents")
         monkeypatch.setattr(tm_agents, "_default_registry", tm_agents.AgentRegistry(tmp_path))
         """When background deploy fails, a notification must be pushed so the
         tray surfaces the error rather than leaving the user stuck on 'deploying'."""
