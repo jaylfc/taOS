@@ -24,7 +24,16 @@ sys.path.insert(0, {src!r})
 sys.path.insert(0, {src + '/tests'!r})
 
 import tinyagentos.app as _app_mod
+# The guard reads _app_mod.PROJECT_DIR at call time, so this override is what
+# points it at the pytester dir. The inner run is a subprocess, but restore the
+# original on unconfigure anyway so the override can never outlive this run.
+_ORIG_PROJECT_DIR = _app_mod.PROJECT_DIR
 _app_mod.PROJECT_DIR = Path({pytester_path!r})
+
+
+def pytest_unconfigure(config):
+    _app_mod.PROJECT_DIR = _ORIG_PROJECT_DIR
+
 
 pytest_plugins = ["_data_guard_plugin"]
 """
