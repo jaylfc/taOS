@@ -1,0 +1,35 @@
+id: mcp-community-github
+name: GitHub
+description: >-
+  Browse repositories, issues and pull requests, and open PRs. Needs a
+  personal access token; supply it through the server's env after install.
+version: 0.6.0
+author: github
+homepage: https://github.com/github/github-mcp-server
+license: MIT
+categories:
+  - dev-tools
+  - vcs
+transport: stdio
+permissions:
+  - network
+  - secrets
+verified: true
+
+install:
+  method: docker
+  package: ghcr.io/github/github-mcp-server
+  command:
+    - docker
+    - pull
+    - ghcr.io/github/github-mcp-server:latest
+
+run:
+  command:
+    - docker
+    - run
+    - "-i"
+    - "--rm"
+    - "-e"
+    - GITHUB_PERSONAL_ACCESS_TOKEN
+    - ghcr.io/github/github-mcp-server

@@ -258,6 +258,9 @@ Pick from 1,467 agent templates, 12 built-in plus 196 from awesome-openclaw-agen
 ### App Store (109 Catalog Apps + 47 MCP Plugins, including 13 Streaming Apps)
 One-click install for agent frameworks, AI models, and services. Hardware-aware, only shows what works on your device.
 
+### MCP Server Marketplace
+Beyond the bundled MCP plugins, a curated registry of community MCP servers is browsable and installable in one click — search by name or category, see the permissions each server declares, and install. The registry lives in `app-catalog/mcp-registry/` (one YAML manifest per entry: id, description, version, author, install command, launch command, declared permissions); curated ids live in the `mcp-community-` namespace so they can never collide with the bundled plugins' ids in the shared server table, and an installed server is launched by the same MCP supervisor as the bundled ones. The API is `/api/mcp/marketplace/*` — browse and detail are readable by any signed-in user, install and uninstall are admin-only.
+
 ### Agent Deployment
 5-step wizard: pick framework → choose model → configure → deploy into an isolated container (LXC on bare metal, Docker on VPS, auto-detected). Each agent gets its own memory system (taOSmd instance), its own file storage, and its own network identity. The framework runs inside the container but taOS manages everything around it: memory, channels, secrets, model access, scheduled tasks, and inter-agent communication. This means the framework is a swappable component, not a lock-in decision.
 

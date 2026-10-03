@@ -116,6 +116,11 @@ from tinyagentos.knowledge_ingest import IngestPipeline
 from tinyagentos.knowledge_categories import CategoryEngine
 from tinyagentos.knowledge_monitor import MonitorService
 from tinyagentos.mcp import MCPServerStore, MCPSupervisor
+from tinyagentos.mcp.marketplace import (
+    MCPMarketplace,
+    MCPRegistry,
+    default_registry_dir,
+)
 from tinyagentos.frameworks import FRAMEWORKS, FrameworkManifestError, validate_framework_manifest
 
 PROJECT_DIR = Path(__file__).parent.parent
@@ -348,6 +353,19 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     notif_store = NotificationStore(data_dir / "notifications.db")
     notif_push_store = NotificationPushStore(data_dir / "notif_push.db")
     mcp_store = MCPServerStore(data_dir / "mcp.db")
+    # The marketplace registry is a directory of YAML manifests shipped with
+    # the package; loading is deferred, so building it here costs nothing at
+    # boot.  The supervisor is attached by the lifespan (the install path only
+    # needs the store; uninstall uses the supervisor when one is wired).
+    mcp_marketplace = MCPMarketplace(
+        registry=MCPRegistry(default_registry_dir()),
+        store=mcp_store,
+        # Where a manifest's `{workspace}` placeholder is expanded to, and the
+        # directory the install flow creates for it.  Deliberately NOT data_dir
+        # itself: a filesystem/git MCP server pointed at the data dir would see
+        # the secrets store and the SQLite databases.
+        workspace_root=data_dir / "mcp-servers",
+    )
     qmd_client = QmdClient(config.qmd.get("url", "http://localhost:7832"))
     http_client = httpx.AsyncClient(timeout=30)
     torrent_settings_store = TorrentSettingsStore(data_dir / "torrent_settings.json")
@@ -705,6 +723,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await mcp_store.init()
         mcp_supervisor = MCPSupervisor(mcp_store, catalog=registry, notif_store=notif_store, secrets_store=secrets_store)
         app.state.mcp_supervisor = mcp_supervisor
+        # The marketplace uninstall path delegates to the supervisor (it drops
+        # the server's attachments and mcp:<id>: secrets with it).
+        mcp_marketplace.supervisor = mcp_supervisor
         await knowledge_monitor.start()
         await agent_browsers.init()
         app.state.agent_browsers = agent_browsers
@@ -1834,6 +1855,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.ingest_pipeline = knowledge_ingest
     app.state.knowledge_monitor = knowledge_monitor
     app.state.mcp_store = mcp_store
+    app.state.mcp_marketplace = mcp_marketplace
     # mcp_supervisor, orchestrator, trace_registry, bridge_sessions,
     # copilot_ticket_store, copilot_hub, and vapid_keypair are all created by
     # the lifespan.  Setting None here ensures attribute-existence checks in

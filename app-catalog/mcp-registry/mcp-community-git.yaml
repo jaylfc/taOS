@@ -1,0 +1,30 @@
+id: mcp-community-git
+name: Git
+description: >-
+  Inspect and operate on a local git repository: status, diff, log, commit and
+  branch. Scoped to the repository in its own private workspace, which the
+  installer provisions — put the repository to work on there.
+version: 2025.4.7
+author: modelcontextprotocol
+homepage: https://github.com/modelcontextprotocol/servers
+license: MIT
+categories:
+  - dev-tools
+  - vcs
+transport: stdio
+permissions:
+  - filesystem:read
+  - filesystem:write
+verified: true
+
+install:
+  method: uvx
+  package: mcp-server-git
+
+run:
+  command:
+    - uvx
+    - mcp-server-git
+  args:
+    - --repository
+    - "{workspace}"

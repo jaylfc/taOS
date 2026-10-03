@@ -1,0 +1,23 @@
+id: mcp-community-time
+name: Time
+description: >-
+  Current time and timezone conversion. Declares no permissions — it reads
+  neither the filesystem nor the network.
+version: 2025.4.7
+author: modelcontextprotocol
+homepage: https://github.com/modelcontextprotocol/servers
+license: MIT
+categories:
+  - utilities
+transport: stdio
+permissions: []
+verified: true
+
+install:
+  method: uvx
+  package: mcp-server-time
+
+run:
+  command:
+    - uvx
+    - mcp-server-time

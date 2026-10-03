@@ -1640,6 +1640,122 @@ forever while `get_status()` still reported it `running` — for a
 stdio-transport server stdout is the JSON-RPC channel, so that was the primary
 data path, not an edge case.
 
+## MCP marketplace (`/api/mcp/marketplace/*`)
+
+Route module `tinyagentos/routes/mcp_marketplace.py`, backed by
+`tinyagentos/mcp/marketplace.py`. This is the *browse and install* half of the
+MCP surface: the bundled plugins under `app-catalog/plugins/` are installed
+through the app Store, while a marketplace entry is a community MCP server
+described by a manifest in the curated registry.
+
+| route | gate | what it does |
+|---|---|---|
+| `GET /api/mcp/marketplace/servers?q=&category=` | any signed-in user | browse/search the registry; each entry carries `installed` + `running` |
+| `GET /api/mcp/marketplace/categories` | any signed-in user | the union of entry categories |
+| `GET /api/mcp/marketplace/servers/{id}` | any signed-in user | one entry plus the stored config when installed |
+| `POST /api/mcp/marketplace/servers/{id}/install` | `require_admin` | resolve → run the install command → register the server |
+| `DELETE /api/mcp/marketplace/servers/{id}` | `require_admin` | uninstall (drops attachments and `mcp:<id>:` secrets) |
+| `POST /api/mcp/marketplace/reload` | `require_admin` | re-read the registry directory |
+
+Install answers `404` for an unknown entry, `409` when it is already installed,
+`409` when the id belongs to a server another installer wrote (see the namespace
+note below), and `502` when the install command fails — **a failed install leaves
+the store untouched**, so a half-installed entry never shows up as launchable.
+Uninstalling is `404` for something that was never installed, and `409` for a
+row the marketplace did not write.
+
+### Id namespace: the marketplace shares one table with the Store
+
+`mcp_servers` is a single namespace that every installer on the platform writes
+to. The app Store registers a bundled `app-catalog/plugins/mcp-*` manifest under
+its **app id** with an empty config and relies on `MCPSupervisor._resolve_cmd`'s
+app-catalog fallback; the marketplace registers a curated entry under its
+**manifest id** with an explicit `cmd`. Two installers writing the same id means
+each destroys the other's row:
+
+- a Store install of that app replaces the marketplace's config (`source:
+  marketplace`, `cmd`, `permissions`) with `{}` and drops the version — with the
+  real catalog registered, `_resolve_cmd` then returns `None` and `start()`
+  returns `False`, so the server the marketplace provisioned quietly stops being
+  launchable;
+- a marketplace `DELETE` removes the shared row while the Store's
+  `installed.json` still reports the app installed — the two surfaces disagree
+  about state.
+
+Curated ids therefore live in their own namespace, **`mcp-community-`**
+(`MARKETPLACE_ID_PREFIX`): `mcp-community-filesystem`, `mcp-community-fetch`,
+`mcp-community-git`, `mcp-community-memory`, `mcp-community-time`,
+`mcp-community-github`. `tests/test_mcp_marketplace.py` scans every
+`app-catalog/**/manifest.yaml` and fails if a curated id ever equals an
+app-catalog id again, so the disjointness is enforced rather than remembered.
+
+The runtime does not rely on the convention alone. Rows the marketplace writes
+carry `config["source"] == "marketplace"` (`MARKETPLACE_SOURCE`), which tells a
+marketplace-owned row from one another installer wrote. `install` refuses to
+overwrite a row it did not write (409 with an explicit "already in use by a
+server installed outside the marketplace" message, instead of the bare "already
+installed", which would read as *this* entry being present), and `uninstall`
+refuses to delete one (409) so it cannot desync the Store's own bookkeeping.
+Browse and detail expose both flags: `installed` is true whenever the id is
+occupied in `mcp_servers` (the Store may own it), and
+`installed_by_marketplace` is true only when the stored config is the one this
+marketplace wrote.
+
+A manifest (`app-catalog/mcp-registry/<id>.yaml`, one per entry) declares
+`id`, `name`, `description`, `version`, `author`, `categories`, `transport`,
+the install command (`install.command`), the launch command (`run.command` +
+`run.args`) and the **permissions the server states it needs**. The permission
+set is validated at load time against a closed vocabulary — an unknown
+permission, a wildcard (`*`/`all`), or a `:write` without the matching `:read`
+is rejected, and the entry is skipped and reported in `reload`'s `errors`
+rather than listed. `validate_permissions` in `tinyagentos/mcp/marketplace.py`
+is the single source of that rule. `transport` is `stdio` only
+(`SUPPORTED_TRANSPORTS`): the built-in supervisor launches a subprocess, so
+accepting an `sse`/`http` entry would register a server with no resolvable
+launch command that the start route can only `500` on.
+
+`{workspace}` (`WORKSPACE_TOKEN`) in a manifest's `run.command`/`run.args`/env
+keys or values is replaced by the installer with `<data_dir>/mcp-servers/<id>`,
+which the install flow creates once the install command has succeeded — a
+failed or timed-out install leaves no directory behind. It exists so a curated
+entry can point a server at a private empty directory instead of an existing
+one: the filesystem and git servers both need a directory that exists before
+they start, and pointing them at the taOS data directory would expose the
+secrets store and the SQLite databases. A manifest that needs a workspace and
+has no workspace root configured is refused (500) before the install command
+runs, and a manifest that puts the placeholder in `install.command` is refused
+(400) — the placeholder is expanded from the run configuration only, so an
+install command carrying it would execute the literal token. The install
+command itself runs under a bounded timeout (`INSTALL_TIMEOUT_S`, 600 s): on
+expiry the child is killed and reaped and the install reports 502 with the
+store untouched — an ASGI server has a graceful-shutdown timeout, not a request
+timeout, so an unbounded runner could hold an admin's request open forever.
+
+The curated registry is read from `app-catalog/mcp-registry/` —
+`default_registry_dir()` derives it from the checkout, the same way `create_app`
+derives the app catalog from `PROJECT_DIR`, and the supported install is a
+source checkout with an editable install (`scripts/install-server.sh` runs
+`pip install -e ".[proxy]"`). A registry directory that is not there is
+recorded in the registry's `errors` and logged, so
+`POST /api/mcp/marketplace/reload` reports *why* the marketplace is empty
+instead of showing a curated registry with zero entries; a readable but empty
+directory is not an error. `MCPRegistry` takes the directory as a constructor
+argument, so a mounted or downloaded copy of a hosted registry is a one-line
+change.
+
+**Declared permissions are requirements, not grants.** Install records them in
+the server config (`config["permissions"]`); who may call which tool is still
+decided by the attachment model (`MCPServerStore` attachments +
+`check_permission`). Installing a server therefore never widens an agent's
+access on its own.
+
+`MCPMarketplace.install` writes the config `MCPSupervisor._resolve_cmd` already
+reads (`cmd`), so an installed server is launchable by the existing loader with
+no extra wiring; a manifest's non-secret `run.env` is merged over the
+controller's environment at spawn time (never replacing it — replacing `PATH`
+would break an `npx`/`uvx` launch command). Credentials belong in the secrets
+store, not in a registry manifest.
+
 ## Config save and restore (`/api/config`, session-only)
 
 Route module `tinyagentos/routes/settings.py`. Owner routes behind the session
