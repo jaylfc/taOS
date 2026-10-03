@@ -155,8 +155,9 @@ class TestUpdateCheckFollowsTrackedBranch:
             return "my-feature"
 
         class _FakeProc:
-            def __init__(self, out=b""):
+            def __init__(self, out=b"", returncode=0):
                 self._out = out
+                self.returncode = returncode
 
             async def communicate(self):
                 return self._out, b""
@@ -175,6 +176,11 @@ class TestUpdateCheckFollowsTrackedBranch:
         monkeypatch.setattr(
             "tinyagentos.auto_update.remote_is_strictly_ahead",
             fake_strictly_ahead,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "tinyagentos.update_preflight.check_preflight",
+            lambda project_dir: [],
             raising=False,
         )
 
