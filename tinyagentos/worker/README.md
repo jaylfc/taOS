@@ -52,12 +52,18 @@ Default name is the machine's hostname.
 
 Probe backends beyond the default ports with comma-separated `type=url` pairs, e.g. `TAOS_EXTRA_BACKENDS="ollama=http://192.168.1.20:11434,llama-cpp=http://127.0.0.1:9000"`. At most 16 entries are used.
 
-- `type`: a local backend the worker can probe: `rkllama`, `ollama`, `hailo-ollama`, `llama-cpp`, `vllm`, `exo`, `mlx`, `sd-cpp`.
+- `type`: a local backend the worker can probe: `rkllama`, `ollama`, `hailo-ollama`, `llama-cpp`, `llama-swap`, `vllm`, `exo`, `mlx`, `sd-cpp`.
 - `url`: a base URL whose host is `localhost` or a literal loopback or private-LAN IP (127/8, 10/8, 172.16/12, 192.168/16, ::1, fc00::/7). Hostnames are not resolved, and link-local and cloud-metadata addresses are refused.
 - Invalid entries are skipped with one warning in the worker log. An entry that repeats a default (same type and port; `localhost`, `127.0.0.1` and `::1` count as the same host) is probed once.
 - Each candidate gets 10 s in total, so a slow or stalled server cannot hold up the heartbeat. A LAN entry is never advertised as the worker's own URL: without `advertise_url` or `TAOS_ADVERTISE_IP` the worker uses its first live local backend, else its own LAN address.
 
 The worker manifest is probed too: for each entry, the origin of its `health_url` (loopback only, on the declared `port` if one is set; the path is not used), else, or if that is rejected, `http://localhost:<port>`. Declared software that is running is reported live. Software that is not running appears as `stopped`, one entry per declared port.
+
+### llama-swap
+
+[llama-swap](https://github.com/mostlygeek/llama-swap) has no default probe (its default port 8080 is also llama.cpp's and rkllama's legacy port), so configure it: `TAOS_EXTRA_BACKENDS="llama-swap=http://127.0.0.1:8080"`. The worker reads `models` from `GET /v1/models` (local models only; peer models run elsewhere) and `loaded_models` from `GET /running` (`{"running": [{"model", "state", ...}]}`; `starting` and `ready` count as loaded). A server without `/running` is not llama-swap and is left to the other types; a llama-swap server on a `llama-cpp`/`vllm` default port is reported once, as `llama-swap`. llama-swap's API key (`apiKeys`) is not supported yet.
+
+Unloading a model is left to the GPU work queue (#3230): `tinyagentos/backend_unload.py` calls `POST /api/models/unload/<model>`, never llama-swap's unload-all.
 
 ## Standalone binaries
 

@@ -171,10 +171,15 @@ _DEFAULT_PROBE_CANDIDATES: tuple[tuple[str, str], ...] = (
 )
 
 # Types an extra/manifest candidate may declare: the local servers whose API
-# _probe_models can detect (/api/tags, /sdapi/v1/sd-models, /v1/models).
-_PROBEABLE_TYPES = frozenset(
-    {"rkllama", "ollama", "hailo-ollama", "llama-cpp", "vllm", "exo", "mlx", "sd-cpp"}
-)
+# detect_backends can probe (/api/tags, /sdapi/v1/sd-models, /v1/models,
+# llama-swap's /running). llama-swap has no default candidate: its default
+# port 8080 is also llama.cpp's and rkllama's legacy one, so it is configured.
+_PROBEABLE_TYPES = frozenset({
+    "rkllama", "ollama", "hailo-ollama", "llama-cpp", "llama-swap", "vllm", "exo", "mlx",
+    "sd-cpp",
+})
+# Types detected by /v1/models alone, which a llama-swap server also answers.
+_OPENAI_MODELS_TYPES = frozenset({"llama-cpp", "vllm", "exo", "mlx"})
 _MAX_EXTRA_BACKENDS = 16
 # Total time one candidate may take. httpx timeouts are per read, so a server
 # trickling bytes could otherwise hold the probe (and the heartbeat, which the
@@ -290,6 +295,66 @@ def _manifest_entry_url(m: dict) -> str | None:
     return f"http://localhost:{port}"
 
 
+# llama-swap's GET /running is {"running": [{"model": <id>, "state": ..., ...}]}
+# (internal/server/api.go handleRunning, verified against llama-swap v261). It
+# lists every process not stopped: "starting", "ready" or "stopping" (the
+# last is excluded below). Plain
+# llama.cpp serves /v1/models but no /running, which is how the two differ.
+_LLAMA_SWAP_UNLOADING_STATES = frozenset({"stopping", "stopped", "shutdown"})
+
+
+def _parse_llama_swap_running(body) -> list[dict] | None:
+    """Models a llama-swap ``/running`` reply holds in memory (starting or
+    ready), or None when *body* is not that reply. Bad entries are skipped."""
+    if not isinstance(body, dict) or not isinstance(body.get("running"), list):
+        return None
+    out = []
+    for entry in body["running"]:
+        if not isinstance(entry, dict):
+            continue
+        model, state = entry.get("model"), entry.get("state")
+        if not isinstance(model, str) or not model:
+            continue
+        if isinstance(state, str) and state in _LLAMA_SWAP_UNLOADING_STATES:
+            continue
+        out.append({"name": model, "size_mb": 0})
+    return out
+
+
+def _is_local_llama_swap_model(m) -> bool:
+    """A /v1/models entry served by this llama-swap. Peer entries
+    (``meta.llamaswap.type == "peer"``) run on another machine, and selectors
+    may point at peers; builds without that metadata list local models only."""
+    if not isinstance(m, dict) or not isinstance(m.get("id"), str) or not m["id"]:
+        return False
+    meta = m.get("meta")
+    info = meta.get("llamaswap") if isinstance(meta, dict) else None
+    kind = info.get("type") if isinstance(info, dict) else None
+    return kind is None or kind == "model"
+
+
+async def _probe_llama_swap(client: httpx.AsyncClient,
+                            base_url: str) -> tuple[list[dict], list[dict]] | None:
+    """(models, loaded_models) from one ``/running`` and one ``/v1/models``,
+    or None when *base_url* is not a llama-swap server: without /running it
+    is some other OpenAI-compatible server (plain llama.cpp), which its own
+    type reports."""
+    try:
+        resp = await client.get(f"{base_url}/running")
+        loaded = _parse_llama_swap_running(resp.json()) if resp.status_code == 200 else None
+        if loaded is None:
+            return None
+        resp = await client.get(f"{base_url}/v1/models")
+        data = resp.json() if resp.status_code == 200 else None
+        if not isinstance(data, dict) or not isinstance(data.get("data"), list):
+            return None
+        models = [{"name": m["id"], "size_mb": 0}
+                  for m in data["data"] if _is_local_llama_swap_model(m)]
+        return models, loaded
+    except Exception:
+        return None
+
+
 def _candidate_key(backend_type: str, url: str) -> tuple:
     """Identity of a normalized candidate: localhost and loopback IPs are one host."""
     parts = urlsplit(url)
@@ -385,10 +450,16 @@ class WorkerAgent:
         )
 
         async def probe(client: httpx.AsyncClient, backend_type: str, base_url: str):
-            models = await self._probe_models(client, backend_type, base_url)
-            if models is None:
-                return None  # backend not running here
-            loaded_models = await self._probe_loaded_models(client, backend_type, base_url)
+            if backend_type == "llama-swap":
+                probed = await _probe_llama_swap(client, base_url)
+                if probed is None:
+                    return None
+                models, loaded_models = probed
+            else:
+                models = await self._probe_models(client, backend_type, base_url)
+                if models is None:
+                    return None  # backend not running here
+                loaded_models = await self._probe_loaded_models(client, backend_type, base_url)
             kv_quant = await self._probe_kv_quant(client, backend_type, base_url)
             _port = urlparse(base_url).port
             return {
@@ -430,6 +501,13 @@ class WorkerAgent:
                 for bt, url in candidates
             ))
         backends = [b for b in results if b is not None]
+        # A llama-swap server also answers the /v1/models probe of the generic
+        # types; when one sits on a candidate's endpoint, report it once.
+        swap_endpoints = {_candidate_key(b["type"], b["url"])[1:]
+                          for b in backends if b["type"] == "llama-swap"}
+        backends = [b for b in backends
+                    if b["type"] not in _OPENAI_MODELS_TYPES
+                    or _candidate_key(b["type"], b["url"])[1:] not in swap_endpoints]
 
         # Attach declared models to live backends so the controller sees both
         # "loaded" and "available" states. An entry that declares a port or

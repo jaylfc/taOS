@@ -23,6 +23,7 @@ ALL_TYPES: set[str] = {
     "hailo-ollama",
     "ollama",
     "llama-cpp",
+    "llama-swap",
     "vllm",
     "exo",
     "mlx",
@@ -68,6 +69,7 @@ BACKEND_TYPE_MAP: dict[str, str] = {
     "rkllama": "ollama",  # rkllama is ollama-compatible on /api/embed too
     "hailo-ollama": "ollama",  # hailo-ollama is ollama-compatible on /api/embed too
     "llama-cpp": "openai",
+    "llama-swap": "openai",
     "vllm": "openai",
     "exo": "openai",
     "mlx": "openai",

@@ -1790,7 +1790,9 @@ snapshot, not a lock.
   `loaded`. Note the corollary: the non-ollama backends (llama.cpp / vLLM /
   sd-cpp) publish no in-memory probe — their `loaded_models` is empty by design
   — so a model they are actively serving still reads `installed`, following the
-  worker's own `available_models[].status`.
+  worker's own `available_models[].status`. llama-swap does publish one: its
+  `loaded_models` (and the controller's `GET /api/models/loaded` rows for a
+  `llama-swap` provider) come from its `/running` list.
 - `capabilities` -- the union of capabilities across the mesh, each split into
   mutually exclusive buckets: `active_nodes` (serving now), `installed_nodes`
   (present but not serving) and `potential_nodes` (hardware could run it,
