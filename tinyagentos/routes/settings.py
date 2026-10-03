@@ -598,8 +598,13 @@ async def check_for_updates(request: Request):
     from tinyagentos.update_preflight import check_preflight
     project_dir = str(Path(__file__).parent.parent.parent)
 
+    # Track the user's selected branch (Updates -> Advanced selector), or the
+    # checked-out branch when unset -- never a hard-coded master, otherwise a
+    # dev box is told a stale master commit is "available" and Install fails.
+    branch = await resolve_tracked_branch(request.app.state.desktop_settings, Path(project_dir))
+
     # Pre-flight validation to prevent confusing errors or partial updates
-    preflight_issues = await asyncio.to_thread(check_preflight, project_dir)
+    preflight_issues = await asyncio.to_thread(check_preflight, project_dir, branch)
     if preflight_issues:
         return {
             "has_updates": False,
@@ -612,11 +617,6 @@ async def check_for_updates(request: Request):
             "preflight_errors": preflight_issues,
             "fetch_error": None,
         }
-
-    # Track the user's selected branch (Updates → Advanced selector), or the
-    # checked-out branch when unset — never a hard-coded master, otherwise a
-    # dev box is told a stale master commit is "available" and Install fails.
-    branch = await resolve_tracked_branch(request.app.state.desktop_settings, Path(project_dir))
 
     # Fetch remote refs so origin/<branch> is current, then compare SHAs.
     # Parsing dry-run output is unreliable on shallow clones / no tracking branch.
@@ -639,7 +639,7 @@ async def check_for_updates(request: Request):
             "current_commit": None,
             "new_commit": None,
             "preflight_errors": [],
-            "fetch_error": (fetch_out.decode() if fetch_out else "unknown error").strip()[:300],
+            "fetch_error": (fetch_out.decode(errors="replace") if fetch_out else "unknown error").strip()[:300],
         }
 
     async def _rev_parse(ref: str) -> str:
@@ -1141,10 +1141,15 @@ async def apply_update(request: Request):
     import asyncio
     project_dir = Path(__file__).parent.parent.parent
 
+    # Track the user's selected branch (Updates -> Advanced selector), or the
+    # checked-out branch when unset -- never a hard-coded master, otherwise a
+    # dev box is told a stale master commit is "available" and Install fails.
+    branch = await resolve_tracked_branch(request.app.state.desktop_settings, project_dir)
+
     # Pre-flight validation to prevent confusing errors or partial updates
     from tinyagentos.update_preflight import check_preflight
 
-    preflight_issues = await asyncio.to_thread(check_preflight, project_dir)
+    preflight_issues = await asyncio.to_thread(check_preflight, project_dir, branch)
     if preflight_issues:
         # REFUSE: check_for_updates returns 200 with preflight_errors: [...] and has_updates false;
         # apply_update returns 409 with the messages and does NOT touch the tree
@@ -1185,11 +1190,6 @@ async def apply_update(request: Request):
     # the update applies; the change is recoverable via `git stash pop`.
     stashed_local = await _stash_local_source_changes(project_dir)
 
-    # Git pull — pull the branch this install tracks (master on stable, dev on
-    # a dev/test box). Pulling a hard-coded master onto a dev box fails ff-only
-    # (dev is ahead of master) and the update silently never applies.
-    branch = await resolve_tracked_branch(request.app.state.desktop_settings, project_dir)
-
     # Fetch first so we can verify GPG signature before merging.
     fetch_proc = await asyncio.create_subprocess_exec(
         "git", "fetch", "--quiet", "origin", "--", branch,
@@ -1199,7 +1199,7 @@ async def apply_update(request: Request):
     fetch_out, _ = await fetch_proc.communicate()
     if fetch_proc.returncode != 0:
         return JSONResponse(
-            {"error": f"Fetch failed: {(fetch_out.decode() if fetch_out else 'unknown error').strip()[:300]}"},
+            {"error": f"Fetch failed: {(fetch_out.decode(errors='replace') if fetch_out else 'unknown error').strip()[:300]}"},
             status_code=500,
         )
 

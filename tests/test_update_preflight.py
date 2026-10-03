@@ -344,6 +344,50 @@ class TestUpdatePreflight:
         assert foreign_issues
         assert "foreign.txt" in foreign_issues[0].message
 
+    def test_check_preflight_with_branch_avoids_branch_not_on_origin(self, tmp_path):
+        """When branch is passed explicitly, preflight must use it, not the local
+        checked-out branch, so a local-only checkout on a tracked master channel
+        does not get a false branch_not_on_origin.
+
+        _ls_remote_heads must be called with the supplied branch.
+        """
+        from tinyagentos.update_preflight import check_preflight
+
+        with patch("tinyagentos.update_preflight._ls_remote_heads") as mock_ls_remote:
+            mock_ls_remote.return_value = (True, True)
+            with patch("tinyagentos.update_preflight._get_fetch_refspecs") as mock_get_specs:
+                mock_get_specs.return_value = ["+refs/heads/*:refs/remotes/origin/*"]
+                with patch("tinyagentos.update_preflight._find_foreign_owned_files") as mock_foreign:
+                    mock_foreign.return_value = (0, [])
+                    with patch("tinyagentos.update_preflight._run_cmd") as mock_run_cmd:
+                        mock_run_cmd.return_value = (0, "local-only\n")
+                        issues = check_preflight(tmp_path, branch="master")
+
+        branch_issues = [i for i in issues if i.code == "branch_not_on_origin"]
+        assert branch_issues == []
+        mock_ls_remote.assert_called_once()
+        assert mock_ls_remote.call_args.args[1] == "master"
+
+    def test_check_preflight_without_branch_uses_rev_parse_fallback(self, tmp_path):
+        """When branch is omitted, the rev-parse fallback must still be used."""
+        from tinyagentos.update_preflight import check_preflight
+
+        with patch("tinyagentos.update_preflight._ls_remote_heads") as mock_ls_remote:
+            mock_ls_remote.return_value = (True, False)
+            with patch("tinyagentos.update_preflight._get_fetch_refspecs") as mock_get_specs:
+                mock_get_specs.return_value = ["+refs/heads/*:refs/remotes/origin/*"]
+                with patch("tinyagentos.update_preflight._find_foreign_owned_files") as mock_foreign:
+                    mock_foreign.return_value = (0, [])
+                    with patch("tinyagentos.update_preflight._run_cmd") as mock_run_cmd:
+                        mock_run_cmd.return_value = (0, "local-only\n")
+                        issues = check_preflight(tmp_path)
+
+                        assert any(c.args[0][:4] == ["git", "rev-parse", "--abbrev-ref", "HEAD"] for c in mock_run_cmd.call_args_list)
+
+                        branch_issues = [i for i in issues if i.code == "branch_not_on_origin"]
+                        assert len(branch_issues) == 1
+                        assert "local-only" in branch_issues[0].message
+
     def test_root_user_can_write_all_files(self, tmp_path):
         """When running as root (geteuid==0), _find_foreign_owned_files must
         return (0, []) because root can write any file. Without this fix,
