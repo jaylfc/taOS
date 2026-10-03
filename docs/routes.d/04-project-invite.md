@@ -20,7 +20,7 @@ Content-negotiated: `Accept: application/json` → redeem contract (`{method, pa
 
 ## Connection bundle
 
-- `controller.endpoints` — non-loopback LAN IPv4s (priority, operator override first), the mesh node IP; optional relay endpoint with `TAOS_CONTROLLER_RELAY_URL=https://`
+- `controller.endpoints` — non-loopback LAN IPv4s (priority, operator override first), the mesh node IP when joined; relay endpoint only when `TAOS_CONTROLLER_RELAY_URL` is `https://`
 - `apis` — agent-JWT-reachable surface, scoped to granted scopes (mirrors the middleware allowlist)
 - `delivery` — timed-check contract (`poll_path`, `stream_path`, `check_interval_secs`, `cursor: ts`, `filter: mentions+project`)
 - `onboarding` + `guide_markdown` — capability guide (repo + manual links, scoped Projects/Canvas, A2A proxy, memory + timed checks). `harness=grok` adds secure-form token storage, onboarding polling, and a shared-account warning.
