@@ -633,7 +633,6 @@ class TestDeployRegistryRegistration:
 
     async def test_deploy_creates_registry_row(self, client, app, monkeypatch):
         import re
-        import taosmd.agents as tm_agents
         from unittest.mock import AsyncMock, MagicMock
 
         app.state.archive = MagicMock(
@@ -656,7 +655,7 @@ class TestDeployRegistryRegistration:
 
         def fake_register_agent(name, **kwargs):
             pass
-        monkeypatch.setattr(tm_agents, "register_agent", fake_register_agent)
+        monkeypatch.setattr(app.state.taosmd_agent_registry, "register_agent", fake_register_agent)
 
         async def fake_deploy(req):
             return {"success": True, "name": req.name, "ip": "10.0.0.42",
@@ -688,7 +687,6 @@ class TestDeployRegistryRegistration:
         """Display names are not unique; a second deploy with the same name is
         a NEW agent (suffixed slug) and must get its own canonical_id, never
         inherit the first agent's identity."""
-        import taosmd.agents as tm_agents
         from unittest.mock import AsyncMock, MagicMock
 
         app.state.archive = MagicMock(
@@ -713,7 +711,7 @@ class TestDeployRegistryRegistration:
 
         def fake_register_agent(name, **kwargs):
             pass
-        monkeypatch.setattr(tm_agents, "register_agent", fake_register_agent)
+        monkeypatch.setattr(app.state.taosmd_agent_registry, "register_agent", fake_register_agent)
 
         async def fake_deploy(req):
             return {"success": True, "name": req.name, "ip": "10.0.0.42",
@@ -754,7 +752,6 @@ class TestDeployRegistryRegistration:
     async def test_reserved_name_registration_rejected_as_400(self, client, app, monkeypatch):
         """A name the registry rejects (reserved prefix) is a user error: the
         deploy must return 400 with the registry's message and add no agent."""
-        import taosmd.agents as tm_agents
         from unittest.mock import AsyncMock, MagicMock
 
         app.state.archive = MagicMock(
@@ -774,7 +771,7 @@ class TestDeployRegistryRegistration:
 
         def fake_register_agent(name, **kwargs):
             pass
-        monkeypatch.setattr(tm_agents, "register_agent", fake_register_agent)
+        monkeypatch.setattr(app.state.taosmd_agent_registry, "register_agent", fake_register_agent)
 
         async def fake_deploy(req):
             return {"success": True, "name": req.name, "ip": "10.0.0.42",
@@ -800,7 +797,49 @@ class TestDeployRegistryRegistration:
 
 
 @pytest.mark.asyncio
+class TestDeployUsesAppScopedTaosmdRegistry:
+    """Deploy must register agents via app.state.taosmd_agent_registry, not the
+    module-level global, so multiple create_app() calls do not share state."""
+
+    async def test_deploy_registers_into_app_scoped_registry(self, client, app, tmp_path, monkeypatch):
+        from unittest.mock import AsyncMock, MagicMock
+
+        app.state.archive = MagicMock(
+            record=AsyncMock(), query=AsyncMock(return_value=[{}])
+        )
+
+        assert hasattr(app.state, "taosmd_agent_registry"), (
+            "create_app must set app.state.taosmd_agent_registry"
+        )
+        pre_count = len(app.state.taosmd_agent_registry.list_agents())
+
+        async def fake_deploy(req):
+            return {"success": True, "name": req.name, "ip": "10.0.0.42",
+                    "llm_key": "sk-test", "steps": ["deployment_complete"],
+                    "container": f"taos-agent-{req.name}"}
+        monkeypatch.setattr("tinyagentos.deployer.deploy_agent", fake_deploy)
+
+        class _FakeCatalog:
+            def all_models(self, capability=None):
+                return [{"name": "test-model", "id": "test-model"}]
+        app.state.backend_catalog = _FakeCatalog()
+        app.state.cluster_manager._workers.clear()
+
+        resp = await client.post("/api/agents/deploy", json={
+            "name": "ScopedReg",
+            "framework": "openclaw",
+            "model": "test-model",
+        })
+        assert resp.status_code == 200
+
+        post_count = len(app.state.taosmd_agent_registry.list_agents())
+        assert post_count == pre_count + 1
+        names = {r["name"] for r in app.state.taosmd_agent_registry.list_agents()}
+        assert "scopedreg" in names
+
+@pytest.mark.asyncio
 class TestAgentArchiveLifecycle:
+
     async def test_archive_creates_snapshot_not_rename(self, client, monkeypatch):
         """DELETE /api/agents/{name} archives via snapshot; no rename called."""
         stopped = []

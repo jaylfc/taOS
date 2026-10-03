@@ -31,7 +31,7 @@ are bearer-authenticated (not session-authenticated).
 
 ```json
 {
-  "pair_request_id": "uuid",
+  "pair_request_id": "550e8400-e29b-41d4-a716-446655440000",
   "verify_code": "123456",
   "server_cert_fingerprint": "ab:cd:ef:..."
 }
@@ -57,16 +57,8 @@ fingerprint it computes from its own TLS handshake, and MUST abort with
 
 ```json
 {
-  "id": "uuid",
-  "status": "pending",
-  "platform": "ios",
-  "display_name": "My Phone",
-  "push_token": "apns-token",
-  "verify_code": null,
-  "device": null,
-  "scoped_token": null,
-  "created_at": "2026-09-30T12:00:00Z",
-  "expires_at": "2026-09-30T12:05:00Z"
+  "pair_request_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "pending"
 }
 ```
 
@@ -78,17 +70,16 @@ admin includes `server_cert_fingerprint` in its metadata for reference.
 
 ```json
 {
+  "pair_request_id": "550e8400-e29b-41d4-a716-446655440000",
   "status": "accepted",
   "device": {
-    "device_id": "uuid",
+    "device_id": "550e8400-e29b-41d4-a716-446655440001",
     "platform": "ios",
     "display_name": "My Phone",
     "user_id": "admin-uuid",
     "registered_at": 1727640000
   },
-  "scoped_token": "taosdev_...",
-  "created_at": "...",
-  "expires_at": "..."
+  "scoped_token": "taosdev_..."
 }
 ```
 
@@ -98,15 +89,16 @@ admin includes `server_cert_fingerprint` in its metadata for reference.
 
 ```json
 {
-  "status": "denied",
-  "device": null,
-  "scoped_token": null
+  "pair_request_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "denied"
 }
 ```
 
+An expired request returns the same shape with `"status": "expired"`.
+
 **Error codes:**
 
-- `404` -- unknown `pair_request_id`.
+- `404` -- `pair request not found`.
 
 ## TLS listener
 
@@ -115,7 +107,7 @@ over TLS on port **6974** (`TAOS_DEVICE_TLS_PORT`). Plain HTTP on port 6969
 refuses embedded bearer tokens with:
 
 ```json
-{"error": "device_tls_required"}
+{"detail": {"error": "device_tls_required"}}
 ```
 
 Phones, watches, and other legacy platforms continue to work over plain HTTP
@@ -145,11 +137,13 @@ from its own handshake.
 
 | HTTP status | Detail | Meaning |
 |---|---|---|
-| 400 | `invalid_platform` | Unknown `platform` value. |
-| 400 | `pair_request_too_large` | Request body exceeds length cap. |
-| 403 | `device_tls_required` | Embedded bearer on plain HTTP. |
-| 404 | `pair_request_not_found` | Unknown `pair_request_id`. |
-| 409 | `no_admin_for_pairing` | No admin user exists yet. |
-| 409 | `pair_request_expired` | Approval arrived after TTL. |
-| 409 | `pair_request_already_accepted` | Duplicate approve on an accepted request. |
-| 429 | `pair_request_pending_cap_exceeded` | Too many open requests. |
+| 400 | `platform must be one of [...]` | Unknown or empty `platform` value. |
+| 400 | `push_token is not accepted for <platform> devices` | Push token supplied for a no-push platform. |
+| 403 | `{"error": "device_tls_required"}` | Embedded bearer on plain HTTP. |
+| 404 | `pair request not found` | Unknown `pair_request_id`. |
+| 409 | `no admin exists to approve pairing requests` | No admin user exists yet (instance not onboarded). |
+| 409 | `{"error": "already answered or not pending"}` | Decision was already answered or is no longer pending (an expired pair request is NOT a 409: approval returns 200 and marks it expired). |
+| 422 | FastAPI validation error | Missing required field (e.g. `platform`) or a body field over `max_length` (e.g. `push_token` over 4096 chars). |
+| 429 | `too many pending pair requests (...)` | `DEVICE_PAIR_REQUESTS_PENDING_CAP` reached. |
+
+Clients must match on HTTP status, not on the detail text.

@@ -211,7 +211,11 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     # data/ directory.
     import importlib
     _tm_agents = importlib.import_module("taosmd.agents")
-    _tm_agents._default_registry = _tm_agents.AgentRegistry(data_dir)
+    taosmd_agent_registry = _tm_agents.AgentRegistry(data_dir)
+    _tm_agents._default_registry = taosmd_agent_registry
+    # App-scoped consumers must use app.state.taosmd_agent_registry (not the
+    # module-level wrapper). CLI entry points and other callers still rely on
+    # taosmd.agents.register_agent, which routes through _default_registry above.
     config_path = data_dir / "config.yaml"
     # Copy example config on first run
     if not config_path.exists():
@@ -783,9 +787,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # taosmd.  Idempotent — safe to run on every startup.
         try:
             from tinyagentos.migrations import migrate_persona_v2
-            import importlib
-            _tm_agents = importlib.import_module("taosmd.agents")
-            migrate_persona_v2(config.agents, register_fn=_tm_agents.register_agent)
+            migrate_persona_v2(config.agents, register_fn=taosmd_agent_registry.register_agent)
             if config.config_path and config.config_path.exists():
                 await save_config_locked(config, config.config_path)
         except Exception:
@@ -1861,9 +1863,12 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.copilot_ticket_store = None
     app.state.copilot_hub = None
     app.state.vapid_keypair = None
-    # agent_registry and its keypair are created by the lifespan; None here
-    # ensures attribute-existence checks work during the pre-startup window.
+    # agent_registry (AgentRegistryStore) and its keypair are created by the
+    # lifespan; None here ensures attribute-existence checks work during the
+    # pre-startup window. In-app taosmd registration uses the separate
+    # taosmd_agent_registry key so the two stores do not shadow each other.
     app.state.agent_registry = agent_registry_store
+    app.state.taosmd_agent_registry = taosmd_agent_registry
     app.state.agent_registry_keypair = agent_registry_keypair
     app.state.agent_model_keys = agent_model_key_store
     app.state.auth_requests = auth_requests_store
