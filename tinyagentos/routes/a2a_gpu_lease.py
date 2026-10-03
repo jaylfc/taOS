@@ -74,7 +74,44 @@ router = APIRouter()
 # Coordination channel. The issue does not name one; "gpu" is the default and an
 # operator can point every agent at the same thread with TAOS_A2A_GPU_CHANNEL.
 _DEFAULT_CHANNEL = "gpu"
-_DEFAULT_RESOURCE = "gpu-cuda-0"
+
+# Resource a lease names when the caller supplies none. It has to match what
+# the target worker advertises: Apple Silicon has no CUDA device and registers
+# `gpu-metal` (tinyagentos/hardware.py, scheduler/discovery.py), so a hardcoded
+# CUDA-indexed default would name a resource no Mac worker has.
+_DEFAULT_CUDA_RESOURCE = "gpu-cuda-0"
+
+
+def _default_resource() -> str:
+    """Default GPU resource for a lease with no explicit one, from THIS host.
+
+    Only right when the target is this controller (a controller-local install)
+    or a node the cluster does not know; a remote worker's GPU class is its own,
+    so callers that know the node use :func:`_default_resource_for`.
+    """
+    from tinyagentos.hardware import (
+        METAL_RESOURCE_NAME,
+        metal_available,
+    )
+
+    return METAL_RESOURCE_NAME if metal_available() else _DEFAULT_CUDA_RESOURCE
+
+
+def _default_resource_for(cluster, node: str) -> str:
+    """Default GPU resource for a lease on *node*.
+
+    The id has to name a resource the TARGET worker advertises:
+    ``ClusterManager._worker_for_resource`` rejects a lease whose resource is
+    not in that worker's inventory, and the GPU class differs per host (a Mac
+    advertises ``gpu-metal``, a CUDA box ``gpu-cuda-N``). The worker's own
+    inventory is therefore the source of truth, and this host's probe is only
+    the fallback for a node the cluster does not know.
+    """
+    worker = _match_worker(cluster, node)
+    for name in sorted(getattr(worker, "resources", None) or []):
+        if str(name).startswith("gpu-"):
+            return str(name)
+    return _default_resource()
 
 # The channel is folded on every CHECK/CLAIM, so the read window has to be deep
 # enough to contain the CLAIM that is still open. 500 is the largest page the
@@ -382,12 +419,15 @@ async def _check_node(
     required_mb: int,
     actor: _Actor,
     channel: str,
-    resource: str = _DEFAULT_RESOURCE,
+    resource: str | None = None,
     replace_own: bool = False,
 ) -> tuple[dict, list[GpuLeaseMessage]]:
     """Run the full CHECK for a node; returns (admission dict, node claims)."""
-    folded = await _folded_claims(request, channel, actor)
     cluster = getattr(request.app.state, "cluster_manager", None)
+    # An unnamed resource defaults to one the TARGET worker advertises, not to
+    # this controller's own GPU class.
+    resource = (resource or "").strip() or _default_resource_for(cluster, node)
+    folded = await _folded_claims(request, channel, actor)
     bus_claims = claims_for_node(folded, node)
     # An A2A claim and the cluster lease it created are the same reservation;
     # charge it once (the bus line is the holder's own declared figure).
@@ -422,7 +462,10 @@ async def _check_node(
 class _LeaseBody(BaseModel):
     node: str
     channel: str | None = None
-    resource: str = _DEFAULT_RESOURCE
+    # Empty means "the caller named no resource": the default is resolved once
+    # the target node is known, from that worker's inventory (see
+    # _default_resource_for), never from this controller's own hardware.
+    resource: str = ""
 
 
 class ClaimBody(_LeaseBody):
@@ -455,8 +498,8 @@ class RenewBody(BaseModel):
     )
 
 
-def _resource_id(node: str, resource: str) -> str:
-    res = (resource or _DEFAULT_RESOURCE).strip() or _DEFAULT_RESOURCE
+def _resource_id(node: str, resource: str, cluster=None) -> str:
+    res = (resource or "").strip() or _default_resource_for(cluster, node)
     return f"{node}:{res}"
 
 
@@ -479,6 +522,25 @@ def _lease_for_actor(cluster, resource_id: str, actor: _Actor):
     if _lease_owned_by(existing, actor):
         return existing
     return None
+
+
+def _lease_for_actor_on_node(cluster, node: str, actor: _Actor):
+    """The actor's single active lease on *node*, or None when ambiguous.
+
+    A release that omits ``resource`` cannot safely guess the resource id: a
+    worker's advertised inventory can change between the claim and the release
+    (a heartbeat rewrites it, ``/api/cluster/workers`` updates it), and with
+    several GPU resources on one worker picking one would free the wrong
+    reservation or leak the other. One match releases; zero or several leave
+    the caller to name ``resource`` or ``lease_id``.
+    """
+    matches = [
+        lease
+        for lease in cluster.get_leases()
+        if (lease.resource_id or "").partition(":")[0] == node
+        and _lease_owned_by(lease, actor)
+    ]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _lease_owned_by(lease, actor: _Actor) -> bool:
@@ -587,14 +649,15 @@ async def gpu_check(request: Request):
             status_code=400,
         )
     channel = (request.query_params.get("channel") or "").strip() or _channel()
-    resource = (request.query_params.get("resource") or _DEFAULT_RESOURCE).strip()
+    # An unnamed resource is resolved inside _check_node, from the target
+    # worker's inventory.
     body, _claims = await _check_node(
         request,
         node=node,
         required_mb=required_mb or 0,
         actor=actor,
         channel=channel,
-        resource=resource or _DEFAULT_RESOURCE,
+        resource=request.query_params.get("resource") or "",
     )
     body["holder"] = actor.holder
     return body
@@ -630,7 +693,7 @@ async def gpu_claim(request: Request, body: ClaimBody):
     lease_node = cluster is not None and _match_worker(cluster, node) is not None
     caller = f"a2a:{actor.identity}"
     resource_id = (
-        _resource_id(_canonical_node(cluster, node), body.resource)
+        _resource_id(_canonical_node(cluster, node), body.resource, cluster)
         if lease_node and cluster is not None
         else None
     )
@@ -817,11 +880,21 @@ async def gpu_release(request: Request, body: ReleaseBody):
                     status_code=403,
                 )
         else:
-            lease = _lease_for_actor(
-                cluster,
-                _resource_id(_canonical_node(cluster, node), body.resource),
-                actor,
-            )
+            # No lease_id: find this actor's lease on the node. An omitted
+            # `resource` is resolved from the worker's inventory, but that
+            # inventory can have moved since the claim, so fall back to the
+            # actor's single lease on the node rather than an exact resource
+            # lookup that may no longer match (and would leave the lease alive
+            # while the bus reports the node free).
+            canonical_node = _canonical_node(cluster, node)
+            if (body.resource or "").strip():
+                lease = _lease_for_actor(
+                    cluster,
+                    _resource_id(canonical_node, body.resource, cluster),
+                    actor,
+                )
+            else:
+                lease = _lease_for_actor_on_node(cluster, canonical_node, actor)
             released_id = lease.lease_id if lease is not None else None
 
     # A lease found by id OWNS the release's node and channel: the request's

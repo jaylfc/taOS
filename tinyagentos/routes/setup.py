@@ -29,6 +29,12 @@ _LLAMACPP_PROBE_TTL_S = 5.0
 _LLAMACPP_PROBE_TIMEOUT_S = 5.0
 _llamacpp_probe_cache: tuple[float, bool] = (0.0, False)
 
+# ...and for the MLX /v1/models probe, which is the second local backend an
+# Apple Silicon host can satisfy the metal step with (taOS #329).
+_MLX_PROBE_TTL_S = 5.0
+_MLX_PROBE_TIMEOUT_S = 5.0
+_mlx_probe_cache: tuple[float, bool] = (0.0, False)
+
 
 def _accel_for_profile(profile) -> str:
     """Map a HardwareProfile to the accelerator its default local-LLM-backend
@@ -36,7 +42,10 @@ def _accel_for_profile(profile) -> str:
 
     Locked product decision: llama.cpp server (MIT, router mode) is the
     default local backend on NVIDIA CUDA, AMD ROCm, Apple Silicon (Metal),
-    and x86 CPU-only. Rockchip NPU boards keep their existing rkllama /
+    and x86 CPU-only. On Apple Silicon the MLX backend also satisfies the
+    step: ``_default_backend_running("metal")`` accepts whichever of the two
+    is up, so a Mac that installed only an MLX model is not told its backend
+    is missing. Rockchip NPU boards keep their existing rkllama /
     rk-llama.cpp one-tap untouched (mapped to "rknpu" here, handled by the
     existing NPU probes/endpoint). Intel Arc and Mali have no one-tap
     backend yet, so they map to "none" (no step shown) — including the
@@ -89,11 +98,39 @@ async def _llamacpp_backend_running() -> bool:
     return running
 
 
+async def _mlx_backend_running() -> bool:
+    """True if the MLX server (Apple Silicon) answers /v1/models on its port.
+
+    Same TTL-cached, off-the-event-loop shape as the llama.cpp probe above.
+    """
+    global _mlx_probe_cache
+    now = time.monotonic()
+    cached_at, cached = _mlx_probe_cache
+    if cached_at and now - cached_at < _MLX_PROBE_TTL_S:
+        return cached
+
+    from tinyagentos.installers.mlx_installer import mlx_server_is_running
+
+    try:
+        running = await asyncio.wait_for(
+            asyncio.to_thread(mlx_server_is_running), _MLX_PROBE_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        running = False
+    _mlx_probe_cache = (now, running)
+    return running
+
+
 async def _default_backend_running(accel: str) -> bool:
     """Probe this device's default local LLM backend, dispatched by accel."""
     if accel == "rknpu":
         return await _npu_backend_running()
-    if accel in ("cuda", "rocm", "metal", "cpu"):
+    if accel == "metal":
+        # Apple Silicon can satisfy this step with either local backend:
+        # llama.cpp (Metal) or MLX. Short-circuit so a host that already has
+        # llama.cpp up never pays for a second socket probe.
+        return await _llamacpp_backend_running() or await _mlx_backend_running()
+    if accel in ("cuda", "rocm", "cpu"):
         return await _llamacpp_backend_running()
     return False
 

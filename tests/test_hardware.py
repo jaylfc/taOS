@@ -448,3 +448,113 @@ class TestRecommendedFrameworkProperty:
     def test_unknown_device_class_with_low_ram_returns_picoclaw(self):
         profile = HardwareProfile(ram_mb=4096, device_class="desktop")
         assert profile.recommended_framework == "picoclaw"
+
+
+SYSTEM_PROFILER_METAL = """\
+Graphics/Displays:
+
+    Apple M2:
+
+      Chipset Model: Apple M2
+      Type: GPU
+      Bus: Built-In
+      Total Number of Cores: 10
+      Metal Support: Metal 3
+      Displays:
+        Color LCD:
+          Resolution: 2560 x 1664 Retina
+"""
+
+SYSTEM_PROFILER_NO_METAL = """\
+Graphics/Displays:
+
+    Display:
+
+      Type: GPU
+      Bus: Built-In
+      Vendor: Apple (0x106b)
+      Displays:
+        Color LCD:
+          Resolution: 1920 x 1080
+"""
+
+
+class TestMetalAvailability:
+    """`metal_available()` must ask the device, not the platform (taOS #329).
+
+    An arm64 macOS VM reports Apple Silicon from its SoC alone but exposes no
+    Metal device, and registering `gpu-metal` for it would advertise a GPU that
+    cannot serve a task. Every test resets the module-level memo so one answer
+    cannot leak into the next.
+    """
+
+    @staticmethod
+    def _darwin_arm64(monkeypatch) -> None:
+        monkeypatch.setattr(hardware_mod.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(hardware_mod.platform, "machine", lambda: "arm64")
+        monkeypatch.setattr(hardware_mod, "_metal_support", None)
+
+    @staticmethod
+    def _system_profiler(monkeypatch, output: str) -> None:
+        monkeypatch.setattr(
+            hardware_mod.shutil, "which", lambda name: f"/usr/sbin/{name}"
+        )
+        monkeypatch.setattr(hardware_mod, "_run", lambda cmd: output)
+
+    def test_resource_name_is_the_documented_class(self):
+        assert hardware_mod.METAL_RESOURCE_NAME == "gpu-metal"
+
+    def test_apple_silicon_with_a_metal_device(self, monkeypatch):
+        self._darwin_arm64(monkeypatch)
+        self._system_profiler(monkeypatch, SYSTEM_PROFILER_METAL)
+        assert hardware_mod.is_apple_silicon() is True
+        assert hardware_mod.metal_available() is True
+
+    def test_apple_silicon_without_a_metal_device_is_not_metal(self, monkeypatch):
+        """The arm64 VM case: the host is Apple Silicon, the GPU is not there."""
+        self._darwin_arm64(monkeypatch)
+        self._system_profiler(monkeypatch, SYSTEM_PROFILER_NO_METAL)
+        assert hardware_mod.metal_available() is False
+
+    def test_explicitly_unsupported_metal_is_not_metal(self, monkeypatch):
+        self._darwin_arm64(monkeypatch)
+        self._system_profiler(monkeypatch, "      Metal Support: Unsupported\n")
+        assert hardware_mod.metal_available() is False
+
+    def test_intel_mac_is_not_metal(self, monkeypatch):
+        monkeypatch.setattr(hardware_mod.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(hardware_mod.platform, "machine", lambda: "x86_64")
+        monkeypatch.setattr(hardware_mod, "_metal_support", None)
+        called = []
+        monkeypatch.setattr(
+            hardware_mod, "_probe_metal_support", lambda: called.append(1) or True
+        )
+        assert hardware_mod.metal_available() is False
+        assert called == [], "the probe only runs on Apple Silicon"
+
+    def test_non_darwin_never_runs_the_probe(self, monkeypatch):
+        monkeypatch.setattr(hardware_mod.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(hardware_mod.platform, "machine", lambda: "arm64")
+        monkeypatch.setattr(hardware_mod, "_metal_support", None)
+        monkeypatch.setattr(hardware_mod, "_run", lambda cmd: SYSTEM_PROFILER_METAL)
+        assert hardware_mod.metal_available() is False
+
+    def test_unavailable_probe_fails_open_to_the_platform(self, monkeypatch):
+        """No `system_profiler` (or no output) is unknown, not "no GPU": hiding a
+        real Mac's GPU over a failed probe would be the worse error."""
+        self._darwin_arm64(monkeypatch)
+        monkeypatch.setattr(hardware_mod.shutil, "which", lambda name: None)
+        assert hardware_mod.metal_available() is True
+
+    def test_probe_result_is_memoised(self, monkeypatch):
+        self._darwin_arm64(monkeypatch)
+        calls = []
+
+        def _probe():
+            calls.append(1)
+            return True
+
+        monkeypatch.setattr(hardware_mod, "_probe_metal_support", _probe)
+        assert hardware_mod.metal_available() is True
+        assert hardware_mod.metal_available() is True
+        assert len(calls) == 1, "system_profiler is slow; probe once per process"

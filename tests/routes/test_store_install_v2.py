@@ -227,6 +227,86 @@ class TestBackendToMethodMapping:
         assert r.status_code == 422
         assert "_BACKEND_TO_METHOD" in r.json()["error"]
 
+    def test_mlx_maps_to_the_mlx_installer_not_the_download_fallback(self):
+        """get_installer(_BACKEND_TO_METHOD['mlx']) returns the purpose-built
+        MLXInstaller (Apple Silicon / mlx-lm), never the generic download
+        fallback it used to be (taOS #329)."""
+        from tinyagentos.routes.store_install import _BACKEND_TO_METHOD
+        from tinyagentos.installers.base import get_installer
+        from tinyagentos.installers.download_installer import DownloadInstaller
+        from tinyagentos.installers.mlx_installer import MLXInstaller
+
+        method = _BACKEND_TO_METHOD["mlx"]
+        assert method == "mlx"
+        installer = get_installer(method)
+        assert isinstance(installer, MLXInstaller)
+        assert not isinstance(installer, DownloadInstaller)
+
+
+class TestMLXVariantRouting:
+    """An Apple-Silicon host installing an `mlx` variant must reach the MLX
+    installer: the dispatch table is what routes it, and before #329 the entry
+    read "download", so the model landed as an opaque file the MLX runtime
+    could not load."""
+
+    @pytest.mark.asyncio
+    async def test_mlx_variant_is_dispatched_to_the_mlx_installer(self, client):
+        manifest = MagicMock()
+        manifest.id = "qwen2.5-3b-mlx"
+        manifest.type = "model"
+        manifest.variants = [
+            {
+                "id": "mlx-4bit",
+                "size_mb": 1900,
+                "hf_repo": "mlx-community/Qwen2.5-3B-Instruct-4bit",
+                "requires": {
+                    "backends": [
+                        {"id": "mlx", "targets": ["apple-silicon"], "min_ram_mb": 8192},
+                    ],
+                },
+            },
+        ]
+        manifest.context_window = 32768
+        manifest.hardware_tiers = {}
+        manifest.install = {}
+        manifest.version = "2.5.0"
+
+        reg = MagicMock()
+        reg.get_app = MagicMock(return_value=manifest)
+        reg.get = MagicMock(return_value=manifest)
+        reg.mark_installed = MagicMock()
+        reg.list_available = MagicMock(return_value=[])
+        client._transport.app.state.registry = reg
+
+        mac = DeviceCapability(
+            device_id="mac-mini",
+            targets=("apple-silicon", "cpu"),
+            total_ram_mb=16384,
+            total_vram_mb=16384,
+            free_disk_mb=200_000,
+            installed_backends=("mlx",),
+        )
+
+        with patch(
+            "tinyagentos.routes.store_install.get_device_capability",
+            new=AsyncMock(return_value=mac),
+        ), patch(
+            "tinyagentos.routes.store_install.get_installer"
+        ) as mock_get:
+            model_inst = MagicMock()
+            model_inst.install = AsyncMock(return_value={"success": True})
+            mock_get.return_value = model_inst
+            r = await client.post("/api/store/install-v2", json={
+                "manifest_id": "qwen2.5-3b-mlx",
+                "variant_id": "mlx-4bit",
+            })
+
+        assert r.status_code == 200
+        assert mock_get.call_args.args[0] == "mlx"
+        assert mock_get.call_args.args[0] != "download"
+        # The installer is told which backend it is installing for.
+        assert model_inst.install.await_args.kwargs["install_config"]["backend"] == "mlx"
+
 
 class TestResolveErrorReturns422:
     @pytest.mark.asyncio
