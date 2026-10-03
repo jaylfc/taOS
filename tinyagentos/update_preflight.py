@@ -197,7 +197,7 @@ def _count_foreign_files_fallback(root: Path, excluded_prefixes: tuple[str, ...]
     return count, paths
 
 
-def check_preflight(project_dir: Path) -> List[PreflightIssue]:
+def check_preflight(project_dir: str | os.PathLike) -> List[PreflightIssue]:
     """Perform all preflight checks and return a list of problems found.
 
     Args:
@@ -206,6 +206,8 @@ def check_preflight(project_dir: Path) -> List[PreflightIssue]:
     Returns:
         List of PreflightIssue objects. Empty list means no problems.
     """
+    project_dir = Path(project_dir)
+
     issues: List[PreflightIssue] = []
 
     # Resolve the tracked branch that this install will update

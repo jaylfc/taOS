@@ -220,3 +220,15 @@ class TestUpdatePreflight:
             assert len(refspecs) == 2
             assert "refs/heads/*" in refspecs[0]
             assert "refs/tags/*" in refspecs[1]
+
+    def test_check_preflight_accepts_str_path(self, tmp_path):
+        """The update-check route passes project_dir as a str; coercion must not crash."""
+        from tinyagentos.update_preflight import check_preflight
+
+        with patch("tinyagentos.update_preflight._ls_remote_heads") as mock_ls_remote:
+            mock_ls_remote.return_value = (True, True)  # Remote reachable, branch exists
+            with patch("tinyagentos.update_preflight._get_fetch_refspecs") as mock_get_specs:
+                mock_get_specs.return_value = ["+refs/heads/*:refs/remotes/origin/*"]  # default glob
+                # Call with a str path, exactly as the settings route does
+                issues = check_preflight(str(tmp_path))
+                assert issues == []
