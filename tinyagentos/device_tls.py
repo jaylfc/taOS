@@ -7,6 +7,7 @@ import hashlib
 from pathlib import Path
 
 from cryptography import x509
+from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
@@ -46,10 +47,18 @@ def load_or_create_device_tls_cert(data_dir: Path) -> tuple[Path, Path, str]:
     key_path = data_dir / _KEY_NAME
 
     if cert_path.exists() and key_path.exists():
-        cert_pem = cert_path.read_bytes()
-        cert = x509.load_pem_x509_certificate(cert_pem)
-        fp = _fingerprint_from_der(cert.public_bytes(serialization.Encoding.DER))
-        return cert_path, key_path, fp
+        try:
+            cert_pem = cert_path.read_bytes()
+            cert = x509.load_pem_x509_certificate(cert_pem)
+            key_pem = key_path.read_bytes()
+            key = serialization.load_pem_private_key(key_pem, password=None)
+            if key.public_key().public_numbers() == cert.public_key().public_numbers():
+                fp = _fingerprint_from_der(cert.public_bytes(serialization.Encoding.DER))
+                return cert_path, key_path, fp
+        except (ValueError, TypeError, AttributeError, UnsupportedAlgorithm):
+            # Cert or key parse failure, fall through to regenerate both
+            pass
+        # Mismatch or parsing failure, fall through to regenerate both
 
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
@@ -76,8 +85,8 @@ def load_or_create_device_tls_cert(data_dir: Path) -> tuple[Path, Path, str]:
         encryption_algorithm=serialization.NoEncryption(),
     )
 
-    _write_file_atomic_0600(cert_path, cert_pem)
     _write_file_atomic_0600(key_path, key_pem)
+    _write_file_atomic_0600(cert_path, cert_pem)
 
     fp = _fingerprint_from_der(cert.public_bytes(serialization.Encoding.DER))
     return cert_path, key_path, fp
