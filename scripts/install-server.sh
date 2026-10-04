@@ -858,11 +858,28 @@ COW_EFFECTIVE_MODE="n/a"
 # worker containers. On macOS, the Apple Containerization framework
 # (bundled with macOS 26) is used instead — no install needed here.
 # On Linux, if no runtime is found, we install Incus via the system
-# package manager on Debian/Ubuntu/Fedora. On Arch/Alpine we log a
-# manual-install notice and continue — those distros have it in the
-# repos but the AUR/apk setup varies too much to auto-invoke here.
+# package manager on Debian/Ubuntu/Fedora. On Arch and Alpine we now
+# install Incus from the official repos automatically.
 # A failed Incus install is non-fatal: taOS still starts; cluster and
 # worker-container features are simply unavailable until one is added.
+
+_start_incusd() {
+    if command -v systemctl >/dev/null 2>&1 && systemctl cat incus.service >/dev/null 2>&1; then
+        sudo systemctl enable --now incus.service
+        return 0
+    elif command -v rc-update >/dev/null 2>&1; then
+        local _name="incus"
+        if [[ -f /etc/init.d/incusd ]]; then
+            _name="incusd"
+        fi
+        sudo rc-update add "$_name" default
+        sudo rc-service "$_name" start
+        return 0
+    else
+        warn "incus installed but no service unit for this init system - incusd not started; skipping incus init"
+        return 1
+    fi
+}
 
 ensure_container_runtime() {
     if [[ "$os_name" == "Darwin" ]]; then
@@ -913,6 +930,7 @@ ensure_container_runtime() {
     fi
 
     local installed=0
+    local _incus_start_service=0
     local _incus_pkg=""
     if command -v apt-get >/dev/null 2>&1; then
         # Try the distro's default repos first (Ubuntu 24.04+ ships incus in
@@ -1016,18 +1034,45 @@ ensure_container_runtime() {
             && installed=1 \
             || warn "dnf install incus failed — continuing without container support"
     elif command -v pacman >/dev/null 2>&1; then
-        warn "container runtime: Arch detected — install Incus manually with:"
-        warn "  sudo pacman -S incus"
-        warn "  (or install Docker/Podman if you prefer)"
-        warn "  worker containers will be unavailable until a runtime is installed"
+        if pacman -Si incus >/dev/null 2>&1; then
+            log "installing incus via pacman"
+            if sudo pacman -S --noconfirm --needed incus; then
+                installed=1
+                _incus_start_service=1
+                log "container runtime: incus installed via pacman"
+            else
+                warn "pacman install incus failed - continuing without container support"
+            fi
+        else
+            warn "container runtime: Arch detected — install Incus manually with:"
+            warn "  sudo pacman -S incus"
+            warn "  (or install Docker/Podman if you prefer)"
+            warn "  worker containers will be unavailable until a runtime is installed"
+        fi
     elif command -v apk >/dev/null 2>&1; then
-        warn "container runtime: Alpine detected — install Incus manually with:"
-        warn "  sudo apk add incus"
-        warn "  worker containers will be unavailable until a runtime is installed"
+        if apk search -x incus 2>/dev/null | grep -q .; then
+            log "installing incus via apk"
+            if sudo apk add incus incus-client; then
+                if command -v rc-update >/dev/null 2>&1; then
+                    sudo apk add incus-openrc || true
+                fi
+                installed=1
+                _incus_start_service=1
+                log "container runtime: incus installed via apk"
+            else
+                warn "apk add incus failed - continuing without container support"
+            fi
+        else
+            warn "container runtime: Alpine detected — install Incus manually with:"
+            warn "  sudo apk add incus"
+            warn "  worker containers will be unavailable until a runtime is installed"
+        fi
     else
         warn "container runtime: unrecognised package manager — install Incus or Docker manually"
         warn "  worker containers will be unavailable until a runtime is installed"
     fi
+
+    if (( installed && _incus_start_service )); then _start_incusd || installed=0; fi
 
     if (( installed )); then
         if command -v incus >/dev/null 2>&1; then
