@@ -52,10 +52,11 @@ def load_or_create_device_tls_cert(data_dir: Path) -> tuple[Path, Path, str]:
             cert = x509.load_pem_x509_certificate(cert_pem)
             key_pem = key_path.read_bytes()
             key = serialization.load_pem_private_key(key_pem, password=None)
+            cert_pubkey = cert.public_key()
             if (
                 isinstance(key, rsa.RSAPrivateKey)
-                and isinstance(cert.public_key(), rsa.RSAPublicKey)
-                and key.public_key().public_numbers() == cert.public_key().public_numbers()
+                and isinstance(cert_pubkey, rsa.RSAPublicKey)
+                and key.public_key().public_numbers() == cert_pubkey.public_numbers()
             ):
                 fp = _fingerprint_from_der(cert.public_bytes(serialization.Encoding.DER))
                 return cert_path, key_path, fp
