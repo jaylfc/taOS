@@ -159,8 +159,9 @@ async def test_warns_when_closed_issue_card_refuses_to_close(store, caplog):
         res = await sync_issues_to_board(store, "p", [_issue(7, "x", "closed")])
 
     assert res["closed"] == 0
-    assert card["status"] != "closed"
+    fresh = await store.get_task(card["id"])
+    assert fresh["status"] != "closed"
     assert any(
-        "#7" in record.message and card["id"] in record.message
+        "#7" in record.getMessage() and card["id"] in record.getMessage()
         for record in caplog.records
     )
