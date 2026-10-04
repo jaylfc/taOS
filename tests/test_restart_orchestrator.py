@@ -930,6 +930,24 @@ class TestAgentHostRefresh:
         assert agent["host"] == "10.42.246.174"
         save_mock.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_failed_lookup_logs_warning_and_keeps_stored_host(self, monkeypatch, caplog):
+        import logging
+
+        agent = {"name": "naira", "host": "10.26.37.174", "port": 8080, "container_name": "taos-agent-naira"}
+
+        async def boom(name):
+            raise RuntimeError("incus lookup failed")
+
+        monkeypatch.setattr("tinyagentos.containers.get_container_ip", boom)
+
+        with caplog.at_level(logging.WARNING, logger="tinyagentos.restart_orchestrator"):
+            new_host = await ro._refresh_agent_host_from_incus(agent)
+
+        assert new_host is None
+        assert agent["host"] == "10.26.37.174"
+        assert any(r.levelno == logging.WARNING and "naira" in r.getMessage() for r in caplog.records)
+
 
 class TestAgentHostRefreshOnConnectFailure:
     @pytest.mark.asyncio
