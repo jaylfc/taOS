@@ -31,7 +31,7 @@ See `docs/design/external-agent-project-invite.md` (issue #1780); canvas routes 
 
 The operator can set `TAOS_CONTROLLER_CALLBACK_HOST` to control which address the invite bundle advertises for the controller. Advertised over **HTTP**:
 
-- **Tailscale CGNAT IPs** in `100.64.0.0/10` (e.g. `100.78.225.80`)
+- **Tailscale CGNAT IPs** in `100.64.0.0/10` (e.g. `100.64.0.10`)
 - **Tailscale ULA IPs** in `fd7a:115c:a1e0::/48`
 - **Private LAN IPs** (RFC 1918: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`)
 - **Loopback** (`127.0.0.1`, `::1`, `localhost`)

@@ -56,7 +56,7 @@ class TestDeployAgent:
         mock_proxy.port = 7834
         mock_proxy.create_agent_key = AsyncMock(return_value="sk-local-key")
         extra = {"llm_proxy": mock_proxy, "llm_gateway_port": 7838} if with_proxy else None
-        req = _req(data_dir=tmp_path, remote="fedora-worker", taos_host="100.78.225.80",
+        req = _req(data_dir=tmp_path, remote="fedora-worker", taos_host="100.64.0.10",
                    extra_config=extra)
 
         with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
