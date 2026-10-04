@@ -91,7 +91,7 @@ async def _refresh_agent_host_from_incus(agent: dict) -> str | None:
         agent["host"] = new_ip
         return new_ip
     except Exception:
-        logger.debug("host refresh for agent %s raised", agent.get("name"), exc_info=True)
+        logger.warning("host refresh for agent %s raised", agent.get("name"), exc_info=True)
         return None
 
 
