@@ -1096,10 +1096,15 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
     if (modelIds.length === 0) return;
     let cancelled = false;
     const run = async () => {
-      const next = await resolveModels(modelIds, "auto");
+      const next = await resolveModels(modelIds, "auto", {
+        onProgress: (m) => {
+          if (!cancelled) setCompatMap(m);
+        },
+        isCancelled: () => cancelled,
+      });
       if (!cancelled) setCompatMap(next);
     };
-    run();
+    run().catch(() => {});
     return () => { cancelled = true; };
   }, [apps]);
 

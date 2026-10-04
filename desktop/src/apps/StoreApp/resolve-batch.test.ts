@@ -28,7 +28,7 @@ describe("resolveModels", () => {
       makeOkResponse(Object.fromEntries(ids.slice(100).map((id) => [id, { compat: "green" }]))),
     );
 
-    const map = await resolveModels(ids, "auto", 100);
+    const map = await resolveModels(ids, "auto", { chunkSize: 100 });
 
     expect((globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(2);
     expect((globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBe("/api/store/resolve-batch");
@@ -49,7 +49,7 @@ describe("resolveModels", () => {
     };
     (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce(makeOkResponse(responseResults));
 
-    const map = await resolveModels(ids, "auto", 100);
+    const map = await resolveModels(ids, "auto", { chunkSize: 100 });
 
     expect(map.has("model-a")).toBe(true);
     expect(map.has("model-b")).toBe(false);
@@ -58,8 +58,80 @@ describe("resolveModels", () => {
   });
 
   it("does not call fetch when given 0 ids", async () => {
-    const map = await resolveModels([]);
+    const map = await resolveModels([], { chunkSize: 100 });
     expect((globalThis.fetch as unknown as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
     expect(map.size).toBe(0);
+  });
+
+  it("fetch rejection on first chunk does not prevent second chunk resolution", async () => {
+    const ids = Array.from({ length: 150 }, (_, i) => `model-${i}`);
+    (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("network"))
+      .mockResolvedValueOnce(
+        makeOkResponse(Object.fromEntries(ids.slice(100).map((id) => [id, { compat: "green" }])))
+      );
+
+    const map = await resolveModels(ids, "auto", { chunkSize: 100 });
+
+    expect((globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(2);
+    expect(map.size).toBe(50);
+    expect(map.has("model-100")).toBe(true);
+    expect(map.has("model-149")).toBe(true);
+  });
+
+  it("fetch with 404 response results in empty map", async () => {
+    const ids = ["model-a", "model-b"];
+    (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ok: false });
+
+    const map = await resolveModels(ids, "auto", { chunkSize: 100 });
+
+    expect((globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+    expect(map.size).toBe(0);
+  });
+
+  it("onProgress is called once per chunk", async () => {
+    const ids = Array.from({ length: 150 }, (_, i) => `model-${i}`);
+    let callCount = 0;
+    (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+      makeOkResponse(Object.fromEntries(ids.slice(0, 100).map((id) => [id, { compat: "green" }])))
+    ).mockResolvedValueOnce(
+      makeOkResponse(Object.fromEntries(ids.slice(100).map((id) => [id, { compat: "green" }])))
+    );
+
+    const map = await resolveModels(ids, "auto", {
+      chunkSize: 100,
+      onProgress: () => { callCount++; },
+    });
+
+    expect(callCount).toBe(2);
+  });
+
+  it("isCancelled prevents fetch when true", async () => {
+    const ids = ["model-a", "model-b", "model-c"];
+    let cancelled = true;
+    const map = await resolveModels(ids, "auto", {
+      chunkSize: 100,
+      isCancelled: () => cancelled,
+    });
+
+    expect((globalThis.fetch as unknown as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+    expect(map.size).toBe(0);
+  });
+
+  it("chunkSize 0 is clamped to 1", { timeout: 2000 }, async () => {
+    const ids = ["model-a", "model-b", "model-c"];
+    (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+      makeOkResponse({ "model-a": { compat: "green" } })
+    ).mockResolvedValueOnce(
+      makeOkResponse({ "model-b": { compat: "amber" } })
+    ).mockResolvedValueOnce(
+      makeOkResponse({ "model-c": { compat: "red" } })
+    );
+
+    const map = await resolveModels(ids, "auto", {
+      chunkSize: 0,
+    });
+
+    expect((globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(3);
+    expect(map.size).toBe(3);
   });
 });
