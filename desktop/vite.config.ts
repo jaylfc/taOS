@@ -2,7 +2,7 @@ import { build, defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
-import { writeFileSync } from "node:fs";
+import { writeFileSync, cpSync, existsSync, readdirSync, statSync } from "node:fs";
 import { readBackendVersion } from "./scripts/read-version.mjs";
 
 /** Writes version.json to the build output so the running SPA can poll it and
@@ -72,6 +72,40 @@ function serviceWorkerPlugin() {
   };
 }
 
+/** Copies a directory tree from srcDir into outDir/relativeTarget, creating
+ *  the destination directories as needed. Used by the excalidraw-assets plugin
+ *  to ship the full font set (including CJK Xiaolai). */
+function copyTree(srcDir: string, outDir: string, relativeTarget: string) {
+  const destRoot = path.join(outDir, relativeTarget);
+  if (!existsSync(destRoot)) cpSync(srcDir, destRoot, { recursive: true });
+}
+
+/** Copies the whole @excalidraw/excalidraw/dist/prod/fonts/ tree into
+ *  <outDir>/excalidraw-assets/fonts/ so every family (Excalifont, Xiaolai, …)
+ *  is available same-origin and offline. */
+function excalidrawAssetsPlugin() {
+  let outDir = "";
+  const srcFonts = path.resolve(
+    __dirname,
+    "node_modules",
+    "@excalidraw",
+    "excalidraw",
+    "dist",
+    "prod",
+    "fonts",
+  );
+  return {
+    name: "taos-excalidraw-assets",
+    apply: "build" as const,
+    configResolved(config: import("vite").ResolvedConfig) {
+      outDir = path.resolve(config.root, config.build.outDir);
+    },
+    writeBundle() {
+      copyTree(srcFonts, outDir, "excalidraw-assets/fonts");
+    },
+  };
+}
+
 export default defineConfig({
   test: {
     environment: "jsdom",
@@ -112,7 +146,7 @@ export default defineConfig({
   define: {
     __TAOS_VERSION__: JSON.stringify(TAOS_VERSION),
   },
-  plugins: [react(), tailwindcss(), spaVersionPlugin(), serviceWorkerPlugin()],
+  plugins: [react(), tailwindcss(), spaVersionPlugin(), serviceWorkerPlugin(), excalidrawAssetsPlugin()],
   base: "/desktop/",
   resolve: {
     alias: { "@": path.resolve(__dirname, "src") },

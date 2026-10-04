@@ -32,12 +32,17 @@ class _CacheAwareStaticFiles(StaticFiles):
         is_manifest_json = (
             filename.startswith("manifest") and filename.endswith(".json")
         )
+        is_font = filename.endswith((".woff", ".woff2", ".ttf", ".otf", ".eot"))
         if (
             filename.endswith((".html", ".webmanifest"))
             or filename == "sw.js"
             or is_manifest_json
         ):
             response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        elif is_font:
+            response.headers.setdefault(
+                "Cache-Control", "public, max-age=31536000, immutable"
+            )
         else:
             response.headers.setdefault(
                 "Cache-Control", "public, max-age=86400"

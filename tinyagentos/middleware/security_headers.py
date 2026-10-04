@@ -27,7 +27,9 @@ def _build_csp(frame_src_extra: str = "") -> str:
         "img-src 'self' data: https: blob:; "
         f"{frame_src}; "
         # data: lets the canvas (tldraw) load its bundled translation URIs
-        # (data:application/json), which are inline data, not a network fetch.
+        # (data:application/json), which are inline data, not a network fetch,
+        # and lets Excalidraw's font-subsetting worker fetch its base64 font
+        # patches; without it the canvas falls back to system fonts for CJK.
         # The two open-meteo origins are the geocoding (city search) and
         # forecast APIs the built-in Weather app fetches directly; without them
         # default-src 'self' silently blocks every lookup and the app looks dead.
