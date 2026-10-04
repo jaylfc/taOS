@@ -739,10 +739,16 @@ async def _stream_with_retry(
 
         first_byte_sent = False
         try:
-            async for chunk in stream_one(route):
-                first_byte_sent = True
-                yield chunk
-            return
+            gen = stream_one(route)
+            try:
+                async for chunk in gen:
+                    first_byte_sent = True
+                    yield chunk
+                return
+            finally:
+                # Close the attempt NOW when our own consumer closes us, so its
+                # cleanup (spend accounting) never waits on gc finalisation.
+                await gen.aclose()
         except (GatewayError, httpx.HTTPError) as exc:
             if first_byte_sent:
                 raise
