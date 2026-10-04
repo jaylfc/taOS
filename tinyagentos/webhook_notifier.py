@@ -7,6 +7,18 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
+def _escape_telegram_md(text: str) -> str:
+    for ch in ("\\", "_", "*", "`", "["):
+        text = text.replace(ch, f"\\{ch}")
+    return text
+
+
+def _escape_slack(text: str) -> str:
+    for old, new in (("&", "&amp;"), ("<", "&lt;"), (">", "&gt;")):
+        text = text.replace(old, new)
+    return text
+
+
 class WebhookNotifier:
     """Send notifications to external services (Slack, Discord, Telegram, generic webhook)."""
 
@@ -29,7 +41,7 @@ class WebhookNotifier:
         async with httpx.AsyncClient(timeout=10) as client:
             if wh_type == "slack":
                 await client.post(url, json={
-                    "text": f"*{title}*\n{message}",
+                    "text": f"*{_escape_slack(title)}*\n{_escape_slack(message)}",
                 })
             elif wh_type == "discord":
                 color = {"info": 3066993, "warning": 16776960, "error": 15158332}.get(level, 3066993)
@@ -43,7 +55,7 @@ class WebhookNotifier:
                     f"https://api.telegram.org/bot{bot_token}/sendMessage",
                     json={
                         "chat_id": chat_id,
-                        "text": f"*{title}*\n{message}",
+                        "text": f"*{_escape_telegram_md(title)}*\n{_escape_telegram_md(message)}",
                         "parse_mode": "Markdown",
                     },
                 )
