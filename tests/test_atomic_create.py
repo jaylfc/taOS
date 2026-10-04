@@ -123,17 +123,13 @@ class TestAncestorfsync:
         target = tmp_path / "a" / "b" / "c" / "key.bin"
 
         fsynced_paths: set[str] = set()
-        real_fsync = os.fsync
+        real_fsync_dir = atomic_io._fsync_dir
 
-        def tracking_fsync(fd: int) -> None:
-            try:
-                link = os.readlink(f"/proc/self/fd/{fd}")
-                fsynced_paths.add(os.path.realpath(link))
-            except OSError:
-                pass
-            return real_fsync(fd)
+        def tracking_fsync_dir(directory):
+            fsynced_paths.add(os.path.realpath(directory))
+            return real_fsync_dir(directory)
 
-        monkeypatch.setattr(os, "fsync", tracking_fsync)
+        monkeypatch.setattr(atomic_io, "_fsync_dir", tracking_fsync_dir)
 
         atomic_write_bytes(target, b"test_data")
 
@@ -155,17 +151,13 @@ class TestAncestorfsync:
         target = tmp_path / "x" / "y" / "z" / "key.bin"
 
         fsynced_paths: set[str] = set()
-        real_fsync = os.fsync
+        real_fsync_dir = atomic_io._fsync_dir
 
-        def tracking_fsync(fd: int) -> None:
-            try:
-                link = os.readlink(f"/proc/self/fd/{fd}")
-                fsynced_paths.add(os.path.realpath(link))
-            except OSError:
-                pass
-            return real_fsync(fd)
+        def tracking_fsync_dir(directory):
+            fsynced_paths.add(os.path.realpath(directory))
+            return real_fsync_dir(directory)
 
-        monkeypatch.setattr(os, "fsync", tracking_fsync)
+        monkeypatch.setattr(atomic_io, "_fsync_dir", tracking_fsync_dir)
 
         atomic_create_bytes(target, b"test_data")
 
