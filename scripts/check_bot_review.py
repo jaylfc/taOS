@@ -398,8 +398,10 @@ def is_real_item(item: CRItem) -> bool:
     placeholder is never real. For issue comments carrying the auto-summary
     marker, the walkthrough detector applies: a Run ID plus at least one
     signal (quota-decrement line, no-actionable phrase, or Files-processed
-    list) means a real review ran. Other comments are real when they carry
-    non-empty, non-stub body text.
+    list) means a real review ran. Positive evidence only: a top-level issue
+    comment counts solely via the walkthrough detector above, and a line
+    comment counts only when it opens a thread (a reply in a thread is
+    conversation, not a review).
     """
     if is_rate_limit_stub(item.body):
         return False

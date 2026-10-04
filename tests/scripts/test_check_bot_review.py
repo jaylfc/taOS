@@ -951,18 +951,23 @@ class TestForkPrGate:
 
     # Arm D control: in-repo PR with real items -> unchanged PASS
     def test_in_repo_pr_real_items_unchanged(self, check_mod) -> None:
-        # In-repo PR with a top-level issue comment that is NOT a walkthrough
-        # (no auto-summary marker, no Run ID). With the new source-tracking
-        # this correctly reads as "not real" under the positive-evidences-only
-        # rule, so the gate reports PASS (absent, not stubbed) since no stubs
-        # are present -- the comment is substantive but not classified as a review.
+        # In-repo PR with a walkthrough issue comment (auto-summary + Run ID +
+        # Files selected). With the new source-tracking this correctly reads
+        # as a real CodeRabbit review, so the gate reports PASS with "real
+        # CodeRabbit review".
         with patch.object(check_mod, "_api_get", side_effect=self._mock_api(
             check_mod, self.IN_REPO_PR_DATA,
-            issue_comments=[{"user": {"login": "coderabbitai[bot]"}, "body": "## Review\n\nFound an issue.", "id": 1}],
+            issue_comments=[{"user": {"login": "coderabbitai[bot]"},
+                             "body": (
+                                 "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n"
+                                 "**Run ID**: abc123-def456\n"
+                                 "Files selected for processing (3)\n"
+                             ),
+                             "id": 1}],
         )):
             exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 3007)
         assert exit_code == check_mod.EXIT_OK
-        assert "PASS (absent, not stubbed)" in message
+        assert "real CodeRabbit review" in message
 
     # Arm E: head.repo == null (deleted fork) -> treated as fork
     def test_deleted_fork_treated_as_fork(self, check_mod) -> None:
