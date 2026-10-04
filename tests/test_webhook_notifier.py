@@ -257,3 +257,58 @@ async def test_send_creates_client_with_timeout():
         await notifier._send(webhook, "T", "M", "info")
 
     mock_client_cls.assert_called_once_with(timeout=10)
+
+
+# --- markup escaping: telegram ---
+
+@pytest.mark.asyncio
+async def test_notify_telegram_escapes_markdown_in_text():
+    config = _make_config("telegram")
+    notifier = WebhookNotifier(config)
+    wh = config["webhooks"][0]
+
+    with patch("tinyagentos.webhook_notifier.httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        await notifier.notify(
+            "T[it]le",
+            "[Review request](https://attacker.example) a_b*c",
+            "info",
+        )
+
+    call_kwargs = mock_client.post.call_args
+    body = call_kwargs[1]["json"]
+    text = body["text"]
+    assert "\\[Review request]" in text
+    assert "a\\_b\\*c" in text
+    msg_part = text.split("\n", 1)[1]
+    assert msg_part.startswith("\\[Review request]")
+    assert body["parse_mode"] == "Markdown"
+
+
+# --- markup escaping: slack ---
+
+@pytest.mark.asyncio
+async def test_notify_slack_escapes_mrkdwn_in_text():
+    config = _make_config("slack")
+    notifier = WebhookNotifier(config)
+    wh = config["webhooks"][0]
+
+    with patch("tinyagentos.webhook_notifier.httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        await notifier.notify(
+            "T<it>le",
+            "<https://attacker.example|Review request> & x",
+            "info",
+        )
+
+    call_kwargs = mock_client.post.call_args
+    body = call_kwargs[1]["json"]
+    text = body["text"]
+    assert "&lt;https://attacker.example|Review request&gt;" in text
+    assert "&amp; x" in text
