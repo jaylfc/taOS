@@ -29,4 +29,9 @@ describe("resolveExcalidrawFontPath", () => {
     expect(resolveExcalidrawFontPath(srcFonts, base, "/desktop/excalidraw-assets/fonts/"))
       .toBeNull();
   });
+
+  it("returns null for malformed URI escape", () => {
+    expect(resolveExcalidrawFontPath(srcFonts, base, "/desktop/excalidraw-assets/fonts/%ZZ.woff2"))
+      .toBeNull();
+  });
 });

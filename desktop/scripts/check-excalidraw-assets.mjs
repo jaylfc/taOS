@@ -70,8 +70,13 @@ if (nodeCount === 0) {
   process.exit(1);
 }
 
-if (distCount < nodeCount) {
-  console.error(`FAIL: dist has ${distCount} .woff2 files, expected ${nodeCount}`);
+const nodeWoff2 = new Set(walk(NODE_FONTS).filter((f) => f.endsWith(".woff2")));
+const distWoff2 = new Set(walk(DIST_FONTS).filter((f) => f.endsWith(".woff2")));
+const missingInDist = [...nodeWoff2].filter((f) => !distWoff2.has(f));
+
+if (missingInDist.length > 0) {
+  const preview = missingInDist.slice(0, 5).join(", ");
+  console.error(`FAIL: missing in dist: ${preview}`);
   process.exit(1);
 }
 

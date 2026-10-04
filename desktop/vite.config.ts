@@ -94,7 +94,12 @@ export function resolveExcalidrawFontPath(
   if (!urlPath.startsWith(prefix)) return null;
   const remainder = urlPath.slice(prefix.length);
   if (remainder.length === 0) return null;
-  const decoded = decodeURIComponent(remainder);
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(remainder);
+  } catch {
+    return null;
+  }
   const resolved = path.resolve(srcFonts, decoded);
   if (!resolved.startsWith(srcFonts + path.sep)) return null;
   return resolved;

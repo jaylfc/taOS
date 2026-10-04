@@ -4,5 +4,5 @@
 
 (window as unknown as Record<string, string>).EXCALIDRAW_ASSET_PATH = new URL(
   "excalidraw-assets/",
-  document.baseURI,
+  new URL(import.meta.env.BASE_URL, window.location.origin),
 ).href;
