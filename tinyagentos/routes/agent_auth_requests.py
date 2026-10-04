@@ -1810,7 +1810,19 @@ async def create_scope_request(
         try:
             scopes = rec["requested_scopes"] or []
             handle = record.get("handle") or record.get("display_name") or canonical_id
-            where = f"project {rec['project_id']}" if rec.get("project_id") else "global scope"
+            # Look up the project by its id to use its human name in notifications
+            where = "global scope"
+            project_id = rec.get("project_id")
+            if project_id:
+                pstore = getattr(request.app.state, "project_store", None)
+                project = None
+                if pstore is not None:
+                    try:
+                        project = await pstore.get_project(project_id)
+                    except Exception:
+                        project = None
+                name = (project or {}).get("name")
+                where = f"project {name or project_id}"
             await notifs.add(
                 title="Scope request",
                 message=f"{handle} is requesting {', '.join(scopes)} on {where}",
