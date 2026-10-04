@@ -1815,7 +1815,12 @@ async def create_scope_request(
             project_id = rec.get("project_id")
             if project_id:
                 pstore = getattr(request.app.state, "project_store", None)
-                project = await pstore.get_project(project_id) if pstore is not None else None
+                project = None
+                if pstore is not None:
+                    try:
+                        project = await pstore.get_project(project_id)
+                    except Exception:
+                        project = None
                 name = (project or {}).get("name")
                 where = f"project {name or project_id}"
             await notifs.add(

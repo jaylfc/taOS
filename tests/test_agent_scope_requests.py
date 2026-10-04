@@ -818,6 +818,67 @@ async def test_scope_request_notification_fallbacks(client, monkeypatch, tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_scope_request_notification_falls_back_when_get_project_raises(
+    client, monkeypatch, tmp_path
+):
+    """If project_store.get_project raises, the notification must still be
+    delivered with the raw project id in place of the human name.
+    """
+    env = await _wire(client, monkeypatch, tmp_path)
+
+    from tinyagentos.projects.project_store import ProjectStore
+
+    pstore = ProjectStore(tmp_path / "project.db")
+    await pstore.init()
+
+    project = await pstore.create_project(
+        name="Raising Project",
+        slug="raising-project",
+        description="A project whose store will raise",
+        created_by=env.owner_uid,
+        user_id=env.owner_uid,
+    )
+
+    async def raising_get_project(project_id):
+        raise RuntimeError("project store boom")
+
+    monkeypatch.setattr(client._transport.app.state, "project_store", pstore)
+    monkeypatch.setattr(
+        client._transport.app.state.project_store,
+        "get_project",
+        raising_get_project,
+    )
+
+    recorded = []
+
+    async def capture_notif(**kwargs):
+        recorded.append(kwargs)
+
+    mock_notif_store = type("MockNotifStore", (), {"add": staticmethod(capture_notif)})()
+    monkeypatch.setattr(client._transport.app.state, "notifications", mock_notif_store)
+
+    cid = await _register_active(env, handle="@raiser", display="raiser", framework="claude")
+
+    try:
+        resp = await client.post(
+            f"/api/agents/registry/{cid}/scope-requests",
+            json={
+                "requested_scopes": ["a2a_send"],
+                "project_id": project["id"],
+                "reason": "boom",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+
+        assert len(recorded) == 1
+        assert f"project {project['id']}" in recorded[0]["message"]
+    finally:
+        await env.close()
+        await pstore.close()
+        monkeypatch.undo()
+
+
+@pytest.mark.asyncio
 async def test_approved_scope_grant_unlocks_route_e2e(client, monkeypatch, tmp_path):
     """End-to-end: agent requests decisions_write scope, admin approves, then
     the agent's token actually reaches the decisions endpoint with a 200.
