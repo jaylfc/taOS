@@ -699,9 +699,7 @@ describe("ThreadPanel", () => {
       />,
     );
     // Parent section should not exist yet.
-    expect(
-      document.querySelector(".border-shell-border"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("thread-parent")).not.toBeInTheDocument();
   });
 
   /* ---- mark-seen on open ---- */
