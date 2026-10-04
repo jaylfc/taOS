@@ -616,6 +616,82 @@ async def test_agent_cannot_deny_its_own_request(client, monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_scope_request_notification_uses_project_name_not_raw_id(client, monkeypatch, tmp_path):
+    """Scope request notifications should use the project's human name instead of its raw ID.
+
+    This ensures the bell/toast message matches the consent UI which already names
+    projects by their human name, making them recognizable to owners.
+    """
+    # Use the existing _wire function to set up the environment properly
+    env = await _wire(client, monkeypatch, tmp_path)
+
+    # Create a real project store and project
+    from tinyagentos.projects.project_store import ProjectStore
+    pstore = ProjectStore(tmp_path / "project.db")
+    await pstore.init()
+    
+    # Create a project with a known name
+    project = await pstore.create_project(
+        name="My Awesome Project",
+        slug="my-awesome-project",
+        description="A test project",
+        created_by=env.owner_uid,
+        user_id=env.owner_uid,
+    )
+    
+    # Monkeypatch the project store onto app.state
+    monkeypatch.setattr(client._transport.app.state, "project_store", pstore)
+
+    # Track notifications to verify the message content
+    notifications_calls = []
+    
+    async def mock_notif_add(**kwargs):
+        notifications_calls.append(kwargs)
+        print(f"DEBUG: mock_notif_add called with: {kwargs}")
+    
+    # Mock the notifications store
+    mock_notif_store = type('MockNotifStore', (), {'add': mock_notif_add})()
+    monkeypatch.setattr(client._transport.app.state, 'notifications', mock_notif_store)
+
+    # Register an active agent using the env
+    cid = await _register_active(env, handle="@worker", display="worker", framework="claude")
+
+    try:
+        # Create a scope request bound to our test project
+        print(f"DEBUG: Creating scope request for project_id={project['id']}")
+        resp = await client.post(
+            f"/api/agents/registry/{cid}/scope-requests",
+            json={
+                "requested_scopes": ["a2a_send", "a2a_receive"],
+                "project_id": project["id"],
+                "reason": "need communication",
+            },
+        )
+        print(f"DEBUG: Scope request response status: {resp.status_code}, body: {resp.text}")
+        assert resp.status_code == 200, resp.text
+
+        # Debug: Print what notifications were captured
+        print(f"DEBUG: notifications_calls = {notifications_calls}")
+
+        # Verify the notification was called with project name, not raw ID
+        assert len(notifications_calls) == 1, f"Expected 1 notification, got {len(notifications_calls)}"
+        
+        notif = notifications_calls[0]
+        message = notif['message']
+        
+        # The message should contain the project name, not the raw ID
+        assert f"project {project['name']}" in message, f"Message should contain project name '{project['name']}', but message was: {message}"
+        assert f"project {project['id']}" not in message, f"Message should NOT contain raw project ID '{project['id']}', but message was: {message}"
+        assert "@worker is requesting a2a_send, a2a_receive on project My Awesome Project" in message
+
+    finally:
+        await env.close()
+        await pstore.close()
+        # Restore original notifications store
+        monkeypatch.undo()
+
+
+@pytest.mark.asyncio
 async def test_approved_scope_grant_unlocks_route_e2e(client, monkeypatch, tmp_path):
     """End-to-end: agent requests decisions_write scope, admin approves, then
     the agent's token actually reaches the decisions endpoint with a 200.
