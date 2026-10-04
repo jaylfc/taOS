@@ -37,7 +37,10 @@ CREATE TABLE IF NOT EXISTS decisions (
     checkpoint_ref     TEXT,
     parent_decision_id TEXT,
     timeline_id        TEXT,
-    metadata           TEXT NOT NULL DEFAULT '{}'
+    metadata           TEXT NOT NULL DEFAULT '{}',
+    withdraw_reason    TEXT,
+    withdrawn_at       REAL,
+    withdrawn_by       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_decisions_status ON decisions(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_decisions_project ON decisions(project_id, status);
@@ -101,6 +104,19 @@ class DecisionStore(BaseStore):
             await self._db.execute(
                 "ALTER TABLE decisions ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'"
             )
+            await self._db.commit()
+
+        # tsk-5dulr5: asker-side withdraw columns, added after initial ship.
+        # Same guarded-ALTER pattern so existing databases gain them in place.
+        # Literal statements, one per column: the schema-column guard matches
+        # each ALTER by text and cannot see through an f-string loop.
+        if "withdraw_reason" not in cols:
+            await self._db.execute("ALTER TABLE decisions ADD COLUMN withdraw_reason TEXT")
+        if "withdrawn_at" not in cols:
+            await self._db.execute("ALTER TABLE decisions ADD COLUMN withdrawn_at REAL")
+        if "withdrawn_by" not in cols:
+            await self._db.execute("ALTER TABLE decisions ADD COLUMN withdrawn_by TEXT")
+        if not {"withdraw_reason", "withdrawn_at", "withdrawn_by"} <= cols:
             await self._db.commit()
 
         # tsk-u72wpc: decision_notes table was added after initial ship. Guarded
@@ -334,6 +350,24 @@ class DecisionStore(BaseStore):
         )
         await self._db.commit()
         return cur.rowcount == 1
+
+    async def withdraw(self, decision_id: str, reason: str, withdrawn_by: str) -> dict | None:
+        """Asker-side withdraw of a moot decision (tsk-5dulr5). Allowed only
+        from ``pending``; answered/superseded/withdrawn are terminal. The row
+        is kept (append-only history) with the reason, actor and time.
+        Returns the updated decision, or None if it does not exist or is not
+        pending."""
+        now = time.time()
+        cur = await self._db.execute(
+            """UPDATE decisions
+               SET status = 'withdrawn', withdraw_reason = ?, withdrawn_at = ?, withdrawn_by = ?
+               WHERE id = ? AND status = 'pending'""",
+            (reason, now, withdrawn_by, decision_id),
+        )
+        await self._db.commit()
+        if cur.rowcount != 1:
+            return None
+        return await self.get(decision_id)
 
     async def add_note(self, decision_id: str, text: str, author: str, source: str = "in_app") -> dict | None:
         """Append a note to a decision. Returns the updated decision with notes,

@@ -233,6 +233,12 @@ class NoteIn(BaseModel):
     source: str = "in_app"
 
 
+class WithdrawIn(BaseModel):
+    # Defaults to "" so a missing reason lands on the route's own 400 rather
+    # than a 422: an empty and an absent reason are the same refusal.
+    reason: str = ""
+
+
 @dataclass
 class _DecisionActor:
     """Who is creating a decision, and who should decide it."""
@@ -702,6 +708,111 @@ async def add_note_to_decision(
 
     await _publish_note_event(request, updated)
     await _route_note_to_agent(updated, text, body.source)
+    return updated
+
+
+async def _publish_withdraw_event(request: Request, decision: dict) -> None:
+    """Best-effort: push a ``decision.withdrawn`` event to the owner's channel so
+    open Decisions windows drop the card from the pending inbox live."""
+    bus = getattr(request.app.state, "event_bus", None)
+    if bus is None:
+        return
+    payload = dict(decision) if isinstance(decision, dict) else {"id": decision.get("id")}
+    payload["decision_id"] = payload.get("id")
+    owner = str(payload.get("user_id") or "").strip()
+    if not owner:
+        return
+    try:
+        await bus.publish_to(f"user:{owner}", SystemEvent(
+            kind="decision.withdrawn",
+            source="decisions",
+            targets=["user"],
+            payload=payload,
+        ))
+    except Exception:
+        logger.warning(
+            "decision.withdrawn SSE broadcast failed for %s",
+            decision.get("id"),
+            exc_info=True,
+        )
+
+
+@router.post("/api/decisions/{decision_id}/withdraw")
+async def withdraw_decision(
+    decision_id: str,
+    body: WithdrawIn,
+    request: Request,
+    agent_cid: str | None = Depends(_authenticate_request),
+):
+    """Asker-side withdraw of a decision that went moot before it was answered
+    (tsk-5dulr5).
+
+    Only the ORIGINAL asker may withdraw: on the agent path (registry JWT with
+    decisions_write on the decision's own project) the authenticated canonical
+    id must equal ``from_agent``; on the session path the caller must own the
+    decision or be an admin. Every refusal collapses to 404 so the route is not
+    an existence oracle (same rule as answer/agent). Device bearers are not on
+    this route's allowlist and never reach it.
+
+    A non-empty reason is required (400) and stored on the record. Allowed only
+    from ``pending``; answered/superseded/withdrawn are terminal (409). The row
+    is never deleted: it leaves the pending inbox and stays in history under
+    ``status=withdrawn``. Each withdraw leaves a forensic governance audit
+    entry, like a driver-token mint.
+    """
+    store = request.app.state.decision_store
+    existing = await store.get(decision_id)
+    if existing is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+
+    if agent_cid is not None:
+        from tinyagentos.agent_token_auth import (
+            check_agent_scope_for_project,
+            PROJECT_SCOPE_MISMATCH_DETAIL,
+        )
+        try:
+            cid = await check_agent_scope_for_project(
+                request, "decisions_write", existing.get("project_id")
+            )
+        except HTTPException as exc:
+            if exc.status_code == 403 and exc.detail == PROJECT_SCOPE_MISMATCH_DETAIL:
+                return JSONResponse({"error": "not found"}, status_code=404)
+            raise
+        if cid is None or existing.get("from_agent") != cid:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        actor = cid
+        via = "agent"
+    else:
+        uid = getattr(request.state, "user_id", None)
+        if not uid:
+            raise HTTPException(status_code=401, detail="authentication required")
+        is_admin = bool(getattr(request.state, "is_admin", False))
+        if not is_admin and existing.get("user_id") != uid:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        actor = uid
+        via = "session"
+
+    reason = body.reason.strip()
+    if not reason:
+        return JSONResponse({"error": "reason must not be empty"}, status_code=400)
+
+    updated = await store.withdraw(decision_id, reason, actor)
+    if updated is None:
+        return JSONResponse({"error": "already answered or not pending"}, status_code=409)
+
+    from tinyagentos.routes.agent_registry import _audit_governance
+    await _audit_governance(
+        request,
+        action="decision-withdraw",
+        canonical_id=existing.get("from_agent") or "",
+        actor_user_id=actor,
+        before_status="pending",
+        after_status="withdrawn",
+        decision_id=decision_id,
+        reason=reason,
+        via=via,
+    )
+    await _publish_withdraw_event(request, updated)
     return updated
 
 

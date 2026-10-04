@@ -210,3 +210,75 @@ async def test_notes_table_created_on_existing_db(tmp_path):
     assert updated is not None
     assert len(updated["notes"]) == 1
     assert updated["notes"][0]["text"] == "hello"
+
+
+# ── tsk-5dulr5: asker-side withdraw ──────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_withdraw_pending_records_reason(store):
+    d = await store.create("@a", "still needed?", "approve_deny", user_id="u1")
+    w = await store.withdraw(d["id"], "moot: satisfied elsewhere", "@a")
+    assert w["status"] == "withdrawn"
+    assert w["withdraw_reason"] == "moot: satisfied elsewhere"
+    assert w["withdrawn_by"] == "@a"
+    assert w["withdrawn_at"] is not None
+    # Leaves the pending inbox, stays in history.
+    assert all(x["id"] != d["id"] for x in await store.list(status="pending"))
+    assert [x["id"] for x in await store.list(status="withdrawn")] == [d["id"]]
+
+
+@pytest.mark.asyncio
+async def test_withdraw_is_terminal(store):
+    d = await store.create("@a", "q", "approve_deny", user_id="u1")
+    await store.answer(d["id"], "approve", "u1")
+    # answered -> withdraw refused, record untouched
+    assert await store.withdraw(d["id"], "late", "@a") is None
+    assert (await store.get(d["id"]))["status"] == "answered"
+
+    d2 = await store.create("@a", "q2", "approve_deny", user_id="u1")
+    assert (await store.withdraw(d2["id"], "moot", "@a"))["status"] == "withdrawn"
+    # withdrawn is terminal: no re-withdraw, no answer, no supersede
+    assert await store.withdraw(d2["id"], "again", "@a") is None
+    assert await store.answer(d2["id"], "approve", "u1") is None
+    assert await store.supersede(d2["id"]) is False
+    got = await store.get(d2["id"])
+    assert got["status"] == "withdrawn" and got["withdraw_reason"] == "moot"
+
+
+@pytest.mark.asyncio
+async def test_withdraw_columns_added_to_existing_db(tmp_path):
+    """Existing-DB upgrade: a decisions table created before the withdraw
+    columns existed gains them on init, and withdraw works on the old row."""
+    import aiosqlite
+
+    db_path = tmp_path / "legacy.db"
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            """CREATE TABLE decisions (
+                id TEXT PRIMARY KEY, from_agent TEXT NOT NULL, project_id TEXT,
+                user_id TEXT NOT NULL DEFAULT '', question TEXT NOT NULL,
+                type TEXT NOT NULL, options TEXT NOT NULL DEFAULT '[]',
+                context TEXT NOT NULL DEFAULT '', priority TEXT NOT NULL DEFAULT 'normal',
+                status TEXT NOT NULL DEFAULT 'pending', answer TEXT,
+                created_at REAL NOT NULL, answered_at REAL, deadline REAL,
+                checkpoint_ref TEXT, parent_decision_id TEXT, timeline_id TEXT,
+                metadata TEXT NOT NULL DEFAULT '{}')"""
+        )
+        await db.execute(
+            "INSERT INTO decisions (id, from_agent, user_id, question, type, created_at) "
+            "VALUES ('dec-old', '@a', 'u1', 'old q', 'approve_deny', 1.0)"
+        )
+        await db.commit()
+
+    s = DecisionStore(db_path)
+    await s.init()
+    try:
+        cols = {
+            r[1] for r in await (await s._db.execute("PRAGMA table_info(decisions)")).fetchall()
+        }
+        assert {"withdraw_reason", "withdrawn_at", "withdrawn_by"} <= cols
+        w = await s.withdraw("dec-old", "moot", "@a")
+        assert w["status"] == "withdrawn" and w["withdraw_reason"] == "moot"
+    finally:
+        await s.close()
