@@ -100,17 +100,18 @@ class TestResumeAgentsFromNotes:
 
     @pytest.mark.asyncio
     async def test_unreachable_agent_resumed_by_retry_loop(self, tmp_path, monkeypatch):
-        """The agent container boots slower than the controller: the inline
-        attempts fail, the background retry loop picks it up and resumes it."""
+        """The agent container boots slower than the controller: the first
+        attempt fails, the background retry succeeds and unpauses it."""
         agent = {"name": "slow", "host": "10.0.0.7", "port": 8080, "paused": True, "paused_by_restart": True}
         state = _app_state(tmp_path, agents=[agent])
         attempts = {"n": 0}
 
-        async def eventually_ok_post(host, port, note):
+        async def flaky_post(host, port, note):
             attempts["n"] += 1
-            return attempts["n"] >= 3
+            return attempts["n"] >= 2
 
-        monkeypatch.setattr(ro, "_post_resume", eventually_ok_post)
+        monkeypatch.setattr(ro, "_post_resume", flaky_post)
+        monkeypatch.setattr("tinyagentos.containers.get_container_ip", AsyncMock(return_value=None))
 
         fake_time = 0.0
         def fake_monotonic():
@@ -124,13 +125,15 @@ class TestResumeAgentsFromNotes:
         monkeypatch.setattr(asyncio, "sleep", fake_sleep)
 
         await ro.resume_agents_from_notes(state)
-        # Inline attempts failed: agent still paused, background loop spawned
-        assert agent["paused"] is True
-        assert state._background_tasks
-        # Drive the background loop to completion
+        assert agent["paused"] is True  # first attempt failed
+        assert state._background_tasks  # retry loop spawned
+
         for task in list(state._background_tasks):
             await task
+
         assert agent["paused"] is False
+        titles = [c.kwargs["title"] for c in state.notifications.add.await_args_list]
+        assert any("resumed" in t.lower() for t in titles)
 
     @pytest.mark.asyncio
     async def test_never_returning_agent_leaves_warning(self, tmp_path, monkeypatch):

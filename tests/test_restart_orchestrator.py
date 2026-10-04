@@ -895,6 +895,9 @@ class TestAgentHostRefresh:
         agent = {"name": "naira", "host": "10.26.37.174", "port": 8080, "container_name": "taos-agent-naira"}
         state = _app_state(tmp_path, agents=[agent])
 
+        save_mock = AsyncMock()
+        monkeypatch.setattr("tinyagentos.config.save_config_locked", save_mock)
+
         async def fake_get_container_ip(name):
             if name == "taos-agent-naira":
                 return "10.42.246.174"
@@ -905,6 +908,27 @@ class TestAgentHostRefresh:
         await ro.refresh_all_agent_hosts(state)
 
         assert agent["host"] == "10.42.246.174"
+        save_mock.assert_awaited_once_with(state.config, state.config.config_path)
+
+    @pytest.mark.asyncio
+    async def test_same_ip_does_not_persist(self, tmp_path, monkeypatch):
+        agent = {"name": "naira", "host": "10.42.246.174", "port": 8080, "container_name": "taos-agent-naira"}
+        state = _app_state(tmp_path, agents=[agent])
+
+        save_mock = AsyncMock()
+        monkeypatch.setattr("tinyagentos.config.save_config_locked", save_mock)
+
+        async def fake_get_container_ip(name):
+            if name == "taos-agent-naira":
+                return "10.42.246.174"
+            return None
+
+        monkeypatch.setattr("tinyagentos.containers.get_container_ip", fake_get_container_ip)
+
+        await ro.refresh_all_agent_hosts(state)
+
+        assert agent["host"] == "10.42.246.174"
+        save_mock.assert_not_awaited()
 
 
 class TestAgentHostRefreshOnConnectFailure:
@@ -946,7 +970,7 @@ class TestAgentHostRefreshOnConnectFailure:
         assert len(post_calls) == 2
         assert "10.26.37.174" in post_calls[0]
         assert "10.42.246.174" in post_calls[1]
-        assert "taos-agent-naira" in refresh_calls
+        assert refresh_calls == ["taos-agent-naira"]
         assert result["note_path"] == "/tmp/note.json"
 
 
