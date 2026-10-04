@@ -39,6 +39,10 @@ _FILTER_ERRORS: tuple[type[BaseException], ...] = (
 MAX_HELPER_READ_BYTES = 1024 * 1024
 
 
+class ArchiveError(Exception):
+    """Raised when an archive is unsafe to extract (bomb limits, unsafe member)."""
+
+
 class _ReadSizeGuard:
     """Wraps a file-like object and refuses reads larger than `cap`."""
 
@@ -71,18 +75,16 @@ def open_tar_gz(fileobj, *, kind="archive"):
     guard = _ReadSizeGuard(gz, MAX_HELPER_READ_BYTES)
     tar = None
     try:
-        tar = tarfile.open(fileobj=guard, mode="r")
-        yield tar
+        tar = tarfile.open(fileobj=guard, mode="r:")
     except (tarfile.ReadError, gzip.BadGzipFile, EOFError) as exc:
+        gz.close()
         raise ArchiveError(f"{kind} is not a valid gzip tarball") from exc
+    try:
+        yield tar
     finally:
         if tar is not None:
             tar.close()
         gz.close()
-
-
-class ArchiveError(Exception):
-    """Raised when an archive is unsafe to extract (bomb limits, unsafe member)."""
 
 
 class _DeclaredSizeBudget:

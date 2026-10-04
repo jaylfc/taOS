@@ -14,7 +14,7 @@ import tarfile
 import pytest
 
 from tinyagentos import safe_archive
-from tinyagentos.safe_archive import ArchiveError, check_tar_limits
+from tinyagentos.safe_archive import ArchiveError, check_tar_limits, extract_tar_safely, open_tar_gz
 
 _MIB = 1024 * 1024
 
@@ -148,7 +148,7 @@ def test_a_real_tar_with_a_negative_directory_size_is_rejected():
         check_tar_limits(tar, kind="backup", max_uncompressed_bytes=1000)
 
 
-def test_gnu_long_name_first_member_refused_before_decompression(tmp_path):
+def test_gnu_long_name_first_member_refused_before_decompression(monkeypatch):
     """An 8 MiB GNU long-name helper as the first member must be refused before
     the gzip payload is fully decompressed."""
     from tinyagentos.safe_archive import open_tar_gz
@@ -161,26 +161,26 @@ def test_gnu_long_name_first_member_refused_before_decompression(tmp_path):
     raw = buf.getvalue()
 
     read_bytes = []
-    original_read = safe_archive.gzip.GzipFile.read
+    _original_gzip_read = safe_archive.gzip.GzipFile.read
 
     def counting_read(self, size=-1):
-        result = original_read(self, size)
+        result = _original_gzip_read(self, size)
         if result:
             read_bytes.append(len(result))
         return result
 
-    safe_archive.gzip.GzipFile.read = counting_read
+    monkeypatch.setattr(safe_archive.gzip.GzipFile, "read", counting_read)
     try:
-        with pytest.raises(ArchiveError):
+        with pytest.raises(ArchiveError, match="exceeds"):
             with open_tar_gz(io.BytesIO(raw)) as tar:
                 check_tar_limits(tar)
         total = sum(read_bytes)
         assert total < 64 * 1024, f"decompressed {total} bytes, expected < 64 KiB"
     finally:
-        safe_archive.gzip.GzipFile.read = original_read
+        monkeypatch.undo()
 
 
-def test_pax_long_name_second_member_refused_before_decompression(tmp_path):
+def test_pax_long_name_second_member_refused_before_decompression(monkeypatch):
     """A PAX long-name helper as the second member must be refused before the
     gzip payload is fully decompressed."""
     from tinyagentos.safe_archive import open_tar_gz
@@ -196,23 +196,23 @@ def test_pax_long_name_second_member_refused_before_decompression(tmp_path):
     raw = buf.getvalue()
 
     read_bytes = []
-    original_read = safe_archive.gzip.GzipFile.read
+    _original_gzip_read = safe_archive.gzip.GzipFile.read
 
     def counting_read(self, size=-1):
-        result = original_read(self, size)
+        result = _original_gzip_read(self, size)
         if result:
             read_bytes.append(len(result))
         return result
 
-    safe_archive.gzip.GzipFile.read = counting_read
+    monkeypatch.setattr(safe_archive.gzip.GzipFile, "read", counting_read)
     try:
-        with pytest.raises(ArchiveError):
+        with pytest.raises(ArchiveError, match="exceeds"):
             with open_tar_gz(io.BytesIO(raw)) as tar:
                 check_tar_limits(tar)
         total = sum(read_bytes)
         assert total < 64 * 1024, f"decompressed {total} bytes, expected < 64 KiB"
     finally:
-        safe_archive.gzip.GzipFile.read = original_read
+        monkeypatch.undo()
 
 
 def test_open_tar_gz_extracts_a_legit_archive(tmp_path):
