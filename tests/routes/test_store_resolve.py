@@ -84,3 +84,137 @@ class TestStoreResolveEndpoint:
         assert "near_miss" in body
         assert "suggestions" in body
         assert body["compat"] == "red"
+
+
+class TestStoreResolveBatch:
+    @pytest.mark.asyncio
+    async def test_batch_of_two_known_ids_returns_same_as_single_route(
+        self, client
+    ):
+        other = make_qwen_manifest()
+        other.id = "another-model"
+        other.variants = [
+            {
+                "id": "fp16",
+                "size_mb": 900_000,
+                "requires": {"backends": [{"id": "vllm", "targets": ["cuda"]}]},
+            },
+        ]
+        manifests = {"qwen2.5-3b": make_qwen_manifest(), "another-model": other}
+        reg = MagicMock()
+        reg.get = MagicMock(side_effect=manifests.get)
+        client._transport.app.state.registry = reg
+        pi = DeviceCapability(
+            device_id="local",
+            targets=("rockchip", "cpu"),
+            total_ram_mb=16384,
+            total_vram_mb=0,
+            free_disk_mb=50_000,
+            installed_backends=("rk-llama-cpp",),
+        )
+        with patch(
+            "tinyagentos.routes.store.get_device_capability",
+            new=AsyncMock(return_value=pi),
+        ):
+            single = {}
+            for mid in manifests:
+                r = await client.post("/api/store/resolve", json={
+                    "manifest_id": mid,
+                    "variant_id": "auto",
+                })
+                assert r.status_code == 200
+                single[mid] = r.json()
+            r2 = await client.post("/api/store/resolve-batch", json={
+                "manifest_ids": list(manifests),
+                "variant_id": "auto",
+            })
+        assert r2.status_code == 200
+        body2 = r2.json()
+        # The two ids resolve differently, so a per-id match is not vacuous
+        assert single["qwen2.5-3b"] != single["another-model"]
+        for mid in manifests:
+            assert body2["results"][mid] == single[mid]
+
+    @pytest.mark.asyncio
+    async def test_batch_device_capability_awaited_once_for_3_id_batch(
+        self, client, fake_registry
+    ):
+        client._transport.app.state.registry = fake_registry
+        pi = DeviceCapability(
+            device_id="local",
+            targets=("rockchip", "cpu"),
+            total_ram_mb=16384,
+            total_vram_mb=0,
+            free_disk_mb=50_000,
+            installed_backends=("rk-llama-cpp",),
+        )
+        with patch(
+            "tinyagentos.routes.store.get_device_capability",
+            new=AsyncMock(return_value=pi),
+        ) as mock_gdc:
+            r = await client.post("/api/store/resolve-batch", json={
+                "manifest_ids": ["qwen2.5-3b", "another-model", "third-model"],
+                "variant_id": "auto",
+            })
+        assert r.status_code == 200
+        # get_device_capability must be awaited exactly once for the whole batch
+        mock_gdc.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_batch_unknown_id_yields_error_known_id_still_resolves(
+        self, client
+    ):
+        reg = MagicMock()
+        reg.get = MagicMock(
+            side_effect=lambda i: make_qwen_manifest() if i == "qwen2.5-3b" else None
+        )
+        client._transport.app.state.registry = reg
+        pi = DeviceCapability(
+            device_id="local",
+            targets=("rockchip", "cpu"),
+            total_ram_mb=16384,
+            total_vram_mb=0,
+            free_disk_mb=50_000,
+            installed_backends=("rk-llama-cpp",),
+        )
+        with patch(
+            "tinyagentos.routes.store.get_device_capability",
+            new=AsyncMock(return_value=pi),
+        ):
+            r = await client.post("/api/store/resolve-batch", json={
+                "manifest_ids": ["qwen2.5-3b", "unknown-model"],
+                "variant_id": "auto",
+            })
+        assert r.status_code == 200
+        body = r.json()
+        # Known id resolves, unknown id yields error entry
+        assert body["results"]["qwen2.5-3b"]["result"] == "ok"
+        assert "error" in body["results"]["unknown-model"]
+
+    @pytest.mark.asyncio
+    async def test_batch_too_many_ids_400(self, client):
+        client._transport.app.state.registry = MagicMock()
+        r = await client.post("/api/store/resolve-batch", json={
+            "manifest_ids": ["id"] * 201,
+            "variant_id": "auto",
+        })
+        assert r.status_code == 400
+        assert r.json()["error"] == "at most 200 manifest_ids per request"
+
+    @pytest.mark.asyncio
+    async def test_batch_non_list_manifest_ids_400(self, client):
+        client._transport.app.state.registry = MagicMock()
+        r = await client.post("/api/store/resolve-batch", json={
+            "manifest_ids": "not-a-list",
+            "variant_id": "auto",
+        })
+        assert r.status_code == 400
+        assert r.json()["error"] == "manifest_ids must be a list of strings"
+
+    @pytest.mark.asyncio
+    async def test_batch_missing_manifest_ids_400(self, client):
+        """Missing manifest_ids key must return 400, not 200 with empty results."""
+        client._transport.app.state.registry = MagicMock()
+        r = await client.post("/api/store/resolve-batch", json={})
+        assert r.status_code == 400
+        assert r.json()["error"] == "manifest_ids must be a list of strings"

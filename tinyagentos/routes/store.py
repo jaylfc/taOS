@@ -425,26 +425,9 @@ async def install_app(request: Request, body: InstallRequest):
     return JSONResponse({"error": result.get("error", "Install failed")}, status_code=500)
 
 
-@router.post("/api/store/resolve", dependencies=[Depends(require_admin)])
-async def resolve_model(request: Request):
-    """Wrapper around the resolver for the Store frontend.
-
-    Returns a JSON envelope with ``result`` ("ok" | "err"), the resolver's
-    structured payload, and the green/amber/red compatibility classification
-    (so the Store can colour-code the card from a single round-trip).
-    """
-    body = await request.json()
-    manifest_id = body.get("manifest_id") or body.get("app_id")
-    variant_id = body.get("variant_id", "auto")
-    target_remote = body.get("target_remote") or None
-    force = bool(body.get("force", False))
-
-    registry = request.app.state.registry
-    manifest = registry.get(manifest_id) if registry else None
-    if manifest is None:
-        return JSONResponse({"error": f"manifest {manifest_id!r} not found"}, status_code=404)
-
-    device = await get_device_capability(request, target_remote)
+def _resolve_envelope(manifest, variant_id, device, force) -> dict:
+    """Build the resolve envelope for a single manifest, returning the same
+    ok/err dict that ``resolve_model`` returns."""
     manifest_dict = {
         "id": manifest.id,
         "type": manifest.type,
@@ -469,6 +452,77 @@ async def resolve_model(request: Request):
         "suggestions": res.suggestions,
         "compat": compat,
     }
+
+
+@router.post("/api/store/resolve", dependencies=[Depends(require_admin)])
+async def resolve_model(request: Request):
+    """Wrapper around the resolver for the Store frontend.
+
+    Returns a JSON envelope with ``result`` ("ok" | "err"), the resolver's
+    structured payload, and the green/amber/red compatibility classification
+    (so the Store can colour-code the card from a single round-trip).
+    """
+    body = await request.json()
+    manifest_id = body.get("manifest_id") or body.get("app_id")
+    variant_id = body.get("variant_id", "auto")
+    target_remote = body.get("target_remote") or None
+    force = bool(body.get("force", False))
+
+    registry = request.app.state.registry
+    manifest = registry.get(manifest_id) if registry else None
+    if manifest is None:
+        return JSONResponse({"error": f"manifest {manifest_id!r} not found"}, status_code=404)
+
+    device = await get_device_capability(request, target_remote)
+    return _resolve_envelope(manifest, variant_id, device, force)
+
+
+@router.post("/api/store/resolve-batch", dependencies=[Depends(require_admin)])
+async def resolve_models_batch(request: Request):
+    """Batch resolve multiple manifest IDs in a single call.
+
+    Returns one envelope per id. Unknown ids yield an error entry
+    without failing the whole batch.
+    """
+    body = await request.json()
+
+    if "manifest_ids" not in body:
+        return JSONResponse(
+            {"error": "manifest_ids must be a list of strings"}, status_code=400
+        )
+
+    manifest_ids = body["manifest_ids"]
+
+    if not isinstance(manifest_ids, list) or not all(
+        isinstance(m, str) for m in manifest_ids
+    ):
+        return JSONResponse(
+            {"error": "manifest_ids must be a list of strings"}, status_code=400
+        )
+
+    if len(manifest_ids) > 200:
+        return JSONResponse(
+            {"error": "at most 200 manifest_ids per request"}, status_code=400
+        )
+
+    if len(manifest_ids) == 0:
+        return {"results": {}}
+
+    variant_id = body.get("variant_id", "auto")
+    target_remote = body.get("target_remote") or None
+    force = bool(body.get("force", False))
+
+    device = await get_device_capability(request, target_remote)
+
+    registry = request.app.state.registry
+    results: dict[str, dict] = {}
+    for mid in manifest_ids:
+        manifest = registry.get(mid) if registry else None
+        if manifest is not None:
+            results[mid] = _resolve_envelope(manifest, variant_id, device, force)
+        else:
+            results[mid] = {"error": f"manifest '{mid}' not found"}
+    return {"results": results}
 
 
 @router.post("/api/store/uninstall", dependencies=[Depends(require_admin)])
