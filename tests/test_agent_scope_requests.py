@@ -749,7 +749,6 @@ async def test_scope_request_notification_fallbacks(client, monkeypatch, tmp_pat
     notif = empty_name_notifications[0]
     assert f"project {empty_name_project['id']}" in notif['message']
     # Should contain "project " but not the empty name
-    assert "project" in notif['message'] and "project " in notif['message']
     
     # Test 2: Missing project store - falls back to raw ID
     # Track notifications
@@ -778,7 +777,6 @@ async def test_scope_request_notification_fallbacks(client, monkeypatch, tmp_pat
     assert len(missing_store_notifications) == 1
     notif = missing_store_notifications[0]
     assert f"project {good_project['id']}" in notif['message']
-    assert "project" in notif['message'] and "project " in notif['message']
     
     # Test 3: Project is None (deleted/unknown) - falls back to raw ID
     # Track notifications
@@ -811,13 +809,16 @@ async def test_scope_request_notification_fallbacks(client, monkeypatch, tmp_pat
     assert len(none_project_notifications) == 1
     notif = none_project_notifications[0]
     assert f"project {fake_project_id}" in notif['message']
-    assert "project" in notif['message'] and "project " in notif['message']
     
     # Clean up
     await env.close()
     await pstore.close()
     # Restore original notifications store
     monkeypatch.undo()
+
+
+@pytest.mark.asyncio
+async def test_approved_scope_grant_unlocks_route_e2e(client, monkeypatch, tmp_path):
     """End-to-end: agent requests decisions_write scope, admin approves, then
     the agent's token actually reaches the decisions endpoint with a 200.
     This proves the grant enforcement chain is wired end to end — the scope
