@@ -275,7 +275,7 @@ You have two stores running in parallel:
 
 ## The turn boundary rule
 
-At the end of every turn, push durable facts to taOSmd. Do not let them pile up in framework memory; it dies on redeploy.
+At the end of every turn, move durable facts to taOSmd: write them there and drop them from framework memory. Do not let them pile up in framework memory; it dies on redeploy.
 
 At the start of every session, read durable facts from taOSmd into your context. Do not re-ask the user for facts they already told you.
 
@@ -285,9 +285,9 @@ If framework memory and taOSmd contradict on a durable fact, taOSmd wins. Framew
 
 ## What NOT to do
 
-- Do not write the same fact to both stores. Write volatile content to framework memory only. Write durable content to taOSmd only.
+- Do not keep the same fact in both stores. Volatile content lives in framework memory only. Durable content lives in taOSmd only.
 - Do not let framework memory become the long-term store. It is a scratchpad.
-- Do not skip the turn-boundary push. A weak model that writes nothing to taOSmd until session end is fine. A model that writes everything to framework memory breaks the split.
+- Do not skip the turn-boundary move. Write durable facts to taOSmd at the end of every turn, not at session end: a redeploy can come first. A model that writes everything to framework memory breaks the split.
 
 ---
 
