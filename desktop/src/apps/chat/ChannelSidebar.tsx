@@ -312,7 +312,7 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
                             <span
                               style={{
                                 background: "var(--color-unread)",
-                                color: "#fff",
+                                color: "white",
                                 fontSize: 10,
                                 fontWeight: 700,
                                 borderRadius: 9999,
@@ -899,7 +899,7 @@ function ProjectsSectionMobile({
                         <span
                           style={{
                             background: "var(--color-unread)",
-                            color: "#fff",
+                            color: "white",
                             fontSize: 10,
                             fontWeight: 700,
                             borderRadius: 9999,

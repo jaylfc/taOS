@@ -342,8 +342,12 @@ const CHAT_FILES = [
 ];
 
 const RAW_PALETTE_RE = /white\/\d|zinc-|slate-|gray-|sky-\d|#[0-9a-f]{3,8}\b/i;
-const STYLE_BLOCK_RE = /style=\{\{[^}]*\}\}/g;
 const HTML_ENTITY_RE = /&#[0-9]+;/g;
+// semantic connection-status colours (green/amber/red), no status token exists yet
+const HEX_ALLOWLIST: Record<string, string[]> = {
+  "ChannelSidebar.tsx": ["#34d399", "#fbbf24", "#f87171"],
+};
+
 
 describe("no raw palette in chat", () => {
   it("chat component files contain no raw palette classes or hex colours", () => {
@@ -351,10 +355,16 @@ describe("no raw palette in chat", () => {
     const failures: string[] = [];
     for (const file of CHAT_FILES) {
       const filePath = path.join(chatDir, file);
-      if (!fs.existsSync(filePath)) continue;
+      if (!fs.existsSync(filePath)) {
+        failures.push(`${file}: missing (renamed or deleted? update CHAT_FILES)`);
+        continue;
+      }
       let content = fs.readFileSync(filePath, "utf-8");
-      content = content.replace(STYLE_BLOCK_RE, "");
       content = content.replace(HTML_ENTITY_RE, "");
+      const allowed = HEX_ALLOWLIST[file] ?? [];
+      for (const literal of allowed) {
+        content = content.split(literal).join("__ALLOWED_HEX__");
+      }
       const matches = content.match(RAW_PALETTE_RE);
       if (matches && matches.length > 0) {
         failures.push(`${file}: ${matches.slice(0, 5).join(", ")}${matches.length > 5 ? ` (+${matches.length - 5} more)` : ""}`);
