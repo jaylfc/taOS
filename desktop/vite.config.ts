@@ -81,6 +81,25 @@ function copyTree(srcDir: string, outDir: string, relativeTarget: string) {
   cpSync(srcDir, destRoot, { recursive: true, force: true });
 }
 
+/** Resolves a requested Excalidraw font URL to a path under `srcFonts`,
+ *  returning null if the URL is outside the allowed prefix or escapes the
+ *  fonts directory. */
+export function resolveExcalidrawFontPath(
+  srcFonts: string,
+  base: string,
+  rawUrl: string,
+): string | null {
+  const urlPath = rawUrl.split("?")[0];
+  const prefix = base + "excalidraw-assets/fonts/";
+  if (!urlPath.startsWith(prefix)) return null;
+  const remainder = urlPath.slice(prefix.length);
+  if (remainder.length === 0) return null;
+  const decoded = decodeURIComponent(remainder);
+  const resolved = path.resolve(srcFonts, decoded);
+  if (!resolved.startsWith(srcFonts + path.sep)) return null;
+  return resolved;
+}
+
 /** Copies the whole @excalidraw/excalidraw/dist/prod/fonts/ tree into
  *  <outDir>/excalidraw-assets/fonts/ so every family (Excalifont, Xiaolai, …)
  *  is available same-origin and offline.
@@ -139,14 +158,16 @@ function excalidrawAssetsPlugin() {
     },
     configureServer(server) {
       if (!existsSync(srcFonts)) return;
-      server.middlewares.use("/excalidraw-assets", (req, res, next) => {
-        const urlPath = (req.url || "").split("?")[0];
-        if (urlPath === "/") {
-          res.statusCode = 403;
-          res.end("Forbidden");
+      server.middlewares.use((req, res, next) => {
+        const assetPath = resolveExcalidrawFontPath(
+          srcFonts,
+          server.config.base,
+          req.url || "",
+        );
+        if (assetPath === null) {
+          next();
           return;
         }
-        const assetPath = path.join(srcFonts, decodeURIComponent(urlPath));
         try {
           const s = statSync(assetPath);
           if (s.isDirectory()) {
