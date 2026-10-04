@@ -128,3 +128,4 @@ fi
 - The install-count ping reports the installed version per device, so each release bump gives per-build telemetry without any extra work.
 - Never tag on `dev`; tags always land on `master` after promotion.
 - Hotfixes follow the same steps: bump, changelog, PR to dev, promote, tag.
+- **Dependency rule**: adding or changing a dependency in `pyproject.toml` requires regenerating `uv.lock` in the same PR. CI runs `uv lock --check` before the test shards and fails if the two files have drifted apart.
