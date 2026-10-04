@@ -171,7 +171,7 @@ export function ThreadPanel({
           aria-label="Thread reply"
           rows={2}
           disabled={sending}
-          className="w-full bg-shell-surface rounded px-3 py-2 text-sm resize-none outline-none border border-shell-border-strong focus:border-sky-400 disabled:opacity-50"
+          className="w-full bg-shell-surface rounded px-3 py-2 text-sm resize-none outline-none border border-shell-border-strong focus:border-accent disabled:opacity-50"
         />
       </div>
     </div>

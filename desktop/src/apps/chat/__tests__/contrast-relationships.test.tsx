@@ -235,7 +235,7 @@ describe("contrast relationships", () => {
       );
       const quietBtn = screen.getByText("quiet");
       const livelyBtn = screen.getByText("lively");
-      expect(quietBtn.className).toContain("bg-sky-500/30");
+      expect(quietBtn.className).toContain("bg-accent/30");
       expect(livelyBtn.className).toContain("bg-shell-surface");
     });
   });
@@ -341,7 +341,7 @@ const CHAT_FILES = [
   "ChannelSwitcher.tsx",
 ];
 
-const RAW_PALETTE_RE = /white\/\d|zinc-|slate-|gray-|#[0-9a-f]{3,8}\b/i;
+const RAW_PALETTE_RE = /white\/\d|zinc-|slate-|gray-|sky-\d|#[0-9a-f]{3,8}\b/i;
 const STYLE_BLOCK_RE = /style=\{\{[^}]*\}\}/g;
 const HTML_ENTITY_RE = /&#[0-9]+;/g;
 

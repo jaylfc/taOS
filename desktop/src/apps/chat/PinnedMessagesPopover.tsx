@@ -38,7 +38,7 @@ export function PinnedMessagesPopover({
               <div className="line-clamp-2">{p.content}</div>
               <button
                 onClick={() => onJumpTo(p.id)}
-                className="mt-1 text-xs text-sky-300 hover:text-sky-200"
+                className="mt-1 text-xs text-accent hover:text-accent-strong"
               >Jump to →</button>
             </li>
           ))}

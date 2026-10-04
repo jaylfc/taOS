@@ -9,7 +9,7 @@ export function PinRequestAffordance({
       <span className="text-shell-text-secondary">@{authorId} wants to pin this</span>
       <button
         onClick={onApprove}
-        className="px-2 py-0.5 bg-sky-500/20 text-sky-200 rounded hover:bg-sky-500/30"
+        className="px-2 py-0.5 bg-accent/20 text-accent rounded hover:bg-accent/30"
         aria-label={`Pin this message from ${authorId}`}
       >📌 Pin this</button>
     </div>

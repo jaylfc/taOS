@@ -373,9 +373,9 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
         onScroll={onScroll}
         className={`flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-0.5 select-text message-list-drop-target ${
           dropTarget.isOver
-            ? "ring-2 ring-sky-400/60 ring-inset bg-sky-500/5"
+            ? "ring-2 ring-accent/60 ring-inset bg-accent/5"
             : dropTarget.isValidTarget
-              ? "ring-2 ring-sky-400/30 ring-inset"
+              ? "ring-2 ring-accent/30 ring-inset"
               : ""
         }`}
         style={

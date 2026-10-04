@@ -136,7 +136,7 @@ export function ChannelSettingsPanel({
           <div className="flex items-center gap-2">
             <span className="text-xs text-shell-text-secondary">Mode:</span>
             <button
-              className={`px-2 py-1 rounded text-xs ${mode === "quiet" ? "bg-sky-500/30 text-sky-200" : "bg-shell-surface"}`}
+              className={`px-2 py-1 rounded text-xs ${mode === "quiet" ? "bg-accent/30 text-accent" : "bg-shell-surface"}`}
               onClick={() => apply({ response_mode: "quiet" }, () => setMode(mode))}
             >quiet</button>
             <button

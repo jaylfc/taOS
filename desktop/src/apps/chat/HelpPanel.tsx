@@ -73,7 +73,7 @@ export function HelpPanel({ onClose }: { onClose: () => void }) {
                     <a
                       {...props}
                       href={href}
-                      className="text-sky-300 hover:text-sky-200 underline"
+                      className="text-accent hover:text-accent-strong underline"
                       target={external ? "_blank" : undefined}
                       rel={external ? "noopener noreferrer" : undefined}
                     />
