@@ -123,19 +123,15 @@ class TestAncestorfsync:
         target = tmp_path / "a" / "b" / "c" / "key.bin"
 
         fsynced_paths: set[str] = set()
-        calls: list[int] = []
-        real_fsync = os.fsync
+        dir_calls: list[str] = []
+        real_fsync_dir = atomic_io._fsync_dir
 
-        def tracking_fsync(fd: int) -> None:
-            calls.append(fd)
-            try:
-                link = os.readlink(f"/proc/self/fd/{fd}")
-                fsynced_paths.add(os.path.realpath(link))
-            except OSError:
-                pass
-            return real_fsync(fd)
+        def tracking_fsync_dir(directory):
+            dir_calls.append(os.path.realpath(directory))
+            fsynced_paths.add(os.path.realpath(directory))
+            return real_fsync_dir(directory)
 
-        monkeypatch.setattr(os, "fsync", tracking_fsync)
+        monkeypatch.setattr(atomic_io, "_fsync_dir", tracking_fsync_dir)
 
         atomic_write_bytes(target, b"test_data")
 
@@ -151,15 +147,15 @@ class TestAncestorfsync:
                 f"fsynced paths were {fsynced_paths!r}"
             )
 
-        # Five fsyncs: the temp file, the three directories the walk owns
-        # (a/b, a, tmp_path), and the caller's own fsync of the parent it just
-        # created once the file landed in it.  The walk must not fsync the
-        # parent itself -- fsyncing a directory persists its *entries*, so the
-        # fsync that makes `a/b/c` durable is the one the caller makes after
-        # the rename.
-        assert len(calls) == 5, (
-            f"expected os.fsync called 5 times (temp file + 3 ancestor dirs + "
-            f"parent), got {len(calls)} -- fsynced paths were {fsynced_paths!r}"
+        # Four directory fsyncs: the three the walk owns (a/b, a, tmp_path),
+        # and the caller's own fsync of the parent it just created once the
+        # file landed in it.  The walk must not fsync the parent itself --
+        # fsyncing a directory persists its *entries*, so the fsync that makes
+        # `a/b/c` durable is the one the caller makes after the rename.
+        parent = os.path.realpath(target.parent)
+        assert len(dir_calls) == 4 and dir_calls.count(parent) == 1, (
+            f"expected 4 directory fsyncs (3 ancestor dirs + parent once), "
+            f"got {dir_calls!r}"
         )
 
     def test_fsyncs_all_created_ancestors_create(
@@ -168,19 +164,15 @@ class TestAncestorfsync:
         target = tmp_path / "x" / "y" / "z" / "key.bin"
 
         fsynced_paths: set[str] = set()
-        calls: list[int] = []
-        real_fsync = os.fsync
+        dir_calls: list[str] = []
+        real_fsync_dir = atomic_io._fsync_dir
 
-        def tracking_fsync(fd: int) -> None:
-            calls.append(fd)
-            try:
-                link = os.readlink(f"/proc/self/fd/{fd}")
-                fsynced_paths.add(os.path.realpath(link))
-            except OSError:
-                pass
-            return real_fsync(fd)
+        def tracking_fsync_dir(directory):
+            dir_calls.append(os.path.realpath(directory))
+            fsynced_paths.add(os.path.realpath(directory))
+            return real_fsync_dir(directory)
 
-        monkeypatch.setattr(os, "fsync", tracking_fsync)
+        monkeypatch.setattr(atomic_io, "_fsync_dir", tracking_fsync_dir)
 
         atomic_create_bytes(target, b"test_data")
 
@@ -195,11 +187,12 @@ class TestAncestorfsync:
                 f"fsynced paths were {fsynced_paths!r}"
             )
 
-        # Same five as the write path: temp file, x/y, x, tmp_path, then the
-        # caller's post-link fsync of the parent.
-        assert len(calls) == 5, (
-            f"expected os.fsync called 5 times (temp file + 3 ancestor dirs + "
-            f"parent), got {len(calls)} -- fsynced paths were {fsynced_paths!r}"
+        # Same four as the write path: x/y, x, tmp_path, then the caller's
+        # post-link fsync of the parent.
+        parent = os.path.realpath(target.parent)
+        assert len(dir_calls) == 4 and dir_calls.count(parent) == 1, (
+            f"expected 4 directory fsyncs (3 ancestor dirs + parent once), "
+            f"got {dir_calls!r}"
         )
 
     def test_walk_starts_at_the_grandparent_not_the_parent(
