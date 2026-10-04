@@ -101,9 +101,9 @@ class TestResumeAgentsFromNotes:
     @pytest.mark.asyncio
     async def test_unreachable_agent_resumed_by_retry_loop(self, tmp_path, monkeypatch):
         """The agent container boots slower than the controller: the first
-        attempt fails, the background retry succeeds and unpauses it."""
+        attempt fails, the inline retry succeeds and unpauses it."""
         agent = {"name": "slow", "host": "10.0.0.7", "port": 8080, "paused": True, "paused_by_restart": True}
-        state = _app_state(tmp_path, [agent])
+        state = _app_state(tmp_path, agents=[agent])
         attempts = {"n": 0}
 
         async def flaky_post(host, port, note):
@@ -124,13 +124,9 @@ class TestResumeAgentsFromNotes:
         monkeypatch.setattr(asyncio, "sleep", fake_sleep)
 
         await ro.resume_agents_from_notes(state)
-        assert agent["paused"] is True  # first attempt failed
-        assert state._background_tasks  # retry loop spawned
+        assert agent["paused"] is False  # inline retry succeeded
+        assert not state._background_tasks  # no pending agents, retry loop not spawned
 
-        for task in list(state._background_tasks):
-            await task
-
-        assert agent["paused"] is False
         titles = [c.kwargs["title"] for c in state.notifications.add.await_args_list]
         assert any("resumed" in t.lower() for t in titles)
 

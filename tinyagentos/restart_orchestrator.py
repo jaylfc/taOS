@@ -70,6 +70,38 @@ def clear_pending_restart() -> None:
         logger.warning("Failed to clear pending-restart flag at %s", path, exc_info=True)
 
 
+async def _refresh_agent_host_from_incus(agent: dict) -> str | None:
+    """Resolve the agent's current container IPv4 from incus and rewrite the
+    stored host when it differs. Returns the new host, or None on no-change
+    / lookup failure."""
+    from tinyagentos.containers import get_container_ip
+
+    name = agent["name"]
+    container_name = agent.get("container_name") or f"taos-agent-{name}"
+    new_ip = await get_container_ip(container_name)
+    if not new_ip:
+        return None
+
+    old_host = agent.get("host", "")
+    if old_host == new_ip:
+        return None
+
+    logger.info("agent %s: refreshing host from incus: %s -> %s", name, old_host, new_ip)
+    agent["host"] = new_ip
+    return new_ip
+
+
+async def refresh_all_agent_hosts(app_state) -> None:
+    """Refresh stored agent hosts from incus at controller startup."""
+    config = app_state.config
+    for agent in config.agents:
+        if agent.get("host"):
+            try:
+                await _refresh_agent_host_from_incus(agent)
+            except Exception:
+                logger.exception("host refresh failed for agent %s", agent.get("name"))
+
+
 class RestartOrchestrator:
     _clock = staticmethod(time.time)
 
@@ -159,34 +191,43 @@ class RestartOrchestrator:
         paused_by_restart = False
 
         if host and port is not None:
-            try:
-                async with httpx.AsyncClient(
-                    timeout=httpx.Timeout(connect=10, read=300, write=10, pool=10)
-                ) as client:
-                    resp = await client.post(
-                        f"http://{host}:{port}/prepare-for-shutdown",
-                        json={"reason": reason, "deadline_s": 300},
-                    )
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        note_path = data.get("note_path")
-                        paused = True
-                        if reason != "pause":
-                            paused_by_restart = True
-                        if agent.get("paused", False) and not agent.get("paused_by_restart", False):
-                            paused_by_restart = False
-                        stale_note = data_dir / "agent-memory" / name / "resume_note.json"
-                        if stale_note.exists():
-                            try:
-                                note = json.loads(stale_note.read_text())
-                                if _is_controller_note(note):
-                                    stale_note.unlink()
-                            except Exception:
-                                pass
-                    else:
-                        note_path = await self._write_controller_note(agent, reason, data_dir)
-            except Exception:
-                note_path = await self._write_controller_note(agent, reason, data_dir)
+            for attempt in range(2):
+                try:
+                    async with httpx.AsyncClient(
+                        timeout=httpx.Timeout(connect=10, read=300, write=10, pool=10)
+                    ) as client:
+                        resp = await client.post(
+                            f"http://{host}:{port}/prepare-for-shutdown",
+                            json={"reason": reason, "deadline_s": 300},
+                        )
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            note_path = data.get("note_path")
+                            paused = True
+                            if reason != "pause":
+                                paused_by_restart = True
+                            if agent.get("paused", False) and not agent.get("paused_by_restart", False):
+                                paused_by_restart = False
+                            stale_note = data_dir / "agent-memory" / name / "resume_note.json"
+                            if stale_note.exists():
+                                try:
+                                    note = json.loads(stale_note.read_text())
+                                    if _is_controller_note(note):
+                                        stale_note.unlink()
+                                except Exception:
+                                    pass
+                            break
+                        else:
+                            note_path = await self._write_controller_note(agent, reason, data_dir)
+                            break
+                except Exception:
+                    if attempt == 0:
+                        new_host = await _refresh_agent_host_from_incus(agent)
+                        if new_host:
+                            host = new_host
+                            continue
+                    note_path = await self._write_controller_note(agent, reason, data_dir)
+                    break
         else:
             note_path = await self._write_controller_note(agent, reason, data_dir)
 
@@ -569,7 +610,18 @@ async def resume_agents_from_notes(app_state) -> None:
 
         note = _load_or_synthesize_note(note_path)
         _cap_context_snapshot(note)
-        if await _post_resume(host, port, note):
+
+        resumed_ok = False
+        for attempt in range(2):
+            if await _post_resume(host, port, note):
+                resumed_ok = True
+                break
+            if attempt == 0:
+                new_host = await _refresh_agent_host_from_incus(agent)
+                if new_host:
+                    host = new_host
+
+        if resumed_ok:
             finalize.append((agent, note_path))
             resumed.append(name)
         else:
@@ -664,7 +716,18 @@ async def _resume_retry_loop(app_state, names: list[str]) -> None:
                 note_path = data_dir / "agent-memory" / name / "resume_note.json"
                 note = _load_or_synthesize_note(note_path)
                 _cap_context_snapshot(note)
-                if await _post_resume(host, port, note):
+
+                resumed_ok = False
+                for attempt in range(2):
+                    if await _post_resume(host, port, note):
+                        resumed_ok = True
+                        break
+                    if attempt == 0:
+                        new_host = await _refresh_agent_host_from_incus(agent)
+                        if new_host:
+                            host = new_host
+
+                if resumed_ok:
                     # Per-agent config write is fine here: retry successes are
                     # rare, isolated events (one agent per 30s tick at worst),
                     # unlike the boot pass which batches.

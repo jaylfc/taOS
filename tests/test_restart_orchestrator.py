@@ -886,3 +886,66 @@ class TestResumeAgentsFromNotes:
 
         assert agent["paused"] is True
         assert "called" not in posted
+
+
+class TestAgentHostRefresh:
+    @pytest.mark.asyncio
+    async def test_stale_host_rewritten_at_startup(self, tmp_path, monkeypatch):
+        agent = {"name": "naira", "host": "10.26.37.174", "port": 8080}
+        state = _app_state(tmp_path, agents=[agent])
+
+        async def fake_refresh(ag):
+            if ag is agent:
+                ag["host"] = "10.42.246.174"
+                return "10.42.246.174"
+            return None
+
+        monkeypatch.setattr(ro, "_refresh_agent_host_from_incus", fake_refresh)
+
+        await ro.refresh_all_agent_hosts(state)
+
+        assert agent["host"] == "10.42.246.174"
+
+
+class TestAgentHostRefreshOnConnectFailure:
+    @pytest.mark.asyncio
+    async def test_prepare_connect_failure_triggers_reresolve_and_retry(self, tmp_path, monkeypatch):
+        agent = {"name": "naira", "host": "10.26.37.174", "port": 8080}
+        state = _app_state(tmp_path, agents=[agent])
+        orch = ro.RestartOrchestrator(state)
+
+        post_calls = []
+        async def fake_post(url, json=None):
+            post_calls.append(url)
+            if len(post_calls) == 1:
+                raise httpx.ConnectError("connection refused")
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_resp.json.return_value = {"note_path": "/tmp/note.json"}
+            return mock_resp
+
+        refresh_calls = []
+        async def fake_refresh(ag):
+            refresh_calls.append(ag)
+            if ag is agent:
+                ag["host"] = "10.42.246.174"
+                return "10.42.246.174"
+            return None
+
+        monkeypatch.setattr(ro, "_refresh_agent_host_from_incus", fake_refresh)
+
+        mock_client = MagicMock()
+        mock_client.post = AsyncMock(side_effect=fake_post)
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+
+        monkeypatch.setattr(orch, "_write_controller_note", AsyncMock())
+        with patch("httpx.AsyncClient", return_value=mock_cm):
+            result = await orch._prepare_agent(agent, "stop", state.data_dir)
+
+        assert len(post_calls) == 2
+        assert "10.26.37.174" in post_calls[0]
+        assert "10.42.246.174" in post_calls[1]
+        assert len(refresh_calls) == 1
+        assert result["note_path"] == "/tmp/note.json"

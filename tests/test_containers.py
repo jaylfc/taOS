@@ -1,5 +1,6 @@
 import json
 import pytest
+import tinyagentos.containers
 from unittest.mock import AsyncMock, patch, call
 from tinyagentos.containers import (
     list_containers, create_container, set_root_quota, set_env,
@@ -521,3 +522,47 @@ class TestLXCBackendListNullNetwork:
             containers = await LXCBackend().list_containers()
         assert {c.name for c in containers} == {"taos-agent-speedtest", "taos-agent-nostate"}
         assert all(c.ip is None for c in containers)
+
+
+class TestGetContainerIpUsesProject:
+    @pytest.mark.asyncio
+    async def test_lookup_uses_agent_project_not_default(self, tmp_path, monkeypatch):
+        """The IP lookup must query the container's own project (user-999),
+        not the ambient default project."""
+        run_calls = []
+
+        async def fake_run(cmd, timeout=120):
+            run_calls.append(cmd)
+            # get_container_state uses --all-projects
+            if "--all-projects" in cmd:
+                return (0, json.dumps([{
+                    "name": "taos-agent-naira",
+                    "project": "user-999",
+                    "status": "Running",
+                }]))
+            # get_container_ip must use --project user-999
+            if "--project" in cmd:
+                project = cmd[cmd.index("--project") + 1]
+                if project == "user-999":
+                    return (0, json.dumps([{
+                        "name": "taos-agent-naira",
+                        "status": "Running",
+                        "state": {
+                            "network": {
+                                "eth0": {
+                                    "addresses": [
+                                        {"family": "inet", "address": "10.42.246.174", "scope": "global"}
+                                    ]
+                                }
+                            }
+                        }
+                    }]))
+            return (1, "not found")
+
+        monkeypatch.setattr("tinyagentos.containers._run", fake_run)
+
+        ip = await tinyagentos.containers.get_container_ip("taos-agent-naira")
+
+        assert ip == "10.42.246.174"
+        project_cmds = [cmd for cmd in run_calls if "--project" in cmd]
+        assert any("user-999" in str(cmd) for cmd in project_cmds)
