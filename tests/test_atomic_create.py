@@ -92,10 +92,9 @@ class TestAtomicCreateBytes:
         monkeypatch.setattr(os, "fsync", counting_fsync)
         atomic_create_bytes(tmp_path / "key.bin", b"x" * 32)
 
-        assert len(calls) == 3, (
-            f"expected os.fsync called 3 times (temp file, "
-            "created ancestors, and parent dir), got {len(calls)} -- "
-            "atomic_create_bytes must fsync the temp file and directories"
+        assert len(calls) == 2, (
+            f"expected os.fsync called 2 times (temp file + parent dir), got {len(calls)} -- "
+            "atomic_create_bytes must fsync the temp file and parent directory"
         )
 
     def test_mode_is_applied_before_the_name_appears(self, tmp_path: Path) -> None:
@@ -180,6 +179,28 @@ class TestAncestorfsync:
                 f"directory {d} was NOT fsynced - "
                 f"fsynced paths were {fsynced_paths!r}"
             )
+
+    def test_no_extra_fsync_when_parent_already_exists(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Writing into an existing directory performs exactly 2 fsyncs
+        (file + parent), same as origin/dev -- no ancestor walk.
+        """
+        target = tmp_path / "key.bin"
+        calls: list[int] = []
+        real_fsync = os.fsync
+
+        def counting_fsync(fd: int) -> None:
+            calls.append(fd)
+            return real_fsync(fd)
+
+        monkeypatch.setattr(os, "fsync", counting_fsync)
+        atomic_write_bytes(target, b"test_data")
+
+        assert len(calls) == 2, (
+            f"expected os.fsync called 2 times (file + parent), got {len(calls)} -- "
+            "writing into existing dir must not fsync ancestors"
+        )
 
 
 def _no_hardlinks(*_a, **_kw) -> None:

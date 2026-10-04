@@ -138,6 +138,10 @@ def _fsync_created_ancestors(path: Path) -> None:
     # need to (and must not) call mkdir(parents=True) themselves.
     path.parent.mkdir(parents=True, exist_ok=True)
 
+    # If nothing was created (parent already existed), no ancestor fsyncs needed.
+    if pre_existing == path.parent:
+        return
+
     # Walk up from path.parent and fsync newly created dirs.
     # Stop when we hit the first directory that already existed before.
     p = path.parent
@@ -187,13 +191,13 @@ def atomic_write_bytes(path: Path, data: bytes, *, mode: int | None = None) -> N
             # os.open honours the umask; chmod does not.
             os.chmod(tmp, mode)
         os.replace(tmp, path)
-        _fsync_dir(path.parent)
     except BaseException:
         try:
             os.unlink(tmp)
         except OSError:
             pass
         raise
+    _fsync_dir(path.parent)
 
 def _create_via_claim(path: Path, data: bytes, mode: int | None) -> bytes:
     """``atomic_create_bytes`` on a filesystem with no hard links.
