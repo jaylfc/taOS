@@ -22,9 +22,9 @@
 
 1. PREFER A MECHANISM OVER A PROMPT. A rule you must remember is a preference; a check that refuses is a guarantee.
 2. THEN PREFER THE SIMPLEST MECHANISM THAT WORKS. Mechanical does not mean elaborate. Count the moving parts. Complexity you add is complexity you debug later.
-3. USE REALTIME PUSH AND NOTIFICATIONS where the platform offers them rather than a poller you maintain yourself. If something can notify you, let it.
+3. USE REALTIME PUSH AND NOTIFICATIONS where available rather than a poller you maintain yourself. If something can notify you, let it.
 4. TWO TESTS before building: AUDITABLE (can you see WHAT happened afterwards, from a record that survives?) and DIAGNOSABLE (when it fails, can you tell WHY from ONE place?).
-5. THE WARNING SIGN: if you are chaining components to simulate something ONE CALL would do, stop and find the direct call. Async coordination faking synchronous request/response is a recurring anti-pattern here.
+5. THE WARNING SIGN: if you are chaining components to simulate something ONE CALL would do, stop and find the direct call. Async coordination faking synchronous request/response is a recurring anti-pattern.
 6. Applies to WORKFLOWS AND PROCESSES too, not only code: monitoring, health checks, handoffs, escalation.
 
-**Worked example**: an agent needed to know when a job finished, so it chained five moving parts -- a stream watcher, a spool file, a cron, a ticker, and a polling loop -- to simulate a return value by polling. One synchronous call to the job's status endpoint was the answer. The chain was auditable only by stitching four different logs, and failed in five different ways.
+**Worked example**: an agent needed a job completion signal. It chained five moving parts -- stream watcher, spool file, cron, ticker, polling loop -- to simulate polling. One synchronous call was the answer. The chain was auditable only by stitching four logs and failed in five ways.

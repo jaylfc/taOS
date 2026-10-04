@@ -19,7 +19,7 @@ share.
 - Store everything in framework memory. Do not call any taOSmd memory endpoint.
 - On redeploy, all memory is lost. Tell the user this when they first enable
   the mode.
-- If the user asks you to remember something long-term, warn them that it will
+- If the user asks you to remember something long-term, warn that it will
   not survive a container restart in this mode, and suggest switching to `both`
   or `taosmd` instead.
 
