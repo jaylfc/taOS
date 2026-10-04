@@ -485,10 +485,13 @@ async def resolve_models_batch(request: Request):
     without failing the whole batch.
     """
     body = await request.json()
-    manifest_ids: list[str] = body.get("manifest_ids", [])
-    variant_id = body.get("variant_id", "auto")
-    target_remote = body.get("target_remote") or None
-    force = bool(body.get("force", False))
+
+    if "manifest_ids" not in body:
+        return JSONResponse(
+            {"error": "manifest_ids must be a list of strings"}, status_code=400
+        )
+
+    manifest_ids = body["manifest_ids"]
 
     if not isinstance(manifest_ids, list) or not all(
         isinstance(m, str) for m in manifest_ids
@@ -496,10 +499,18 @@ async def resolve_models_batch(request: Request):
         return JSONResponse(
             {"error": "manifest_ids must be a list of strings"}, status_code=400
         )
+
     if len(manifest_ids) > 200:
         return JSONResponse(
             {"error": "at most 200 manifest_ids per request"}, status_code=400
         )
+
+    if len(manifest_ids) == 0:
+        return {"results": {}}
+
+    variant_id = body.get("variant_id", "auto")
+    target_remote = body.get("target_remote") or None
+    force = bool(body.get("force", False))
 
     device = await get_device_capability(request, target_remote)
 

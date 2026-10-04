@@ -103,13 +103,13 @@ class TestStoreResolveBatch:
         with patch(
             "tinyagentos.routes.store.get_device_capability",
             new=AsyncMock(return_value=pi),
-        ) as mock_gdc:
+        ):
             r1 = await client.post("/api/store/resolve", json={
                 "manifest_id": "qwen2.5-3b",
                 "variant_id": "auto",
             })
             r2 = await client.post("/api/store/resolve-batch", json={
-                "manifest_ids": ["qwen2.5-3b", "qwen2.5-3b"],
+                "manifest_ids": ["qwen2.5-3b", "another-model"],
                 "variant_id": "auto",
             })
         assert r1.status_code == 200
@@ -118,9 +118,10 @@ class TestStoreResolveBatch:
         body2 = r2.json()
         # Each id in the batch result should match the single-route result
         assert body2["results"]["qwen2.5-3b"] == body1
+        assert body2["results"]["another-model"] == body1
 
     @pytest.mark.asyncio
-    async def test_batch_device_capability_awaited_once_for_3_id_batch(
+    async def test_batch_device_capability_awaited_once_for_2_id_batch(
         self, client, fake_registry
     ):
         client._transport.app.state.registry = fake_registry
@@ -137,7 +138,7 @@ class TestStoreResolveBatch:
             new=AsyncMock(return_value=pi),
         ) as mock_gdc:
             r = await client.post("/api/store/resolve-batch", json={
-                "manifest_ids": ["qwen2.5-3b", "qwen2.5-3b", "qwen2.5-3b"],
+                "manifest_ids": ["qwen2.5-3b", "another-model"],
                 "variant_id": "auto",
             })
         assert r.status_code == 200
@@ -192,5 +193,13 @@ class TestStoreResolveBatch:
             "manifest_ids": "not-a-list",
             "variant_id": "auto",
         })
+        assert r.status_code == 400
+        assert r.json()["error"] == "manifest_ids must be a list of strings"
+
+    @pytest.mark.asyncio
+    async def test_batch_missing_manifest_ids_400(self, client):
+        """Missing manifest_ids key must return 400, not 200 with empty results."""
+        client._transport.app.state.registry = MagicMock()
+        r = await client.post("/api/store/resolve-batch", json={})
         assert r.status_code == 400
         assert r.json()["error"] == "manifest_ids must be a list of strings"
