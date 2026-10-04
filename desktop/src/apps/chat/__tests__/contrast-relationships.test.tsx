@@ -14,6 +14,18 @@ import { MessageInput, type MessageInputProps } from "../MessageInput";
 /*  Relationship tests — every pair must use DIFFERENT class tokens  */
 /* ================================================================== */
 
+function textToken(el: HTMLElement, prefix = ""): string {
+  const cls = el.className.split(/\s+/).find((c) => c.startsWith(prefix + "text-shell-text"));
+  if (!cls) throw new Error(`no ${prefix}text-shell-text* class on <${el.tagName}>: ${el.className}`);
+  return cls.slice(prefix.length);
+}
+
+function bgToken(el: HTMLElement, prefix = ""): string {
+  const cls = el.className.split(/\s+/).find((c) => c.startsWith(prefix + "bg-shell-") || c.startsWith(prefix + "bg-white/"));
+  if (!cls) throw new Error(`no ${prefix}bg-shell-* class on <${el.tagName}>: ${el.className}`);
+  return cls.slice(prefix.length);
+}
+
 describe("contrast relationships", () => {
   /* ---- AgentContextMenu ------------------------------------------ */
   describe("AgentContextMenu", () => {
@@ -91,9 +103,7 @@ describe("contrast relationships", () => {
       render(<ChannelSidebar {...buildProps({ sections })} />);
       const header = screen.getByText("Topics").closest("button") as HTMLElement;
       expect(header).toBeTruthy();
-      // The header should have a text color class; hover should be different.
-      expect(header.className).toContain("text-shell-text-tertiary");
-      expect(header.className).toContain("hover:text-shell-text-secondary");
+      expect(textToken(header)).not.toBe(textToken(header, "hover:"));
     });
 
     it("archived section header default and hover use different classes", () => {
@@ -114,12 +124,11 @@ describe("contrast relationships", () => {
       );
       const header = screen.getByText(/Archived/).closest("button") as HTMLElement;
       expect(header).toBeTruthy();
-      expect(header.className).toContain("text-shell-text-hint");
-      expect(header.className).toContain("hover:text-shell-text-subtle-hover");
+      expect(textToken(header)).not.toBe(textToken(header, "hover:"));
     });
 
     it("enabled restore button and disabled restore button use different text color classes", () => {
-      render(
+      const { container: enabledContainer } = render(
         <ChannelSidebar
           {...buildProps({
             archivedChannels: [
@@ -135,11 +144,31 @@ describe("contrast relationships", () => {
           })}
         />,
       );
-      const restoreBtn = screen.getByRole("button", {
-        name: "Restore archived channel old-chan",
-      });
-      // Enabled restore has text-shell-text-tertiary; disabled would be text-shell-text-disabled.
-      expect(restoreBtn.className).toContain("text-shell-text-tertiary");
+      const { container: disabledContainer } = render(
+        <ChannelSidebar
+          {...buildProps({
+            archivedChannels: [
+              {
+                id: "arch-1",
+                name: "old-chan",
+                settings: { archived: true, archived_agent_id: "agent-1" },
+              },
+            ],
+            archivedExpanded: true,
+            archivedAgents: [],
+            onRestoreArchivedChannel: () => {},
+          })}
+        />,
+      );
+      const enabledBtn = enabledContainer.querySelector(
+        'button[aria-label="Restore archived channel old-chan"]',
+      ) as HTMLElement;
+      const disabledBtn = disabledContainer.querySelector(
+        'button[aria-label="Restore archived channel old-chan"]',
+      ) as HTMLElement;
+      expect(enabledBtn).toBeTruthy();
+      expect(disabledBtn).toBeTruthy();
+      expect(textToken(enabledBtn)).not.toBe(textToken(disabledBtn));
     });
 
     it("selected and unselected channel rows use different background classes", () => {
@@ -183,7 +212,7 @@ describe("contrast relationships", () => {
       );
       const link = screen.getByText("file.txt").closest("a") as HTMLElement;
       expect(link).toBeTruthy();
-      expect(link.className).toContain("hover:bg-shell-border-strong");
+      expect(bgToken(link)).not.toBe(bgToken(link, "hover:"));
     });
   });
 
@@ -256,8 +285,11 @@ describe("contrast relationships", () => {
     it("search input rest border and focus border use different classes", () => {
       render(<SearchPanel onJump={() => {}} onClose={() => {}} />);
       const input = screen.getByRole("textbox", { name: "Search messages" });
-      expect(input.className).toContain("border-shell-border-strong");
-      expect(input.className).toContain("focus:border-accent-line");
+      const borderCls = input.className.match(/(?:^|\s)border-shell-border-strong(?:$|\s)/)?.[0]?.trim() ?? "";
+      const focusCls = input.className.match(/(?:^|\s)focus:border-accent-line(?:$|\s)/)?.[0]?.trim() ?? "";
+      expect(borderCls).not.toBe(focusCls);
+      expect(borderCls).toBeTruthy();
+      expect(focusCls).toBeTruthy();
     });
 
     it("search result items carry a hover background class", () => {
