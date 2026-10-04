@@ -14,10 +14,18 @@ import { MessageInput, type MessageInputProps } from "../MessageInput";
 /*  Relationship tests — every pair must use DIFFERENT class tokens  */
 /* ================================================================== */
 
-function textToken(el: HTMLElement, prefix = ""): string {
-  const cls = el.className.split(/\s+/).find((c) => c.startsWith(prefix + "text-shell-text"));
-  if (!cls) throw new Error(`no ${prefix}text-shell-text* class on <${el.tagName}>: ${el.className}`);
+function token(el: HTMLElement, prefix: string): string {
+  const cls = el.className.split(/\s+/).find((c) => c.startsWith(prefix));
+  if (!cls) throw new Error(`no ${prefix}* class on <${el.tagName}>: ${el.className}`);
   return cls.slice(prefix.length);
+}
+
+function borderToken(el: HTMLElement, prefix = ""): string {
+  return token(el, prefix + "border-");
+}
+
+function textToken(el: HTMLElement, prefix = ""): string {
+  return token(el, prefix + "text-shell-text");
 }
 
 function bgToken(el: HTMLElement, prefix = ""): string {
@@ -168,6 +176,8 @@ describe("contrast relationships", () => {
       ) as HTMLElement;
       expect(enabledBtn).toBeTruthy();
       expect(disabledBtn).toBeTruthy();
+      expect(enabledBtn).toBeEnabled();
+      expect(disabledBtn).toBeDisabled();
       expect(textToken(enabledBtn)).not.toBe(textToken(disabledBtn));
     });
 
@@ -284,12 +294,11 @@ describe("contrast relationships", () => {
   describe("SearchPanel", () => {
     it("search input rest border and focus border use different classes", () => {
       render(<SearchPanel onJump={() => {}} onClose={() => {}} />);
-      const input = screen.getByRole("textbox", { name: "Search messages" });
-      const borderCls = input.className.match(/(?:^|\s)border-shell-border-strong(?:$|\s)/)?.[0]?.trim() ?? "";
-      const focusCls = input.className.match(/(?:^|\s)focus:border-accent-line(?:$|\s)/)?.[0]?.trim() ?? "";
-      expect(borderCls).not.toBe(focusCls);
-      expect(borderCls).toBeTruthy();
-      expect(focusCls).toBeTruthy();
+      const input = screen.getByRole("textbox", { name: "Search messages" }) as HTMLElement;
+      expect(input).toBeTruthy();
+      // The input carries border-shell-border-strong (rest) and focus:border-accent-line (focus);
+      // both values are read from the DOM so a migration cannot make them equal without the test catching it.
+      expect(borderToken(input)).not.toBe(borderToken(input, "focus:"));
     });
 
     it("search result items carry a hover background class", () => {
