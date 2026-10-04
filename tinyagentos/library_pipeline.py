@@ -359,18 +359,15 @@ class YouTubeProcessor(Processor):
         from tinyagentos.knowledge_fetchers.youtube import (
             fetch,
             format_timestamp,
-            _cleanup_procs,
         )
 
         media_dir = self.storage_dir / "youtube"
-        try:
-            result = await asyncio.wait_for(
-                fetch(source_url, media_dir=media_dir),
-                timeout=self._YTDLP_TIMEOUT,
-            )
-        except asyncio.TimeoutError:
-            _cleanup_procs()
-            raise
+        # On timeout wait_for cancels fetch(), whose own finally kills only
+        # the subprocesses this fetch started.
+        result = await asyncio.wait_for(
+            fetch(source_url, media_dir=media_dir),
+            timeout=self._YTDLP_TIMEOUT,
+        )
 
         title = result.get("title", "")
         if title and not item.get("title"):

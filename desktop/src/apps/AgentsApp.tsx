@@ -343,6 +343,30 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
 
   useRefreshOnFocus(fetchAgents);
 
+  // Load the pending scope-request count ourselves rather than waiting for
+  // RequestsPanel to report it: the panel only mounts once its tab is clicked,
+  // and the app opens on Registry, so an agent's pending ask was invisible
+  // until the admin happened to open the very tab the badge exists to point
+  // at. Skipped for callers who cannot see the tab (the route 403s them).
+  const fetchPendingRequestCount = useCallback(async () => {
+    if (!isAdmin && !ownsAgent) return;
+    try {
+      const res = await fetch("/api/agents/scope-requests?status=pending", {
+        credentials: "include",
+      });
+      if (!res.ok) return;
+      const data = (await res.json()) as { requests?: { status?: string }[] };
+      const rows = Array.isArray(data?.requests) ? data.requests : [];
+      setPendingRequestCount(rows.filter((r) => r.status === "pending").length);
+    } catch { /* keep the last known count */ }
+  }, [isAdmin, ownsAgent]);
+
+  useEffect(() => {
+    void fetchPendingRequestCount();
+  }, [fetchPendingRequestCount]);
+
+  useRefreshOnFocus(fetchPendingRequestCount);
+
   useEffect(() => {
     if (contentTab === "requests" && !isAdmin && !ownsAgent) {
       setContentTab("registry");

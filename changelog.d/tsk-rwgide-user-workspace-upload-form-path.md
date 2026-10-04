@@ -1,0 +1,2 @@
+### Fixed
+- `POST /api/workspace/files/upload` now accepts `path` from multipart form field (in addition to query string), matching the behavior in `project_files.py`. Conflicting query and form `path` values return 400.
