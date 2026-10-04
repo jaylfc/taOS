@@ -38,6 +38,26 @@ _FILTER_ERRORS: tuple[type[BaseException], ...] = (
 # this (extractall requests 16 KiB chunks; headers are 512 bytes).
 MAX_HELPER_READ_BYTES = 1024 * 1024
 
+_HELPER_TYPES = (
+    tarfile.GNUTYPE_LONGNAME,
+    tarfile.GNUTYPE_LONGLINK,
+    tarfile.XHDTYPE,
+    tarfile.XGLTYPE,
+    tarfile.SOLARIS_XHDTYPE,
+)
+
+
+class _HelperSizeGuardTarInfo(tarfile.TarInfo):
+    """Refuses a GNU/PAX helper record whose declared size exceeds the cap,
+    before tarfile reads (and the gzip layer decompresses) its payload."""
+
+    def _proc_member(self, tarfile_obj):
+        if self.type in _HELPER_TYPES and self.size > MAX_HELPER_READ_BYTES:
+            raise ArchiveError(
+                f"tar helper record of {self.size} bytes exceeds {MAX_HELPER_READ_BYTES}"
+            )
+        return super()._proc_member(tarfile_obj)
+
 
 class ArchiveError(Exception):
     """Raised when an archive is unsafe to extract (bomb limits, unsafe member)."""
@@ -75,7 +95,7 @@ def open_tar_gz(fileobj, *, kind="archive"):
     guard = _ReadSizeGuard(gz, MAX_HELPER_READ_BYTES)
     tar = None
     try:
-        tar = tarfile.open(fileobj=guard, mode="r:")
+        tar = tarfile.open(fileobj=guard, mode="r:", tarinfo=_HelperSizeGuardTarInfo)
     except (tarfile.ReadError, gzip.BadGzipFile, EOFError) as exc:
         gz.close()
         raise ArchiveError(f"{kind} is not a valid gzip tarball") from exc
