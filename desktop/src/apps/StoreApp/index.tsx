@@ -11,7 +11,7 @@ import { DevicePillBar, UnknownHardwareBanner } from "./DevicePillBar";
 import { BackendPillBar } from "./BackendPillBar";
 import { IncompatibleToggle } from "./IncompatibleToggle";
 import { filterCatalog, compatFromResolver, hasUnknownHardwareDevice } from "./filter";
-import { resolveModel, type ResolveResponse } from "./resolver-types";
+import { type ResolveResponse, resolveModels } from "./resolver-types";
 import { compatVisuals } from "./compat-visuals";
 import { loadFilter, saveFilter } from "./storage";
 import { emitAppEvent, APP_INSTALLED } from "@/lib/app-event-bus";
@@ -1096,17 +1096,8 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
     if (modelIds.length === 0) return;
     let cancelled = false;
     const run = async () => {
-      const next = new Map<string, ResolveResponse>();
-      for (let i = 0; i < modelIds.length; i += 8) {
-        if (cancelled) return;
-        const batch = modelIds.slice(i, i + 8);
-        const results = await Promise.allSettled(batch.map((id) => resolveModel(id, "auto")));
-        results.forEach((r, idx) => {
-          const id = batch[idx];
-          if (id && r.status === "fulfilled" && r.value && "compat" in r.value) next.set(id, r.value);
-        });
-        if (!cancelled) setCompatMap(new Map(next));
-      }
+      const next = await resolveModels(modelIds, "auto");
+      if (!cancelled) setCompatMap(next);
     };
     run();
     return () => { cancelled = true; };
