@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { render, screen, fireEvent, cleanup, within, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup, within, waitFor, act } from "@testing-library/react";
 import { WebStudioApp } from "./WebStudioApp";
 import { EditView } from "./webstudio/EditView";
 import { SectionBlock } from "./webstudio/SectionBlock";
@@ -338,49 +338,53 @@ describe("WebStudioApp saved-sites list state", () => {
     const staleSites = [{ id: "old", title: "Old site", updated_at: 1 }];
     const freshSites = [{ id: "new", title: "New site", updated_at: 2 }];
 
-    let initialResolve: (value: SavedSite[]) => void;
-    const initialPromise = new Promise<SavedSite[]>((resolve) => { initialResolve = resolve; });
+    let retryResolve!: (value: SavedSite[]) => void;
+    const retryPromise = new Promise<SavedSite[]>((resolve) => { retryResolve = resolve; });
 
     let getCallCount = 0;
-    const fetchCalls: string[] = [];
+    const fetchCalls: { url: string; method?: string }[] = [];
 
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = vi.fn(async (url: string, init?: RequestInit) => {
-      const method = init?.method || "GET";
-      fetchCalls.push(`${method} ${url}`);
-      if (url === "/api/web/sites" && !init?.method) {
-        getCallCount++;
-        if (getCallCount === 1) {
-          return { ok: false, json: async () => ({}) };
+    try {
+      globalThis.fetch = vi.fn(async (url: string, init?: RequestInit) => {
+        const method = init?.method || "GET";
+        fetchCalls.push({ url, method });
+        if (url === "/api/web/sites" && !init?.method) {
+          getCallCount++;
+          if (getCallCount === 1) {
+            return { ok: false, json: async () => ({}) } as Response;
+          }
+          if (getCallCount === 2) {
+            return { ok: true, json: async () => retryPromise } as Response;
+          }
+          return { ok: true, json: async () => freshSites } as Response;
         }
-        if (getCallCount === 2) {
-          return { ok: true, json: async () => initialPromise };
+        if (url === "/api/web/sites" && init?.method === "POST") {
+          return { ok: true, json: async () => ({ id: "site-new" }) } as Response;
         }
-        return { ok: true, json: async () => freshSites };
-      }
-      if (url === "/api/web/sites" && init?.method === "POST") {
-        return { ok: true, json: async () => ({ id: "site-new" }) };
-      }
-      return originalFetch(url, init);
-    }) as typeof globalThis.fetch;
+        return originalFetch(url, init);
+      }) as typeof globalThis.fetch;
 
-    render(<WebStudioApp windowId="w1" />);
+      render(<WebStudioApp windowId="w1" />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
-    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Could not load sites"));
+      fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+      await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Could not load sites"));
 
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    console.log("calls before wait:", fetchCalls.length, fetchCalls);
-    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(4));
-    console.log("calls after wait:", fetchCalls.length, fetchCalls);
-    await waitFor(() => expect(screen.getByText("New site")).toBeInTheDocument());
+      fireEvent.click(within(screen.getByRole("alert")).getByRole("button", { name: "Retry" }));
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
-    initialResolve(staleSites);
+      await waitFor(() => expect(screen.getByText("New site")).toBeInTheDocument());
 
-    await waitFor(() => expect(screen.getByText("New site")).toBeInTheDocument());
-    expect(screen.queryByText("Old site")).not.toBeInTheDocument();
+      await act(async () => {
+        retryResolve(staleSites);
+        await retryPromise;
+      });
 
-    globalThis.fetch = originalFetch;
+      expect(screen.getByText("New site")).toBeInTheDocument();
+      expect(screen.queryByText("Old site")).not.toBeInTheDocument();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 

@@ -61,15 +61,17 @@ export function WebStudioApp(_props: { windowId: string }) {
   // fallback, or a reopened saved site are "user-uploaded" (the safe default;
   // both tiers carry the same capability ceiling, so this is a labeling fix).
   const [provenance, setProvenance] = useState<"ai-generated" | "user-uploaded">("user-uploaded");
-  const loadSeq = useRef(0);
+  const loadSeq = useRef<number>(0);
 
   const loadList = useCallback(async () => {
     const req = ++loadSeq.current;
     try {
       const res = await fetch("/api/web/sites", { credentials: "include" });
       if (!res.ok) throw new Error("Could not load sites");
+      const data = await res.json();
       if (req !== loadSeq.current) return;
-      setSaved((await res.json()) as SavedSite[]);
+      setSaved(data as SavedSite[]);
+      if (req !== loadSeq.current) return;
       setListError(null);
     } catch (e) {
       if (req !== loadSeq.current) return;
