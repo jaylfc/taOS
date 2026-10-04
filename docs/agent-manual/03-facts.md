@@ -19,4 +19,4 @@
 | Community | github.com/jaylfc/taOS/discussions |
 | Bug reports | github.com/jaylfc/taOS/issues |
 
-Old installs keep their old ports automatically. Users never need to change ports by hand.
+Old installs keep their old ports automatically; users never need to change ports by hand.

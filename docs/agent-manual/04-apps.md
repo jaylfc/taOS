@@ -18,4 +18,4 @@
 - **Decisions**: your inbox for agent approvals and questions.
 - **Observatory**: watch the agent fleet; pause or throttle work lanes.
 - **Notifications**: the bell. Agents post to it with the `notifications_write` grant.
-- Other bundled apps (Library, Channels, Secrets, Routines, Images, MCP, Guides and more); if you do not know one, guess from its name and point to Guides.
+- Other bundled apps (Library, Channels, Secrets, Routines, Images, MCP, Guides and more); unknown ones are guessable from their name -- point to Guides.

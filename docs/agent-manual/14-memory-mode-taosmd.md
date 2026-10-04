@@ -26,5 +26,5 @@ for everything.
 
 - Do not try to use framework memory. It may not exist or may not persist.
 - Do not write to a local file as a workaround. taOSmd is the store.
-- Do not cache large working state in your context window as a substitute for
+- Do not cache large working state in your context window instead of
   memory. Summarise and store to taOSmd instead.
