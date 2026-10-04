@@ -965,20 +965,8 @@ case "$os_name" in
     *) die "unsupported OS: $os_name" ;;
 esac
 
-# --- accelerator detection (advisory only — never auto-installs drivers) ----
-#
-# We never apt/dnf/pacman a GPU driver: most boxes don't have an
-# accelerator at all (Apple Silicon, Intel iGPU, ARM SBCs), and the
-# ones that do typically already have the right driver from the OS
-# vendor. Touching the kernel-module + DKMS stack on someone else's
-# box without consent is rude.
-#
-# What we do instead: detect what's physically present, then surface
-# clear advice if the hardware is on the bus but the driver isn't
-# loaded so the worker can use it. The user runs the install command
-# themselves.
-
-chain_hailo_installer() { local hailo_script="$1"
+chain_hailo_installer() {
+    local hailo_script="$1"
     if TAOS_HAILO_SETUP=1 sudo -E bash "$hailo_script" --yes; then
         :
     else
@@ -991,6 +979,19 @@ chain_hailo_installer() { local hailo_script="$1"
         fi
     fi
 }
+
+# --- accelerator detection (advisory only — never auto-installs drivers) ----
+#
+# We never apt/dnf/pacman a GPU driver: most boxes don't have an
+# accelerator at all (Apple Silicon, Intel iGPU, ARM SBCs), and the
+# ones that do typically already have the right driver from the OS
+# vendor. Touching the kernel-module + DKMS stack on someone else's
+# box without consent is rude.
+#
+# What we do instead: detect what's physically present, then surface
+# clear advice if the hardware is on the bus but the driver isn't
+# loaded so the worker can use it. The user runs the install command
+# themselves.
 
 detect_and_advise_accelerators() {
     [[ "$os_name" != "Linux" ]] && return 0  # macOS detection lives elsewhere

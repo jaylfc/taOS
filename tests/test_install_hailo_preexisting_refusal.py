@@ -195,12 +195,10 @@ def _mock_hailo_ollama_binary_inside_dir(tmp_path: Path) -> None:
 def _write_caller_wrapper(
     tmp_path: Path,
     function_body: str,
-    caller_name: str,
-    install_hailo_script: str,
     call_line: str,
 ) -> Path:
-    """Create a wrapper script that defines log/warn, sets up the caller's
-    environment, sources the extracted caller function, and invokes it."""
+    """Create a wrapper script that defines log/warn, sources the extracted
+    caller function, and invokes it."""
     wrapper = tmp_path / "caller_wrapper.sh"
     wrapper.write_text(
         "#!/usr/bin/env bash\n"
@@ -217,7 +215,7 @@ def _write_caller_wrapper(
     return wrapper
 
 
-def _run_caller(tmp_path: Path, wrapper: Path, env: dict) -> subprocess.CompletedProcess[str]:
+def _run_caller(wrapper: Path, env: dict) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["/bin/bash", str(wrapper)],
         env=env,
@@ -249,11 +247,210 @@ def _assert_exit_0_no_warn(result: subprocess.CompletedProcess[str]) -> None:
     assert "CONTINUED" in result.stdout
 
 
+# --- detect_preexisting_hailoollama behavioural tests -------------------------
+
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash required")
-@pytest.mark.parametrize("exit_code", [3, 1, 0])
-def test_install_hailo_if_pending_exit_codes(tmp_path: Path, exit_code: int) -> None:
-    """install_hailo_if_pending in install-server.sh must branch correctly on
-    each exit code from install-hailo.sh."""
+def test_preexisting_instance_refuses_with_exit_3(tmp_path: Path) -> None:
+    """A live upstream tags endpoint must refuse with the reserved status 3."""
+    result = _run_detection(
+        tmp_path,
+        "    printf '%s' '{\"models\":[]}'\n",
+    )
+
+    assert result.returncode == 3, (
+        "pre-existing hailo-ollama must exit 3, not silently report success; "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash required")
+def test_no_instance_on_8000_allows_install_to_proceed(tmp_path: Path) -> None:
+    """An unanswered upstream probe is a clean no-op and must not block setup."""
+    result = _run_detection(
+        tmp_path,
+        "    return 1\n",
+        "printf 'install proceeds\\n'",
+    )
+
+    assert result.returncode == 0, f"unexpected probe failure: {result.stderr}"
+    assert "install proceeds" in result.stdout, (
+        "a clean :8000 probe must allow the installer to continue; "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash required")
+def test_preexisting_detected_exits_3_not_0(tmp_path: Path) -> None:
+    """When a pre-existing hailo-ollama answers on :8000 with a "models"
+    payload, the function must exit 3 (refused), not 0 (success). Exit 0 is
+    the bug from PR #3002 that made auto-install callers silent."""
+    function_body = _extract_detect_preexisting_function()
+    curl_body = '    printf \'{"models":[{"name":"llama3.2:3b"}]}\'\n    return 0\n'
+    wrapper = _write_hailo_wrapper(tmp_path, curl_body, function_body)
+
+    result = subprocess.run(
+        ["/usr/bin/env", "bash", str(wrapper)],
+        env={**os.environ},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 3, (
+        f"detect_preexisting_hailoollama returned {result.returncode} "
+        f"when pre-existing instance found; must be exactly 3 (refused), "
+        f"not 0 (silent success) or 1 (generic failure).\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    combined = (result.stdout + result.stderr).lower()
+    assert "pre-existing" in combined or "8000" in combined, (
+        f"output does not mention pre-existing or 8000; "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash required")
+def test_nothing_on_8000_returns_0_proceeds(tmp_path: Path) -> None:
+    """When nothing answers on :8000, the function must return 0 (not exit)
+    so the install proceeds normally."""
+    function_body = _extract_detect_preexisting_function()
+    curl_body = "    return 1\n"
+    wrapper = _write_hailo_wrapper(tmp_path, curl_body, function_body)
+
+    result = subprocess.run(
+        ["/usr/bin/env", "bash", str(wrapper)],
+        env={**os.environ},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, (
+        f"detect_preexisting_hailoollama returned {result.returncode} "
+        f"when nothing on 8000; must return 0 to let install proceed.\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash required")
+def test_preexisting_unit_without_marker_refuses(tmp_path: Path) -> None:
+    """An upstream unit with a wrong OLLAMA_HOST marker must refuse with exit 3."""
+    _mock_systemctl_unit_without_marker(tmp_path)
+    result = _run_detection(
+        tmp_path,
+        "    return 1\n",
+        path=str(tmp_path),
+    )
+    assert result.returncode == 3, (
+        f"unit with wrong marker must refuse with exit 3; "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    combined = (result.stdout + result.stderr).lower()
+    assert "upstream" in combined or "marker" in combined, (
+        f"refusal message must mention upstream or marker; "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash required")
+def test_upstream_unit_without_marker_is_refused(tmp_path: Path) -> None:
+    """An upstream hailo-ollama.service with NO OLLAMA_HOST marker must refuse with exit 3.
+
+    This is the bug from #3201: the detection code only checks if the marker is WRONG,
+    but not if the marker is MISSING. An upstream unit without any OLLAMA_HOST line
+    was accepted as our own install (rc 0) instead of being refused (rc 3).
+    """
+    _mock_systemctl_unit_no_marker(tmp_path)
+    result = _run_detection(
+        tmp_path,
+        "    return 1\n",
+        path=str(tmp_path),
+    )
+    assert result.returncode == 3, (
+        f"upstream unit without marker must refuse with exit 3; "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    combined = (result.stdout + result.stderr).lower()
+    assert "upstream" in combined or "marker" in combined, (
+        f"refusal message must mention upstream or marker; "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash required")
+def test_preexisting_binary_outside_install_dir_refuses(tmp_path: Path) -> None:
+    """An upstream hailo-ollama binary outside the install directory must refuse."""
+    _mock_hailo_ollama_binary_outside_dir(tmp_path)
+    result = _run_detection(
+        tmp_path,
+        "    return 1\n",
+        path=str(tmp_path),
+    )
+    assert result.returncode == 3, (
+        f"binary outside install dir must refuse with exit 3; "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    combined = (result.stdout + result.stderr).lower()
+    assert "upstream" in combined or "binary" in combined, (
+        f"refusal message must mention upstream or binary; "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash required")
+def test_our_own_install_without_markers_allowed(tmp_path: Path) -> None:
+    """Our own install (unit with correct marker + binary inside dir) must be allowed."""
+    _mock_systemctl_unit_with_marker(tmp_path)
+    _mock_hailo_ollama_binary_inside_dir(tmp_path)
+    result = _run_detection(
+        tmp_path,
+        "    return 1\n",
+        path=str(tmp_path),
+    )
+    assert result.returncode == 0, (
+        f"our own install must be allowed (exit 0); "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+
+
+# --- caller behavioural tests -------------------------------------------------
+
+_CALLER_CONFIGS = {
+    "controller": {
+        "script": SERVER_SCRIPT,
+        "function": "install_hailo_if_pending",
+        "call_line": lambda tmp: (
+            f"HAILO_PENDING_INSTALL=1 INSTALL_DIR={tmp} install_hailo_if_pending"
+        ),
+        "extra_env": {},
+    },
+    "worker": {
+        "script": WORKER_SCRIPT,
+        "function": "chain_hailo_installer",
+        "call_line": lambda tmp: (
+            f"chain_hailo_installer {tmp}/scripts/install-hailo.sh"
+        ),
+        "extra_env": {},
+    },
+}
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash required")
+@pytest.mark.parametrize("caller,exit_code", [
+    ("controller", 3),
+    ("controller", 1),
+    ("controller", 0),
+    ("worker", 3),
+    ("worker", 1),
+    ("worker", 0),
+])
+def test_caller_exit_codes(
+    tmp_path: Path, caller: str, exit_code: int
+) -> None:
+    """Each installer caller must branch correctly on exit codes 3, 1, and 0
+    from install-hailo.sh, running the real function against a stubbed script."""
+    config = _CALLER_CONFIGS[caller]
+
     hailo_script = tmp_path / "scripts" / "install-hailo.sh"
     hailo_script.parent.mkdir(parents=True)
     hailo_script.write_text(f"#!/usr/bin/env bash\nexit {exit_code}\n")
@@ -269,22 +466,20 @@ def test_install_hailo_if_pending_exit_codes(tmp_path: Path, exit_code: int) -> 
     )
     sudo_stub.chmod(0o755)
 
-    function_body = _extract_function(SERVER_SCRIPT, "install_hailo_if_pending")
+    function_body = _extract_function(config["script"], config["function"])
+    call_line = config["call_line"](tmp_path)
     wrapper = _write_caller_wrapper(
         tmp_path,
         function_body,
-        "install_hailo_if_pending",
-        str(hailo_script),
-        "HAILO_PENDING_INSTALL=1 INSTALL_DIR=" + str(tmp_path) + " install_hailo_if_pending",
+        call_line,
     )
     env = {
         "PATH": str(bin_dir) + ":/usr/bin:/bin",
         "LANG": "C.UTF-8",
         "HOME": str(tmp_path),
-        "HAILO_PENDING_INSTALL": "1",
-        "INSTALL_DIR": str(tmp_path),
+        **config["extra_env"],
     }
-    result = _run_caller(tmp_path, wrapper, env)
+    result = _run_caller(wrapper, env)
 
     if exit_code == 3:
         _assert_exit_3_conflict(result)
@@ -294,48 +489,7 @@ def test_install_hailo_if_pending_exit_codes(tmp_path: Path, exit_code: int) -> 
         _assert_exit_0_no_warn(result)
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash required")
-@pytest.mark.parametrize("exit_code", [3, 1, 0])
-def test_chain_hailo_installer_exit_codes(tmp_path: Path, exit_code: int) -> None:
-    """chain_hailo_installer in install-worker.sh must branch correctly on
-    each exit code from install-hailo.sh."""
-    hailo_script = tmp_path / "scripts" / "install-hailo.sh"
-    hailo_script.parent.mkdir(parents=True)
-    hailo_script.write_text(f"#!/usr/bin/env bash\nexit {exit_code}\n")
-    hailo_script.chmod(0o755)
-
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    sudo_stub = bin_dir / "sudo"
-    sudo_stub.write_text(
-        "#!/usr/bin/sh\n"
-        '[ "$1" = -E ] && shift\n'
-        'exec "$@"\n'
-    )
-    sudo_stub.chmod(0o755)
-
-    function_body = _extract_function(WORKER_SCRIPT, "chain_hailo_installer")
-    wrapper = _write_caller_wrapper(
-        tmp_path,
-        function_body,
-        "chain_hailo_installer",
-        str(hailo_script),
-        "chain_hailo_installer " + str(hailo_script),
-    )
-    env = {
-        "PATH": str(bin_dir) + ":/usr/bin:/bin",
-        "LANG": "C.UTF-8",
-        "HOME": str(tmp_path),
-    }
-    result = _run_caller(tmp_path, wrapper, env)
-
-    if exit_code == 3:
-        _assert_exit_3_conflict(result)
-    elif exit_code == 1:
-        _assert_exit_1_generic(result)
-    else:
-        _assert_exit_0_no_warn(result)
-
+# --- misc ---------------------------------------------------------------------
 
 def test_probe_url_uses_localhost_not_0000() -> None:
     """The probe URL in detect_preexisting_hailoollama must use
