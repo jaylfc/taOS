@@ -707,7 +707,9 @@ different project, and 403 when the agent lacks the `canvas_read` scope or the
 
 - **files_read**: `GET /api/projects/{slug}/files` (list), `.../files/watch`,
   `GET .../files/{path}` (download), `.../trash`, `.../stats`. **files_write**:
-  `POST .../files/upload` (multipart), `POST .../mkdir`, `DELETE .../files/{path}`,
+  `POST .../files/upload` (multipart; `path` = target directory via query or
+  form field, optional form `filename` sets the stored name, response echoes
+  `stored_as`), `POST .../mkdir`, `DELETE .../files/{path}`,
   and the trash restore/purge/empty routes. NOTE: the files routes key on the
   project SLUG in the path, not the id.
 - **decisions_write**: `POST /api/decisions` (raise a human-in-the-loop

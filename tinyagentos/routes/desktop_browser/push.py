@@ -29,6 +29,7 @@ from urllib.parse import urlsplit
 import pywebpush
 from pywebpush import WebPushException
 
+from tinyagentos.notifications_push import _vapid_signing_key
 from tinyagentos.routes.desktop_browser.store import BrowserStore
 
 _log = logging.getLogger(__name__)
@@ -110,6 +111,15 @@ async def send(
     if not subs:
         return {"sent": 0, "failed": 0, "removed": 0}
 
+    # pywebpush wants base64url-DER, not the stored PEM: raw PEM fails py_vapid
+    # parsing on every send. A key that cannot convert breaks ALL sends, so log
+    # it loud instead of letting each per-subscription send fail quietly.
+    try:
+        signing_key = _vapid_signing_key(private_pem)
+    except Exception:  # noqa: BLE001
+        _log.error("push: VAPID key unusable; web push disabled", exc_info=True)
+        return {"sent": 0, "failed": len(subs), "removed": 0}
+
     # Rate-limit check — ONCE per send() invocation, not per device.
     allowed = await _rate_limiter.acquire(user_id)
     if not allowed:
@@ -118,7 +128,7 @@ async def send(
 
     loop = asyncio.get_running_loop()
     results = await asyncio.gather(
-        *[_send_one(sub, data_str, private_pem, store, loop) for sub in subs],
+        *[_send_one(sub, data_str, signing_key, store, loop) for sub in subs],
         return_exceptions=True,
     )
 
@@ -146,7 +156,7 @@ async def send(
 async def _send_one(
     sub: dict,
     data_str: str,
-    private_pem: str,
+    signing_key: str,
     store: BrowserStore,
     loop: asyncio.AbstractEventLoop,
 ) -> str:
@@ -174,7 +184,7 @@ async def _send_one(
                 _sync_send,
                 subscription_info,
                 data_str,
-                private_pem,
+                signing_key,
                 vapid_claims,
             ),
             timeout=_SEND_TIMEOUT,
@@ -206,14 +216,14 @@ async def _send_one(
 def _sync_send(
     subscription_info: dict,
     data: str,
-    private_pem: str,
+    signing_key: str,
     vapid_claims: dict,
 ) -> None:
     """Blocking pywebpush call — run in executor."""
     pywebpush.webpush(
         subscription_info=subscription_info,
         data=data,
-        vapid_private_key=private_pem,
+        vapid_private_key=signing_key,
         vapid_claims=vapid_claims,
         timeout=_SEND_TIMEOUT,
     )

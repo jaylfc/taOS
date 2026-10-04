@@ -204,3 +204,122 @@ async def test_concurrent_fetch_cancel_does_not_kill_other(tmp_path):
             mock_proc1.kill.assert_called_once()
             # task2 completes successfully despite task1 being cancelled
             assert result["title"] == "Test Video Title"
+
+
+# ---------------------------------------------------------------------------
+# tsk-5gxu33: per-fetch process tracking. One fetch's cancel must not kill a
+# still-running peer, and completed processes are dropped from tracking (never
+# killed after they exit).
+# ---------------------------------------------------------------------------
+
+class _GatedProc:
+    """Stub subprocess whose communicate() blocks until its gate is set."""
+
+    def __init__(self, stdout: bytes = b"", returncode: int = 0):
+        self.gate = asyncio.Event()
+        self.started = asyncio.Event()
+        self._stdout = stdout
+        self._final_rc = returncode
+        self.returncode = None
+        self.kill = MagicMock()
+
+    async def communicate(self):
+        self.started.set()
+        await self.gate.wait()
+        self.returncode = self._final_rc
+        return self._stdout, b""
+
+
+def _gated_exec_factory(procs: dict):
+    """Route create_subprocess_exec by (url marker, metadata vs media) args."""
+
+    async def _fake_exec(*args, **kwargs):
+        url = args[-1]
+        marker = "test1" if "test1" in url else "test2"
+        kind = "meta" if "--dump-single-json" in args else "media"
+        return procs[(marker, kind)]
+
+    return _fake_exec
+
+
+def _make_gated_procs() -> dict:
+    meta = json.dumps([_FAKE_INFO]).encode()
+    return {
+        ("test1", "meta"): _GatedProc(stdout=meta),
+        ("test1", "media"): _GatedProc(),
+        ("test2", "meta"): _GatedProc(stdout=meta),
+        ("test2", "media"): _GatedProc(),
+    }
+
+
+@pytest.mark.asyncio
+async def test_cancel_one_fetch_does_not_kill_running_peer(tmp_path):
+    procs = _make_gated_procs()
+    with patch("shutil.which", return_value="/usr/bin/yt-dlp"):
+        with patch("asyncio.create_subprocess_exec", side_effect=_gated_exec_factory(procs)):
+            task1 = asyncio.create_task(
+                fetch("https://www.youtube.com/watch?v=test1", media_dir=tmp_path / "a")
+            )
+            task2 = asyncio.create_task(
+                fetch("https://www.youtube.com/watch?v=test2", media_dir=tmp_path / "b")
+            )
+            # Both fetches are in flight, each blocked on its own subprocess.
+            await asyncio.wait_for(procs[("test1", "meta")].started.wait(), 1)
+            await asyncio.wait_for(procs[("test2", "meta")].started.wait(), 1)
+
+            task1.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task1
+
+            # The cancelled fetch killed its own running process...
+            procs[("test1", "meta")].kill.assert_called_once()
+            # ...and NOT the peer's, which is still running.
+            procs[("test2", "meta")].kill.assert_not_called()
+            assert not task2.done()
+
+            procs[("test2", "meta")].gate.set()
+            await asyncio.wait_for(procs[("test2", "media")].started.wait(), 1)
+            procs[("test2", "media")].gate.set()
+            result = await asyncio.wait_for(task2, 1)
+
+    assert result["title"] == "Test Video Title"
+    # The peer's processes exited normally, so nothing ever signals them.
+    procs[("test2", "meta")].kill.assert_not_called()
+    procs[("test2", "media")].kill.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_completed_fetch_processes_are_dropped_not_killed(tmp_path):
+    procs = _make_gated_procs()
+    for p in procs.values():
+        p.gate.set()
+    with patch("shutil.which", return_value="/usr/bin/yt-dlp"):
+        with patch("asyncio.create_subprocess_exec", side_effect=_gated_exec_factory(procs)):
+            result = await fetch("https://www.youtube.com/watch?v=test1", media_dir=tmp_path)
+
+    assert result["title"] == "Test Video Title"
+    # Both subprocesses exited normally: they are dropped from the fetch's
+    # tracker on completion, so cleanup never signals an exited process.
+    procs[("test1", "meta")].kill.assert_not_called()
+    procs[("test1", "media")].kill.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_completed_download_process_is_dropped_not_killed(tmp_path):
+    proc = _GatedProc(stdout=b"/tmp/out/test123.mp4\n")
+    proc.gate.set()
+    with patch("shutil.which", return_value="/usr/bin/yt-dlp"):
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+            path = await download_video(
+                "https://www.youtube.com/watch?v=test1", output_dir=tmp_path
+            )
+
+    assert path == "/tmp/out/test123.mp4"
+    proc.kill.assert_not_called()
+
+
+def test_no_module_global_process_tracker():
+    import tinyagentos.knowledge_fetchers.youtube as yt
+
+    assert not hasattr(yt, "_tracked_procs")
+    assert not hasattr(yt, "_cleanup_procs")

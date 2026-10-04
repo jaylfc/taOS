@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { render, screen, fireEvent, cleanup, within, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup, within, waitFor, act } from "@testing-library/react";
 import { WebStudioApp } from "./WebStudioApp";
 import { EditView } from "./webstudio/EditView";
 import { SectionBlock } from "./webstudio/SectionBlock";
@@ -282,5 +282,163 @@ describe("WebStudioApp confirms before discarding unsaved edits", () => {
     fireEvent.click(screen.getByRole("button", { name: "New" }));
     expect(screen.queryByText("Edited but unsaved")).not.toBeInTheDocument();
     confirmSpy.mockRestore();
+  });
+});
+
+describe("WebStudioApp saved-sites list state", () => {
+  it("shows a first-run empty-state card when there are no saved sites", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: true, json: async () => [] })),
+    );
+    render(<WebStudioApp windowId="w1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    const card = await screen.findByTestId("webstudio-empty-state");
+    expect(within(card).getByText("No saved sites yet")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("scopes a list load failure to the sites list, not a stale shared banner", async () => {
+    let listOk = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url === "/api/web/sites") {
+          return listOk
+            ? { ok: true, json: async () => [] }
+            : { ok: false, json: async () => ({}) };
+        }
+        return { ok: true, json: async () => [] };
+      }),
+    );
+    const { container } = render(<WebStudioApp windowId="w1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Could not load sites");
+    // The failure lives inside the "My sites" list, and the first-run empty
+    // state is not shown while the list is actually unknown.
+    const sidebar = container.querySelector("aside") as HTMLElement;
+    expect(sidebar).toContainElement(alert);
+    expect(screen.queryByTestId("webstudio-empty-state")).not.toBeInTheDocument();
+
+    // Leaving Edit and coming back does not resurrect a canvas-level banner.
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+
+    // A successful retry clears it.
+    listOk = true;
+    fireEvent.click(within(screen.getByRole("alert")).getByRole("button", { name: "Retry" }));
+    await screen.findByTestId("webstudio-empty-state");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("ignores stale loadList responses when a newer request wins", async () => {
+    const staleSites = [{ id: "old", title: "Old site", updated_at: 1 }];
+    const freshSites = [{ id: "new", title: "New site", updated_at: 2 }];
+
+    let retryResolve!: (value: SavedSite[]) => void;
+    const retryPromise = new Promise<SavedSite[]>((resolve) => { retryResolve = resolve; });
+
+    let getCallCount = 0;
+    const fetchCalls: { url: string; method?: string }[] = [];
+
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = vi.fn(async (url: string, init?: RequestInit) => {
+        const method = init?.method || "GET";
+        fetchCalls.push({ url, method });
+        if (url === "/api/web/sites" && !init?.method) {
+          getCallCount++;
+          if (getCallCount === 1) {
+            return { ok: false, json: async () => ({}) } as Response;
+          }
+          if (getCallCount === 2) {
+            return { ok: true, json: async () => retryPromise } as Response;
+          }
+          return { ok: true, json: async () => freshSites } as Response;
+        }
+        if (url === "/api/web/sites" && init?.method === "POST") {
+          return { ok: true, json: async () => ({ id: "site-new" }) } as Response;
+        }
+        return originalFetch(url, init);
+      }) as typeof globalThis.fetch;
+
+      render(<WebStudioApp windowId="w1" />);
+
+      fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+      await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Could not load sites"));
+
+      fireEvent.click(within(screen.getByRole("alert")).getByRole("button", { name: "Retry" }));
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+      await waitFor(() => expect(screen.getByText("New site")).toBeInTheDocument());
+
+      await act(async () => {
+        retryResolve(staleSites);
+        await retryPromise;
+      });
+
+      expect(screen.getByText("New site")).toBeInTheDocument();
+      expect(screen.queryByText("Old site")).not.toBeInTheDocument();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+describe("WebStudioApp save round-trip", () => {
+  it("POSTs /api/web/sites with the site JSON content and the rendered index_html", async () => {
+    const calls: { url: string; init?: RequestInit }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        calls.push({ url, init });
+        if (url === "/api/web/sites" && init?.method === "POST") {
+          return { ok: true, json: async () => ({ id: "site-new" }) };
+        }
+        return { ok: true, json: async () => [] };
+      }),
+    );
+    render(<WebStudioApp windowId="w1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(calls.some((c) => c.url === "/api/web/sites" && c.init?.method === "POST")).toBe(true),
+    );
+    const post = calls.find((c) => c.url === "/api/web/sites" && c.init?.method === "POST")!;
+    const body = JSON.parse(String(post.init!.body)) as {
+      title: string;
+      content: string;
+      index_html: string;
+    };
+    expect(body.title).toBe("Untitled site");
+    const content: unknown = JSON.parse(body.content);
+    expect(isValidSite(content)).toBe(true);
+    expect(body.index_html).toMatch(/^<!doctype html>/i);
+    expect(body.index_html).toContain("</html>");
+  });
+
+  it("rejects an over-5MB site with a clear error before any save request", async () => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => ({
+      ok: true,
+      json: async () => [],
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WebStudioApp windowId="w1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+
+    const heading = screen.getByRole("textbox", { name: "Hero heading" });
+    heading.textContent = "x".repeat(5 * 1024 * 1024 + 1);
+    fireEvent.blur(heading);
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText(/too large to save \(over 5 MB\)/)).toBeInTheDocument();
+    const writes = fetchMock.mock.calls.filter(
+      ([, init]) => init?.method === "POST" || init?.method === "PUT",
+    );
+    expect(writes).toHaveLength(0);
   });
 });

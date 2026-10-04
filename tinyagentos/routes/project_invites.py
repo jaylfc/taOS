@@ -626,7 +626,9 @@ def _build_guide_markdown(
         lines.append(
             f"- Files write: add and edit Files. Upload with "
             f"`POST /api/projects/{project_slug}/files/upload?path=<subdir>` as multipart "
-            f"`file=@...`, and make folders with `POST /api/projects/{project_slug}/mkdir` "
+            f"`file=@...` (`path` is the target DIRECTORY and may also be sent as a form "
+            f"field; add form field `filename=<name>` to choose the stored name; the "
+            f"response's `stored_as` is the real path), and make folders with `POST /api/projects/{project_slug}/mkdir` "
             f"`{{\"path\": \"<subdir>\"}}`."
         )
     else:
