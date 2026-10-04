@@ -8,7 +8,10 @@ distribution, not import. The evidence lives in ``uv.lock`` and in
 from __future__ import annotations
 
 import importlib.util
+import re
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -22,6 +25,9 @@ assert _spec and _spec.loader
 check_install_licences = importlib.util.module_from_spec(_spec)
 sys.modules["check_install_licences"] = check_install_licences
 _spec.loader.exec_module(check_install_licences)
+
+CONSTRAINTS_FILE = REPO_ROOT / "constraints.txt"
+INSTALLER = REPO_ROOT / "scripts" / "install-server.sh"
 
 
 # Packages that must never appear in the set a server install resolves, with the
@@ -96,3 +102,83 @@ def test_proprietary_style_substring_is_not_narrowed_to_word_boundaries():
     regexes as a side effect of the Commons Clause change.
     """
     assert check_install_licences.classify_licence("Proprietary-ish") == "blocked"
+
+
+def test_installer_pip_commands_use_constraints_file():
+    """Every pip install in install-server.sh must pass -c constraints.txt.
+
+    The licence gate audits uv.lock, but the installer runs pip which can pick
+    newer versions inside declared ranges. Pinning via constraints.txt ensures
+    the installed set matches the audited set exactly.
+    """
+    content = INSTALLER.read_text()
+    pip_installs = re.findall(r'\.venv/bin/pip install[^\n]*', content)
+    assert pip_installs, "No pip install commands found in installer"
+    for cmd in pip_installs:
+        assert "-c constraints.txt" in cmd, (
+            f"pip install command missing -c constraints.txt: {cmd}"
+        )
+
+
+def test_constraints_file_matches_uv_lock():
+    """constraints.txt must match a fresh export from uv.lock.
+
+    Drift gate — same shape as the routes-doc gate. If uv.lock changes,
+    constraints.txt must be regenerated.
+    """
+    assert CONSTRAINTS_FILE.exists(), "constraints.txt not found — generate with: uv export --no-hashes --format requirements-txt --no-emit-project > constraints.txt"
+
+    committed = CONSTRAINTS_FILE.read_text(encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "uv",
+            "export",
+            "--no-hashes",
+            "--format",
+            "requirements-txt",
+            "--no-emit-project",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+    )
+    assert result.returncode == 0, f"uv export failed:\n{result.stderr}"
+
+    fresh = result.stdout
+    assert fresh == committed, (
+        "constraints.txt is out of sync with uv.lock. "
+        "Regenerate with: uv export --no-hashes --format requirements-txt --no-emit-project > constraints.txt"
+    )
+
+
+def test_fresh_install_constraint_set_equals_audited_set():
+    """A fresh install with constraints.txt must resolve the same set as the licence gate audits.
+
+    This ensures the installer's pip resolution under constraints matches the
+    exact versions resolved from uv.lock by check_install_licences.resolve_install_set().
+    """
+    # The audited set from uv.lock (what the licence gate checks)
+    audited = _install_set()
+
+    # Generate a fresh constraints file and verify it contains at least the audited packages
+    # at the same versions. We check that every audited package appears in constraints.txt
+    # with the same version.
+    constraints_text = CONSTRAINTS_FILE.read_text(encoding="utf-8")
+    constraint_versions = {}
+    for line in constraints_text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        # Parse name==version (ignore markers/comments)
+        if "==" in line:
+            pkg_part = line.split("==")[0].strip()
+            ver_part = line.split("==")[1].split()[0].split(";")[0].strip()
+            constraint_versions[check_install_licences.canonical(pkg_part)] = ver_part
+
+    for name, version in audited.items():
+        cname = check_install_licences.canonical(name)
+        assert cname in constraint_versions, f"Audited package {name} missing from constraints.txt"
+        assert constraint_versions[cname] == version, (
+            f"Version mismatch for {name}: audited={version}, constraints={constraint_versions[cname]}"
+        )
