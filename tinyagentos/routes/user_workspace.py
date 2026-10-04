@@ -6,7 +6,7 @@ import logging
 import shutil
 from pathlib import Path
 
-from fastapi import APIRouter, Request, UploadFile, File
+from fastapi import APIRouter, Request, UploadFile, File, Form, Query
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -190,9 +190,21 @@ async def api_watch_files(request: Request, path: str = "", interval: float = 1.
 
 
 @router.post("/api/workspace/files/upload")
-async def api_upload_file(request: Request, path: str = "", file: UploadFile = File(...)):
+async def api_upload_file(
+    request: Request,
+    path: str | None = Query(None),
+    form_path: str | None = Form(None, alias="path"),
+    file: UploadFile = File(...),
+):
     """Upload a file to the user workspace, optionally into a subdirectory."""
     workspace = _get_workspace_root(request)
+
+    if path is not None and form_path is not None and path != form_path:
+        return JSONResponse(
+            {"error": "path given in both query and form with different values"},
+            status_code=400,
+        )
+    path = path if path is not None else (form_path or "")
 
     if path:
         target_dir = _resolve_safe(workspace, path)

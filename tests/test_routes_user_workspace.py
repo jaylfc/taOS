@@ -39,6 +39,48 @@ class TestUserWorkspaceRoutes:
         names = [e["name"] for e in resp.json()]
         assert "list_me.txt" in names
 
+    # -- form-field path handling (mirrors project_files tests) --
+
+    @pytest.mark.asyncio
+    async def test_upload_form_field_path_is_honoured(self, client):
+        """A multipart form field `path` places the file in that directory."""
+        content = b"form path"
+        resp = await client.post(
+            "/api/workspace/files/upload",
+            data={"path": "docs"},
+            files={"file": ("note.md", io.BytesIO(content), "text/markdown")},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["path"] == "docs/note.md"
+        back = await client.get("/api/workspace/files/docs/note.md")
+        assert back.status_code == 200
+        assert back.content == content
+
+    @pytest.mark.asyncio
+    async def test_upload_query_path_still_works(self, client):
+        """Existing query-string callers keep their directory semantics."""
+        resp = await client.post(
+            "/api/workspace/files/upload?path=sub/dir",
+            files={"file": ("q.txt", io.BytesIO(b"q"), "text/plain")},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["path"] == "sub/dir/q.txt"
+        back = await client.get("/api/workspace/files/sub/dir/q.txt")
+        assert back.content == b"q"
+
+    @pytest.mark.asyncio
+    async def test_upload_query_and_form_path_conflict_400(self, client):
+        resp = await client.post(
+            "/api/workspace/files/upload?path=one",
+            data={"path": "two"},
+            files={"file": ("c.txt", io.BytesIO(b"c"), "text/plain")},
+        )
+        assert resp.status_code == 400
+        listing = await client.get("/api/workspace/files")
+        assert listing.json() == []
+
     @pytest.mark.asyncio
     async def test_create_directory(self, client):
         """POST /api/workspace/mkdir creates a directory."""
