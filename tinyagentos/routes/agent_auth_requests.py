@@ -1815,19 +1815,9 @@ async def create_scope_request(
             project_id = rec.get("project_id")
             if project_id:
                 pstore = getattr(request.app.state, "project_store", None)
-                if pstore is not None:
-                    project = await pstore.get_project(project_id)
-                    if project is not None:
-                        # Use the project's human name if available
-                        name = project.get("name")
-                        if name:
-                            where = f"project {name}"
-                            # fall back to raw id if no name
-                        else:
-                            where = f"project {project_id}"
-                        # fall back to raw id if no store or no project
-                else:
-                    where = f"project {project_id}"
+                project = await pstore.get_project(project_id) if pstore is not None else None
+                name = (project or {}).get("name")
+                where = f"project {name or project_id}"
             await notifs.add(
                 title="Scope request",
                 message=f"{handle} is requesting {', '.join(scopes)} on {where}",
