@@ -165,8 +165,8 @@ async def test_notify_telegram_posts_to_correct_url():
     assert call_kwargs[0][0] == expected_url
     body = call_kwargs[1]["json"]
     assert body["chat_id"] == wh["chat_id"]
-    assert body["text"] == "*T*\nM"
-    assert body["parse_mode"] == "Markdown"
+    assert body["text"] == "<b>T</b>\nM"
+    assert body["parse_mode"] == "HTML"
 
 
 # --- notify: multiple webhooks ---
@@ -257,3 +257,54 @@ async def test_send_creates_client_with_timeout():
         await notifier._send(webhook, "T", "M", "info")
 
     mock_client_cls.assert_called_once_with(timeout=10)
+
+
+# --- markup escaping: telegram ---
+
+@pytest.mark.asyncio
+async def test_notify_telegram_escapes_markdown_in_text():
+    config = _make_config("telegram")
+    notifier = WebhookNotifier(config)
+
+    with patch("tinyagentos.webhook_notifier.httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        await notifier.notify(
+            "T_it*le<x>",
+            "<a href=\"https://attacker.example\">Review</a> a_b*c",
+            "info",
+        )
+
+    call_kwargs = mock_client.post.call_args
+    body = call_kwargs[1]["json"]
+    text = body["text"]
+    assert body["parse_mode"] == "HTML"
+    assert text.startswith("<b>T_it*le&lt;x&gt;</b>\n")
+    assert "&lt;a href=\"https://attacker.example\"&gt;Review&lt;/a&gt; a_b*c" in text
+
+
+# --- markup escaping: slack ---
+
+@pytest.mark.asyncio
+async def test_notify_slack_escapes_mrkdwn_in_text():
+    config = _make_config("slack")
+    notifier = WebhookNotifier(config)
+
+    with patch("tinyagentos.webhook_notifier.httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        await notifier.notify(
+            "T<it>le",
+            "<https://attacker.example|Review request> & x",
+            "info",
+        )
+
+    call_kwargs = mock_client.post.call_args
+    body = call_kwargs[1]["json"]
+    text = body["text"]
+    assert "&lt;https://attacker.example|Review request&gt;" in text
+    assert "&amp; x" in text

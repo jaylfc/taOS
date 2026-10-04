@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import html
 import logging
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+
+def _escape_slack(text: str) -> str:
+    for old, new in (("&", "&amp;"), ("<", "&lt;"), (">", "&gt;")):
+        text = text.replace(old, new)
+    return text
 
 
 class WebhookNotifier:
@@ -29,7 +36,7 @@ class WebhookNotifier:
         async with httpx.AsyncClient(timeout=10) as client:
             if wh_type == "slack":
                 await client.post(url, json={
-                    "text": f"*{title}*\n{message}",
+                    "text": f"*{_escape_slack(title)}*\n{_escape_slack(message)}",
                 })
             elif wh_type == "discord":
                 color = {"info": 3066993, "warning": 16776960, "error": 15158332}.get(level, 3066993)
@@ -43,8 +50,8 @@ class WebhookNotifier:
                     f"https://api.telegram.org/bot{bot_token}/sendMessage",
                     json={
                         "chat_id": chat_id,
-                        "text": f"*{title}*\n{message}",
-                        "parse_mode": "Markdown",
+                        "text": f"<b>{html.escape(title, quote=False)}</b>\n{html.escape(message, quote=False)}",
+                        "parse_mode": "HTML",
                     },
                 )
             else:  # generic

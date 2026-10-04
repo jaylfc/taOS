@@ -307,3 +307,52 @@ async def test_timeout_counted_as_failed(store):
     assert result == {"sent": 0, "failed": 1, "removed": 0}
     rows = await store.list_push_subscriptions("user_a")
     assert len(rows) == 1  # not deleted on timeout
+
+
+# ---------------------------------------------------------------------------
+# 9. VAPID key format: the PEM must be converted before it reaches pywebpush
+# ---------------------------------------------------------------------------
+
+def test_vapid_signing_key_from_browser_keypair_is_accepted_by_py_vapid():
+    """The BrowserApp keypair PEM converts to a key py_vapid accepts."""
+    from py_vapid import Vapid01
+
+    from tinyagentos.notifications_push import _vapid_signing_key
+
+    with tempfile.TemporaryDirectory() as d:
+        _pub, private_pem = load_or_create_vapid_keypair(pathlib.Path(d))
+        signing_key = _vapid_signing_key(private_pem)
+        # Raw PEM raises 'Could not deserialize key data' here.
+        Vapid01.from_string(private_key=signing_key)
+
+
+@pytest.mark.asyncio
+async def test_send_passes_converted_signing_key_to_webpush(store):
+    """Regression: send() handed the raw PEM to pywebpush.webpush, which py_vapid
+    rejects before any network call, so every BrowserApp push failed silently.
+    The kwarg that reaches webpush must be the base64url-DER signing key."""
+    from py_vapid import Vapid01
+
+    from tinyagentos.notifications_push import _vapid_signing_key
+
+    await store.upsert_push_subscription(
+        "user1", "device_a",
+        endpoint=_ENDPOINT_A,
+        p256dh_key="p256dh_fake",
+        auth_key="auth_fake",
+    )
+
+    captured: dict = {}
+
+    def _capture(**kwargs):
+        captured.update(kwargs)
+        return _make_response(201)
+
+    with patch.object(push_module.pywebpush, "webpush", side_effect=_capture):
+        result = await send("user1", _PAYLOAD, store=store, vapid=FAKE_VAPID)
+
+    assert result == {"sent": 1, "failed": 0, "removed": 0}
+    key = captured["vapid_private_key"]
+    assert "BEGIN" not in key
+    assert key == _vapid_signing_key(_vapid_priv)
+    Vapid01.from_string(private_key=key)

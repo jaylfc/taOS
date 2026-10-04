@@ -200,10 +200,35 @@ describe("DesignStudioApp", () => {
     expect(nav).toBeDefined();
     expect(screen.getByRole("button", { name: "Design" })).toBeDefined();
     expect(screen.getByRole("button", { name: "Templates" })).toBeDefined();
-    expect(screen.getByRole("button", { name: "Elements" })).toBeDefined();
     expect(screen.getByRole("button", { name: "Magic" })).toBeDefined();
     expect(screen.getByRole("button", { name: "Library" })).toBeDefined();
-    expect(screen.getByRole("button", { name: "Brand" })).toBeDefined();
+  });
+
+  it("every rail button has a distinct action (no dead or duplicate targets)", () => {
+    const { container } = renderApp();
+    const nav = screen.getByRole("navigation", { name: "Design Studio views" });
+    const buttons = Array.from(nav.querySelectorAll("button"));
+    expect(buttons.map((b) => b.getAttribute("aria-label"))).toEqual([
+      "Design",
+      "Templates",
+      "Magic",
+      "Library",
+    ]);
+    const mainArea = nav.nextElementSibling as HTMLElement;
+    expect(mainArea).toBeTruthy();
+    const seen = new Set<string>();
+    for (const btn of buttons) {
+      fireEvent.click(btn);
+      // Clicking the button must make it, and only it, the active view.
+      expect(btn.getAttribute("aria-current")).toBe("page");
+      expect(nav.querySelectorAll('[aria-current="page"]').length).toBe(1);
+      // And it must render something no other rail item renders.
+      const signature = mainArea.innerHTML;
+      expect(seen.has(signature)).toBe(false);
+      seen.add(signature);
+    }
+    expect(container.querySelector('[aria-label="Elements"]')).toBeNull();
+    expect(container.querySelector('nav [aria-label="Brand"]')).toBeNull();
   });
 
   it("shows Design view by default with Design rail item active", () => {
