@@ -177,8 +177,10 @@ class CRItem:
     id: int
     body: str | None
     is_review: bool
+    source: str = ""
     review_state: str | None = None
     created_at: str | None = None
+    in_reply_to: int | None = None
 
 
 def _get_token() -> str | None:
@@ -411,7 +413,14 @@ def is_real_item(item: CRItem) -> bool:
         return False
     if not item.is_review and is_coderabbit_auto_summary(item.body):
         return is_coderabbit_walkthrough(item.body)
-    return bool(item.body and item.body.strip())
+    if not (item.body and item.body.strip()):
+        return False
+    if item.is_review:
+        return True
+    # Positive evidence only: a top-level issue comment counts solely via the
+    # walkthrough detector above, and a line comment counts only when it opens
+    # a thread (a reply in a thread is conversation, not a review).
+    return item.source == "review_comment" and item.in_reply_to is None
 
 
 def _is_coderabbit(user: dict | None) -> bool:
@@ -463,6 +472,7 @@ def collect_coderabbit_items(
                 id=r.get("id", 0),
                 body=r.get("body"),
                 is_review=True,
+                source="review",
                 review_state=r.get("state"),
                 created_at=r.get("created_at"),
             ))
@@ -479,6 +489,7 @@ def collect_coderabbit_items(
                 id=c.get("id", 0),
                 body=c.get("body"),
                 is_review=False,
+                source="issue_comment",
                 created_at=c.get("created_at"),
             ))
 
@@ -492,6 +503,8 @@ def collect_coderabbit_items(
                 id=c.get("id", 0),
                 body=c.get("body"),
                 is_review=False,
+                source="review_comment",
+                in_reply_to=c.get("in_reply_to_id"),
                 created_at=c.get("created_at"),
             ))
 
