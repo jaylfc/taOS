@@ -1713,8 +1713,8 @@ fi
 # so the brackets are added only when there is an extra.
 _taos_extras="$(taos_controller_extras)"
 log "installing controller python deps into .venv (pip install -e '.${_taos_extras:+[$_taos_extras]}')"
-./.venv/bin/pip install --quiet --upgrade pip
-./.venv/bin/pip install --quiet -e ".${_taos_extras:+[$_taos_extras]}"
+./.venv/bin/pip install --quiet --upgrade pip -c scripts/install-constraints.txt
+./.venv/bin/pip install --quiet -c scripts/install-constraints.txt -e ".${_taos_extras:+[$_taos_extras]}"
 
 # litellm (and with it the proprietary litellm-enterprise wheel an older
 # litellm[proxy] pulled in) is no longer part of the install set. A FRESH

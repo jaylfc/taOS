@@ -186,6 +186,12 @@ walks `uv.lock` from the server extras and fails on any blocked licence or any i
 Option 3 (isolated proxy venv) remains the structural answer to the transitive footprint, incl.
 `soundfile`'s bundled libsndfile (§2.1).
 
+**Resolved (tsk-owdjzx).** The installer now passes `-c scripts/install-constraints.txt` to every
+controller `pip install`, and that file is regenerated from `uv export` for the default + proxy set
+so the resolver cannot drift from the locked graph the licence gate audits. A drift test in
+`tests/test_install_licences.py` fails if the committed constraints differ from what `uv.lock`
+resolves.
+
 ---
 
 ## 2. Licence FLAGs and compliance hygiene

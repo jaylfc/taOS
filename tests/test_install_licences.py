@@ -8,6 +8,7 @@ distribution, not import. The evidence lives in ``uv.lock`` and in
 from __future__ import annotations
 
 import importlib.util
+import re
 import sys
 from pathlib import Path
 
@@ -96,3 +97,105 @@ def test_proprietary_style_substring_is_not_narrowed_to_word_boundaries():
     regexes as a side effect of the Commons Clause change.
     """
     assert check_install_licences.classify_licence("Proprietary-ish") == "blocked"
+
+
+def test_installer_pip_uses_constraints_file():
+    """Every controller pip install must pin against the committed constraints file.
+
+    ``scripts/install-server.sh`` runs ``pip install -e .[proxy]`` (or the
+    extras-variant). Without ``-c scripts/install-constraints.txt``, pip may
+    resolve newer versions inside the declared ranges than the locked graph
+    the licence gate audits, so a relicense reaches users without tripping
+    the gate.
+    """
+    installer = check_install_licences.REPO_ROOT / "scripts" / "install-server.sh"
+    constraints_rel = "scripts/install-constraints.txt"
+    for line in installer.read_text().splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        # Match actual pip install invocations: the line must start with pip
+        # (possibly via the venv path), not just contain the string inside a
+        # log message or comment.
+        match = re.search(r"^(?:\.?/\.venv/bin/)?pip(?:3)?\s+install\s+(.*)$", stripped)
+        if not match:
+            continue
+        args = match.group(1)
+        assert f"-c {constraints_rel}" in args, (
+            f"pip install in install-server.sh lacks -c {constraints_rel}: {stripped}"
+        )
+
+
+def test_constraints_file_matches_lock():
+    """``scripts/install-constraints.txt`` must match what ``uv export`` emits for the audited set.
+
+    Regenerates the constraints from ``uv.lock`` for the default + proxy
+    extras and fails if the committed file drifts.
+    """
+    import subprocess
+
+    constraints_path = check_install_licences.REPO_ROOT / "scripts" / "install-constraints.txt"
+    assert constraints_path.exists(), f"Constraints file not found: {constraints_path}"
+
+    result = subprocess.run(
+        [
+            "uv", "export",
+            "--no-hashes",
+            "--format", "requirements-txt",
+            "--package", "tinyagentos",
+            "--extra", "proxy",
+            "--no-dev",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=check_install_licences.REPO_ROOT,
+    )
+    assert result.returncode == 0, f"uv export failed:\n{result.stderr}"
+
+    fresh_lines = []
+    for line in result.stdout.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped == "-e .":
+            continue
+        if " ; " in stripped:
+            stripped = stripped.split(" ; ")[0]
+        if "==" in stripped:
+            fresh_lines.append(stripped)
+
+    committed_raw = constraints_path.read_text(encoding="utf-8")
+    expected = "\n".join(fresh_lines) + "\n"
+    assert committed_raw == expected, (
+        f"{constraints_path} is out of sync with uv.lock for the default+proxy set. "
+        "Regenerate with: uv export --no-hashes --format requirements-txt "
+        "--package tinyagentos --extra proxy --no-dev "
+        "| grep -E '^[A-Za-z]' | grep -v '^#' | grep -v '^\\-e ' "
+        "| sed 's/ ;.*//' > scripts/install-constraints.txt"
+    )
+
+
+def test_constraints_set_equals_audited_install_set():
+    """The committed constraints file must pin exactly the packages the licence gate audits.
+
+    A fresh install reads ``scripts/install-constraints.txt``, so its set of
+    pinned packages must equal the set ``resolve_install_set`` returns from
+    ``uv.lock`` for the same extras.
+    """
+    constraints_path = check_install_licences.REPO_ROOT / "scripts" / "install-constraints.txt"
+    assert constraints_path.exists(), f"Constraints file not found: {constraints_path}"
+
+    constraint_names = set()
+    for line in constraints_path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if "==" in stripped:
+            constraint_names.add(check_install_licences.canonical(stripped.split("==")[0]))
+
+    audited = check_install_licences.resolve_install_set()
+    audited_canonical = {check_install_licences.canonical(n) for n in audited}
+
+    assert constraint_names == audited_canonical, (
+        f"Constraints set ({len(constraint_names)}) differs from audited install set ({len(audited_canonical)}).\n"
+        f"Only in constraints: {sorted(constraint_names - audited_canonical)}\n"
+        f"Only in audited:   {sorted(audited_canonical - constraint_names)}"
+    )
