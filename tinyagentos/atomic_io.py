@@ -118,10 +118,18 @@ def _fsync_created_ancestors(path: Path) -> None:
     """Fsync each directory newly created by ``mkdir(parents=True)`` for *path*.
 
     After ``path.parent.mkdir(parents=True, exist_ok=True)``, walks up from
-    ``path.parent`` and fsyncs each directory that was not present before,
-    stopping when it encounters a directory that already existed prior to the
-    call.  This ensures durability of the entire directory subtree created by
-    the ``mkdir`` operation, not just the immediate parent.
+    ``path.parent.parent`` and fsyncs each directory that was not present
+    before, stopping when it encounters a directory that already existed
+    prior to the call.  This ensures durability of the entire directory
+    subtree created by the ``mkdir`` operation, not just the immediate
+    parent.
+
+    The walk starts one level above ``path.parent`` on purpose: fsyncing a
+    directory persists its *entries*, so a newly created directory is made
+    durable by fsyncing *its* parent.  ``path.parent`` is the one directory
+    whose own fsync is not this walk's job -- the caller fsyncs it again
+    once the file has landed in it, and fsyncing it here while it is still
+    empty only buys a duplicate fsync.
     """
     path = Path(path)
 
@@ -142,9 +150,9 @@ def _fsync_created_ancestors(path: Path) -> None:
     if pre_existing == path.parent:
         return
 
-    # Walk up from path.parent and fsync newly created dirs.
+    # Walk up from path.parent.parent and fsync newly created dirs.
     # Stop when we hit the first directory that already existed before.
-    p = path.parent
+    p = path.parent.parent
     while p is not None:
         _fsync_dir(p)
         if p == pre_existing:

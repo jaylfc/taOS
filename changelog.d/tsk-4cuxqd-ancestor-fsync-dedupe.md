@@ -1,0 +1,2 @@
+### Changed
+- In `tinyagentos/atomic_io.py`, `_fsync_created_ancestors` now starts its fsync walk at `path.parent.parent` instead of `path.parent`. Fsyncing a directory persists its entries, so a newly created directory is made durable by fsyncing its parent, and the caller already fsyncs `path.parent` again after the rename lands the file. This removes one redundant fsync whenever `mkdir(parents=True)` actually created a directory tree.
