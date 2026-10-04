@@ -1,16 +1,11 @@
 from __future__ import annotations
 
+import html
 import logging
 
 import httpx
 
 logger = logging.getLogger(__name__)
-
-
-def _escape_telegram_md(text: str) -> str:
-    for ch in ("\\", "_", "*", "`", "["):
-        text = text.replace(ch, f"\\{ch}")
-    return text
 
 
 def _escape_slack(text: str) -> str:
@@ -55,8 +50,8 @@ class WebhookNotifier:
                     f"https://api.telegram.org/bot{bot_token}/sendMessage",
                     json={
                         "chat_id": chat_id,
-                        "text": f"*{_escape_telegram_md(title)}*\n{_escape_telegram_md(message)}",
-                        "parse_mode": "Markdown",
+                        "text": f"<b>{html.escape(title, quote=False)}</b>\n{html.escape(message, quote=False)}",
+                        "parse_mode": "HTML",
                     },
                 )
             else:  # generic

@@ -165,8 +165,8 @@ async def test_notify_telegram_posts_to_correct_url():
     assert call_kwargs[0][0] == expected_url
     body = call_kwargs[1]["json"]
     assert body["chat_id"] == wh["chat_id"]
-    assert body["text"] == "*T*\nM"
-    assert body["parse_mode"] == "Markdown"
+    assert body["text"] == "<b>T</b>\nM"
+    assert body["parse_mode"] == "HTML"
 
 
 # --- notify: multiple webhooks ---
@@ -265,7 +265,6 @@ async def test_send_creates_client_with_timeout():
 async def test_notify_telegram_escapes_markdown_in_text():
     config = _make_config("telegram")
     notifier = WebhookNotifier(config)
-    wh = config["webhooks"][0]
 
     with patch("tinyagentos.webhook_notifier.httpx.AsyncClient") as mock_client_cls:
         mock_client = AsyncMock()
@@ -273,19 +272,17 @@ async def test_notify_telegram_escapes_markdown_in_text():
         mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
 
         await notifier.notify(
-            "T[it]le",
-            "[Review request](https://attacker.example) a_b*c",
+            "T_it*le<x>",
+            "<a href=\"https://attacker.example\">Review</a> a_b*c",
             "info",
         )
 
     call_kwargs = mock_client.post.call_args
     body = call_kwargs[1]["json"]
     text = body["text"]
-    assert "\\[Review request]" in text
-    assert "a\\_b\\*c" in text
-    msg_part = text.split("\n", 1)[1]
-    assert msg_part.startswith("\\[Review request]")
-    assert body["parse_mode"] == "Markdown"
+    assert body["parse_mode"] == "HTML"
+    assert text.startswith("<b>T_it*le&lt;x&gt;</b>\n")
+    assert "&lt;a href=\"https://attacker.example\"&gt;Review&lt;/a&gt; a_b*c" in text
 
 
 # --- markup escaping: slack ---
@@ -294,7 +291,6 @@ async def test_notify_telegram_escapes_markdown_in_text():
 async def test_notify_slack_escapes_mrkdwn_in_text():
     config = _make_config("slack")
     notifier = WebhookNotifier(config)
-    wh = config["webhooks"][0]
 
     with patch("tinyagentos.webhook_notifier.httpx.AsyncClient") as mock_client_cls:
         mock_client = AsyncMock()
