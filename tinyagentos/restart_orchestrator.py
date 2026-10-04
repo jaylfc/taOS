@@ -74,32 +74,45 @@ async def _refresh_agent_host_from_incus(agent: dict) -> str | None:
     """Resolve the agent's current container IPv4 from incus and rewrite the
     stored host when it differs. Returns the new host, or None on no-change
     / lookup failure."""
-    from tinyagentos.containers import get_container_ip
+    try:
+        from tinyagentos.containers import get_container_ip
 
-    name = agent["name"]
-    container_name = agent.get("container_name") or f"taos-agent-{name}"
-    new_ip = await get_container_ip(container_name)
-    if not new_ip:
+        name = agent["name"]
+        container_name = agent.get("container_name") or f"taos-agent-{name}"
+        new_ip = await get_container_ip(container_name)
+        if not new_ip:
+            return None
+
+        old_host = agent.get("host", "")
+        if old_host == new_ip:
+            return None
+
+        logger.info("agent %s: refreshing host from incus: %s -> %s", name, old_host, new_ip)
+        agent["host"] = new_ip
+        return new_ip
+    except Exception:
+        logger.debug("host refresh for agent %s raised", agent.get("name"), exc_info=True)
         return None
-
-    old_host = agent.get("host", "")
-    if old_host == new_ip:
-        return None
-
-    logger.info("agent %s: refreshing host from incus: %s -> %s", name, old_host, new_ip)
-    agent["host"] = new_ip
-    return new_ip
 
 
 async def refresh_all_agent_hosts(app_state) -> None:
     """Refresh stored agent hosts from incus at controller startup."""
     config = app_state.config
+    changed = False
     for agent in config.agents:
-        if agent.get("host"):
+        if agent.get("host") and not agent.get("remote"):
             try:
-                await _refresh_agent_host_from_incus(agent)
+                new_host = await _refresh_agent_host_from_incus(agent)
+                if new_host:
+                    changed = True
             except Exception:
                 logger.exception("host refresh failed for agent %s", agent.get("name"))
+    if changed:
+        try:
+            from tinyagentos.config import save_config_locked
+            await save_config_locked(config, config.config_path)
+        except Exception:
+            logger.exception("failed to persist refreshed agent hosts")
 
 
 class RestartOrchestrator:
@@ -220,11 +233,17 @@ class RestartOrchestrator:
                         else:
                             note_path = await self._write_controller_note(agent, reason, data_dir)
                             break
-                except Exception:
-                    if attempt == 0:
+                except Exception as exc:
+                    if attempt == 0 and isinstance(exc, httpx.ConnectError):
                         new_host = await _refresh_agent_host_from_incus(agent)
                         if new_host:
                             host = new_host
+                            config = self._app_state.config
+                            from tinyagentos.config import save_config_locked
+                            try:
+                                await save_config_locked(config, config.config_path)
+                            except Exception:
+                                logger.exception("failed to persist refreshed host for agent %s", name)
                             continue
                     note_path = await self._write_controller_note(agent, reason, data_dir)
                     break
@@ -620,6 +639,13 @@ async def resume_agents_from_notes(app_state) -> None:
                 new_host = await _refresh_agent_host_from_incus(agent)
                 if new_host:
                     host = new_host
+                    from tinyagentos.config import save_config_locked
+                    try:
+                        await save_config_locked(config, config.config_path)
+                    except Exception:
+                        logger.exception("failed to persist refreshed host for agent %s", name)
+                else:
+                    break
 
         if resumed_ok:
             finalize.append((agent, note_path))
@@ -726,6 +752,13 @@ async def _resume_retry_loop(app_state, names: list[str]) -> None:
                         new_host = await _refresh_agent_host_from_incus(agent)
                         if new_host:
                             host = new_host
+                            from tinyagentos.config import save_config_locked
+                            try:
+                                await save_config_locked(config, config.config_path)
+                            except Exception:
+                                logger.exception("failed to persist refreshed host for agent %s", name)
+                        else:
+                            break
 
                 if resumed_ok:
                     # Per-agent config write is fine here: retry successes are
