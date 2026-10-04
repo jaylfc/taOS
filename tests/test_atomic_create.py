@@ -123,9 +123,11 @@ class TestAncestorfsync:
         target = tmp_path / "a" / "b" / "c" / "key.bin"
 
         fsynced_paths: set[str] = set()
+        calls: list[int] = []
         real_fsync = os.fsync
 
         def tracking_fsync(fd: int) -> None:
+            calls.append(fd)
             try:
                 link = os.readlink(f"/proc/self/fd/{fd}")
                 fsynced_paths.add(os.path.realpath(link))
@@ -149,15 +151,28 @@ class TestAncestorfsync:
                 f"fsynced paths were {fsynced_paths!r}"
             )
 
+        # Five fsyncs: the temp file, the three directories the walk owns
+        # (a/b, a, tmp_path), and the caller's own fsync of the parent it just
+        # created once the file landed in it.  The walk must not fsync the
+        # parent itself -- fsyncing a directory persists its *entries*, so the
+        # fsync that makes `a/b/c` durable is the one the caller makes after
+        # the rename.
+        assert len(calls) == 5, (
+            f"expected os.fsync called 5 times (temp file + 3 ancestor dirs + "
+            f"parent), got {len(calls)} -- fsynced paths were {fsynced_paths!r}"
+        )
+
     def test_fsyncs_all_created_ancestors_create(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         target = tmp_path / "x" / "y" / "z" / "key.bin"
 
         fsynced_paths: set[str] = set()
+        calls: list[int] = []
         real_fsync = os.fsync
 
         def tracking_fsync(fd: int) -> None:
+            calls.append(fd)
             try:
                 link = os.readlink(f"/proc/self/fd/{fd}")
                 fsynced_paths.add(os.path.realpath(link))
@@ -179,6 +194,50 @@ class TestAncestorfsync:
                 f"directory {d} was NOT fsynced - "
                 f"fsynced paths were {fsynced_paths!r}"
             )
+
+        # Same five as the write path: temp file, x/y, x, tmp_path, then the
+        # caller's post-link fsync of the parent.
+        assert len(calls) == 5, (
+            f"expected os.fsync called 5 times (temp file + 3 ancestor dirs + "
+            f"parent), got {len(calls)} -- fsynced paths were {fsynced_paths!r}"
+        )
+
+    def test_walk_starts_at_the_grandparent_not_the_parent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The walk must never fsync the parent it just created.
+
+        Fsyncing a directory persists its *entries*, so the fsync that makes a
+        newly created directory durable is the fsync of *its* parent. The
+        parent the walk would start on is the one the caller fsyncs again after
+        the rename, so walking from it only buys a duplicate fsync.
+        """
+        target = tmp_path / "a" / "b" / "c" / "key.bin"
+
+        walked: list[Path] = []
+        real_fsync_dir = atomic_io._fsync_dir
+
+        def recording_fsync_dir(directory: Path) -> None:
+            walked.append(Path(directory))
+            return real_fsync_dir(directory)
+
+        monkeypatch.setattr(atomic_io, "_fsync_dir", recording_fsync_dir)
+
+        atomic_io._fsync_created_ancestors(target)
+
+        assert target.parent not in walked, (
+            "_fsync_created_ancestors fsynced the parent directory it had just "
+            f"created ({target.parent}) -- the caller fsyncs it again after the "
+            f"rename; walked {walked!r}"
+        )
+        assert walked == [
+            target.parent.parent,
+            target.parent.parent.parent,
+            tmp_path,
+        ], (
+            "the walk must start at the grandparent and stop at the first "
+            f"pre-existing ancestor, got {walked!r}"
+        )
 
     def test_no_extra_fsync_when_parent_already_exists(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
