@@ -33,15 +33,24 @@ class _CacheAwareStaticFiles(StaticFiles):
             filename.startswith("manifest") and filename.endswith(".json")
         )
         is_font = filename.endswith((".woff", ".woff2", ".ttf", ".otf", ".eot"))
+        # excalidraw-assets fonts are not fingerprinted by content hash, so
+        # their URL does not change across app versions; apply a short
+        # revalidate window so a font byte change is not stuck with a
+        # year-long immutable cache.
+        is_excalidraw_asset = path.startswith("desktop/excalidraw-assets/")
         if (
             filename.endswith((".html", ".webmanifest"))
             or filename == "sw.js"
             or is_manifest_json
         ):
             response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-        elif is_font:
+        elif is_font and not is_excalidraw_asset:
             response.headers.setdefault(
                 "Cache-Control", "public, max-age=31536000, immutable"
+            )
+        elif is_font and is_excalidraw_asset:
+            response.headers.setdefault(
+                "Cache-Control", "public, max-age=86400"
             )
         else:
             response.headers.setdefault(

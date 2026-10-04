@@ -1,23 +1,33 @@
 #!/usr/bin/env node
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DESKTOP = path.resolve(__dirname, "..");
+
+// Read the outDir from vite.config.ts so the check stays in sync if it changes.
+let DIST = path.join(DESKTOP, "..", "static", "desktop");
+try {
+  const viteConfig = readFileSync(path.join(DESKTOP, "vite.config.ts"), "utf8");
+  const m = viteConfig.match(/outDir:\s*"([^"]+)"/);
+  if (m) {
+    // vite.config.ts outDir is relative to config.root (the desktop/ dir),
+    // e.g. "../static/desktop". Resolve it to an absolute path.
+    DIST = path.resolve(DESKTOP, m[1]);
+  }
+} catch {}
+
 const NODE_FONTS = path.join(DESKTOP, "node_modules", "@excalidraw", "excalidraw", "dist", "prod", "fonts");
-const DIST = path.join(DESKTOP, "..", "static", "desktop");
 const DIST_FONTS = path.join(DIST, "excalidraw-assets", "fonts");
 
 function walk(dir) {
-  const out = [];
-  for (const entry of readdirSync(dir, { withFileTypes: true, recursive: true })) {
-    if (entry.isFile()) {
-      const full = entry.parentPath ? path.join(entry.parentPath, entry.name) : path.join(dir, entry.name);
-      out.push(path.relative(dir, full));
-    }
-  }
-  return out;
+  return readdirSync(dir, { withFileTypes: true, recursive: true })
+    .filter((e) => e.isFile())
+    .map((e) => {
+      const full = e.parentPath ? path.join(e.parentPath, e.name) : path.join(dir, e.name);
+      return path.relative(dir, full);
+    });
 }
 
 function families(dir) {

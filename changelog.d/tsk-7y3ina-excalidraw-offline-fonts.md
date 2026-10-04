@@ -1,2 +1,3 @@
-### Added
-- Excalidraw canvas is fully offline-capable: the Vite build now copies the entire `@excalidraw/excalidraw` font set (including the CJK Xiaolai family) into `dist/excalidraw-assets/fonts/`, and `window.EXCALIDRAW_ASSET_PATH` is set same-origin before the library loads.
+### Fixed
+
+- Canvas: Excalidraw now loads all fonts (including CJK Xiaolai) from the same origin via a self-hosted `/excalidraw-assets/fonts/` tree, removing the external esm.sh dependency and the associated CSP block. The app is fully functional offline with zero CSP font violations.

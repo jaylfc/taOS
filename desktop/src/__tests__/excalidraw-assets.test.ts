@@ -1,8 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const DESKTOP = path.resolve(import.meta.dirname, "../../");
+const DESKTOP = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../");
 const EXCALIDRAW_ASSETS = path.join(DESKTOP, "src/apps/ProjectsApp/canvas/excalidraw-assets.ts");
 const EXCALIDRAW_BOARD = path.join(DESKTOP, "src/apps/ProjectsApp/canvas/ExcalidrawBoard.tsx");
 const MERMAID = path.join(DESKTOP, "src/apps/ProjectsApp/canvas/mermaid-to-elements.ts");
@@ -14,6 +15,9 @@ describe("excalidraw-assets integration", () => {
     expect(before).not.toBe("");
     const url = new URL(before);
     expect(url.origin).toBe(window.location.origin);
+    // The path must resolve to the served /excalidraw-assets/ directory
+    // so Excalidraw can fetch fonts same-origin without a CSP violation.
+    expect(url.pathname).toMatch(/\/excalidraw-assets\/$/);
   });
 
   it("ExcalidrawBoard.tsx and mermaid-to-elements.ts import ./excalidraw-assets before @excalidraw", async () => {

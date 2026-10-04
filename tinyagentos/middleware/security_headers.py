@@ -26,13 +26,11 @@ def _build_csp(frame_src_extra: str = "") -> str:
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data: https: blob:; "
         f"{frame_src}; "
-        # data: lets the canvas (tldraw) load its bundled translation URIs
-        # (data:application/json), which are inline data, not a network fetch,
-        # and lets Excalidraw's font-subsetting worker fetch its base64 font
-        # patches; without it the canvas falls back to system fonts for CJK.
-        # The two open-meteo origins are the geocoding (city search) and
-        # forecast APIs the built-in Weather app fetches directly; without them
-        # default-src 'self' silently blocks every lookup and the app looks dead.
+        # data: is retained for tldraw's inline translation data URIs
+        # (data:application/json); it is not needed for Excalidraw's
+        # same-origin module workers (governed by default-src 'self') or
+        # for font loading (handled by font-src). Verify removal against a
+        # real canvas boot before dropping.
         "connect-src 'self' ws: wss: data: "
         "https://geocoding-api.open-meteo.com https://api.open-meteo.com"
     )
