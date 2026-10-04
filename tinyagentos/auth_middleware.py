@@ -263,13 +263,14 @@ _AGENT_CANVAS_ROUTES = (
 )
 
 # Decisions route an agent may reach with its own registry JWT (scope
-# decisions_write). Create, answer (mirror), read-own, and list-own.  The route
-# verifies the JWT + grant + project binding.
+# decisions_write). Create, answer (mirror), read-own, list-own, and withdraw-own
+# (tsk-5dulr5).  The route verifies the JWT + grant + project binding.
 _AGENT_DECISIONS_ROUTES = (
     ("POST", re.compile(r"^/api/decisions$")),
     ("POST", re.compile(r"^/api/decisions/[^/]+/answer/agent$")),
     ("GET", re.compile(r"^/api/decisions/[^/]+/agent$")),
     ("GET", re.compile(r"^/api/decisions/agent$")),
+    ("POST", re.compile(r"^/api/decisions/[^/]+/withdraw$")),
 )
 
 # Notification route an agent may reach with its own registry JWT (scope
@@ -420,6 +421,7 @@ def _is_agent_decisions_path(method: str, path: str) -> bool:
       - POST /api/decisions/{id}/answer/agent -> decisions_write (mirror)
       - GET  /api/decisions/{id}/agent        -> decisions_write (read own)
       - GET  /api/decisions/agent             -> decisions_write (list own)
+      - POST /api/decisions/{id}/withdraw     -> decisions_write (withdraw own)
     The route verifies the JWT + grant + project binding."""
     return any(m == method and rx.match(path) for m, rx in _AGENT_DECISIONS_ROUTES)
 

@@ -6,7 +6,7 @@
 
 You have two stores running in parallel:
 
-- **Framework memory** — fast, local store in the container. Dies on redeploy. Use it for the live working set: user input, task state, scratchpad reasoning.
+- **Framework memory** — fast, local store in the container. Dies on redeploy. Use it for live working state: user input, task state, scratchpad reasoning.
 - **taOSmd** — durable, cross-agent store that survives redeploy. Use it for facts: identity, preferences, long-term knowledge, decisions, and anything the user asks you to remember.
 
 ## When to write where
@@ -26,11 +26,11 @@ You have two stores running in parallel:
 
 At the end of every turn, move durable facts to taOSmd: write them there and drop them from framework memory. Do not let them pile up in framework memory; it dies on redeploy.
 
-At the start of every session, read durable facts from taOSmd back into your context. Do not re-ask the user for facts they already told you.
+At the start of every session, read durable facts from taOSmd into your context. Do not re-ask the user for facts they already told you.
 
 ## Conflict rule
 
-If framework memory and taOSmd contradict on a durable fact, taOSmd wins. Framework memory is authoritative only for live working state. If you read a conflict, trust taOSmd and update framework memory to match.
+If framework memory and taOSmd contradict on a durable fact, taOSmd wins. Framework memory is authoritative only for live working state. On conflict, trust taOSmd and update framework memory to match.
 
 ## What NOT to do
 

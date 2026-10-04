@@ -22,7 +22,7 @@ type DecisionType =
   | "approve_deny"
   | "free_text";
 
-type DecisionStatus = "pending" | "answered" | "expired" | "superseded";
+type DecisionStatus = "pending" | "answered" | "expired" | "superseded" | "withdrawn";
 
 interface DecisionOption {
   label: string;
@@ -66,6 +66,10 @@ interface Decision {
   // endpoint.
   parent_decision_id?: string | null;
   notes?: DecisionNote[];
+  // Set when the asker withdrew the decision as moot before it was answered.
+  withdraw_reason?: string | null;
+  withdrawn_at?: number | null;
+  withdrawn_by?: string | null;
 }
 
 // A pending external-agent access request (consent loop). Surfaced here as an
@@ -557,7 +561,11 @@ function HistoryTrail({ decisionId }: { decisionId: string }) {
                     {d.question}
                   </span>
                   <span className="pl-4 text-shell-text-tertiary">
-                    {d.status === "superseded" ? "superseded" : answerLabel(d)}
+                    {d.status === "superseded"
+                      ? "superseded"
+                      : d.status === "withdrawn"
+                        ? "withdrawn"
+                        : answerLabel(d)}
                     {" · "}
                     {relativeTime(d.answer?.answered_at ?? d.created_at)}
                   </span>
@@ -588,16 +596,28 @@ function AnsweredCard({ decision }: { decision: Decision }) {
         <span className="ml-auto text-xs text-shell-text-tertiary">
           {decision.answer?.answered_at
             ? relativeTime(decision.answer.answered_at)
-            : relativeTime(decision.created_at)}
+            : decision.withdrawn_at
+              ? relativeTime(decision.withdrawn_at)
+              : relativeTime(decision.created_at)}
         </span>
       </div>
       <p className="text-sm font-medium text-shell-text">{decision.question}</p>
-      <div className="flex items-center gap-2 text-sm">
-        <CheckCircle2 size={15} className="shrink-0 text-accent" />
-        <span className="text-shell-text-secondary">
-          {decision.status === "superseded" ? "Superseded" : answerLabel(decision)}
-        </span>
-      </div>
+      {decision.status === "withdrawn" ? (
+        <div className="flex items-start gap-2 text-sm">
+          <X size={15} className="mt-0.5 shrink-0 text-shell-text-tertiary" aria-hidden="true" />
+          <span className="text-shell-text-secondary">
+            Withdrawn by {decision.withdrawn_by || decision.from_agent}
+            {decision.withdraw_reason ? `: ${decision.withdraw_reason}` : ""}
+          </span>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2 text-sm">
+          <CheckCircle2 size={15} className="shrink-0 text-accent" />
+          <span className="text-shell-text-secondary">
+            {decision.status === "superseded" ? "Superseded" : answerLabel(decision)}
+          </span>
+        </div>
+      )}
       {notes.length > 0 && (
         <div className="flex flex-col gap-1.5 border-l border-shell-border pl-3">
           {notes.map((n) => (
@@ -660,12 +680,13 @@ function AuthRequestCard({
   );
 }
 
-type TabKey = "pending" | "answered";
+type TabKey = "pending" | "answered" | "withdrawn";
 
 export function DecisionsApp({ windowId: _windowId }: { windowId: string }) {
   const [tab, setTab] = useState<TabKey>("pending");
   const [pending, setPending] = useState<Decision[]>([]);
   const [answered, setAnswered] = useState<Decision[]>([]);
+  const [withdrawn, setWithdrawn] = useState<Decision[]>([]);
   const [authRequests, setAuthRequests] = useState<AuthRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const latestSeq = useRef(0);
@@ -697,6 +718,17 @@ export function DecisionsApp({ windowId: _windowId }: { windowId: string }) {
         const reqs = (data?.requests ?? data ?? []) as AuthRequest[];
         if (seq === latestSeq.current) setAuthRequests(Array.isArray(reqs) ? reqs : []);
       }
+      // Withdrawn decisions (tsk-5dulr5) load on their own, outside the
+      // Promise.all above, so a failure here never blanks the pending inbox.
+      try {
+        const wRes = await fetch("/api/decisions?status=withdrawn", { credentials: "include" });
+        if (wRes.ok) {
+          const next = asDecisionList(await wRes.json());
+          if (seq === latestSeq.current) setWithdrawn(next);
+        }
+      } catch {
+        // Best-effort: keep the last withdrawn list in place.
+      }
     } catch {
       // Network error: keep whatever was last loaded in place.
     } finally {
@@ -717,7 +749,7 @@ export function DecisionsApp({ windowId: _windowId }: { windowId: string }) {
   const refreshSilently = useCallback(() => load({ silent: true }), [load]);
   useRefreshOnFocus(refreshSilently);
 
-  const { stale } = useOsEvents(["decision.answered", "decision.note"], () => {
+  const { stale } = useOsEvents(["decision.answered", "decision.note", "decision.withdrawn"], () => {
     void refreshSilently();
   });
 
@@ -762,7 +794,7 @@ export function DecisionsApp({ windowId: _windowId }: { windowId: string }) {
     [load],
   );
 
-  const list = tab === "pending" ? pending : answered;
+  const list = tab === "pending" ? pending : tab === "answered" ? answered : withdrawn;
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-shell-bg">
@@ -782,7 +814,7 @@ export function DecisionsApp({ windowId: _windowId }: { windowId: string }) {
 
       {/* Tabs */}
       <div className="flex items-center gap-1 border-b border-shell-border px-5 py-2.5">
-        {(["pending", "answered"] as const).map((t) => (
+        {(["pending", "answered", "withdrawn"] as const).map((t) => (
           <button
             key={t}
             type="button"
@@ -797,7 +829,9 @@ export function DecisionsApp({ windowId: _windowId }: { windowId: string }) {
           >
             {t === "pending"
               ? `Pending${pending.length ? ` (${pending.length})` : ""}`
-              : "Archive"}
+              : t === "answered"
+                ? "Archive"
+                : "Withdrawn"}
           </button>
         ))}
       </div>
@@ -831,7 +865,9 @@ export function DecisionsApp({ windowId: _windowId }: { windowId: string }) {
             <p className="text-sm text-shell-text-secondary">
               {tab === "pending"
                 ? "No decisions waiting on you."
-                : "No answered decisions yet."}
+                : tab === "answered"
+                  ? "No answered decisions yet."
+                  : "No withdrawn decisions."}
             </p>
           </div>
         ) : (

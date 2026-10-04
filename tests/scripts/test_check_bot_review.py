@@ -111,6 +111,49 @@ class TestIsRealItem:
         )
         assert not check_mod.is_real_item(item)
 
+    def test_zero_content_issue_comments_are_not_real(self, check_mod) -> None:
+        """Zero-content issue comments (source='issue_comment') are NOT real reviews."""
+        zero_content_bodies = [
+            "Note: you can re-trigger with `@coderabbitai review`.",
+            "Updated settings from `.coderabbit.yaml`.",
+            "Tracking in #3100.",
+            "I will fix that shortly.",
+            "> [!TIP]\n> For best results, initiate chat on the files or code changes.\n\n@jaylfc Acknowledged.",
+        ]
+        for body in zero_content_bodies:
+            item = check_mod.CRItem(
+                id=1, body=body, is_review=False, source="issue_comment",
+            )
+            assert not check_mod.is_real_item(item), f"body={body!r} should not be real"
+
+    def test_line_level_review_comment_is_real(self, check_mod) -> None:
+        """A top-level line comment (source='review_comment', in_reply_to=None) IS real."""
+        item = check_mod.CRItem(
+            id=1, body="Potential null deref in foo()", is_review=False,
+            source="review_comment", in_reply_to=None,
+        )
+        assert check_mod.is_real_item(item)
+
+    def test_reply_in_review_thread_is_not_real(self, check_mod) -> None:
+        """A line comment that is a reply in a thread (in_reply_to set) is NOT real."""
+        item = check_mod.CRItem(
+            id=1, body="Potential null deref in foo()", is_review=False,
+            source="review_comment", in_reply_to=123,
+        )
+        assert not check_mod.is_real_item(item)
+
+    def test_walkthrough_issue_comment_is_still_real(self, check_mod) -> None:
+        """A walkthrough issue comment (source='issue_comment') with Run ID + signal is real."""
+        body = (
+            "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n"
+            "**Run ID**: abc123-def456\n"
+            "Files selected for processing (3)\n"
+        )
+        item = check_mod.CRItem(
+            id=1, body=body, is_review=False, source="issue_comment",
+        )
+        assert check_mod.is_real_item(item)
+
     def test_coderabbit_acknowledgement_is_not_real(self, check_mod) -> None:
         item = check_mod.CRItem(
             id=1, body=ACK_BODY, is_review=False,
@@ -218,6 +261,7 @@ class TestClassify:
             ),
             check_mod.CRItem(
                 id=2, body="Found a bug on line 42.", is_review=False,
+                source="review_comment",
             ),
         ]
         exit_code, message = check_mod.classify(items)
@@ -907,9 +951,19 @@ class TestForkPrGate:
 
     # Arm D control: in-repo PR with real items -> unchanged PASS
     def test_in_repo_pr_real_items_unchanged(self, check_mod) -> None:
+        # In-repo PR with a walkthrough issue comment (auto-summary + Run ID +
+        # Files selected). With the new source-tracking this correctly reads
+        # as a real CodeRabbit review, so the gate reports PASS with "real
+        # CodeRabbit review".
         with patch.object(check_mod, "_api_get", side_effect=self._mock_api(
             check_mod, self.IN_REPO_PR_DATA,
-            issue_comments=[{"user": {"login": "coderabbitai[bot]"}, "body": "## Review\n\nFound an issue.", "id": 1}],
+            issue_comments=[{"user": {"login": "coderabbitai[bot]"},
+                             "body": (
+                                 "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n"
+                                 "**Run ID**: abc123-def456\n"
+                                 "Files selected for processing (3)\n"
+                             ),
+                             "id": 1}],
         )):
             exit_code, message = check_mod.check_bot_review("jaylfc", "taOS", 3007)
         assert exit_code == check_mod.EXIT_OK

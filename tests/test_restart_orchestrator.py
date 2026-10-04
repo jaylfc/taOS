@@ -12,6 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 import tinyagentos.restart_orchestrator as ro
@@ -886,3 +887,127 @@ class TestResumeAgentsFromNotes:
 
         assert agent["paused"] is True
         assert "called" not in posted
+
+
+class TestAgentHostRefresh:
+    @pytest.mark.asyncio
+    async def test_stale_host_rewritten_at_startup(self, tmp_path, monkeypatch):
+        agent = {"name": "naira", "host": "10.26.37.174", "port": 8080, "container_name": "taos-agent-naira"}
+        state = _app_state(tmp_path, agents=[agent])
+
+        save_mock = AsyncMock()
+        monkeypatch.setattr("tinyagentos.config.save_config_locked", save_mock)
+
+        async def fake_get_container_ip(name):
+            if name == "taos-agent-naira":
+                return "10.42.246.174"
+            return None
+
+        monkeypatch.setattr("tinyagentos.containers.get_container_ip", fake_get_container_ip)
+
+        await ro.refresh_all_agent_hosts(state)
+
+        assert agent["host"] == "10.42.246.174"
+        save_mock.assert_awaited_once_with(state.config, state.config.config_path)
+
+    @pytest.mark.asyncio
+    async def test_same_ip_does_not_persist(self, tmp_path, monkeypatch):
+        agent = {"name": "naira", "host": "10.42.246.174", "port": 8080, "container_name": "taos-agent-naira"}
+        state = _app_state(tmp_path, agents=[agent])
+
+        save_mock = AsyncMock()
+        monkeypatch.setattr("tinyagentos.config.save_config_locked", save_mock)
+
+        async def fake_get_container_ip(name):
+            if name == "taos-agent-naira":
+                return "10.42.246.174"
+            return None
+
+        monkeypatch.setattr("tinyagentos.containers.get_container_ip", fake_get_container_ip)
+
+        await ro.refresh_all_agent_hosts(state)
+
+        assert agent["host"] == "10.42.246.174"
+        save_mock.assert_not_awaited()
+
+
+class TestAgentHostRefreshOnConnectFailure:
+    @pytest.mark.asyncio
+    async def test_prepare_connect_failure_triggers_reresolve_and_retry(self, tmp_path, monkeypatch):
+        agent = {"name": "naira", "host": "10.26.37.174", "port": 8080}
+        state = _app_state(tmp_path, agents=[agent])
+        orch = ro.RestartOrchestrator(state)
+
+        post_calls = []
+        async def fake_post(url, json=None):
+            post_calls.append(url)
+            if len(post_calls) == 1:
+                raise httpx.ConnectError("connection refused")
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_resp.json.return_value = {"note_path": "/tmp/note.json"}
+            return mock_resp
+
+        refresh_calls = []
+        async def fake_get_container_ip(name):
+            refresh_calls.append(name)
+            if name == "taos-agent-naira":
+                return "10.42.246.174"
+            return None
+
+        monkeypatch.setattr("tinyagentos.containers.get_container_ip", fake_get_container_ip)
+
+        mock_client = MagicMock()
+        mock_client.post = AsyncMock(side_effect=fake_post)
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+
+        monkeypatch.setattr(orch, "_write_controller_note", AsyncMock())
+        with patch("httpx.AsyncClient", return_value=mock_cm):
+            result = await orch._prepare_agent(agent, "stop", state.data_dir)
+
+        assert len(post_calls) == 2
+        assert "10.26.37.174" in post_calls[0]
+        assert "10.42.246.174" in post_calls[1]
+        assert refresh_calls == ["taos-agent-naira"]
+        assert result["note_path"] == "/tmp/note.json"
+
+
+class TestAppStartupHostRefreshOrder:
+    @pytest.mark.asyncio
+    async def test_host_refresh_runs_before_resume(self, tmp_path, monkeypatch):
+        """Boot-time host refresh must run before resume_agents_from_notes
+        (regression guard for the lead review finding)."""
+        import yaml
+
+        config = {
+            "server": {"host": "0.0.0.0", "port": 6969},
+            "backends": [],
+            "qmd": {"url": "http://localhost:7832"},
+            "agents": [{"name": "naira", "host": "10.26.37.174", "port": 8080, "paused": True, "paused_by_restart": True}],
+            "metrics": {"poll_interval": 30, "retention_days": 30},
+        }
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.dump(config))
+        (tmp_path / ".setup_complete").touch()
+
+        call_order = []
+
+        async def fake_refresh(app_state):
+            call_order.append("refresh")
+
+        async def fake_resume(app_state):
+            call_order.append("resume")
+
+        monkeypatch.setattr("tinyagentos.restart_orchestrator.refresh_all_agent_hosts", fake_refresh)
+        monkeypatch.setattr("tinyagentos.app.resume_agents_from_notes", fake_resume)
+
+        from tinyagentos.app import create_app
+        from unittest.mock import MagicMock
+        with patch("tinyagentos.app.LLMProxy", return_value=MagicMock(port=7834, create_agent_key=MagicMock())):
+            app = create_app(data_dir=tmp_path)
+            async with app.router.lifespan_context(app):
+                pass
+
+        assert call_order == ["refresh", "resume"]

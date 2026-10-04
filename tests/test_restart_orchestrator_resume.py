@@ -103,7 +103,7 @@ class TestResumeAgentsFromNotes:
         """The agent container boots slower than the controller: the first
         attempt fails, the background retry succeeds and unpauses it."""
         agent = {"name": "slow", "host": "10.0.0.7", "port": 8080, "paused": True, "paused_by_restart": True}
-        state = _app_state(tmp_path, [agent])
+        state = _app_state(tmp_path, agents=[agent])
         attempts = {"n": 0}
 
         async def flaky_post(host, port, note):
@@ -111,6 +111,7 @@ class TestResumeAgentsFromNotes:
             return attempts["n"] >= 2
 
         monkeypatch.setattr(ro, "_post_resume", flaky_post)
+        monkeypatch.setattr("tinyagentos.containers.get_container_ip", AsyncMock(return_value=None))
 
         fake_time = 0.0
         def fake_monotonic():
