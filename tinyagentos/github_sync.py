@@ -10,8 +10,12 @@ is fully testable without network access; the HTTP fetch lives in the route.
 
 from __future__ import annotations
 
+import logging
+
 GH_LABEL_PREFIX = "gh-issue-"
 SYNC_ACTOR = "github-sync"
+
+logger = logging.getLogger(__name__)
 
 
 def issue_marker(number: int) -> str:
@@ -82,12 +86,24 @@ async def sync_issues_to_board(
             if state == "closed":
                 if await task_store.close_task(new["id"], closed_by=created_by, reason="issue closed on GitHub"):
                     closed += 1
+                else:
+                    logger.warning(
+                        "github sync: issue #%s closed upstream but card %s refused to close (claimed by another actor?)",
+                        num,
+                        new["id"],
+                    )
             continue
 
         status = card.get("status")
         if state == "closed" and status != "closed":
             if await task_store.close_task(card["id"], closed_by=created_by, reason="issue closed on GitHub"):
                 closed += 1
+            else:
+                logger.warning(
+                    "github sync: issue #%s closed upstream but card %s refused to close (claimed by another actor?)",
+                    num,
+                    card["id"],
+                )
         elif state == "open" and status == "closed":
             if await task_store.reopen_task(card["id"], reopened_by=created_by):
                 reopened += 1
