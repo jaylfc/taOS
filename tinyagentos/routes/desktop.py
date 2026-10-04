@@ -224,7 +224,7 @@ async def serve_spa(rest: str = ""):
     # the right content.
     file_path = SPA_DIR / rest
     if file_path.is_file() and SPA_DIR in file_path.resolve().parents:
-        if rest.startswith("assets/"):
+        if rest.startswith("assets/") or rest.startswith("excalidraw-assets/"):
             return FileResponse(
                 file_path,
                 headers={"Cache-Control": "public, max-age=31536000, immutable"},

@@ -2,8 +2,64 @@ import { build, defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
-import { writeFileSync } from "node:fs";
+import { writeFileSync, cpSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { readBackendVersion } from "./scripts/read-version.mjs";
+
+/** Copies a directory tree (no symlinks) into the build outDir. */
+function copyDir(src: string, dest: string) {
+  try {
+    statSync(dest).isDirectory() || mkdirSync(dest, { recursive: true });
+  } catch {
+    mkdirSync(dest, { recursive: true });
+  }
+  for (const entry of readdirSync(src)) {
+    const s = path.join(src, entry);
+    const d = path.join(dest, entry);
+    const st = statSync(s);
+    if (st.isDirectory()) {
+      copyDir(s, d);
+    } else {
+      cpSync(s, d);
+    }
+  }
+}
+
+/** Copies the full Excalidraw font tree from node_modules into the build
+ *  output so the app can serve them from the same origin (offline-first,
+ *  CSP-clean). Reusable: additional asset trees can be added via the same
+ *  plugin instance or a second one. */
+function copyExcalidrawAssetsPlugin() {
+  let outDir = "";
+  const srcRoot = path.resolve(
+    __dirname,
+    "node_modules",
+    "@excalidraw",
+    "excalidraw",
+    "dist",
+    "prod",
+  );
+
+  return {
+    name: "taos-copy-excalidraw-assets",
+    apply: "build" as const,
+    configResolved(config: import("vite").ResolvedConfig) {
+      outDir = path.resolve(config.root, config.build.outDir);
+    },
+    writeBundle() {
+      const srcFonts = path.join(srcRoot, "fonts");
+      const destFonts = path.join(outDir, "excalidraw-assets", "fonts");
+      copyDir(srcFonts, destFonts);
+      const licenceSrc = path.join(srcRoot, "licence");
+      try {
+        if (statSync(licenceSrc).isDirectory()) {
+          copyDir(licenceSrc, path.join(outDir, "excalidraw-assets", "licence"));
+        }
+      } catch {
+        // licence directory not present in this package version; skip.
+      }
+    },
+  };
+}
 
 /** Writes version.json to the build output so the running SPA can poll it and
  *  detect when a new build has been deployed. */
@@ -112,7 +168,7 @@ export default defineConfig({
   define: {
     __TAOS_VERSION__: JSON.stringify(TAOS_VERSION),
   },
-  plugins: [react(), tailwindcss(), spaVersionPlugin(), serviceWorkerPlugin()],
+  plugins: [react(), tailwindcss(), spaVersionPlugin(), serviceWorkerPlugin(), copyExcalidrawAssetsPlugin()],
   base: "/desktop/",
   resolve: {
     alias: { "@": path.resolve(__dirname, "src") },
