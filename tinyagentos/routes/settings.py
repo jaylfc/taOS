@@ -23,7 +23,7 @@ from tinyagentos.hardware import _detect_device_class
 from tinyagentos.auto_update import resolve_tracked_branch, is_valid_branch_name, PREF_NAMESPACE
 from tinyagentos.data_snapshot import snapshot_data_dir
 from tinyagentos.middleware.upload_body_limit import register_upload_cap
-from tinyagentos.safe_archive import ArchiveError, extract_tar_safely
+from tinyagentos.safe_archive import ArchiveError, extract_tar_safely, open_tar_gz
 from tinyagentos.update_runner import switch_to_branch
 from tinyagentos.restart_orchestrator import write_pending_restart
 from tinyagentos.launchd_migration import apply_launchd_migration
@@ -343,7 +343,7 @@ async def restore_backup(request: Request, file: UploadFile):
         return JSONResponse({"error": "backup file too large (64 MB max)"}, status_code=413)
     buf = io.BytesIO(content)
     try:
-        with tarfile.open(fileobj=buf, mode="r:gz") as tar:
+        with open_tar_gz(buf, kind="backup") as tar:
             # Stage inside data_dir (same filesystem, so the moves are renames).
             # extract_tar_safely applies the shared bomb caps before anything is
             # written and PEP 706's "data" filter while it writes, so the

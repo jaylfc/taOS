@@ -146,3 +146,93 @@ def test_a_real_tar_with_a_negative_directory_size_is_rejected():
         pytest.raises(ArchiveError, match="member size invalid"),
     ):
         check_tar_limits(tar, kind="backup", max_uncompressed_bytes=1000)
+
+
+def test_gnu_long_name_first_member_refused_before_decompression(tmp_path):
+    """An 8 MiB GNU long-name helper as the first member must be refused before
+    the gzip payload is fully decompressed."""
+    from tinyagentos.safe_archive import open_tar_gz
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz", format=tarfile.GNU_FORMAT) as tar:
+        info = tarfile.TarInfo("A" * (8 * 1024 * 1024))
+        info.size = 1
+        tar.addfile(info, io.BytesIO(b"x"))
+    raw = buf.getvalue()
+
+    read_bytes = []
+    original_read = safe_archive.gzip.GzipFile.read
+
+    def counting_read(self, size=-1):
+        result = original_read(self, size)
+        if result:
+            read_bytes.append(len(result))
+        return result
+
+    safe_archive.gzip.GzipFile.read = counting_read
+    try:
+        with pytest.raises(ArchiveError):
+            with open_tar_gz(io.BytesIO(raw)) as tar:
+                check_tar_limits(tar)
+        total = sum(read_bytes)
+        assert total < 64 * 1024, f"decompressed {total} bytes, expected < 64 KiB"
+    finally:
+        safe_archive.gzip.GzipFile.read = original_read
+
+
+def test_pax_long_name_second_member_refused_before_decompression(tmp_path):
+    """A PAX long-name helper as the second member must be refused before the
+    gzip payload is fully decompressed."""
+    from tinyagentos.safe_archive import open_tar_gz
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz", format=tarfile.PAX_FORMAT) as tar:
+        info = tarfile.TarInfo("small.txt")
+        info.size = 1
+        tar.addfile(info, io.BytesIO(b"s"))
+        info2 = tarfile.TarInfo("A" * (8 * 1024 * 1024))
+        info2.size = 1
+        tar.addfile(info2, io.BytesIO(b"x"))
+    raw = buf.getvalue()
+
+    read_bytes = []
+    original_read = safe_archive.gzip.GzipFile.read
+
+    def counting_read(self, size=-1):
+        result = original_read(self, size)
+        if result:
+            read_bytes.append(len(result))
+        return result
+
+    safe_archive.gzip.GzipFile.read = counting_read
+    try:
+        with pytest.raises(ArchiveError):
+            with open_tar_gz(io.BytesIO(raw)) as tar:
+                check_tar_limits(tar)
+        total = sum(read_bytes)
+        assert total < 64 * 1024, f"decompressed {total} bytes, expected < 64 KiB"
+    finally:
+        safe_archive.gzip.GzipFile.read = original_read
+
+
+def test_open_tar_gz_extracts_a_legit_archive(tmp_path):
+    """A legitimate archive extracts correctly through open_tar_gz."""
+    from tinyagentos.safe_archive import open_tar_gz
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz", format=tarfile.GNU_FORMAT) as tar:
+        info = tarfile.TarInfo("big.bin")
+        info.size = 20 * 1024 * 1024
+        tar.addfile(info, io.BufferedReader(_Zeros(20 * 1024 * 1024)))
+        info2 = tarfile.TarInfo("small.txt")
+        info2.size = 5
+        tar.addfile(info2, io.BytesIO(b"hello"))
+    raw = buf.getvalue()
+
+    dest = tmp_path / "out"
+    dest.mkdir()
+    with open_tar_gz(io.BytesIO(raw)) as tar:
+        extract_tar_safely(tar, dest, kind="test")
+    assert (dest / "big.bin").exists()
+    assert (dest / "big.bin").stat().st_size == 20 * 1024 * 1024
+    assert (dest / "small.txt").read_text() == "hello"
