@@ -864,16 +864,32 @@ COW_EFFECTIVE_MODE="n/a"
 # worker-container features are simply unavailable until one is added.
 
 _start_incusd() {
-    if command -v systemctl >/dev/null 2>&1 && systemctl cat incus.service >/dev/null 2>&1; then
-        sudo systemctl enable --now incus.service
+    local _systemd_run_dir="${TAOS_SYSTEMD_RUN_DIR:-/run/systemd/system}"
+    local _openrc_run_dir="${TAOS_OPENRC_RUN_DIR:-/run/openrc}"
+
+    if [[ -d "$_systemd_run_dir" ]]; then
+        if ! systemctl cat incus.service >/dev/null 2>&1; then
+            warn "incus.service unit not found - skipping incus init"
+            return 1
+        fi
+        sudo systemctl enable --now incus.service || {
+            warn "systemctl enable --now incus failed - skipping incus init"
+            return 1
+        }
         return 0
-    elif command -v rc-update >/dev/null 2>&1; then
+    elif command -v rc-service >/dev/null 2>&1 && [[ -d "$_openrc_run_dir" ]]; then
         local _name="incus"
         if [[ -f /etc/init.d/incusd ]]; then
             _name="incusd"
         fi
-        sudo rc-update add "$_name" default
-        sudo rc-service "$_name" start
+        sudo rc-update add "$_name" default || {
+            warn "rc-update add $_name failed - skipping incus init"
+            return 1
+        }
+        sudo rc-service "$_name" start || {
+            warn "rc-service $_name start failed - skipping incus init"
+            return 1
+        }
         return 0
     else
         warn "incus installed but no service unit for this init system - incusd not started; skipping incus init"
@@ -1050,7 +1066,7 @@ ensure_container_runtime() {
             warn "  worker containers will be unavailable until a runtime is installed"
         fi
     elif command -v apk >/dev/null 2>&1; then
-        if apk search -x incus 2>/dev/null | grep -q .; then
+        if [[ -n "$(apk search -x incus 2>/dev/null)" ]]; then
             log "installing incus via apk"
             if sudo apk add incus incus-client; then
                 if command -v rc-update >/dev/null 2>&1; then

@@ -16,11 +16,11 @@ def _extract(text, name):
         i += 1
 
 
-def _run(tmp_path, pm, init, resolvable=True, unit=True):
+def _run(tmp_path, pm, init, resolvable=True, unit=True, systemctl_enable_rc=0, rc_service_rc=0):
     b = tmp_path / "bin"
     b.mkdir()
     log = tmp_path / "calls.log"
-    for tool in ["grep", "sed", "head", "awk", "cat", "mktemp", "mv", "rm", "tr", "chmod", "bash", "sh", "env"]:
+    for tool in ["grep", "sed", "head", "awk", "cat", "mktemp", "mv", "rm", "tr", "chmod", "bash", "sh", "env", "mkdir", "rmdir"]:
         p = shutil.which(tool)
         if p:
             os.symlink(p, b / tool)
@@ -42,15 +42,23 @@ def _run(tmp_path, pm, init, resolvable=True, unit=True):
         stub("apt-get", f'case "$*" in *install*) {make_incus} ;; esac')
         stub("apt-cache", "echo \"incus-base | 6.0 | http://deb\"")
     if init == "systemd":
-        stub("systemctl", f'case "$1" in cat) exit {0 if unit else 1} ;; esac')
+        stub("systemctl", f'case "$1" in cat) exit {0 if unit else 1} ;; enable) exit {systemctl_enable_rc} ;; esac')
     elif init == "openrc":
         stub("rc-update", "")
-        stub("rc-service", "")
+        stub("rc-service", f"exit {rc_service_rc}")
     text = SCRIPT.read_text()
     fns = _extract(text, "ensure_container_runtime")
     if "_start_incusd()" in text:
         fns = _extract(text, "_start_incusd") + "\n" + fns
     w = tmp_path / "w.sh"
+    # Set env vars for the /run directory checks so tests can control them
+    # Only create the directory for the init system being tested
+    systemd_run_dir = tmp_path / "run" / "systemd" / "system"
+    openrc_run_dir = tmp_path / "run" / "openrc"
+    if init == "systemd":
+        systemd_run_dir.mkdir(parents=True, exist_ok=True)
+    elif init == "openrc":
+        openrc_run_dir.mkdir(parents=True, exist_ok=True)
     w.write_text(
         "log(){ echo \"LOG $*\"; }\n"
         "warn(){ echo \"WARN $*\" >&2; }\n"
@@ -62,7 +70,12 @@ def _run(tmp_path, pm, init, resolvable=True, unit=True):
     )
     r = subprocess.run(
         [shutil.which("bash"), str(w)],
-        env={"PATH": str(b), "HOME": str(tmp_path)},
+        env={
+            "PATH": str(b),
+            "HOME": str(tmp_path),
+            "TAOS_SYSTEMD_RUN_DIR": str(systemd_run_dir),
+            "TAOS_OPENRC_RUN_DIR": str(openrc_run_dir),
+        },
         capture_output=True,
         text=True,
         timeout=30,
@@ -91,7 +104,7 @@ def test_pacman_systemd_installs_and_starts(tmp_path):
 def test_apk_systemd_without_unit_skips_init(tmp_path):
     r, log = _run(tmp_path, "apk", "systemd", unit=False)
     assert "apk add incus incus-client" in log, log
-    assert "no service unit" in r.stderr, r.stderr
+    assert "incus.service unit not found" in r.stderr, r.stderr
     assert "incus admin init --auto" not in log, log
     assert r.stdout.strip().endswith("RC=0")
 
@@ -107,3 +120,22 @@ def test_apt_path_still_runs_incus_init(tmp_path):
     assert "apt-get install" in log, log
     assert "incus admin init --auto" in log, log
     assert "systemctl enable" not in log, log
+
+
+def test_systemd_systemctl_enable_fails_no_incus_init(tmp_path):
+    # systemd running (TAOS_SYSTEMD_RUN_DIR exists), but systemctl enable --now fails
+    r, log = _run(tmp_path, "apk", "systemd", systemctl_enable_rc=1)
+    assert "apk add incus incus-client" in log, log
+    assert "systemctl enable --now incus.service" in log, log
+    assert "incus admin init --auto" not in log, log
+    assert r.stdout.strip().endswith("RC=0")
+
+
+def test_openrc_rc_service_fails_no_incus_init(tmp_path):
+    # OpenRC running (TAOS_OPENRC_RUN_DIR exists + rc-service), but rc-service start fails
+    r, log = _run(tmp_path, "apk", "openrc", rc_service_rc=1)
+    assert "apk add incus incus-client" in log, log
+    assert "rc-update add" in log, log
+    assert "rc-service" in log, log
+    assert "incus admin init --auto" not in log, log
+    assert r.stdout.strip().endswith("RC=0")
