@@ -608,6 +608,69 @@ def test_device_tls_ed25519_key_regenerates(tmp_path):
         "Stored key should match stored cert after regeneration"
 
 
+def test_device_tls_ec_key_regenerates(tmp_path):
+    """When key is EC (non-RSA), regenerate new RSA key."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, NoEncryption
+
+    # Generate a valid self-signed RSA cert
+    from cryptography import x509
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+    import datetime
+
+    rsa_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = issuer = x509.Name([
+        x509.NameAttribute(NameOID.COMMON_NAME, "taOS Orb device TLS"),
+    ])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(rsa_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now)
+        .not_valid_after(now + datetime.timedelta(days=3650))
+        .sign(rsa_key, hashes.SHA256())
+    )
+
+    cert_pem = cert.public_bytes(Encoding.PEM)
+    key_pem = rsa_key.private_bytes(
+        encoding=Encoding.PEM,
+        format=PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=NoEncryption(),
+    )
+    (tmp_path / "device_tls.crt").write_bytes(cert_pem)
+
+    # Generate an EC private key (non-RSA)
+    ec_key = ec.generate_private_key(ec.SECP256R1())
+    ec_key_pem = ec_key.private_bytes(
+        encoding=Encoding.PEM,
+        format=PrivateFormat.PKCS8,
+        encryption_algorithm=NoEncryption(),
+    )
+    (tmp_path / "device_tls.key").write_bytes(ec_key_pem)
+
+    # Call load_or_create_device_tls_cert - it should detect that the EC key
+    # is not RSA and regenerate new RSA pair
+    cert_path, key_path, fp = load_or_create_device_tls_cert(tmp_path)
+
+    # Verify it regenerated new files
+    new_cert_pem = cert_path.read_bytes()
+    new_cert = x509.load_pem_x509_certificate(new_cert_pem)
+    new_fp = _fingerprint_from_der(new_cert.public_bytes(Encoding.DER))
+    assert fp == new_fp, "Should return new fingerprint after EC key regeneration"
+
+    # Verify the stored key now matches the stored cert (both should be RSA)
+    new_key_pem = key_path.read_bytes()
+    new_key = serialization.load_pem_private_key(new_key_pem, password=None)
+    assert isinstance(new_key, rsa.RSAPrivateKey), "Regenerated key should be RSA"
+    assert new_key.public_key().public_numbers() == new_cert.public_key().public_numbers(), \
+        "Stored key should match stored cert after regeneration"
+
+
 def test_device_tls_unsupported_algorithm_regenerates(tmp_path, monkeypatch):
     """When load_pem_private_key raises UnsupportedAlgorithm, regenerate new pair."""
     from cryptography.exceptions import UnsupportedAlgorithm
@@ -642,12 +705,9 @@ def test_device_tls_unsupported_algorithm_regenerates(tmp_path, monkeypatch):
     cert_pem = cert.public_bytes(serialization.Encoding.PEM)
     (tmp_path / "device_tls.crt").write_bytes(cert_pem)
 
-    # Store original fingerprint
     original_fp = _fingerprint_from_der(cert.public_bytes(serialization.Encoding.DER))
 
     # Patch load_pem_private_key to raise UnsupportedAlgorithm
-    original_load = serialization.load_pem_private_key
-
     def mock_load_pem_private_key(data, password):
         raise UnsupportedAlgorithm("unsupported key type")
 
