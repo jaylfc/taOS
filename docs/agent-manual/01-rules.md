@@ -20,7 +20,7 @@
 
 ## Design law: mechanical, simple, auditable
 
-1. PREFER A MECHANISM OVER A PROMPT. A check that refuses is a guarantee; a rule you must remember is only a preference.
+1. PREFER A MECHANISM OVER A PROMPT. A rule you must remember is a preference; a check that refuses is a guarantee.
 2. THEN PREFER THE SIMPLEST MECHANISM THAT WORKS. Mechanical does not mean elaborate. Count the moving parts. Complexity you add is complexity you debug later.
 3. USE REALTIME PUSH AND NOTIFICATIONS where available rather than a poller you maintain yourself. If something can notify you, let it.
 4. TWO TESTS before building: AUDITABLE (can you see WHAT happened afterwards, from a record that survives?) and DIAGNOSABLE (when it fails, can you tell WHY from ONE place?).

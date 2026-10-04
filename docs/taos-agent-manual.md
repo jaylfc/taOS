@@ -36,7 +36,7 @@ Your character:
 
 ## Design law: mechanical, simple, auditable
 
-1. PREFER A MECHANISM OVER A PROMPT. A check that refuses is a guarantee; a rule you must remember is only a preference.
+1. PREFER A MECHANISM OVER A PROMPT. A rule you must remember is a preference; a check that refuses is a guarantee.
 2. THEN PREFER THE SIMPLEST MECHANISM THAT WORKS. Mechanical does not mean elaborate. Count the moving parts. Complexity you add is complexity you debug later.
 3. USE REALTIME PUSH AND NOTIFICATIONS where available rather than a poller you maintain yourself. If something can notify you, let it.
 4. TWO TESTS before building: AUDITABLE (can you see WHAT happened afterwards, from a record that survives?) and DIAGNOSABLE (when it fails, can you tell WHY from ONE place?).
@@ -74,7 +74,7 @@ taOS is a self-hosted operating system for AI agents. It runs on the user's own 
 | Community | github.com/jaylfc/taOS/discussions |
 | Bug reports | github.com/jaylfc/taOS/issues |
 
-Old installs keep their old ports automatically; users never need to change ports by hand.
+Old installs keep their old ports automatically. Users never need to change ports by hand.
 
 ---
 
@@ -96,7 +96,7 @@ Old installs keep their old ports automatically; users never need to change port
 - **Decisions**: your inbox for agent approvals and questions.
 - **Observatory**: watch the agent fleet; pause or throttle work lanes.
 - **Notifications**: the bell. Agents post to it with the `notifications_write` grant.
-- Other bundled apps (Library, Channels, Secrets, Routines, Images, MCP, Guides and more); unknown ones are guessable from their name -- point to Guides.
+- Other bundled apps (Library, Channels, Secrets, Routines, Images, MCP, Guides and more); if you do not know one, guess from its name and point to Guides.
 
 ---
 
@@ -223,6 +223,31 @@ Change one thing at a time (style word, detail, negative term), keep the same se
 ---
 
 # Project Files API
+
+Member agents read and write a project's Files through the HTTP API, keyed on the
+project **slug**. Authenticate with `Authorization: Bearer <token>`. The granted scope
+is bound to this project: a token for a different project returns 404.
+
+## One-write principle
+
+POST to `/upload`, then GET it back under the same path. There is no second publish step.
+
+- `POST /api/projects/{slug}/files/upload?path=<subdir>` — multipart form field `file`.
+  Returns `{name, path, stored_as, size, status}`; `stored_as` is the real path relative
+  to the files root, so compare it with what you meant to write. `path` is the target
+  DIRECTORY (never the file name) and may be sent as `?path=` or as a form field; sending
+  both with different values is a 400. Optional form field `filename=<name>` sets the
+  stored name (a bare name only: `/`, `\`, `.` or `..` is a 400). Needs `files_write`.
+- `POST /api/projects/{slug}/mkdir` with JSON `{"path": "<subdir>"}` — create a folder.
+
+## List and fetch
+
+- `GET /api/projects/{slug}/files?path=<subdir>` — list entries (`files_read`).
+- `GET /api/projects/{slug}/files/{path}` — stream one file as raw bytes (`files_read`).
+- `GET /api/projects/{slug}/stats` — `{total_files, total_size}` (`files_read`).
+- `GET /api/projects/{slug}/files/watch` — SSE stream that pushes directory listing on changes.
+
+Write routes need `files_write`; read routes need `files_read`.
 
 ---
 
