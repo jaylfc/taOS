@@ -192,21 +192,62 @@ def _mock_hailo_ollama_binary_inside_dir(tmp_path: Path) -> None:
     binary.chmod(0o755)
 
 
-def _assert_caller_reports_conflict(script: Path, caller: str) -> None:
-    text = script.read_text()
-    branch = re.compile(
-        r"if \(\( rc == 3 \)\); then\s*"
-        r"warn \"[^\"]*pre-existing hailo-ollama on :8000[^\"]*"
-        r"taOS backend not installed on 7836[^\"]*\""
+def _write_caller_wrapper(
+    tmp_path: Path,
+    function_body: str,
+    call_line: str,
+) -> Path:
+    """Create a wrapper script that defines log/warn, sources the extracted
+    caller function, and invokes it."""
+    wrapper = tmp_path / "caller_wrapper.sh"
+    wrapper.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "log(){ echo \"LOG $*\"; }\n"
+        "warn(){ echo \"WARN $*\"; }\n"
+        + function_body
+        + "\n"
+        + call_line
+        + "\n"
+        + "echo CONTINUED\n"
     )
-    assert branch.search(text), (
-        f"{caller} must branch on exit status 3 and name the :8000 conflict; "
-        "the generic failure warning alone leaves the auto-install silence bug uncovered"
-    )
-    assert 'warn "install-hailo.sh failed - continuing ' in text, (
-        f"{caller} must retain its generic warning for non-3 failures"
+    wrapper.chmod(0o755)
+    return wrapper
+
+
+def _run_caller(wrapper: Path, env: dict) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["/bin/bash", str(wrapper)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
 
+
+def _assert_exit_3_conflict(result: subprocess.CompletedProcess[str]) -> None:
+    assert "7836" in result.stdout, (
+        "exit-3 must print the conflict message mentioning 7836; "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    assert "CONTINUED" in result.stdout
+
+
+def _assert_exit_1_generic(result: subprocess.CompletedProcess[str]) -> None:
+    assert "install-hailo.sh failed - continuing" in result.stdout, (
+        "exit-1 must print the generic failure message; "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    assert "CONTINUED" in result.stdout
+
+
+def _assert_exit_0_no_warn(result: subprocess.CompletedProcess[str]) -> None:
+    assert "7836" not in result.stdout
+    assert "install-hailo.sh failed - continuing" not in result.stdout
+    assert "CONTINUED" in result.stdout
+
+
+# --- detect_preexisting_hailoollama behavioural tests -------------------------
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash required")
 def test_preexisting_instance_refuses_with_exit_3(tmp_path: Path) -> None:
@@ -314,7 +355,7 @@ def test_preexisting_unit_without_marker_refuses(tmp_path: Path) -> None:
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash required")
 def test_upstream_unit_without_marker_is_refused(tmp_path: Path) -> None:
     """An upstream hailo-ollama.service with NO OLLAMA_HOST marker must refuse with exit 3.
-    
+
     This is the bug from #3201: the detection code only checks if the marker is WRONG,
     but not if the marker is MISSING. An upstream unit without any OLLAMA_HOST line
     was accepted as our own install (rc 0) instead of being refused (rc 3).
@@ -372,13 +413,83 @@ def test_our_own_install_without_markers_allowed(tmp_path: Path) -> None:
     )
 
 
-def test_install_server_reports_hailo_conflict() -> None:
-    _assert_caller_reports_conflict(CALLERS["controller"], "install-server.sh")
+# --- caller behavioural tests -------------------------------------------------
+
+_CALLER_CONFIGS = {
+    "controller": {
+        "script": SERVER_SCRIPT,
+        "function": "install_hailo_if_pending",
+        "call_line": lambda tmp: (
+            f"HAILO_PENDING_INSTALL=1 INSTALL_DIR={tmp} install_hailo_if_pending"
+        ),
+        "extra_env": {},
+    },
+    "worker": {
+        "script": WORKER_SCRIPT,
+        "function": "chain_hailo_installer",
+        "call_line": lambda tmp: (
+            f"chain_hailo_installer {tmp}/scripts/install-hailo.sh"
+        ),
+        "extra_env": {},
+    },
+}
 
 
-def test_install_worker_reports_hailo_conflict() -> None:
-    _assert_caller_reports_conflict(CALLERS["worker"], "install-worker.sh")
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash required")
+@pytest.mark.parametrize("caller,exit_code", [
+    ("controller", 3),
+    ("controller", 1),
+    ("controller", 0),
+    ("worker", 3),
+    ("worker", 1),
+    ("worker", 0),
+])
+def test_caller_exit_codes(
+    tmp_path: Path, caller: str, exit_code: int
+) -> None:
+    """Each installer caller must branch correctly on exit codes 3, 1, and 0
+    from install-hailo.sh, running the real function against a stubbed script."""
+    config = _CALLER_CONFIGS[caller]
 
+    hailo_script = tmp_path / "scripts" / "install-hailo.sh"
+    hailo_script.parent.mkdir(parents=True)
+    hailo_script.write_text(f"#!/usr/bin/env bash\nexit {exit_code}\n")
+    hailo_script.chmod(0o755)
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    sudo_stub = bin_dir / "sudo"
+    sudo_stub.write_text(
+        "#!/usr/bin/sh\n"
+        '[ "$1" = -E ] && shift\n'
+        'exec "$@"\n'
+    )
+    sudo_stub.chmod(0o755)
+
+    function_body = _extract_function(config["script"], config["function"])
+    call_line = config["call_line"](tmp_path)
+    wrapper = _write_caller_wrapper(
+        tmp_path,
+        function_body,
+        call_line,
+    )
+    env = {
+        "PATH": str(bin_dir) + ":/usr/bin:/bin",
+        "LANG": "C.UTF-8",
+        "HOME": str(tmp_path),
+        **config["extra_env"],
+    }
+    result = _run_caller(wrapper, env)
+
+    if exit_code == 3:
+        _assert_exit_3_conflict(result)
+    elif exit_code == 1:
+        _assert_exit_1_generic(result)
+    else:
+        _assert_exit_0_no_warn(result)
+
+
+# --- misc ---------------------------------------------------------------------
 
 def test_probe_url_uses_localhost_not_0000() -> None:
     """The probe URL in detect_preexisting_hailoollama must use
