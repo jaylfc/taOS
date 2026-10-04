@@ -114,6 +114,44 @@ def _fsync_dir(directory: Path) -> None:
         os.close(dir_fd)
 
 
+def _fsync_created_ancestors(path: Path) -> None:
+    """Fsync each directory newly created by ``mkdir(parents=True)`` for *path*.
+
+    After ``path.parent.mkdir(parents=True, exist_ok=True)``, walks up from
+    ``path.parent`` and fsyncs each directory that was not present before,
+    stopping when it encounters a directory that already existed prior to the
+    call.  This ensures durability of the entire directory subtree created by
+    the ``mkdir`` operation, not just the immediate parent.
+    """
+    path = Path(path)
+
+    # Find the first pre-existing ancestor by walking up from path.parent
+    pre_existing: Path | None = None
+    p = path.parent
+    while p is not None:
+        if p.exists():
+            pre_existing = p
+            break
+        p = p.parent
+
+    # Create the directories; the helper owns the mkdir so callers do not
+    # need to (and must not) call mkdir(parents=True) themselves.
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    # If nothing was created (parent already existed), no ancestor fsyncs needed.
+    if pre_existing == path.parent:
+        return
+
+    # Walk up from path.parent and fsync newly created dirs.
+    # Stop when we hit the first directory that already existed before.
+    p = path.parent
+    while p is not None:
+        _fsync_dir(p)
+        if p == pre_existing:
+            break
+        p = p.parent
+
+
 def atomic_write_bytes(path: Path, data: bytes, *, mode: int | None = None) -> None:
     """Durably replace *path* with *data*.
 
@@ -123,7 +161,7 @@ def atomic_write_bytes(path: Path, data: bytes, *, mode: int | None = None) -> N
     (or the process umask applies for a new file).
     """
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _fsync_created_ancestors(path)
 
     if mode is None:
         try:
@@ -159,9 +197,7 @@ def atomic_write_bytes(path: Path, data: bytes, *, mode: int | None = None) -> N
         except OSError:
             pass
         raise
-
     _fsync_dir(path.parent)
-
 
 def _create_via_claim(path: Path, data: bytes, mode: int | None) -> bytes:
     """``atomic_create_bytes`` on a filesystem with no hard links.
@@ -297,7 +333,7 @@ def atomic_create_bytes(path: Path, data: bytes, *, mode: int | None = None) -> 
     same bytes back to use instead of its own.
     """
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _fsync_created_ancestors(path)
 
     try:
         return path.read_bytes()

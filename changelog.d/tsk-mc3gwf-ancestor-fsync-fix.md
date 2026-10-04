@@ -1,0 +1,2 @@
+### Fixed
+- In `tinyagentos/atomic_io.py`, `_fsync_created_ancestors` no longer fsyncs `path.parent` when `mkdir(parents=True)` created nothing (the parent already existed). This removes an extra fsync on every ordinary write. `atomic_write_bytes` also restores `_fsync_dir(path.parent)` after the try/except block, matching origin/dev.
