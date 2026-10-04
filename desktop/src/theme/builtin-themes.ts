@@ -35,6 +35,9 @@ export const BUILTIN_THEMES: BuiltinTheme[] = [
         "--color-shell-text": "rgba(0, 0, 0, 0.85)",
         "--color-shell-text-secondary": "rgba(0, 0, 0, 0.55)",
         "--color-shell-text-tertiary": "rgba(0, 0, 0, 0.42)",
+        "--color-shell-text-disabled": "rgba(0, 0, 0, 0.20)",
+        "--color-shell-text-hint": "rgba(0, 0, 0, 0.28)",
+        "--color-shell-text-subtle-hover": "rgba(0, 0, 0, 0.42)",
         // Slate accent — the dark theme's cool-neutral grey, darkened to read on light.
         "--color-accent": "#5b6472",
         "--color-accent-glow": "rgba(91, 100, 114, 0.25)",
@@ -78,6 +81,9 @@ export const BUILTIN_THEMES: BuiltinTheme[] = [
         "--color-shell-text": "rgba(255, 255, 255, 0.85)",
         "--color-shell-text-secondary": "rgba(255, 255, 255, 0.5)",
         "--color-shell-text-tertiary": "rgba(255, 255, 255, 0.42)",
+        "--color-shell-text-disabled": "rgba(255, 255, 255, 0.15)",
+        "--color-shell-text-hint": "rgba(255, 255, 255, 0.25)",
+        "--color-shell-text-subtle-hover": "rgba(255, 255, 255, 0.4)",
         // Refined periwinkle indigo accent (6:1 on the body), with matching
         // tinted fills, hairline, and a brighter strong variant (10.5:1).
         "--color-accent": "#8b93e6",

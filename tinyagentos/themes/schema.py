@@ -9,6 +9,7 @@ _COLOR_TOKENS = {
     "--color-shell-surface-hover", "--color-shell-surface-active",
     "--color-shell-border", "--color-shell-border-strong",
     "--color-shell-text", "--color-shell-text-secondary", "--color-shell-text-tertiary",
+    "--color-shell-text-disabled", "--color-shell-text-hint", "--color-shell-text-subtle-hover",
     "--color-shell-scrim", "--color-shell-subtle",
     "--color-traffic-close", "--color-traffic-minimize", "--color-traffic-maximize",
     "--color-accent", "--color-accent-glow",
