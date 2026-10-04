@@ -1,2 +1,2 @@
 ### Changed
-- Tightened the compiled agent manual (docs/taos-agent-manual.md) to free margin under the 18500 char cap by trimming wordy prose across docs/agent-manual/*.md. Reverted three non-tightening edits (01-rules rule 1 "only" addition, 04-apps wordier rewrite, 03-facts net-zero semicolon). Restored 11-files-api.md rules to the manual (the moved section contained agent rules, not just reference material, so the move was out of scope). Converted em dashes in docs/project-files-api.md to `--`.
+- Tightened wordy prose in the agent manual to free margin under its size cap.

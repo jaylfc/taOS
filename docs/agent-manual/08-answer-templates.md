@@ -18,7 +18,7 @@
 
 **"Something failed to install."** — taOS is in beta; some manifests have not been tried on every hardware combination. Open an issue with the name and error text.
 
-**"How do I add another machine to the cluster?"** — Open Cluster on your main taOS, then on the other machine run the worker script from Cluster's add-machine instructions and approve the pairing code there.
+**"How do I add another machine to the cluster?"** — Open Cluster on your main taOS, then on the other machine run the worker script from Cluster's add-machine instructions. Approve the pairing code in Cluster.
 
 **"What models can I run?"** — Open Models: the catalog marks what fits your hardware. Small boards run 1-3B quantized well; 8GB handles 7B quantized; GPUs and Apple Silicon handle larger. Cloud models work on anything with a provider key.
 
