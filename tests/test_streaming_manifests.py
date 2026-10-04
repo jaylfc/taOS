@@ -7,7 +7,7 @@ STREAMING_DIR = Path(__file__).parent.parent / "app-catalog" / "streaming"
 class TestStreamingManifests:
     def test_all_manifests_valid_yaml(self):
         manifests = list(STREAMING_DIR.rglob("manifest.yaml"))
-        assert len(manifests) >= 12  # 4 Phase 1 + 8 Phase 2
+        assert len(manifests) >= 1  # neko-browser; placeholders live in docs/specs/streaming-apps
         for path in manifests:
             data = yaml.safe_load(path.read_text())
             assert "id" in data
