@@ -126,4 +126,23 @@ describe("CodeView", () => {
 
     expect(saveBtn).toBeDisabled();
   });
+
+  it("opens on the workspace passed via initialWorkspaceId", async () => {
+    vi.stubGlobal("fetch", mockFetch({
+      "/api/coding/workspaces": {
+        ok: true,
+        body: [
+          { id: "ws-a", name: "Workspace A", path: "/tmp/ws-a", created_at: "2024-01-01" },
+          { id: "ws-b", name: "Workspace B", path: "/tmp/ws-b", created_at: "2024-01-02" },
+        ],
+      },
+      "*": { ok: true, body: {} },
+    }));
+
+    render(<CodeView initialWorkspaceId="ws-b" />);
+    await flush();
+
+    const select = screen.getByLabelText("Select workspace") as HTMLSelectElement;
+    expect(select.value).toBe("ws-b");
+  });
 });
