@@ -53,3 +53,48 @@ export async function resolveModel(
   });
   return res.json();
 }
+
+/** POST /api/store/resolve-batch once per chunk. Returns only entries whose
+ *  response value has a `compat` key; skips `{error}` entries and non-ok
+ *  HTTP responses. */
+export async function resolveModels(
+  manifestIds: string[],
+  variantId: string = "auto",
+  opts: { chunkSize?: number; onProgress?: (soFar: Map<string, ResolveResponse>) => void; isCancelled?: () => boolean } = {},
+): Promise<Map<string, ResolveResponse>> {
+  const out = new Map<string, ResolveResponse>();
+  const size = Math.min(200, Math.max(1, Math.floor(opts.chunkSize ?? 100)));
+  
+  for (let i = 0; i < manifestIds.length; i += size) {
+    if (opts.isCancelled?.()) break;
+    
+    try {
+      const chunk = manifestIds.slice(i, i + size);
+      const res = await fetch("/api/store/resolve-batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          manifest_ids: chunk,
+          variant_id: variantId,
+          target_remote: null,
+          force: false,
+        }),
+      });
+      if (!res.ok) {
+        opts.onProgress?.(new Map(out));
+        continue;
+      }
+      const data = (await res.json()) as { results: Record<string, ResolveResponse | { error: string }> };
+      for (const [id, value] of Object.entries(data.results)) {
+        if (value && typeof value === "object" && "compat" in value) {
+          out.set(id, value as ResolveResponse);
+        }
+      }
+      opts.onProgress?.(new Map(out));
+    } catch {
+      opts.onProgress?.(new Map(out));
+      continue;
+    }
+  }
+  return out;
+}
