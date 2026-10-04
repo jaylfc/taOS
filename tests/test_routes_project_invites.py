@@ -1171,7 +1171,7 @@ class TestBuildControllerDict:
         from unittest.mock import patch
 
         monkeypatch.delenv("TAOS_CONTROLLER_RELAY_URL", raising=False)
-        monkeypatch.setenv("TAOS_CONTROLLER_CALLBACK_HOST", "100.78.225.80")
+        monkeypatch.setenv("TAOS_CONTROLLER_CALLBACK_HOST", "100.64.0.10")
 
         req = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
 
@@ -1182,14 +1182,14 @@ class TestBuildControllerDict:
             return_value={"joined": False},
         ), patch(
             "tinyagentos.routes.agent_deploy.controller_callback_host",
-            return_value="100.78.225.80",
+            return_value="100.64.0.10",
         ):
             result = await _build_controller_dict(req)
 
         endpoints = result["endpoints"]
         lan_eps = [ep for ep in endpoints if ep["kind"] == "lan"]
         assert len(lan_eps) == 1
-        assert lan_eps[0]["url"] == "http://100.78.225.80:6969"
+        assert lan_eps[0]["url"] == "http://100.64.0.10:6969"
         assert lan_eps[0]["priority"] == 1
 
     @pytest.mark.asyncio

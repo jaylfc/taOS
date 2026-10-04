@@ -470,14 +470,14 @@ class TestConfigureRemoteDeploy:
         worker = SimpleNamespace(status="online", hardware={"arch": "x86_64"})
         with patch.object(
             agent_deploy, "controller_callback_host",
-            new=AsyncMock(return_value="100.78.225.80"),
+            new=AsyncMock(return_value="100.64.0.10"),
         ):
             remote, host, err = await agent_deploy.configure_remote_deploy(
                 self._req(worker=worker), self._body(target_worker="fedora-worker", framework="hermes")
             )
         assert err is None
         assert remote == "fedora-worker"
-        assert host == "100.78.225.80"
+        assert host == "100.64.0.10"
 
     async def test_online_worker_no_callback_host_500(self):
         """A remote deploy with no reachable controller address must hard-fail,

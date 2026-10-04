@@ -41,7 +41,7 @@ class TestConsoleOriginRefusesRemote:
             "192.168.55.52",   # the pi-top itself, over the LAN
             "192.168.1.10",    # another machine on the home network
             "10.0.0.4",
-            "100.78.225.80",   # tailnet
+            "100.64.0.10",    # tailnet
             "8.8.8.8",
             "::1:junk",        # unparseable — must not be read as loopback
             "",
