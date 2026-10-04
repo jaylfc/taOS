@@ -236,6 +236,41 @@ async def list_containers(prefix: str = "taos-agent-") -> list[ContainerInfo]:
     return results
 
 
+async def get_container_ip(name: str) -> str | None:
+    """Return the current global-scope IPv4 for a container in its own project.
+
+    Resolves the container's project first (across all projects), then queries
+    ``incus list`` scoped to that project so restricted projects (e.g.
+    ``user-999``) are queried directly instead of falling back to the default.
+    Returns None when the container is not found, incus cannot be queried, or
+    the instance has no global-scope inet address.
+    """
+    state = await get_container_state(name)
+    if state is None:
+        return None
+    project = state["project"]
+    proj_args = ["--project", project]
+    try:
+        code, output = await _run(["incus", "list", *proj_args, name, "-f", "json"])
+    except (FileNotFoundError, OSError):
+        return None
+    if code != 0:
+        return None
+    try:
+        containers = json.loads(output)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    for c in containers:
+        if not isinstance(c, dict):
+            continue
+        network = (c.get("state") or {}).get("network") or {}
+        for iface in network.values():
+            for addr in iface.get("addresses", []):
+                if addr.get("family") == "inet" and addr.get("scope") == "global":
+                    return addr.get("address")
+    return None
+
+
 async def set_root_quota(name: str, size_gib: int) -> dict:
     """Set per-container rootfs quota. On btrfs-backed LXC pools, the
     quota is immediately enforced. On ZFS, same. On dir-backed, this
@@ -925,4 +960,5 @@ __all__ = [
     "remote_list",
     "remote_remove",
     "migrate_container",
+    "get_container_ip",
 ]

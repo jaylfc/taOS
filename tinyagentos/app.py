@@ -962,6 +962,12 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             await apply_pending_restart_check(app.state)
         except Exception:
             logger.exception("boot-time pending restart check failed")
+        # Boot-time: refresh stored agent hosts from incus before resuming
+        try:
+            from tinyagentos.restart_orchestrator import refresh_all_agent_hosts
+            await refresh_all_agent_hosts(app.state)
+        except Exception:
+            logger.exception("boot-time agent host refresh failed")
         # Boot-time: resume any agents that have resume notes from a prior shutdown
         try:
             await resume_agents_from_notes(app.state)
