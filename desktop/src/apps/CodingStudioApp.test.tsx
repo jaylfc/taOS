@@ -1,5 +1,5 @@
-import { render, screen, fireEvent } from "@testing-library/react";
-import { describe, it, expect } from "vitest";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi } from "vitest";
 import { CodingStudioApp } from "./CodingStudioApp";
 
 function renderApp() {
@@ -62,5 +62,41 @@ describe("CodingStudioApp", () => {
     );
     // Preview header h2
     expect(screen.getByRole("heading", { name: "Preview" })).toBeDefined();
+  });
+
+  it("handoff: selects a workspace in Build and switches to Code with that workspace selected", async () => {
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = vi.fn(async (url: string) => {
+        if (url === "/api/coding/workspaces") {
+          return {
+            ok: true,
+            json: async () => [
+              { id: "ws-1", name: "Workspace 1", path: "/tmp/ws1", created_at: "2024-01-01" },
+              { id: "ws-2", name: "Workspace 2", path: "/tmp/ws2", created_at: "2024-01-02" },
+            ],
+          } as Response;
+        }
+        return originalFetch(url);
+      }) as typeof globalThis.fetch;
+
+      renderApp();
+
+      await waitFor(() => {
+        expect(screen.getByLabelText("Select workspace")).toBeTruthy();
+      });
+
+      const buildSelect = screen.getByLabelText("Select workspace") as HTMLSelectElement;
+      fireEvent.change(buildSelect, { target: { value: "ws-1" } });
+
+      fireEvent.click(screen.getByRole("button", { name: "Code" }));
+
+      await waitFor(() => {
+        const codeSelect = screen.getByLabelText("Select workspace") as HTMLSelectElement;
+        expect(codeSelect.value).toBe("ws-1");
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

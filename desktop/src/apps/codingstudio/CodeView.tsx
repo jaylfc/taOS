@@ -20,7 +20,7 @@ import {
 import { oneDark } from "@codemirror/theme-one-dark";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { syntaxHighlighting, defaultHighlightStyle } from "@codemirror/language";
-import { Workspace } from "./BuildView";
+import type { Workspace } from "./BuildView";
 
 /* ── Types ──────────────────────────────────────────────── */
 
@@ -288,7 +288,7 @@ export function CodeView({
     } catch (err) {
       setWsError(err instanceof Error ? err.message : "Failed to create workspace");
     }
-  }, []);
+  }, [onActiveWorkspaceChange]);
 
   /* ── load file tree ─────────────────────────────────────── */
 
