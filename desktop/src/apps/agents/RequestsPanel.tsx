@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { RefreshCw, AlertCircle, CheckCircle2, XCircle, Clock } from "lucide-react";
+import { RefreshCw, AlertCircle, Clock } from "lucide-react";
 import { Button } from "@/components/ui";
-import { withCsrf } from "@/lib/csrf";
+import { ConsentActions } from "@/components/ConsentActions";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -33,9 +33,7 @@ export function RequestsPanel() {
   const [requests, setRequests] = useState<ScopeRequestRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
-  const [actionErr, setActionErr] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("pending");
-  const [acting, setActing] = useState<string | null>(null);
   const loadSeq = useRef(0);
 
   const load = useCallback(async () => {
@@ -83,42 +81,6 @@ export function RequestsPanel() {
       window.removeEventListener("focus", refresh);
     };
   }, [load]);
-
-  async function act(req: ScopeRequestRow, approve: boolean) {
-    setActing(req.id);
-    setActionErr(null);
-    try {
-      const base =
-        `/api/agents/registry/${encodeURIComponent(req.canonical_id)}/scope-requests/${encodeURIComponent(req.id)}`;
-      const url = `${base}/${approve ? "approve" : "deny"}`;
-      const body = approve
-        ? JSON.stringify({
-            granted_scopes: req.requested_scopes,
-            ...(req.project_id ? { project_id: req.project_id } : {}),
-          })
-        : undefined;
-      const res = await fetch(
-        url,
-        withCsrf({
-          method: "POST",
-          headers: body ? { "Content-Type": "application/json" } : {},
-          body,
-          credentials: "include",
-        }),
-      );
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(
-          (data as { detail?: string }).detail ?? `Action failed (${res.status})`
-        );
-      }
-      await load();
-    } catch (e: unknown) {
-      setActionErr(e instanceof Error ? e.message : "Network error");
-    } finally {
-      setActing(null);
-    }
-  }
 
   const pendingCount = requests.filter((r) => r.status === "pending").length;
 
@@ -207,33 +169,9 @@ export function RequestsPanel() {
           </div>
         ) : (
           <>
-            {actionErr && (
-              <div className="p-4">
-                <div
-                  className="flex items-start gap-3 rounded-lg border border-red-500/30 bg-red-500/10 p-4"
-                  role="alert"
-                >
-                  <AlertCircle size={18} className="text-red-400 shrink-0 mt-0.5" />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm text-red-300 font-medium">Action failed</p>
-                    <p className="text-xs text-red-400 mt-1">{actionErr}</p>
-                  </div>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => setActionErr(null)}
-                    className="border-red-500/30 hover:bg-red-500/10 shrink-0"
-                    aria-label="Dismiss action error"
-                  >
-                    Dismiss
-                  </Button>
-                </div>
-              </div>
-            )}
             <ul className="divide-y divide-white/5" role="list" aria-label="Scope request list">
             {requests.map((req) => {
               const isPending = req.status === "pending";
-              const actingThis = acting === req.id;
               const age = relativeTime(req.created_ts);
               return (
                 <li
@@ -263,51 +201,48 @@ export function RequestsPanel() {
                           {req.reason}
                         </p>
                       )}
-                      <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                        {req.requested_scopes.map((scope) => (
-                          <code
-                            key={scope}
-                            className="text-[10px] font-mono bg-white/5 border border-white/10 rounded px-1.5 py-0.5 text-shell-text-secondary"
-                          >
-                            {scope}
-                          </code>
-                        ))}
-                      </div>
+                      {/* A pending row's scopes and project are shown by
+                          ConsentActions below (Requested vs Granted, project by
+                          name); repeating them here would show the raw id again. */}
+                      {!isPending && (
+                        <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                          {req.requested_scopes.map((scope) => (
+                            <code
+                              key={scope}
+                              className="text-[10px] font-mono bg-white/5 border border-white/10 rounded px-1.5 py-0.5 text-shell-text-secondary"
+                            >
+                              {scope}
+                            </code>
+                          ))}
+                        </div>
+                      )}
                       <div className="flex items-center gap-3 mt-1.5 text-[10px] text-shell-text-tertiary">
                         <span>Requested {age}</span>
-                        {req.project_id && (
+                        {!isPending && req.project_id && (
                           <span className="truncate">Project: {req.project_id}</span>
                         )}
                         <code className="font-mono truncate">{req.id}</code>
                       </div>
                     </div>
-                    {isPending && (
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => act(req, true)}
-                          disabled={actingThis}
-                          aria-label={`Approve request from ${req.agent_display_name || req.canonical_id} for ${req.requested_scopes.join(", ")}`}
-                          className="text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10"
-                        >
-                          <CheckCircle2 size={14} aria-hidden="true" />
-                          <span className="hidden sm:inline">Approve</span>
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => act(req, false)}
-                          disabled={actingThis}
-                          aria-label={`Deny request from ${req.agent_display_name || req.canonical_id} for ${req.requested_scopes.join(", ")}`}
-                          className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
-                        >
-                          <XCircle size={14} aria-hidden="true" />
-                          <span className="hidden sm:inline">Deny</span>
-                        </Button>
-                      </div>
-                    )}
                   </div>
+                  {isPending && (
+                    // The shared consent surface, not a bespoke Approve button:
+                    // it renders the project picker for every scope the server's
+                    // vocabulary marks project-bound, names the requested project
+                    // by its human-readable name, and blocks Allow while the
+                    // vocabulary is unknown. A bare approve here posted no
+                    // project_id for project_tasks_update (a 400 nothing on screen
+                    // could fix) or forwarded the agent's own project_id, which
+                    // the operator never chose (tsk-ce2stw).
+                    <ConsentActions
+                      requestId={req.id}
+                      canonicalId={req.canonical_id}
+                      source="agent_scope_requests"
+                      scopes={req.requested_scopes}
+                      requestedProjectId={req.project_id ?? undefined}
+                      onResolved={load}
+                    />
+                  )}
                 </li>
               );
             })}

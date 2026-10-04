@@ -1,0 +1,3 @@
+### Fixed
+
+- The Agents app Requests tab now approves scope requests through the shared consent surface instead of a bare Approve button. A request for a project-bound scope such as `project_tasks_update` alone now shows the project picker, names the requested project by its human-readable name, and keeps Allow disabled until a project is chosen (or while the scope vocabulary is unknown), so the approve can no longer be sent without a project and fail with a 400 nothing on screen could fix. The approve also no longer forwards the agent's own requested project id: only the project the operator picks is sent. (tsk-ce2stw)
