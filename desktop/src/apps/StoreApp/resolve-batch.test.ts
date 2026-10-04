@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 import { resolveModels } from "./resolver-types";
 
@@ -22,10 +22,6 @@ describe("resolveModels", () => {
 
   it("chunks 150 ids into two calls (100 then 50) against /api/store/resolve-batch", async () => {
     const ids = Array.from({ length: 150 }, (_, i) => `model-${i}`);
-    const results: Record<string, { compat: string }> = {};
-    for (const id of ids) {
-      results[id] = { compat: "green" };
-    }
     (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
       makeOkResponse(Object.fromEntries(ids.slice(0, 100).map((id) => [id, { compat: "green" }]))),
     ).mockResolvedValueOnce(
@@ -62,7 +58,7 @@ describe("resolveModels", () => {
   });
 
   it("does not call fetch when given 0 ids", async () => {
-    const map = await resolveModels([], "auto", 100);
+    const map = await resolveModels([]);
     expect((globalThis.fetch as unknown as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
     expect(map.size).toBe(0);
   });
