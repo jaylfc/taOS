@@ -1,0 +1,2 @@
+### Fixed
+- In `tinyagentos/atomic_io.py`, `_fsync_created_ancestors` now fsyncs every directory newly created by `mkdir(parents=True)`, walking up from the target's parent until the first pre-existing directory. Both `atomic_write_bytes` and `atomic_create_bytes` use this helper, and also fsync the immediate parent directory after the write operation, to ensure durability of the entire directory subtree.

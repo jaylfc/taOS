@@ -92,9 +92,10 @@ class TestAtomicCreateBytes:
         monkeypatch.setattr(os, "fsync", counting_fsync)
         atomic_create_bytes(tmp_path / "key.bin", b"x" * 32)
 
-        assert len(calls) == 2, (
-            f"expected os.fsync called 2 times, got {len(calls)} -- "
-            "atomic_create_bytes must fsync the temp file and its parent dir"
+        assert len(calls) == 3, (
+            f"expected os.fsync called 3 times (temp file, "
+            "created ancestors, and parent dir), got {len(calls)} -- "
+            "atomic_create_bytes must fsync the temp file and directories"
         )
 
     def test_mode_is_applied_before_the_name_appears(self, tmp_path: Path) -> None:
@@ -122,11 +123,15 @@ class TestAncestorfsync:
     ) -> None:
         target = tmp_path / "a" / "b" / "c" / "key.bin"
 
-        fsynced_fds: list[int] = []
+        fsynced_paths: set[str] = set()
         real_fsync = os.fsync
 
         def tracking_fsync(fd: int) -> None:
-            fsynced_fds.append(fd)
+            try:
+                link = os.readlink(f"/proc/self/fd/{fd}")
+                fsynced_paths.add(os.path.realpath(link))
+            except OSError:
+                pass
             return real_fsync(fd)
 
         monkeypatch.setattr(os, "fsync", tracking_fsync)
@@ -139,25 +144,26 @@ class TestAncestorfsync:
 
         for d in created_dirs:
             assert d.exists(), f"Directory {d} should have been created"
-            dir_fd = os.open(d, os.O_RDONLY)
-            try:
-                assert dir_fd in fsynced_fds, (
-                    f"fd {dir_fd} for directory {d} was NOT fsynced - "
-                    f"fsynced fds were {fsynced_fds!r}"
-                )
-            finally:
-                os.close(dir_fd)
+            real_path = os.path.realpath(d)
+            assert real_path in fsynced_paths, (
+                f"directory {d} was NOT fsynced - "
+                f"fsynced paths were {fsynced_paths!r}"
+            )
 
     def test_fsyncs_all_created_ancestors_create(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         target = tmp_path / "x" / "y" / "z" / "key.bin"
 
-        fsynced_fds: list[int] = []
+        fsynced_paths: set[str] = set()
         real_fsync = os.fsync
 
         def tracking_fsync(fd: int) -> None:
-            fsynced_fds.append(fd)
+            try:
+                link = os.readlink(f"/proc/self/fd/{fd}")
+                fsynced_paths.add(os.path.realpath(link))
+            except OSError:
+                pass
             return real_fsync(fd)
 
         monkeypatch.setattr(os, "fsync", tracking_fsync)
@@ -169,14 +175,11 @@ class TestAncestorfsync:
 
         for d in created_dirs:
             assert d.exists(), f"Directory {d} should have been created"
-            dir_fd = os.open(d, os.O_RDONLY)
-            try:
-                assert dir_fd in fsynced_fds, (
-                    f"fd {dir_fd} for directory {d} was NOT fsynced - "
-                    f"fsynced fds were {fsynced_fds!r}"
-                )
-            finally:
-                os.close(dir_fd)
+            real_path = os.path.realpath(d)
+            assert real_path in fsynced_paths, (
+                f"directory {d} was NOT fsynced - "
+                f"fsynced paths were {fsynced_paths!r}"
+            )
 
 
 def _no_hardlinks(*_a, **_kw) -> None:

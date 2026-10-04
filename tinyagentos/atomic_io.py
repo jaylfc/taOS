@@ -132,10 +132,7 @@ def _fsync_created_ancestors(path: Path) -> None:
         if p.exists():
             pre_existing = p
             break
-        try:
-            p = p.parent
-        except RuntimeError:
-            break
+        p = p.parent
 
     # Create the directories; the helper owns the mkdir so callers do not
     # need to (and must not) call mkdir(parents=True) themselves.
@@ -148,10 +145,7 @@ def _fsync_created_ancestors(path: Path) -> None:
         _fsync_dir(p)
         if p == pre_existing:
             break
-        try:
-            p = p.parent
-        except RuntimeError:
-            break
+        p = p.parent
 
 
 def atomic_write_bytes(path: Path, data: bytes, *, mode: int | None = None) -> None:
@@ -193,13 +187,13 @@ def atomic_write_bytes(path: Path, data: bytes, *, mode: int | None = None) -> N
             # os.open honours the umask; chmod does not.
             os.chmod(tmp, mode)
         os.replace(tmp, path)
+        _fsync_dir(path.parent)
     except BaseException:
         try:
             os.unlink(tmp)
         except OSError:
             pass
         raise
-
 
 def _create_via_claim(path: Path, data: bytes, mode: int | None) -> bytes:
     """``atomic_create_bytes`` on a filesystem with no hard links.
@@ -383,6 +377,7 @@ def atomic_create_bytes(path: Path, data: bytes, *, mode: int | None = None) -> 
         # restart, so they are the ones the caller must use.
         return path.read_bytes()
 
+    _fsync_dir(path.parent)
     return data
 
 
