@@ -18,6 +18,7 @@ import logging
 import time
 from typing import Any, AsyncGenerator
 
+import anyio
 import httpx
 
 from tinyagentos.llm_gateway.errors import GatewayError, upstream_error, bad_request, rate_limit_error
@@ -517,9 +518,58 @@ async def chat_completion_stream_anthropic(
         translator = _StreamTranslator(body.get("model", "unknown"))
         completion_text: list[str] = []
         request_text = json.dumps(body)
-        response_text = ""
-        usage_obj: Usage | None = None
         stream_done = False
+        # Spend is settled exactly once, from a finally, on every way out of
+        # the stream: normal end, client abort (GeneratorExit), cancellation
+        # (CancelledError) or a mid-stream upstream error. An aborted or
+        # errored stream is still charged, or aborting would dodge the cap.
+        delta_usage_seen = False
+        upstream_failed = False
+        settled = False
+
+        async def _settle() -> None:
+            nonlocal settled
+            if settled:
+                return
+            settled = True
+            response_text = "".join(completion_text)
+            usage_obj: Usage = translator.usage_tracker.result()
+            # message_stop seen: the answer finished, whether or not the
+            # client stayed for the final [DONE].
+            finished = translator.done
+            status = "success" if finished else "failure"
+            # message_start alone reports an initial output count, not what
+            # was generated: an unfinished stream counts as real usage only
+            # once a message_delta usage arrived, else it is estimated.
+            real_usage = usage_obj.known and (finished or delta_usage_seen)
+
+            if not real_usage:
+                cost = Cost(None, False, "usage not reported by the backend")
+                await _record_trace(
+                    state, principal, body.get("model", ""), usage_obj, cost,
+                    route.backend_name,
+                    request_text, response_text, 0, status, estimated=True,
+                )
+                estimate = _conservative_budget_estimate(
+                    route.backend_type or route.backend_name,
+                    body.get("model", ""),
+                    request_text, response_text,
+                )
+                if estimate > 0:
+                    _record_spend(state, principal, estimate)
+            else:
+                cost = cost_of(route.backend_type or route.backend_name,
+                               body.get("model", ""), usage_obj)
+                await _record_trace(
+                    state, principal, body.get("model", ""), usage_obj, cost,
+                    route.backend_name,
+                    request_text, response_text, 0, status, estimated=False,
+                )
+                if cost and cost.usd and cost.usd > 0:
+                    _record_spend(state, principal, cost.usd)
+
+            if not upstream_failed:
+                _notify_lifecycle(state, route.backend_name)
 
         async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)) as client:
             req = client.build_request(
@@ -536,7 +586,6 @@ async def chat_completion_stream_anthropic(
             err = await _anthropic_status_error(resp, api_key)
             if err is not None:
                 raise err
-            exc_to_reraise: Exception | None = None
             try:
                 _buf = ""
                 async for raw in resp.aiter_text():
@@ -564,51 +613,32 @@ async def chat_completion_stream_anthropic(
                             continue
                         if not isinstance(event, dict):
                             continue
+                        if event.get("type") == "message_delta" and isinstance(event.get("usage"), dict):
+                            delta_usage_seen = True
                         for chunk in translator.feed(event):
                             yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
                         if event.get("type") == "content_block_delta":
                             delta = event.get("delta") or {}
                             if delta.get("type") == "text_delta":
                                 completion_text.append(delta.get("text", ""))
-            except GeneratorExit:
-                pass
-            except Exception as exc:
-                exc_to_reraise = exc
+            except Exception:
+                upstream_failed = True
+                raise
             finally:
-                await resp.aclose()
+                # Shielded: on a client disconnect Starlette cancels a scope
+                # that re-raises at every checkpoint, which would cut the
+                # accounting off part way and let the abort go uncharged.
+                with anyio.CancelScope(shield=True):
+                    try:
+                        await resp.aclose()
+                    finally:
+                        await _settle()
 
-        if exc_to_reraise is not None:
-            raise exc_to_reraise
-
-        response_text = "".join(completion_text)
-        usage_obj = translator.usage_tracker.result()
-
-        if not usage_obj.known:
-            cost = Cost(None, False, "usage not reported by the backend")
-            await _record_trace(
-                state, principal, body.get("model", ""), usage_obj, cost,
-                route.backend_name,
-                request_text, response_text, 0, "success", estimated=True,
-            )
-            estimate = _conservative_budget_estimate(
-                route.backend_type or route.backend_name,
-                body.get("model", ""),
-                request_text, response_text,
-            )
-            if estimate > 0:
-                _record_spend(state, principal, estimate)
-        else:
-            cost = cost_of(route.backend_type or route.backend_name,
-                           body.get("model", ""), usage_obj)
-            await _record_trace(
-                state, principal, body.get("model", ""), usage_obj, cost,
-                route.backend_name,
-                request_text, response_text, 0, "success", estimated=False,
-            )
-            if cost and cost.usd and cost.usd > 0:
-                _record_spend(state, principal, cost.usd)
-
-        _notify_lifecycle(state, route.backend_name)
-
-    async for chunk in _stream_with_retry(anthropic_routes, _stream_one):
-        yield chunk
+    outer = _stream_with_retry(anthropic_routes, _stream_one)
+    try:
+        async for chunk in outer:
+            yield chunk
+    finally:
+        # A client abort closes THIS generator: close the retry loop with it so
+        # the attempt's accounting runs before aclose() returns, not at gc.
+        await outer.aclose()

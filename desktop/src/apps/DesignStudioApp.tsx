@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { PenLine, LayoutGrid, Plus, Sparkles, Circle, FolderOpen, Save, FilePlus2 } from "lucide-react";
+import { PenLine, LayoutGrid, Sparkles, FolderOpen, Save, FilePlus2 } from "lucide-react";
 import { ModelBrowser } from "@/components/ModelBrowser";
 import { DesignView } from "./designstudio/DesignView";
 import { TemplatesView, type TemplateChoice } from "./designstudio/TemplatesView";
@@ -21,7 +21,6 @@ import type { ImageModel } from "./images/types";
 const RAIL: { id: DesignStudioView; label: string; icon: typeof PenLine }[] = [
   { id: "design", label: "Design", icon: PenLine },
   { id: "templates", label: "Templates", icon: LayoutGrid },
-  { id: "elements", label: "Elements", icon: Plus },
   { id: "magic", label: "Magic", icon: Sparkles },
   { id: "library", label: "Library", icon: FolderOpen },
 ];
@@ -347,15 +346,6 @@ export function DesignStudioApp({ windowId: _windowId }: { windowId: string }) {
               </button>
             );
           })}
-          <div className="flex-1" />
-          <button
-            type="button"
-            aria-label="Brand"
-            className="flex h-[46px] w-[46px] flex-col items-center justify-center gap-0.5 rounded-xl text-[9px] font-semibold text-shell-text-tertiary transition-colors hover:bg-white/10 hover:text-shell-text-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-          >
-            <Circle size={21} />
-            Brand
-          </button>
         </nav>
 
         <div className="flex min-w-0 flex-1 flex-col">
@@ -367,13 +357,6 @@ export function DesignStudioApp({ windowId: _windowId }: { windowId: string }) {
             />
           )}
           {view === "templates" && <TemplatesView onSelectTemplate={handleSelectTemplate} />}
-          {view === "elements" && (
-            <DesignView
-              elements={canvasElements}
-              onElementsChange={handleElementsChange}
-              artboard={artboard}
-            />
-          )}
           {view === "magic" && (
             <MagicView
               prompt={magicPrompt}

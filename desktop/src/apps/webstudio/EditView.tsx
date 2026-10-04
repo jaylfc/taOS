@@ -35,6 +35,9 @@ interface Props {
   loading: boolean;
   saving: boolean;
   error: string | null;
+  /** Failure loading the saved-sites list; shown in the "My sites" sidebar. */
+  listError?: string | null;
+  onRetryList?: () => void;
   onNew: () => void;
   onOpen: (id: string) => void;
   onSave: () => void;
@@ -49,6 +52,8 @@ export function EditView({
   loading,
   saving,
   error,
+  listError = null,
+  onRetryList,
   onNew,
   onOpen,
   onSave,
@@ -131,8 +136,30 @@ export function EditView({
           </div>
           <div className="min-h-0 flex-1 overflow-auto p-2">
             {loading && <p className="px-2 py-1 text-[12px] text-shell-text-tertiary">Loading...</p>}
-            {!loading && saved.length === 0 && (
-              <p className="px-2 py-1 text-[12px] text-shell-text-tertiary">No saved sites yet</p>
+            {!loading && listError && (
+              <div role="alert" className="px-2 py-1 text-[12px] text-red-400">
+                <p>{listError}</p>
+                {onRetryList && (
+                  <button
+                    type="button"
+                    onClick={onRetryList}
+                    className="mt-1 rounded-md px-1.5 py-0.5 text-[11.5px] font-semibold text-shell-text-secondary hover:bg-shell-surface-active focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                  >
+                    Retry
+                  </button>
+                )}
+              </div>
+            )}
+            {!loading && !listError && saved.length === 0 && (
+              <div
+                data-testid="webstudio-empty-state"
+                className="rounded-lg border border-dashed border-shell-border bg-shell-surface/40 px-2.5 py-3 text-[12px] text-shell-text-secondary"
+              >
+                <p className="font-semibold text-shell-text">No saved sites yet</p>
+                <p className="mt-1 text-[11.5px] leading-snug text-shell-text-tertiary">
+                  Start from Generate or Templates, or edit this site, then press Save to keep it here.
+                </p>
+              </div>
             )}
             {saved.map((s) => (
               <div key={s.id} className="group relative mb-1">

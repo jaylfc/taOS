@@ -138,6 +138,49 @@ class TestAgentWorkspaceRoutes:
         assert resp.content == b"hello from agent"
 
     @pytest.mark.asyncio
+    async def test_upload_form_field_path_is_honoured(self, client, app):
+        """A multipart form field ``path`` places the file in that directory."""
+        _add_agent(app, "formpath")
+        content = b"form path"
+        resp = await client.post(
+            "/api/agents/formpath/workspace/files/upload",
+            data={"path": "docs"},
+            files={"file": ("note.md", io.BytesIO(content), "text/markdown")},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["path"] == "docs/note.md"
+        back = await client.get("/api/agents/formpath/workspace/files/docs/note.md")
+        assert back.status_code == 200
+        assert back.content == content
+
+    @pytest.mark.asyncio
+    async def test_upload_query_path_still_works(self, client, app):
+        """Existing query-string callers keep their directory semantics."""
+        _add_agent(app, "querypath")
+        resp = await client.post(
+            "/api/agents/querypath/workspace/files/upload?path=sub/dir",
+            files={"file": ("q.txt", io.BytesIO(b"q"), "text/plain")},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["path"] == "sub/dir/q.txt"
+        back = await client.get("/api/agents/querypath/workspace/files/sub/dir/q.txt")
+        assert back.content == b"q"
+
+    @pytest.mark.asyncio
+    async def test_upload_query_and_form_path_conflict_400(self, client, app):
+        _add_agent(app, "conflictpath")
+        resp = await client.post(
+            "/api/agents/conflictpath/workspace/files/upload?path=one",
+            data={"path": "two"},
+            files={"file": ("c.txt", io.BytesIO(b"c"), "text/plain")},
+        )
+        assert resp.status_code == 400
+        ws = app.state.agent_workspaces_dir / "conflictpath"
+        assert not (ws / "c.txt").exists()
+
+    @pytest.mark.asyncio
     async def test_stats_returns_totals(self, client, app):
         """GET /stats returns total_files and total_size."""
         _add_agent(app, "theta")

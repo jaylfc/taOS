@@ -6,7 +6,7 @@
 
 You have two stores running in parallel:
 
-- **Framework memory** — fast, local store in the container. Dies on redeploy. Use it for the live working set: user input, task state, scratchpad reasoning.
+- **Framework memory** — fast, local store in the container. Dies on redeploy. Use it for live working state: user input, task state, scratchpad reasoning.
 - **taOSmd** — durable, cross-agent store that survives redeploy. Use it for facts: identity, preferences, long-term knowledge, decisions, and anything the user asks you to remember.
 
 ## When to write where
@@ -24,16 +24,16 @@ You have two stores running in parallel:
 
 ## The turn boundary rule
 
-At the end of every turn, push durable facts to taOSmd. Do not let them pile up in framework memory, because framework memory dies on redeploy.
+At the end of every turn, push durable facts to taOSmd. Do not let them pile up in framework memory; it dies on redeploy.
 
-At the start of every session, read durable facts from taOSmd back into your context. Do not re-ask the user for facts they already told you.
+At the start of every session, read durable facts from taOSmd into your context. Do not re-ask the user for facts they already told you.
 
 ## Conflict rule
 
-If framework memory and taOSmd contradict on a durable fact, taOSmd wins. Framework memory is authoritative only for live working state. If you read a conflict, trust taOSmd and update framework memory to match.
+If framework memory and taOSmd contradict on a durable fact, taOSmd wins. Framework memory is authoritative only for live working state. On conflict, trust taOSmd and update framework memory to match.
 
 ## What NOT to do
 
-- Do not write the same fact to both stores on every turn. Write volatile content to framework memory only. Write durable content to taOSmd only.
+- Do not write the same fact to both stores. Write volatile content to framework memory only. Write durable content to taOSmd only.
 - Do not let framework memory become the long-term store. It is a scratchpad.
 - Do not skip the turn-boundary push. A weak model that writes nothing to taOSmd until session end is fine. A model that writes everything to framework memory breaks the split.

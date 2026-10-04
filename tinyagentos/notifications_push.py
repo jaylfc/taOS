@@ -258,20 +258,20 @@ def _vapid_signing_key(private_pem: str) -> str:
     return base64.urlsafe_b64encode(der).decode().rstrip("=")
 
 
-def _sync_send(subscription_info: dict, data: str, private_pem: str, vapid_claims: dict) -> None:
+def _sync_send(subscription_info: dict, data: str, signing_key: str, vapid_claims: dict) -> None:
     """Blocking pywebpush call - run in a worker thread."""
     import pywebpush
 
     pywebpush.webpush(
         subscription_info=subscription_info,
         data=data,
-        vapid_private_key=private_pem,
+        vapid_private_key=signing_key,
         vapid_claims=vapid_claims,
         timeout=_SEND_TIMEOUT,
     )
 
 
-async def _send_one(sub: dict, data_str: str, private_pem: str, store: NotificationPushStore) -> str:
+async def _send_one(sub: dict, data_str: str, signing_key: str, store: NotificationPushStore) -> str:
     """Send to one subscription. Returns "sent", "failed", or "removed"."""
     from pywebpush import WebPushException
 
@@ -284,7 +284,7 @@ async def _send_one(sub: dict, data_str: str, private_pem: str, store: Notificat
     vapid_claims = {"sub": _VAPID_SUB, "aud": f"{parsed.scheme}://{parsed.netloc}"}
     ep_hash = hash(endpoint) & 0xFFFFFFFF
     try:
-        await asyncio.to_thread(_sync_send, subscription_info, data_str, private_pem, vapid_claims)
+        await asyncio.to_thread(_sync_send, subscription_info, data_str, signing_key, vapid_claims)
         return "sent"
     except WebPushException as exc:
         status = getattr(getattr(exc, "response", None), "status_code", None)

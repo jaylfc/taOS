@@ -77,9 +77,35 @@ const MOCK_REQUESTS = [
   },
 ];
 
+/** Answer GET /api/agents/scope-vocabulary (ConsentActions reads it before it
+ *  will enable Allow), or null for any other URL. */
+function vocab(url: string) {
+  if (!url.startsWith("/api/agents/scope-vocabulary")) return null;
+  return Promise.resolve({
+    ok: true,
+    status: 200,
+    json: () =>
+      Promise.resolve({
+        valid_scopes: ["a2a_receive", "a2a_send", "project_tasks"],
+        project_scopes: ["project_tasks"],
+      }),
+  } as unknown as Response);
+}
+
+/** Every Allow button, once the first one (Agent Alpha's, no project scope)
+ *  is enabled, i.e. the scope vocabulary has been read. */
+async function allowEnabled() {
+  await waitFor(() =>
+    expect(screen.getAllByRole("button", { name: /allow/i })[0]).not.toBeDisabled(),
+  );
+  return screen.getAllByRole("button", { name: /allow/i });
+}
+
 describe("RequestsPanel", () => {
   beforeEach(() => {
     vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => {
+      const v = vocab(url);
+      if (v) return v;
       if (url.startsWith("/api/agents/scope-requests")) {
         return Promise.resolve({
           ok: true,
@@ -112,24 +138,32 @@ describe("RequestsPanel", () => {
       expect(screen.getByText("Agent Alpha")).toBeInTheDocument();
     });
     expect(screen.getByText("Agent Beta")).toBeInTheDocument();
-    // Scopes rendered as chips
-    expect(screen.getByText("a2a_send")).toBeInTheDocument();
-    expect(screen.getByText("project_tasks")).toBeInTheDocument();
+    // Scopes rendered by the consent surface (Requested and Granted rows)
+    expect(screen.getAllByText("a2a_send").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("project_tasks").length).toBeGreaterThan(0);
   });
 
-  it("Approve button calls the existing approve route", async () => {
+  it("Allow calls the existing approve route", async () => {
     render(<RequestsPanel />);
     await waitFor(() => {
       expect(screen.getByText("Agent Alpha")).toBeInTheDocument();
     });
-    const approveButtons = screen.getAllByRole("button", { name: /approve/i });
-    approveButtons[0].click();
-    // The mock for approve should have been called; verify via the global fetch mock
-    const fetchCalls = (globalThis.fetch as any).mock.calls;
-    const approveCall = fetchCalls.find((call: any[]) =>
-      call[0].includes("/approve")
+    const allowButtons = await allowEnabled();
+    fireEvent.click(allowButtons[0]);
+    await waitFor(() => {
+      const fetchCalls = (globalThis.fetch as any).mock.calls;
+      expect(fetchCalls.some((call: any[]) => call[0].includes("/approve"))).toBe(true);
+    });
+    const approveCall = (globalThis.fetch as any).mock.calls.find((call: any[]) =>
+      call[0].includes("/approve"),
     );
-    expect(approveCall).toBeDefined();
+    expect(approveCall[0]).toBe(
+      "/api/agents/registry/agent-alpha/scope-requests/req-1/approve",
+    );
+    // No project-bound scope requested, so no project_id is sent.
+    expect(JSON.parse(approveCall[1].body)).toEqual({
+      granted_scopes: ["a2a_send", "a2a_receive"],
+    });
   });
 
   it("failed fetch renders the error, not the empty state", async () => {
@@ -150,6 +184,8 @@ describe("RequestsPanel", () => {
 
   it("failed approve keeps the rows rendered and shows the action error", async () => {
     vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => {
+      const v = vocab(url);
+      if (v) return v;
       if (url.startsWith("/api/agents/scope-requests")) {
         return Promise.resolve({
           ok: true,
@@ -175,17 +211,19 @@ describe("RequestsPanel", () => {
     await waitFor(() => {
       expect(screen.getByText("Agent Alpha")).toBeInTheDocument();
     });
-    const approveButtons = screen.getAllByRole("button", { name: /approve/i });
-    fireEvent.click(approveButtons[0]);
+    const allowButtons = await allowEnabled();
+    fireEvent.click(allowButtons[0]);
     await waitFor(() => {
       expect(screen.getByText(/bad request/i)).toBeInTheDocument();
     });
     expect(screen.getByText("Agent Alpha")).toBeInTheDocument();
   });
 
-  it("successful retry clears the previous Action failed error", async () => {
+  it("successful retry clears the previous action error", async () => {
     let approveAttempt = 0;
     vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => {
+      const v = vocab(url);
+      if (v) return v;
       if (url.startsWith("/api/agents/scope-requests")) {
         return Promise.resolve({
           ok: true,
@@ -219,14 +257,158 @@ describe("RequestsPanel", () => {
     await waitFor(() => {
       expect(screen.getByText("Agent Alpha")).toBeInTheDocument();
     });
-    const approveButtons = screen.getAllByRole("button", { name: /approve/i });
-    fireEvent.click(approveButtons[0]);
+    const allowButtons = await allowEnabled();
+    fireEvent.click(allowButtons[0]);
     await waitFor(() => {
       expect(screen.getByText(/transient error/i)).toBeInTheDocument();
     });
-    fireEvent.click(approveButtons[0]);
+    await waitFor(() => expect(allowButtons[0]).not.toBeDisabled());
+    fireEvent.click(allowButtons[0]);
     await waitFor(() => {
-      expect(screen.queryByText("Action failed")).not.toBeInTheDocument();
+      expect(screen.queryByText(/transient error/i)).not.toBeInTheDocument();
+    });
+  });
+
+  // tsk-ce2stw: the Requests tab must not reopen the unfixable-400 path that
+  // ConsentActions closed. A project_tasks_update-ONLY request is the defect's
+  // exact shape: project_tasks present is the case that already worked, so it
+  // cannot catch this.
+  describe("project-bound scope request (tsk-ce2stw)", () => {
+    const UPDATE_ONLY = {
+      id: "req-upd",
+      canonical_id: "taos-dev",
+      requested_scopes: ["project_tasks_update"],
+      project_id: null as string | null,
+      reason: "Edit my board",
+      status: "pending",
+      created_ts: new Date(Date.now() - 60_000).toISOString(),
+      agent_display_name: "taos-dev",
+    };
+
+    function stubServer(row: typeof UPDATE_ONLY) {
+      const fetchMock = vi.fn().mockImplementation((url: string) => {
+        if (url.startsWith("/api/agents/scope-vocabulary")) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () =>
+              Promise.resolve({
+                valid_scopes: ["a2a_send", "project_tasks", "project_tasks_update"],
+                project_scopes: ["project_tasks", "project_tasks_update"],
+              }),
+          } as unknown as Response);
+        }
+        if (url.startsWith("/api/agents/scope-requests")) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () => Promise.resolve({ requests: [row] }),
+          } as unknown as Response);
+        }
+        if (url.startsWith("/api/projects")) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () =>
+              Promise.resolve({
+                items: [
+                  { id: "prj-web", name: "taOS Website" },
+                  { id: "prj-utbsh7", name: "Lead Board" },
+                ],
+              }),
+          } as unknown as Response);
+        }
+        if (url.includes("/approve")) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () => Promise.resolve({ status: "accepted" }),
+          } as unknown as Response);
+        }
+        return Promise.resolve({
+          ok: false,
+          status: 404,
+          json: () => Promise.resolve({}),
+        } as unknown as Response);
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      return fetchMock;
+    }
+
+    const approveCalls = (m: ReturnType<typeof vi.fn>) =>
+      m.mock.calls.filter((c: any[]) => String(c[0]).includes("/approve"));
+
+    it("renders the project picker for project_tasks_update alone and blocks approve until a project is chosen", async () => {
+      const fetchMock = stubServer({ ...UPDATE_ONLY, project_id: null });
+      render(<RequestsPanel />);
+      const picker = (await screen.findByLabelText(
+        /Grant project access for/i,
+      )) as HTMLSelectElement;
+      await waitFor(() =>
+        expect(screen.getByRole("option", { name: "taOS Website" })).toBeInTheDocument(),
+      );
+      const allow = screen.getByRole("button", { name: /allow/i });
+      expect(allow).toBeDisabled();
+      fireEvent.click(allow);
+      expect(approveCalls(fetchMock)).toHaveLength(0);
+
+      fireEvent.change(picker, { target: { value: "prj-web" } });
+      await waitFor(() => expect(allow).not.toBeDisabled());
+      fireEvent.click(allow);
+      await waitFor(() => expect(approveCalls(fetchMock)).toHaveLength(1));
+      const call = approveCalls(fetchMock)[0];
+      expect(String(call[0])).toBe(
+        "/api/agents/registry/taos-dev/scope-requests/req-upd/approve",
+      );
+      expect(JSON.parse((call[1] as RequestInit).body as string)).toEqual({
+        granted_scopes: ["project_tasks_update"],
+        project_id: "prj-web",
+      });
+    });
+
+    it("names the requested project by its human-readable name, not the raw id", async () => {
+      stubServer({ ...UPDATE_ONLY, project_id: "prj-utbsh7" });
+      render(<RequestsPanel />);
+      const line = await screen.findByText(/Requesting access for/i);
+      expect(line).toHaveTextContent("Lead Board");
+    });
+
+    it("blocks approve with a visible reason when the scope vocabulary is unavailable", async () => {
+      const fetchMock = vi.fn().mockImplementation((url: string) => {
+        if (url.startsWith("/api/agents/scope-requests")) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () => Promise.resolve({ requests: [UPDATE_ONLY] }),
+          } as unknown as Response);
+        }
+        if (url.includes("/approve")) {
+          return Promise.resolve({
+            ok: false,
+            status: 400,
+            json: () =>
+              Promise.resolve({
+                detail: "project_id is required when granting ['project_tasks_update']",
+              }),
+          } as unknown as Response);
+        }
+        return Promise.resolve({
+          ok: false,
+          status: 503,
+          json: () => Promise.resolve({}),
+        } as unknown as Response);
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      render(<RequestsPanel />);
+      await waitFor(() =>
+        expect(
+          screen.getByText(/Could not confirm which scopes need a project/i),
+        ).toBeInTheDocument(),
+      );
+      const allow = screen.getByRole("button", { name: /allow/i });
+      expect(allow).toBeDisabled();
+      fireEvent.click(allow);
+      expect(approveCalls(fetchMock)).toHaveLength(0);
     });
   });
 

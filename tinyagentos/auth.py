@@ -133,6 +133,28 @@ class _PersistentSessions:
     def items(self):
         return list(self._load().items())
 
+    def set_capped(self, key: str, value: dict, limit: int) -> None:
+        """Store *value* under *key*, then evict the same user's oldest
+        sessions so that user keeps at most *limit* live ones.
+
+        One load/modify/save under the lock, so concurrent mints cannot race
+        each other past the cap. "Oldest" is dict insertion order, which is
+        mint order: tokens are never re-inserted and JSON round-trips keep
+        the order. Legacy float entries carry no user_id and are not counted.
+        """
+        user_id = value.get("user_id", "")
+        with self._lock:
+            data = self._load()
+            data[key] = value
+            if limit > 0:
+                owned = [
+                    token for token, entry in data.items()
+                    if isinstance(entry, dict) and entry.get("user_id", "") == user_id
+                ]
+                for token in owned[: max(0, len(owned) - limit)]:
+                    del data[token]
+            self._save(data)
+
 
 def hash_password(password: str, salt: str = "") -> str:
     """Hash a password with argon2id.
@@ -438,6 +460,10 @@ class AuthManager:
         self._users_lock = threading.RLock()
         self.session_ttl = 86400 * 7  # 7 days, default
         self.long_session_ttl = 86400 * 30  # 30 days for "stay signed in"
+        # Live sessions kept per user; minting past it evicts that user's
+        # oldest. Bounds the store when a client logs in per invocation
+        # instead of reusing its session (tsk-wmclfd: 37,521 for one user).
+        self.max_sessions_per_user = 50
         self._prune_sessions_on_startup()
 
     def _prune_sessions_on_startup(self) -> None:
@@ -1093,7 +1119,7 @@ class AuthManager:
         }
         if user_agent:
             entry["user_agent_hash"] = hashlib.sha256(user_agent.encode()).hexdigest()
-        self._sessions[token] = entry
+        self._sessions.set_capped(token, entry, self.max_sessions_per_user)
         return token
 
     def session_ttl_for(self, long_lived: bool = False) -> int:

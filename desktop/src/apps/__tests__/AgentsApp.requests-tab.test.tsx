@@ -190,4 +190,71 @@ describe("AgentsApp — requests tab gating", () => {
     const requestsTab = screen.queryByRole("tab", { name: /requests/i });
     expect(requestsTab).toBeInTheDocument();
   });
+
+  // tsk-zfdagx: agent-filed pending scope requests must be visible to the
+  // admin WITHOUT first opening the Requests tab. The app opens on the
+  // Registry tab, so the badge is the only on-screen sign that an agent is
+  // waiting; it must be loaded by AgentsApp itself, not only by RequestsPanel
+  // (which is not mounted until the tab is clicked).
+  it("admin sees the pending scope-request count on the Requests tab from the default tab", async () => {
+    (global.fetch as any).mockImplementation((url: string) => {
+      if (url === "/api/agents") {
+        return Promise.resolve({
+          ok: true,
+          headers: { get: () => "application/json" },
+          json: () => Promise.resolve([{ name: "local-agent" }]),
+        } as unknown as Response);
+      }
+      if (url === "/api/agents/archived") {
+        return Promise.resolve({
+          ok: true,
+          headers: { get: () => "application/json" },
+          json: () => Promise.resolve([]),
+        } as unknown as Response);
+      }
+      if (url === "/api/agents/registry") {
+        return Promise.resolve({
+          ok: true,
+          headers: { get: () => "application/json" },
+          json: () => Promise.resolve([{ canonical_id: "devbot-1", status: "active" }]),
+        } as unknown as Response);
+      }
+      if (url === "/auth/status") {
+        return Promise.resolve({
+          ok: true,
+          headers: { get: () => "application/json" },
+          json: () => Promise.resolve({ user: { is_admin: true, id: "admin-1" } }),
+        } as unknown as Response);
+      }
+      if (url === "/api/agents/scope-requests?status=pending") {
+        const rows = ["a818d008", "5bcb992b", "94fd1743"].map((id) => ({
+          id,
+          canonical_id: "devbot-1",
+          agent_display_name: "devbot",
+          requested_scopes: ["decisions_read"],
+          project_id: null,
+          reason: "",
+          status: "pending",
+          created_ts: "2026-09-30T14:31:57+00:00",
+        }));
+        return Promise.resolve({
+          ok: true,
+          headers: { get: () => "application/json" },
+          json: () => Promise.resolve({ requests: rows }),
+        } as unknown as Response);
+      }
+      return Promise.resolve({
+        ok: false,
+        headers: { get: () => "application/json" },
+        json: () => Promise.resolve({}),
+      } as unknown as Response);
+    });
+
+    render(<AgentsApp windowId="test" />);
+    const requestsTab = await screen.findByRole("tab", { name: /requests/i });
+    expect(requestsTab).toHaveAttribute("aria-selected", "false");
+    await waitFor(() => {
+      expect(requestsTab.textContent).toContain("3");
+    });
+  });
 });

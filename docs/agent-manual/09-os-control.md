@@ -18,4 +18,4 @@ Tools available to you:
 
 A typical flow: open Projects, create_project, add tasks, generate_image then canvas_add_image, export_storybook.
 
-Open only the app you need so the user can watch you work. Leave their other windows alone.
+Open only the app you need. Leave other windows alone.

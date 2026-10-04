@@ -18,9 +18,6 @@ logger = logging.getLogger(__name__)
 
 _YTDLP_NOT_FOUND_MSG = "yt-dlp not installed -- install the optional media extra"
 
-def _cleanup_procs() -> None:
-    pass
-
 # Quality format map for yt-dlp -f flag
 _QUALITY_FORMATS: dict[str, str] = {
     "360": "bestvideo[height<=360]+bestaudio/best[height<=360]",
@@ -172,6 +169,7 @@ async def fetch(
         )
         tracked_procs.append(proc)
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        tracked_procs.remove(proc)
         if proc.returncode != 0:
             err = stderr.decode(errors="replace").strip()
             raise RuntimeError(f"yt-dlp metadata fetch failed for {url!r}: {err}")
@@ -219,6 +217,7 @@ async def fetch(
         )
         tracked_procs.append(out_proc)
         await asyncio.wait_for(out_proc.communicate(), timeout=120)
+        tracked_procs.remove(out_proc)
         if out_proc.returncode != 0:
             logger.warning("yt-dlp media download failed for %s", url)
 
@@ -309,6 +308,7 @@ async def download_video(
         )
         tracked_procs.append(proc)
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        tracked_procs.remove(proc)
 
         if proc.returncode != 0:
             err = stderr.decode(errors="replace").strip()

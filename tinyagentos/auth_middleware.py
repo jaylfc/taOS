@@ -108,6 +108,10 @@ _MEMORY_ROUTES = (
 # accept a LiteLLM/Bearer key for agent self-service.
 # Desktop control endpoints (command, screenshot, layout) for the system taOS Agent.
 # Skill-exec endpoints for the system taOS Agent (scope system_agent_exec).
+# NOTE: /api/dispatcher/config is deliberately NOT here. Config CRUD is
+# session-only and refuses agents outright, so nothing there verifies a JWT or a
+# scope grant; listing it would only hand a bare Bearer (valid, stale or
+# garbage) the auth gate and shadow the caller's own session cookie.
 _AGENT_TOKEN_PATHS = (
     _REGISTRY_FEED_PATHS
     | _A2A_BUS_READ_PATHS
