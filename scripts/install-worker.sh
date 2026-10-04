@@ -978,6 +978,20 @@ esac
 # loaded so the worker can use it. The user runs the install command
 # themselves.
 
+chain_hailo_installer() { local hailo_script="$1"
+    if TAOS_HAILO_SETUP=1 sudo -E bash "$hailo_script" --yes; then
+        :
+    else
+        local rc=$?
+        if (( rc == 3 )); then
+            warn "install-hailo.sh refused: pre-existing hailo-ollama on :8000; taOS backend not installed on 7836"
+            warn "  continuing worker install anyway"
+        else
+            warn "install-hailo.sh failed - continuing worker install anyway"
+        fi
+    fi
+}
+
 detect_and_advise_accelerators() {
     [[ "$os_name" != "Linux" ]] && return 0  # macOS detection lives elsewhere
 
@@ -1191,17 +1205,7 @@ detect_and_advise_accelerators() {
                 fi
                 if [[ -n "$hailo_script" ]]; then
                     log "TAOS_HAILO_SETUP=1 - chaining into $hailo_script"
-                    if TAOS_HAILO_SETUP=1 sudo -E bash "$hailo_script" --yes; then
-                        :
-                    else
-                        local rc=$?
-                        if (( rc == 3 )); then
-                            warn "install-hailo.sh refused: pre-existing hailo-ollama on :8000; taOS backend not installed on 7836"
-                            warn "  continuing worker install anyway"
-                        else
-                            warn "install-hailo.sh failed - continuing worker install anyway"
-                        fi
-                    fi
+                    chain_hailo_installer "$hailo_script"
                 else
                     warn "TAOS_HAILO_SETUP=1 but install-hailo.sh not found locally yet"
                     warn "  it will be available after the worker repo is cloned; run it then"
