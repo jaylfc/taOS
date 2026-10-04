@@ -390,11 +390,16 @@ async def check_agent_scope_for_project(
     # Grant-gated authorization: a project is reachable only if the agent holds
     # an active grant for the required scope bound to that project. The token's
     # project_id claim is advisory and is intentionally NOT checked here (taOS #1862).
-    registry = _get_store(request)
     grants_store = _get_grants_store(request)
     now = datetime.now(timezone.utc)
-    project_ids = await active_project_grants(registry, grants_store, canonical_id, required_scope, now=now)
-    if project_id not in project_ids:
+    grants = await grants_store.list_grants(canonical_id)
+    grant_ok = any(
+        g["scope"] == required_scope
+        and g.get("project_id") == project_id
+        and _grant_unexpired(g.get("expires_at"), now)
+        for g in grants
+    )
+    if not grant_ok:
         raise HTTPException(status_code=403, detail=PROJECT_SCOPE_MISMATCH_DETAIL)
     return canonical_id
 
