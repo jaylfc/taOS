@@ -1,0 +1,1 @@
+These are design references for a future streamed-app tier (KasmVNC base image + agent bridge, see docs/design/app-streaming.md). They are not built, not loaded by the registry and not shipped. Moved out of app-catalog/ on 2026-10-04 per lib-audit R2-32.
