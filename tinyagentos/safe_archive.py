@@ -26,11 +26,54 @@ MAX_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
 MAX_MEMBER_BYTES = 64 * 1024 * 1024
 MAX_MEMBERS = 10_000
 
+# Cap the total bytes read from the underlying stream (compressed bytes for an
+# ``r:gz`` upload). This bounds PAX/GNU helper record payloads too, because
+# ``tar.next()`` consumes those payloads from the stream before yielding the
+# real member, so the per-member and cumulative caps never saw them.
+MAX_TOTAL_STREAM_BYTES = MAX_UNCOMPRESSED_BYTES
+
 # tarfile.FilterError only exists on Pythons carrying PEP 706. An empty tuple in
 # an `except` clause never matches, so the handler stays valid either way.
 _FILTER_ERRORS: tuple[type[BaseException], ...] = (
     (tarfile.FilterError,) if hasattr(tarfile, "FilterError") else ()
 )
+
+
+class _CountingStream:
+    """A fileobj wrapper that raises ArchiveError once a byte cap is exceeded."""
+
+    def __init__(self, wrapped, cap):
+        self._wrapped = wrapped
+        self._cap = cap
+        self._count = 0
+
+    def read(self, size=-1):
+        data = self._wrapped.read(size)
+        self._count += len(data)
+        if self._count > self._cap:
+            raise ArchiveError(
+                f"archive stream exceeds {self._cap} bytes "
+                f"({self._count} bytes consumed)"
+            )
+        return data
+
+    def __getattr__(self, name):
+        return getattr(self._wrapped, name)
+
+
+def _wrap_tar_stream(tar, cap):
+    """Replace the tar's underlying stream with a byte-counting wrapper."""
+    fileobj = tar.fileobj
+    if fileobj is None:
+        return
+    if hasattr(fileobj, "fileobj") and fileobj.fileobj is not None:
+        # Wrapped by gzip / bz2 / xz or a similar compression layer.
+        wrapped = _CountingStream(fileobj.fileobj, cap)
+        fileobj.fileobj = wrapped
+    else:
+        # Direct (unwrapped) stream.
+        wrapped = _CountingStream(fileobj, cap)
+        tar.fileobj = wrapped
 
 
 class ArchiveError(Exception):
@@ -136,12 +179,14 @@ def check_zip_limits(
 
 
 def check_tar_limits(
-    tar: tarfile.TarFile,
+    tar: tarfile.TarFile | None = None,
     *,
+    stream=None,
     kind: str = "archive",
     max_members: int | None = None,
     max_member_bytes: int | None = None,
     max_uncompressed_bytes: int | None = None,
+    max_total_stream_bytes: int | None = None,
 ) -> None:
     """Reject a tar bomb from the member headers, before anything is written.
 
@@ -155,7 +200,31 @@ def check_tar_limits(
     first cap could fire, handing an attacker exactly the CPU the caps exist to
     deny. Stepping with ``next()`` and judging each header the moment it arrives
     means an offending member's payload is never decompressed.
+
+    PAX (typeflag x / g) and GNU long-name/long-link (L / K) helper records
+    bypass the per-member and cumulative caps because tarfile consumes their
+    payloads from the stream before yielding the real member. An optional
+    stream cap bounds those payloads too, independently of member accounting.
     """
+    if stream is not None:
+        if max_total_stream_bytes is not None:
+            stream = _CountingStream(stream, max_total_stream_bytes)
+        with tarfile.open(fileobj=stream, mode="r:gz") as tar:
+            budget = _DeclaredSizeBudget(
+                kind=kind,
+                max_members=max_members,
+                max_member_bytes=max_member_bytes,
+                max_uncompressed_bytes=max_uncompressed_bytes,
+            )
+            while (member := tar.next()) is not None:
+                budget.add(member.name, member.size)
+        return
+
+    if tar is None:
+        raise ArchiveError("check_tar_limits requires a tar or a stream")
+
+    if max_total_stream_bytes is not None:
+        _wrap_tar_stream(tar, max_total_stream_bytes)
     budget = _DeclaredSizeBudget(
         kind=kind,
         max_members=max_members,
@@ -174,6 +243,7 @@ def extract_tar_safely(
     max_members: int | None = None,
     max_member_bytes: int | None = None,
     max_uncompressed_bytes: int | None = None,
+    max_total_stream_bytes: int | None = None,
 ) -> None:
     """Size-check a tarball, then extract it under PEP 706's ``data`` filter.
 
@@ -193,6 +263,7 @@ def extract_tar_safely(
         max_members=max_members,
         max_member_bytes=max_member_bytes,
         max_uncompressed_bytes=max_uncompressed_bytes,
+        max_total_stream_bytes=max_total_stream_bytes,
     )
     try:
         tar.extractall(dest, filter=tarfile.data_filter)

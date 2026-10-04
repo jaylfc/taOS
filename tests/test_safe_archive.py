@@ -9,6 +9,7 @@ deny.
 """
 
 import io
+import os
 import tarfile
 
 import pytest
@@ -146,3 +147,17 @@ def test_a_real_tar_with_a_negative_directory_size_is_rejected():
         pytest.raises(ArchiveError, match="member size invalid"),
     ):
         check_tar_limits(tar, kind="backup", max_uncompressed_bytes=1000)
+
+
+def test_oversized_helper_record_payload_is_rejected():
+    """A helper record (PAX x / GNU L / GNU K) with a huge payload must be
+    bounded by the stream cap before the tar parser consumes it.
+    """
+    random_name = os.urandom(8 * _MIB - 100).decode("latin-1")
+    full = _tar_gz([(random_name, 0)])
+
+    stream = safe_archive._CountingStream(io.BytesIO(full), 1024 * 1024)
+    with pytest.raises(ArchiveError, match="stream exceeds"):
+        check_tar_limits(stream=stream, kind="backup")
+
+    assert stream._count < 8 * _MIB
