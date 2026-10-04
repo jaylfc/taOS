@@ -97,7 +97,8 @@ export function resolveExcalidrawFontPath(
   let decoded: string;
   try {
     decoded = decodeURIComponent(remainder);
-  } catch {
+  } catch (e) {
+    if (!(e instanceof URIError)) throw e;
     return null;
   }
   const resolved = path.resolve(srcFonts, decoded);
