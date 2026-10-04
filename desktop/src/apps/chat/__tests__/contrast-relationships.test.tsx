@@ -50,10 +50,9 @@ describe("contrast relationships", () => {
       const divider = menu.querySelector(".h-px") as HTMLElement;
       const item = screen.getByText("DM @test-agent") as HTMLElement;
 
-      // Extract the background / surface class token from each element.
-      const menuSurface = menu.className.match(/bg-shell-[^\s]+/)?.[0] ?? menu.className.match(/bg-white\/\d+/)?.[0] ?? "";
-      const dividerToken = divider.className.match(/bg-white\/\d+|bg-shell-[^\s]+/)?.[0] ?? "";
-      const itemHoverToken = item.className.match(/hover:bg-white\/\d+|hover:bg-shell-[^\s]+|focus:bg-white\/\d+|focus:bg-shell-[^\s]+/)?.[0] ?? "";
+      const menuSurface = bgToken(menu);
+      const dividerToken = bgToken(divider);
+      const itemHoverToken = bgToken(item, "hover:");
 
       // menu surface != divider != item hover
       expect(menuSurface).not.toBe(dividerToken);
