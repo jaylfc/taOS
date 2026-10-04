@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Wand2, LayoutGrid, Pencil, Eye, Download, Share2 } from "lucide-react";
 import { GenerateView } from "./webstudio/GenerateView";
 import { TemplatesView } from "./webstudio/TemplatesView";
@@ -61,14 +61,18 @@ export function WebStudioApp(_props: { windowId: string }) {
   // fallback, or a reopened saved site are "user-uploaded" (the safe default;
   // both tiers carry the same capability ceiling, so this is a labeling fix).
   const [provenance, setProvenance] = useState<"ai-generated" | "user-uploaded">("user-uploaded");
+  const loadSeq = useRef(0);
 
   const loadList = useCallback(async () => {
+    const req = ++loadSeq.current;
     try {
       const res = await fetch("/api/web/sites", { credentials: "include" });
       if (!res.ok) throw new Error("Could not load sites");
+      if (req !== loadSeq.current) return;
       setSaved((await res.json()) as SavedSite[]);
       setListError(null);
     } catch (e) {
+      if (req !== loadSeq.current) return;
       setListError(e instanceof Error ? e.message : "Load failed");
     }
   }, []);

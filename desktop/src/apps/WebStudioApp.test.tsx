@@ -333,6 +333,55 @@ describe("WebStudioApp saved-sites list state", () => {
     await screen.findByTestId("webstudio-empty-state");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
+
+  it("ignores stale loadList responses when a newer request wins", async () => {
+    const staleSites = [{ id: "old", title: "Old site", updated_at: 1 }];
+    const freshSites = [{ id: "new", title: "New site", updated_at: 2 }];
+
+    let initialResolve: (value: SavedSite[]) => void;
+    const initialPromise = new Promise<SavedSite[]>((resolve) => { initialResolve = resolve; });
+
+    let getCallCount = 0;
+    const fetchCalls: string[] = [];
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      const method = init?.method || "GET";
+      fetchCalls.push(`${method} ${url}`);
+      if (url === "/api/web/sites" && !init?.method) {
+        getCallCount++;
+        if (getCallCount === 1) {
+          return { ok: false, json: async () => ({}) };
+        }
+        if (getCallCount === 2) {
+          return { ok: true, json: async () => initialPromise };
+        }
+        return { ok: true, json: async () => freshSites };
+      }
+      if (url === "/api/web/sites" && init?.method === "POST") {
+        return { ok: true, json: async () => ({ id: "site-new" }) };
+      }
+      return originalFetch(url, init);
+    }) as typeof globalThis.fetch;
+
+    render(<WebStudioApp windowId="w1" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Could not load sites"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    console.log("calls before wait:", fetchCalls.length, fetchCalls);
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(4));
+    console.log("calls after wait:", fetchCalls.length, fetchCalls);
+    await waitFor(() => expect(screen.getByText("New site")).toBeInTheDocument());
+
+    initialResolve(staleSites);
+
+    await waitFor(() => expect(screen.getByText("New site")).toBeInTheDocument());
+    expect(screen.queryByText("Old site")).not.toBeInTheDocument();
+
+    globalThis.fetch = originalFetch;
+  });
 });
 
 describe("WebStudioApp save round-trip", () => {
