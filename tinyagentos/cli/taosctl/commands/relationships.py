@@ -9,8 +9,6 @@ from urllib.parse import quote
 
 NOUN = "relationships"
 
-_BASE = "/api/relationships"
-
 
 def register(subparsers) -> None:
     p = subparsers.add_parser(
@@ -71,46 +69,46 @@ def _optional(args, *fields) -> dict:
 
 
 def _list(args, client):
-    return client.get(f"{_BASE}/groups")
+    return client.get(f"/api/relationships/groups")
 
 
 def _create(args, client):
     body = {"name": args.name}
     body.update(_optional(args, "description", "lead_agent", "color"))
-    return client.post(f"{_BASE}/groups", body=body)
+    return client.post(f"/api/relationships/groups", body=body)
 
 
 def _update(args, client):
     body = _optional(args, "name", "description", "lead_agent", "color")
-    return client.put(f"{_BASE}/groups/{args.group_id}", body=body)
+    return client.put(f"/api/relationships/groups/{args.group_id}", body=body)
 
 
 def _delete(args, client):
-    return client.delete(f"{_BASE}/groups/{args.group_id}")
+    return client.delete(f"/api/relationships/groups/{args.group_id}")
 
 
 def _add_member(args, client):
     body = {"agent_name": args.agent_name}
     body.update(_optional(args, "role"))
-    return client.post(f"{_BASE}/groups/{args.group_id}/members", body=body)
+    return client.post(f"/api/relationships/groups/{args.group_id}/members", body=body)
 
 
 def _remove_member(args, client):
     name = quote(args.agent_name, safe="")
-    return client.delete(f"{_BASE}/groups/{args.group_id}/members/{name}")
+    return client.delete(f"/api/relationships/groups/{args.group_id}/members/{name}")
 
 
 def _agent(args, client):
-    return client.get(f"{_BASE}/agent/{quote(args.name, safe='')}")
+    return client.get(f"/api/relationships/agent/{quote(args.name, safe='')}")
 
 
 def _allow(args, client):
     body = {"from_agent": args.from_agent, "to_agent": args.to_agent}
-    return client.post(f"{_BASE}/permissions", body=body)
+    return client.post(f"/api/relationships/permissions", body=body)
 
 
 def _revoke(args, client):
     # The route reads a JSON body on DELETE; client.delete() sends none, so go
     # through request() directly.
     body = {"from_agent": args.from_agent, "to_agent": args.to_agent}
-    return client.request("DELETE", f"{_BASE}/permissions", body=body)
+    return client.request("DELETE", f"/api/relationships/permissions", body=body)
