@@ -1,0 +1,1 @@
+- taosctl: new `channels` command group (list, types, create, delete, toggle) wrapping the /api/channels routes so agents and scripts can manage agent channels from the shell.
