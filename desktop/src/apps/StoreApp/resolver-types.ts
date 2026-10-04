@@ -63,7 +63,10 @@ export async function resolveModels(
   opts: { chunkSize?: number; onProgress?: (soFar: Map<string, ResolveResponse>) => void; isCancelled?: () => boolean } = {},
 ): Promise<Map<string, ResolveResponse>> {
   const out = new Map<string, ResolveResponse>();
-  const size = Math.min(200, Math.max(1, Math.floor(opts.chunkSize ?? 100)));
+  const raw = Math.floor(opts.chunkSize ?? 100);
+  const size = Math.min(200, Math.max(1, Number.isFinite(raw) ? raw : 100));
+  
+  const report = () => { try { opts.onProgress?.(new Map(out)); } catch { /* listener error must not abort resolution */ } };
   
   for (let i = 0; i < manifestIds.length; i += size) {
     if (opts.isCancelled?.()) break;
@@ -81,7 +84,7 @@ export async function resolveModels(
         }),
       });
       if (!res.ok) {
-        opts.onProgress?.(new Map(out));
+        report();
         continue;
       }
       const data = (await res.json()) as { results: Record<string, ResolveResponse | { error: string }> };
@@ -90,9 +93,9 @@ export async function resolveModels(
           out.set(id, value as ResolveResponse);
         }
       }
-      opts.onProgress?.(new Map(out));
+      report();
     } catch {
-      opts.onProgress?.(new Map(out));
+      report();
       continue;
     }
   }
