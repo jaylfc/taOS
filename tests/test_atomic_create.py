@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 
 import tinyagentos.atomic_io as atomic_io
-from tinyagentos.atomic_io import atomic_create_bytes
+from tinyagentos.atomic_io import atomic_create_bytes, atomic_write_bytes
 
 
 class TestAtomicCreateBytes:
@@ -112,6 +112,71 @@ class TestAtomicCreateBytes:
         target = tmp_path / "nested" / "deeper" / "key.bin"
         assert atomic_create_bytes(target, b"k") == b"k"
         assert target.read_bytes() == b"k"
+
+
+class TestAncestorfsync:
+    """RED-FIRST: verify that mkdir(parents=True) ancestors are all fsynced."""
+
+    def test_fsyncs_all_created_ancestors_write(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        target = tmp_path / "a" / "b" / "c" / "key.bin"
+
+        fsynced_fds: list[int] = []
+        real_fsync = os.fsync
+
+        def tracking_fsync(fd: int) -> None:
+            fsynced_fds.append(fd)
+            return real_fsync(fd)
+
+        monkeypatch.setattr(os, "fsync", tracking_fsync)
+
+        atomic_write_bytes(target, b"test_data")
+
+        # The mkdir(parents=True) created: a, a/b, a/b/c
+        # (tmp_path already existed, so only a/, a/b/, a/b/c/ are new)
+        created_dirs = [tmp_path / "a", tmp_path / "a" / "b", tmp_path / "a" / "b" / "c"]
+
+        for d in created_dirs:
+            assert d.exists(), f"Directory {d} should have been created"
+            dir_fd = os.open(d, os.O_RDONLY)
+            try:
+                assert dir_fd in fsynced_fds, (
+                    f"fd {dir_fd} for directory {d} was NOT fsynced - "
+                    f"fsynced fds were {fsynced_fds!r}"
+                )
+            finally:
+                os.close(dir_fd)
+
+    def test_fsyncs_all_created_ancestors_create(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        target = tmp_path / "x" / "y" / "z" / "key.bin"
+
+        fsynced_fds: list[int] = []
+        real_fsync = os.fsync
+
+        def tracking_fsync(fd: int) -> None:
+            fsynced_fds.append(fd)
+            return real_fsync(fd)
+
+        monkeypatch.setattr(os, "fsync", tracking_fsync)
+
+        atomic_create_bytes(target, b"test_data")
+
+        # The mkdir(parents=True) created: x, x/y, x/y/z
+        created_dirs = [tmp_path / "x", tmp_path / "x" / "y", tmp_path / "x" / "y" / "z"]
+
+        for d in created_dirs:
+            assert d.exists(), f"Directory {d} should have been created"
+            dir_fd = os.open(d, os.O_RDONLY)
+            try:
+                assert dir_fd in fsynced_fds, (
+                    f"fd {dir_fd} for directory {d} was NOT fsynced - "
+                    f"fsynced fds were {fsynced_fds!r}"
+                )
+            finally:
+                os.close(dir_fd)
 
 
 def _no_hardlinks(*_a, **_kw) -> None:
