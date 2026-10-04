@@ -646,8 +646,6 @@ def test_device_tls_unsupported_algorithm_regenerates(tmp_path, monkeypatch):
     original_fp = _fingerprint_from_der(cert.public_bytes(serialization.Encoding.DER))
 
     # Patch load_pem_private_key to raise UnsupportedAlgorithm
-    original_load = serialization.load_pem_private_key
-
     def mock_load_pem_private_key(data, password):
         raise UnsupportedAlgorithm("unsupported key type")
 
