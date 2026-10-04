@@ -89,9 +89,21 @@ class TestStoreResolveEndpoint:
 class TestStoreResolveBatch:
     @pytest.mark.asyncio
     async def test_batch_of_two_known_ids_returns_same_as_single_route(
-        self, client, fake_registry
+        self, client
     ):
-        client._transport.app.state.registry = fake_registry
+        other = make_qwen_manifest()
+        other.id = "another-model"
+        other.variants = [
+            {
+                "id": "fp16",
+                "size_mb": 900_000,
+                "requires": {"backends": [{"id": "vllm", "targets": ["cuda"]}]},
+            },
+        ]
+        manifests = {"qwen2.5-3b": make_qwen_manifest(), "another-model": other}
+        reg = MagicMock()
+        reg.get = MagicMock(side_effect=manifests.get)
+        client._transport.app.state.registry = reg
         pi = DeviceCapability(
             device_id="local",
             targets=("rockchip", "cpu"),
@@ -104,24 +116,27 @@ class TestStoreResolveBatch:
             "tinyagentos.routes.store.get_device_capability",
             new=AsyncMock(return_value=pi),
         ):
-            r1 = await client.post("/api/store/resolve", json={
-                "manifest_id": "qwen2.5-3b",
-                "variant_id": "auto",
-            })
+            single = {}
+            for mid in manifests:
+                r = await client.post("/api/store/resolve", json={
+                    "manifest_id": mid,
+                    "variant_id": "auto",
+                })
+                assert r.status_code == 200
+                single[mid] = r.json()
             r2 = await client.post("/api/store/resolve-batch", json={
-                "manifest_ids": ["qwen2.5-3b", "another-model"],
+                "manifest_ids": list(manifests),
                 "variant_id": "auto",
             })
-        assert r1.status_code == 200
         assert r2.status_code == 200
-        body1 = r1.json()
         body2 = r2.json()
-        # Each id in the batch result should match the single-route result
-        assert body2["results"]["qwen2.5-3b"] == body1
-        assert body2["results"]["another-model"] == body1
+        # The two ids resolve differently, so a per-id match is not vacuous
+        assert single["qwen2.5-3b"] != single["another-model"]
+        for mid in manifests:
+            assert body2["results"][mid] == single[mid]
 
     @pytest.mark.asyncio
-    async def test_batch_device_capability_awaited_once_for_2_id_batch(
+    async def test_batch_device_capability_awaited_once_for_3_id_batch(
         self, client, fake_registry
     ):
         client._transport.app.state.registry = fake_registry
@@ -138,7 +153,7 @@ class TestStoreResolveBatch:
             new=AsyncMock(return_value=pi),
         ) as mock_gdc:
             r = await client.post("/api/store/resolve-batch", json={
-                "manifest_ids": ["qwen2.5-3b", "another-model"],
+                "manifest_ids": ["qwen2.5-3b", "another-model", "third-model"],
                 "variant_id": "auto",
             })
         assert r.status_code == 200
