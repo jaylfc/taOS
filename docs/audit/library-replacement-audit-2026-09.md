@@ -178,17 +178,18 @@ lockfile. Any licence-scan CI job must be pointed at what the installer actually
 **Resolved (tsk-f3j765, tsk-negkzy).** Neither option 1 nor 2 as written: pip cannot subtract one member of
 another package's extra, and plain `litellm` does not run the proxy. Instead the `proxy` extra in
 `pyproject.toml` inlines litellm 1.94.2's own proxy requirements minus `litellm-enterprise`, caps
-litellm `<1.95` (the installer's `pip install -e .[proxy]` does not read `uv.lock`, and litellm 1.99
+litellm `<1.95` (the installer's `pip install -e .[proxy]` did not read `uv.lock`, and litellm 1.99
 grows requirements the inlined list lacks), and `install-server.sh` uninstalls a copy an earlier
 install left behind. `yt-dlp` is now a declared dependency. `scripts/check_install_licences.py`
 walks `uv.lock` from the server extras and fails on any blocked licence or any installer
 `pip install` of an undeclared package; `tests/test_install_licences.py` holds the rule.
 
 **The structural install-vs-lock drift is now closed (tsk-negkzy).** A generated `constraints.txt`
-(from `uv export --no-hashes --format requirements-txt --no-emit-project`) is committed and
+(from `uv export --no-hashes --format requirements-txt --all-extras`) is committed and
 `install-server.sh` passes `-c constraints.txt` to every `pip install`. A drift gate in
 `tests/test_install_licences.py` regenerates the file from `uv.lock` and fails if it differs,
 ensuring the installed set matches the audited set exactly.
+
 Option 3 (isolated proxy venv) remains the structural answer to the transitive footprint, incl.
 `soundfile`'s bundled libsndfile (§2.1).
 

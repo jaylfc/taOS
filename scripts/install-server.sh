@@ -1651,9 +1651,10 @@ fi
 # gateway replaced it); a handset adds `ble`. `.[]` is not a valid pip target,
 # so the brackets are added only when there is an extra.
 _taos_extras="$(taos_controller_extras)"
-log "installing controller python deps into .venv (pip install -c constraints.txt -e '.${_taos_extras:+[$_taos_extras]}')"
-./.venv/bin/pip install --quiet --upgrade pip -c constraints.txt
-./.venv/bin/pip install --quiet -c constraints.txt -e ".${_taos_extras:+[$_taos_extras]}"
+_constraints_file="$INSTALL_DIR/constraints.txt"
+log "installing controller python deps into .venv (pip install -c $_constraints_file -e '.${_taos_extras:+[$_taos_extras]}')"
+./.venv/bin/pip install --quiet --upgrade pip -c "$_constraints_file"
+./.venv/bin/pip install --quiet -c "$_constraints_file" -e ".${_taos_extras:+[$_taos_extras]}"
 
 # litellm (and with it the proprietary litellm-enterprise wheel an older
 # litellm[proxy] pulled in) is no longer part of the install set. A FRESH

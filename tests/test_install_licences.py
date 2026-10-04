@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import importlib.util
 import re
+import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -29,6 +29,9 @@ _spec.loader.exec_module(check_install_licences)
 CONSTRAINTS_FILE = REPO_ROOT / "constraints.txt"
 INSTALLER = REPO_ROOT / "scripts" / "install-server.sh"
 
+# Minimum uv version that supports --all-extras and --format requirements-txt
+MIN_UV_VERSION = "0.4.0"
+
 
 # Packages that must never appear in the set a server install resolves, with the
 # reason, so a future re-add has to argue with the reason rather than the name.
@@ -42,6 +45,35 @@ FORBIDDEN = {
 
 def _install_set() -> dict[str, str]:
     return check_install_licences.resolve_install_set()
+
+
+def _parse_constraints(text: str) -> dict[str, tuple[str, str]]:
+    """Parse constraints text into {canonical_name: (version, marker)}.
+
+    Ignores comments, blank lines, the -e . editable line, uv's "Resolved N packages"
+    header line, and uv's header comments. Returns a dict mapping canonical package
+    name to (version, marker) where marker is the environment marker string
+    (empty if none).
+    """
+    result: dict[str, tuple[str, str]] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or line.startswith("-e ") or line.startswith("Resolved "):
+            continue
+        # Split on ; to separate requirement from marker
+        if ";" in line:
+            req_part, marker_part = line.split(";", 1)
+            marker = marker_part.strip()
+        else:
+            req_part = line
+            marker = ""
+        # Parse name==version
+        if "==" in req_part:
+            name_part, ver_part = req_part.split("==", 1)
+            name = check_install_licences.canonical(name_part.strip())
+            version = ver_part.split()[0].strip()
+            result[name] = (version, marker)
+    return result
 
 
 @pytest.mark.parametrize("forbidden,reason", sorted(FORBIDDEN.items()))
@@ -112,10 +144,24 @@ def test_installer_pip_commands_use_constraints_file():
     the installed set matches the audited set exactly.
     """
     content = INSTALLER.read_text()
-    pip_installs = re.findall(r'\.venv/bin/pip install[^\n]*', content)
+    # Reuse the pip-install detection from check_install_licences.py
+    pip_installs: list[str] = []
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        match = re.search(r"pip(?:3)?\s+install\s+(.*)$", stripped)
+        if match:
+            pip_installs.append(line.strip())
     assert pip_installs, "No pip install commands found in installer"
     for cmd in pip_installs:
-        assert "-c constraints.txt" in cmd, (
+        # Check for constraints file usage: either explicit "constraints.txt",
+        # a variable reference like "$_constraints_file", or an absolute path
+        # ending in "constraints.txt"
+        assert ("-c constraints.txt" in cmd
+                or "-c $_constraints_file" in cmd
+                or '-c "$_constraints_file"' in cmd
+                or re.search(r'-c\s+\S*constraints\.txt', cmd)), (
             f"pip install command missing -c constraints.txt: {cmd}"
         )
 
@@ -126,9 +172,36 @@ def test_constraints_file_matches_uv_lock():
     Drift gate — same shape as the routes-doc gate. If uv.lock changes,
     constraints.txt must be regenerated.
     """
-    assert CONSTRAINTS_FILE.exists(), "constraints.txt not found — generate with: uv export --no-hashes --format requirements-txt --no-emit-project > constraints.txt"
+    assert CONSTRAINTS_FILE.exists(), (
+        "constraints.txt not found — generate with: "
+        "uv export --no-hashes --format requirements-txt --all-extras > constraints.txt"
+    )
+
+    # Guard: uv binary must be present and recent enough
+    uv_path = shutil.which("uv")
+    assert uv_path is not None, "uv binary not found on PATH — cannot run drift gate"
+
+    # Check uv version meets minimum
+    result = subprocess.run(
+        ["uv", "--version"],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+    )
+    assert result.returncode == 0, f"uv --version failed: {result.stderr}"
+    # uv --version outputs like "uv 0.4.30 (abc123 2024-01-01)"
+    version_match = re.search(r"uv\s+(\d+\.\d+\.\d+)", result.stdout)
+    assert version_match, f"Could not parse uv version from: {result.stdout}"
+    uv_version = version_match.group(1)
+    # Compare versions properly (tuple of ints)
+    uv_version_tuple = tuple(map(int, uv_version.split(".")))
+    min_version_tuple = tuple(map(int, MIN_UV_VERSION.split(".")))
+    assert uv_version_tuple >= min_version_tuple, (
+        f"uv version {uv_version} < {MIN_UV_VERSION} — upgrade uv to run drift gate"
+    )
 
     committed = CONSTRAINTS_FILE.read_text(encoding="utf-8")
+    committed_parsed = _parse_constraints(committed)
 
     result = subprocess.run(
         [
@@ -137,7 +210,7 @@ def test_constraints_file_matches_uv_lock():
             "--no-hashes",
             "--format",
             "requirements-txt",
-            "--no-emit-project",
+            "--all-extras",
         ],
         capture_output=True,
         text=True,
@@ -146,39 +219,113 @@ def test_constraints_file_matches_uv_lock():
     assert result.returncode == 0, f"uv export failed:\n{result.stderr}"
 
     fresh = result.stdout
-    assert fresh == committed, (
+    fresh_parsed = _parse_constraints(fresh)
+
+    # Compare parsed sets — order and uv header/comments don't matter
+    assert fresh_parsed == committed_parsed, (
         "constraints.txt is out of sync with uv.lock. "
-        "Regenerate with: uv export --no-hashes --format requirements-txt --no-emit-project > constraints.txt"
+        "Regenerate with: uv export --no-hashes --format requirements-txt --all-extras > constraints.txt"
     )
 
 
 def test_fresh_install_constraint_set_equals_audited_set():
     """A fresh install with constraints.txt must resolve the same set as the licence gate audits.
 
-    This ensures the installer's pip resolution under constraints matches the
-    exact versions resolved from uv.lock by check_install_licences.resolve_install_set().
+    This uses pip's --dry-run --report to resolve the exact versions that would be
+    installed under constraints.txt, and compares the resolved set against the
+    audited set from uv.lock in both directions (equality, not just subset).
     """
     # The audited set from uv.lock (what the licence gate checks)
     audited = _install_set()
+    audited_canonical = {check_install_licences.canonical(k): v for k, v in audited.items()}
 
-    # Generate a fresh constraints file and verify it contains at least the audited packages
-    # at the same versions. We check that every audited package appears in constraints.txt
-    # with the same version.
-    constraints_text = CONSTRAINTS_FILE.read_text(encoding="utf-8")
-    constraint_versions = {}
-    for line in constraints_text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        # Parse name==version (ignore markers/comments)
-        if "==" in line:
-            pkg_part = line.split("==")[0].strip()
-            ver_part = line.split("==")[1].split()[0].split(";")[0].strip()
-            constraint_versions[check_install_licences.canonical(pkg_part)] = ver_part
+    # Use pip's --dry-run --report to resolve what would be installed
+    # We need a temporary venv for this
+    import tempfile
+    import json
 
-    for name, version in audited.items():
-        cname = check_install_licences.canonical(name)
-        assert cname in constraint_versions, f"Audited package {name} missing from constraints.txt"
-        assert constraint_versions[cname] == version, (
-            f"Version mismatch for {name}: audited={version}, constraints={constraint_versions[cname]}"
+    with tempfile.TemporaryDirectory() as tmpdir:
+        venv_dir = Path(tmpdir) / "test_venv"
+        subprocess.run(
+            [sys.executable, "-m", "venv", str(venv_dir)],
+            check=True,
+            capture_output=True,
         )
+        pip_bin = venv_dir / "bin" / "pip"
+
+        # First upgrade pip to support --report
+        subprocess.run(
+            [str(pip_bin), "install", "--quiet", "--upgrade", "pip"],
+            check=True,
+            capture_output=True,
+        )
+
+        # Create a clean constraints file for pip (strip uv's "Resolved N packages" line and -e .)
+        constraints_text = CONSTRAINTS_FILE.read_text(encoding="utf-8")
+        clean_constraints = "\n".join(
+            line for line in constraints_text.splitlines()
+            if not line.strip().startswith("Resolved ") and not line.strip().startswith("-e ")
+        )
+        clean_constraints_file = Path(tmpdir) / "clean_constraints.txt"
+        clean_constraints_file.write_text(clean_constraints, encoding="utf-8")
+
+        # Run dry-run with constraints and capture report
+        report_file = Path(tmpdir) / "report.json"
+        result = subprocess.run(
+            [
+                str(pip_bin),
+                "install",
+                "--dry-run",
+                "--report", str(report_file),
+                "--quiet",
+                "-c", str(clean_constraints_file),
+                "-e", ".",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=REPO_ROOT,
+        )
+        assert result.returncode == 0, f"pip dry-run failed: {result.stderr}"
+
+# Parse the JSON report
+        report = json.loads(report_file.read_text(encoding="utf-8"))
+        # pip 26+ uses "install" key (not "installs")
+        installs = report.get("install", report.get("installs", []))
+        # Debug: print report structure if installs is empty
+        if not installs:
+            print(f"DEBUG: Report keys: {list(report.keys())}", file=sys.stderr)
+            print(f"DEBUG: Full report: {json.dumps(report, indent=2)}", file=sys.stderr)
+        resolved = {}
+        for install in installs:
+            name = check_install_licences.canonical(install["metadata"]["name"])
+            version = install["metadata"]["version"]
+            resolved[name] = version
+
+    # Parse constraints for platform marker filtering
+    constraints_text = CONSTRAINTS_FILE.read_text(encoding="utf-8")
+    committed_parsed = _parse_constraints(constraints_text)
+
+    # The resolved set must equal the audited set (both directions)
+    # Filter: remove the project itself (tinyagentos) from resolved
+    resolved.pop("tinyagentos", None)
+    # Filter audited set: exclude packages with platform markers that don't match current platform
+    # Use the parsed constraints which include markers
+    expected = {}
+    for name, version in audited_canonical.items():
+        if name in committed_parsed:
+            _, marker = committed_parsed[name]
+            if marker:
+                try:
+                    from packaging.markers import Marker
+                    if not Marker(marker).evaluate():
+                        continue  # Skip packages not for this platform
+                except Exception:
+                    pass  # If marker eval fails, include the package
+        expected[name] = version
+
+    assert resolved == expected, (
+        f"Resolved set != audited set (platform-filtered). "
+        f"In resolved not expected: {set(resolved) - set(expected)}. "
+        f"In expected not resolved: {set(expected) - set(resolved)}. "
+        f"Version mismatches: { {k: (resolved[k], expected[k]) for k in set(resolved) & set(expected) if resolved[k] != expected[k]} }"
+    )
