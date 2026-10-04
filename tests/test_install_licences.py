@@ -140,6 +140,7 @@ def test_constraints_file_matches_lock():
     result = subprocess.run(
         [
             "uv", "export",
+            "--locked",
             "--no-hashes",
             "--format", "requirements-txt",
             "--package", "tinyagentos",
@@ -150,7 +151,7 @@ def test_constraints_file_matches_lock():
         text=True,
         cwd=check_install_licences.REPO_ROOT,
     )
-    assert result.returncode == 0, f"uv export failed:\n{result.stderr}"
+    assert result.returncode == 0, f"uv export --locked failed (uv.lock stale or uv missing): {result.stderr}"
 
     fresh_lines = []
     for line in result.stdout.splitlines():
@@ -166,7 +167,7 @@ def test_constraints_file_matches_lock():
     expected = "\n".join(fresh_lines) + "\n"
     assert committed_raw == expected, (
         f"{constraints_path} is out of sync with uv.lock for the default+proxy set. "
-        "Regenerate with: uv export --no-hashes --format requirements-txt "
+        "Regenerate with: uv export --locked --no-hashes --format requirements-txt "
         "--package tinyagentos --extra proxy --no-dev "
         "| grep -E '^[A-Za-z]' | grep -v '^#' | grep -v '^\\-e ' "
         "| sed 's/ ;.*//' > scripts/install-constraints.txt"
