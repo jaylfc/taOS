@@ -287,7 +287,7 @@ If framework memory and taOSmd contradict on a durable fact, taOSmd wins. Framew
 
 - Do not keep the same fact in both stores. Volatile content lives in framework memory only. Durable content lives in taOSmd only.
 - Do not let framework memory become the long-term store. It is a scratchpad.
-- Do not skip the turn-boundary push. A weak model that writes nothing to taOSmd until session end is fine. A model that writes everything to framework memory breaks the split.
+- Do not skip the turn-boundary move. Write durable facts to taOSmd at the end of every turn, not at session end: a redeploy can come first. A model that writes everything to framework memory breaks the split.
 
 ---
 
