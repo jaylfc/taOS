@@ -4,8 +4,7 @@ The caps themselves are exercised end-to-end by the theme and restore route
 tests. What this module pins down is *when* they fire: a tar header has to be
 judged before the parser is allowed to walk past its payload, because for an
 ``r:gz`` upload walking past a payload means decompressing it. A guard that
-first enumerates the whole archive has already spent the CPU it was meant to
-deny.
+first enumerates the archive has already spent the CPU it was meant to deny.
 """
 
 import io
@@ -46,6 +45,18 @@ def _tar_gz(members: list[tuple[str, int]]) -> bytes:
     return buf.getvalue()
 
 
+def _tar_gz_gnu(members: list[tuple[str, int]]) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(
+        fileobj=buf, mode="w:gz", compresslevel=1, format=tarfile.GNU_FORMAT
+    ) as tar:
+        for name, size in members:
+            info = tarfile.TarInfo(name)
+            info.size = size
+            tar.addfile(info, io.BufferedReader(_Zeros(size)))
+    return buf.getvalue()
+
+
 def test_oversized_member_is_rejected_from_its_own_header(tmp_path):
     """The first header must be judged before anything after it is read.
 
@@ -65,8 +76,6 @@ def test_oversized_member_is_rejected_from_its_own_header(tmp_path):
 def test_cumulative_cap_is_rejected_from_the_header_that_crosses_it():
     """Same for the running total: stop at the header that crosses the cap."""
     member = 52 * _MIB
-    # Five 52 MiB members: each under the per-member cap, the fifth carries the
-    # running total past MAX_UNCOMPRESSED_BYTES.
     full = _tar_gz([(f"pad{i}.bin", member) for i in range(5)])
     with tarfile.open(fileobj=io.BytesIO(full), mode="r:gz") as tar:
         with pytest.raises(ArchiveError, match="uncompressed size too large"):
@@ -86,6 +95,7 @@ class _FakeTar:
 
     def __init__(self, members: list[tarfile.TarInfo]) -> None:
         self._members = iter(members)
+        self.fileobj = None
 
     def next(self) -> tarfile.TarInfo | None:
         return next(self._members, None)
@@ -150,14 +160,36 @@ def test_a_real_tar_with_a_negative_directory_size_is_rejected():
 
 
 def test_oversized_helper_record_payload_is_rejected():
-    """A helper record (PAX x / GNU L / GNU K) with a huge payload must be
-    bounded by the stream cap before the tar parser consumes it.
+    """A PAX helper record (typeflag x / g) with a huge payload must be
+    bounded by the stream cap before the tar parser consumes it. A
+    repeated-character name is used so the gzip-compressed form is tiny,
+    documenting that the cap is enforced on decompressed bytes, not on the
+    compressed input size.
     """
-    random_name = os.urandom(8 * _MIB - 100).decode("latin-1")
-    full = _tar_gz([(random_name, 0)])
+    helper_payload = "A" * (8 * _MIB - 100)
+    full = _tar_gz([(helper_payload, 0)])
 
     stream = safe_archive._CountingStream(io.BytesIO(full), 1024 * 1024)
     with pytest.raises(ArchiveError, match="stream exceeds"):
-        check_tar_limits(stream=stream, kind="backup")
-
+        check_tar_limits(
+            stream=stream, kind="backup", max_total_stream_bytes=1024 * 1024
+        )
     assert stream._count < 8 * _MIB
+
+
+def test_oversized_gnu_long_name_rejected_before_full_decompression():
+    """A real r:gz archive with an oversized GNU L helper record is bounded by
+    the module stream cap before its full payload is decompressed. The inner
+    wrapper on tar.fileobj counts decompressed bytes consumed by the parser.
+    """
+    long_name = "A" * (7 * _MIB)
+    full = _tar_gz_gnu([("first.txt", 0), (long_name, 0)])
+
+    raw_stream = io.BytesIO(full)
+    with tarfile.open(fileobj=raw_stream, mode="r:gz") as tar:
+        with pytest.raises(ArchiveError, match="stream exceeds"):
+            check_tar_limits(tar, kind="backup", max_total_stream_bytes=_MIB)
+        inner = tar.fileobj
+        assert isinstance(inner, safe_archive._CountingStream)
+        assert inner._count >= _MIB
+        assert inner._count < 8 * _MIB

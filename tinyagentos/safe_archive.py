@@ -1,6 +1,6 @@
 """One guarded entry point for every archive taOS extracts from an upload.
 
-An uploaded ``.taosapp``, ``.taostheme`` or backup tarball is attacker
+An uploaded ``.taosapp``, ``taostheme`` or backup tarball is attacker
 controlled: a 40 KB zip can declare gigabytes of uncompressed content, and
 ``zipfile.read()`` inflates that declared size straight into memory. The guards
 below therefore run over the archive's own index -- ``infolist()`` /
@@ -40,7 +40,11 @@ _FILTER_ERRORS: tuple[type[BaseException], ...] = (
 
 
 class _CountingStream:
-    """A fileobj wrapper that raises ArchiveError once a byte cap is exceeded."""
+    """A fileobj wrapper that raises ArchiveError once a byte cap is exceeded.
+
+    Uses ``tell()`` when available so that backward ``seek()`` calls do not
+    double-count already-consumed bytes.
+    """
 
     def __init__(self, wrapped, cap):
         self._wrapped = wrapped
@@ -49,7 +53,11 @@ class _CountingStream:
 
     def read(self, size=-1):
         data = self._wrapped.read(size)
-        self._count += len(data)
+        if hasattr(self._wrapped, "tell"):
+            end = self._wrapped.tell()
+            self._count = max(self._count, end)
+        else:
+            self._count += len(data)
         if self._count > self._cap:
             raise ArchiveError(
                 f"archive stream exceeds {self._cap} bytes "
@@ -63,17 +71,10 @@ class _CountingStream:
 
 def _wrap_tar_stream(tar, cap):
     """Replace the tar's underlying stream with a byte-counting wrapper."""
-    fileobj = tar.fileobj
+    fileobj = getattr(tar, "fileobj", None)
     if fileobj is None:
         return
-    if hasattr(fileobj, "fileobj") and fileobj.fileobj is not None:
-        # Wrapped by gzip / bz2 / xz or a similar compression layer.
-        wrapped = _CountingStream(fileobj.fileobj, cap)
-        fileobj.fileobj = wrapped
-    else:
-        # Direct (unwrapped) stream.
-        wrapped = _CountingStream(fileobj, cap)
-        tar.fileobj = wrapped
+    tar.fileobj = _CountingStream(fileobj, cap)
 
 
 class ArchiveError(Exception):
@@ -178,6 +179,11 @@ def check_zip_limits(
     )
 
 
+def _walk_tar(tar, budget):
+    while (member := tar.next()) is not None:
+        budget.add(member.name, member.size)
+
+
 def check_tar_limits(
     tar: tarfile.TarFile | None = None,
     *,
@@ -203,36 +209,35 @@ def check_tar_limits(
 
     PAX (typeflag x / g) and GNU long-name/long-link (L / K) helper records
     bypass the per-member and cumulative caps because tarfile consumes their
-    payloads from the stream before yielding the real member. An optional
-    stream cap bounds those payloads too, independently of member accounting.
+    payloads from the stream before yielding the real member. The stream cap
+    bounds those payloads too, independently of member accounting.
     """
+    if max_total_stream_bytes is None:
+        max_total_stream_bytes = MAX_TOTAL_STREAM_BYTES
+
     if stream is not None:
-        if max_total_stream_bytes is not None:
-            stream = _CountingStream(stream, max_total_stream_bytes)
         with tarfile.open(fileobj=stream, mode="r:gz") as tar:
+            _wrap_tar_stream(tar, max_total_stream_bytes)
             budget = _DeclaredSizeBudget(
                 kind=kind,
                 max_members=max_members,
                 max_member_bytes=max_member_bytes,
                 max_uncompressed_bytes=max_uncompressed_bytes,
             )
-            while (member := tar.next()) is not None:
-                budget.add(member.name, member.size)
+            _walk_tar(tar, budget)
         return
 
     if tar is None:
         raise ArchiveError("check_tar_limits requires a tar or a stream")
 
-    if max_total_stream_bytes is not None:
-        _wrap_tar_stream(tar, max_total_stream_bytes)
+    _wrap_tar_stream(tar, max_total_stream_bytes)
     budget = _DeclaredSizeBudget(
         kind=kind,
         max_members=max_members,
         max_member_bytes=max_member_bytes,
         max_uncompressed_bytes=max_uncompressed_bytes,
     )
-    while (member := tar.next()) is not None:
-        budget.add(member.name, member.size)
+    _walk_tar(tar, budget)
 
 
 def extract_tar_safely(
@@ -257,6 +262,8 @@ def extract_tar_safely(
             f"this Python lacks the path-safe tar filter (PEP 706); "
             f"refusing to extract {kind}"
         )
+    if max_total_stream_bytes is None:
+        max_total_stream_bytes = MAX_TOTAL_STREAM_BYTES
     check_tar_limits(
         tar,
         kind=kind,
