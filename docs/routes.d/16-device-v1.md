@@ -97,10 +97,10 @@ If `If-None-Match` matches the ETag, returns `304 Not Modified` with empty body.
 
 **Server-side cache:**
 
-Converted images are cached under `<data_dir>/cache/device-avatars/<hash>-<size>.lvimg`
+Converted images are cached under `<data_dir>/cache/device-avatars/<agent_key>/<hash>-<size>.lvimg`
 (atomic write via tmp + rename). Key is the content hash, so an avatar change is
-automatically a cache miss. Stale entries for the same agent are deleted on
-conversion.
+automatically a cache miss. Stale entries for the same agent (different sizes or old
+hashes) are deleted on conversion.
 
 **Error codes:**
 

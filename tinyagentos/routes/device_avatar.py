@@ -34,6 +34,11 @@ LV_IMAGE_HEADER_MAGIC = 0x19
 CACHE_SUBDIR = "device-avatars"
 
 
+def _agent_key(name: str) -> str:
+    """Return a safe per-agent cache directory key (first 16 hex chars of sha256)."""
+    return hashlib.sha256(name.encode()).hexdigest()[:16]
+
+
 def _cache_dir(data_dir: Path) -> Path:
     """Return the cache directory for device avatars, creating it if needed."""
     cache_path = data_dir / "cache" / CACHE_SUBDIR
@@ -190,8 +195,9 @@ async def device_agent_avatar(
         # Unknown agent name -> 404 (never 403, no name leak)
         raise HTTPException(status_code=404, detail={"error": "avatar_not_found"})
 
-    if agent_config.get("user_id") != owner_id:
-        # Agent belongs to different owner -> 404 (not 403)
+    entry_uid = agent_config.get("user_id")
+    if entry_uid and entry_uid != owner_id:
+        # Agent belongs to different owner and is not shared -> 404 (not 403)
         raise HTTPException(status_code=404, detail={"error": "avatar_not_found"})
 
     # Get avatar hash (also validates source exists and is readable)
@@ -208,7 +214,8 @@ async def device_agent_avatar(
 
     # Check cache
     data_dir = request.app.state.config_path.parent
-    cache_path = _cache_dir(data_dir) / _cache_key(ahash, size)
+    agent_key = _agent_key(name)
+    cache_path = _cache_dir(data_dir) / agent_key / _cache_key(ahash, size)
 
     if cache_path.is_file():
         # Cache hit
@@ -234,16 +241,17 @@ async def device_agent_avatar(
         raise HTTPException(status_code=404, detail={"error": "avatar_not_found"})
 
     # Atomic write to cache: write to tmp then rename
+    agent_dir = cache_path.parent
+    agent_dir.mkdir(parents=True, exist_ok=True)
     tmp_path = cache_path.with_suffix(".lvimg.tmp")
     try:
         tmp_path.write_bytes(lvimg_data)
         tmp_path.rename(cache_path)
 
         # Clean up stale cache entries for this agent (different sizes or old hashes)
-        # We only remove files for THIS agent's hash prefix
-        cache_dir = _cache_dir(data_dir)
-        for old_file in cache_dir.glob(f"{ahash}-*.lvimg"):
-            if old_file != cache_path:
+        agent_dir = cache_path.parent
+        for old_file in agent_dir.glob("*.lvimg"):
+            if not old_file.name.startswith(f"{ahash}-"):
                 try:
                     old_file.unlink()
                 except OSError:

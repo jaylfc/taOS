@@ -411,3 +411,114 @@ async def test_avatar_requires_agents_read(vapp):
 
     assert r.status_code == 403, r.text
     assert r.json()["detail"] == {"error": "device_scope_missing", "scope": "agents:read"}
+
+
+# (h) test_avatar_sibling_size_stays_cached
+@pytest.mark.asyncio
+async def test_avatar_sibling_size_stays_cached(vapp, monkeypatch):
+    from tinyagentos import agent_avatars as avatars
+    from tinyagentos.routes import device_avatar as da_mod
+
+    app = vapp
+    app.state.config.agents = [
+        {"name": "sibling-agent", "framework": "openclaw", "user_id": "u1"},
+    ]
+
+    call_count = {"convert": 0}
+    real_convert = da_mod._convert_to_lvgl9_rgb565a8
+
+    def _counting_convert(source_path, size):
+        call_count["convert"] += 1
+        return real_convert(source_path, size)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        monkeypatch.setattr(avatars, "LOCK_AVATAR_DIR", tmpdir)
+        monkeypatch.setattr(da_mod, "_convert_to_lvgl9_rgb565a8", _counting_convert)
+        slug = avatars._avatar_slug("sibling-agent")
+        img_path = Path(tmpdir) / f"{slug}.jpg"
+        img_path.write_bytes(_make_image_bytes(200, 200, (128, 64, 32)))
+
+        tok = await _device(app, user_id="u1", scopes=("agents:read",))
+
+        async with _client(app) as c:
+            r45a = await c.get("/api/device/v1/agents/sibling-agent/avatar?size=45", headers=_bearer(tok))
+        assert r45a.status_code == 200, r45a.text
+
+        async with _client(app) as c:
+            r96 = await c.get("/api/device/v1/agents/sibling-agent/avatar?size=96", headers=_bearer(tok))
+        assert r96.status_code == 200, r96.text
+
+        async with _client(app) as c:
+            r45b = await c.get("/api/device/v1/agents/sibling-agent/avatar?size=45", headers=_bearer(tok))
+        assert r45b.status_code == 200, r45b.text
+
+    assert call_count["convert"] == 2, f"expected 2 conversions, got {call_count['convert']}"
+    assert r45b.headers.get("etag") == r45a.headers.get("etag"), "third response should be served from cache (same ETag as first)"
+
+
+# (i) test_avatar_old_hash_entry_removed
+@pytest.mark.asyncio
+async def test_avatar_old_hash_entry_removed(vapp, monkeypatch):
+    from tinyagentos import agent_avatars as avatars
+    from tinyagentos.routes import device_avatar as da_mod
+
+    app = vapp
+    app.state.config.agents = [
+        {"name": "oldhash-agent", "framework": "openclaw", "user_id": "u1"},
+    ]
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        monkeypatch.setattr(avatars, "LOCK_AVATAR_DIR", tmpdir)
+        slug = avatars._avatar_slug("oldhash-agent")
+        img_path = Path(tmpdir) / f"{slug}.jpg"
+        img_path.write_bytes(_make_image_bytes(100, 100, (50, 50, 50)))
+
+        tok = await _device(app, user_id="u1", scopes=("agents:read",))
+
+        async with _client(app) as c:
+            r1 = await c.get("/api/device/v1/agents/oldhash-agent/avatar?size=96", headers=_bearer(tok))
+        assert r1.status_code == 200, r1.text
+        etag1 = r1.headers.get("etag")
+
+        # Rewrite the source image with different bytes -> new hash
+        img_path.write_bytes(_make_image_bytes(100, 100, (100, 100, 100)))
+
+        async with _client(app) as c:
+            r2 = await c.get("/api/device/v1/agents/oldhash-agent/avatar?size=96", headers=_bearer(tok))
+        assert r2.status_code == 200, r2.text
+        etag2 = r2.headers.get("etag")
+        assert etag2 != etag1, "ETag should change when source image changes"
+
+        # Check the agent's cache directory holds exactly one .lvimg file carrying the new hash
+        data_dir = app.state.config_path.parent
+        cache_dir = da_mod._cache_dir(data_dir)
+        agent_key = hashlib.sha256("oldhash-agent".encode()).hexdigest()[:16]
+        agent_dir = cache_dir / agent_key
+        lvimg_files = list(agent_dir.glob("*.lvimg")) if agent_dir.is_dir() else []
+        assert len(lvimg_files) == 1, f"expected exactly 1 .lvimg in agent cache dir, found {len(lvimg_files)}: {lvimg_files}"
+        assert etag2.strip('"') in lvimg_files[0].name, f"cache file {lvimg_files[0].name} should carry new hash {etag2}"
+
+
+# (j) test_avatar_shared_agent_served
+@pytest.mark.asyncio
+async def test_avatar_shared_agent_served(vapp, monkeypatch):
+    from tinyagentos import agent_avatars as avatars
+
+    app = vapp
+    app.state.config.agents = [
+        {"name": "shared-agent", "framework": "openclaw", "user_id": ""},
+    ]
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        monkeypatch.setattr(avatars, "LOCK_AVATAR_DIR", tmpdir)
+        slug = avatars._avatar_slug("shared-agent")
+        img_path = Path(tmpdir) / f"{slug}.jpg"
+        img_path.write_bytes(_make_image_bytes(100, 100, (80, 80, 80)))
+
+        tok = await _device(app, user_id="u1", scopes=("agents:read",))
+
+        async with _client(app) as c:
+            r = await c.get("/api/device/v1/agents/shared-agent/avatar?size=96", headers=_bearer(tok))
+
+    assert r.status_code == 200, f"shared agent should be served to device owner: {r.text}"
+    assert r.headers.get("content-type") == "application/x-taos-lvimg"
