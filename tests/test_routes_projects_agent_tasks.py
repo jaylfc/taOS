@@ -480,6 +480,29 @@ class TestActorBinding:
         assert check.status_code == 200
         assert check.json()["status"] == "open"
 
+    async def test_author_agent_closes_own_unclaimed_card(self, ctx):
+        """An agent may close an unclaimed card it authored (created_by matches
+        the agent's canonical id). The card is created directly via the store
+        so created_by is the agent id, not the session user."""
+        pid = await _new_project(ctx, "alpha")
+        cid, token = await _mint_agent(ctx, pid)
+        store = ctx.app.state.project_task_store
+        task = await store.create_task(
+            project_id=pid,
+            title="authored by agent",
+            created_by=cid,
+        )
+        tid = task["id"]
+        async with _bare(ctx.app) as bare:
+            resp = await bare.post(
+                f"/api/projects/{pid}/tasks/{tid}/close",
+                json={"closed_by": cid},
+                headers=_hdr(token),
+            )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["status"] == "closed"
+        assert resp.json()["closed_by"] == cid
+
     async def test_agent_closes_unclaimed_card_after_claiming_it(self, ctx):
         pid = await _new_project(ctx, "alpha")
         tid = await _new_task(ctx, pid)
@@ -714,9 +737,19 @@ class TestSessionRegression:
         assert resp.json()["closed_by"] == lead_cid
 
     async def test_admin_session_closes_unclaimed_card(self, ctx):
-        """A session admin may close an unclaimed card."""
+        """A session admin may close an unclaimed card authored by another agent."""
         pid = await _new_project(ctx, "alpha")
-        tid = await _new_task(ctx, pid)
+        author_cid, author_token = await _mint_agent(
+            ctx, pid, scopes=("project_tasks_create",), handle="@author"
+        )
+        async with _bare(ctx.app) as bare:
+            create = await bare.post(
+                f"/api/projects/{pid}/tasks",
+                json={"title": "authored by @author"},
+                headers=_hdr(author_token),
+            )
+        assert create.status_code == 200, create.text
+        tid = create.json()["id"]
         resp = await ctx.client.post(
             f"/api/projects/{pid}/tasks/{tid}/close",
             json={"closed_by": ctx.uid},
@@ -724,6 +757,68 @@ class TestSessionRegression:
         assert resp.status_code == 200, resp.text
         assert resp.json()["status"] == "closed"
         assert resp.json()["closed_by"] == ctx.uid
+
+    async def test_non_author_agent_cannot_close_unclaimed_card(self, ctx):
+        """A plain member agent (not the author, not the lead) may not close an
+        unclaimed card authored by a different agent."""
+        pid = await _new_project(ctx, "alpha")
+        author_cid, author_token = await _mint_agent(
+            ctx, pid, scopes=("project_tasks_create",), handle="@author"
+        )
+        async with _bare(ctx.app) as bare:
+            create = await bare.post(
+                f"/api/projects/{pid}/tasks",
+                json={"title": "authored by @author"},
+                headers=_hdr(author_token),
+            )
+        assert create.status_code == 200, create.text
+        tid = create.json()["id"]
+        _member_cid, member_token = await _mint_agent(ctx, pid)
+        async with _bare(ctx.app) as bare:
+            resp = await bare.post(
+                f"/api/projects/{pid}/tasks/{tid}/close",
+                json={"closed_by": _member_cid},
+                headers=_hdr(member_token),
+            )
+        assert resp.status_code == 403, resp.text
+        assert "only the card's author" in resp.text
+
+    async def test_admin_session_closes_unclaimed_card_bypass_isolated_from_authorship(self, ctx):
+        """Admin bypass for closing unclaimed cards is isolated from authorship:
+        create the card with created_by set to someone-else, then the admin
+        session closes it -> 200. This proves the bypass does not depend on
+        the admin being the author."""
+        pid = await _new_project(ctx, "alpha")
+        store = ctx.app.state.project_task_store
+        task = await store.create_task(
+            project_id=pid,
+            title="authored by someone else",
+            created_by="someone-else",
+        )
+        tid = task["id"]
+        resp = await ctx.client.post(
+            f"/api/projects/{pid}/tasks/{tid}/close",
+            json={"closed_by": ctx.uid},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["status"] == "closed"
+        assert resp.json()["closed_by"] == ctx.uid
+
+    async def test_admin_session_closes_unclaimed_card_in_project_it_does_not_own(self, ctx):
+        pstore = ctx.app.state.project_store
+        project = await pstore.create_project(
+            name="foreign", slug="foreign", created_by="other-owner", user_id="other-owner"
+        )
+        pid = project["id"]
+        task = await ctx.app.state.project_task_store.create_task(
+            project_id=pid, title="authored by someone else", created_by="someone-else"
+        )
+        resp = await ctx.client.post(
+            f"/api/projects/{pid}/tasks/{task['id']}/close",
+            json={"closed_by": ctx.uid},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["status"] == "closed"
 
     async def test_unauthenticated_still_401(self, ctx):
         pid = await _new_project(ctx, "alpha")
