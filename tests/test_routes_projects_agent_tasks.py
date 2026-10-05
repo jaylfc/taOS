@@ -804,6 +804,22 @@ class TestSessionRegression:
         assert resp.json()["status"] == "closed"
         assert resp.json()["closed_by"] == ctx.uid
 
+    async def test_admin_session_closes_unclaimed_card_in_project_it_does_not_own(self, ctx):
+        pstore = ctx.app.state.project_store
+        project = await pstore.create_project(
+            name="foreign", slug="foreign", created_by="other-owner", user_id="other-owner"
+        )
+        pid = project["id"]
+        task = await ctx.app.state.project_task_store.create_task(
+            project_id=pid, title="authored by someone else", created_by="someone-else"
+        )
+        resp = await ctx.client.post(
+            f"/api/projects/{pid}/tasks/{task['id']}/close",
+            json={"closed_by": ctx.uid},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["status"] == "closed"
+
     async def test_unauthenticated_still_401(self, ctx):
         pid = await _new_project(ctx, "alpha")
         async with _bare(ctx.app) as bare:
