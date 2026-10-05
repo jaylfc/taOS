@@ -480,6 +480,29 @@ class TestActorBinding:
         assert check.status_code == 200
         assert check.json()["status"] == "open"
 
+    async def test_author_agent_closes_own_unclaimed_card(self, ctx):
+        """An agent may close an unclaimed card it authored (created_by matches
+        the agent's canonical id). The card is created directly via the store
+        so created_by is the agent id, not the session user."""
+        pid = await _new_project(ctx, "alpha")
+        cid, token = await _mint_agent(ctx, pid)
+        store = ctx.app.state.project_task_store
+        task = await store.create_task(
+            project_id=pid,
+            title="authored by agent",
+            created_by=cid,
+        )
+        tid = task["id"]
+        async with _bare(ctx.app) as bare:
+            resp = await bare.post(
+                f"/api/projects/{pid}/tasks/{tid}/close",
+                json={"closed_by": cid},
+                headers=_hdr(token),
+            )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["status"] == "closed"
+        assert resp.json()["closed_by"] == cid
+
     async def test_agent_closes_unclaimed_card_after_claiming_it(self, ctx):
         pid = await _new_project(ctx, "alpha")
         tid = await _new_task(ctx, pid)
@@ -717,6 +740,27 @@ class TestSessionRegression:
         """A session admin may close an unclaimed card."""
         pid = await _new_project(ctx, "alpha")
         tid = await _new_task(ctx, pid)
+        resp = await ctx.client.post(
+            f"/api/projects/{pid}/tasks/{tid}/close",
+            json={"closed_by": ctx.uid},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["status"] == "closed"
+        assert resp.json()["closed_by"] == ctx.uid
+
+    async def test_admin_session_closes_unclaimed_card_bypass_isolated_from_authorship(self, ctx):
+        """Admin bypass for closing unclaimed cards is isolated from authorship:
+        create the card with created_by set to someone-else, then the admin
+        session closes it -> 200. This proves the bypass does not depend on
+        the admin being the author."""
+        pid = await _new_project(ctx, "alpha")
+        store = ctx.app.state.project_task_store
+        task = await store.create_task(
+            project_id=pid,
+            title="authored by someone else",
+            created_by="someone-else",
+        )
+        tid = task["id"]
         resp = await ctx.client.post(
             f"/api/projects/{pid}/tasks/{tid}/close",
             json={"closed_by": ctx.uid},
