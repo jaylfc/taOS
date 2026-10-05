@@ -1258,6 +1258,11 @@ async def close_task(
         or project.get("user_id") == actor_id
         or bool(getattr(request.state, "is_admin", False))
     )
+    if not force and not existing.get("claimed_by") and existing.get("created_by") != closed_by:
+        return JSONResponse(
+            {"error": "only the card's author, the project lead, owner or an admin may close an unclaimed card"},
+            status_code=403,
+        )
     ok = await store.close_task(task_id, closed_by=closed_by, reason=payload.reason, force=force)
     if not ok:
         if existing.get("claimed_by") and existing["claimed_by"] != closed_by:
