@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sqlite3
 import time
 
 import tinyagentos
@@ -34,6 +35,7 @@ _ELLIPSIS = "\u2026"
 # them and advance the injectable clock without real sleeps.
 _POLL_INTERVAL_S = 2.0
 _HEARTBEAT_INTERVAL_S = 15.0
+_SLEEP_STEP_S = 0.5
 
 
 def _clock() -> float:
@@ -60,7 +62,7 @@ def _hue_for(name: str) -> int:
 async def _last_recap(agent_name: str, agent_messages) -> str:
     try:
         rows = await agent_messages.get_messages(agent_name, limit=1)
-    except Exception:  # noqa: BLE001
+    except sqlite3.Error:
         return ""
     if not rows:
         return ""
@@ -115,26 +117,8 @@ def _agent_change_key(agent: dict) -> tuple:
     )
 
 
-# Global event counter and bounded history for Last-Event-ID resume.
-_event_id = 0
-_event_history: dict[int, str] = {}
-_MAX_HISTORY = 200
-
-
-def _record_event(eid: int, event_type: str) -> None:
-    global _event_id, _event_history
-    _event_id = eid
-    _event_history[eid] = event_type
-    # Prune history to bound memory.
-    while len(_event_history) > _MAX_HISTORY:
-        oldest = min(_event_history)
-        del _event_history[oldest]
-
-
 async def _events_stream(request: Request, device: dict):
     """Async generator that yields SSE frames for device events."""
-    import sys
-    print("[EVENTS_STREAM] STARTED", file=sys.stderr, flush=True)
     owner_id = device.get("user_id")
     auth_header = request.headers.get("authorization", "")
     token = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else ""
@@ -148,25 +132,38 @@ async def _events_stream(request: Request, device: dict):
     except ValueError:
         last_event_id = 0
 
-    need_snapshot = True
-    if last_event_id > 0 and last_event_id in _event_history:
-        need_snapshot = False
+    # Per-connection event counter and bounded history for Last-Event-ID resume.
+    _event_id = 0
+    _event_history: dict[int, str] = {}
+    _MAX_HISTORY = 200
 
-    print(f"[EVENTS_STREAM] about to call assemble_lock_agents", file=sys.stderr, flush=True)
+    def _record_event(eid: int, event_type: str) -> None:
+        nonlocal _event_id
+        _event_id = eid
+        _event_history[eid] = event_type
+        while len(_event_history) > _MAX_HISTORY:
+            oldest = min(_event_history)
+            del _event_history[oldest]
+
+    need_snapshot = False
+    if last_event_id > 0:
+        if last_event_id not in _event_history:
+            need_snapshot = True
+        elif last_event_id < _event_id:
+            need_snapshot = True
+
     base_agents = await assemble_lock_agents(request, owner_id=owner_id)
-    print(f"[EVENTS_STREAM] assemble_lock_agents returned {len(base_agents)} agents", file=sys.stderr, flush=True)
     transformed = [
         await _transform_agent(a, agent_messages)
         for a in base_agents
         if not a.get("system")
     ]
-    print(f"[EVENTS_STREAM] transformed {len(transformed)} agents", file=sys.stderr, flush=True)
     snapshot_data = {
         "agents": transformed,
         "server": {
             "version": getattr(tinyagentos, "__version__", "unknown"),
         },
-        "time": time.time(),
+        "time": _clock(),
         "demo": _demo_enabled(request),
     }
 
@@ -178,9 +175,7 @@ async def _events_stream(request: Request, device: dict):
     if need_snapshot:
         eid = _event_id + 1
         _record_event(eid, "snapshot")
-        print(f"[EVENTS_STREAM] about to yield snapshot {eid}", file=sys.stderr, flush=True)
         yield f"id: {eid}\nevent: snapshot\ndata: {json.dumps(snapshot_data)}\n\n".encode("utf-8")
-        print(f"[EVENTS_STREAM] yielded snapshot {eid}", file=sys.stderr, flush=True)
 
     # Emit agent.upsert for every current agent on connect so clients that
     # already received a snapshot still see a typed per-agent event.
@@ -197,7 +192,6 @@ async def _events_stream(request: Request, device: dict):
 
     while True:
         if await request.is_disconnected():
-            print("[EVENTS_STREAM] disconnected", file=sys.stderr, flush=True)
             return
 
         now = _clock()
@@ -206,10 +200,9 @@ async def _events_stream(request: Request, device: dict):
         if token:
             try:
                 device_check = await device_store.get_by_token(token)
-            except Exception:  # noqa: BLE001
+            except sqlite3.Error:
                 device_check = None
             if device_check is None:
-                print("[EVENTS_STREAM] device revoked", file=sys.stderr, flush=True)
                 return
 
         # Poll state at the configured interval.
@@ -286,7 +279,7 @@ async def _events_stream(request: Request, device: dict):
             yield f"id: {eid}\n: ping\n\n".encode("utf-8")
 
         # Sleep in small steps so disconnect and device-check stay fresh.
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(_SLEEP_STEP_S)
 
 
 @router.get("/api/device/v1/state")
@@ -311,7 +304,7 @@ async def device_state(request: Request, _device: dict = Depends(device_scope(AG
         "server": {
             "version": getattr(tinyagentos, "__version__", "unknown"),
         },
-        "time": time.time(),
+        "time": _clock(),
         "demo": _demo_enabled(request),
     }
 
@@ -327,5 +320,3 @@ async def device_events(request: Request, _device: dict = Depends(device_scope(A
             "Connection": "keep-alive",
         },
     )
-
-
