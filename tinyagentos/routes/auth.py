@@ -27,6 +27,7 @@ from fastapi.responses import (
     Response,
     StreamingResponse,
 )
+from tinyagentos.agent_avatars import LOCK_AVATAR_DIR, _avatar_slug
 from tinyagentos.auth import (
     PIN_MAX_LEN,
     PIN_MIN_LEN,
@@ -9601,30 +9602,6 @@ async def lock_widgets(request: Request):
         payload["refresh_in_ms"] = refresh_in_ms
     return JSONResponse(payload)
 
-
-
-#: Where lock-screen agent avatars are read from. One flat directory of
-#: "<slug>.jpg" files, slug being the agent name lowercased with non-alphanumerics
-#: collapsed to "-". Overridable so a packaged install can point it at its own
-#: data dir rather than this default.
-LOCK_AVATAR_DIR = os.environ.get("TAOS_LOCK_AVATAR_DIR", "/var/lib/taos/lock-avatars")
-
-
-def _avatar_slug(name: str) -> str:
-    """Slug for an agent name, restricted to characters that cannot traverse.
-
-    Anything outside [a-z0-9-] is dropped rather than escaped: this value is
-    used to build a filesystem path, so a conservative whitelist is the control
-    that keeps "../" and absolute paths out, not a sanitiser that tries to spot
-    bad input.
-    """
-    out = []
-    for ch in name.strip().lower():
-        if ch.isalnum() and ch.isascii():
-            out.append(ch)
-        elif out and out[-1] != "-":
-            out.append("-")
-    return "".join(out).strip("-")
 
 
 @router.get("/lock-avatar/{slug}")
