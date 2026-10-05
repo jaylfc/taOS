@@ -522,3 +522,144 @@ async def test_avatar_shared_agent_served(vapp, monkeypatch):
 
     assert r.status_code == 200, f"shared agent should be served to device owner: {r.text}"
     assert r.headers.get("content-type") == "application/x-taos-lvimg"
+
+
+# (k) test_avatar_if_none_match_multiple_values
+@pytest.mark.asyncio
+async def test_avatar_if_none_match_multiple_values(vapp, monkeypatch):
+    from tinyagentos import agent_avatars as avatars
+
+    app = vapp
+    app.state.config.agents = [
+        {"name": "multietag-agent", "framework": "openclaw", "user_id": "u1"},
+    ]
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        monkeypatch.setattr(avatars, "LOCK_AVATAR_DIR", tmpdir)
+        slug = avatars._avatar_slug("multietag-agent")
+        img_path = Path(tmpdir) / f"{slug}.jpg"
+        img_path.write_bytes(_make_image_bytes(200, 200, (128, 64, 32)))
+
+        tok = await _device(app, user_id="u1", scopes=("agents:read",))
+
+        async with _client(app) as c:
+            r1 = await c.get("/api/device/v1/agents/multietag-agent/avatar?size=96", headers=_bearer(tok))
+
+        assert r1.status_code == 200, r1.text
+        etag = r1.headers.get("etag")
+        assert etag is not None
+
+        async with _client(app) as c:
+            r2 = await c.get(
+                "/api/device/v1/agents/multietag-agent/avatar?size=96",
+                headers={**_bearer(tok), "If-None-Match": f'"other", {etag}'},
+            )
+
+        assert r2.status_code == 304, r2.text
+        assert r2.content == b""
+
+
+# (l) test_avatar_if_none_match_star
+@pytest.mark.asyncio
+async def test_avatar_if_none_match_star(vapp, monkeypatch):
+    from tinyagentos import agent_avatars as avatars
+
+    app = vapp
+    app.state.config.agents = [
+        {"name": "staragent", "framework": "openclaw", "user_id": "u1"},
+    ]
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        monkeypatch.setattr(avatars, "LOCK_AVATAR_DIR", tmpdir)
+        slug = avatars._avatar_slug("staragent")
+        img_path = Path(tmpdir) / f"{slug}.jpg"
+        img_path.write_bytes(_make_image_bytes(200, 200, (128, 64, 32)))
+
+        tok = await _device(app, user_id="u1", scopes=("agents:read",))
+
+        async with _client(app) as c:
+            r = await c.get(
+                "/api/device/v1/agents/staragent/avatar?size=96",
+                headers={**_bearer(tok), "If-None-Match": "*"},
+            )
+
+        assert r.status_code == 304, r.text
+        assert r.content == b""
+
+
+# (m) test_avatar_if_none_match_weak
+@pytest.mark.asyncio
+async def test_avatar_if_none_match_weak(vapp, monkeypatch):
+    from tinyagentos import agent_avatars as avatars
+
+    app = vapp
+    app.state.config.agents = [
+        {"name": "weakagent", "framework": "openclaw", "user_id": "u1"},
+    ]
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        monkeypatch.setattr(avatars, "LOCK_AVATAR_DIR", tmpdir)
+        slug = avatars._avatar_slug("weakagent")
+        img_path = Path(tmpdir) / f"{slug}.jpg"
+        img_path.write_bytes(_make_image_bytes(200, 200, (128, 64, 32)))
+
+        tok = await _device(app, user_id="u1", scopes=("agents:read",))
+
+        async with _client(app) as c:
+            r1 = await c.get("/api/device/v1/agents/weakagent/avatar?size=96", headers=_bearer(tok))
+
+        assert r1.status_code == 200, r1.text
+        etag = r1.headers.get("etag")
+        assert etag is not None
+
+        async with _client(app) as c:
+            r2 = await c.get(
+                "/api/device/v1/agents/weakagent/avatar?size=96",
+                headers={**_bearer(tok), "If-None-Match": f"W/{etag}"},
+            )
+
+        assert r2.status_code == 304, r2.text
+        assert r2.content == b""
+
+
+# (n) test_avatar_truncated_cache_is_miss
+@pytest.mark.asyncio
+async def test_avatar_truncated_cache_is_miss(vapp, monkeypatch):
+    from tinyagentos import agent_avatars as avatars
+    from tinyagentos.routes import device_avatar as da_mod
+
+    app = vapp
+    app.state.config.agents = [
+        {"name": "truncache-agent", "framework": "openclaw", "user_id": "u1"},
+    ]
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        monkeypatch.setattr(avatars, "LOCK_AVATAR_DIR", tmpdir)
+        slug = avatars._avatar_slug("truncache-agent")
+        img_path = Path(tmpdir) / f"{slug}.jpg"
+        img_path.write_bytes(_make_image_bytes(200, 200, (128, 64, 32)))
+
+        tok = await _device(app, user_id="u1", scopes=("agents:read",))
+
+        async with _client(app) as c:
+            r1 = await c.get("/api/device/v1/agents/truncache-agent/avatar?size=96", headers=_bearer(tok))
+
+        assert r1.status_code == 200, r1.text
+        etag = r1.headers.get("etag")
+
+        data_dir = app.state.config_path.parent
+        agent_key = da_mod._agent_key("truncache-agent")
+        ahash_from_etag = etag.strip('"').rsplit("-", 1)[0]
+        cache_path = da_mod._cache_dir(data_dir) / agent_key / da_mod._cache_key(ahash_from_etag, 96)
+        cache_path.write_bytes(b"\x00" * 5)
+        assert cache_path.is_file(), f"cache file not at {cache_path}"
+        assert cache_path.stat().st_size == 5, f"cache file size={cache_path.stat().st_size}"
+
+        async with _client(app) as c:
+            r2 = await c.get(
+                "/api/device/v1/agents/truncache-agent/avatar?size=96",
+                headers=_bearer(tok),
+            )
+
+        assert r2.status_code == 200, r2.text
+        assert len(r2.content) == 12 + 96 * 96 * 3
