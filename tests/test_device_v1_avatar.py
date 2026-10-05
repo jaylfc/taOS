@@ -663,3 +663,88 @@ async def test_avatar_truncated_cache_is_miss(vapp, monkeypatch):
 
         assert r2.status_code == 200, r2.text
         assert len(r2.content) == 12 + 96 * 96 * 3
+
+
+# (o) test_cache_hit_with_wrong_header_is_regenerated
+@pytest.mark.asyncio
+async def test_cache_hit_with_wrong_header_is_regenerated(vapp, monkeypatch):
+    from tinyagentos import agent_avatars as avatars
+    from tinyagentos.routes import device_avatar as da_mod
+
+    app = vapp
+    app.state.config.agents = [
+        {"name": "badheader-agent", "framework": "openclaw", "user_id": "u1"},
+    ]
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        monkeypatch.setattr(avatars, "LOCK_AVATAR_DIR", tmpdir)
+        slug = avatars._avatar_slug("badheader-agent")
+        img_path = Path(tmpdir) / f"{slug}.jpg"
+        img_path.write_bytes(_make_image_bytes(200, 200, (128, 64, 32)))
+
+        tok = await _device(app, user_id="u1", scopes=("agents:read",))
+
+        async with _client(app) as c:
+            r1 = await c.get("/api/device/v1/agents/badheader-agent/avatar?size=96", headers=_bearer(tok))
+
+        assert r1.status_code == 200, r1.text
+        correct_header = r1.content[:12]
+        etag = r1.headers.get("etag")
+
+        data_dir = app.state.config_path.parent
+        agent_key = da_mod._agent_key("badheader-agent")
+        ahash_from_etag = etag.strip('"').rsplit("-", 1)[0]
+        cache_path = da_mod._cache_dir(data_dir) / agent_key / da_mod._cache_key(ahash_from_etag, 96)
+        expected_len = 12 + 96 * 96 * 3
+        bad_data = bytearray(expected_len)
+        bad_data[0] = 0x19  # keep magic byte
+        for i in range(1, 12):
+            bad_data[i] = (bad_data[i] + 1) % 256  # corrupt bytes 1-11
+        cache_path.write_bytes(bytes(bad_data))
+        assert cache_path.is_file()
+        assert cache_path.stat().st_size == expected_len
+
+        async with _client(app) as c:
+            r2 = await c.get(
+                "/api/device/v1/agents/badheader-agent/avatar?size=96",
+                headers=_bearer(tok),
+            )
+
+        assert r2.status_code == 200, r2.text
+        assert r2.content[:12] == correct_header, "cache hit with wrong header should regenerate with correct header"
+
+
+# (p) test_if_none_match_weak_with_space_returns_304
+@pytest.mark.asyncio
+async def test_if_none_match_weak_with_space_returns_304(vapp, monkeypatch):
+    from tinyagentos import agent_avatars as avatars
+
+    app = vapp
+    app.state.config.agents = [
+        {"name": "weakspace-agent", "framework": "openclaw", "user_id": "u1"},
+    ]
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        monkeypatch.setattr(avatars, "LOCK_AVATAR_DIR", tmpdir)
+        slug = avatars._avatar_slug("weakspace-agent")
+        img_path = Path(tmpdir) / f"{slug}.jpg"
+        img_path.write_bytes(_make_image_bytes(200, 200, (128, 64, 32)))
+
+        tok = await _device(app, user_id="u1", scopes=("agents:read",))
+
+        async with _client(app) as c:
+            r1 = await c.get("/api/device/v1/agents/weakspace-agent/avatar?size=96", headers=_bearer(tok))
+
+        assert r1.status_code == 200, r1.text
+        etag = r1.headers.get("etag")
+        assert etag is not None
+
+        async with _client(app) as c:
+            r2 = await c.get(
+                "/api/device/v1/agents/weakspace-agent/avatar?size=96",
+                headers={**_bearer(tok), "If-None-Match": f"W/ {etag}"},
+            )
+
+        assert r2.status_code == 304, r2.text
+        assert r2.content == b""
+

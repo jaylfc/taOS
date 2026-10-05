@@ -68,7 +68,7 @@ def _etag_matches(header: str | None, etag: str) -> bool:
     for part in header.split(","):
         part = part.strip()
         if part.startswith("W/"):
-            part = part[2:]
+            part = part[2:].strip()
         if part == etag:
             return True
     return False
@@ -237,11 +237,22 @@ async def device_agent_avatar(
 
     if cache_path.is_file():
         try:
-            data = cache_path.read_bytes()
+            data = await asyncio.to_thread(cache_path.read_bytes)
         except OSError:
             data = None
         expected_len = 12 + size * size * 3
-        if data is None or len(data) < 12 or data[0] != 0x19 or len(data) != expected_len:
+        expected_header = struct.pack(
+            "<BBBBHHHH",
+            LV_IMAGE_HEADER_MAGIC,
+            LV_COLOR_FORMAT_RGB565A8,
+            0,
+            0,
+            size,
+            size,
+            size * 2,
+            0,
+        )
+        if data is None or len(data) != expected_len or data[:12] != expected_header:
             pass  # treat as cache miss, fall through
         else:
             return Response(
