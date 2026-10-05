@@ -663,3 +663,49 @@ async def test_avatar_truncated_cache_is_miss(vapp, monkeypatch):
 
         assert r2.status_code == 200, r2.text
         assert len(r2.content) == 12 + 96 * 96 * 3
+
+
+# (o) test_cache_hit_with_wrong_header_is_regenerated
+@pytest.mark.asyncio
+async def test_cache_hit_with_wrong_header_is_regenerated(vapp, monkeypatch):
+    from tinyagentos import agent_avatars as avatars
+    from tinyagentos.routes import device_avatar as da_mod
+
+    app = vapp
+    app.state.config.agents = [
+        {"name": "wrongheader-agent", "framework": "openclaw", "user_id": "u1"},
+    ]
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        monkeypatch.setattr(avatars, "LOCK_AVATAR_DIR", tmpdir)
+        slug = avatars._avatar_slug("wrongheader-agent")
+        img_path = Path(tmpdir) / f"{slug}.jpg"
+        img_path.write_bytes(_make_image_bytes(200, 200, (128, 64, 32)))
+
+        tok = await _device(app, user_id="u1", scopes=("agents:read",))
+
+        async with _client(app) as c:
+            r1 = await c.get("/api/device/v1/agents/wrongheader-agent/avatar?size=96", headers=_bearer(tok))
+
+        assert r1.status_code == 200, r1.text
+        etag = r1.headers.get("etag")
+
+        data_dir = app.state.config_path.parent
+        agent_key = da_mod._agent_key("wrongheader-agent")
+        ahash_from_etag = etag.strip('"').rsplit("-", 1)[0]
+        cache_path = da_mod._cache_dir(data_dir) / agent_key / da_mod._cache_key(ahash_from_etag, 96)
+        assert cache_path.is_file(), f"cache file not at {cache_path}"
+
+        wrong_header = b"\x00" * 12
+        original_data = cache_path.read_bytes()
+        cache_path.write_bytes(wrong_header + original_data[12:])
+
+        async with _client(app) as c:
+            r2 = await c.get(
+                "/api/device/v1/agents/wrongheader-agent/avatar?size=96",
+                headers=_bearer(tok),
+            )
+
+        assert r2.status_code == 200, r2.text
+        correct_header = r2.content[:12]
+        assert correct_header == da_mod._lvimg_header(96)

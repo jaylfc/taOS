@@ -74,6 +74,21 @@ def _etag_matches(header: str | None, etag: str) -> bool:
     return False
 
 
+def _lvimg_header(size: int) -> bytes:
+    """Return the 12-byte LVGL 9 header for an RGB565A8 image of the given size."""
+    return struct.pack(
+        "<BBBBHHHH",
+        LV_IMAGE_HEADER_MAGIC,
+        LV_COLOR_FORMAT_RGB565A8,
+        0,
+        0,
+        size,
+        size,
+        size * 2,
+        0,
+    )
+
+
 def _rgb_to_rgb565(r: int, g: int, b: int) -> int:
     """Convert 8-bit RGB to RGB565 (native little-endian value)."""
     return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
@@ -152,17 +167,7 @@ def _convert_to_lvgl9_rgb565a8(source_path: Path, size: int) -> bytes:
     #   uint16_t h;           // height
     #   uint16_t stride;      // w * 2 (RGB565 stride in bytes)
     #   uint16_t reserved1;   // 0
-    header = struct.pack(
-        "<BBBBHHHH",
-        LV_IMAGE_HEADER_MAGIC,
-        LV_COLOR_FORMAT_RGB565A8,
-        0,  # flags
-        0,  # reserved0
-        size,  # w
-        size,  # h
-        size * 2,  # stride
-        0,  # reserved1
-    )
+    header = _lvimg_header(size)
 
     return header + bytes(rgb565_plane) + bytes(alpha_plane)
 
@@ -241,7 +246,8 @@ async def device_agent_avatar(
         except OSError:
             data = None
         expected_len = 12 + size * size * 3
-        if data is None or len(data) < 12 or data[0] != 0x19 or len(data) != expected_len:
+        expected_header = _lvimg_header(size)
+        if data is None or len(data) < 12 or data[:12] != expected_header or len(data) != expected_len:
             pass  # treat as cache miss, fall through
         else:
             return Response(
