@@ -9441,7 +9441,7 @@ async def assemble_lock_agents(request: Request, owner_id: str | None = None) ->
     pending: list[dict] = []
     try:
         store = request.app.state.decision_store
-        pending = await store.list(status="pending", limit=20)
+        pending = await store.list(status="pending", user_id=owner_id, limit=20)
     except Exception:  # noqa: BLE001
         pending = []
 

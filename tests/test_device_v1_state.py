@@ -263,3 +263,31 @@ async def test_state_avatar_hash(vapp, monkeypatch):
         h2 = agent["avatar"]["hash"]
         assert h2 is not None
         assert h2 != h1
+
+
+# (k) a shared agent (no user_id) must not leak another owner's pending decision.
+@pytest.mark.asyncio
+async def test_state_does_not_leak_other_owners_decision(vapp):
+    app = vapp
+    app.state.config.agents = [
+        {"name": "shared-agent", "framework": "openclaw", "user_id": ""},
+    ]
+
+    await app.state.decision_store.create(
+        from_agent="shared-agent",
+        question="u2's secret decision",
+        type="approve_deny",
+        user_id="u2",
+        options=[{"label": "Approve", "value": "approve"}, {"label": "Deny", "value": "deny"}],
+    )
+
+    tok = await _device(app, user_id="u1", scopes=("agents:read",))
+
+    async with _client(app) as c:
+        r = await c.get("/api/device/v1/state", headers=_bearer(tok))
+
+    assert r.status_code == 200, r.text
+    data = r.json()
+    agent = next(a for a in data["agents"] if a["name"] == "shared-agent")
+    assert agent.get("decision") is None
+    assert "u2's secret decision" not in r.text

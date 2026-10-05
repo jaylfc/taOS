@@ -50,7 +50,7 @@ each `option` 40.
 **Error codes:**
 
 - `401` -- missing or invalid device bearer.
-- `403` -- `{"error": "device_scope_missing", "scope": "agents:read"}` when the device token lacks the required scope.
+- `403` -- FastAPI's wrapper: `{"detail": {"error": "device_scope_missing", "scope": "agents:read"}}` when the device token lacks the required scope.
 
 ### GET /api/device/v1/events
 
