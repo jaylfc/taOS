@@ -127,4 +127,32 @@ export const canvasApi = {
   elementsJsonUrl(projectId: string): string {
     return `/api/projects/${encodeURIComponent(projectId)}/canvas/elements?include_deleted=true`;
   },
+
+  // Upload one or more canvas image files and return the entries Excalidraw
+  // needs to render them (id + dataURL). Each file is fetched from the
+  // project's same-origin canvas file store and POSTed back as a multipart
+  // upload into files/canvas so it is persisted alongside the element rows.
+  async addFiles(
+    projectSlug: string,
+    files: { file_id: string; data: string }[],
+  ): Promise<{ id: string; data: string }[]> {
+    await Promise.all(
+      files.map(async ({ file_id, data }) => {
+        const blob = await (await fetch(data)).blob();
+        const form = new FormData();
+        form.set("file", blob, file_id);
+        form.set("path", "canvas");
+        const r = await fetch(`/api/projects/${projectSlug}/files/upload?path=canvas`, {
+          method: "POST",
+          body: form,
+        });
+        if (!r.ok) {
+          const body = await r.text();
+          throw new Error(`addFiles upload ${file_id}: ${r.status} ${body}`);
+        }
+        return body as any;
+      }),
+    );
+    return files.map(({ file_id, data }) => ({ id: file_id, data }));
+  },
 };

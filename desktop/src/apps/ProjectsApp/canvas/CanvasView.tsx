@@ -1,20 +1,57 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useId, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Download } from "lucide-react";
-import { CanvasBoard } from "./CanvasBoard";
+import { getCanvasEngine } from "./canvas-engine";
 import { canvasApi } from "./canvas-api";
 import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 
+const CanvasBoard = lazy(() => import("./CanvasBoard"));
+const ExcalidrawBoard = lazy(() => import("./ExcalidrawBoard"));
+
 export function CanvasView({
-  projectId, projectSlug, elementId,
+  projectId,
+  projectSlug,
+  elementId,
 }: { projectId: string; projectSlug: string; elementId?: string | null }) {
+  const engine = getCanvasEngine();
+
   return (
     <div style={{ position: "relative", height: "100%", padding: 0 }}>
-      {/* Contain any canvas/tldraw render crash to a fallback instead of taking
+      {/* Contain any canvas engine render crash to a fallback instead of taking
           down the whole Projects app. Keyed by project so switching projects
           gives a fresh boundary. */}
       <AppErrorBoundary key={projectId}>
-        <CanvasBoard projectId={projectId} projectSlug={projectSlug} elementId={elementId} />
+        <Suspense
+          fallback={
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                background: "var(--color-shell-surface, #1f2230)",
+                color: "var(--color-shell-text, #f2f3f7)",
+              }}
+            >
+              Loading canvas
+            </div>
+          }
+        >
+          {engine === "excalidraw" ? (
+            <ExcalidrawBoard
+              projectId={projectId}
+              projectSlug={projectSlug}
+              elementId={elementId}
+            />
+          ) : (
+            <CanvasBoard
+              projectId={projectId}
+              projectSlug={projectSlug}
+              elementId={elementId}
+            />
+          )}
+        </Suspense>
       </AppErrorBoundary>
       {/* Deliberately a sibling of the engine, not inside it: the recovery
           downloads must survive the drawing-engine swap, the tldraw removal,
