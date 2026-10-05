@@ -9441,7 +9441,19 @@ async def assemble_lock_agents(request: Request, owner_id: str | None = None) ->
     pending: list[dict] = []
     try:
         store = request.app.state.decision_store
-        pending = await store.list(status="pending", user_id=owner_id, limit=20)
+        if owner_id is not None:
+            auth_mgr = request.app.state.auth
+            owner_user = auth_mgr.get_user_by_id(owner_id)
+            is_admin = bool(owner_user and owner_user.get("is_admin"))
+            if is_admin:
+                owned = await store.list(status="pending", user_id=owner_id, limit=20)
+                unowned = await store.list(status="pending", user_id="", limit=20)
+                seen = {d.get("id") for d in owned}
+                pending = owned + [d for d in unowned if d.get("id") not in seen]
+            else:
+                pending = await store.list(status="pending", user_id=owner_id, limit=20)
+        else:
+            pending = await store.list(status="pending", limit=20)
     except Exception:  # noqa: BLE001
         pending = []
 
