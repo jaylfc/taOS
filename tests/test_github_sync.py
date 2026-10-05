@@ -1,3 +1,4 @@
+import logging
 import pytest
 import pytest_asyncio
 
@@ -146,3 +147,21 @@ async def test_issue_labels_and_url_carried_onto_card(store):
     card = (await store.list_tasks("p"))[0]
     assert "github" in card["labels"] and "bug" in card["labels"] and "perf" in card["labels"]
     assert "http://gh/1" in card["body"]
+
+
+@pytest.mark.asyncio
+async def test_warns_when_closed_issue_card_refuses_to_close(store, caplog):
+    await sync_issues_to_board(store, "p", [_issue(7, "x", "open")])
+    card = (await store.list_tasks("p"))[0]
+    assert await store.claim_task(card["id"], "agent-x")
+
+    with caplog.at_level(logging.WARNING, logger="tinyagentos.github_sync"):
+        res = await sync_issues_to_board(store, "p", [_issue(7, "x", "closed")])
+
+    assert res["closed"] == 0
+    fresh = await store.get_task(card["id"])
+    assert fresh["status"] != "closed"
+    assert any(
+        "#7" in record.getMessage() and card["id"] in record.getMessage()
+        for record in caplog.records
+    )

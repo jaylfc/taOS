@@ -20,15 +20,9 @@ import {
 import { oneDark } from "@codemirror/theme-one-dark";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { syntaxHighlighting, defaultHighlightStyle } from "@codemirror/language";
+import type { Workspace } from "./BuildView";
 
 /* ── Types ──────────────────────────────────────────────── */
-
-interface Workspace {
-  id: string;
-  name: string;
-  path: string;
-  created_at: string;
-}
 
 interface FileEntry {
   name: string;
@@ -214,7 +208,13 @@ function TreeItem({
 
 /* ── CodeView ────────────────────────────────────────────── */
 
-export function CodeView() {
+export function CodeView({
+  initialWorkspaceId = null,
+  onActiveWorkspaceChange,
+}: {
+  initialWorkspaceId?: string | null;
+  onActiveWorkspaceChange?: (ws: Workspace | null) => void;
+} = {}) {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [wsLoading, setWsLoading] = useState(true);
   const [wsError, setWsError] = useState<string | null>(null);
@@ -263,6 +263,12 @@ export function CodeView() {
     loadWorkspaces();
   }, [loadWorkspaces]);
 
+  useEffect(() => {
+    if (activeWs !== null || !initialWorkspaceId || !workspaces.length) return;
+    const match = workspaces.find((w) => w.id === initialWorkspaceId) ?? null;
+    if (match) setActiveWs(match);
+  }, [workspaces, initialWorkspaceId, activeWs]);
+
   /* ── create workspace ───────────────────────────────────── */
 
   const createWorkspace = useCallback(async () => {
@@ -278,10 +284,11 @@ export function CodeView() {
       const ws: Workspace = await res.json();
       setWorkspaces((prev) => [...prev, ws]);
       setActiveWs(ws);
+      onActiveWorkspaceChange?.(ws);
     } catch (err) {
       setWsError(err instanceof Error ? err.message : "Failed to create workspace");
     }
-  }, []);
+  }, [onActiveWorkspaceChange]);
 
   /* ── load file tree ─────────────────────────────────────── */
 
@@ -463,6 +470,7 @@ export function CodeView() {
                     if (!ok) return;
                   }
                   setActiveWs(ws);
+                  onActiveWorkspaceChange?.(ws);
                 }}
                 className="h-[28px] rounded-[9px] border border-shell-border bg-shell-surface px-2 text-[12px] text-shell-text focus:outline-none focus:ring-1 focus:ring-accent/40"
               >

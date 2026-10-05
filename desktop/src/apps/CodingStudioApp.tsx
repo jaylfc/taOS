@@ -61,7 +61,12 @@ export function CodingStudioApp({ windowId: _windowId }: { windowId: string }) {
         {/* active surface */}
         <div className="flex min-w-0 flex-1 flex-col">
           {view === "build" && <BuildView onActiveWorkspaceChange={setActiveWorkspace} />}
-          {view === "code" && <CodeView />}
+          {view === "code" && (
+            <CodeView
+              initialWorkspaceId={activeWorkspace?.id ?? null}
+              onActiveWorkspaceChange={setActiveWorkspace}
+            />
+          )}
           {view === "preview" && (
             <PreviewView
               workspaceId={activeWorkspace?.id ?? null}

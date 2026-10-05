@@ -15,8 +15,10 @@ whatever their own surface raises or returns.
 
 from __future__ import annotations
 
+import gzip
 import tarfile
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path
 
 # Bomb defenses: cap the declared uncompressed total, the per-member size and
@@ -32,9 +34,77 @@ _FILTER_ERRORS: tuple[type[BaseException], ...] = (
     (tarfile.FilterError,) if hasattr(tarfile, "FilterError") else ()
 )
 
+# No legitimate tar read during header walking or extraction asks for more than
+# this (extractall requests 16 KiB chunks; headers are 512 bytes).
+MAX_HELPER_READ_BYTES = 1024 * 1024
+
+_HELPER_TYPES = (
+    tarfile.GNUTYPE_LONGNAME,
+    tarfile.GNUTYPE_LONGLINK,
+    tarfile.XHDTYPE,
+    tarfile.XGLTYPE,
+    tarfile.SOLARIS_XHDTYPE,
+)
+
+
+class _HelperSizeGuardTarInfo(tarfile.TarInfo):
+    """Refuses a GNU/PAX helper record whose declared size exceeds the cap,
+    before tarfile reads (and the gzip layer decompresses) its payload."""
+
+    def _proc_member(self, tarfile_obj):
+        if self.type in _HELPER_TYPES and self.size > MAX_HELPER_READ_BYTES:
+            raise ArchiveError(
+                f"tar helper record of {self.size} bytes exceeds {MAX_HELPER_READ_BYTES}"
+            )
+        return super()._proc_member(tarfile_obj)
+
 
 class ArchiveError(Exception):
     """Raised when an archive is unsafe to extract (bomb limits, unsafe member)."""
+
+
+class _ReadSizeGuard:
+    """Wraps a file-like object and refuses reads larger than `cap`."""
+
+    def __init__(self, wrapped, cap: int) -> None:
+        self._wrapped = wrapped
+        self._cap = cap
+
+    def read(self, size=-1):
+        if size is None or size < 0 or size > self._cap:
+            raise ArchiveError(
+                f"archive read of {size} bytes exceeds {self._cap} "
+                f"(oversized tar header record)"
+            )
+        return self._wrapped.read(size)
+
+    def __getattr__(self, name):
+        return getattr(self._wrapped, name)
+
+
+@contextmanager
+def open_tar_gz(fileobj, *, kind="archive"):
+    """Open a gzip-compressed tar with a read-size guard on the decompressor.
+
+    The guard is installed before ``tarfile.open`` so that a PAX or GNU helper
+    record that is consumed during opening (or during ``next()``) cannot force
+    the whole helper payload through the decompressor before ``check_tar_limits``
+    sees the offending header.
+    """
+    gz = gzip.GzipFile(fileobj=fileobj, mode="rb")
+    guard = _ReadSizeGuard(gz, MAX_HELPER_READ_BYTES)
+    tar = None
+    try:
+        tar = tarfile.open(fileobj=guard, mode="r:", tarinfo=_HelperSizeGuardTarInfo)
+    except (tarfile.ReadError, gzip.BadGzipFile, EOFError) as exc:
+        gz.close()
+        raise ArchiveError(f"{kind} is not a valid gzip tarball") from exc
+    try:
+        yield tar
+    finally:
+        if tar is not None:
+            tar.close()
+        gz.close()
 
 
 class _DeclaredSizeBudget:

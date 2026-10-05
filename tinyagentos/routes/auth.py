@@ -27,6 +27,7 @@ from fastapi.responses import (
     Response,
     StreamingResponse,
 )
+from tinyagentos.agent_avatars import LOCK_AVATAR_DIR, _avatar_slug
 from tinyagentos.auth import (
     PIN_MAX_LEN,
     PIN_MIN_LEN,
@@ -9358,6 +9359,155 @@ def _demo_refresh_in_ms(next_change_candidates: list[int]) -> int | None:
     return max(1000, min(15000, min(next_change_candidates) + 150))
 
 
+async def assemble_lock_agents(request: Request, owner_id: str | None = None) -> list[dict]:
+    """Shared async assembler for lock-screen agent islands.
+
+    Returns the base agent list (configured + demo + device-live, with pending
+    decisions and the demo decision attached). The caller is responsible for
+    adding the system agent, tasks, and wrapping in the final payload.
+
+    Configured agents are filtered by *owner_id* when supplied (include an
+    entry only when ``user_id`` is missing or equals *owner_id*). Demo agents
+    are global content. Device-live agents are only included when *owner_id*
+    is ``None`` (they carry no owner field and must not leak across owners).
+    """
+    agents: list[dict] = []
+    try:
+        configured = request.app.state.config.agents or []
+    except AttributeError:
+        configured = []
+
+    status_by_name: dict[str, str] = {}
+    try:
+        from tinyagentos.containers import list_containers
+
+        for c in await list_containers(prefix="taos-agent-"):
+            status_by_name[c.name.removeprefix("taos-agent-")] = c.status
+    except Exception:  # noqa: BLE001
+        status_by_name = {}
+
+    for entry in configured:
+        if isinstance(entry, dict):
+            entry_uid = entry.get("user_id")
+            if owner_id is not None and entry_uid and entry_uid != owner_id:
+                continue
+            name = entry.get("name")
+            framework = str(entry.get("framework") or entry.get("harness") or "")
+        else:
+            name = str(entry)
+            framework = ""
+        if not name:
+            continue
+        agents.append({
+            "name": str(name),
+            "framework": framework.lower(),
+            "framework_icon": _framework_icon(framework),
+            "status": status_by_name.get(str(name), ""),
+            "avatar": _avatar_url(str(name)),
+        })
+
+    demo = _demo_value("TAOS_LOCK_DEMO_AGENTS", request)
+    if demo:
+        existing = {a["name"] for a in agents}
+        for raw in demo.split(","):
+            parts = [seg.strip() for seg in raw.split(":")]
+            label = parts[0] if parts else ""
+            if label and label not in existing:
+                agents.append({
+                    "name": label,
+                    "framework": parts[1].lower() if len(parts) > 1 and parts[1] else "",
+                    "framework_icon": _framework_icon(parts[1] if len(parts) > 1 else ""),
+                    "status": parts[2] if len(parts) > 2 and parts[2] else "running",
+                    "avatar": _avatar_url(label),
+                    "demo": True,
+                })
+
+        busy = {name for name, is_busy in _demo_agent_specs(request) if is_busy}
+        now = _demo_task_clock()
+        for agent in agents:
+            if not agent.get("demo") or agent["name"] not in busy:
+                continue
+            status, remaining = _demo_agent_independent_state(
+                agent["name"], agent["status"], now
+            )
+            agent["status"] = status
+            if remaining is not None:
+                agent["next_change_ms"] = int(round(remaining * 1000))
+
+    if _device_agents_enabled(request) and owner_id is None:
+        for entry in _device_live():
+            agents.append(_device_island(entry))
+
+    pending: list[dict] = []
+    try:
+        store = request.app.state.decision_store
+        if owner_id is not None:
+            auth_mgr = request.app.state.auth
+            owner_user = auth_mgr.get_user_by_id(owner_id)
+            is_admin = bool(owner_user and owner_user.get("is_admin"))
+            if is_admin:
+                owned = await store.list(status="pending", user_id=owner_id, limit=20)
+                unowned = await store.list(status="pending", user_id="", limit=20)
+                seen = {d.get("id") for d in owned}
+                pending = owned + [d for d in unowned if d.get("id") not in seen]
+            else:
+                pending = await store.list(status="pending", user_id=owner_id, limit=20)
+        else:
+            pending = await store.list(status="pending", limit=20)
+    except Exception:  # noqa: BLE001
+        pending = []
+
+    by_agent: dict[str, dict] = {}
+    for d in reversed(pending):
+        agent_key = str(d.get("from_agent") or "").strip().lower()
+        if agent_key and agent_key not in by_agent:
+            by_agent[agent_key] = d
+
+    def _attach(agent: dict) -> None:
+        d = by_agent.get(agent["name"].strip().lower())
+        if not d:
+            return
+        options = d.get("options") or []
+        labels = [
+            str(o.get("label") or o.get("value") or "")
+            for o in options
+            if isinstance(o, dict)
+        ]
+        agent["attention"] = True
+        agent["decision"] = {
+            "id": str(d.get("id") or ""),
+            "question": str(d.get("question") or ""),
+            "priority": str(d.get("priority") or "normal"),
+            "options": [lbl for lbl in labels if lbl][:4],
+        }
+
+    for agent in agents:
+        _attach(agent)
+
+    if demo and not any(a.get("attention") for a in agents):
+        want = _demo_value("TAOS_LOCK_DEMO_DECISION_AGENT", request).lower()
+        target = None
+        for a in agents:
+            if not a.get("demo") or a.get("system"):
+                continue
+            if want and a["name"].strip().lower() != want:
+                continue
+            target = a
+            break
+        if target is not None:
+            target["attention"] = True
+            target["decision"] = {
+                "id": "",
+                "question": _demo_value("TAOS_LOCK_DEMO_DECISION", request)
+                or "Approve \u00a31,340 for the second Raspberry Pi order?",
+                "priority": "normal",
+                "options": ["Approve", "Deny"],
+                "demo": True,
+            }
+
+    return agents
+
+
 @router.get("/lock-widgets")
 async def lock_widgets(request: Request):
     """Agent activity + scheduled tasks for the lock screen. Console-only.
@@ -9372,37 +9522,7 @@ async def lock_widgets(request: Request):
     if not _request_is_console(request):
         return JSONResponse({"error": "console only"}, status_code=403)
 
-    agents: list[dict] = []
-    try:
-        configured = request.app.state.config.agents or []
-    except AttributeError:
-        configured = []
-    # Container status is best-effort: on a host with no container runtime the
-    # import or the call raises, and a lock screen that 500s because the phone
-    # has no LXC is worse than one that simply shows no status.
-    status_by_name: dict[str, str] = {}
-    try:
-        from tinyagentos.containers import list_containers
-
-        for c in await list_containers(prefix="taos-agent-"):
-            status_by_name[c.name.removeprefix("taos-agent-")] = c.status
-    except Exception:  # noqa: BLE001 - any runtime absence degrades to "no status"
-        status_by_name = {}
-
-    for entry in configured:
-        name = entry.get("name") if isinstance(entry, dict) else str(entry)
-        if not name:
-            continue
-        framework = ""
-        if isinstance(entry, dict):
-            framework = str(entry.get("framework") or entry.get("harness") or "")
-        agents.append({
-            "name": str(name),
-            "framework": framework.lower(),
-            "framework_icon": _framework_icon(framework),
-            "status": status_by_name.get(str(name), ""),
-            "avatar": _avatar_url(str(name)),
-        })
+    agents = await assemble_lock_agents(request)
 
     # The OS's own agent is pinned to the top and is not one of the configured
     # ones: it is part of the device rather than something the user added. It
@@ -9434,154 +9554,13 @@ async def lock_widgets(request: Request):
     except Exception:  # noqa: BLE001 - no scheduler on this host: show no tasks
         tasks = []
 
-    # Demo override. OFF unless TAOS_LOCK_DEMO_AGENTS is set, and it only ever
-    # ADDS named placeholders to this one read-only lock-screen endpoint -- it
-    # writes nothing, creates no agents and changes no other surface. It exists
-    # so a demo machine can show a populated lock screen without standing up
-    # three real container-backed agents first; anything it lists is a
-    # placeholder, not a running process.
-    demo = _demo_value("TAOS_LOCK_DEMO_AGENTS", request)
-    if demo:
-        existing = {a["name"] for a in agents}
-        for raw in demo.split(","):
-            # "Name", "Name:framework" or "Name:framework:status text"
-            parts = [seg.strip() for seg in raw.split(":")]
-            label = parts[0] if parts else ""
-            if label and label not in existing:
-                agents.append({
-                    "name": label,
-                    "framework": parts[1].lower() if len(parts) > 1 and parts[1] else "",
-                    "framework_icon": _framework_icon(parts[1] if len(parts) > 1 else ""),
-                    "status": parts[2] if len(parts) > 2 and parts[2] else "running",
-                    "avatar": _avatar_url(label),
-                    # Marked at creation so nothing downstream has to work out
-                    # which of these entries is a placeholder by elimination.
-                    "demo": True,
-                })
+    demo = _demo_enabled(request)
 
-        # Rotating "current task": each demo agent with a script (see
-        # _DEMO_TASK_SCRIPTS) cycles through it on its OWN independent clock
-        # -- its own pace, phase and per-entry jitter (all stable, derived
-        # from its name) -- instead of sitting on its configured status
-        # forever. Computed fresh from the clock on every request -- the
-        # SERVER is authoritative, so a 15s poll landing while the client is
-        # mid-animation can never revert what the client is showing, and a
-        # late or early poll just sees whatever the schedule says right now
-        # rather than drifting out of sync with it.
-        #
-        # Only an agent the demo config says is BUSY rotates. The stats panel
-        # reads the same (name, busy) pairs (_demo_agent_specs), so a scripted
-        # agent configured with a resting status must stay at rest here too --
-        # rotating it into "Replying to 12 comments" would show a working
-        # island for an agent the stats model has idle.
-        busy = {name for name, is_busy in _demo_agent_specs(request) if is_busy}
-        now = _demo_task_clock()
-        for agent in agents:
-            if not agent.get("demo") or agent["name"] not in busy:
-                continue
-            status, remaining = _demo_agent_independent_state(
-                agent["name"], agent["status"], now
-            )
-            agent["status"] = status
-            if remaining is not None:
-                agent["next_change_ms"] = int(round(remaining * 1000))
-
-    # Live device agents: physical boards that are plugged in right now.
-    #
-    # MERGED HERE rather than served from their own endpoint because the lock
-    # screen already polls this one and reconciles the islands by key -- a
-    # second list would mean a second poll and two painters racing over the
-    # same row. Their keys are namespaced (`device:<slug>`) so a board can
-    # never collide with a TAOS_LOCK_DEMO_AGENTS placeholder of the same name.
-    if _device_agents_enabled(request):
-        for entry in _device_live():
-            agents.append(_device_island(entry))
-
-    # Pending decisions. An agent that is blocked waiting on a human is the one
-    # thing on this screen that is actually ASKING for something, so it gets the
-    # attention ring -- everything else here is status. Best-effort for the same
-    # reason as the container statuses: a host with no decision store should
-    # show a lock screen, not a 500.
-    #
-    # Only the question and its options cross the pre-auth boundary, never the
-    # decision's context or notes: the question is a one-line prompt the holder
-    # of the phone needs in order to know the phone wants them, while the
-    # context is free text an agent may have filled with anything.
-    pending: list[dict] = []
-    try:
-        store = request.app.state.decision_store
-        pending = await store.list(status="pending", limit=20)
-    except Exception:  # noqa: BLE001 - no decision store on this host: no ring
-        pending = []
-
-    # The store returns newest-first. If an agent has asked twice, the question
-    # to surface is the one that has been WAITING longest, so walk oldest-first
-    # and keep the first hit per agent.
-    by_agent: dict[str, dict] = {}
-    for d in reversed(pending):
-        agent_key = str(d.get("from_agent") or "").strip().lower()
-        if agent_key and agent_key not in by_agent:
-            by_agent[agent_key] = d
-
-    def _attach(agent: dict) -> None:
-        d = by_agent.get(agent["name"].strip().lower())
-        if not d:
-            return
-        options = d.get("options") or []
-        labels = [
-            str(o.get("label") or o.get("value") or "")
-            for o in options
-            if isinstance(o, dict)
-        ]
-        agent["attention"] = True
-        agent["decision"] = {
-            "id": str(d.get("id") or ""),
-            "question": str(d.get("question") or ""),
-            "priority": str(d.get("priority") or "normal"),
-            "options": [lbl for lbl in labels if lbl][:4],
-        }
-
-    for agent in agents:
-        _attach(agent)
-
-    # Demo decision. Same single flag as the demo agents, and it is attached to
-    # an agent that is already a placeholder -- it never marks a REAL agent as
-    # waiting on a human, because a fabricated ring on a real agent would be a
-    # lie about the state of the machine. It carries no decision id, which is
-    # what the client uses to tell a demo prompt from an answerable one.
-    if demo and not any(a.get("attention") for a in agents):
-        want = _demo_value("TAOS_LOCK_DEMO_DECISION_AGENT", request).lower()
-        target = None
-        for a in agents:
-            if not a.get("demo") or a.get("system"):
-                continue
-            if want and a["name"].strip().lower() != want:
-                continue
-            target = a
-            break
-        if target is not None:
-            target["attention"] = True
-            target["decision"] = {
-                "id": "",
-                "question": _demo_value("TAOS_LOCK_DEMO_DECISION", request)
-                or "Approve \u00a31,340 for the second Raspberry Pi order?",
-                "priority": "normal",
-                "options": ["Approve", "Deny"],
-                "demo": True,
-            }
-
-    # Anything with a status that is not an explicit resting word is doing
-    # something -- the demo statuses are free text ("Drafting replies"), so an
-    # equality test against "running" would report every busy agent as idle.
     resting = {"", "stopped", "idle", "exited", "error"}
     running = sum(
         1 for a in agents
         if not a.get("system") and a["status"].strip().lower() not in resting
     )
-    # NO cap on the islands (Jay: "there shouldnt be a cap"); the feed scrolls.
-    # A cap of six silently cut off a plugged-in board, which is appended last,
-    # whenever five demo agents were configured. New agents go at the BOTTOM,
-    # in arrival order (Jay; custom ordering comes later).
     visible = agents
     payload = {
         "agents": visible,
@@ -9591,9 +9570,6 @@ async def lock_widgets(request: Request):
         "task_total": len(tasks),
         "threads": bool(demo),
     }
-    # Only agents actually SENT can schedule the client's next fetch -- a
-    # rotation happening off the sent list would tell the client to poll
-    # sooner for a change it could never paint anyway.
     refresh_in_ms = _demo_refresh_in_ms(
         [a["next_change_ms"] for a in visible if "next_change_ms" in a]
     )
@@ -9601,30 +9577,6 @@ async def lock_widgets(request: Request):
         payload["refresh_in_ms"] = refresh_in_ms
     return JSONResponse(payload)
 
-
-
-#: Where lock-screen agent avatars are read from. One flat directory of
-#: "<slug>.jpg" files, slug being the agent name lowercased with non-alphanumerics
-#: collapsed to "-". Overridable so a packaged install can point it at its own
-#: data dir rather than this default.
-LOCK_AVATAR_DIR = os.environ.get("TAOS_LOCK_AVATAR_DIR", "/var/lib/taos/lock-avatars")
-
-
-def _avatar_slug(name: str) -> str:
-    """Slug for an agent name, restricted to characters that cannot traverse.
-
-    Anything outside [a-z0-9-] is dropped rather than escaped: this value is
-    used to build a filesystem path, so a conservative whitelist is the control
-    that keeps "../" and absolute paths out, not a sanitiser that tries to spot
-    bad input.
-    """
-    out = []
-    for ch in name.strip().lower():
-        if ch.isalnum() and ch.isascii():
-            out.append(ch)
-        elif out and out[-1] != "-":
-            out.append("-")
-    return "".join(out).strip("-")
 
 
 @router.get("/lock-avatar/{slug}")
