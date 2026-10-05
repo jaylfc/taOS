@@ -302,6 +302,9 @@ _DEVICE_BEARER_PATHS = (
     # scope via device_scope(), this entry is what lets the Bearer past the gate.
     ("POST", re.compile(r"^/api/device/v1/voice$"), VOICE_STT),
     ("POST", re.compile(r"^/api/device/v1/voice/tts$"), VOICE_TTS),
+    # S2b: device state (agents read). Device-bearer only; the route names its
+    # own scope via device_scope(), this entry is what lets the Bearer past.
+    ("GET", re.compile(r"^/api/device/v1/state$"), AGENTS_READ),
 )
 
 # Device-bearer routes that are NOT in _DEVICE_BEARER_PATHS because they sit in

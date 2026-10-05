@@ -109,6 +109,11 @@ def register_all_routers(app):
     from tinyagentos.routes.device_voice import router as device_voice_router
     app.include_router(device_voice_router)
 
+    # Device state (S2b): device-bearer only, so CSRF-exempt like the pair
+    # routes (the bearer is not an ambient cookie credential).
+    from tinyagentos.routes.device_state import router as device_state_router
+    app.include_router(device_state_router)
+
     from tinyagentos.routes.observatory import router as observatory_router
     app.include_router(observatory_router, dependencies=_csrf)
 

@@ -993,6 +993,18 @@ approval channel for privileged grants. Device scoped tokens do not expire and
 cannot be self-rotated; the only revocation is `DELETE /api/devices/{id}` from
 a session.
 
+The device-bearer self-service allowlist in `tinyagentos/auth_middleware.py`
+covers:
+
+- `PATCH /api/devices/{id}/push-token` — scope `push:register`
+- `GET /api/decisions`, `GET /api/decisions/{id}`, `GET /api/decisions/{id}/history` — scope `agents:read`
+- `POST /api/decisions/{id}/answer` — scope `decisions:answer`
+- `POST /api/library/ingest` — scope `library:ingest`
+- `POST /api/projects/{slug}/files/upload` — scope `files:upload`
+- `POST /api/chat/messages` — scope `chat:send`
+- `POST /api/device/v1/voice`, `POST /api/device/v1/voice/tts` — scope `voice:stt` / `voice:tts`
+- `GET /api/device/v1/state` — scope `agents:read` (owner-filtered agent list)
+
 ## Share destinations (device bearer)
 
 `GET /api/share/destinations` lets a paired device DISCOVER share destinations. It is
