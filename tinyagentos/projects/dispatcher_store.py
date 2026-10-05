@@ -93,6 +93,46 @@ class DispatcherConfig:
         }
 
 
+@dataclass
+class DispatchLedger:
+    """Pending dispatch ledger row."""
+    id: str
+    user_id: str
+    task_id: str
+    project_id: str
+    canonical_id: str
+    assignee_written: str
+    state: str = "pending"
+    reason: str = ""
+    assigned_at: float = 0.0
+    lease_expires_at: float = 0.0
+    resolved_at: Optional[float] = None
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "user_id": self.user_id,
+            "task_id": self.task_id,
+            "project_id": self.project_id,
+            "canonical_id": self.canonical_id,
+            "assignee_written": self.assignee_written,
+            "state": self.state,
+            "reason": self.reason,
+            "assigned_at": self.assigned_at,
+            "lease_expires_at": self.lease_expires_at,
+            "resolved_at": self.resolved_at,
+        }
+
+
+@dataclass
+class DispatchAgentBackoff:
+    """Agent backoff state after consecutive expiries."""
+    canonical_id: str
+    consecutive_expiries: int = 0
+    next_eligible_at: float = 0.0
+    last_assigned_at: float = 0.0
+
+
 def _row_to_config(row) -> DispatcherConfig:
     return DispatcherConfig(
         user_id=row[0],
@@ -195,3 +235,178 @@ class DispatcherStore(ProjectsDBStore):
         ) as cur:
             rows = await cur.fetchall()
         return [_row_to_config(r) for r in rows]
+
+    async def insert_lease(
+        self,
+        task_id: str,
+        project_id: str,
+        user_id: str,
+        assignee_written: str,
+        lease_expires_at: float,
+    ) -> str:
+        """Insert a pending ledger row.
+
+        Returns the generated lease ID.
+        """
+        lease_id = new_id()
+        now = time.time()
+
+        async with self._tx():
+            await self._db.execute(
+                """
+                INSERT INTO dispatch_ledger (
+                    id, user_id, task_id, project_id, canonical_id,
+                    assignee_written, state, reason, assigned_at, lease_expires_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    lease_id,
+                    user_id,
+                    task_id,
+                    project_id,
+                    task_id,  # canonical_id for now
+                    assignee_written,
+                    "pending",
+                    "",
+                    now,
+                    lease_expires_at,
+                ),
+            )
+
+            # Stamp backoff for the task
+            await self._stamp_backoff(task_id, now)
+
+        return lease_id
+
+    async def pending_for_agent(
+        self,
+        agent_canonical_id: str,
+        now: Optional[float] = None,
+    ) -> list[DispatchLedger]:
+        """Get pending leases for an agent.
+
+        Args:
+            agent_canonical_id: The agent's canonical ID
+            now: Current time, defaults to time.time()
+
+        Returns:
+            List of pending DispatchLedger rows where assignee_written matches agent_canonical_id
+        """
+        if now is None:
+            now = time.time()
+
+        async with self._read(
+            """
+            SELECT id, user_id, task_id, project_id, canonical_id,
+                   assignee_written, state, reason, assigned_at, lease_expires_at, resolved_at
+            FROM dispatch_ledger
+            WHERE assignee_written = ? AND state = 'pending'
+            ORDER BY assigned_at ASC
+            """,
+            (agent_canonical_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+            return [_row_to_ledger(r) for r in rows]
+
+    async def expired_counts_48h(
+        self,
+        now: Optional[float] = None,
+    ) -> dict[str, int]:
+        """Get expired lease counts per canonical ID in the last 48 hours.
+
+        Args:
+            now: Current time, defaults to time.time()
+
+        Returns:
+            Dict mapping canonical_id to count of expired leases
+        """
+        if now is None:
+            now = time.time()
+
+        cutoff = now - (48 * 3600)
+
+        async with self._read(
+            """
+            SELECT assignee_written, COUNT(*)
+            FROM dispatch_ledger
+            WHERE state = 'pending' AND lease_expires_at < ?
+            GROUP BY assignee_written
+            """,
+            (cutoff,),
+        ) as cur:
+            rows = await cur.fetchall()
+            return {row[0]: row[1] for row in rows}
+
+    async def recent_expiries(
+        self,
+        now: Optional[float] = None,
+    ) -> list[tuple[str, str, float]]:
+        """Get recently expired leases.
+
+        Args:
+            now: Current time, defaults to time.time()
+
+        Returns:
+            List of (canonical_id, task_id, expired_at) tuples for expired leases
+        """
+        if now is None:
+            now = time.time()
+
+        cutoff = now - (48 * 3600)
+
+        async with self._read(
+            """
+            SELECT assignee_written, task_id, lease_expires_at
+            FROM dispatch_ledger
+            WHERE state = 'pending' AND lease_expires_at < ?
+            ORDER BY lease_expires_at DESC
+            """,
+            (cutoff,),
+        ) as cur:
+            rows = await cur.fetchall()
+            return [(row[0], row[1], row[2]) for row in rows]
+
+    async def stamp_backoff(self, task_id: str, now: Optional[float] = None) -> None:
+        """Stamp backoff for a task after assignment.
+
+        Args:
+            task_id: The task ID
+            now: Current time, defaults to time.time()
+        """
+        if now is None:
+            now = time.time()
+
+        async with self._tx():
+            # Get the canonical_id for this task (assuming task_id == canonical_id)
+            async with self._read(
+                "SELECT assignee_written FROM dispatch_ledger WHERE task_id = ? AND state = 'pending'",
+                (task_id,),
+            ) as cur:
+                row = await cur.fetchone()
+                if row is None:
+                    return
+
+                canonical_id = row[0]
+
+            # Update or insert backoff record
+            await self._db.execute(
+                """
+                INSERT INTO dispatch_agent_backoff (
+                    canonical_id, consecutive_expiries, next_eligible_at, last_assigned_at
+                )
+                VALUES (?, 1, ?, ?)
+                ON CONFLICT(canonical_id) DO UPDATE SET
+                    consecutive_expiries = excluded.consecutive_expiries,
+                    next_eligible_at = GREATEST(
+                        dispatch_agent_backoff.next_eligible_at,
+                        excluded.next_eligible_at
+                    ),
+                    last_assigned_at = excluded.last_assigned_at
+                """,
+                (
+                    canonical_id,
+                    now,  # next_eligible_at: reset immediately for now
+                    now,  # last_assigned_at
+                ),
+            )

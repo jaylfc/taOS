@@ -68,7 +68,7 @@ def _should_wake(debounce: dict, agent_id: str, task_id: str, now: float) -> boo
     return True
 
 
-async def _wake_agent_with_task(app_state, agent: dict, task: dict) -> bool:
+async def wake_agent_with_task(app_state, agent: dict, task: dict) -> bool:
     """Best-effort wake: enqueue a user_message to the agent's bridge session
     and post a system message into the project's a2a channel. Mirrors
     tinyagentos.projects.routine_runner._wake_and_announce -- each sub-step
@@ -233,3 +233,7 @@ async def agent_heartbeat_loop(app_state, interval: float = HEARTBEAT_INTERVAL) 
         except Exception:
             logger.exception("heartbeat: sweep iteration crashed")
         await asyncio.sleep(interval)
+
+
+# Alias for backward compatibility
+_wake_agent_with_task = wake_agent_with_task
