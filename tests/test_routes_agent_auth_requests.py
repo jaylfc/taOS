@@ -779,6 +779,20 @@ class TestAddAgentToAnotherProject:
         # Same canonical_id is reused, NOT a fresh one (no 409).
         assert respB.json()["canonical_id"] == cid
 
+        # Exactly one active agent with that handle.
+        active = await registry.list_all(status="active")
+        assert len([a for a in active if a["handle"] == "taosmd-dev"]) == 1
+
+        # Member of BOTH projects.
+        membersA = await pstore.list_members(pA["id"])
+        membersB = await pstore.list_members(pB["id"])
+        assert any(m["member_id"] == cid for m in membersA)
+        assert any(m["member_id"] == cid for m in membersB)
+
+        # Grants for BOTH projects.
+        agent_grants = await grants.list_grants(cid)
+        assert {g["project_id"] for g in agent_grants} >= {pA["id"], pB["id"]}
+
         await registry.close()
         await auth_store.close()
         await grants.close()
@@ -935,6 +949,85 @@ class TestAddAgentToAnotherProject:
         await pstore.close()
 
     @pytest.mark.asyncio
+    async def test_reuse_binds_to_validated_project_not_agent_supplied(
+        self, client, monkeypatch, tmp_path
+    ):
+        """Hardening (kilo review, taOS #1862): the multi-project ADD branch
+        binds to the ADMIN-validated project_id, never to the agent-supplied
+        record.project_id. An agent that self-requests project C but is approved
+        by the admin for project B must land in B only, never C."""
+        from tinyagentos.agent_registry_store import (
+            AgentRegistryStore,
+            load_or_create_signing_keypair,
+        )
+        from tinyagentos.auth_requests_store import AuthRequestsStore
+        from tinyagentos.agent_grants_store import AgentGrantsStore
+        from tinyagentos.projects.project_store import ProjectStore
+
+        registry = AgentRegistryStore(tmp_path / "reg-h.db")
+        await registry.init()
+        auth_store = AuthRequestsStore(tmp_path / "auth-h.db")
+        await auth_store.init()
+        grants = AgentGrantsStore(tmp_path / "grants-h.db")
+        await grants.init()
+        pstore = ProjectStore(tmp_path / "projects-h.db")
+        await pstore.init()
+        priv, pub = load_or_create_signing_keypair(tmp_path / "keys-h")
+
+        pA = await pstore.create_project(name="A", slug="proj-a", created_by="u")
+        pB = await pstore.create_project(name="B", slug="proj-b", created_by="u")
+        pC = await pstore.create_project(name="C", slug="proj-c", created_by="u")
+
+        monkeypatch.setattr(client._transport.app.state, "agent_registry", registry)
+        monkeypatch.setattr(client._transport.app.state, "auth_requests", auth_store)
+        monkeypatch.setattr(client._transport.app.state, "agent_grants", grants)
+        monkeypatch.setattr(client._transport.app.state, "agent_registry_keypair", (priv, pub))
+        monkeypatch.setattr(client._transport.app.state, "project_store", pstore)
+
+        # Establish the active identity in project A.
+        rA = await auth_store.create(
+            identity_claim="@dev", framework="openclaw",
+            requested_scopes=["project_tasks"], requested_skills=None, reason="",
+            duration_secs=None, project_id=pA["id"],
+        )
+        respA = await client.post(
+            f"/api/agents/auth-requests/{rA['id']}/approve",
+            json={"granted_scopes": ["project_tasks"], "project_id": pA["id"]},
+        )
+        assert respA.status_code == 200, respA.text
+        cid = respA.json()["canonical_id"]
+
+        # Second request: the AGENT names project C in the record, but the admin
+        # approves for project B. The reuse/ADD branch must honour B, not C.
+        rB = await auth_store.create(
+            identity_claim="@dev", framework="openclaw",
+            requested_scopes=["project_tasks"], requested_skills=None, reason="",
+            duration_secs=None, project_id=pC["id"],
+            proven_canonical_id=cid,
+        )
+        respB = await client.post(
+            f"/api/agents/auth-requests/{rB['id']}/approve",
+            json={"granted_scopes": ["project_tasks"], "project_id": pB["id"]},
+        )
+        assert respB.status_code == 200, respB.text
+        assert respB.json()["canonical_id"] == cid
+
+        membersB = await pstore.list_members(pB["id"])
+        membersC = await pstore.list_members(pC["id"])
+        assert any(m["member_id"] == cid for m in membersB), "must be a member of the validated project B"
+        assert not any(m["member_id"] == cid for m in membersC), "must NOT be added to the agent-supplied project C"
+
+        agent_grants = await grants.list_grants(cid)
+        grant_projects = {g["project_id"] for g in agent_grants}
+        assert pB["id"] in grant_projects
+        assert pC["id"] not in grant_projects, "no grant may bind to the agent-supplied project C"
+
+        await registry.close()
+        await auth_store.close()
+        await grants.close()
+        await pstore.close()
+
+    @pytest.mark.asyncio
     async def test_create_route_records_bearer_identity(
         self, client, monkeypatch, tmp_path
     ):
@@ -1024,80 +1117,6 @@ class TestAddAgentToAnotherProject:
         # Fetch the stored record
         stored_record2 = await auth_store.get(request_id2)
         assert stored_record2["proven_canonical_id"] is None, f"Expected proven_canonical_id=None, got {stored_record2['proven_canonical_id']}"
-
-        await registry.close()
-        await auth_store.close()
-        await grants.close()
-        await pstore.close()
-        """Hardening (kilo review, taOS #1862): the multi-project ADD branch
-        binds to the ADMIN-validated project_id, never to the agent-supplied
-        record.project_id. An agent that self-requests project C but is approved
-        by the admin for project B must land in B only, never C."""
-        from tinyagentos.agent_registry_store import (
-            AgentRegistryStore,
-            load_or_create_signing_keypair,
-        )
-        from tinyagentos.auth_requests_store import AuthRequestsStore
-        from tinyagentos.agent_grants_store import AgentGrantsStore
-        from tinyagentos.projects.project_store import ProjectStore
-
-        registry = AgentRegistryStore(tmp_path / "reg-h.db")
-        await registry.init()
-        auth_store = AuthRequestsStore(tmp_path / "auth-h.db")
-        await auth_store.init()
-        grants = AgentGrantsStore(tmp_path / "grants-h.db")
-        await grants.init()
-        pstore = ProjectStore(tmp_path / "projects-h.db")
-        await pstore.init()
-        priv, pub = load_or_create_signing_keypair(tmp_path / "keys-h")
-
-        pA = await pstore.create_project(name="A", slug="proj-a", created_by="u")
-        pB = await pstore.create_project(name="B", slug="proj-b", created_by="u")
-        pC = await pstore.create_project(name="C", slug="proj-c", created_by="u")
-
-        monkeypatch.setattr(client._transport.app.state, "agent_registry", registry)
-        monkeypatch.setattr(client._transport.app.state, "auth_requests", auth_store)
-        monkeypatch.setattr(client._transport.app.state, "agent_grants", grants)
-        monkeypatch.setattr(client._transport.app.state, "agent_registry_keypair", (priv, pub))
-        monkeypatch.setattr(client._transport.app.state, "project_store", pstore)
-
-        # Establish the active identity in project A.
-        rA = await auth_store.create(
-            identity_claim="@dev", framework="openclaw",
-            requested_scopes=["project_tasks"], requested_skills=None, reason="",
-            duration_secs=None, project_id=pA["id"],
-        )
-        respA = await client.post(
-            f"/api/agents/auth-requests/{rA['id']}/approve",
-            json={"granted_scopes": ["project_tasks"], "project_id": pA["id"]},
-        )
-        assert respA.status_code == 200, respA.text
-        cid = respA.json()["canonical_id"]
-
-        # Second request: the AGENT names project C in the record, but the admin
-        # approves for project B. The reuse/ADD branch must honour B, not C.
-        rB = await auth_store.create(
-            identity_claim="@dev", framework="openclaw",
-            requested_scopes=["project_tasks"], requested_skills=None, reason="",
-            duration_secs=None, project_id=pC["id"],
-            proven_canonical_id=cid,
-        )
-        respB = await client.post(
-            f"/api/agents/auth-requests/{rB['id']}/approve",
-            json={"granted_scopes": ["project_tasks"], "project_id": pB["id"]},
-        )
-        assert respB.status_code == 200, respB.text
-        assert respB.json()["canonical_id"] == cid
-
-        membersB = await pstore.list_members(pB["id"])
-        membersC = await pstore.list_members(pC["id"])
-        assert any(m["member_id"] == cid for m in membersB), "must be a member of the validated project B"
-        assert not any(m["member_id"] == cid for m in membersC), "must NOT be added to the agent-supplied project C"
-
-        agent_grants = await grants.list_grants(cid)
-        grant_projects = {g["project_id"] for g in agent_grants}
-        assert pB["id"] in grant_projects
-        assert pC["id"] not in grant_projects, "no grant may bind to the agent-supplied project C"
 
         await registry.close()
         await auth_store.close()
