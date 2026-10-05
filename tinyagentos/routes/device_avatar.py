@@ -5,6 +5,7 @@ circle-masked avatar. Cached per (avatar_hash, size). ETag/304 support.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import os
@@ -235,7 +236,7 @@ async def device_agent_avatar(
         raise HTTPException(status_code=404, detail={"error": "avatar_not_found"})
 
     try:
-        lvimg_data = _convert_to_lvgl9_rgb565a8(source_path, size)
+        lvimg_data = await asyncio.to_thread(_convert_to_lvgl9_rgb565a8, source_path, size)
     except Exception as exc:  # noqa: BLE001
         # Undecodable source image -> 404 (never 500)
         logger.warning("Avatar conversion failed for agent %r: %s", name, exc)

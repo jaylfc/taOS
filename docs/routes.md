@@ -468,59 +468,25 @@ each `option` 40.
 
 ### GET /api/device/v1/agents/{name}/avatar
 
-**Scope:** `agents:read` (device bearer).
+**Scope:** `agents:read` (device bearer). `size` query param is required and must
+be `45` or `96`.
 
-Returns the agent's avatar converted server-side to LVGL 9 native RGB565A8 format
-(little-endian, transparent pixels = black). The device caches this by ETag
-and never decodes PNG/JPEG.
+Returns the avatar converted server-side to LVGL 9 RGB565A8 (`Content-Type:
+application/x-taos-lvimg`), so the device never decodes PNG/JPEG. Body: a 12-byte
+little-endian `lv_image_header_t` (magic `0x19`, cf `0x14`, w, h, stride `w*2`),
+then the RGB565 plane (little-endian) and the A8 alpha plane (circle mask):
+`12 + w*h*3` bytes.
 
-**Query parameters:**
-
-- `size` (required): whitelisted to `45` or `96`. Any other value returns `400`
-  `{"detail": {"error": "size_not_supported"}}`.
-
-**Response 200:**
-
-Content-Type: `application/x-taos-lvimg`
-
-Body: LVGL 9 compatible image (12-byte header + RGB565 plane + A8 alpha plane):
-
-```
-Header (12 bytes, little-endian, compatible with lv_image_header_t):
-  uint8_t  magic        = 0x19
-  uint8_t  cf           = 0x14 (LV_COLOR_FORMAT_RGB565A8)
-  uint8_t  flags        = 0
-  uint8_t  reserved0    = 0
-  uint16_t w            = size
-  uint16_t h            = size
-  uint16_t stride       = w * 2  (RGB565 stride in bytes)
-  uint16_t reserved1    = 0
-
-RGB565 plane: stride * h bytes (native little-endian: pure red = 0xF800 stored as 00 F8)
-A8 alpha plane: w * h bytes (anti-aliased circle mask, 0 = transparent, 255 = opaque)
-
-Total body size: 12 + w*h*3 bytes.
-```
-
-**ETag / 304:**
-
-`ETag: "<avatar_hash>-<size>"` (quoted, e.g. `"abc123def4567890-96"`).
-
-If `If-None-Match` matches the ETag, returns `304 Not Modified` with empty body.
+`ETag: "<avatar_hash>-<size>"`; a matching `If-None-Match` returns `304`.
 `Cache-Control: private, max-age=86400`.
 
-**Server-side cache:**
-
-Converted images are cached under `<data_dir>/cache/device-avatars/<agent_key>/<hash>-<size>.lvimg`
-(atomic write via tmp + rename). Key is the content hash, so an avatar change is
-automatically a cache miss. Stale entries for the same agent (different sizes or old
-hashes) are deleted on conversion.
+Server cache: `<data_dir>/cache/device-avatars/<agent_key>/<hash>-<size>.lvimg`,
+written with `atomic_write_bytes`. The key is the content hash, so an avatar change
+is a cache miss; stale entries for the agent are deleted on conversion.
 
 **Error codes:**
 
-- `400` -- `size` not in whitelist: `{"detail": {"error": "size_not_supported"}}`.
-- `401` -- missing or invalid device bearer.
-- `403` -- device token lacks `agents:read` scope: `{"detail": {"error": "device_scope_missing", "scope": "agents:read"}}`.
-- `404` -- agent not owned by device user, no avatar installed, or source image
-  undecodable: `{"detail": {"error": "avatar_not_found"}}`. Never `403` for
-  unknown/non-owned names (no name leak). Never `500` for bad source images.
+- `400` -- `{"detail": {"error": "size_not_supported"}}`.
+- `401` / `403` -- as for `/api/device/v1/state` (scope `agents:read`).
+- `404` -- `{"detail": {"error": "avatar_not_found"}}` for a non-owned or unknown
+  agent, no avatar, or an undecodable image. Never `403` (no name leak), never `500`.
