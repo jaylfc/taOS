@@ -2,7 +2,7 @@ import { build, defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
-import { writeFileSync } from "node:fs";
+import { writeFileSync, readFileSync, cpSync, existsSync, readdirSync, statSync, rmSync } from "node:fs";
 import { readBackendVersion } from "./scripts/read-version.mjs";
 
 /** Writes version.json to the build output so the running SPA can poll it and
@@ -72,6 +72,132 @@ function serviceWorkerPlugin() {
   };
 }
 
+/** Copies a directory tree from srcDir into outDir/relativeTarget. The
+ *  destination is always removed first so stale files from a prior build or
+ *  an @excalidraw/excalidraw version bump are never shipped. */
+function copyTree(srcDir: string, outDir: string, relativeTarget: string) {
+  const destRoot = path.join(outDir, relativeTarget);
+  rmSync(destRoot, { recursive: true, force: true });
+  cpSync(srcDir, destRoot, { recursive: true, force: true });
+}
+
+/** Resolves a requested Excalidraw font URL to a path under `srcFonts`,
+ *  returning null if the URL is outside the allowed prefix or escapes the
+ *  fonts directory. */
+export function resolveExcalidrawFontPath(
+  srcFonts: string,
+  base: string,
+  rawUrl: string,
+): string | null {
+  const urlPath = rawUrl.split("?")[0];
+  const prefix = base + "excalidraw-assets/fonts/";
+  if (!urlPath.startsWith(prefix)) return null;
+  const remainder = urlPath.slice(prefix.length);
+  if (remainder.length === 0) return null;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(remainder);
+  } catch (e) {
+    if (!(e instanceof URIError)) throw e;
+    return null;
+  }
+  const resolved = path.resolve(srcFonts, decoded);
+  if (!resolved.startsWith(srcFonts + path.sep)) return null;
+  return resolved;
+}
+
+/** Copies the whole @excalidraw/excalidraw/dist/prod/fonts/ tree into
+ *  <outDir>/excalidraw-assets/fonts/ so every family (Excalifont, Xiaolai, …)
+ *  is available same-origin and offline.
+ *
+ *  Fonts are emitted through the Vite asset graph (generateBundle) so they
+ *  appear in the manifest and are picked up by service-worker precache lists.
+ *  They are also copied in writeBundle as a fallback for environments where
+ *  emitFile is not available. */
+function excalidrawAssetsPlugin() {
+  let outDir = "";
+  let srcFonts = "";
+  return {
+    name: "taos-excalidraw-assets",
+    configResolved(config: import("vite").ResolvedConfig) {
+      outDir = path.resolve(config.root, config.build.outDir);
+      srcFonts = path.resolve(
+        __dirname,
+        "node_modules",
+        "@excalidraw",
+        "excalidraw",
+        "dist",
+        "prod",
+        "fonts",
+      );
+    },
+    generateBundle() {
+      if (!existsSync(srcFonts)) {
+        console.warn(`[taos-excalidraw-assets] fonts directory not found, skipping: ${srcFonts}`);
+        return;
+      }
+      const files: string[] = [];
+      function collect(dir: string) {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            collect(full);
+          } else if (entry.isFile()) {
+            files.push(path.relative(srcFonts, full));
+          }
+        }
+      }
+      collect(srcFonts);
+      for (const file of files) {
+        const srcPath = path.join(srcFonts, file);
+        const content = readFileSync(srcPath);
+        this.emitFile({
+          type: "asset",
+          fileName: `excalidraw-assets/fonts/${file}`,
+          source: content,
+        });
+      }
+    },
+    writeBundle() {
+      if (!existsSync(srcFonts)) return;
+      copyTree(srcFonts, outDir, "excalidraw-assets/fonts");
+    },
+    configureServer(server) {
+      if (!existsSync(srcFonts)) return;
+      server.middlewares.use((req, res, next) => {
+        const assetPath = resolveExcalidrawFontPath(
+          srcFonts,
+          server.config.base,
+          req.url || "",
+        );
+        if (assetPath === null) {
+          next();
+          return;
+        }
+        try {
+          const s = statSync(assetPath);
+          if (s.isDirectory()) {
+            res.statusCode = 403;
+            res.end("Forbidden");
+            return;
+          }
+          const ext = path.extname(assetPath).toLowerCase();
+          const contentType =
+            ext === ".woff2"
+              ? "font/woff2"
+              : ext === ".woff"
+                ? "font/woff"
+                : "application/octet-stream";
+          res.writeHead(200, { "Content-Type": contentType, "Cache-Control": "no-cache" });
+          res.end(readFileSync(assetPath));
+        } catch {
+          next();
+        }
+      });
+    },
+  };
+}
+
 export default defineConfig({
   test: {
     environment: "jsdom",
@@ -112,7 +238,7 @@ export default defineConfig({
   define: {
     __TAOS_VERSION__: JSON.stringify(TAOS_VERSION),
   },
-  plugins: [react(), tailwindcss(), spaVersionPlugin(), serviceWorkerPlugin()],
+  plugins: [react(), tailwindcss(), spaVersionPlugin(), serviceWorkerPlugin(), excalidrawAssetsPlugin()],
   base: "/desktop/",
   resolve: {
     alias: { "@": path.resolve(__dirname, "src") },
