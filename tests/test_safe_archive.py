@@ -295,6 +295,8 @@ def test_helper_guard_hook_exists_on_this_python():
     assert "_proc_member(" in inspect.getsource(TarInfo._fromtarfile)
 
 
+@pytest.mark.guards("tinyagentos.safe_archive:open_tar_gz",
+                    replace=[("tarinfo=_HelperSizeGuardTarInfo", "tarinfo=tarfile.TarInfo")])
 def test_helper_guard_override_is_called(monkeypatch):
     """_HelperSizeGuardTarInfo._proc_member must be called during archive opening."""
     from tinyagentos.safe_archive import open_tar_gz
