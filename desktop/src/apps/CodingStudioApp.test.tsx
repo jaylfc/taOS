@@ -1,12 +1,33 @@
-import { render, screen, fireEvent } from "@testing-library/react";
-import { describe, it, expect } from "vitest";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi } from "vitest";
 import { CodingStudioApp } from "./CodingStudioApp";
 
 function renderApp() {
   return render(<CodingStudioApp windowId="test-window" />);
 }
 
+function mockWorkspaceFetch() {
+  return vi.fn().mockImplementation((input: string | URL | Request) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    if (url === "/api/coding/workspaces") {
+      return Promise.resolve({
+        ok: true,
+        json: async () => [
+          { id: "ws-1", name: "Workspace 1", path: "/tmp/ws1", created_at: "2024-01-01" },
+          { id: "ws-2", name: "Workspace 2", path: "/tmp/ws2", created_at: "2024-01-02" },
+        ],
+      } as Response);
+    }
+    return Promise.resolve({ ok: true, json: async () => ({}) } as Response);
+  });
+}
+
 describe("CodingStudioApp", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
   it("renders all rail items", () => {
     renderApp();
     // Rail buttons use aria-label for exact matching via the nav element
@@ -62,5 +83,33 @@ describe("CodingStudioApp", () => {
     );
     // Preview header h2
     expect(screen.getByRole("heading", { name: "Preview" })).toBeDefined();
+  });
+
+  it("handoff: selects a workspace in Build and switches to Code with that workspace selected", async () => {
+    vi.stubGlobal("fetch", mockWorkspaceFetch());
+    try {
+      renderApp();
+
+      await waitFor(() => {
+        expect(screen.getByLabelText("Select workspace")).toBeTruthy();
+      });
+
+      const buildSelect = screen.getByLabelText("Select workspace") as HTMLSelectElement;
+      fireEvent.change(buildSelect, { target: { value: "ws-2" } });
+
+      fireEvent.click(screen.getByRole("button", { name: "Code" }));
+
+      // Assert the Code view is actually rendered before reading its select
+      await waitFor(() => {
+        expect(screen.getByRole("heading", { name: "Code" })).toBeTruthy();
+      });
+
+      await waitFor(() => {
+        const codeSelect = screen.getByLabelText("Select workspace") as HTMLSelectElement;
+        expect(codeSelect.value).toBe("ws-2");
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
