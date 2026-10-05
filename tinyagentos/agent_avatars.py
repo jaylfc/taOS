@@ -4,6 +4,10 @@ import hashlib
 import os
 from pathlib import Path
 
+#: Where lock-screen agent avatars are read from. One flat directory of
+#: "<slug>.jpg" files, slug being the agent name lowercased with non-alphanumerics
+#: collapsed to "-". Overridable so a packaged install can point it at its own
+#: data dir rather than this default.
 LOCK_AVATAR_DIR = os.environ.get("TAOS_LOCK_AVATAR_DIR", "/var/lib/taos/lock-avatars")
 
 
@@ -35,4 +39,8 @@ def avatar_hash(name: str) -> str | None:
     path = avatar_source_path(name)
     if path is None:
         return None
-    return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    return hashlib.sha256(data).hexdigest()[:16]
