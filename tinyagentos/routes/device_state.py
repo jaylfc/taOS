@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from tinyagentos.agent_avatars import avatar_hash
 from tinyagentos.device_auth import device_scope
 from tinyagentos.device_scopes import AGENTS_READ
-from tinyagentos.routes.auth import assemble_lock_agents, _demo_enabled
+from tinyagentos.routes.auth import assemble_lock_agents, _demo_value
 
 router = APIRouter()
 
@@ -62,16 +62,17 @@ def _decision_for_agent(agent: dict) -> dict | None:
     return {
         "id": str(dec.get("id") or ""),
         "question": _cap(str(dec.get("question") or ""), _CAP_QUESTION),
-        "options": capped[:4],
+        "options": capped,
     }
 
 
 async def _transform_agent(agent: dict, agent_messages) -> dict:
-    name = _cap(str(agent.get("name") or ""), _CAP_NAME)
+    original_name = agent.get("name") or ""
+    name = _cap(str(original_name), _CAP_NAME)
     status = _cap(str(agent.get("status") or ""), _CAP_STATUS)
     framework = str(agent.get("framework") or "").lower()
-    hue = _hue_for(name)
-    ahash = avatar_hash(name)
+    hue = _hue_for(original_name)
+    ahash = avatar_hash(original_name)
     return {
         "name": name,
         "status": status,
@@ -109,5 +110,6 @@ async def device_state(request: Request, _device: dict = Depends(device_scope(AG
             "version": getattr(tinyagentos, "__version__", "unknown"),
         },
         "time": time.time(),
-        "demo": _demo_enabled(request),
+        "demo": bool(_demo_value("TAOS_LOCK_DEMO_AGENTS", request).strip()),
     }
+

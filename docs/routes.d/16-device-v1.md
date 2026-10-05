@@ -15,6 +15,10 @@ version, current time, and demo flag.
 
 **Response 200:**
 
+All string fields are server-side capped with a trailing ellipsis when they
+exceed the limit: `name` 48, `status` 120, `last_recap` 180, `question` 280,
+each `option` 40.
+
 ```json
 {
   "agents": [

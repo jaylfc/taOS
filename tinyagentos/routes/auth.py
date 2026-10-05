@@ -9368,7 +9368,8 @@ async def assemble_lock_agents(request: Request, owner_id: str | None = None) ->
 
     Configured agents are filtered by *owner_id* when supplied (include an
     entry only when ``user_id`` is missing or equals *owner_id*). Demo agents
-    and device-live agents are not owner-filtered: they are global content.
+    are global content. Device-live agents are only included when *owner_id*
+    is ``None`` (they carry no owner field and must not leak across owners).
     """
     agents: list[dict] = []
     try:
@@ -9435,7 +9436,7 @@ async def assemble_lock_agents(request: Request, owner_id: str | None = None) ->
             if remaining is not None:
                 agent["next_change_ms"] = int(round(remaining * 1000))
 
-    if _device_agents_enabled(request):
+    if _device_agents_enabled(request) and owner_id is None:
         for entry in _device_live():
             agents.append(_device_island(entry))
 

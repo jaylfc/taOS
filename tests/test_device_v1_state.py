@@ -154,11 +154,10 @@ async def test_state_demo_flag_and_unanswerable_decision(vapp, monkeypatch):
 
 # (h) Settings demo switch takes state down.
 @pytest.mark.asyncio
-async def test_settings_demo_switch_takes_state_down(vapp):
+async def test_settings_demo_switch_takes_state_down(vapp, monkeypatch):
     from tinyagentos.demo_mode import write_demo_mode
 
     app = vapp
-    monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setenv("TAOS_LOCK_DEMO_AGENTS", "DemoB:openclaw:Drafting")
     monkeypatch.setenv("TAOS_LOCK_DEMO_DECISION", "Ship it?")
     monkeypatch.setenv("TAOS_LOCK_DEMO_DECISION_AGENT", "DemoB")
@@ -183,8 +182,6 @@ async def test_settings_demo_switch_takes_state_down(vapp):
 
     assert r_off.json()["demo"] is False
     assert not any(a.get("demo") for a in w_off.json()["agents"])
-
-    monkeypatch.undo()
 
 
 # (j) avatar hash: null when no image, 16-hex when present, changes on rewrite.
