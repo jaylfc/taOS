@@ -1,3 +1,3 @@
 ### Security
 
-- Refuse an oversized PAX/GNU helper record before it is decompressed, via a read-size guard installed before `tarfile.open`. A gzip-compressed 8 MiB long name could previously be fully decompressed into memory before `check_tar_limits` saw the offending header.
+- Refuse an oversized PAX/GNU helper record by its declared size before its payload is read or decompressed, independent of Python's tar read chunking, with a read-size guard as a second layer.

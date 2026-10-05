@@ -100,7 +100,10 @@ def open_tar_gz(fileobj, *, kind="archive"):
         gz.close()
         raise ArchiveError(f"{kind} is not a valid gzip tarball") from exc
     try:
-        yield tar
+        try:
+            yield tar
+        except (tarfile.ReadError, gzip.BadGzipFile, EOFError) as exc:
+            raise ArchiveError(f"{kind} is not a valid gzip tarball") from exc
     finally:
         if tar is not None:
             tar.close()

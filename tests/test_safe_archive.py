@@ -286,6 +286,27 @@ def test_pax_helper_refused_even_when_reads_are_chunked(monkeypatch):
         monkeypatch.undo()
 
 
+def test_truncated_gzip_during_validation_raises_archive_error():
+    """A truncated gzip stream must raise ArchiveError during member iteration,
+    not let tarfile.ReadError or EOFError escape."""
+    from tinyagentos.safe_archive import open_tar_gz, check_tar_limits
+
+    # Build a valid tar.gz with one 64 KiB member
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz", compresslevel=1) as tar:
+        info = tarfile.TarInfo("data.bin")
+        info.size = 64 * 1024
+        tar.addfile(info, io.BufferedReader(_Zeros(64 * 1024)))
+    full = buf.getvalue()
+
+    # Truncate to two thirds so the gzip stream ends mid-member during iteration
+    truncated = full[: len(full) * 2 // 3]
+
+    with pytest.raises(safe_archive.ArchiveError, match="not a valid gzip tarball"):
+        with open_tar_gz(io.BytesIO(truncated)) as tar:
+            check_tar_limits(tar)
+
+
 def test_open_tar_gz_extracts_a_legit_archive(tmp_path):
     """A legitimate archive extracts correctly through open_tar_gz."""
     from tinyagentos.safe_archive import open_tar_gz
