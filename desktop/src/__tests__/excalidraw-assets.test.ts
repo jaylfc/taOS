@@ -1,12 +1,32 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdirSync, writeFileSync, mkdtempSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import os from "node:os";
+import child_process from "node:child_process";
 
 const DESKTOP = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../");
 const EXCALIDRAW_ASSETS = path.join(DESKTOP, "src/apps/ProjectsApp/canvas/excalidraw-assets.ts");
 const EXCALIDRAW_BOARD = path.join(DESKTOP, "src/apps/ProjectsApp/canvas/ExcalidrawBoard.tsx");
 const MERMAID = path.join(DESKTOP, "src/apps/ProjectsApp/canvas/mermaid-to-elements.ts");
+
+const fs = { mkdtempSync, mkdirSync, writeFileSync };
+
+function makeDirs(nodeContents: string[], distContents: string[]): { nodeDir: string; distDir: string } {
+  const nodeDir = fs.mkdtempSync(path.join(os.tmpdir(), "excalidraw-node-"));
+  const distDir = fs.mkdtempSync(path.join(os.tmpdir(), "excalidraw-dist-"));
+  nodeContents.forEach((f) => {
+    const p = path.join(nodeDir, f);
+    mkdirSync(path.dirname(p), { recursive: true });
+    writeFileSync(p, "");
+  });
+  distContents.forEach((f) => {
+    const p = path.join(distDir, f);
+    mkdirSync(path.dirname(p), { recursive: true });
+    writeFileSync(p, "");
+  });
+  return { nodeDir, distDir };
+}
 
 describe("excalidraw-assets integration", () => {
   it("EXCALIDRAW_ASSET_PATH is same-origin after importing excalidraw-assets", async () => {
@@ -41,5 +61,23 @@ describe("excalidraw-assets integration", () => {
     expect(mermaidAssetIdx).toBeGreaterThanOrEqual(0);
     expect(mermaidExcalIdx).toBeGreaterThanOrEqual(0);
     expect(mermaidAssetIdx).toBeLessThan(mermaidExcalIdx);
+  });
+
+  it("check-excalidraw-assets.mjs passes when node and dist hold exactly the same .woff2 files", () => {
+    const { nodeDir, distDir } = makeDirs(["Fam/a.woff2"], ["Fam/a.woff2"]);
+    const result = child_process.spawnSync(process.execPath, [path.join(DESKTOP, "scripts", "check-excalidraw-assets.mjs")], {
+      env: { ...process.env, EXCALIDRAW_NODE_FONTS: nodeDir, EXCALIDRAW_DIST_FONTS: distDir },
+    });
+    expect(result.status).toBe(0);
+    expect(result.stderr.toString()).not.toContain("FAIL");
+  });
+
+  it("check-excalidraw-assets.mjs fails when dist holds a .woff2 node_modules does not", () => {
+    const { nodeDir, distDir } = makeDirs(["Fam/a.woff2"], ["Fam/a.woff2", "Fam/stale.woff2"]);
+    const result = child_process.spawnSync(process.execPath, [path.join(DESKTOP, "scripts", "check-excalidraw-assets.mjs")], {
+      env: { ...process.env, EXCALIDRAW_NODE_FONTS: nodeDir, EXCALIDRAW_DIST_FONTS: distDir },
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr.toString()).toContain("extra in dist");
   });
 });
