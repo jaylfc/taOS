@@ -18,7 +18,7 @@
 export const DEFAULT_ENGINE = "tldraw";
 
 export function getCanvasEngine(): "tldraw" | "excalidraw" {
-  if (typeof window === "undefined" || typeof window.location === "undefined") {
+  if (typeof window === "undefined") {
     return DEFAULT_ENGINE;
   }
   try {

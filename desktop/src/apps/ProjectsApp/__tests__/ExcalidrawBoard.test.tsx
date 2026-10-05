@@ -128,6 +128,7 @@ describe("ExcalidrawBoard", () => {
     vi.spyOn(canvasApi, "listElements").mockResolvedValue([]);
 
     render(<ExcalidrawBoard projectId="p1" projectSlug="s1" />);
+
     await waitFor(() => sseOnMessage !== undefined, { timeout: 2000 });
 
     expect(updateSceneCalls.length).toBeGreaterThanOrEqual(1);
@@ -160,8 +161,10 @@ describe("ExcalidrawBoard", () => {
     };
     sseOnMessage!({ data: JSON.stringify(note) } as MessageEvent);
 
-    await waitFor(() => updateSceneCalls.length >= 2, { timeout: 2000 });
-    expect(updateSceneCalls[1].length).toBe(1);
+    // The element added via SSE re-flows through the store subscriber -> scene
+    // memo -> updateScene, so an updateScene call carrying the note must appear.
+    await waitFor(() => updateSceneCalls.some((c) => c.length === 1), { timeout: 2000 });
+
     expect(
       screen.getByRole("listitem").textContent?.includes("note, user u1: hello"),
     ).toBe(true);

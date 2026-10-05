@@ -5,7 +5,7 @@ import { getCanvasEngine } from "./canvas-engine";
 import { canvasApi } from "./canvas-api";
 import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 
-const CanvasBoard = lazy(() => import("./CanvasBoard"));
+const CanvasBoard = lazy(() => import("./CanvasBoard").then((m) => ({ default: m.CanvasBoard })));
 const ExcalidrawBoard = lazy(() => import("./ExcalidrawBoard"));
 
 export function CanvasView({

@@ -49,6 +49,27 @@ async function jsonOrThrow<T>(r: Response): Promise<T> {
   return r.json() as Promise<T>;
 }
 
+/** Convert a data URL (as returned by FileReader.readAsDataURL) into a Blob.
+ *
+ * Fetching the data URL (`await (await fetch(data)).blob()`) works in browsers
+ * but does extra work and fails in non-browser test environments (jsdom has no
+ * fetch support for data URLs). Parse the `data:` prefix for the MIME type and
+ * decode the base64 body straight into a Uint8Array.
+ */
+function dataUrlToBlob(dataUrl: string): Blob {
+  const commaIndex = dataUrl.indexOf(",");
+  const meta = dataUrl.slice(0, commaIndex);
+  const encoded = dataUrl.slice(commaIndex + 1);
+  const binary = atob(encoded);
+  const u8 = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    u8[i] = binary.charCodeAt(i);
+  }
+  const type = meta.split(";")[0];
+  const mimeType = type && type.indexOf(":") >= 0 ? type.slice(type.indexOf(":") + 1) : "application/octet-stream";
+  return new Blob([u8], { type: mimeType });
+}
+
 export const canvasApi = {
   async listElements(projectId: string, elementId?: string | null): Promise<CanvasElement[]> {
     const qs = elementId != null ? `?element_id=${encodeURIComponent(elementId)}` : "";
@@ -138,7 +159,7 @@ export const canvasApi = {
   ): Promise<{ id: string; data: string }[]> {
     await Promise.all(
       files.map(async ({ file_id, data }) => {
-        const blob = await (await fetch(data)).blob();
+        const blob = dataUrlToBlob(data);
         const form = new FormData();
         form.set("file", blob, file_id);
         form.set("path", "canvas");
@@ -150,7 +171,8 @@ export const canvasApi = {
           const body = await r.text();
           throw new Error(`addFiles upload ${file_id}: ${r.status} ${body}`);
         }
-        return body as any;
+        // Response body is ignored; the caller rebuilds entries from the inputs below.
+        return { id: file_id, data };
       }),
     );
     return files.map(({ file_id, data }) => ({ id: file_id, data }));

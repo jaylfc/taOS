@@ -6,6 +6,10 @@ describe("getCanvasEngine", () => {
     vi.resetAllMocks();
   });
 
+  afterEach(() => {
+    localStorage.removeItem("taos.canvas.engine");
+  });
+
   it("falls back to DEFAULT_ENGINE when the URL is absent", () => {
     Object.defineProperty(globalThis, "window", {
       value: {},

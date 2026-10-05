@@ -7,16 +7,15 @@ import {
   useCallback,
 } from "react";
 import type { ComponentProps } from "react";
-import { Excalidraw, convertToExcalidrawElements, type ExcalidrawElement } from "@excalidraw/excalidraw";
+import { Excalidraw, convertToExcalidrawElements } from "@excalidraw/excalidraw";
+import type { BinaryFileData, BinaryFiles } from "@excalidraw/excalidraw/types";
+import type { ExcalidrawElement } from "@excalidraw/excalidraw/element/types";
 import "@excalidraw/excalidraw/index.css";
 import { CanvasElement } from "./canvas-api";
-import {
-  elementToSkeleton,
-  elementsToSkeletons,
-} from "./element-to-excalidraw";
+import { elementToSkeleton } from "./element-to-excalidraw";
 import { mermaidToExcalidraw, type ExcalidrawElements } from "./mermaid-to-elements";
 import { createCanvasStore } from "./canvas-store";
-import { subscribeCanvasStream, type CanvasEvent } from "./canvas-sse";
+import { subscribeCanvasStream } from "./canvas-sse";
 import { canvasApi } from "./canvas-api";
 import { createSceneSync, type SceneSync, type SyncSceneElement } from "./excalidraw-sync";
 import { useIsMobile } from "../../../hooks/use-is-mobile";
@@ -35,7 +34,6 @@ export interface ExcalidrawBoardProps {
   elementId?: string | null;
 }
 
-const EMPTY: never[] = [];
 
 export function ExcalidrawBoard({
   projectId,
@@ -52,8 +50,12 @@ const [boardState, setBoardState] = useState<{
 }>({ elements: [], scopeElements: [], visibleElements: [] });
   const [api, setApi] = useState<ExcalidrawAPI | null>(null);
   const [diagrams, setDiagrams] = useState<Record<string, ExcalidrawElements>>({});
-  const [files, setFiles] = useState<readonly { id: string; data: string }[]>([]);
+  const [files, setFiles] = useState<Record<string, BinaryFileData>>({});
   const syncRef = useRef<SceneSync | null>(null);
+  const scopeElementsRef = useRef(boardState.scopeElements);
+  useEffect(() => {
+    scopeElementsRef.current = boardState.scopeElements;
+  }, [boardState.scopeElements]);
 
   // Drive scope/visible state from the store so every SSE-driven upsert or
   // remove re-evaluates the element_id scope, the soft-delete filter, and the
@@ -87,18 +89,20 @@ const [boardState, setBoardState] = useState<{
   }, [projectId, elementId, store]);
 
   // Sync core: turns Excalidraw changes into REST PATCH/POST/DELETE calls and
-  // tells the board which remote rows are echoes of its own writes.
+  // tells the board which remote rows are echoes of its own writes. Created once
+  // per board (project/scope), with getElement reading a ref so it always sees
+  // the freshest scope state instead of a boardState snapshot.
   useEffect(() => {
     syncRef.current = createSceneSync({
       projectId,
       elementId,
       api: canvasApi,
-      getElement: (id) => boardState.scopeElements.find((e) => e.id === id),
+      getElement: (id) => scopeElementsRef.current.find((e) => e.id === id),
       onConflict: (rowId) => console.warn("canvas: conflict on", rowId),
       onError: (err, rowId) => console.error("canvas: write error on", rowId, err),
     });
     return () => { syncRef.current?.dispose(); };
-  }, [projectId, elementId, boardState]);
+  }, [projectId, elementId]);
 
   // Convert every non-diagram skeleton in a single batch so cross-kind bindings
   // (mindmap_edge from/to) resolve. Ready mermaid/flowchart diagrams are spliced
@@ -123,8 +127,8 @@ const [boardState, setBoardState] = useState<{
         s.customData.taos_id = el.id;
         s.customData.taos_kind = el.kind;
         s.customData.taos_updated_at = el.updated_at;
-        converted = [...converted, ...ready];
       }
+      converted = [...converted, ...ready];
     }
 
     const byId = new Map<string, unknown>();
@@ -132,7 +136,9 @@ const [boardState, setBoardState] = useState<{
 
     for (const el of converted) {
       const s = el as any;
-      const row = boardState.scopeElements.find((e) => e.id === s.id);
+      const row = boardState.scopeElements.find(
+        (e) => e.id === s.customData?.taos_original_element_id,
+      );
       if (row) {
         (s.customData ??= {}) as SyncSceneElement["customData"];
         s.customData.taos_id = row.id;
@@ -162,7 +168,7 @@ const [boardState, setBoardState] = useState<{
       }
     }
     return converted;
-  }, [boardState, diagrams]);
+  }, [boardState.visibleElements, boardState.scopeElements, diagrams]);
 
   // Ready mermaid diagrams, keyed by element id. Converted in parallel so the
   // total wait is the slowest single diagram, not the sum.
@@ -193,25 +199,32 @@ const [boardState, setBoardState] = useState<{
 
   // Each canvas image file is fetched as a dataURL once and registered with the
   // backend so it is persisted in files/canvas beside the element rows. The
-  // returned entries populate Excalidraw's file dictionary.
-  useEffect(() => {
-    let cancelled = false;
-    const fileIds = new Set<string>();
+  // returned entries populate Excalidraw's file dictionary. The set of image
+  // file ids is memoized so the fetch effect re-runs only when an image is
+  // added or removed, not on every scope element change.
+  const imageFileIds = useMemo(() => {
+    const ids = new Set<string>();
     for (const el of boardState.scopeElements) {
       if (el.kind === "image") {
         const fid = (el.payload ?? {}).file_id;
-        if (fid) fileIds.add(fid as string);
+        if (fid) ids.add(fid as string);
       }
     }
+    return ids;
+  }, [boardState.scopeElements]);
+
+  useEffect(() => {
+    let cancelled = false;
     (async () => {
       const entries = await Promise.all(
-        Array.from(fileIds).map(async (fileId) => {
+        Array.from(imageFileIds).map(async (fileId) => {
           const res = await fetch(`/api/projects/${projectSlug}/files/canvas/${fileId}`);
           if (!res.ok) {
             console.warn("canvas: image not found", fileId);
-            return { id: fileId, data: "" } as const;
+            return { id: fileId, mimeType: "application/octet-stream", dataURL: "", created: 0 };
           }
           const blob = await res.blob();
+          const mimeType = blob.type || "application/octet-stream";
           const data = await new Promise<string>((resolve, reject) => {
             const fr = new FileReader();
             fr.onload = () => resolve(fr.result as string);
@@ -223,13 +236,23 @@ const [boardState, setBoardState] = useState<{
           } catch (err) {
             console.warn("canvas: addFiles failed", err);
           }
-          return { id: fileId, data };
+          return { id: fileId, mimeType, dataURL: data, created: Date.now() };
         }),
       );
-      if (!cancelled) setFiles(entries);
+      if (!cancelled) {
+        setFiles((prev) =>
+          entries.reduce(
+            (acc, entry) => {
+              acc[entry.id] = entry as BinaryFileData;
+              return acc;
+            },
+            { ...prev },
+          ),
+        );
+      }
     })();
     return () => { cancelled = true; };
-  }, [boardState, projectSlug]);
+  }, [imageFileIds, projectSlug]);
 
   // Push the current scene to Excalidraw and tell the sync core it is remote,
   // so later local edits only write when they are newer. Runs on every scene
@@ -243,7 +266,6 @@ const [boardState, setBoardState] = useState<{
 
   const onChange = useCallback(
     (els: readonly ExcalidrawElement[]) => {
-      if (els.length === 0) return;
       syncRef.current?.onLocalChange(els as any);
     },
     [],
@@ -265,7 +287,7 @@ const [boardState, setBoardState] = useState<{
           appState: {
             viewBackgroundColor: theme === "dark" ? "#0b0f17" : "#ffffff",
           },
-          files,
+          files: files as BinaryFiles,
         }}
         onChange={onChange}
       />
@@ -282,27 +304,33 @@ const [boardState, setBoardState] = useState<{
           listStyle: "none",
         }}
       >
-        {boardState.visibleElements.map((el) => {
-          const s = elementToSkeleton(el);
-          const isPh = isPlaceholder(s);
-          let label = "";
-          if (isPh) {
-            label = `not convertible, element ${s.customData?.taos_original_element_id ?? el.id}`;
-          } else if (el.kind === "note" || el.kind === "text") {
-            label = String((el.payload ?? {}).text ?? "");
-          } else if (el.kind === "link") {
-            const p = (el.payload ?? {}) as any;
-            label = String(p.title || p.url || "");
-          } else if (el.kind === "image") {
-            const p = (el.payload ?? {}) as any;
-            label = String(p.alt || p.file_id || "");
-          }
-          return (
-            <li key={el.id}>
-              {el.kind}, {el.author_kind} {el.author_id}: {label}
-            </li>
+        {(() => {
+          const skeletons = useMemo(
+            () => boardState.visibleElements.map((el) => elementToSkeleton(el)),
+            [boardState.visibleElements],
           );
-        })}
+          return skeletons.map((s, index) => {
+            const el = boardState.visibleElements[index]!;
+            const isPh = isPlaceholder(s);
+            let label = "";
+            if (isPh) {
+              label = `not convertible, element ${s.customData?.taos_original_element_id ?? el.id}`;
+            } else if (el.kind === "note" || el.kind === "text") {
+              label = String((el.payload ?? {}).text ?? "");
+            } else if (el.kind === "link") {
+              const p = (el.payload ?? {}) as any;
+              label = String(p.title || p.url || "");
+            } else if (el.kind === "image") {
+              const p = (el.payload ?? {}) as any;
+              label = String(p.alt || p.file_id || "");
+            }
+            return (
+              <li key={el.id}>
+                {el.kind}, {el.author_kind} {el.author_id}: {label}
+              </li>
+            );
+          });
+        })()}
       </ul>
     </div>
   );

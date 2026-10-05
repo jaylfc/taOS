@@ -152,6 +152,7 @@ function noteBackground(color: string): string {
 function taosCustomData(el: CanvasElement): SkeletonCustomData {
   return {
     taos_id: el.id,
+    taos_original_element_id: el.id,
     taos_kind: el.kind,
     taos_author_id: el.author_id,
     taos_author_kind: el.author_kind,
