@@ -171,7 +171,7 @@ def test_gnu_long_name_first_member_refused_before_decompression(monkeypatch):
 
     monkeypatch.setattr(safe_archive.gzip.GzipFile, "read", counting_read)
     try:
-        with pytest.raises(ArchiveError, match="exceeds"):
+        with pytest.raises(ArchiveError, match="tar helper record"):
             with open_tar_gz(io.BytesIO(raw)) as tar:
                 check_tar_limits(tar)
         total = sum(read_bytes)
@@ -206,7 +206,7 @@ def test_pax_long_name_second_member_refused_before_decompression(monkeypatch):
 
     monkeypatch.setattr(safe_archive.gzip.GzipFile, "read", counting_read)
     try:
-        with pytest.raises(ArchiveError, match="exceeds"):
+        with pytest.raises(ArchiveError, match="tar helper record"):
             with open_tar_gz(io.BytesIO(raw)) as tar:
                 check_tar_limits(tar)
         total = sum(read_bytes)
@@ -240,7 +240,7 @@ def test_helper_refused_even_when_reads_are_chunked(monkeypatch):
     monkeypatch.setattr(safe_archive.gzip.GzipFile, "read", counting_read)
     monkeypatch.setattr(_ReadSizeGuard, "read", lambda self, size=-1: self._wrapped.read(size))
     try:
-        with pytest.raises(ArchiveError, match="exceeds"):
+        with pytest.raises(ArchiveError, match="tar helper record"):
             with open_tar_gz(io.BytesIO(raw)) as tar:
                 check_tar_limits(tar)
         total = sum(read_bytes)
@@ -277,13 +277,48 @@ def test_pax_helper_refused_even_when_reads_are_chunked(monkeypatch):
     monkeypatch.setattr(safe_archive.gzip.GzipFile, "read", counting_read)
     monkeypatch.setattr(_ReadSizeGuard, "read", lambda self, size=-1: self._wrapped.read(size))
     try:
-        with pytest.raises(ArchiveError, match="exceeds"):
+        with pytest.raises(ArchiveError, match="tar helper record"):
             with open_tar_gz(io.BytesIO(raw)) as tar:
                 check_tar_limits(tar)
         total = sum(read_bytes)
         assert total < 64 * 1024, f"decompressed {total} bytes, expected < 64 KiB"
     finally:
         monkeypatch.undo()
+
+
+def test_helper_guard_hook_exists_on_this_python():
+    """The CPython private hook _proc_member must still be present in TarInfo."""
+    import inspect
+    from tarfile import TarInfo
+    
+    assert "_proc_member" in vars(TarInfo)
+    assert "_proc_member(" in inspect.getsource(TarInfo._fromtarfile)
+
+
+def test_helper_guard_override_is_called(monkeypatch):
+    """_HelperSizeGuardTarInfo._proc_member must be called during archive opening."""
+    from tinyagentos.safe_archive import open_tar_gz
+    
+    call_count = 0
+    
+    def mock_proc_member(self, tarfile_obj):
+        nonlocal call_count
+        call_count += 1
+        return tarfile.TarInfo._proc_member(self, tarfile_obj)
+    
+    monkeypatch.setattr(safe_archive._HelperSizeGuardTarInfo, "_proc_member", mock_proc_member)
+    
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz", format=tarfile.GNU_FORMAT) as tar:
+        info = tarfile.TarInfo("small.txt")
+        info.size = 1
+        tar.addfile(info, io.BytesIO(b"x"))
+    raw = buf.getvalue()
+    
+    with open_tar_gz(io.BytesIO(raw)) as tar:
+        list(tar)  # iterate through members
+    
+    assert call_count >= 1, "_HelperSizeGuardTarInfo._proc_member was never called"
 
 
 def test_open_tar_gz_extracts_a_legit_archive(tmp_path):
