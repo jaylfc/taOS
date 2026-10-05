@@ -388,9 +388,6 @@ def test_open_tar_gz_translates_zlib_error_on_open(monkeypatch):
     raw = buf.getvalue()
 
     # Monkeypatch tarfile.open to raise zlib.error directly
-    import tinyagentos.safe_archive as safe_archive
-    original_tarfile_open = safe_archive.tarfile.open
-
     def patched_open(*args, **kwargs):
         return (_ for _ in ()).throw(zlib.error("Error -3"))
 
