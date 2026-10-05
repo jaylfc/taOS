@@ -737,9 +737,19 @@ class TestSessionRegression:
         assert resp.json()["closed_by"] == lead_cid
 
     async def test_admin_session_closes_unclaimed_card(self, ctx):
-        """A session admin may close an unclaimed card."""
+        """A session admin may close an unclaimed card authored by another agent."""
         pid = await _new_project(ctx, "alpha")
-        tid = await _new_task(ctx, pid)
+        author_cid, author_token = await _mint_agent(
+            ctx, pid, scopes=("project_tasks_create",), handle="@author"
+        )
+        async with _bare(ctx.app) as bare:
+            create = await bare.post(
+                f"/api/projects/{pid}/tasks",
+                json={"title": "authored by @author"},
+                headers=_hdr(author_token),
+            )
+        assert create.status_code == 200, create.text
+        tid = create.json()["id"]
         resp = await ctx.client.post(
             f"/api/projects/{pid}/tasks/{tid}/close",
             json={"closed_by": ctx.uid},
@@ -747,6 +757,31 @@ class TestSessionRegression:
         assert resp.status_code == 200, resp.text
         assert resp.json()["status"] == "closed"
         assert resp.json()["closed_by"] == ctx.uid
+
+    async def test_non_author_agent_cannot_close_unclaimed_card(self, ctx):
+        """A plain member agent (not the author, not the lead) may not close an
+        unclaimed card authored by a different agent."""
+        pid = await _new_project(ctx, "alpha")
+        author_cid, author_token = await _mint_agent(
+            ctx, pid, scopes=("project_tasks_create",), handle="@author"
+        )
+        async with _bare(ctx.app) as bare:
+            create = await bare.post(
+                f"/api/projects/{pid}/tasks",
+                json={"title": "authored by @author"},
+                headers=_hdr(author_token),
+            )
+        assert create.status_code == 200, create.text
+        tid = create.json()["id"]
+        _member_cid, member_token = await _mint_agent(ctx, pid)
+        async with _bare(ctx.app) as bare:
+            resp = await bare.post(
+                f"/api/projects/{pid}/tasks/{tid}/close",
+                json={"closed_by": _member_cid},
+                headers=_hdr(member_token),
+            )
+        assert resp.status_code == 403, resp.text
+        assert "only the card's author" in resp.text
 
     async def test_admin_session_closes_unclaimed_card_bypass_isolated_from_authorship(self, ctx):
         """Admin bypass for closing unclaimed cards is isolated from authorship:
