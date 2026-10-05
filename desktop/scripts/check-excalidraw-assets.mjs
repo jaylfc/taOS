@@ -18,8 +18,9 @@ try {
   }
 } catch {}
 
-const NODE_FONTS = path.join(DESKTOP, "node_modules", "@excalidraw", "excalidraw", "dist", "prod", "fonts");
-const DIST_FONTS = path.join(DIST, "excalidraw-assets", "fonts");
+const NODE_FONTS =
+  process.env.EXCALIDRAW_NODE_FONTS || path.join(DESKTOP, "node_modules", "@excalidraw", "excalidraw", "dist", "prod", "fonts");
+const DIST_FONTS = process.env.EXCALIDRAW_DIST_FONTS || path.join(DIST, "excalidraw-assets", "fonts");
 
 function walk(dir) {
   return readdirSync(dir, { withFileTypes: true, recursive: true })
@@ -73,6 +74,13 @@ if (nodeCount === 0) {
 const nodeWoff2 = new Set(walk(NODE_FONTS).filter((f) => f.endsWith(".woff2")));
 const distWoff2 = new Set(walk(DIST_FONTS).filter((f) => f.endsWith(".woff2")));
 const missingInDist = [...nodeWoff2].filter((f) => !distWoff2.has(f));
+const extraInDist = [...distWoff2].filter((f) => !nodeWoff2.has(f));
+
+if (extraInDist.length > 0) {
+  const preview = extraInDist.slice(0, 5).join(", ");
+  console.error(`FAIL: extra in dist: ${preview}`);
+  process.exit(1);
+}
 
 if (missingInDist.length > 0) {
   const preview = missingInDist.slice(0, 5).join(", ");
