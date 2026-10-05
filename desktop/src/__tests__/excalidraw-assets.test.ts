@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { readFileSync, mkdirSync, writeFileSync, mkdtempSync } from "node:fs";
+import { describe, it, expect, afterEach } from "vitest";
+import { readFileSync, mkdirSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
@@ -10,11 +10,12 @@ const EXCALIDRAW_ASSETS = path.join(DESKTOP, "src/apps/ProjectsApp/canvas/excali
 const EXCALIDRAW_BOARD = path.join(DESKTOP, "src/apps/ProjectsApp/canvas/ExcalidrawBoard.tsx");
 const MERMAID = path.join(DESKTOP, "src/apps/ProjectsApp/canvas/mermaid-to-elements.ts");
 
-const fs = { mkdtempSync, mkdirSync, writeFileSync };
+const created: string[] = [];
 
 function makeDirs(nodeContents: string[], distContents: string[]): { nodeDir: string; distDir: string } {
-  const nodeDir = fs.mkdtempSync(path.join(os.tmpdir(), "excalidraw-node-"));
-  const distDir = fs.mkdtempSync(path.join(os.tmpdir(), "excalidraw-dist-"));
+  const nodeDir = mkdtempSync(path.join(os.tmpdir(), "excalidraw-node-"));
+  const distDir = mkdtempSync(path.join(os.tmpdir(), "excalidraw-dist-"));
+  created.push(nodeDir, distDir);
   nodeContents.forEach((f) => {
     const p = path.join(nodeDir, f);
     mkdirSync(path.dirname(p), { recursive: true });
@@ -29,6 +30,9 @@ function makeDirs(nodeContents: string[], distContents: string[]): { nodeDir: st
 }
 
 describe("excalidraw-assets integration", () => {
+  afterEach(() => {
+    for (const d of created.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
   it("EXCALIDRAW_ASSET_PATH is same-origin after importing excalidraw-assets", async () => {
     const mod = await import(EXCALIDRAW_ASSETS);
     const before = (window as unknown as Record<string, string>).EXCALIDRAW_ASSET_PATH ?? "";
@@ -68,6 +72,7 @@ describe("excalidraw-assets integration", () => {
     const result = child_process.spawnSync(process.execPath, [path.join(DESKTOP, "scripts", "check-excalidraw-assets.mjs")], {
       env: { ...process.env, EXCALIDRAW_NODE_FONTS: nodeDir, EXCALIDRAW_DIST_FONTS: distDir },
     });
+    expect(result.error).toBeUndefined();
     expect(result.status).toBe(0);
     expect(result.stderr.toString()).not.toContain("FAIL");
   });
@@ -77,6 +82,7 @@ describe("excalidraw-assets integration", () => {
     const result = child_process.spawnSync(process.execPath, [path.join(DESKTOP, "scripts", "check-excalidraw-assets.mjs")], {
       env: { ...process.env, EXCALIDRAW_NODE_FONTS: nodeDir, EXCALIDRAW_DIST_FONTS: distDir },
     });
+    expect(result.error).toBeUndefined();
     expect(result.status).toBe(1);
     expect(result.stderr.toString()).toContain("extra in dist");
   });
