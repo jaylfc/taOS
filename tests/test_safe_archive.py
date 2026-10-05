@@ -307,3 +307,36 @@ def test_open_tar_gz_extracts_a_legit_archive(tmp_path):
     assert (dest / "big.bin").exists()
     assert (dest / "big.bin").stat().st_size == 20 * 1024 * 1024
     assert (dest / "small.txt").read_text() == "hello"
+
+
+def test_open_tar_gz_closes_gzip_when_guard_refuses_first_member(monkeypatch):
+    """GzipFile.close must be called even when the read guard refuses the first
+    member during tarfile.open."""
+    import gzip as gzip_mod
+    from tinyagentos.safe_archive import open_tar_gz
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz", format=tarfile.GNU_FORMAT) as tar:
+        info = tarfile.TarInfo("A" * (8 * 1024 * 1024))
+        info.size = 1
+        tar.addfile(info, io.BytesIO(b"x"))
+    raw = buf.getvalue()
+
+    close_calls = []
+
+    class TrackingGzipFile(gzip_mod.GzipFile):
+        def close(self):
+            close_calls.append(True)
+            super().close()
+
+        def __del__(self):
+            pass
+
+    monkeypatch.setattr(safe_archive.gzip, "GzipFile", TrackingGzipFile)
+    try:
+        with pytest.raises(ArchiveError):
+            with open_tar_gz(io.BytesIO(raw)) as tar:
+                pass
+        assert close_calls, "GzipFile.close was not called"
+    finally:
+        monkeypatch.undo()
