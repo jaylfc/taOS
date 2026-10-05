@@ -29,6 +29,18 @@ class TestAvatarSourcePathAndHash:
         assert len(h) == 16
         assert h == hashlib.sha256(b"one").hexdigest()[:16]
 
+    def test_avatar_hash_returns_none_when_read_fails(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(aa, "LOCK_AVATAR_DIR", str(tmp_path))
+        name = "Some Agent"
+        slug = _avatar_slug(name)
+        (tmp_path / f"{slug}.jpg").write_bytes(b"one")
+
+        def _raise(self):
+            raise FileNotFoundError("avatar deleted mid-read")
+
+        monkeypatch.setattr(Path, "read_bytes", _raise)
+        assert avatar_hash(name) is None
+
     def test_hash_changes_when_file_changes(self, tmp_path, monkeypatch):
         monkeypatch.setattr(aa, "LOCK_AVATAR_DIR", str(tmp_path))
         name = "Some Agent"
