@@ -11,7 +11,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 from tinyagentos.projects.ids import new_id
 from tinyagentos.projects.tx import ProjectsDBStore
@@ -195,3 +195,147 @@ class DispatcherStore(ProjectsDBStore):
         ) as cur:
             rows = await cur.fetchall()
         return [_row_to_config(r) for r in rows]
+
+    async def set_state(
+        self, ledger_id: str, state: str, reason: str = "", resolved_at: float | None = None
+    ) -> None:
+        """Set the state of a ledger row."""
+        async with self._tx():
+            await self._db.execute(
+                """
+                UPDATE dispatch_ledger
+                SET state = ?,
+                    reason = ?,
+                    resolved_at = ?
+                WHERE id = ?
+                """,
+                (state, reason, resolved_at, ledger_id),
+            )
+
+    async def list_pending(self, user_id: str | None = None) -> list[dict[str, Any]]:
+        """List pending ledger rows for a user, or all users if user_id is None.
+
+        Pending means state is not 'closed' or 'overridden' and resolved_at is NULL.
+        """
+        if user_id is not None:
+            async with self._read(
+                """
+                SELECT id, user_id, task_id, project_id, canonical_id, assignee_written,
+                       state, reason, assigned_at, lease_expires_at, resolved_at
+                FROM dispatch_ledger
+                WHERE user_id = ?
+                  AND state NOT IN ('closed', 'overridden')
+                  AND resolved_at IS NULL
+                """,
+                (user_id,),
+            ) as cur:
+                rows = await cur.fetchall()
+        else:
+            async with self._read(
+                """
+                SELECT id, user_id, task_id, project_id, canonical_id, assignee_written,
+                       state, reason, assigned_at, lease_expires_at, resolved_at
+                FROM dispatch_ledger
+                WHERE state NOT IN ('closed', 'overridden')
+                  AND resolved_at IS NULL
+                """,
+            ) as cur:
+                rows = await cur.fetchall()
+        return [
+            {
+                "id": row[0],
+                "user_id": row[1],
+                "task_id": row[2],
+                "project_id": row[3],
+                "canonical_id": row[4],
+                "assignee_written": row[5],
+                "state": row[6],
+                "reason": row[7],
+                "assigned_at": row[8],
+                "lease_expires_at": row[9],
+                "resolved_at": row[10],
+            }
+            for row in rows
+        ]
+
+    async def bump_backoff(self, canonical_id: str, now: float, lease_seconds: int) -> None:
+        """Increment consecutive expiries and compute next eligible time for an agent."""
+        async with self._tx():
+            # Get current consecutive_expiries
+            async with self._read(
+                "SELECT consecutive_expiries FROM dispatch_agent_backoff WHERE canonical_id = ?",
+                (canonical_id,),
+            ) as cur:
+                row = await cur.fetchone()
+                if row is None:
+                    # Insert a new row if not exists
+                    await self._db.execute(
+                        """
+                        INSERT INTO dispatch_agent_backoff
+                            (canonical_id, consecutive_expiries, next_eligible_at, last_assigned_at)
+                        VALUES (?, 0, 0, 0)
+                        """,
+                        (canonical_id,),
+                    )
+                    consecutive_expiries = 0
+                else:
+                    consecutive_expiries = row[0]
+
+            # Increment consecutive_expiries
+            new_expiries = consecutive_expiries + 1
+            # Calculate backoff: lease_seconds * 2**(new_expiries-1), capped at 21600 (6 hours)
+            backoff = lease_seconds * (2 ** (new_expiries - 1))
+            if backoff > 21600:
+                backoff = 21600
+            next_eligible_at = now + backoff
+
+            await self._db.execute(
+                """
+                UPDATE dispatch_agent_backoff
+                SET consecutive_expiries = ?,
+                    next_eligible_at = ?
+                WHERE canonical_id = ?
+                """,
+                (new_expiries, next_eligible_at, canonical_id),
+            )
+
+    async def reset_backoff(self, canonical_id: str) -> None:
+        """Reset consecutive expiries and next eligible time for an agent."""
+        async with self._tx():
+            await self._db.execute(
+                """
+                UPDATE dispatch_agent_backoff
+                SET consecutive_expiries = 0,
+                    next_eligible_at = 0
+                WHERE canonical_id = ?
+                """,
+                (canonical_id,),
+            )
+
+    async def list_backed_off_agents(self, now: float) -> list[str]:
+        """List agents that are backed off (now < next_eligible_at)."""
+        async with self._read(
+            "SELECT canonical_id FROM dispatch_agent_backoff WHERE next_eligible_at > ?",
+            (now,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [row[0] for row in rows]
+
+    async def list_paused_cards(self, now: float) -> list[str]:
+        """List cards (project_id) that have >= CARD_EXPIRY_CAP expired rows in the last 48h."""
+        CARD_EXPIRY_CAP = 5
+        window_start = now - (48 * 3600)  # 48 hours ago
+        async with self._read(
+            """
+            SELECT project_id
+            FROM dispatch_ledger
+            WHERE state = 'expired'
+              AND resolved_at >= ?
+              AND resolved_at < ?
+            GROUP BY project_id
+            HAVING COUNT(*) >= ?
+            """,
+            (window_start, now, CARD_EXPIRY_CAP),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [row[0] for row in rows]
