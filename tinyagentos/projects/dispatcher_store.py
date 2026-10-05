@@ -275,7 +275,7 @@ class DispatcherStore(ProjectsDBStore):
             )
 
             # Stamp backoff for the task
-            await self._stamp_backoff(task_id, now)
+            await self.stamp_backoff(task_id, now)
 
         return lease_id
 
