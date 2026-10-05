@@ -58,6 +58,22 @@ def _etag_value(avatar_hash_hex: str, size: int) -> str:
     return f'"{avatar_hash_hex}-{size}"'
 
 
+def _etag_matches(header: str | None, etag: str) -> bool:
+    """Return True if the If-None-Match header matches the given ETag."""
+    if not header:
+        return False
+    header = header.strip()
+    if header == "*":
+        return True
+    for part in header.split(","):
+        part = part.strip()
+        if part.startswith("W/"):
+            part = part[2:]
+        if part == etag:
+            return True
+    return False
+
+
 def _rgb_to_rgb565(r: int, g: int, b: int) -> int:
     """Convert 8-bit RGB to RGB565 (native little-endian value)."""
     return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
@@ -203,7 +219,7 @@ async def device_agent_avatar(
         raise HTTPException(status_code=404, detail={"error": "avatar_not_found"})
 
     # Get avatar hash (also validates source exists and is readable)
-    ahash = avatar_hash(name)
+    ahash = await asyncio.to_thread(avatar_hash, name)
     if ahash is None:
         # No source image installed
         raise HTTPException(status_code=404, detail={"error": "avatar_not_found"})
@@ -211,7 +227,7 @@ async def device_agent_avatar(
     # ETag check
     etag = _etag_value(ahash, size)
     if_none_match = request.headers.get("if-none-match")
-    if if_none_match and if_none_match == etag:
+    if _etag_matches(if_none_match, etag):
         return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "private, max-age=86400"})
 
     # Check cache
@@ -220,15 +236,22 @@ async def device_agent_avatar(
     cache_path = _cache_dir(data_dir) / agent_key / _cache_key(ahash, size)
 
     if cache_path.is_file():
-        # Cache hit
-        return FileResponse(
-            path=cache_path,
-            media_type="application/x-taos-lvimg",
-            headers={
-                "ETag": etag,
-                "Cache-Control": "private, max-age=86400",
-            },
-        )
+        try:
+            data = cache_path.read_bytes()
+        except OSError:
+            data = None
+        expected_len = 12 + size * size * 3
+        if data is None or len(data) < 12 or data[0] != 0x19 or len(data) != expected_len:
+            pass  # treat as cache miss, fall through
+        else:
+            return Response(
+                content=data,
+                media_type="application/x-taos-lvimg",
+                headers={
+                    "ETag": etag,
+                    "Cache-Control": "private, max-age=86400",
+                },
+            )
 
     # Cache miss - convert
     source_path = avatar_source_path(name)
