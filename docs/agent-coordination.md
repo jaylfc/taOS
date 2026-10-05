@@ -788,7 +788,7 @@ purely from a matching active grant. An already-registered agent is added to a
 further project via `POST /api/projects/{project_id}/members/assign-agent`
 (admin/owner gated) or by redeeming an invite whose handle collides with an
 active identity (the existing canonical_id and token are reused instead of
-409ing). The reverse is
+409ing). **To reuse an existing identity for a multi-project approval, the requester must re-submit the request with that agent's registry token as a Bearer header, otherwise the approval returns 409.** The reverse is
 `POST /api/projects/{project_id}/members/revoke-agent` (taOS #2148), which drops
 the agent's grants on that ONE project and leaves its other projects, its other
 scopes and the identity itself standing.

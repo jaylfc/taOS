@@ -37,6 +37,7 @@ from tinyagentos.agent_registry_store import (
     agent_slug_or_fallback,
     mint_registry_token,
 )
+from tinyagentos.agent_token_auth import check_agent_identity
 from tinyagentos.auth_context import CurrentUser, current_user, require_owner_or_admin
 from tinyagentos.base_store import PendingCapExceeded
 from tinyagentos.routes.projects import _free_suggestions
@@ -284,7 +285,6 @@ async def _resolve_agent_identity(request: Request, identity_claim: str, *, stri
     ``check_agent_identity`` is propagated, and a missing or unresolved identity
     raises 401 instead of returning the caller-supplied string.
     """
-    from tinyagentos.agent_token_auth import check_agent_identity
 
     try:
         cid = await check_agent_identity(request)
@@ -381,6 +381,12 @@ async def _handle_project_create_request(
 
     decision_store = request.app.state.decision_store
 
+    # Check agent identity for proof of reuse
+    try:
+        proven = await check_agent_identity(request)
+    except HTTPException:
+        proven = None
+
     record = None
     try:
         record = await store.create(
@@ -398,6 +404,7 @@ async def _handle_project_create_request(
             purpose=body.purpose or body.reason,
             cap_identity=from_agent,
             cap_framework="project_create",
+            proven_canonical_id=proven,
         )
     except PendingCapExceeded as exc:
         raise HTTPException(
@@ -549,6 +556,10 @@ async def create_auth_request(request: Request, body: CreateAuthRequest):
     # concurrent posts is free, and a count-then-insert check hands every
     # request in that burst the same pre-insert count.
     try:
+        proven = await check_agent_identity(request)
+    except HTTPException:
+        proven = None
+    try:
         record = await store.create(
             identity_claim=body.identity_claim,
             framework=body.framework,
@@ -558,6 +569,7 @@ async def create_auth_request(request: Request, body: CreateAuthRequest):
             duration_secs=body.duration_secs,
             project_id=body.project_id,
             pending_cap=_PENDING_CAP,
+            proven_canonical_id=proven,
         )
     except PendingCapExceeded as exc:
         raise HTTPException(
@@ -900,6 +912,16 @@ async def approve_request_record(
                 ),
             )
         if project_id and set(granted_scopes) & _PROJECT_SCOPES:
+            # PROOF REQUIRED: the requester must have proven they are the agent
+            # the existing active agent owns, by presenting a valid registry token.
+            if record.get("proven_canonical_id") != existing_active["canonical_id"]:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"handle '{handle}' belongs to active agent "
+                        f"{existing_active['canonical_id']}; resubmit the request with that agent's registry token as a Bearer header"
+                    ),
+                )
             existing_cid = existing_active["canonical_id"]
             token = mint_registry_token(
                 existing_cid,
@@ -1719,8 +1741,6 @@ async def _authorize_scope_request_creation(
     uid = getattr(request.state, "user_id", None)
     if is_admin or (uid and uid == record.get("user_id")):
         return
-
-    from tinyagentos.agent_token_auth import check_agent_identity
 
     try:
         agent_cid = await check_agent_identity(request)
