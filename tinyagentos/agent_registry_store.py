@@ -631,19 +631,41 @@ class AgentRegistryStore(BaseStore):
 
         caps_json = json.dumps(capabilities)
         initial_status = "pending" if origin == "external-selfjoin" else "active"
-        await self._db.execute(
-            """
-            INSERT INTO agent_registry
-                (canonical_id, display_name, framework, user_id, origin,
-                 handle, role, title, reports_to, capabilities, created_ts, status,
-                 install_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (canonical_id, display_name, framework, user_id, origin,
-             handle, role, title, reports_to, caps_json, created_ts, initial_status,
-             install_id),
-        )
-        await self._db.commit()
+
+        last_integrity_error = None
+        for _attempt in range(16):
+            try:
+                await self._db.execute(
+                    """
+                    INSERT INTO agent_registry
+                        (canonical_id, display_name, framework, user_id, origin,
+                         handle, role, title, reports_to, capabilities, created_ts, status,
+                         install_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (canonical_id, display_name, framework, user_id, origin,
+                     handle, role, title, reports_to, caps_json, created_ts, initial_status,
+                     install_id),
+                )
+                await self._db.commit()
+                break
+            except aiosqlite.IntegrityError as exc:
+                await self._db.rollback()
+                last_integrity_error = exc
+                existing = await (
+                    await self._db.execute(
+                        "SELECT id FROM agent_registry WHERE canonical_id = ?",
+                        (canonical_id,),
+                    )
+                ).fetchone()
+                if existing is not None:
+                    suffix_n += 1
+                    canonical_id = f"{base_id}-{suffix_n:02x}"
+                    continue
+                raise
+        else:
+            if last_integrity_error is not None:
+                raise last_integrity_error
 
         row = await (
             await self._db.execute(

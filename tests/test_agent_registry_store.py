@@ -571,6 +571,26 @@ class TestRegister:
         assert r1["canonical_id"] != r2["canonical_id"]
 
     @pytest.mark.asyncio
+    async def test_concurrent_register_same_second_gets_suffix(self, store):
+        import asyncio
+        from unittest.mock import patch
+
+        with patch(
+            "tinyagentos.agent_registry_store.mint_canonical_id",
+            lambda slug, ts: f"{slug}-20261005-120000",
+        ):
+            rows = await asyncio.gather(
+                *[
+                    store.register(framework="openclaw", display_name="Racer")
+                    for _ in range(5)
+                ]
+            )
+        assert len(rows) == 5
+        canonical_ids = {r["canonical_id"] for r in rows}
+        assert len(canonical_ids) == 5
+        assert "racer-20261005-120000" in canonical_ids
+
+    @pytest.mark.asyncio
     async def test_not_initialized_raises(self, tmp_path):
         s = AgentRegistryStore(tmp_path / "not_init.db")
         with pytest.raises(RuntimeError, match="not initialised"):
