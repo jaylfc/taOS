@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import gzip
 import tarfile
+import zlib
 import zipfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -96,7 +97,7 @@ def open_tar_gz(fileobj, *, kind="archive"):
     tar = None
     try:
         tar = tarfile.open(fileobj=guard, mode="r:", tarinfo=_HelperSizeGuardTarInfo)
-    except (tarfile.ReadError, gzip.BadGzipFile, EOFError) as exc:
+    except (tarfile.ReadError, gzip.BadGzipFile, EOFError, zlib.error) as exc:
         gz.close()
         raise ArchiveError(f"{kind} is not a valid gzip tarball") from exc
     except BaseException:
@@ -105,7 +106,7 @@ def open_tar_gz(fileobj, *, kind="archive"):
     try:
         try:
             yield tar
-        except (tarfile.ReadError, gzip.BadGzipFile, EOFError) as exc:
+        except (tarfile.ReadError, gzip.BadGzipFile, EOFError, zlib.error) as exc:
             raise ArchiveError(f"{kind} is not a valid gzip tarball") from exc
     finally:
         if tar is not None:
