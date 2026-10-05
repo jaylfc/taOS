@@ -249,7 +249,6 @@ async def device_agent_avatar(
         tmp_path.rename(cache_path)
 
         # Clean up stale cache entries for this agent (different sizes or old hashes)
-        agent_dir = cache_path.parent
         for old_file in agent_dir.glob("*.lvimg"):
             if not old_file.name.startswith(f"{ahash}-"):
                 try:
