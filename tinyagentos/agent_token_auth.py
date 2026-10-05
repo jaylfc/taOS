@@ -66,6 +66,76 @@ def _grant_unexpired(expires_at, now: datetime) -> bool:
     return exp > now
 
 
+async def active_project_grants(
+    registry,
+    grants_store,
+    canonical_id: str,
+    scope: str,
+    now: datetime | None = None,
+) -> set[str]:
+    """Return the set of project_ids for which *canonical_id* holds an active
+    grant of *scope*.
+
+    This predicate is usable outside an HTTP request (no Request, no fastapi
+    exceptions). It returns an empty set for a missing or non-active registry
+    record. The same ``_grant_unexpired`` logic and fail-closed parsing are used
+    as the HTTP-layer checks.
+
+    Args:
+        registry: An object with an async ``get(canonical_id) -> dict | None``
+            method (e.g. AgentRegistryStore).
+        grants_store: An object with an async ``list_grants(canonical_id) ->
+            list[dict]`` method (e.g. AgentGrantsStore).
+        canonical_id: The agent's canonical registry id.
+        scope: The grant scope to filter on (e.g. "project_tasks").
+        now: Optional reference time for expiry checks. Defaults to
+            ``datetime.now(timezone.utc)``.
+
+    Returns:
+        Set of project_id strings for active, unexpired grants of the given
+        scope. Empty if the agent is not active, has no grants, or all matching
+        grants are expired/unparseable.
+    """
+    by_project = await _active_project_grants_by_project(
+        registry, grants_store, canonical_id, scope, now
+    )
+    return set(by_project.keys())
+
+
+async def _active_project_grants_by_project(
+    registry,
+    grants_store,
+    canonical_id: str,
+    scope: str,
+    now: datetime | None = None,
+) -> dict[str, dict]:
+    """Internal helper returning active grants keyed by project_id.
+
+    Same logic as ``active_project_grants`` but preserves the full grant dict
+    for each project. Used by ``check_agent_project_grants`` to avoid
+    re-fetching grants.
+    """
+    record = await registry.get(canonical_id)
+    if record is None or record.get("status") != "active":
+        return {}
+
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    grants = await grants_store.list_grants(canonical_id)
+    by_project: dict[str, dict] = {}
+    for g in grants:
+        if g.get("scope") != scope:
+            continue
+        pid = g.get("project_id")
+        if not pid:
+            continue
+        if not _grant_unexpired(g.get("expires_at"), now):
+            continue
+        by_project[pid] = g
+    return by_project
+
+
 def _enforce_rotation_cutoff(record: dict, payload: dict) -> None:
     """Reject a token issued before the identity's ``token_min_iat`` cutoff.
 
@@ -385,16 +455,7 @@ async def check_agent_project_grants(
     _enforce_rotation_cutoff(record, payload)
 
     grants_store = _get_grants_store(request)
-    grants = await grants_store.list_grants(canonical_id)
-    now = datetime.now(timezone.utc)
-    by_project: dict[str, dict] = {}
-    for g in grants:
-        if g.get("scope") != required_scope:
-            continue
-        pid = g.get("project_id")
-        if not pid:
-            continue
-        if not _grant_unexpired(g.get("expires_at"), now):
-            continue
-        by_project[pid] = g
+    by_project = await _active_project_grants_by_project(
+        registry, grants_store, canonical_id, required_scope, now=datetime.now(timezone.utc)
+    )
     return canonical_id, by_project
