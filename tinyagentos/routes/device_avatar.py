@@ -18,6 +18,7 @@ from PIL import Image, ImageDraw, ImageFilter
 from tinyagentos.agent_avatars import avatar_hash, avatar_source_path
 from tinyagentos.device_auth import device_scope
 from tinyagentos.device_scopes import AGENTS_READ
+from tinyagentos.atomic_io import atomic_write_bytes
 
 router = APIRouter()
 
@@ -240,13 +241,11 @@ async def device_agent_avatar(
         logger.warning("Avatar conversion failed for agent %r: %s", name, exc)
         raise HTTPException(status_code=404, detail={"error": "avatar_not_found"})
 
-    # Atomic write to cache: write to tmp then rename
+    # Atomic write to cache
     agent_dir = cache_path.parent
     agent_dir.mkdir(parents=True, exist_ok=True)
-    tmp_path = cache_path.with_suffix(".lvimg.tmp")
     try:
-        tmp_path.write_bytes(lvimg_data)
-        tmp_path.rename(cache_path)
+        atomic_write_bytes(cache_path, lvimg_data)
 
         # Clean up stale cache entries for this agent (different sizes or old hashes)
         for old_file in agent_dir.glob("*.lvimg"):
