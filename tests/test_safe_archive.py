@@ -10,6 +10,7 @@ deny.
 
 import io
 import tarfile
+import zlib
 
 import pytest
 
@@ -286,6 +287,27 @@ def test_pax_helper_refused_even_when_reads_are_chunked(monkeypatch):
         monkeypatch.undo()
 
 
+def test_truncated_gzip_during_validation_raises_archive_error():
+    """A truncated gzip stream must raise ArchiveError during member iteration,
+    not let tarfile.ReadError or EOFError escape."""
+    from tinyagentos.safe_archive import open_tar_gz, check_tar_limits
+
+    # Build a valid tar.gz with one 64 KiB member
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz", compresslevel=1) as tar:
+        info = tarfile.TarInfo("data.bin")
+        info.size = 64 * 1024
+        tar.addfile(info, io.BufferedReader(_Zeros(64 * 1024)))
+    full = buf.getvalue()
+
+    # Truncate to two thirds so the gzip stream ends mid-member during iteration
+    truncated = full[: len(full) * 2 // 3]
+
+    with pytest.raises(safe_archive.ArchiveError, match="not a valid gzip tarball"):
+        with open_tar_gz(io.BytesIO(truncated)) as tar:
+            check_tar_limits(tar)
+
+
 def test_helper_guard_hook_exists_on_this_python():
     """The CPython private hook _proc_member must still be present in TarInfo."""
     import inspect
@@ -375,5 +397,41 @@ def test_open_tar_gz_closes_gzip_when_guard_refuses_first_member(monkeypatch):
             with open_tar_gz(io.BytesIO(raw)) as tar:
                 pass
         assert close_calls, "GzipFile.close was not called"
+    finally:
+        monkeypatch.undo()
+
+def test_open_tar_gz_translates_zlib_error_during_iteration():
+    """zlib.error must be translated to ArchiveError during member iteration."""
+    # Build a valid tar.gz in memory (one small member)
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        info = tarfile.TarInfo("small.txt")
+        info.size = 5
+        tar.addfile(info, io.BytesIO(b"hello"))
+    raw = buf.getvalue()
+
+    with pytest.raises(ArchiveError, match="not a valid gzip tarball"):
+        with open_tar_gz(io.BytesIO(raw)) as tar:
+            raise zlib.error("Error -3 while decompressing data: invalid code lengths set")
+
+def test_open_tar_gz_translates_zlib_error_on_open(monkeypatch):
+    """zlib.error on tarfile.open must be translated to ArchiveError."""
+    # Build a valid tar.gz in memory (one small member)
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        info = tarfile.TarInfo("small.txt")
+        info.size = 5
+        tar.addfile(info, io.BytesIO(b"hello"))
+    raw = buf.getvalue()
+
+    # Monkeypatch tarfile.open to raise zlib.error directly
+    def patched_open(*args, **kwargs):
+        return (_ for _ in ()).throw(zlib.error("Error -3"))
+
+    monkeypatch.setattr(safe_archive.tarfile, "open", patched_open)
+    try:
+        with pytest.raises(ArchiveError, match="not a valid gzip tarball"):
+            with open_tar_gz(io.BytesIO(raw)):
+                pass
     finally:
         monkeypatch.undo()
