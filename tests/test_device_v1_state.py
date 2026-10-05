@@ -39,6 +39,29 @@ async def _device(app, user_id="u1", platform="ios", scopes=("agents:read",)):
     return d["scoped_token"]
 
 
+# RED-FIRST: configure an agent with a non-empty config status and no live
+# status, then prove /auth/lock-widgets does NOT leak the configured status.
+@pytest.mark.asyncio
+async def test_lock_widgets_status_does_not_fall_back_to_configured_status(vapp, monkeypatch):
+    from tinyagentos.routes import auth as auth_mod
+
+    app = vapp
+    monkeypatch.setattr(auth_mod, "_request_is_console", lambda _r: True)
+
+    app.state.config.agents = [
+        {"name": "secret-status-agent", "framework": "openclaw", "user_id": "u1", "status": "secret-config-status"},
+    ]
+
+    async with _client(app) as c:
+        r = await c.get("/auth/lock-widgets")
+
+    assert r.status_code == 200, r.text
+    data = r.json()
+    agent = next(a for a in data["agents"] if a["name"] == "secret-status-agent")
+    assert agent["status"] == ""
+    assert "secret-config-status" not in r.text
+
+
 # (a) two owners, each with agents; a device paired to owner 1 sees only owner 1's agents.
 @pytest.mark.asyncio
 async def test_state_returns_only_owner_agents(vapp):
@@ -67,12 +90,25 @@ async def test_state_returns_only_owner_agents(vapp):
 
 # (b) a 500-char recap arrives with length <= 180 and ends with the ellipsis.
 @pytest.mark.asyncio
-async def test_state_caps_long_strings(vapp):
+async def test_state_caps_long_strings(vapp, monkeypatch):
+    from tinyagentos import containers
+
     app = vapp
     long_status = "x" * 500
     long_recap = "r" * 500
+
+    class _MockContainer:
+        def __init__(self, name, status):
+            self.name = name
+            self.status = status
+
+    async def _mock_list_containers(prefix=None):
+        return [_MockContainer("taos-agent-cap-agent", long_status)]
+
+    monkeypatch.setattr(containers, "list_containers", _mock_list_containers, raising=False)
+
     app.state.config.agents = [
-        {"name": "cap-agent", "framework": "openclaw", "user_id": "u1", "status": long_status},
+        {"name": "cap-agent", "framework": "openclaw", "user_id": "u1"},
     ]
 
     await app.state.agent_messages.send(
@@ -138,11 +174,11 @@ async def test_state_demo_flag_and_unanswerable_decision(vapp, monkeypatch):
     widgets_names = {a["name"] for a in widgets_data["agents"] if not a.get("system")}
     assert state_names == widgets_names
 
-    for a in state_data["agents"]:
-        dec = a.get("decision")
-        if dec and dec.get("id") == "":
-            assert dec["id"] == ""
-            break
+    demo_a = next((a for a in state_data["agents"] if a["name"] == "DemoA"), None)
+    assert demo_a is not None
+    dec = demo_a.get("decision")
+    assert dec is not None
+    assert dec["id"] == ""
 
     write_demo_mode(app.state.data_dir, False)
 

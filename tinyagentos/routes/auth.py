@@ -9393,18 +9393,16 @@ async def assemble_lock_agents(request: Request, owner_id: str | None = None) ->
                 continue
             name = entry.get("name")
             framework = str(entry.get("framework") or entry.get("harness") or "")
-            configured_status = entry.get("status") if isinstance(entry, dict) else None
         else:
             name = str(entry)
             framework = ""
-            configured_status = None
         if not name:
             continue
         agents.append({
             "name": str(name),
             "framework": framework.lower(),
             "framework_icon": _framework_icon(framework),
-            "status": status_by_name.get(str(name)) or (str(configured_status) if configured_status else ""),
+            "status": status_by_name.get(str(name), ""),
             "avatar": _avatar_url(str(name)),
         })
 

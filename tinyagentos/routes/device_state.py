@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from tinyagentos.agent_avatars import avatar_hash
 from tinyagentos.device_auth import device_scope
 from tinyagentos.device_scopes import AGENTS_READ
-from tinyagentos.routes.auth import assemble_lock_agents, _demo_value
+from tinyagentos.routes.auth import assemble_lock_agents, _demo_enabled
 
 router = APIRouter()
 
@@ -110,6 +110,6 @@ async def device_state(request: Request, _device: dict = Depends(device_scope(AG
             "version": getattr(tinyagentos, "__version__", "unknown"),
         },
         "time": time.time(),
-        "demo": bool(_demo_value("TAOS_LOCK_DEMO_AGENTS", request).strip()),
+        "demo": _demo_enabled(request),
     }
 
