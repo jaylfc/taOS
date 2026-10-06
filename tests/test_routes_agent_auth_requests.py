@@ -1124,6 +1124,195 @@ class TestAddAgentToAnotherProject:
         await pstore.close()
 
     @pytest.mark.asyncio
+    async def test_create_reports_proof_status_none(
+        self, client, monkeypatch, tmp_path
+    ):
+        """POST /api/agents/auth-requests without Authorization header stores None and reports proof_status='none'."""
+        from tinyagentos.agent_registry_store import (
+            AgentRegistryStore,
+            load_or_create_signing_keypair,
+        )
+        from tinyagentos.auth_requests_store import AuthRequestsStore
+        from tinyagentos.agent_grants_store import AgentGrantsStore
+        from tinyagentos.projects.project_store import ProjectStore
+
+        registry = AgentRegistryStore(tmp_path / "reg-bearer-none.db")
+        await registry.init()
+        auth_store = AuthRequestsStore(tmp_path / "auth-bearer-none.db")
+        await auth_store.init()
+        grants = AgentGrantsStore(tmp_path / "grants-bearer-none.db")
+        await grants.init()
+        pstore = ProjectStore(tmp_path / "projects-bearer-none.db")
+        await pstore.init()
+        priv, pub = load_or_create_signing_keypair(tmp_path / "keys-bearer-none")
+
+        pA = await pstore.create_project(name="A", slug="proj-a-none", created_by="u")
+
+        # Set up monkeypatched stores
+        monkeypatch.setattr(client._transport.app.state, "agent_registry", registry)
+        monkeypatch.setattr(client._transport.app.state, "auth_requests", auth_store)
+        monkeypatch.setattr(client._transport.app.state, "agent_grants", grants)
+        monkeypatch.setattr(client._transport.app.state, "agent_registry_keypair", (priv, pub))
+        monkeypatch.setattr(client._transport.app.state, "project_store", pstore)
+
+        # POST without Bearer header should report proof_status='none'
+        resp = await client.post(
+            "/api/agents/auth-requests",
+            json={
+                "identity_claim": "@bearer-agent",
+                "framework": "openclaw",
+                "requested_scopes": ["project_tasks"],
+                "project_id": pA["id"],
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        response_data = resp.json()
+        assert response_data["proof_status"] == "none", f"Expected proof_status='none', got {response_data['proof_status']}"
+
+        # Fetch the stored record
+        stored_record = await auth_store.get(response_data["request_id"])
+        assert stored_record["proven_canonical_id"] is None
+
+        await registry.close()
+        await auth_store.close()
+        await grants.close()
+        await pstore.close()
+
+    @pytest.mark.asyncio
+    async def test_create_reports_proof_status_accepted(
+        self, client, monkeypatch, tmp_path
+    ):
+        """POST /api/agents/auth-requests with Authorization: Bearer <token from an ACTIVE registered agent stores proven_canonical_id and reports proof_status='accepted'."""
+        import uuid
+        from tinyagentos.agent_registry_store import (
+            AgentRegistryStore,
+            load_or_create_signing_keypair,
+            mint_registry_token,
+        )
+        from tinyagentos.auth_requests_store import AuthRequestsStore
+        from tinyagentos.agent_grants_store import AgentGrantsStore
+        from tinyagentos.projects.project_store import ProjectStore
+
+        registry = AgentRegistryStore(tmp_path / "reg-bearer-accept.db")
+        await registry.init()
+        auth_store = AuthRequestsStore(tmp_path / "auth-bearer-accept.db")
+        await auth_store.init()
+        grants = AgentGrantsStore(tmp_path / "grants-bearer-accept.db")
+        await grants.init()
+        pstore = ProjectStore(tmp_path / "projects-bearer-accept.db")
+        await pstore.init()
+        priv, pub = load_or_create_signing_keypair(tmp_path / "keys-bearer-accept")
+
+        pA = await pstore.create_project(name="A", slug="proj-a-accept", created_by="u")
+
+        # Create and register the agent
+        reg = await registry.register(
+            framework="openclaw",
+            display_name="Bearer Test Agent Accept",
+            user_id="u",
+            origin="external-selfjoin",
+            handle="bearer-agent-accept",
+        )
+        cid = reg["canonical_id"]
+        await registry.set_status(cid, "active")
+
+        # Create a token for this agent
+        agent_token = mint_registry_token(
+            cid,
+            priv,
+            user_id="u",
+            framework="openclaw",
+            project_id=pA["id"],
+        )
+
+        # Set up monkeypatched stores
+        monkeypatch.setattr(client._transport.app.state, "agent_registry", registry)
+        monkeypatch.setattr(client._transport.app.state, "auth_requests", auth_store)
+        monkeypatch.setattr(client._transport.app.state, "agent_grants", grants)
+        monkeypatch.setattr(client._transport.app.state, "agent_registry_keypair", (priv, pub))
+        monkeypatch.setattr(client._transport.app.state, "project_store", pstore)
+
+        # POST with Bearer header should store proven_canonical_id and report proof_status='accepted'
+        resp = await client.post(
+            "/api/agents/auth-requests",
+            headers={"Authorization": f"Bearer {agent_token}"},
+            json={
+                "identity_claim": "@bearer-agent-accept",
+                "framework": "openclaw",
+                "requested_scopes": ["project_tasks"],
+                "project_id": pA["id"],
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        response_data = resp.json()
+        assert response_data["proof_status"] == "accepted", f"Expected proof_status='accepted', got {response_data['proof_status']}"
+
+        # Fetch the stored record
+        stored_record = await auth_store.get(response_data["request_id"])
+        assert stored_record["proven_canonical_id"] == cid
+
+        await registry.close()
+        await auth_store.close()
+        await grants.close()
+        await pstore.close()
+
+    @pytest.mark.asyncio
+    async def test_create_reports_proof_status_rejected(
+        self, client, monkeypatch, tmp_path
+    ):
+        """POST /api/agents/auth-requests with Authorization: Bearer <invalid token> stores None and reports proof_status='rejected'."""
+        from tinyagentos.agent_registry_store import (
+            AgentRegistryStore,
+            load_or_create_signing_keypair,
+        )
+        from tinyagentos.auth_requests_store import AuthRequestsStore
+        from tinyagentos.agent_grants_store import AgentGrantsStore
+        from tinyagentos.projects.project_store import ProjectStore
+
+        registry = AgentRegistryStore(tmp_path / "reg-bearer-reject.db")
+        await registry.init()
+        auth_store = AuthRequestsStore(tmp_path / "auth-bearer-reject.db")
+        await auth_store.init()
+        grants = AgentGrantsStore(tmp_path / "grants-bearer-reject.db")
+        await grants.init()
+        pstore = ProjectStore(tmp_path / "projects-bearer-reject.db")
+        await pstore.init()
+        priv, pub = load_or_create_signing_keypair(tmp_path / "keys-bearer-reject")
+
+        pA = await pstore.create_project(name="A", slug="proj-a-reject", created_by="u")
+
+        # Set up monkeypatched stores
+        monkeypatch.setattr(client._transport.app.state, "agent_registry", registry)
+        monkeypatch.setattr(client._transport.app.state, "auth_requests", auth_store)
+        monkeypatch.setattr(client._transport.app.state, "agent_grants", grants)
+        monkeypatch.setattr(client._transport.app.state, "agent_registry_keypair", (priv, pub))
+        monkeypatch.setattr(client._transport.app.state, "project_store", pstore)
+
+        # POST with invalid Bearer header should report proof_status='rejected'
+        resp = await client.post(
+            "/api/agents/auth-requests",
+            headers={"Authorization": "Bearer invalid-token-12345"},
+            json={
+                "identity_claim": "@bearer-agent",
+                "framework": "openclaw",
+                "requested_scopes": ["project_tasks"],
+                "project_id": pA["id"],
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        response_data = resp.json()
+        assert response_data["proof_status"] == "rejected", f"Expected proof_status='rejected', got {response_data['proof_status']}"
+
+        # Fetch the stored record
+        stored_record = await auth_store.get(response_data["request_id"])
+        assert stored_record["proven_canonical_id"] is None
+
+        await registry.close()
+        await auth_store.close()
+        await grants.close()
+        await pstore.close()
+
+    @pytest.mark.asyncio
     async def test_non_project_handle_collision_still_409(
         self, client, monkeypatch, tmp_path
     ):
