@@ -962,6 +962,10 @@ class AgentRegistryStore(BaseStore):
             before_status = record.get("status") or "active"
             _assert_valid_transition(before_status, new_status)
 
+            # Atomic: the UPDATE is conditional on the status still being
+            # ``before_status``, so two concurrent transitions cannot both win a
+            # read/validate/write race - the loser's WHERE matches 0 rows. This
+            # also guarantees the returned/audited before_status is accurate.
             now = datetime.now(timezone.utc).isoformat()
             if new_status == "revoked":
                 cur = await self._db.execute(
@@ -977,11 +981,12 @@ class AgentRegistryStore(BaseStore):
                 )
             await self._db.commit()
             if cur.rowcount == 0:
+                # Status changed under us between the read and the write.
                 raise ValueError(
                     f"lifecycle transition conflict: {canonical_id!r} is no longer "
                     f"in state {before_status!r}"
                 )
-            return await self.get(canonical_id)
+            return await self.get(canonical_id)  # type: ignore[return-value]
 
     # ------------------------------------------------------------------
     # Revoke

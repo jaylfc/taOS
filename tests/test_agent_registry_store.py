@@ -636,6 +636,8 @@ class TestRegister:
         all_rows = await store.list_all()
         assert len(all_rows) == 51
 
+        assert all(isinstance(r, dict) for r in update_results)
+
 
 # ---------------------------------------------------------------------------
 # Reserved-prefix guard
