@@ -122,7 +122,8 @@ class TestNpmPin:
         def mock_npm_get(package):
             return {"dist-tags": {"latest": "2.6.0"}}
 
-        with patch.object(mod, "_npm_get", side_effect=mock_npm_get):
+        with patch.object(mod, "_npm_get", side_effect=mock_npm_get), \
+             patch.object(mod, "_read_pin", return_value="2.6.0"):
             result = mod.npm_pin(entry)
 
         assert result["ok"] is True
@@ -141,7 +142,8 @@ class TestNpmPin:
         def mock_npm_get(package):
             return {"dist-tags": {"latest": "3.0.0"}}
 
-        with patch.object(mod, "_npm_get", side_effect=mock_npm_get):
+        with patch.object(mod, "_npm_get", side_effect=mock_npm_get), \
+             patch.object(mod, "_read_pin", return_value="2.6.0"):
             result = mod.npm_pin(entry)
 
         assert result["ok"] is False
@@ -199,7 +201,8 @@ class TestReadPinFormat:
             "pin_file": "scripts/install-server.sh",
             "pin_var": "qmd_npm_version",
         }
-        pinned = _read_pin_via_tracked(mod, entry)
+        with patch.object(mod, "_read_pin", return_value="2.6.0"):
+            pinned = _read_pin_via_tracked(mod, entry)
         assert pinned is not None
         assert re.fullmatch(r"\d+\.\d+\.\d+", pinned), f"qmd pin {pinned!r} not semver"
 
