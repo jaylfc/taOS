@@ -122,6 +122,29 @@ async def _collect_from_stream(gen, max_chunks=20, timeout=3.0):
     return chunks, finished
 
 
+def _ticking_clock(monkeypatch):
+    # Every _clock() call advances 1.0s, so with the patched 0.1s poll and
+    # 0.2s heartbeat EVERY loop tick polls once and then yields one ": ping".
+    from tinyagentos.routes import device_state as ds_mod
+    t = [0.0]
+    def _tick():
+        t[0] += 1.0
+        return t[0]
+    monkeypatch.setattr(ds_mod, "_clock", _tick)
+
+
+async def _read_until_ping(gen, limit=50):
+    # Reads frames up to and including the next heartbeat frame. Never cancels
+    # the generator. Each __anext__ returns within one loop tick.
+    frames = []
+    for _ in range(limit):
+        frame = await gen.__anext__()
+        frames.append(frame)
+        if b": ping" in frame:
+            return frames
+    raise AssertionError(f"no heartbeat within {limit} frames")
+
+
 def _make_mock_request(app, headers, last_event_id="0"):
     req = _MockRequest(app, headers)
     req.headers["last-event-id"] = last_event_id
@@ -294,7 +317,8 @@ async def test_stream_stops_demo_after_switch_off(vapp, monkeypatch):
 
     app = vapp
     monkeypatch.setattr(auth_mod, "_request_is_console", lambda _r: True)
-    monkeypatch.setattr(ds_mod, "_clock", lambda: 0.0)
+
+    _ticking_clock(monkeypatch)
 
     monkeypatch.setenv("TAOS_LOCK_DEMO_AGENTS", "DemoX:openclaw:Drafting")
     monkeypatch.setenv("TAOS_LOCK_DEMO_DECISION", "Ship it?")
@@ -305,36 +329,14 @@ async def test_stream_stops_demo_after_switch_off(vapp, monkeypatch):
     headers = {"authorization": f"Bearer {tok}"}
     device = {"user_id": "u1"}
 
-    post_flip_demo = False
     gen = _events_stream(_make_mock_request(app, headers), device)
-
-    # consume initial events
-    pre_flip, _ = await _collect_from_stream(gen, max_chunks=20, timeout=2.0)
-
-    # flip the switch off
+    before = _parse_events(await _read_until_ping(gen))
+    assert ("agent.upsert", "DemoX") in [(e, d.get("name")) for e, d in before]   # positive control
     write_demo_mode(app.state.data_dir, False)
-
-    # advance clock past any armed timer
-    monkeypatch.setattr(ds_mod, "_clock", lambda: 9999.0)
-    post_flip, _ = await _collect_from_stream(gen, max_chunks=20, timeout=2.0)
-    for chunk in (c.decode("utf-8") if isinstance(c, bytes) else c for c in post_flip):
-        for evt_line in chunk.splitlines():
-            if evt_line.startswith("event:"):
-                pass
-            elif evt_line.startswith("data:"):
-                try:
-                    data = json.loads(evt_line.split(":", 1)[1].strip())
-                except Exception:
-                    continue
-                if isinstance(data, dict):
-                    if data.get("demo") is True:
-                        post_flip_demo = True
-                    dec = data.get("decision") or {}
-                    if dec.get("demo") is True or dec.get("id") == "":
-                        if data.get("name") == "DemoX":
-                            post_flip_demo = True
-
-    assert not post_flip_demo
+    after = _parse_events(await _read_until_ping(gen))
+    assert ("agent.remove", {"name": "DemoX"}) in after
+    assert not [d for e, d in after if e == "agent.upsert" and d.get("name") == "DemoX"]
+    await gen.aclose()
 
 
 # (j2) Avatar change triggers agent.upsert with new hash.
@@ -368,10 +370,9 @@ async def test_stream_upsert_on_avatar_change(vapp, monkeypatch):
         img.write_bytes(b"first-avatar-content")
 
         gen = _events_stream(_make_mock_request(app, headers), device)
-        chunks1, _ = await _collect_from_stream(gen, max_chunks=20, timeout=2.0)
-        events1 = _parse_events(chunks1)
+        first = _parse_events(await _read_until_ping(gen))
         initial_hash = None
-        for evt, data in events1:
+        for evt, data in first:
             if evt == "agent.upsert" and data.get("name") == "eve-agent":
                 av = data.get("avatar") or {}
                 initial_hash = av.get("hash")
@@ -382,11 +383,9 @@ async def test_stream_upsert_on_avatar_change(vapp, monkeypatch):
 
         img.write_bytes(b"second-avatar-content-changed")
 
-        gen = _events_stream(_make_mock_request(app, headers), device)
-        chunks2, _ = await _collect_from_stream(gen, max_chunks=20, timeout=2.0)
-        events2 = _parse_events(chunks2)
+        second = _parse_events(await _read_until_ping(gen))
         got_new_hash = False
-        for evt, data in events2:
+        for evt, data in second:
             if evt == "agent.upsert" and data.get("name") == "eve-agent":
                 av = data.get("avatar") or {}
                 new_hash = av.get("hash")
@@ -395,3 +394,27 @@ async def test_stream_upsert_on_avatar_change(vapp, monkeypatch):
                     break
 
     assert got_new_hash
+
+
+# (j) HTTP route: bearer auth.
+@pytest.mark.asyncio
+async def test_events_route_requires_bearer(vapp):
+    app = vapp
+
+    async with _client(app) as c:
+        r = await c.get("/api/device/v1/events")
+
+    assert r.status_code == 401, r.text
+
+
+# (k) HTTP route: device without agents:read scope is denied.
+@pytest.mark.asyncio
+async def test_events_route_refuses_device_without_agents_read(vapp):
+    app = vapp
+    tok = await _device(app, user_id="u1", scopes=())
+
+    async with _client(app) as c:
+        r = await c.get("/api/device/v1/events", headers={"Authorization": f"Bearer {tok}"})
+
+    assert r.status_code == 403, r.text
+    assert "device_scope_missing" in r.text

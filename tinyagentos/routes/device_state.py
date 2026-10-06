@@ -209,16 +209,12 @@ async def _events_stream(request: Request, device: dict):
         if now - last_poll >= _POLL_INTERVAL_S:
             last_poll = now
 
-            demo_on = _demo_enabled(request)
-
             base_agents = await assemble_lock_agents(request, owner_id=owner_id)
             transformed = [
                 await _transform_agent(a, agent_messages)
                 for a in base_agents
                 if not a.get("system")
             ]
-            if not demo_on:
-                transformed = [a for a in transformed if not a.get("demo")]
 
             current_by_name = {a["name"]: a for a in transformed}
 
