@@ -1,4 +1,5 @@
 import pathlib
+import re
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 INSTALL_SH = REPO_ROOT / "install.sh"
@@ -17,11 +18,14 @@ def test_install_sh_rknpu_hint_points_to_install_rknpu_sh():
 
     start = None
     for i, line in enumerate(lines):
-        if "/dev/rknpu" in line:
+        if re.match(r'\s*if \[ -e "/dev/rknpu" \]', line):
             start = i
             break
 
     assert start is not None, "install.sh missing /dev/rknpu hint block"
+    assert lines[start].lstrip().startswith("if"), (
+        "install.sh /dev/rknpu hint block must start with an if conditional"
+    )
 
     indent = len(lines[start]) - len(lines[start].lstrip())
 
