@@ -203,7 +203,7 @@ class TestReadPinFormat:
         }
         pinned = _read_pin_via_tracked(mod, entry)
         assert pinned is not None
-        assert re.fullmatch(r"\d+\.\d+\.\d+(?:[-+0-9A-Za-z.]*)", pinned), f"qmd pin {pinned!r} not semver"
+        assert re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?", pinned), f"qmd pin {pinned!r} not semver"
 
     def test_openclaw_pin_is_semver(self):
         entry = next(e for e in mod.TRACKED if e.get("package") == "openclaw")
