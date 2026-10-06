@@ -200,13 +200,23 @@ class TestChatAgentAuthorBinding:
             )
         assert resp.status_code == 403
 
-    async def test_bound_agent_state_missing_message_is_403(self, client, app):
-        """update_message_state returns 403 when the target message does not exist."""
+    async def test_bound_agent_cannot_stream_into_user_message_with_its_name(self, client, app):
+        """Host token posts a message with author_id=\"agent-a\", author_type=\"user\";
+        agent-a's bound token delta -> 403."""
         ch = await _create_channel_dm(app)
+        async with _host_token_client(app) as c:
+            resp = await c.post("/api/chat/messages", json={
+                "channel_id": ch["id"],
+                "author_id": "agent-a",
+                "author_type": "user",
+                "content": "host-spoofed message",
+            })
+        assert resp.status_code == 200
+        msg = resp.json()
         async with _bound_client(app, "agent-a") as c:
             resp = await c.post(
-                "/api/chat/messages/nonexistent/state",
-                json={"state": "complete"},
+                f"/api/chat/messages/{msg['id']}/delta",
+                json={"channel_id": ch["id"], "delta": " intruder"},
             )
         assert resp.status_code == 403
 
@@ -238,7 +248,6 @@ class TestChatAgentAuthorBinding:
         )
         
         # Verify the message was created
-        assert msg["id"] == msg["id"]
         assert msg["author_id"] == "agent-a"
         assert msg["channel_id"] == ch["id"]
         
@@ -257,36 +266,16 @@ class TestChatAgentAuthorBinding:
         # Verify the hub.broadcast was called with the message's channel_id, not empty
         mock_hub.broadcast.assert_called_once()
         call_args = mock_hub.broadcast.call_args
-        
-        # Get the channel_id from the call
-        # For AsyncMock, the call_args structure can vary
-        if hasattr(call_args, 'args') and call_args.args:
-            called_channel_id = call_args.args[0]
-        elif hasattr(call_args, 'kwargs') and 'channel_id' in call_args.kwargs:
-            called_channel_id = call_args.kwargs['channel_id']
-        else:
-            called_channel_id = None
-        
+        # broadcast is called with positional args: channel_id, dict
+        called_channel_id = call_args.args[0]
+
         assert called_channel_id == ch["id"], (
             f"Expected hub.broadcast to be called with channel_id={ch['id']}, "
             f"but it was called with {called_channel_id}"
         )
-        
+
         # Verify the broadcast message contains the correct data
-        # We need to check what was passed as the second argument to broadcast
-        # For MagicMock/AsyncMock, we need to check call_args properly
-        if hasattr(call_args, 'args') and len(call_args.args) > 1:
-            broadcast_dict = call_args.args[1]
-        elif hasattr(call_args, 'kwargs'):
-            # If it was called with kwargs, get the dict
-            for key, value in call_args.kwargs.items():
-                if isinstance(value, dict) and 'type' in value and value['type'] == 'message_delta':
-                    broadcast_dict = value
-                    break
-            else:
-                broadcast_dict = {}
-        else:
-            broadcast_dict = {}
+        broadcast_dict = call_args.args[1]
         
         if broadcast_dict:
             assert broadcast_dict["type"] == "message_delta"
