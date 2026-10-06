@@ -584,4 +584,12 @@ async def purge_archived(request: Request, archive_id: str):
     config.archived_agents = [a for a in config.archived_agents if a.get("id") != archive_id]
     await save_config_locked(config, config.config_path)
 
+    # 5a) Revoke the agent's local-token binding so the old token no longer
+    # validates as an admin credential.
+    if archived_slug:
+        try:
+            request.app.state.auth.unbind_local_token_agent(archived_slug)
+        except Exception as exc:  # noqa: BLE001 - best-effort revocation
+            logger.warning("purge: unbind local token for %s failed: %s", archived_slug, exc)
+
     return {"status": "purged", "id": archive_id}

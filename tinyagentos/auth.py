@@ -1301,7 +1301,8 @@ class AuthManager:
         serialises the read-modify-write cycle so concurrent deploys cannot
         lose one another's binding. The bindings file must be readable and
         a valid JSON object; a corrupt or mis-shaped file raises rather than
-        being silently replaced.
+        being silently replaced. Any previous binding for the same agent is
+        removed first so an agent has at most one live token.
         """
         path = self._local_token_agent_path()
         lock_path = self._local_token_agent_lock_path()
@@ -1328,8 +1329,41 @@ class AuthManager:
                     )
             else:
                 data = {}
+            for existing_hash in [k for k, v in data.items() if v == agent_name]:
+                del data[existing_hash]
             data[token_hash] = agent_name
             atomic_write_text(path, json.dumps(data), mode=0o600)
+
+    def unbind_local_token_agent(self, agent_name: str) -> int:
+        """Remove every entry bound to *agent_name*. Returns the count removed."""
+        path = self._local_token_agent_path()
+        lock_path = self._local_token_agent_lock_path()
+        lock = FileLock(str(lock_path), timeout=10)
+        with lock:
+            if not path.exists():
+                return 0
+            try:
+                raw = path.read_text()
+            except OSError as exc:
+                raise AuthStoreCorruptError(
+                    f"cannot read bindings file {path}: {exc}"
+                ) from exc
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise AuthStoreCorruptError(
+                    f"bindings file {path} is not valid JSON: {exc}"
+                ) from exc
+            if not isinstance(data, dict):
+                raise AuthStoreCorruptError(
+                    f"bindings file {path} is a "
+                    f"{type(data).__name__}, expected an object"
+                )
+            keys_to_remove = [k for k, v in data.items() if v == agent_name]
+            for k in keys_to_remove:
+                del data[k]
+            atomic_write_text(path, json.dumps(data), mode=0o600)
+            return len(keys_to_remove)
 
     def get_local_token_agent(self, presented: str) -> str | None:
         """Return the agent name bound to this local token, or ``None``."""
