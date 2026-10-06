@@ -712,6 +712,7 @@ async def test_cache_hit_with_wrong_header_is_regenerated(vapp, monkeypatch):
 
         assert r2.status_code == 200, r2.text
         assert r2.content[:12] == correct_header, "cache hit with wrong header should regenerate with correct header"
+        assert correct_header == da_mod._lvimg_header(96)
 
 
 # (p) test_if_none_match_weak_with_space_returns_304

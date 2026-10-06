@@ -32,6 +32,21 @@ ALLOWED_SIZES = frozenset({45, 96})
 LV_COLOR_FORMAT_RGB565A8 = 0x14  # from lv_image_dsc.h
 LV_IMAGE_HEADER_MAGIC = 0x19
 
+
+def _lvimg_header(size: int) -> bytes:
+    return struct.pack(
+        "<BBBBHHHH",
+        LV_IMAGE_HEADER_MAGIC,
+        LV_COLOR_FORMAT_RGB565A8,
+        0,
+        0,
+        size,
+        size,
+        size * 2,
+        0,
+    )
+
+
 # Cache directory name
 CACHE_SUBDIR = "device-avatars"
 
@@ -152,17 +167,7 @@ def _convert_to_lvgl9_rgb565a8(source_path: Path, size: int) -> bytes:
     #   uint16_t h;           // height
     #   uint16_t stride;      // w * 2 (RGB565 stride in bytes)
     #   uint16_t reserved1;   // 0
-    header = struct.pack(
-        "<BBBBHHHH",
-        LV_IMAGE_HEADER_MAGIC,
-        LV_COLOR_FORMAT_RGB565A8,
-        0,  # flags
-        0,  # reserved0
-        size,  # w
-        size,  # h
-        size * 2,  # stride
-        0,  # reserved1
-    )
+    header = _lvimg_header(size)
 
     return header + bytes(rgb565_plane) + bytes(alpha_plane)
 
@@ -241,17 +246,7 @@ async def device_agent_avatar(
         except OSError:
             data = None
         expected_len = 12 + size * size * 3
-        expected_header = struct.pack(
-            "<BBBBHHHH",
-            LV_IMAGE_HEADER_MAGIC,
-            LV_COLOR_FORMAT_RGB565A8,
-            0,
-            0,
-            size,
-            size,
-            size * 2,
-            0,
-        )
+        expected_header = _lvimg_header(size)
         if data is None or len(data) != expected_len or data[:12] != expected_header:
             pass  # treat as cache miss, fall through
         else:
