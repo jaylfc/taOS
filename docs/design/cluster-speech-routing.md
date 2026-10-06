@@ -105,11 +105,13 @@ Non-goals and kept rules:
   if served (speechd lists `kind: stt|tts` and `sample_rate`), else the manifest's names.
 - **Capabilities per entry, not per type.** A `speechd` backend advertises only the
   capabilities its declared entries carry (`asr` and/or `tts`), so a TTS-only node never
-  advertises `asr`. `detect_capabilities` already prefers each backend's own `capabilities`.
+  advertises `asr`. This needs a change in `detect_backends`, which today fills `capabilities`
+  from `BACKEND_CAPABILITIES.get(backend_type)` both for a probed backend and for the synthetic
+  `stopped` entry; `detect_capabilities` already prefers each backend's own `capabilities`.
 - Several entries on one port (023 runs STT and two voices in one process) attach to one
   backend, which the existing `_candidate_key` grouping already does.
 
-Resulting registration for the Mac (023 manifest, unchanged except `software`):
+Resulting registration for the Mac (023 manifest with `software` changed and the new `sample_rate` field added):
 
 ```json
 {"name": "speechd:8771", "type": "speechd", "url": "http://localhost:8771",
