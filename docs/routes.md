@@ -482,10 +482,12 @@ agent `name` key.
   including `avatar: {hue, hash}`). Emitted on connect for every current
   agent so a fresh client can build state from typed events alone.
 - `agent.remove` -- an agent disappeared. Data: `{"name": "<agent name>"}`.
+- `decision.close` -- an agent's pending decision was resolved. Data:
+  `{"name": "<agent name>", "decision_id": "<old decision id>"}`. When a decision
+  is replaced (new id issued for the same agent), the old decision id is
+  included so clients can correlate the close with the previous open.
 - `decision.open` -- a pending decision appeared for an agent. Data:
   `{"name": "<agent name>", "decision": {...}}`.
-- `decision.close` -- an agent's pending decision was resolved. Data:
-  `{"name": "<agent name>"}`.
 - `agent.recap` -- an agent's `last_recap` changed. Data:
   `{"name": "<agent name>", "last_recap": "<text>"}`.
 - `snapshot` -- full state body, sent only when the client's `Last-Event-ID`
@@ -500,12 +502,13 @@ A comment line `: ping` is emitted every 15 seconds (configurable via
 **Resume and snapshot behaviour:**
 
 The client may send `Last-Event-ID` to resume. If the ID is older than what
-the stream still holds, the server sends one `snapshot` event and then
-continues with typed events from the current state. Fresh connects (no
-`Last-Event-ID` or `Last-Event-ID: 0`) start directly with typed
-`agent.upsert` events and do not receive a snapshot.
+ the stream still holds, the server sends one `snapshot` event and then
+ continues with typed events from the current state. Fresh connects (no
+ `Last-Event-ID` or `Last-Event-ID: 0`) start directly with typed
+ `agent.upsert` events and do not receive a snapshot.
 
 **Close-on-revoke:**
 
 The stream re-checks the device bearer token on every loop tick. If the
-device is revoked or the scope is lost, the stream closes immediately.
+ device is revoked, blocked or the scope is lost (specifically `agents:read`),
+ the stream closes immediately.

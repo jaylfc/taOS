@@ -144,10 +144,6 @@ async def _events_stream(request: Request, device: dict):
         while len(_event_history) > _MAX_HISTORY:
             oldest = min(_event_history)
             del _event_history[oldest]
-    
-    def _next_event_id() -> int:
-        nonlocal _event_id
-        return _event_id + 1
 
     need_snapshot = False
     if last_event_id > 0:
@@ -177,7 +173,7 @@ async def _events_stream(request: Request, device: dict):
     prev_decision: dict[str, dict | None] = {}
 
     if need_snapshot:
-        eid = _next_event_id()
+        eid = _event_id + 1
         _record_event(eid, "snapshot")
         yield f"id: {eid}\nevent: snapshot\ndata: {json.dumps(snapshot_data)}\n\n".encode("utf-8")
 
@@ -187,7 +183,7 @@ async def _events_stream(request: Request, device: dict):
         prev_by_name[a["name"]] = a
         prev_recap[a["name"]] = a.get("last_recap", "") or ""
         prev_decision[a["name"]] = a.get("decision")
-        eid = _next_event_id()
+        eid = _event_id + 1
         _record_event(eid, "agent.upsert")
         yield f"id: {eid}\nevent: agent.upsert\ndata: {json.dumps(a)}\n\n".encode("utf-8")
 
@@ -211,7 +207,7 @@ async def _events_stream(request: Request, device: dict):
             if AGENTS_READ not in effective_scopes(device_check):
                 return
 
-# Poll state at the configured interval.
+        # Poll state at the configured interval.
         if now - last_poll >= _POLL_INTERVAL_S:
             last_poll = now
 
@@ -228,19 +224,19 @@ async def _events_stream(request: Request, device: dict):
             for name, agent in current_by_name.items():
                 prev = prev_by_name.get(name)
                 if prev is None:
-                    eid = _next_event_id()
+                    eid = _event_id + 1
                     _record_event(eid, "agent.upsert")
                     yield f"id: {eid}\nevent: agent.upsert\ndata: {json.dumps(agent)}\n\n".encode("utf-8")
                 else:
                     if _agent_change_key(agent) != _agent_change_key(prev):
-                        eid = _next_event_id()
+                        eid = _event_id + 1
                         _record_event(eid, "agent.upsert")
                         yield f"id: {eid}\nevent: agent.upsert\ndata: {json.dumps(agent)}\n\n".encode("utf-8")
 
                     # Recap change.
                     current_recap = agent.get("last_recap", "") or ""
                     if current_recap != prev_recap.get(name, ""):
-                        eid = _next_event_id()
+                        eid = _event_id + 1
                         _record_event(eid, "agent.recap")
                         yield (
                             f"id: {eid}\nevent: agent.recap\n"
@@ -251,14 +247,14 @@ async def _events_stream(request: Request, device: dict):
                     current_dec = agent.get("decision")
                     prev_dec = prev_decision.get(name)
                     if current_dec and not prev_dec:
-                        eid = _next_event_id()
+                        eid = _event_id + 1
                         _record_event(eid, "decision.open")
                         yield (
                             f"id: {eid}\nevent: decision.open\n"
                             f"data: {json.dumps({'name': name, 'decision': current_dec})}\n\n"
                         ).encode("utf-8")
                     elif not current_dec and prev_dec:
-                        eid = _next_event_id()
+                        eid = _event_id + 1
                         _record_event(eid, "decision.close")
                         yield f"id: {eid}\nevent: decision.close\ndata: {json.dumps({'name': name})}\n\n".encode("utf-8")
                     elif current_dec and prev_dec:
@@ -267,11 +263,11 @@ async def _events_stream(request: Request, device: dict):
                         prev_id = prev_dec.get("id") or ""
                         if current_id != prev_id:
                             # Emit decision.close for old id
-                            eid = _next_event_id()
+                            eid = _event_id + 1
                             _record_event(eid, "decision.close")
-                            yield f"id: {eid}\nevent: decision.close\ndata: {json.dumps({'name': name})}\n\n".encode("utf-8")
+                            yield f"id: {eid}\nevent: decision.close\ndata: {json.dumps({'name': name, 'decision_id': prev_id})}\n\n".encode("utf-8")
                             # Emit decision.open for new id
-                            eid = _next_event_id()
+                            eid = _event_id + 1
                             _record_event(eid, "decision.open")
                             yield (
                                 f"id: {eid}\nevent: decision.open\n"
@@ -281,7 +277,7 @@ async def _events_stream(request: Request, device: dict):
                 # Removed agents.
                 for name in prev_by_name:
                     if name not in current_by_name:
-                        eid = _next_event_id()
+                        eid = _event_id + 1
                         _record_event(eid, "agent.remove")
                         yield f"id: {eid}\nevent: agent.remove\ndata: {json.dumps({'name': name})}\n\n".encode("utf-8")
 
@@ -289,12 +285,12 @@ async def _events_stream(request: Request, device: dict):
                 prev_recap = {n: a.get("last_recap", "") or "" for n, a in current_by_name.items()}
                 prev_decision = {n: a.get("decision") for n, a in current_by_name.items()}
 
-            # Heartbeat.
-            if now - last_heartbeat >= _HEARTBEAT_INTERVAL_S:
-                last_heartbeat = now
-                eid = _next_event_id()
-                _record_event(eid, "heartbeat")
-                yield f"id: {eid}\n: ping\n\n".encode("utf-8")
+        # Heartbeat.
+        if now - last_heartbeat >= _HEARTBEAT_INTERVAL_S:
+            last_heartbeat = now
+            eid = _event_id + 1
+            _record_event(eid, "heartbeat")
+            yield f"id: {eid}\n: ping\n\n".encode("utf-8")
 
         # Sleep in small steps so disconnect and device-check stay fresh.
         await asyncio.sleep(_SLEEP_STEP_S)
