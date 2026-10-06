@@ -55,7 +55,7 @@ def _parse_pin_value(line: str, pin_var: str | None = None, pin_regex: str | Non
     - VAR="value" form: extracts the assigned value
     """
     # 1. Try ${VAR:-default} form
-    m = re.search(r'\$\{([^}:]*?)(?:[:][^}]*)?\}', line)
+    m = re.search(r'\$\{[^}]*?:([^}]*)\}', line)
     if m:
         content = m.group(1)
         if ':' in content:
