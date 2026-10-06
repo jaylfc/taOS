@@ -488,6 +488,22 @@ async def test_a_disconnected_client_never_reaches_the_daemon(gw, daemon, monkey
     assert daemon.requests == []
 
 
+@pytest.mark.asyncio
+async def test_a_client_gone_mid_upload_is_499_and_never_reaches_the_daemon(gw, daemon, monkeypatch):
+    c, data_dir, _ = gw
+    write_manifest(data_dir, daemon.port)
+    from starlette.requests import ClientDisconnect, Request
+
+    async def cut(self):
+        yield b"x"
+        raise ClientDisconnect()
+
+    monkeypatch.setattr(Request, "stream", cut)
+    resp = await post(c)
+    assert resp.status_code == 499
+    assert daemon.requests == []
+
+
 # --- happy paths ------------------------------------------------------------
 
 
