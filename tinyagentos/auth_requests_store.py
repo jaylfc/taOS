@@ -45,7 +45,8 @@ CREATE TABLE IF NOT EXISTS auth_requests (
     requested_project_name  TEXT,
     requested_project_slug  TEXT,
     purpose                 TEXT DEFAULT '',
-    proven_canonical_id     TEXT
+    proven_canonical_id     TEXT,
+    proven_token_iat        INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_auth_requests_status ON auth_requests(status);
 CREATE INDEX IF NOT EXISTS idx_auth_requests_identity ON auth_requests(identity_claim, framework, status);
@@ -58,7 +59,7 @@ _VALID_DECISION_STATUSES = frozenset({"accepted", "refused"})
 _CREATE_COLUMNS = (
     "(id, identity_claim, framework, requested_scopes, requested_skills,"
     " reason, duration_secs, project_id, status, created_ts,"
-    " kind, requested_project_name, requested_project_slug, purpose, proven_canonical_id)"
+    " kind, requested_project_name, requested_project_slug, purpose, proven_canonical_id, proven_token_iat)"
 )
 
 # Makes the pending cap atomic with the insert: SQLite evaluates the count and
@@ -107,6 +108,7 @@ class AuthRequestsStore(BaseStore):
             ("requested_project_slug", "ALTER TABLE auth_requests ADD COLUMN requested_project_slug TEXT"),
             ("purpose", "ALTER TABLE auth_requests ADD COLUMN purpose TEXT DEFAULT ''"),
             ("proven_canonical_id", "ALTER TABLE auth_requests ADD COLUMN proven_canonical_id TEXT"),
+            ("proven_token_iat", "ALTER TABLE auth_requests ADD COLUMN proven_token_iat INTEGER"),
         ]
         dirty = False
         for col, sql in alters:
@@ -138,6 +140,7 @@ class AuthRequestsStore(BaseStore):
         cap_identity: Optional[str] = None,
         cap_framework: Optional[str] = None,
         proven_canonical_id: Optional[str] = None,
+        proven_token_iat: Optional[int] = None,
     ) -> dict:
         """Create a new pending auth request. Returns the full record.
 
@@ -173,12 +176,13 @@ class AuthRequestsStore(BaseStore):
             requested_project_slug,
             purpose,
             proven_canonical_id,
+            proven_token_iat,
         )
 
         if pending_cap is None:
             cur = await self._db.execute(
                 f"INSERT INTO auth_requests {_CREATE_COLUMNS} "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)",
                 values,
             )
         else:
@@ -186,7 +190,7 @@ class AuthRequestsStore(BaseStore):
             cap_framework_val = cap_framework or framework
             cur = await self._db.execute(
                 f"INSERT INTO auth_requests {_CREATE_COLUMNS} "
-                "SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ? WHERE " + _CAP_GUARD,
+                "SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ? WHERE " + _CAP_GUARD,
                 (*values, cap_identity_val, cap_framework_val, pending_cap),
             )
         await self._db.commit()

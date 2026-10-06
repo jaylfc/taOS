@@ -37,7 +37,7 @@ from tinyagentos.agent_registry_store import (
     agent_slug_or_fallback,
     mint_registry_token,
 )
-from tinyagentos.agent_token_auth import check_agent_identity
+from tinyagentos.agent_token_auth import check_agent_identity, check_agent_identity_claims
 from tinyagentos.auth_context import CurrentUser, current_user, require_owner_or_admin
 from tinyagentos.base_store import PendingCapExceeded
 from tinyagentos.routes.projects import _free_suggestions
@@ -383,9 +383,16 @@ async def _handle_project_create_request(
 
     # Check agent identity for proof of reuse
     try:
-        proven = await check_agent_identity(request)
+        result = await check_agent_identity_claims(request)
     except HTTPException:
         proven = None
+        proven_iat = None
+    else:
+        if result is not None:
+            proven, proven_iat = result
+        else:
+            proven = None
+            proven_iat = None
 
     record = None
     try:
@@ -405,6 +412,7 @@ async def _handle_project_create_request(
             cap_identity=from_agent,
             cap_framework="project_create",
             proven_canonical_id=proven,
+            proven_token_iat=proven_iat,
         )
     except PendingCapExceeded as exc:
         raise HTTPException(
@@ -556,9 +564,16 @@ async def create_auth_request(request: Request, body: CreateAuthRequest):
     # concurrent posts is free, and a count-then-insert check hands every
     # request in that burst the same pre-insert count.
     try:
-        proven = await check_agent_identity(request)
+        result = await check_agent_identity_claims(request)
     except HTTPException:
         proven = None
+        proven_iat = None
+    else:
+        if result is not None:
+            proven, proven_iat = result
+        else:
+            proven = None
+            proven_iat = None
     try:
         record = await store.create(
             identity_claim=body.identity_claim,
@@ -570,6 +585,7 @@ async def create_auth_request(request: Request, body: CreateAuthRequest):
             project_id=body.project_id,
             pending_cap=_PENDING_CAP,
             proven_canonical_id=proven,
+            proven_token_iat=proven_iat,
         )
     except PendingCapExceeded as exc:
         raise HTTPException(
@@ -920,6 +936,17 @@ async def approve_request_record(
                     detail=(
                         f"handle '{handle}' belongs to active agent "
                         f"{existing_active['canonical_id']}; resubmit the request with that agent's registry token as a Bearer header"
+                    ),
+                )
+            # Also reject if the proof token was superseded by a rotation since
+            # the request was filed. The stored token iat must be >= the
+            # identity's current token_min_iat.
+            if (record.get("proven_token_iat") or 0) < (existing_active.get("token_min_iat") or 0):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"handle '{handle}' belongs to active agent "
+                        f"{existing_active['canonical_id']}; the proof token was superseded by a rotation and the request must be resubmitted with a current token"
                     ),
                 )
             existing_cid = existing_active["canonical_id"]
