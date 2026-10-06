@@ -328,9 +328,10 @@ them after stopping them.
    which returns once the unit starts. `stop_argv` is `systemctl --user stop <unit>`, which
    waits up to `stop_grace_s` (Strata's KV persist save) and then kills the process group.
 2. **A real drain.** Add `BackendCatalog.in_flight_count(name)` backed by a counter the gateway
-   increments in `forward._record_request_start` and decrements in `_record_request_finish`
-   (both already run exactly once per attempt). `_wait_for_drain` then does what its docstring
-   says. This also fixes the drain for existing auto-managed backends.
+   increments where `forward._record_request_start` is called and decrements where
+   `_record_request_finish` runs (once per attempt, including the stream's `_finish` guard).
+   The counter must sit beside the feed call, not inside it: both functions return early when
+   `_activity_feed(state)` is None. `_wait_for_drain` then does what its docstring says. This also fixes the drain for existing auto-managed backends.
 3. **Health.** `_probe_health` accepts JSON `status` in `ok|healthy|running`; llama-server's
    `/health` returns `{"status": "ok"}`. Strata's shape is checked in the lab; a recipe may
    declare a different `health` path.
