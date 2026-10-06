@@ -383,7 +383,7 @@ async def _handle_project_create_request(
 
     # Check agent identity for proof of reuse
     authorization_header = request.headers.get("authorization")
-    has_auth_header = bool(authorization_header)
+    has_auth_header = authorization_header is not None
     proof_status = "none" if not has_auth_header else "rejected"
     proven = None
     if has_auth_header:
@@ -566,7 +566,7 @@ async def create_auth_request(request: Request, body: CreateAuthRequest):
     
     # Determine proof_status
     authorization_header = request.headers.get("authorization")
-    has_auth_header = bool(authorization_header)
+    has_auth_header = authorization_header is not None
     proof_status = "none" if not has_auth_header else "rejected"
     proven = None
     if has_auth_header:

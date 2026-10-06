@@ -1313,6 +1313,59 @@ class TestAddAgentToAnotherProject:
         await pstore.close()
 
     @pytest.mark.asyncio
+    async def test_create_reports_proof_status_rejected_for_empty_header(
+        self, client, monkeypatch, tmp_path
+    ):
+        """POST /api/agents/auth-requests with Authorization: '' (present, empty value) stores None and reports proof_status='rejected'."""
+        from tinyagentos.agent_registry_store import (
+            AgentRegistryStore,
+            load_or_create_signing_keypair,
+        )
+        from tinyagentos.auth_requests_store import AuthRequestsStore
+        from tinyagentos.agent_grants_store import AgentGrantsStore
+        from tinyagentos.projects.project_store import ProjectStore
+
+        registry = AgentRegistryStore(tmp_path / "reg-bearer-empty.db")
+        await registry.init()
+        auth_store = AuthRequestsStore(tmp_path / "auth-bearer-empty.db")
+        await auth_store.init()
+        grants = AgentGrantsStore(tmp_path / "grants-bearer-empty.db")
+        await grants.init()
+        pstore = ProjectStore(tmp_path / "projects-bearer-empty.db")
+        await pstore.init()
+        priv, pub = load_or_create_signing_keypair(tmp_path / "keys-bearer-empty")
+
+        pA = await pstore.create_project(name="A", slug="proj-a-empty", created_by="u")
+
+        monkeypatch.setattr(client._transport.app.state, "agent_registry", registry)
+        monkeypatch.setattr(client._transport.app.state, "auth_requests", auth_store)
+        monkeypatch.setattr(client._transport.app.state, "agent_grants", grants)
+        monkeypatch.setattr(client._transport.app.state, "agent_registry_keypair", (priv, pub))
+        monkeypatch.setattr(client._transport.app.state, "project_store", pstore)
+
+        resp = await client.post(
+            "/api/agents/auth-requests",
+            headers={"Authorization": ""},
+            json={
+                "identity_claim": "@bearer-agent",
+                "framework": "openclaw",
+                "requested_scopes": ["project_tasks"],
+                "project_id": pA["id"],
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        response_data = resp.json()
+        assert response_data["proof_status"] == "rejected", f"Expected proof_status='rejected', got {response_data['proof_status']}"
+
+        stored_record = await auth_store.get(response_data["request_id"])
+        assert stored_record["proven_canonical_id"] is None
+
+        await registry.close()
+        await auth_store.close()
+        await grants.close()
+        await pstore.close()
+
+    @pytest.mark.asyncio
     async def test_non_project_handle_collision_still_409(
         self, client, monkeypatch, tmp_path
     ):
