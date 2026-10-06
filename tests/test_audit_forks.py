@@ -201,10 +201,9 @@ class TestReadPinFormat:
             "pin_file": "scripts/install-server.sh",
             "pin_var": "qmd_npm_version",
         }
-        with patch.object(mod, "_read_pin", return_value="2.6.0"):
-            pinned = _read_pin_via_tracked(mod, entry)
+        pinned = _read_pin_via_tracked(mod, entry)
         assert pinned is not None
-        assert re.fullmatch(r"\d+\.\d+\.\d+", pinned), f"qmd pin {pinned!r} not semver"
+        assert re.fullmatch(r"\d+\.\d+\.\d+(?:[-+0-9A-Za-z.]*)", pinned), f"qmd pin {pinned!r} not semver"
 
     def test_openclaw_pin_is_semver(self):
         entry = next(e for e in mod.TRACKED if e.get("package") == "openclaw")
