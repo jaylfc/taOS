@@ -481,12 +481,11 @@ async def post_message_delta(request: Request, message_id: str):
     if agent:
         msg_store = request.app.state.chat_messages
         msg = await msg_store.get_message(message_id)
-        if msg is not None:
-            if msg.get("author_id") != agent:
-                return JSONResponse({"error": "forbidden: not the author"}, status_code=403)
-            body_channel_id = body.get("channel_id", "")
-            if body_channel_id and body_channel_id != msg.get("channel_id"):
-                return JSONResponse({"error": "forbidden: wrong channel"}, status_code=403)
+        if msg is None or msg.get("author_type") != "agent" or msg.get("author_id") != agent:
+            return JSONResponse({"error": "forbidden: not the author"}, status_code=403)
+        body_channel_id = body.get("channel_id", "")
+        if body_channel_id and body_channel_id != msg.get("channel_id"):
+            return JSONResponse({"error": "forbidden: wrong channel"}, status_code=403)
     hub = request.app.state.chat_hub
     channel_id = body.get("channel_id", "")
     await hub.broadcast(channel_id, {
@@ -507,7 +506,7 @@ async def update_message_state(request: Request, message_id: str):
     if agent:
         msg_store = request.app.state.chat_messages
         msg = await msg_store.get_message(message_id)
-        if msg is not None and msg.get("author_id") != agent:
+        if msg is None or msg.get("author_type") != "agent" or msg.get("author_id") != agent:
             return JSONResponse({"error": "forbidden: not the author"}, status_code=403)
     msg_store = request.app.state.chat_messages
     hub = request.app.state.chat_hub
@@ -786,7 +785,7 @@ async def add_reaction(message_id: str, body: dict, request: Request):
     emoji = body.get("emoji")
     agent = _bound_agent(request)
     author_id = agent if agent else body.get("author_id")
-    author_type = body.get("author_type", "user")
+    author_type = "agent" if agent else body.get("author_type", "user")
     if not emoji or not author_id:
         return JSONResponse({"error": "emoji and author_id required"}, status_code=400)
     state = request.app.state
@@ -851,11 +850,12 @@ async def post_typing(channel_id: str, body: dict, request: Request):
     hub = getattr(request.app.state, "chat_hub", None)
     if reg is None:
         return JSONResponse({"error": "typing registry not configured"}, status_code=503)
-    reg.mark(channel_id, author_id, "human")
+    kind = "agent" if agent else "human"
+    reg.mark(channel_id, author_id, kind)
     if hub is not None:
         await hub.broadcast(channel_id, {
             "type": "typing",
-            "kind": "human",
+            "kind": kind,
             "slug": author_id,
         })
     return JSONResponse({"ok": True}, status_code=200)

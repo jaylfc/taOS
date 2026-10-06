@@ -7,6 +7,8 @@ supplied author_id/slug for post, reaction, typing, thinking, delta and state.
 """
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -89,8 +91,8 @@ class TestChatAgentAuthorBinding:
             )
         assert resp.status_code == 200
         listed = app.state.typing.list(ch["id"])
-        human_slugs = [t["slug"] for t in listed.get("human", [])]
-        assert "agent-a" in human_slugs
+        agent_slugs = [t["slug"] for t in listed.get("agent", [])]
+        assert "agent-a" in agent_slugs
 
     async def test_bound_agent_thinking_other_slug_is_403(self, client, app):
         """post_thinking returns 403 when body slug does not match the bound agent."""
@@ -153,3 +155,77 @@ class TestChatAgentAuthorBinding:
         body = resp.json()
         assert body["author_id"] == "human-author"
         assert body["author_type"] == "user"
+
+    async def test_bound_agent_reaction_type_is_agent(self, client, app):
+        """Bound agent reaction ignores body author_type=\"user\" and forwards as agent."""
+        ch = await _create_channel_dm(app)
+        msg_store = app.state.chat_messages
+        msg = await msg_store.send_message(
+            channel_id=ch["id"],
+            author_id="agent-a",
+            author_type="agent",
+            content="a message",
+        )
+        with patch("tinyagentos.routes.chat.maybe_trigger_semantic", new_callable=AsyncMock) as mock_sem:
+            async with _bound_client(app, "agent-a") as c:
+                resp = await c.post(
+                    f"/api/chat/messages/{msg['id']}/reactions",
+                    json={"emoji": "\u2764\ufe0f", "author_type": "user"},
+                )
+        assert resp.status_code == 200
+        mock_sem.assert_awaited_once()
+        assert mock_sem.call_args.kwargs["reactor_type"] == "agent"
+
+    async def test_bound_agent_typing_kind_is_agent(self, client, app):
+        """Bound agent typing is recorded with kind=\"agent\", not \"human\"."""
+        app.state.typing = TypingRegistry()
+        ch = await _create_channel_dm(app)
+        async with _bound_client(app, "agent-a") as c:
+            resp = await c.post(
+                f"/api/chat/channels/{ch['id']}/typing",
+                json={"author_id": "agent-b"},
+            )
+        assert resp.status_code == 200
+        listed = app.state.typing.list(ch["id"])
+        assert "agent-a" in [t["slug"] for t in listed.get("agent", [])]
+        assert "agent-a" not in [t["slug"] for t in listed.get("human", [])]
+
+    async def test_bound_agent_delta_missing_message_is_403(self, client, app):
+        """post_message_delta returns 403 when the target message does not exist."""
+        ch = await _create_channel_dm(app)
+        async with _bound_client(app, "agent-a") as c:
+            resp = await c.post(
+                "/api/chat/messages/nonexistent/delta",
+                json={"channel_id": ch["id"], "delta": "hi"},
+            )
+        assert resp.status_code == 403
+
+    async def test_bound_agent_state_missing_message_is_403(self, client, app):
+        """update_message_state returns 403 when the target message does not exist."""
+        ch = await _create_channel_dm(app)
+        async with _bound_client(app, "agent-a") as c:
+            resp = await c.post(
+                "/api/chat/messages/nonexistent/state",
+                json={"state": "complete"},
+            )
+        assert resp.status_code == 403
+
+    async def test_bound_agent_cannot_stream_into_user_message_with_its_name(self, client, app):
+        """Host token posts a message with author_id=\"agent-a\", author_type=\"user\";
+        agent-a's bound token delta -> 403."""
+        ch = await _create_channel_dm(app)
+        async with _host_token_client(app) as c:
+            resp = await c.post("/api/chat/messages", json={
+                "channel_id": ch["id"],
+                "author_id": "agent-a",
+                "author_type": "user",
+                "content": "host-spoofed message",
+            })
+        assert resp.status_code == 200
+        msg = resp.json()
+        async with _bound_client(app, "agent-a") as c:
+            resp = await c.post(
+                f"/api/chat/messages/{msg['id']}/delta",
+                json={"channel_id": ch["id"], "delta": " intruder"},
+            )
+        assert resp.status_code == 403
