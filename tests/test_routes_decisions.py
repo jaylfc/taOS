@@ -863,6 +863,39 @@ async def test_multi_select_other_answer_accepted(client):
 
 
 @pytest.mark.asyncio
+async def test_multi_select_other_only_accepted(client):
+    """A multi_select with only other_value and empty value is accepted."""
+    resp = await client.post("/api/decisions", json={
+        "from_agent": "@a", "question": "q", "type": "multi_select",
+        "options": [{"label": "A", "value": "a"}, {"label": "B", "value": "b"}],
+    })
+    d = resp.json()
+    resp = await client.post(
+        f"/api/decisions/{d['id']}/answer",
+        json={"value": [], "other_value": "custom"},
+    )
+    assert resp.status_code == 200, resp.text
+    ans = resp.json()["answer"]
+    assert ans["value"] == ["custom"]
+    assert ans["other_value"] == "custom"
+
+
+@pytest.mark.asyncio
+async def test_multi_select_empty_value_and_blank_other_rejected(client):
+    """A multi_select with empty value and blank other_value is rejected 400."""
+    resp = await client.post("/api/decisions", json={
+        "from_agent": "@a", "question": "q", "type": "multi_select",
+        "options": [{"label": "A", "value": "a"}, {"label": "B", "value": "b"}],
+    })
+    d = resp.json()
+    resp = await client.post(
+        f"/api/decisions/{d['id']}/answer",
+        json={"value": [], "other_value": "   "},
+    )
+    assert resp.status_code == 400, resp.text
+
+
+@pytest.mark.asyncio
 async def test_multi_select_other_plus_option_works(client):
     """multi_select with Other plus a real option stores both."""
     resp = await client.post("/api/decisions", json={

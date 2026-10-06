@@ -32,6 +32,21 @@ ALLOWED_SIZES = frozenset({45, 96})
 LV_COLOR_FORMAT_RGB565A8 = 0x14  # from lv_image_dsc.h
 LV_IMAGE_HEADER_MAGIC = 0x19
 
+
+def _lvimg_header(size: int) -> bytes:
+    return struct.pack(
+        "<BBBBHHHH",
+        LV_IMAGE_HEADER_MAGIC,
+        LV_COLOR_FORMAT_RGB565A8,
+        0,
+        0,
+        size,
+        size,
+        size * 2,
+        0,
+    )
+
+
 # Cache directory name
 CACHE_SUBDIR = "device-avatars"
 
@@ -56,6 +71,22 @@ def _cache_key(avatar_hash_hex: str, size: int) -> str:
 def _etag_value(avatar_hash_hex: str, size: int) -> str:
     """ETag value: quoted "<hash>-<size>"""
     return f'"{avatar_hash_hex}-{size}"'
+
+
+def _etag_matches(header: str | None, etag: str) -> bool:
+    """Return True if the If-None-Match header matches the given ETag."""
+    if not header:
+        return False
+    header = header.strip()
+    if header == "*":
+        return True
+    for part in header.split(","):
+        part = part.strip()
+        if part.startswith("W/"):
+            part = part[2:].strip()
+        if part == etag:
+            return True
+    return False
 
 
 def _rgb_to_rgb565(r: int, g: int, b: int) -> int:
@@ -136,17 +167,7 @@ def _convert_to_lvgl9_rgb565a8(source_path: Path, size: int) -> bytes:
     #   uint16_t h;           // height
     #   uint16_t stride;      // w * 2 (RGB565 stride in bytes)
     #   uint16_t reserved1;   // 0
-    header = struct.pack(
-        "<BBBBHHHH",
-        LV_IMAGE_HEADER_MAGIC,
-        LV_COLOR_FORMAT_RGB565A8,
-        0,  # flags
-        0,  # reserved0
-        size,  # w
-        size,  # h
-        size * 2,  # stride
-        0,  # reserved1
-    )
+    header = _lvimg_header(size)
 
     return header + bytes(rgb565_plane) + bytes(alpha_plane)
 
@@ -203,7 +224,7 @@ async def device_agent_avatar(
         raise HTTPException(status_code=404, detail={"error": "avatar_not_found"})
 
     # Get avatar hash (also validates source exists and is readable)
-    ahash = avatar_hash(name)
+    ahash = await asyncio.to_thread(avatar_hash, name)
     if ahash is None:
         # No source image installed
         raise HTTPException(status_code=404, detail={"error": "avatar_not_found"})
@@ -211,7 +232,7 @@ async def device_agent_avatar(
     # ETag check
     etag = _etag_value(ahash, size)
     if_none_match = request.headers.get("if-none-match")
-    if if_none_match and if_none_match == etag:
+    if _etag_matches(if_none_match, etag):
         return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "private, max-age=86400"})
 
     # Check cache
@@ -220,15 +241,23 @@ async def device_agent_avatar(
     cache_path = _cache_dir(data_dir) / agent_key / _cache_key(ahash, size)
 
     if cache_path.is_file():
-        # Cache hit
-        return FileResponse(
-            path=cache_path,
-            media_type="application/x-taos-lvimg",
-            headers={
-                "ETag": etag,
-                "Cache-Control": "private, max-age=86400",
-            },
-        )
+        try:
+            data = await asyncio.to_thread(cache_path.read_bytes)
+        except OSError:
+            data = None
+        expected_len = 12 + size * size * 3
+        expected_header = _lvimg_header(size)
+        if data is None or len(data) != expected_len or data[:12] != expected_header:
+            pass  # treat as cache miss, fall through
+        else:
+            return Response(
+                content=data,
+                media_type="application/x-taos-lvimg",
+                headers={
+                    "ETag": etag,
+                    "Cache-Control": "private, max-age=86400",
+                },
+            )
 
     # Cache miss - convert
     source_path = avatar_source_path(name)
