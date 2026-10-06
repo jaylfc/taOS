@@ -3638,6 +3638,39 @@ class TestProjectCreateSecurity:
     """Security tests for the project_create auth-request path."""
 
     @pytest.mark.asyncio
+    async def test_project_create_empty_authorization_header_is_401(
+        self, client, monkeypatch, tmp_path
+    ):
+        from tinyagentos.auth_requests_store import AuthRequestsStore
+        from tinyagentos.projects.project_store import ProjectStore
+
+        auth_store = AuthRequestsStore(tmp_path / "auth-pc-empty.db")
+        await auth_store.init()
+        pstore = ProjectStore(tmp_path / "projects-pc-empty.db")
+        await pstore.init()
+
+        monkeypatch.setattr(client._transport.app.state, "agent_registry", None)
+        monkeypatch.setattr(client._transport.app.state, "auth_requests", auth_store)
+        monkeypatch.setattr(client._transport.app.state, "project_store", pstore)
+
+        resp = await client.post(
+            "/api/agents/auth-requests",
+            json={
+                "identity_claim": "agent-alice",
+                "framework": "openclaw",
+                "kind": "project_create",
+                "requested_name": "Empty Header Project",
+                "requested_slug": "empty-header-project",
+                "purpose": "test",
+            },
+            headers={"Authorization": ""},
+        )
+        assert resp.status_code == 401, resp.text
+
+        await auth_store.close()
+        await pstore.close()
+
+    @pytest.mark.asyncio
     async def test_unresolved_identity_is_rejected(self, client, monkeypatch, tmp_path):
         from tinyagentos.auth_requests_store import AuthRequestsStore
         from tinyagentos.projects.project_store import ProjectStore

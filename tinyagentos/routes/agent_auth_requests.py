@@ -231,6 +231,28 @@ def _get_relationships(request: Request):
     return rel
 
 
+async def _classify_proof(request: Request) -> tuple[str, str | None]:
+    """Return (proof_status, proven_cid) from the request's Authorization header.
+
+    Header absent -> ("none", None).
+    Header present -> check_agent_identity; truthy -> ("accepted", cid);
+    None or HTTPException -> ("rejected", None).
+    """
+    authorization_header = request.headers.get("authorization")
+    has_auth_header = authorization_header is not None
+    proof_status = "none" if not has_auth_header else "rejected"
+    proven = None
+    if has_auth_header:
+        try:
+            proven = await check_agent_identity(request)
+            if proven:
+                proof_status = "accepted"
+        except HTTPException:
+            proven = None
+            proof_status = "rejected"
+    return proof_status, proven
+
+
 async def _retire_request_notification(request: Request, request_id: str) -> None:
     """Archive the bell notification for a now-decided auth request so it leaves
     the active list. Best effort: never fails the decision."""
@@ -374,26 +396,14 @@ async def _handle_project_create_request(
 
     from_agent = await _resolve_agent_identity(request, body.identity_claim, strict=True)
 
+    proof_status, proven = "accepted", from_agent
+
     admins = [u for u in request.app.state.auth.list_users() if u.get("is_admin")]
     if not admins:
         raise HTTPException(status_code=409, detail="no admin to receive the decision")
     decider = admins[0]["id"]
 
     decision_store = request.app.state.decision_store
-
-    # Check agent identity for proof of reuse
-    authorization_header = request.headers.get("authorization")
-    has_auth_header = authorization_header is not None
-    proof_status = "none" if not has_auth_header else "rejected"
-    proven = None
-    if has_auth_header:
-        try:
-            proven = await check_agent_identity(request)
-            if proven:
-                proof_status = "accepted"
-        except HTTPException:
-            proven = None
-            proof_status = "rejected"
 
     record = None
     try:
@@ -564,20 +574,8 @@ async def create_auth_request(request: Request, body: CreateAuthRequest):
     # concurrent posts is free, and a count-then-insert check hands every
     # request in that burst the same pre-insert count.
     
-    # Determine proof_status
-    authorization_header = request.headers.get("authorization")
-    has_auth_header = authorization_header is not None
-    proof_status = "none" if not has_auth_header else "rejected"
-    proven = None
-    if has_auth_header:
-        try:
-            proven = await check_agent_identity(request)
-            if proven:
-                proof_status = "accepted"
-        except HTTPException:
-            proven = None
-            proof_status = "rejected"
-    
+    proof_status, proven = await _classify_proof(request)
+
     try:
         record = await store.create(
             identity_claim=body.identity_claim,
