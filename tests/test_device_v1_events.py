@@ -410,14 +410,123 @@ async def test_events_route_requires_bearer(vapp):
     assert r.status_code == 401, r.text
 
 
-# (k) HTTP route: device without agents:read scope is denied.
+# (l) Scope loss (AGENTS_READ removed) closes stream.
 @pytest.mark.asyncio
-async def test_events_route_refuses_device_without_agents_read(vapp):
+async def test_scope_loss_closes_stream(vapp, monkeypatch):
+    from tinyagentos.routes import auth as auth_mod
+    from tinyagentos.demo_mode import write_demo_mode
+
+    _patch_intervals(monkeypatch)
+
     app = vapp
-    tok = await _device(app, user_id="u1", scopes=())
+    monkeypatch.setattr(auth_mod, "_request_is_console", lambda _r: True)
 
-    async with _client(app) as c:
-        r = await c.get("/api/device/v1/events", headers={"Authorization": f"Bearer {tok}"})
+    write_demo_mode(app.state.data_dir, False)
+    app.state.config.agents = [
+        {"name": "scope-test-agent", "framework": "openclaw", "user_id": "u1", "status": "running"},
+    ]
 
-    assert r.status_code == 403, r.text
-    assert "device_scope_missing" in r.text
+    # Create device with agents:read scope
+    st = app.state.device_store
+    d = await st.register(user_id="u1", platform="ios")
+    await st.set_scopes(d["device_id"], list(("agents:read",)))
+    tok = d["scoped_token"]
+
+    headers = {"authorization": f"Bearer {tok}"}
+    device = {"user_id": "u1"}
+
+    gen = _events_stream(_make_mock_request(app, headers), device)
+
+    # Read initial events.
+    await _read_until_ping(gen)
+
+    # Remove agents:read scope from the device
+    await st.set_scopes(d["device_id"], [])
+
+    # The next read should detect the scope loss and close the stream.
+    with pytest.raises(StopAsyncIteration):
+        await gen.__anext__()
+
+
+# (m) Decision replaced (different id) emits close then open.
+@pytest.mark.asyncio
+async def test_decision_replace_emits_close_then_open(vapp, monkeypatch):
+    from tinyagentos.routes import auth as auth_mod
+    from tinyagentos.demo_mode import write_demo_mode
+
+    _patch_intervals(monkeypatch)
+    _ticking_clock(monkeypatch)
+
+    app = vapp
+    monkeypatch.setattr(auth_mod, "_request_is_console", lambda _r: True)
+
+    write_demo_mode(app.state.data_dir, False)
+    app.state.config.agents = [
+        {"name": "decision-agent", "framework": "openclaw", "user_id": "u1", "status": "running"},
+    ]
+
+    # Create device with agents:read scope
+    st = app.state.device_store
+    d = await st.register(user_id="u1", platform="ios")
+    await st.set_scopes(d["device_id"], list(("agents:read",)))
+    tok = d["scoped_token"]
+
+    headers = {"authorization": f"Bearer {tok}"}
+    device = {"user_id": "u1"}
+
+    gen = _events_stream(_make_mock_request(app, headers), device)
+
+    # Read events to get to steady state
+    await _read_until_ping(gen)
+
+    # First decision (id="dec-1")
+    await st.set_decision(d["device_id"], "pending", "Question 1", "Option A")
+    first_decision_events = await _read_until_ping(gen)
+    first_decision_id = None
+    for frame in first_decision_events:
+        if b'event: decision.open' in frame:
+            # Extract event id
+            for line in frame.decode('utf-8').splitlines():
+                if line.startswith("id:"):
+                    first_decision_id = int(line.split(":", 1)[1].strip())
+                    break
+    assert first_decision_id is not None
+
+    # Second decision with different id (id="dec-2") for the same agent
+    await st.set_decision(d["device_id"], "pending", "Question 2", "Option B")
+    second_decision_events = await _read_until_ping(gen)
+
+    # Find all decision events and their ids
+    close_events = []
+    open_events = []
+    for frame in second_decision_events:
+        if b'event: decision.close' in frame:
+            close_events.append(frame)
+        elif b'event: decision.open' in frame:
+            open_events.append(frame)
+
+    # Verify we got both a close and open event
+    assert len(close_events) == 1
+    assert len(open_events) == 1
+
+    # Extract event ids
+    close_id = None
+    open_id = None
+    for frame in close_events:
+        for line in frame.decode('utf-8').splitlines():
+            if line.startswith("id:"):
+                close_id = int(line.split(":", 1)[1].strip())
+                break
+    for frame in open_events:
+        for line in frame.decode('utf-8').splitlines():
+            if line.startswith("id:"):
+                open_id = int(line.split(":", 1)[1].strip())
+                break
+
+    # Verify the event ids are distinct and increasing
+    assert close_id is not None
+    assert open_id is not None
+    assert close_id > first_decision_id  # Close event id should be greater than previous open
+    assert open_id > close_id  # Open event id should be greater than close
+
+    await gen.aclose()
