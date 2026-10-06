@@ -705,6 +705,32 @@ async def test_agent_multi_select_other_plus_option_accepted(client):
 
 
 @pytest.mark.asyncio
+async def test_agent_multi_select_other_only_accepted(client):
+    """An agent can answer its own multi_select with only other_value."""
+    app = client._transport.app
+    pid = await _new_project(client)
+    cid, token = await _mint_agent(app, pid, ("decisions_write",))
+
+    body = _decision_body(
+        project_id=pid,
+        type="multi_select",
+        options=[{"label": "A", "value": "a"}, {"label": "B", "value": "b"}],
+    )
+    async with _agent_client(app, token) as ac:
+        resp = await ac.post("/api/decisions", json=body)
+    assert resp.status_code == 200, resp.text
+    did = resp.json()["id"]
+
+    async with _agent_client(app, token) as ac:
+        resp = await ac.post(
+            f"/api/decisions/{did}/answer/agent",
+            json={"value": [], "other_value": "custom"},
+        )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["answer"]["value"] == ["custom"]
+
+
+@pytest.mark.asyncio
 async def test_agent_cannot_answer_via_human_path(client):
     """An agent with a bearer JWT must NEVER be able to answer its own question
     via the human path POST /api/decisions/{id}/answer. That route is not in

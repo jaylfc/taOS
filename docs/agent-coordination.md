@@ -1875,7 +1875,9 @@ A `single_select` or `multi_select` decision can be answered off-menu by sending
 - `multi_select`: `value` must still be a list and **every element is still
   validated against the declared options**; the free-text entry is appended, so
   the stored answer is `[*declared_values, other_value.strip()]`. A non-list
-  `value` is a `400`.
+  `value` is a `400`. `value` may be an empty list when `other_value` is
+  non-empty; the stored answer is then `[other_value.strip()]`. An empty
+  `value` with an empty `other_value` is a `400`.
 - `note` is a separate optional field. When present it is appended to the text
   routed to the agent as `<answer> (note: <note>)`.
 - With no `other_value`, the original strict validation is unchanged: the answer
