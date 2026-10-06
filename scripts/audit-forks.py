@@ -77,6 +77,9 @@ def _read_pin(pin_file: str, pin_var: str | None = None, pin_regex: str | None =
     try:
         with open(path) as f:
             for line in f:
+                stripped = line.lstrip()
+                if stripped.startswith("#"):
+                    continue
                 if pin_var and pin_var in line:
                     value = _parse_pin_value(line, pin_var=pin_var)
                     if value is not None:
@@ -95,7 +98,7 @@ def _read_pin(pin_file: str, pin_var: str | None = None, pin_regex: str | None =
 TRACKED: list[dict] = [
     {"kind": "git_pin", "fork": "jaylfc/rkllama", "pin_file": "scripts/install-rknpu.sh", "pin_var": "RKLLAMA_REF"},
     {"kind": "npm_pin", "package": "@jaylfc/qmd", "upstream_package": "@tobilu/qmd", "pin_file": "scripts/install-server.sh", "pin_var": "qmd_npm_version"},
-    {"kind": "npm_pin", "package": "openclaw", "upstream_package": "openclaw", "pin_file": "app-catalog/agents/openclaw/scripts/install.sh", "pin_regex": "openclaw@([0-9][^ \"']*)"},
+    {"kind": "npm_pin", "package": "openclaw", "upstream_package": "openclaw", "pin_file": "app-catalog/agents/openclaw/scripts/install.sh", "pin_regex": r"npm install -g [^\n]*openclaw@([0-9][0-9A-Za-z.+-]*)"},
 ]
 
 API = "https://api.github.com"

@@ -31,6 +31,14 @@ def _line_matching(path, pattern):
     return None
 
 
+def _read_pin_via_tracked(mod, entry):
+    """Helper to read a pin using the module's _read_pin with TRACKED entry config."""
+    pin_file = entry["pin_file"]
+    pin_var = entry.get("pin_var")
+    pin_regex = entry.get("pin_regex")
+    return mod._read_pin(pin_file, pin_var=pin_var, pin_regex=pin_regex)
+
+
 class TestParsePinValue:
     def test_rkllama(self):
         line = _line_matching(
@@ -165,3 +173,64 @@ class TestMain:
             result = mod.main()
 
         assert result == 0
+
+
+class TestReadPinFormat:
+    """Tests that _read_pin returns correctly formatted values for all tracked packages.
+    These tests do NOT derive expected values using the module's own regex.
+    """
+
+    def test_rkllama_pin_is_40_hex(self):
+        entry = {
+            "kind": "git_pin",
+            "fork": "jaylfc/rkllama",
+            "pin_file": "scripts/install-rknpu.sh",
+            "pin_var": "RKLLAMA_REF",
+        }
+        pinned = _read_pin_via_tracked(mod, entry)
+        assert pinned is not None
+        assert re.fullmatch(r"[0-9a-f]{40}", pinned), f"rkllama pin {pinned!r} not 40 hex chars"
+
+    def test_qmd_pin_is_semver(self):
+        entry = {
+            "kind": "npm_pin",
+            "package": "@jaylfc/qmd",
+            "upstream_package": "@tobilu/qmd",
+            "pin_file": "scripts/install-server.sh",
+            "pin_var": "qmd_npm_version",
+        }
+        pinned = _read_pin_via_tracked(mod, entry)
+        assert pinned is not None
+        assert re.fullmatch(r"\d+\.\d+\.\d+", pinned), f"qmd pin {pinned!r} not semver"
+
+    def test_openclaw_pin_is_semver(self):
+        entry = next(e for e in mod.TRACKED if e.get("package") == "openclaw")
+        pinned = _read_pin_via_tracked(mod, entry)
+        assert pinned is not None
+        assert re.fullmatch(r"\d+\.\d+\.\d+", pinned), f"openclaw pin {pinned!r} not semver"
+
+
+class TestParsePinValueCommentHandling:
+    """Tests for comment line handling in _parse_pin_value and _read_pin."""
+
+    def test_parse_pin_value_skips_comment_line(self):
+        # The old regex would match this comment and return "0.2.0)"
+        comment_line = "# from npm (openclaw@0.2.0) here"
+        new_regex = r"npm install -g [^\n]*openclaw@([0-9][0-9A-Za-z.+-]*)"
+        result = mod._parse_pin_value(comment_line, pin_regex=new_regex)
+        assert result is None, f"Expected None for comment line, got {result!r}"
+
+    def test_read_pin_skips_comment_and_finds_real_install(self, tmp_path, monkeypatch):
+        # Create a temp file with a comment line then the real install command
+        content = """# (openclaw@9.9.9)
+npm install -g openclaw@1.2.3;
+"""
+        pin_file = tmp_path / "install.sh"
+        pin_file.write_text(content)
+
+        # Monkeypatch REPO_ROOT to tmp_path so _read_pin finds our file
+        monkeypatch.setattr(mod, "REPO_ROOT", tmp_path)
+
+        new_regex = r"npm install -g [^\n]*openclaw@([0-9][0-9A-Za-z.+-]*)"
+        result = mod._read_pin("install.sh", pin_regex=new_regex)
+        assert result == "1.2.3", f"Expected '1.2.3', got {result!r}"
