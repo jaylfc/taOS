@@ -304,15 +304,14 @@ async def check_human_identity(request: Request) -> Optional[str]:
     return user_id
 
 
-async def check_agent_identity(request: Request) -> Optional[str]:
-    """Return the canonical_id from a valid Bearer registry JWT for an ACTIVE
+async def check_agent_identity_claims(request: Request) -> Optional[tuple[str, int]]:
+    """Return (canonical_id, iat) from a valid Bearer registry JWT for an ACTIVE
     agent, without requiring any scope grant.
 
-    This proves only *who* the caller is, not *what* it may do — the caller is
-    responsible for the authorization decision (e.g. only allowing an agent to
-    act on its OWN canonical_id).  It is used by the scope-request create flow,
-    where an already-registered agent asks for MORE scopes: it must not need a
-    scope it does not yet hold in order to request one.
+    This proves only *who* the caller is and *when* the token was issued. The
+    caller is responsible for the authorization decision. Used by the auth-request
+    create flow to store the token's iat so a later token rotation can be detected
+    at approve time.
 
     Returns None when no Authorization header is present (the caller falls
     through to its own admin/session handling).
@@ -345,14 +344,36 @@ async def check_agent_identity(request: Request) -> Optional[str]:
         raise HTTPException(status_code=403, detail="agent is not active in the registry")
 
     # Reject tokens issued before the identity's token_min_iat cutoff (rotation),
-    # exactly as check_agent_scope and check_agent_scope_for_project do. Identity
-    # is the ONLY auth on the surfaces that do not need a grant -- creating a
-    # scope request, the agent decisions routes, container-provisioning requests,
-    # the auth-request flow -- so skipping it here would leave rotate-tokens
-    # unable to kill a leaked token on precisely the route that can widen its own
-    # privileges.
+    # exactly as check_agent_scope and check_agent_scope_for_project do.
     _enforce_rotation_cutoff(record, payload)
 
+    iat = payload.get("iat") or 0
+    return canonical_id, iat
+
+
+async def check_agent_identity(request: Request) -> Optional[str]:
+    """Return the canonical_id from a valid Bearer registry JWT for an ACTIVE
+    agent, without requiring any scope grant.
+
+    This proves only *who* the caller is, not *what* it may do — the caller is
+    responsible for the authorization decision (e.g. only allowing an agent to
+    act on its OWN canonical_id).  It is used by the scope-request create flow,
+    where an already-registered agent asks for MORE scopes: it must not need a
+    scope it does not yet hold in order to request one.
+
+    Returns None when no Authorization header is present (the caller falls
+    through to its own admin/session handling).
+
+    Raises:
+      401 -- Authorization header present but the token is malformed, has a bad
+             signature, is missing the sub claim, or was superseded by a token
+             rotation on the identity.
+      403 -- Token is valid but the agent is not active in the registry.
+    """
+    result = await check_agent_identity_claims(request)
+    if result is None:
+        return None
+    canonical_id, _iat = result
     return canonical_id
 
 

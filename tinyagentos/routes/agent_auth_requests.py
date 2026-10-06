@@ -37,7 +37,7 @@ from tinyagentos.agent_registry_store import (
     agent_slug_or_fallback,
     mint_registry_token,
 )
-from tinyagentos.agent_token_auth import check_agent_identity
+from tinyagentos.agent_token_auth import check_agent_identity, check_agent_identity_claims
 from tinyagentos.auth_context import CurrentUser, current_user, require_owner_or_admin
 from tinyagentos.base_store import PendingCapExceeded
 from tinyagentos.routes.projects import _free_suggestions
@@ -231,26 +231,30 @@ def _get_relationships(request: Request):
     return rel
 
 
-async def _classify_proof(request: Request) -> tuple[str, str | None]:
-    """Return (proof_status, proven_cid) from the request's Authorization header.
+async def _classify_proof(request: Request) -> tuple[str, str | None, int | None]:
+    """Return (proof_status, proven_cid, proven_iat) from the request's Authorization header.
 
-    Header absent -> ("none", None).
-    Header present -> check_agent_identity; truthy -> ("accepted", cid);
-    None or HTTPException -> ("rejected", None).
+    Header absent -> ("none", None, None).
+    Header present -> check_agent_identity_claims; truthy -> ("accepted", cid, iat);
+    None or HTTPException -> ("rejected", None, None).
     """
     authorization_header = request.headers.get("authorization")
     has_auth_header = authorization_header is not None
     proof_status = "none" if not has_auth_header else "rejected"
     proven = None
+    proven_iat = None
     if has_auth_header:
         try:
-            proven = await check_agent_identity(request)
+            result = await check_agent_identity_claims(request)
+            if result is not None:
+                proven, proven_iat = result
             if proven:
                 proof_status = "accepted"
         except HTTPException:
             proven = None
+            proven_iat = None
             proof_status = "rejected"
-    return proof_status, proven
+    return proof_status, proven, proven_iat
 
 
 async def _retire_request_notification(request: Request, request_id: str) -> None:
@@ -405,6 +409,9 @@ async def _handle_project_create_request(
 
     decision_store = request.app.state.decision_store
 
+    # proof_status is fixed above; only the token iat is needed for rotation detection.
+    _, _, proven_iat = await _classify_proof(request)
+
     record = None
     try:
         record = await store.create(
@@ -423,6 +430,7 @@ async def _handle_project_create_request(
             cap_identity=from_agent,
             cap_framework="project_create",
             proven_canonical_id=proven,
+            proven_token_iat=proven_iat,
         )
     except PendingCapExceeded as exc:
         raise HTTPException(
@@ -574,7 +582,7 @@ async def create_auth_request(request: Request, body: CreateAuthRequest):
     # concurrent posts is free, and a count-then-insert check hands every
     # request in that burst the same pre-insert count.
     
-    proof_status, proven = await _classify_proof(request)
+    proof_status, proven, proven_iat = await _classify_proof(request)
 
     try:
         record = await store.create(
@@ -587,6 +595,7 @@ async def create_auth_request(request: Request, body: CreateAuthRequest):
             project_id=body.project_id,
             pending_cap=_PENDING_CAP,
             proven_canonical_id=proven,
+            proven_token_iat=proven_iat,
         )
     except PendingCapExceeded as exc:
         raise HTTPException(
@@ -937,6 +946,17 @@ async def approve_request_record(
                     detail=(
                         f"handle '{handle}' belongs to active agent "
                         f"{existing_active['canonical_id']}; resubmit the request with that agent's registry token as a Bearer header"
+                    ),
+                )
+            # Also reject if the proof token was superseded by a rotation since
+            # the request was filed. The stored token iat must be >= the
+            # identity's current token_min_iat.
+            if (record.get("proven_token_iat") or 0) < (existing_active.get("token_min_iat") or 0):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"handle '{handle}' belongs to active agent "
+                        f"{existing_active['canonical_id']}; the proof token was superseded by a rotation and the request must be resubmitted with a current token"
                     ),
                 )
             existing_cid = existing_active["canonical_id"]

@@ -4,6 +4,7 @@ import json
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
+from starlette.requests import ClientDisconnect
 
 from tinyagentos.llm_gateway.auth import GatewayCaller, gateway_caller
 from tinyagentos.llm_gateway.errors import (
@@ -201,11 +202,15 @@ async def _read_capped(request: Request, cap: int) -> bytes:
             raise GatewayError(413, f"request body over {cap} bytes", code="request_too_large")
     chunks: list[bytes] = []
     total = 0
-    async for chunk in request.stream():
-        total += len(chunk)
-        if total > cap:
-            raise GatewayError(413, f"request body over {cap} bytes", code="request_too_large")
-        chunks.append(chunk)
+    try:
+        async for chunk in request.stream():
+            total += len(chunk)
+            if total > cap:
+                raise GatewayError(413, f"request body over {cap} bytes", code="request_too_large")
+            chunks.append(chunk)
+    except ClientDisconnect:
+        # Gone mid-upload: the same 499 the routes give a client gone after the read.
+        raise GatewayError(499, "client closed the request", code="client_closed_request") from None
     return b"".join(chunks)
 
 

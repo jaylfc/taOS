@@ -304,6 +304,68 @@ async def test_existing_db_gains_proven_canonical_id_column(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_existing_db_gains_proven_token_iat_column(tmp_path):
+    """A DB created with the pre-change schema gains the proven_token_iat column
+    on init and old rows read back None."""
+    import aiosqlite
+
+    db_path = tmp_path / "old_auth_iat.db"
+    async with aiosqlite.connect(str(db_path)) as db:
+        db.row_factory = aiosqlite.Row
+        await db.execute(
+            """CREATE TABLE auth_requests (
+                id TEXT PRIMARY KEY,
+                identity_claim TEXT NOT NULL DEFAULT '',
+                framework TEXT NOT NULL DEFAULT '',
+                requested_scopes TEXT NOT NULL DEFAULT '[]',
+                requested_skills TEXT NOT NULL DEFAULT '[]',
+                reason TEXT NOT NULL DEFAULT '',
+                duration_secs INTEGER,
+                project_id TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                canonical_id TEXT,
+                token TEXT,
+                granted_scopes TEXT,
+                created_ts TEXT NOT NULL,
+                decided_ts TEXT,
+                decided_by TEXT,
+                kind TEXT NOT NULL DEFAULT 'scope_request',
+                requested_project_name TEXT,
+                requested_project_slug TEXT,
+                purpose TEXT DEFAULT '',
+                proven_canonical_id TEXT
+            );"""
+        )
+        await db.commit()
+
+    # Now open with the new store class - it should add the column
+    s = AuthRequestsStore(db_path)
+    await s.init()
+
+    # Insert a row without proven_token_iat
+    record = await s.create(
+        identity_claim="old-agent-iat",
+        framework="test",
+        requested_scopes=["a2a_receive"],
+        reason="testing",
+    )
+    # The new column should be None for old records
+    assert record["proven_token_iat"] is None
+    assert record["proven_canonical_id"] is None
+
+    # Close and reopen to verify the column persists
+    await s.close()
+
+    s2 = AuthRequestsStore(db_path)
+    await s2.init()
+    fetched = await s2.get(record["id"])
+    assert fetched["proven_token_iat"] is None
+    assert fetched["proven_canonical_id"] is None
+
+    await s2.close()
+
+
+@pytest.mark.asyncio
 async def test_uninitialised_store_raises(tmp_path):
     s = AuthRequestsStore(tmp_path / "auth.db")
     with pytest.raises(RuntimeError, match="init"):

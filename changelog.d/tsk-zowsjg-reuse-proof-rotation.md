@@ -1,0 +1,2 @@
+### Fixed
+- Auth request reuse proof now stores the token's `iat` at create time and rejects approval if the agent's tokens were rotated (`bump_token_min_iat`) after the request was filed but before admin approval. A superseded proof returns 409 with detail "the proof token was superseded by a rotation and the request must be resubmitted with a current token" and no token is minted.
