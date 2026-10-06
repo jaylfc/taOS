@@ -1028,6 +1028,220 @@ class TestAddAgentToAnotherProject:
         await pstore.close()
 
     @pytest.mark.asyncio
+    async def test_reuse_proof_superseded_by_rotation_is_refused(
+        self, client, monkeypatch, tmp_path
+    ):
+        """A request created with a valid Bearer token must be REFUSED at approve
+        time if the agent's tokens were rotated (bump_token_min_iat) after the
+        request was filed. The stored proof token's iat must be >= the identity's
+        current token_min_iat, otherwise 409 with a message about the superseded
+        token and no token is minted."""
+        from tinyagentos.agent_registry_store import (
+            AgentRegistryStore,
+            load_or_create_signing_keypair,
+            mint_registry_token,
+        )
+        from tinyagentos.auth_requests_store import AuthRequestsStore
+        from tinyagentos.agent_grants_store import AgentGrantsStore
+        from tinyagentos.projects.project_store import ProjectStore
+
+        registry = AgentRegistryStore(tmp_path / "reg-rotation.db")
+        await registry.init()
+        auth_store = AuthRequestsStore(tmp_path / "auth-rotation.db")
+        await auth_store.init()
+        grants = AgentGrantsStore(tmp_path / "grants-rotation.db")
+        await grants.init()
+        pstore = ProjectStore(tmp_path / "projects-rotation.db")
+        await pstore.init()
+        priv, pub = load_or_create_signing_keypair(tmp_path / "keys-rotation")
+
+        pA = await pstore.create_project(name="A", slug="proj-a", created_by="u")
+        pB = await pstore.create_project(name="B", slug="proj-b", created_by="u")
+
+        # Set up monkeypatched stores
+        monkeypatch.setattr(client._transport.app.state, "agent_registry", registry)
+        monkeypatch.setattr(client._transport.app.state, "auth_requests", auth_store)
+        monkeypatch.setattr(client._transport.app.state, "agent_grants", grants)
+        monkeypatch.setattr(client._transport.app.state, "agent_registry_keypair", (priv, pub))
+        monkeypatch.setattr(client._transport.app.state, "project_store", pstore)
+
+        # First, establish the active identity by creating and approving a request for project A
+        rA = await auth_store.create(
+            identity_claim="@rotation-agent", framework="openclaw",
+            requested_scopes=["project_tasks"], requested_skills=None, reason="",
+            duration_secs=None, project_id=pA["id"],
+        )
+        respA = await client.post(
+            f"/api/agents/auth-requests/{rA['id']}/approve",
+            json={"granted_scopes": ["project_tasks"], "project_id": pA["id"]},
+        )
+        assert respA.status_code == 200, respA.text
+        cid = respA.json()["canonical_id"]
+
+        # Create a token for this agent (this token's iat will be captured as proof)
+        agent_token = mint_registry_token(
+            cid,
+            priv,
+            user_id="u",
+            framework="openclaw",
+            project_id=pA["id"],
+        )
+
+        # Decode the token to get its iat
+        from tinyagentos.agent_registry_store import verify_registry_token
+        payload = verify_registry_token(agent_token, pub)
+        token_iat = payload.get("iat", 0)
+
+        # Create auth request WITH the Bearer token (proves identity + captures iat)
+        resp = await client.post(
+            "/api/agents/auth-requests",
+            headers={"Authorization": f"Bearer {agent_token}"},
+            json={
+                "identity_claim": "@rotation-agent",
+                "framework": "openclaw",
+                "requested_scopes": ["project_tasks"],
+                "project_id": pB["id"],
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        request_id = resp.json()["request_id"]
+
+        # Verify the stored record has both proven_canonical_id and proven_token_iat
+        stored_record = await auth_store.get(request_id)
+        assert stored_record["proven_canonical_id"] == cid
+        assert stored_record["proven_token_iat"] == token_iat
+
+        # NOW rotate the agent's tokens: bump token_min_iat to > the proof token's iat
+        # iat has 1-second granularity, so bump to iat + 1
+        await registry.bump_token_min_iat(cid, token_iat + 1)
+
+        # Verify the rotation took effect
+        rotated_record = await registry.get(cid)
+        assert rotated_record["token_min_iat"] == token_iat + 1
+
+        # Now approve the request - should return 409 because proof token is superseded
+        resp_approve = await client.post(
+            f"/api/agents/auth-requests/{request_id}/approve",
+            json={"granted_scopes": ["project_tasks"], "project_id": pB["id"]},
+        )
+        assert resp_approve.status_code == 409, resp_approve.text
+        assert "superseded by a rotation" in resp_approve.text
+        assert "resubmitted with a current token" in resp_approve.text
+
+        # No new grant should have been created for project B
+        agent_grants = await grants.list_grants(cid)
+        grant_projects = {g["project_id"] for g in agent_grants}
+        assert pA["id"] in grant_projects
+        assert pB["id"] not in grant_projects, "No grant should be minted for superseded proof"
+
+        # The request should still be pending (not accepted)
+        final_record = await auth_store.get(request_id)
+        assert final_record["status"] == "pending"
+
+        await registry.close()
+        await auth_store.close()
+        await grants.close()
+        await pstore.close()
+
+    @pytest.mark.asyncio
+    async def test_reuse_proof_with_current_token_still_approves(
+        self, client, monkeypatch, tmp_path
+    ):
+        """A request created with a valid Bearer token must STILL APPROVE if the
+        agent's tokens were NOT rotated after the request was filed (the normal
+        case). This ensures we didn't break the happy path."""
+        from tinyagentos.agent_registry_store import (
+            AgentRegistryStore,
+            load_or_create_signing_keypair,
+            mint_registry_token,
+        )
+        from tinyagentos.auth_requests_store import AuthRequestsStore
+        from tinyagentos.agent_grants_store import AgentGrantsStore
+        from tinyagentos.projects.project_store import ProjectStore
+
+        registry = AgentRegistryStore(tmp_path / "reg-current.db")
+        await registry.init()
+        auth_store = AuthRequestsStore(tmp_path / "auth-current.db")
+        await auth_store.init()
+        grants = AgentGrantsStore(tmp_path / "grants-current.db")
+        await grants.init()
+        pstore = ProjectStore(tmp_path / "projects-current.db")
+        await pstore.init()
+        priv, pub = load_or_create_signing_keypair(tmp_path / "keys-current")
+
+        pA = await pstore.create_project(name="A", slug="proj-a", created_by="u")
+        pB = await pstore.create_project(name="B", slug="proj-b", created_by="u")
+
+        # Set up monkeypatched stores
+        monkeypatch.setattr(client._transport.app.state, "agent_registry", registry)
+        monkeypatch.setattr(client._transport.app.state, "auth_requests", auth_store)
+        monkeypatch.setattr(client._transport.app.state, "agent_grants", grants)
+        monkeypatch.setattr(client._transport.app.state, "agent_registry_keypair", (priv, pub))
+        monkeypatch.setattr(client._transport.app.state, "project_store", pstore)
+
+        # First, establish the active identity by creating and approving a request for project A
+        rA = await auth_store.create(
+            identity_claim="@current-agent", framework="openclaw",
+            requested_scopes=["project_tasks"], requested_skills=None, reason="",
+            duration_secs=None, project_id=pA["id"],
+        )
+        respA = await client.post(
+            f"/api/agents/auth-requests/{rA['id']}/approve",
+            json={"granted_scopes": ["project_tasks"], "project_id": pA["id"]},
+        )
+        assert respA.status_code == 200, respA.text
+        cid = respA.json()["canonical_id"]
+
+        # Create a token for this agent
+        agent_token = mint_registry_token(
+            cid,
+            priv,
+            user_id="u",
+            framework="openclaw",
+            project_id=pA["id"],
+        )
+
+        # Create auth request WITH the Bearer token
+        resp = await client.post(
+            "/api/agents/auth-requests",
+            headers={"Authorization": f"Bearer {agent_token}"},
+            json={
+                "identity_claim": "@current-agent",
+                "framework": "openclaw",
+                "requested_scopes": ["project_tasks"],
+                "project_id": pB["id"],
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        request_id = resp.json()["request_id"]
+
+        # DO NOT rotate tokens - the proof token is still current
+
+        # Approve the request - should succeed
+        resp_approve = await client.post(
+            f"/api/agents/auth-requests/{request_id}/approve",
+            json={"granted_scopes": ["project_tasks"], "project_id": pB["id"]},
+        )
+        assert resp_approve.status_code == 200, resp_approve.text
+        assert resp_approve.json()["status"] == "accepted"
+        assert resp_approve.json()["canonical_id"] == cid
+
+        # Grant should exist for project B
+        agent_grants = await grants.list_grants(cid)
+        grant_projects = {g["project_id"] for g in agent_grants}
+        assert pA["id"] in grant_projects
+        assert pB["id"] in grant_projects
+
+        # The request should be accepted
+        final_record = await auth_store.get(request_id)
+        assert final_record["status"] == "accepted"
+
+        await registry.close()
+        await auth_store.close()
+        await grants.close()
+        await pstore.close()
+
+    @pytest.mark.asyncio
     async def test_create_route_records_bearer_identity(
         self, client, monkeypatch, tmp_path
     ):
