@@ -277,8 +277,14 @@ async def archive_agent_fully(request: Request, name: str) -> dict:
 
     # 5) Revoke the agent's key-store key (best effort) and every LLM gateway
     #    key bound to the agent. Both stores are local; nothing is gated on a
-    #    process.
+    #    process. The agent's local-token binding is revoked here too: the
+    #    slug is about to be freed, so the archived token must stop
+    #    validating as an admin credential.
     _revoke_gateway_keys(request, slug, agent_id)
+    try:
+        request.app.state.auth.unbind_local_token_agent(slug)
+    except Exception as exc:  # noqa: BLE001 - best-effort revocation
+        logger.warning("archive: unbind local token for %s failed: %s", slug, exc)
     llm_key = agent.get("llm_key")
     llm_proxy = getattr(request.app.state, "llm_proxy", None)
     if llm_key and llm_proxy:
@@ -585,11 +591,23 @@ async def purge_archived(request: Request, archive_id: str):
     await save_config_locked(config, config.config_path)
 
     # 5a) Revoke the agent's local-token binding so the old token no longer
-    # validates as an admin credential.
+    # validates as an admin credential. Skip when a live agent holds the
+    # slug: it is free again once the agent is archived, so a redeployed
+    # agent may have taken it, and that live agent's token must survive.
     if archived_slug:
-        try:
-            request.app.state.auth.unbind_local_token_agent(archived_slug)
-        except Exception as exc:  # noqa: BLE001 - best-effort revocation
-            logger.warning("purge: unbind local token for %s failed: %s", archived_slug, exc)
+        if any(a.get("name") == archived_slug for a in config.agents):
+            logger.info(
+                "purge: slug %s in use by a live agent, "
+                "skipping local token unbind",
+                archived_slug,
+            )
+        else:
+            try:
+                request.app.state.auth.unbind_local_token_agent(archived_slug)
+            except Exception as exc:  # noqa: BLE001 - best-effort revocation
+                logger.warning(
+                    "purge: unbind local token for %s failed: %s",
+                    archived_slug, exc,
+                )
 
     return {"status": "purged", "id": archive_id}
