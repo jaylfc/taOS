@@ -1,24 +1,72 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import logging
+import logging.handlers
 import re
+from datetime import UTC, datetime
+from pathlib import Path
 
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import HTMLResponse, RedirectResponse
 
-from tinyagentos.agent_token_auth import check_agent_identity, _get_keypair, _get_store
+from tinyagentos.agent_token_auth import _get_keypair, _get_store, check_agent_identity
 from tinyagentos.auth import AuthStoreCorruptError
 from tinyagentos.device_scopes import (
-    AGENTS_READ, CHAT_SEND, DECISIONS_ANSWER, FILES_UPLOAD, LIBRARY_INGEST,
-    PUSH_REGISTER, VOICE_STT, VOICE_TTS,
+    AGENTS_READ,
+    CHAT_SEND,
+    DECISIONS_ANSWER,
+    FILES_UPLOAD,
+    LIBRARY_INGEST,
+    PUSH_REGISTER,
+    VOICE_STT,
+    VOICE_TTS,
 )
 from tinyagentos.device_store import DEVICE_TOKEN_PREFIX
 from tinyagentos.rate_limit import MovingWindowLimiter
 
 logger = logging.getLogger(__name__)
+
+# Agent token route recorder loggers -- logs bound-agent local-token requests
+# to {data_dir}/logs/agent-token-routes.jsonl (rotating, 5MB, 3 backups).
+# Attached lazily on first use per data_dir via _get_agent_token_routes_logger().
+_agent_token_routes_loggers: dict[str, logging.Logger] = {}
+
+
+def _get_agent_token_routes_logger(data_dir: Path) -> logging.Logger:
+    """Return the module-level logger for agent token route recording.
+
+    The logger writes JSON lines to {data_dir}/logs/agent-token-routes.jsonl
+    with a RotatingFileHandler (maxBytes=5MB, backupCount=3). The handler is
+    attached once per data_dir, on first call. propagate=False so logs don't
+    bubble to root.
+    """
+    global _agent_token_routes_loggers
+    data_dir_str = str(data_dir.resolve())
+    if data_dir_str in _agent_token_routes_loggers:
+        return _agent_token_routes_loggers[data_dir_str]
+
+    log_logger = logging.getLogger(f"taos.agent_token_routes.{data_dir_str}")
+    log_logger.propagate = False
+    log_logger.setLevel(logging.INFO)
+
+    log_dir = data_dir / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "agent-token-routes.jsonl"
+
+    handler = logging.handlers.RotatingFileHandler(
+        log_path, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+    )
+    # JSON line formatter: just the message (we format as JSON in the caller)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    log_logger.addHandler(handler)
+
+    _agent_token_routes_loggers[data_dir_str] = log_logger
+    return log_logger
+
 
 # /auth/pin-login is session-exempt for the same reason as /auth/login: it is
 # how a session is obtained, so requiring one would be circular. It is NOT
@@ -839,6 +887,27 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 bound_agent = auth_mgr.get_local_token_agent(presented)
                 if bound_agent:
                     request.state.agent_name = bound_agent
+                    response = await call_next(request)
+                    # Record the bound-agent local-token request (LOG ONLY)
+                    try:
+                        route_obj = request.scope.get("route")
+                        route_template = getattr(route_obj, "path", None) or "<unmatched>"
+                        log_entry = {
+                            "ts": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                            "method": request.method,
+                            "route": route_template,
+                            "agent": bound_agent,
+                            "status": response.status_code,
+                        }
+                        log_logger = _get_agent_token_routes_logger(auth_mgr.data_dir)
+                        log_logger.info(json.dumps(log_entry, separators=(",", ":")))
+                    except Exception:
+                        # Warning must never raise into the request either
+                        try:
+                            logger.warning("Failed to record agent token route", exc_info=True)
+                        except Exception:
+                            pass
+                    return response
                 return await call_next(request)
 
         # 2) Registry JWT on allowlisted paths (passthrough; route verifies
@@ -877,8 +946,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
                         # We do a lightweight verification here; the route will
                         # do the full scope check.
                         try:
-                            from tinyagentos.agent_token_auth import verify_registry_token
-                            from tinyagentos.native_agent_identity import NATIVE_AGENT_ORIGIN
+                            from tinyagentos.agent_token_auth import (
+                                verify_registry_token,
+                            )
+                            from tinyagentos.native_agent_identity import (
+                                NATIVE_AGENT_ORIGIN,
+                            )
                             _private_pem, public_pem = _get_keypair(request)
                             payload = verify_registry_token(presented, public_pem)
                             canonical_id = payload.get("sub", "")
