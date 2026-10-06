@@ -1057,6 +1057,12 @@ approval, so an agent that already holds an active registry identity cannot use
 it to gain more scopes without duplicating itself. A scope request adds grants to
 that SAME canonical_id instead:
 
+**Auth model.** When `POST /api/agents/auth-requests` receives an Authorization header, it calls `check_agent_identity` and records the proven canonical id (or None on rejection). A `proof_status` field now indicates the result:
+   - `"none"` when no Authorization header is present
+   - `"accepted"` when a token validates and the record's `proven_canonical_id` is set
+   - `"rejected"` when a token is present but validation raises 401/403
+   The status is exposed in the response so the caller can distinguish these three states.
+
 - `POST /api/agents/registry/{canonical_id}/scope-requests`
   `{requested_scopes, project_id?, reason?}`: create a pending request. Unlike
   the new-agent auth-request (unauthenticated, since the agent has no creds yet),
