@@ -382,17 +382,22 @@ async def _handle_project_create_request(
     decision_store = request.app.state.decision_store
 
     # Check agent identity for proof of reuse
-    try:
-        result = await check_agent_identity_claims(request)
-    except HTTPException:
-        proven = None
-        proven_iat = None
-    else:
-        if result is not None:
-            proven, proven_iat = result
-        else:
+    authorization_header = request.headers.get("authorization")
+    has_auth_header = authorization_header is not None
+    proof_status = "none" if not has_auth_header else "rejected"
+    proven = None
+    proven_iat = None
+    if has_auth_header:
+        try:
+            result = await check_agent_identity_claims(request)
+            if result is not None:
+                proven, proven_iat = result
+            if proven:
+                proof_status = "accepted"
+        except HTTPException:
             proven = None
             proven_iat = None
+            proof_status = "rejected"
 
     record = None
     try:
@@ -481,7 +486,7 @@ async def _handle_project_create_request(
             pass
 
     return JSONResponse(
-        {"request_id": record["id"], "status": "pending", "decision_id": decision["id"]}
+        {"request_id": record["id"], "status": "pending", "decision_id": decision["id"], "proof_status": proof_status}
     )
 
 
@@ -563,17 +568,25 @@ async def create_auth_request(request: Request, body: CreateAuthRequest):
     # than counted here first: this route takes no credentials, so a burst of
     # concurrent posts is free, and a count-then-insert check hands every
     # request in that burst the same pre-insert count.
-    try:
-        result = await check_agent_identity_claims(request)
-    except HTTPException:
-        proven = None
-        proven_iat = None
-    else:
-        if result is not None:
-            proven, proven_iat = result
-        else:
+    
+    # Determine proof_status
+    authorization_header = request.headers.get("authorization")
+    has_auth_header = authorization_header is not None
+    proof_status = "none" if not has_auth_header else "rejected"
+    proven = None
+    proven_iat = None
+    if has_auth_header:
+        try:
+            result = await check_agent_identity_claims(request)
+            if result is not None:
+                proven, proven_iat = result
+            if proven:
+                proof_status = "accepted"
+        except HTTPException:
             proven = None
             proven_iat = None
+            proof_status = "rejected"
+    
     try:
         record = await store.create(
             identity_claim=body.identity_claim,
@@ -628,7 +641,7 @@ async def create_auth_request(request: Request, body: CreateAuthRequest):
         except Exception:
             pass
 
-    return {"request_id": record["id"], "status": "pending"}
+    return {"request_id": record["id"], "status": "pending", "proof_status": proof_status}
 
 
 @router.get("/api/agents/auth-requests/{request_id}")

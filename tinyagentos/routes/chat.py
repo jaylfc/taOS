@@ -21,6 +21,11 @@ def _resolve_chat_data_dir() -> Path:
     return resolve_data_dir()
 
 
+def _bound_agent(request: Request) -> str | None:
+    """Return the agent name bound to the presented local token, or None."""
+    return getattr(request.state, "agent_name", None)
+
+
 _SLASH_GROUP_GUARD_ERROR = (
     "slash commands in group channels must address an agent: "
     "use @<agent> /<cmd> or @all /<cmd>"
@@ -333,6 +338,11 @@ async def post_message(request: Request, user: CurrentUser = Depends(current_use
         if user_id_str not in members:
             from fastapi import HTTPException
             raise HTTPException(status_code=403, detail="Not a member of this channel")
+
+    agent = _bound_agent(request)
+    if agent:
+        body["author_id"] = agent
+        body["author_type"] = "agent"
     
     msg_store = request.app.state.chat_messages
     ch_store = request.app.state.chat_channels
@@ -467,6 +477,15 @@ async def post_message(request: Request, user: CurrentUser = Depends(current_use
 async def post_message_delta(request: Request, message_id: str):
     """Stream a token delta for an agent response. Used by framework adapters."""
     body = await request.json()
+    agent = _bound_agent(request)
+    if agent:
+        msg_store = request.app.state.chat_messages
+        msg = await msg_store.get_message(message_id)
+        if msg is None or msg.get("author_type") != "agent" or msg.get("author_id") != agent:
+            return JSONResponse({"error": "forbidden: not the author"}, status_code=403)
+        body_channel_id = body.get("channel_id", "")
+        if body_channel_id and body_channel_id != msg.get("channel_id"):
+            return JSONResponse({"error": "forbidden: wrong channel"}, status_code=403)
     hub = request.app.state.chat_hub
     channel_id = body.get("channel_id", "")
     await hub.broadcast(channel_id, {
@@ -483,6 +502,12 @@ async def post_message_delta(request: Request, message_id: str):
 async def update_message_state(request: Request, message_id: str):
     """Update message state (pending/streaming/complete/error)."""
     body = await request.json()
+    agent = _bound_agent(request)
+    if agent:
+        msg_store = request.app.state.chat_messages
+        msg = await msg_store.get_message(message_id)
+        if msg is None or msg.get("author_type") != "agent" or msg.get("author_id") != agent:
+            return JSONResponse({"error": "forbidden: not the author"}, status_code=403)
     msg_store = request.app.state.chat_messages
     hub = request.app.state.chat_hub
     await msg_store.update_state(message_id, body["state"])
@@ -758,8 +783,9 @@ async def mark_read(request: Request, channel_id: str):
 @router.post("/api/chat/messages/{message_id}/reactions")
 async def add_reaction(message_id: str, body: dict, request: Request):
     emoji = body.get("emoji")
-    author_id = body.get("author_id")
-    author_type = body.get("author_type", "user")
+    agent = _bound_agent(request)
+    author_id = agent if agent else body.get("author_id")
+    author_type = "agent" if agent else body.get("author_type", "user")
     if not emoji or not author_id:
         return JSONResponse({"error": "emoji and author_id required"}, status_code=400)
     state = request.app.state
@@ -786,6 +812,9 @@ async def add_reaction(message_id: str, body: dict, request: Request):
 @router.delete("/api/chat/messages/{message_id}/reactions/{emoji}")
 async def remove_reaction(message_id: str, emoji: str, author_id: str, request: Request):
     state = request.app.state
+    agent = _bound_agent(request)
+    if agent:
+        author_id = agent
     await state.chat_messages.remove_reaction(message_id, emoji, author_id)
     msg = await state.chat_messages.get_message(message_id)
     if msg:
@@ -813,18 +842,20 @@ VALID_PHASES = {"thinking", "tool", "reading", "writing", "searching", "planning
 @router.post("/api/chat/channels/{channel_id}/typing")
 async def post_typing(channel_id: str, body: dict, request: Request):
     """Mark a human user as typing in the channel. Ephemeral; TTL 3s."""
-    author_id = (body or {}).get("author_id")
+    agent = _bound_agent(request)
+    author_id = agent if agent else (body or {}).get("author_id")
     if not author_id:
         return JSONResponse({"error": "author_id required"}, status_code=400)
     reg = getattr(request.app.state, "typing", None)
     hub = getattr(request.app.state, "chat_hub", None)
     if reg is None:
         return JSONResponse({"error": "typing registry not configured"}, status_code=503)
-    reg.mark(channel_id, author_id, "human")
+    kind = "agent" if agent else "human"
+    reg.mark(channel_id, author_id, kind)
     if hub is not None:
         await hub.broadcast(channel_id, {
             "type": "typing",
-            "kind": "human",
+            "kind": kind,
             "slug": author_id,
         })
     return JSONResponse({"ok": True}, status_code=200)
@@ -840,6 +871,12 @@ async def post_thinking(channel_id: str, body: dict, request: Request):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
     if auth is None or not auth.validate_local_token(bearer[7:].strip()):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+    bound_agent = auth.get_local_token_agent(bearer[7:].strip())
+    if bound_agent:
+        slug = (body or {}).get("slug")
+        if slug != bound_agent:
+            return JSONResponse({"error": "forbidden: slug does not match credential"}, status_code=403)
 
     slug = (body or {}).get("slug")
     state = (body or {}).get("state")
