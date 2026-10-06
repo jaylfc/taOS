@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 import pytest
 import pytest_asyncio
 from pathlib import Path
@@ -848,6 +849,66 @@ async def test_embed_failure_sets_partial_status(store):
     assert item["status"] == "partial", (
         f"Expected 'partial' status on embed failure, got '{item['status']}'"
     )
+
+
+@pytest.mark.asyncio
+async def test_delete_chunk_non_2xx_logs_warning_and_continues(store, caplog):
+    """R2-26c: when QMD /delete-chunk returns non-2xx (e.g. 404), a warning
+    must be logged with the status code, and the ingest pipeline must continue
+    (the delete is best-effort)."""
+    from tinyagentos.knowledge_ingest import IngestPipeline
+
+    # First POST (delete-chunk) returns 404, subsequent POSTs (ingest) return 200
+    delete_response = MagicMock()
+    delete_response.status_code = 404
+    delete_response.raise_for_status = MagicMock()
+
+    ingest_response = MagicMock()
+    ingest_response.status_code = 200
+    ingest_response.raise_for_status = MagicMock()
+
+    mock_http = AsyncMock()
+    mock_http.get = AsyncMock(side_effect=Exception("no HTTP in this test"))
+    mock_http.post = AsyncMock(side_effect=[delete_response, ingest_response, ingest_response])
+
+    notif = AsyncMock()
+    notif.emit_event = AsyncMock()
+    cat_engine = AsyncMock()
+    cat_engine.categorise = AsyncMock(return_value=[])
+
+    pipeline = IngestPipeline(
+        store=store,
+        http_client=mock_http,
+        fetch_client=mock_http,
+        notifications=notif,
+        category_engine=cat_engine,
+        qmd_base_url="http://localhost:7832",
+        llm_base_url="",
+    )
+
+    item_id = await pipeline.submit(
+        url="https://example.com/delete-chunk-fail",
+        title="Delete Chunk Test",
+        text="Content long enough to trigger embedding. " * 50,
+        categories=[],
+        source="test",
+    )
+
+    with caplog.at_level(logging.WARNING):
+        await pipeline.run(item_id)
+
+    # Assert warning was logged with status code
+    assert any(
+        "QMD delete-chunk failed for item" in record.message
+        and "404" in record.message
+        and item_id in record.message
+        for record in caplog.records
+    ), f"Expected warning with 404 status, got: {[r.message for r in caplog.records]}"
+
+    # Assert /ingest calls still happened (pipeline continued)
+    calls = [str(call) for call in mock_http.post.call_args_list]
+    assert any("/delete-chunk" in c for c in calls), "Expected /delete-chunk call"
+    assert sum(1 for c in calls if "/ingest" in c) >= 1, "Expected /ingest calls after failed delete"
 
 
 # ------------------------------------------------------------------
