@@ -2012,16 +2012,7 @@ valid for admin/system callers but is no longer bound to any agent name.
 ## Chat author identity (credential-bound for per-agent local tokens)
 
 `POST /api/chat/messages`, `POST /api/chat/messages/{id}/reactions`,
-`DELETE /api/chat/messages/{id}/reactions/{emoji}`,
-`POST /api/chat/channels/{id}/typing`, `POST /api/chat/channels/{id}/thinking`,
-`POST /api/chat/messages/{id}/delta`, and `POST /api/chat/messages/{id}/state`
-now bind the caller-supplied author to the per-agent local token when one is
-presented. The auth middleware sets `request.state.agent_name` for bound tokens
-(`AuthManager.get_local_token_agent`); the routes use a `_bound_agent(request)`
-helper and override `author_id`/`slug` with that name. The host local token,
-admin sessions, session cookies, and device bearers are not bound, so their
-caller-supplied values are preserved (byte-for-byte compatibility with taosctl
-and the SPA).
+`DELETE /api/chat/messages/{id}/reactions/{emoji}`, `POST /api/chat/channels/{id}/typing`, and `POST /api/chat/channels/{id}/thinking` now bind the caller-supplied author to the per-agent local token when one is presented. `POST /api/chat/messages/{id}/delta` and `POST /api/chat/messages/{id}/state` CHECK message ownership (403 when the message is missing or not authored by the bound agent) rather than overriding an author field. The auth middleware sets `request.state.agent_name` for bound tokens (`AuthManager.get_local_token_agent`); the routes use a `_bound_agent(request)` helper and override `author_id`/`slug` with that name. The host local token, admin sessions, session cookies, and device bearers are not bound, so their caller-supplied values are preserved (byte-for-byte compatibility with taosctl and the SPA). `POST /api/chat/channels/{id}/thinking` REJECTS a mismatched slug (it does not override it).
 
 ## In-process LLM gateway (`/api/llm/v1`, scoped gateway keys, session or host local token)
 
