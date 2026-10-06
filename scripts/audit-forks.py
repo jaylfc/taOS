@@ -39,17 +39,53 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-# (fork, sync_branch_on_fork, upstream_branch_on_parent)
+
+def _parse_pin_value(line: str, pin_var: str | None = None, pin_regex: str | None = None) -> str | None:
+    """Extract the deployed pin value from a line in a pin file.
+
+    Supports:
+    - ${VAR:-default} form: extracts the default value after ':-'
+    - regex form: extracts the first capture group match
+    - VAR="value" form: extracts the assigned value
+    """
+    # 1. Try ${VAR:-default} form
+    m = re.search(r'\$\{([^}:]*?)(?:[:][^}]*)?\}', line)
+    if m:
+        content = m.group(1)
+        if ':' in content:
+            default = content.split(':', 1)[1].strip()
+            return default.strip()
+        return content.strip()
+
+    # 2. Try pin_regex form
+    if pin_regex:
+        m = re.search(pin_regex, line)
+        if m:
+            return m.group(1)
+
+    # 3. Try VAR="value" form
+    if pin_var:
+        pattern = rf'^\s*{re.escape(pin_var)}\s*=\s*["\']?([^"\'}]*)["\']?'
+        m = re.match(pattern, line)
+        if m:
+            return m.group(1).strip()
+
+    return None
+
+
+# (kind, fork, pin_file, pin_var/pin_regex, upstream_branch_on_parent)
 # upstream_branch=None means "use the parent's default branch".
+# New entry kinds: git_pin and npm_pin replace the old branch-tracking model.
 TRACKED: list[dict] = [
-    {"fork": "jaylfc/openclaw", "sync_branch": "taos-fork", "upstream_branch": "main"},
-    {"fork": "jaylfc/qmd",      "sync_branch": "main",      "upstream_branch": None},
-    {"fork": "jaylfc/rkllama",  "sync_branch": "main",      "upstream_branch": None},
+    {"kind": "git_pin", "fork": "jaylfc/rkllama", "pin_file": "scripts/install-rknpu.sh", "pin_var": "RKLLAMA_REF"},
+    {"kind": "npm_pin", "package": "@jaylfc/qmd", "upstream_package": "@tobilu/qmd", "pin_file": "scripts/install-server.sh", "pin_var": "qmd_npm_version"},
+    {"kind": "npm_pin", "package": "openclaw", "upstream_package": "openclaw", "pin_file": "app-catalog/agents/openclaw/scripts/install.sh", "pin_regex": "openclaw@([0-9][^ \\"']*)"},
 ]
 
 API = "https://api.github.com"
