@@ -200,7 +200,7 @@ systemctl enable tinyagentos
 if [ -e "/dev/rknpu" ]; then
     echo ""
     echo "Rockchip NPU detected! Consider installing rkllama for NPU-accelerated inference."
-    echo "  sudo bash scripts/install-rknpu.sh"
+    echo "  sudo bash $INSTALL_DIR/scripts/install-rknpu.sh"
 fi
 
 # Detect if a Hailo-10H NPU is available (Raspberry Pi 5 + AI HAT+2).
