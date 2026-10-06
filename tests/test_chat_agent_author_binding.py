@@ -200,6 +200,16 @@ class TestChatAgentAuthorBinding:
             )
         assert resp.status_code == 403
 
+    async def test_bound_agent_state_missing_message_is_403(self, client, app):
+        """update_message_state returns 403 when the target message does not exist."""
+        ch = await _create_channel_dm(app)
+        async with _bound_client(app, "agent-a") as c:
+            resp = await c.post(
+                "/api/chat/messages/nonexistent/state",
+                json={"state": "complete"},
+            )
+        assert resp.status_code == 403
+
     async def test_bound_agent_cannot_stream_into_user_message_with_its_name(self, client, app):
         """Host token posts a message with author_id=\"agent-a\", author_type=\"user\";
         agent-a's bound token delta -> 403."""
@@ -276,9 +286,8 @@ class TestChatAgentAuthorBinding:
 
         # Verify the broadcast message contains the correct data
         broadcast_dict = call_args.args[1]
-        
-        if broadcast_dict:
-            assert broadcast_dict["type"] == "message_delta"
-            assert broadcast_dict["message_id"] == msg["id"]
-            assert broadcast_dict["channel_id"] == ch["id"]
-            assert broadcast_dict["delta"] == " test delta"
+
+        assert broadcast_dict["type"] == "message_delta"
+        assert broadcast_dict["message_id"] == msg["id"]
+        assert broadcast_dict["channel_id"] == ch["id"]
+        assert broadcast_dict["delta"] == " test delta"
