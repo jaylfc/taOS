@@ -348,6 +348,8 @@ async def test_stream_upsert_on_avatar_change(vapp, monkeypatch):
 
     _patch_intervals(monkeypatch)
 
+    _ticking_clock(monkeypatch)
+
     app = vapp
     monkeypatch.setattr(auth_mod, "_request_is_console", lambda _r: True)
 
@@ -394,6 +396,7 @@ async def test_stream_upsert_on_avatar_change(vapp, monkeypatch):
                     break
 
     assert got_new_hash
+    await gen.aclose()
 
 
 # (j) HTTP route: bearer auth.
