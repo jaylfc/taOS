@@ -537,6 +537,11 @@ class AgentRegistryStore(BaseStore):
         # be held together. Created at construction (not in init()) so it always
         # exists before any caller, independent of init ordering.
         self._reporting_lock = asyncio.Lock()
+        # Serialises every write-through-self._db sequence so a concurrent
+        # rollback from one coroutine cannot discard another coroutine's
+        # uncommitted writes.  The shared aiosqlite connection yields on every
+        # await, so two writers can interleave inside the same open transaction.
+        self._write_lock = asyncio.Lock()
 
     async def init(self) -> None:
         await super().init()
@@ -604,54 +609,77 @@ class AgentRegistryStore(BaseStore):
         if self._db is None:
             raise RuntimeError("AgentRegistryStore not initialised - call init() first")
 
-        capabilities = capabilities or []
-        now_utc = datetime.now(timezone.utc)
-        source_name = display_name if display_name else framework
-        slug = agent_slug_or_fallback(source_name)
-        if not allow_reserved:
-            _check_reserved_prefix(slug, source_name)
-        base_id = mint_canonical_id(slug, now_utc)
-        canonical_id = base_id
-        created_ts = now_utc.isoformat()
+        async with self._write_lock:
+            capabilities = capabilities or []
+            now_utc = datetime.now(timezone.utc)
+            source_name = display_name if display_name else framework
+            slug = agent_slug_or_fallback(source_name)
+            if not allow_reserved:
+                _check_reserved_prefix(slug, source_name)
+            base_id = mint_canonical_id(slug, now_utc)
+            canonical_id = base_id
+            created_ts = now_utc.isoformat()
 
-        # Collision guard: if the same slug+second already exists, append a
-        # 2-char hex suffix to break the tie.
-        suffix_n = 0
-        while True:
-            existing = await (
+            # Collision guard: if the same slug+second already exists, append a
+            # 2-char hex suffix to break the tie.
+            suffix_n = 0
+            while True:
+                existing = await (
+                    await self._db.execute(
+                        "SELECT id FROM agent_registry WHERE canonical_id = ?",
+                        (canonical_id,),
+                    )
+                ).fetchone()
+                if existing is None:
+                    break
+                suffix_n += 1
+                canonical_id = f"{base_id}-{suffix_n:02x}"
+
+            caps_json = json.dumps(capabilities)
+            initial_status = "pending" if origin == "external-selfjoin" else "active"
+
+            last_integrity_error = None
+            for _attempt in range(16):
+                try:
+                    await self._db.execute(
+                        """
+                        INSERT INTO agent_registry
+                            (canonical_id, display_name, framework, user_id, origin,
+                             handle, role, title, reports_to, capabilities, created_ts, status,
+                             install_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (canonical_id, display_name, framework, user_id, origin,
+                         handle, role, title, reports_to, caps_json, created_ts, initial_status,
+                         install_id),
+                    )
+                    await self._db.commit()
+                    break
+                except aiosqlite.IntegrityError as exc:
+                    await self._db.rollback()
+                    last_integrity_error = exc
+                    existing = await (
+                        await self._db.execute(
+                            "SELECT id FROM agent_registry WHERE canonical_id = ?",
+                            (canonical_id,),
+                        )
+                    ).fetchone()
+                    if existing is not None:
+                        suffix_n += 1
+                        canonical_id = f"{base_id}-{suffix_n:02x}"
+                        continue
+                    raise
+            else:
+                if last_integrity_error is not None:
+                    raise last_integrity_error
+
+            row = await (
                 await self._db.execute(
-                    "SELECT id FROM agent_registry WHERE canonical_id = ?",
+                    "SELECT * FROM agent_registry WHERE canonical_id = ?",
                     (canonical_id,),
                 )
             ).fetchone()
-            if existing is None:
-                break
-            suffix_n += 1
-            canonical_id = f"{base_id}-{suffix_n:02x}"
-
-        caps_json = json.dumps(capabilities)
-        initial_status = "pending" if origin == "external-selfjoin" else "active"
-        await self._db.execute(
-            """
-            INSERT INTO agent_registry
-                (canonical_id, display_name, framework, user_id, origin,
-                 handle, role, title, reports_to, capabilities, created_ts, status,
-                 install_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (canonical_id, display_name, framework, user_id, origin,
-             handle, role, title, reports_to, caps_json, created_ts, initial_status,
-             install_id),
-        )
-        await self._db.commit()
-
-        row = await (
-            await self._db.execute(
-                "SELECT * FROM agent_registry WHERE canonical_id = ?",
-                (canonical_id,),
-            )
-        ).fetchone()
-        return _row_to_dict(row)
+            return _row_to_dict(row)
 
     # ------------------------------------------------------------------
     # Read
@@ -663,7 +691,8 @@ class AgentRegistryStore(BaseStore):
         no transaction is open.
         """
         if self._db is not None:
-            await self._db.rollback()
+            async with self._write_lock:
+                await self._db.rollback()
 
     async def delete(self, canonical_id: str) -> None:
         """Permanently remove *canonical_id* (used to clean up a half-registered
@@ -672,10 +701,11 @@ class AgentRegistryStore(BaseStore):
         """
         if self._db is None:
             raise RuntimeError("AgentRegistryStore not initialised")
-        await self._db.execute(
-            "DELETE FROM agent_registry WHERE canonical_id = ?", (canonical_id,)
-        )
-        await self._db.commit()
+        async with self._write_lock:
+            await self._db.execute(
+                "DELETE FROM agent_registry WHERE canonical_id = ?", (canonical_id,)
+            )
+            await self._db.commit()
 
     async def get(self, canonical_id: str) -> Optional[dict]:
         """Return the record for *canonical_id*, or ``None``."""
@@ -924,38 +954,39 @@ class AgentRegistryStore(BaseStore):
         if self._db is None:
             raise RuntimeError("AgentRegistryStore not initialised")
 
-        record = await self.get(canonical_id)
-        if record is None:
-            raise KeyError(canonical_id)
+        async with self._write_lock:
+            record = await self.get(canonical_id)
+            if record is None:
+                raise KeyError(canonical_id)
 
-        before_status = record.get("status") or "active"
-        _assert_valid_transition(before_status, new_status)
+            before_status = record.get("status") or "active"
+            _assert_valid_transition(before_status, new_status)
 
-        now = datetime.now(timezone.utc).isoformat()
-        # Atomic: the UPDATE is conditional on the status still being
-        # ``before_status``, so two concurrent transitions cannot both win a
-        # read/validate/write race - the loser's WHERE matches 0 rows. This
-        # also guarantees the returned/audited before_status is accurate.
-        if new_status == "revoked":
-            cur = await self._db.execute(
-                "UPDATE agent_registry SET status = ?, revoked_at = COALESCE(revoked_at, ?) "
-                "WHERE canonical_id = ? AND status = ?",
-                (new_status, now, canonical_id, before_status),
-            )
-        else:
-            cur = await self._db.execute(
-                "UPDATE agent_registry SET status = ? "
-                "WHERE canonical_id = ? AND status = ?",
-                (new_status, canonical_id, before_status),
-            )
-        await self._db.commit()
-        if cur.rowcount == 0:
-            # Status changed under us between the read and the write.
-            raise ValueError(
-                f"lifecycle transition conflict: {canonical_id!r} is no longer "
-                f"in state {before_status!r}"
-            )
-        return await self.get(canonical_id)  # type: ignore[return-value]
+            # Atomic: the UPDATE is conditional on the status still being
+            # ``before_status``, so two concurrent transitions cannot both win a
+            # read/validate/write race - the loser's WHERE matches 0 rows. This
+            # also guarantees the returned/audited before_status is accurate.
+            now = datetime.now(timezone.utc).isoformat()
+            if new_status == "revoked":
+                cur = await self._db.execute(
+                    "UPDATE agent_registry SET status = ?, revoked_at = COALESCE(revoked_at, ?) "
+                    "WHERE canonical_id = ? AND status = ?",
+                    (new_status, now, canonical_id, before_status),
+                )
+            else:
+                cur = await self._db.execute(
+                    "UPDATE agent_registry SET status = ? "
+                    "WHERE canonical_id = ? AND status = ?",
+                    (new_status, canonical_id, before_status),
+                )
+            await self._db.commit()
+            if cur.rowcount == 0:
+                # Status changed under us between the read and the write.
+                raise ValueError(
+                    f"lifecycle transition conflict: {canonical_id!r} is no longer "
+                    f"in state {before_status!r}"
+                )
+            return await self.get(canonical_id)  # type: ignore[return-value]
 
     # ------------------------------------------------------------------
     # Revoke
@@ -982,43 +1013,44 @@ class AgentRegistryStore(BaseStore):
         """
         if self._db is None:
             raise RuntimeError("AgentRegistryStore not initialised")
-        record = await self.get(canonical_id)
-        if record is None:
-            return None
+        async with self._write_lock:
+            record = await self.get(canonical_id)
+            if record is None:
+                return None
 
-        cols: list[str] = []
-        vals: list = []
-        if display_name is not None:
-            cols.append("display_name = ?")
-            vals.append(display_name)
-        if handle is not None:
-            cols.append("handle = ?")
-            vals.append(handle)
-        if role is not None:
-            cols.append("role = ?")
-            vals.append(role)
-        if title is not None:
-            cols.append("title = ?")
-            vals.append(title)
-        if capabilities is not None:
-            cols.append("capabilities = ?")
-            vals.append(json.dumps(capabilities))
-        if not cols:
-            return record
-        vals.append(canonical_id)
-        try:
-            await self._db.execute(
-                f"UPDATE agent_registry SET {', '.join(cols)} WHERE canonical_id = ?",
-                vals,
-            )
-        except aiosqlite.IntegrityError as exc:
+            cols: list[str] = []
+            vals: list = []
+            if display_name is not None:
+                cols.append("display_name = ?")
+                vals.append(display_name)
             if handle is not None:
-                raise ValueError(
-                    f"handle {handle!r} is already owned by another active agent"
-                ) from exc
-            raise
-        await self._db.commit()
-        return await self.get(canonical_id)
+                cols.append("handle = ?")
+                vals.append(handle)
+            if role is not None:
+                cols.append("role = ?")
+                vals.append(role)
+            if title is not None:
+                cols.append("title = ?")
+                vals.append(title)
+            if capabilities is not None:
+                cols.append("capabilities = ?")
+                vals.append(json.dumps(capabilities))
+            if not cols:
+                return record
+            vals.append(canonical_id)
+            try:
+                await self._db.execute(
+                    f"UPDATE agent_registry SET {', '.join(cols)} WHERE canonical_id = ?",
+                    vals,
+                )
+            except aiosqlite.IntegrityError as exc:
+                if handle is not None:
+                    raise ValueError(
+                        f"handle {handle!r} is already owned by another active agent"
+                    ) from exc
+                raise
+            await self._db.commit()
+            return await self.get(canonical_id)
 
     async def revoke(self, canonical_id: str) -> Optional[dict]:
         """Transition *canonical_id* to 'revoked' via the state-transition guard.
@@ -1048,16 +1080,17 @@ class AgentRegistryStore(BaseStore):
         """
         if self._db is None:
             raise RuntimeError("AgentRegistryStore not initialised")
-        record = await self.get(canonical_id)
-        if record is None:
-            return None
-        await self._db.execute(
-            "UPDATE agent_registry SET token_min_iat = MAX(token_min_iat + 1, ?) "
-            "WHERE canonical_id = ?",
-            (ts, canonical_id),
-        )
-        await self._db.commit()
-        return await self.get(canonical_id)
+        async with self._write_lock:
+            record = await self.get(canonical_id)
+            if record is None:
+                return None
+            await self._db.execute(
+                "UPDATE agent_registry SET token_min_iat = MAX(token_min_iat + 1, ?) "
+                "WHERE canonical_id = ?",
+                (ts, canonical_id),
+            )
+            await self._db.commit()
+            return await self.get(canonical_id)
 
     # ------------------------------------------------------------------
     # Org model (#161): reporting lines, roles/titles, org tree
@@ -1084,27 +1117,28 @@ class AgentRegistryStore(BaseStore):
         """
         if self._db is None:
             raise RuntimeError("AgentRegistryStore not initialised")
-        record = await self.get(canonical_id)
-        if record is None:
-            return None
+        async with self._write_lock:
+            record = await self.get(canonical_id)
+            if record is None:
+                return None
 
-        cols: list[str] = []
-        vals: list = []
-        if role is not None:
-            cols.append("role = ?")
-            vals.append(role or None)
-        if title is not None:
-            cols.append("title = ?")
-            vals.append(title or None)
-        if not cols:
-            return record
-        vals.append(canonical_id)
-        await self._db.execute(
-            f"UPDATE agent_registry SET {', '.join(cols)} WHERE canonical_id = ?",
-            vals,
-        )
-        await self._db.commit()
-        return await self.get(canonical_id)
+            cols: list[str] = []
+            vals: list = []
+            if role is not None:
+                cols.append("role = ?")
+                vals.append(role or None)
+            if title is not None:
+                cols.append("title = ?")
+                vals.append(title or None)
+            if not cols:
+                return record
+            vals.append(canonical_id)
+            await self._db.execute(
+                f"UPDATE agent_registry SET {', '.join(cols)} WHERE canonical_id = ?",
+                vals,
+            )
+            await self._db.commit()
+            return await self.get(canonical_id)
 
     async def set_reporting(
         self, canonical_id: str, reports_to: Optional[str]
@@ -1161,12 +1195,13 @@ class AgentRegistryStore(BaseStore):
                     current = current_record.get("reports_to") if current_record else None
                     depth += 1
 
-            await self._db.execute(
-                "UPDATE agent_registry SET reports_to = ? WHERE canonical_id = ?",
-                (reports_to, canonical_id),
-            )
-            await self._db.commit()
-            return await self.get(canonical_id)  # type: ignore[return-value]
+            async with self._write_lock:
+                await self._db.execute(
+                    "UPDATE agent_registry SET reports_to = ? WHERE canonical_id = ?",
+                    (reports_to, canonical_id),
+                )
+                await self._db.commit()
+                return await self.get(canonical_id)  # type: ignore[return-value]
 
     async def direct_reports(self, canonical_id: str) -> list[dict]:
         """Return the agents whose reports_to is *canonical_id*, oldest first."""
