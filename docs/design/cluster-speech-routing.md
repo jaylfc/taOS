@@ -1,7 +1,9 @@
 # Design: speech (ASR and TTS) routed to paired worker nodes
 
-**Status:** Draft for review. Jay decided (via taOS-dev, 2026-10-06) to **allow remote ASR and TTS
-through the worker agent**, routed to paired workers. This spec says how, grounded in `dev`.
+**Status:** Revision 2, for review. Jay decided (via taOS-dev, 2026-10-06) to **allow remote ASR
+and TTS through the worker agent**, routed to paired workers, over the LAN and over taOSgo. This
+revision applies the lead review (#3572 comment 6024979159) and Jay's answers (comment
+6025016170); section 11 lists what changed.
 **Date:** 2026-10-06
 **Evidence:** omp-strata-lab experiment 023 (offline speech across the cluster) and its working
 server, `tools/speech/speechd.py`.
@@ -57,6 +59,21 @@ worker; `cluster/worker_auth.require_worker_hmac` verifies worker-to-controller 
 over `f"{timestamp}.{METHOD}.{path}.{sha256(body)}"` with a 300 s skew window. The controller
 holds the same key (`get_signing_key(name)`), so it can sign requests to the worker.
 
+**taOSgo.** `tinyagentos/taosnet/mesh.py` joins the host to the account's Headscale mesh with
+system tailscale (`mesh_up`: `tailscale up --login-server <login_server()> --authkey ...`;
+`login_server()` defaults to `https://hs.taos.my`, `TAOS_HEADSCALE_URL` overrides it), and
+`mesh_status()` reads `tailscale status --json` (joined, tailnet, `node_ip`, and peers tagged
+`tag:guest`). Traffic between mesh nodes is WireGuard, direct when possible and through the
+mesh's relays otherwise. `routes/taosgo.app_join` mints the preauth key, but its body is still a
+placeholder ("In production, this would call the Headscale admin API"), and the worker agent has
+no mesh join of its own; the browser worker only reads its tailnet IP
+(`browser_container._detect_tailscale_ip`, `tailscale ip -4`).
+
+**Worker URL trust.** `routes/cluster.register_worker` takes `body.url` from the worker's signed
+registration and does not compare it with the source address. The one existing cross-check is
+in the incus enrolment route, which refuses an `incus_url` whose host differs from the
+registered `worker.url` host.
+
 **Lab evidence (023).** speechd serves the taOS daemon contracts (`POST /stt`, `POST /tts`) plus
 OpenAI routes, `/health` and `/v1/models`, bound to 127.0.0.1, on a Mac mini M4 (Parakeet TDT
 0.6B v3 MLX, Kokoro-82M MLX, Piper cori-high) and a CPU-only i5 (Parakeet v2 int8 via
@@ -71,7 +88,8 @@ Mac. Mac M4 numbers: STT 0.084 s for a 5 s clip, 2.76% WER; Kokoro first audio 0
 Goals:
 
 1. `/audio/transcriptions` and `/audio/speech` can target a paired worker's `asr` / `tts`
-   capability, through the worker agent, chosen explicitly.
+   capability, through the worker agent, chosen explicitly, over two transports: the **LAN**
+   and **taOSgo** (the account mesh, the path taOS promotes for off-LAN workers).
 2. Speech entries in `worker-models.json` reach the controller (new backend type and mappings,
    a `piper` software value).
 3. A catalog variant that runs Parakeet without PyTorch (sherpa-onnx int8).
@@ -83,7 +101,8 @@ Non-goals and kept rules:
   worker or the reverse, and one worker never to another. A down target is a 503.
 - **Local is unchanged.** With no worker route configured, both routes behave byte for byte as
   today, and a manifest still cannot redirect the gateway (no `host`/`url` key is read).
-- No cloud speech. No audio, text or transcript is logged, traced or kept, on either side.
+- No cloud speech engines. taOSgo's relays only carry WireGuard-encrypted traffic between the
+  account's own nodes. No audio, text or transcript is logged, traced or kept, on either side.
 - The 7838 agent listener allowlist (`listener.GATEWAY_PATHS`) is unchanged; whether agents get
   audio paths there is a separate decision.
 - No speech-model download or install orchestration on workers (operators run the daemon; the
@@ -130,9 +149,15 @@ gains a small relay, modelled on the browser worker's API:
 - `tinyagentos/worker/speech_relay.py`: an ASGI app with `POST /worker/speech/stt` and
   `POST /worker/speech/tts`, served by the worker agent (uvicorn, as `browser_main.serve` does)
   only when at least one `speechd` entry is declared and `TAOS_WORKER_SPEECH_RELAY=1`.
-- It binds the advertised LAN address and port (`TAOS_ADVERTISE_IP` and `worker_port`,
-  default 7841). A relay without an explicit advertised address refuses to start, because
-  `_advertised_url` would otherwise fall back to a loopback backend URL.
+- It binds the advertised address and port: the LAN address (`TAOS_ADVERTISE_IP`), or on
+  taOSgo the worker's tailnet IP (4.4). A relay without an explicit advertised address refuses
+  to start, because `_advertised_url` would otherwise fall back to a loopback backend URL, and it
+  never binds `0.0.0.0` or loopback.
+- **Port: 7841, a new default.** `WorkerAgent.worker_port` defaults to 0 today and the browser
+  worker uses 7080. 7841 is not used anywhere in `tinyagentos/` on `dev`, and clears the core
+  and bundled ports found there (6969 web, 6970 browser proxy, 7832 qmd, 7833 rkllama, 7834
+  LiteLLM legacy, 7836 hailo-ollama, 7837 MLX, 7838 agent listener, 7864 sd-cpp). The PR that
+  adds it re-checks that list and makes it overridable (`TAOS_WORKER_SPEECH_PORT`).
 - Request: the target `model_id` in a header (`X-TAOS-Speech-Model`), body exactly the daemon
   contract (raw PCM16 for `/stt`, `{"text"}` for `/tts`). The relay looks the model up in the
   **current manifest**, and forwards only to `http://127.0.0.1:<that entry's port>/stt|/tts`.
@@ -174,16 +199,30 @@ name is what makes the route explicit and keeps "no fallback" literal.
 
 ### 4.2 Worker eligibility
 
-A worker target is accepted only when all hold, else a 404 (unknown) or 503 (known, unusable):
+A worker target is accepted only when all hold, else a 404 (unknown) or 503 (known, unusable).
+The checks live in one helper, `eligible_worker_url`, in a new `llm_gateway/speech_targets.py`
+that `stt.resolve_target` and `tts.resolve_target` share:
 
 - `voice.remote_workers` is on (default **off**; an admin turns it on);
 - the worker is in `ClusterManager` with a pairing `signing_key`, `kind == "worker"`, status
   `online` (not draining or updating), and it advertises the capability (`asr` or `tts`);
 - `model_id` is in that worker's `available_models` with the matching capability; for `tts`, it
   declares an integer `sample_rate`;
-- `worker.url` parses as `http` with a literal **private-LAN or loopback IP** and an explicit
-  port (the same ranges as `worker/agent._normalize_probe_url`: no hostnames, no link-local, no
-  public addresses). Tailscale's `100.64.0.0/10` is open question 2.
+- `worker.url` parses as `http` with a literal IP and an explicit port, and the IP is in an
+  **allowed transport range**:
+  - **LAN:** `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7` (the `_LAN_NETS` of
+    `worker/agent.py`);
+  - **mesh:** `100.64.0.0/10` or `fd7a:115c:a1e0::/48`, only when the mesh check in 4.4 passes.
+- **Never loopback, never the controller itself.** `localhost`, `127.0.0.0/8`, `::1`,
+  IPv4-mapped loopback, link-local, any address bound to the controller's own interfaces
+  (its LAN and tailnet IPs), and every public address are refused. This is deliberately
+  **not** `_normalize_probe_url`: that function validates a worker's own backend URLs, where
+  loopback is the point. On the controller, a worker registering `http://127.0.0.1:<port>`
+  would otherwise aim signed audio at the controller's own loopback services.
+- **Pinned to the registration source.** `register_worker` records the connection's source
+  address (`request.client.host`) beside `worker.url`. A worker is eligible only when the
+  `worker.url` host equals that source address, the same idea as the incus enrolment check.
+  A worker behind NAT or a proxy fails this and is refused with a reason; it is not guessed.
 
 ### 4.3 Transport
 
@@ -202,6 +241,34 @@ A worker target is accepted only when all hold, else a 404 (unknown) or 503 (kno
   or oversized upload.
 - `stt.py` and `tts.py` still import nothing from chat routing; they gain a dependency on the
   cluster manager and pairing store through `app.state`, passed in by the route.
+
+### 4.4 taOSgo transport
+
+A worker reached over taOSgo uses the same relay, the same signing and the same rules; only the
+addressing and the eligibility check differ.
+
+- **Joining.** The worker joins the account mesh with the same mechanism the host uses:
+  `taosnet.mesh.mesh_up` (system tailscale, `login_server()`), given a single-use preauth key
+  that an admin mints for that worker on the controller. Today `/api/taosgo/app-join` returns a
+  placeholder key, so real Headscale key issuance is a prerequisite (rollout step 4).
+- **Addressing.** The relay binds the worker's tailnet IP (`tailscale ip -4`, as
+  `browser_container._detect_tailscale_ip` reads it), and the worker registers
+  `http://<tailnet IP>:7841`. The worker reaches the controller over the mesh too, so the
+  registration's source address is the same tailnet IP and the pin in 4.2 holds.
+- **Eligibility.** A mesh-range URL is accepted only if the controller is itself joined, and its
+  own `tailscale status --json` lists that IP as an **online peer** that is **not** tagged
+  `tag:guest` (guest instances from cross-user preauth never receive speech). This needs a
+  `mesh_peers()` beside `mesh_status()` returning every peer's IPs, online state and tags;
+  `mesh_status()` keeps only guests today.
+- **Labels.** When the controller's mesh is the taOSgo one (its control server is
+  `login_server()`), the transport is reported as `taosgo`. A mesh-range peer on any other
+  tailnet (a user's own Tailscale) is accepted under the same peer check and reported as
+  `manual-vpn`: allowed because the user set it up, but docs and UI never suggest it; taOSgo is
+  the path they point to.
+- **Signing and limits.** The same `c2w.` HMAC, 60 s window and replay cache. WireGuard adds
+  encryption on this path; the HMAC is still required. Timeouts: connect 5 s on the mesh
+  (relayed paths are slower to open), read 60 s. Added latency is measured in the lab before
+  rollout.
 
 ## 5. Catalog
 
@@ -228,11 +295,16 @@ A worker target is accepted only when all hold, else a 404 (unknown) or 503 (kno
       min_ram_mb: 1536
 ```
 
-  and `hardware_tiers` recommending it for `arm-cpu-8gb` and `cpu-only`. Two gaps: the catalog's
-  variants carry one `download_url` and one `sha256`, and `installers/download_installer.py` has
-  no archive extraction. Either the installer learns "archive plus per-file hashes" (`files:`
-  above), or the four files are mirrored individually (open question 4). A `sherpa-onnx` backend
+  and `hardware_tiers` recommending it for `arm-cpu-8gb` and `cpu-only`. A `sherpa-onnx` backend
   id (pip `sherpa-onnx`, the 023 version is 1.13.8) is needed in the backend list.
+- **Archive support in `download_installer` (decided).** Today a variant carries one
+  `download_url` and one `sha256`, and `download_file` checks that hash on the downloaded file;
+  there is no extraction. A variant with `files:` is an archive: download (through the existing
+  `_ssrf_guard` and pinning), extract `.tar.bz2`, `.tar.gz` or `.zip` into a temporary directory
+  under the target, refuse any member that is absolute, contains `..`, is a link or a device,
+  or is not listed in `files:`, check each listed file's sha256 (all must be present), then move
+  the directory into place atomically. An optional archive-level `sha256` is checked first when
+  given.
 - Measured on the i5 CPU under contention (023): 0.70 s for a 5 s clip, RTF 0.11 to 0.125,
   3.26% WER on the 20-utterance set.
 
@@ -255,13 +327,19 @@ A worker target is accepted only when all hold, else a 404 (unknown) or 503 (kno
 ## 7. Security and privacy
 
 - Remote speech is **off by default** (`voice.remote_workers`); an admin turns it on.
-- Hosts come only from the cluster registry of paired, online workers with private-LAN literal
-  IPs; never from a manifest, request or model name. The relay forwards only to loopback ports
-  its own manifest declares.
+- Hosts come only from the cluster registry of paired, online workers whose URL is a LAN or
+  verified mesh-peer IP that matches the registration source, never loopback or the controller
+  itself; never from a manifest, request or model name. The relay forwards only to loopback
+  ports its own manifest declares.
+- **Trust assumption, stated:** a paired worker is trusted with the audio and text routed to
+  it. `worker.url` is self-reported in its signed registration, so a compromised paired worker
+  could still receive what is routed to it; the source pin and the range rules stop it from
+  aiming that traffic at the controller or at a third host.
 - Every relay request is HMAC-signed with domain separation, a 60 s window and replay refusal;
   the worker refuses unsigned or unpaired traffic.
-- **Confidentiality gap:** like the browser worker's API, the relay is plain HTTP, so audio and
-  text cross the LAN unencrypted (integrity is covered, secrecy is not). Open question 1.
+- **Confidentiality:** accepted by Jay. On the LAN the relay is plain HTTP with HMAC integrity,
+  like the browser worker's API (audio is readable on the LAN). On taOSgo it is inside
+  WireGuard.
 - No logging or tracing of audio, text or transcripts on the controller, the relay or speechd
   (023's speechd keeps its access log off). Errors log fixed strings and the worker name.
 - `kind == "device"` nodes are never targets, consistent with `get_workers_for_capability`.
@@ -269,9 +347,11 @@ A worker target is accepted only when all hold, else a 404 (unknown) or 503 (kno
 ## 8. Config and flags
 
 - Controller `config.yaml`: `voice.remote_workers` (bool, default false),
-  `voice.stt.default` and `voice.tts.default` (`local` or `<worker>/<model_id>`, default `local`).
-- Worker: `TAOS_WORKER_SPEECH_RELAY=1`, `TAOS_ADVERTISE_IP`, and the relay port (`worker_port`,
-  default 7841).
+  `voice.stt.default` and `voice.tts.default` (`local` or `<worker>/<model_id>`, default
+  `local`). Only an admin sets these; a worker default is resolved per request with the same
+  eligibility checks, so an ineligible default is a 503, never a silent switch to local.
+- Worker: `TAOS_WORKER_SPEECH_RELAY=1`, `TAOS_ADVERTISE_IP` (LAN) or the tailnet IP (taOSgo),
+  and `TAOS_WORKER_SPEECH_PORT` (default 7841, new).
 - No change to `TAOS_STT_MANIFEST` / `TAOS_TTS_MANIFEST`.
 
 ## 9. Tests
@@ -292,6 +372,17 @@ New, controller (`tests/test_llm_gateway_stt.py`, `test_llm_gateway_tts.py`, new
   capability, model not in `available_models`, wrong capability, tts entry without
   `sample_rate`, `worker.url` with a hostname, a public IP or link-local: each refused, and
   the fake relay receives nothing;
+- **loopback refusal (the review's must-fix):** a paired, online worker registered as
+  `http://127.0.0.1:<port>`, `http://localhost:<port>`, `http://[::1]:<port>` or
+  `http://[::ffff:127.0.0.1]:<port>`, and one registered with the controller's own LAN IP, is
+  refused and nothing is sent to the controller's loopback. Declared with
+  `@pytest.mark.guards("tinyagentos.llm_gateway.speech_targets:eligible_worker_url",
+  replace=[(<the controller-side range check>, <_normalize_probe_url(url)>)])`: swapping in the
+  worker-side check, which accepts loopback, must make it fail;
+- source pin: a `worker.url` host that differs from the recorded registration source is refused;
+- taOSgo: a mesh-range URL is refused when the controller is not joined, when the IP is not a
+  peer, when the peer is offline, and when it is tagged `tag:guest`; it is accepted as `taosgo`
+  or `manual-vpn` according to the controller's control server;
 - **no fallback:** worker down gives 503 and the local daemon receives nothing; local down
   gives 503 and no worker receives anything;
 - signing: the relay receives the `c2w.` signature over the exact body; a tampered body fails;
@@ -315,27 +406,34 @@ New, worker (`tests/test_worker_manifest.py`, new `tests/test_worker_speech_rela
 
 Small PRs against `dev`, each with its changelog fragment and the doc gate satisfied:
 
-1. Worker manifest: `speechd` type, software mappings incl. `piper`, per-entry capabilities,
-   warning on unknown software; macOS RAM fix. (No controller behaviour change.)
-2. Worker speech relay with controller-signed HMAC, behind `TAOS_WORKER_SPEECH_RELAY`.
-3. Gateway: `SpeechTarget`, resolution and eligibility, the replaced and new tests, behind
+1. Worker manifest: `speechd` type, `piper` and `speechd` software values, per-entry
+   capabilities, warning on unknown software; macOS RAM fix. (No controller behaviour change.)
+2. Worker speech relay with controller-signed HMAC, behind `TAOS_WORKER_SPEECH_RELAY`; the
+   registration source pin in `register_worker`.
+3. Gateway: `SpeechTarget`, resolution and LAN eligibility, the replaced and new tests, behind
    `voice.remote_workers` (default off).
-4. Catalog: the sherpa-onnx int8 variant and installer support for it.
-5. Optional: LM Studio probe; `--dry-run`.
+4. taOSgo: real preauth issuance in `app_join`, worker mesh join, `mesh_peers()`, and the mesh
+   eligibility path.
+5. Catalog: archive support in `download_installer` and the sherpa-onnx int8 variant.
+6. Optional: LM Studio probe; `--dry-run`.
 
 Validation in the lab before step 3 is enabled anywhere: the Mac and omarchy as real paired
 workers with 023's manifests, STT and TTS through the controller, and the same WER and
 first-audio numbers as direct calls, plus the added LAN latency.
 
-## 11. Open questions for Jay
+## 11. Decisions (revision 2)
 
-1. **Encryption on the LAN:** accept HMAC integrity over plain HTTP (as the browser worker does),
-   or require TLS or a WireGuard/Tailscale path before audio may leave the host?
-2. **Tailscale addresses:** allow `100.64.0.0/10` worker URLs (the Mac is reached over Tailscale
-   in the lab), or private RFC 1918 ranges only?
-3. **Default alias:** may `taos-stt-default` / `taos-tts-default` point at a worker
-   (`voice.*.default`), or must remote use always be by qualified name?
-4. **Catalog download:** teach `download_installer` archives with per-file hashes, or mirror the
-   four sherpa files individually?
-5. **Software values:** add only `piper` and `speechd`, or also `parakeet`, so a manifest names
-   the model family rather than reusing `whisper` for any ASR?
+| Item | Decision | Where |
+|---|---|---|
+| Review 1 (must-fix) | Loopback, `localhost` and the controller's own addresses are never eligible; refusal test with a guards pair | 4.2, 9 |
+| Review 2 | `worker.url` pinned to the registration source; trust assumption stated | 4.2, 7 |
+| Review 3 | 7841 named as a new default, checked against core ports, overridable | 3.2, 8 |
+| Q1 transport | HMAC over plain HTTP accepted on the LAN; taOSgo added as a transport | 4.4, 7 |
+| Q2 Tailscale | `100.64.0.0/10` accepted as a verified mesh peer (`manual-vpn`); never promoted; taOSgo is the promoted path | 4.2, 4.4 |
+| Q3 default alias | `voice.*.default` may name `<worker>/<model_id>`, admin-configured | 4.1, 8 |
+| Q4 catalog | `download_installer` gains archives with per-file sha256 (`files:`) | 5 |
+| Q5 software values | Only `piper` and `speechd` are added | 3.1 |
+
+No questions are open. The remaining unknowns are measurements for the lab: LAN and taOSgo
+latency added to STT and first TTS audio, and relayed-path behaviour when no direct mesh path
+exists.
