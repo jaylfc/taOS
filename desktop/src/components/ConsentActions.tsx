@@ -173,6 +173,13 @@ export function ConsentActions({
   const [requestedProjectNotFound, setRequestedProjectNotFound] =
     useState<boolean>(false);
   const [creating, setCreating] = useState(false);
+  // Only the consent route takes is_lead, and the backend refuses it unless
+  // the grant creates a membership row (project_tasks or a canvas scope).
+  const canLead =
+    source === "auth_requests" &&
+    needsProject &&
+    granted.some((s) => s === "project_tasks" || s.startsWith("canvas_"));
+  const [makeLead, setMakeLead] = useState(false);
   const [newName, setNewName] = useState("");
 
   useEffect(() => {
@@ -358,10 +365,15 @@ export function ConsentActions({
     const url = `${baseUrl}/${approved ? "approve" : "deny"}`;
     let body: string | undefined;
     if (approved) {
-      const payload: { granted_scopes: string[]; project_id?: string } = {
+      const payload: {
+        granted_scopes: string[];
+        project_id?: string;
+        is_lead?: boolean;
+      } = {
         granted_scopes: granted,
       };
       if (needsProject && projectId) payload.project_id = projectId;
+      if (canLead && makeLead && projectId) payload.is_lead = true;
       body = JSON.stringify(payload);
     }
     try {
@@ -382,6 +394,18 @@ export function ConsentActions({
         );
         setBusy(false);
         return;
+      }
+      if (body && JSON.parse(body).is_lead) {
+        const data = (await res.json().catch(() => ({}))) as {
+          lead_assigned?: boolean;
+        };
+        if (data.lead_assigned === false) {
+          setError(
+            "Approved, but the project lead could not be set. Make the agent lead from the project's Members.",
+          );
+          setBusy(false);
+          return;
+        }
       }
       onResolved?.();
     } catch (e) {
@@ -551,6 +575,23 @@ export function ConsentActions({
                   Cancel
                 </button>
               </div>
+            )}
+            {canLead && (
+              <label
+                className="mt-1.5 flex items-center gap-1.5 text-[11px] text-shell-text-secondary"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <input
+                  type="checkbox"
+                  checked={makeLead}
+                  onChange={(e) => {
+                    e.stopPropagation();
+                    setMakeLead(e.target.checked);
+                  }}
+                  disabled={busy}
+                />
+                Make project lead
+              </label>
             )}
           </div>
         )}

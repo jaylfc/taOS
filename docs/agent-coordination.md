@@ -768,6 +768,13 @@ A bool, string, float, zero, negative or over-ten-years value is refused with
 and a bound that is set is never silently dropped or lengthened. To explicitly
 renew or extend an existing bound, set `renew: true` on the approve body.
 
+Set `is_lead: true` on the approve body to make the approved agent the
+project's lead: the membership row gets role `lead` and the project's lead
+pointer is set to it. It is refused with **400** unless the body names an
+explicit `project_id` and grants `project_tasks` or a canvas scope (the grants
+that create the membership row), and it cannot be combined with
+`defer_binding`.
+
 Deferred binding (`defer_binding=True`) mints the token and grants UNBOUND
 (project_id=None) with the same `expires_at` from `duration_secs`. When the
 agent is later bound to a project via `POST /api/projects/{id}/members/assign-agent`,
