@@ -1655,6 +1655,15 @@ async def _do_approve(request: Request, request_id: str, body: ApproveBody, user
                 status_code=400,
                 detail="is_lead requires granting project_tasks or a canvas scope",
             )
+        # Validate the project BEFORE minting: the lead write runs inside the
+        # best-effort membership block, so a missing project would otherwise
+        # surface only as a log line after the request is already accepted.
+        pstore = getattr(request.app.state, "project_store", None)
+        if pstore is None or await pstore.get_project(body.project_id) is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"is_lead: project {body.project_id!r} not found",
+            )
 
     approval_result = await approve_request_record(
         request,
@@ -1667,6 +1676,13 @@ async def _do_approve(request: Request, request_id: str, body: ApproveBody, user
         renew=body.renew,
         is_lead=body.is_lead,
     )
+    # Report whether the lead pointer actually landed rather than trusting the
+    # best-effort write, so the approver is told when it did not.
+    if body.is_lead:
+        project = await request.app.state.project_store.get_project(body.project_id)
+        approval_result["lead_assigned"] = bool(
+            project and project.get("lead_member_id") == approval_result.get("canonical_id")
+        )
 
     # Attach duration information to the approval result.
     approval_result.update({

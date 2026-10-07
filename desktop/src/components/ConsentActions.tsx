@@ -395,6 +395,18 @@ export function ConsentActions({
         setBusy(false);
         return;
       }
+      if (body && JSON.parse(body).is_lead) {
+        const data = (await res.json().catch(() => ({}))) as {
+          lead_assigned?: boolean;
+        };
+        if (data.lead_assigned === false) {
+          setError(
+            "Approved, but the project lead could not be set. Make the agent lead from the project's Members.",
+          );
+          setBusy(false);
+          return;
+        }
+      }
       onResolved?.();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Network error");
