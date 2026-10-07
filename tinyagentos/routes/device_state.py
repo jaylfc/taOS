@@ -10,6 +10,7 @@ import json
 import logging
 import sqlite3
 import time
+from collections import deque
 
 import tinyagentos
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -36,6 +37,40 @@ _ELLIPSIS = "\u2026"
 _POLL_INTERVAL_S = 2.0
 _HEARTBEAT_INTERVAL_S = 15.0
 _SLEEP_STEP_S = 0.5
+
+# Per-owner shared event buffer for Last-Event-ID resume.
+_owner_buffers: dict[str, dict] = {}
+_BUFFER_LOCK = asyncio.Lock()
+_MAX_HISTORY = 200
+
+
+def _get_owner_buffer(owner_id: str) -> dict:
+    if owner_id not in _owner_buffers:
+        _owner_buffers[owner_id] = {
+            "next_id": 1,
+            "events": deque(maxlen=_MAX_HISTORY),
+        }
+    return _owner_buffers[owner_id]
+
+
+async def _allocate_event_id(owner_id: str) -> int:
+    async with _BUFFER_LOCK:
+        buf = _get_owner_buffer(owner_id)
+        eid = buf["next_id"]
+        buf["next_id"] += 1
+        return eid
+
+
+async def _record_event(owner_id: str, eid: int, event_type: str, data_json: str) -> None:
+    async with _BUFFER_LOCK:
+        buf = _get_owner_buffer(owner_id)
+        buf["events"].append((eid, event_type, data_json))
+
+
+async def _get_buffered_events_after(owner_id: str, last_event_id: int) -> list:
+    async with _BUFFER_LOCK:
+        buf = _get_owner_buffer(owner_id)
+        return [(eid, etype, data) for eid, etype, data in buf["events"] if eid > last_event_id]
 
 
 def _clock() -> float:
@@ -132,26 +167,6 @@ async def _events_stream(request: Request, device: dict):
     except ValueError:
         last_event_id = 0
 
-    # Per-connection event counter and bounded history for Last-Event-ID resume.
-    _event_id = 0
-    _event_history: dict[int, str] = {}
-    _MAX_HISTORY = 200
-
-    def _record_event(eid: int, event_type: str) -> None:
-        nonlocal _event_id
-        _event_id = eid
-        _event_history[eid] = event_type
-        while len(_event_history) > _MAX_HISTORY:
-            oldest = min(_event_history)
-            del _event_history[oldest]
-
-    need_snapshot = False
-    if last_event_id > 0:
-        if last_event_id not in _event_history:
-            need_snapshot = True
-        elif last_event_id < _event_id:
-            need_snapshot = True
-
     base_agents = await assemble_lock_agents(request, owner_id=owner_id)
     transformed = [
         await _transform_agent(a, agent_messages)
@@ -172,20 +187,51 @@ async def _events_stream(request: Request, device: dict):
     prev_recap: dict[str, str] = {}
     prev_decision: dict[str, dict | None] = {}
 
-    if need_snapshot:
-        eid = _event_id + 1
-        _record_event(eid, "snapshot")
-        yield f"id: {eid}\nevent: snapshot\ndata: {json.dumps(snapshot_data)}\n\n".encode("utf-8")
+    buf = _get_owner_buffer(owner_id)
+    buffered_ids = [eid for eid, _, _ in buf["events"]]
 
-    # Emit agent.upsert for every current agent on connect so clients that
-    # already received a snapshot still see a typed per-agent event.
-    for a in transformed:
-        prev_by_name[a["name"]] = a
-        prev_recap[a["name"]] = a.get("last_recap", "") or ""
-        prev_decision[a["name"]] = a.get("decision")
-        eid = _event_id + 1
-        _record_event(eid, "agent.upsert")
-        yield f"id: {eid}\nevent: agent.upsert\ndata: {json.dumps(a)}\n\n".encode("utf-8")
+    need_snapshot = False
+    if last_event_id > 0:
+        if not buffered_ids:
+            need_snapshot = True
+        else:
+            oldest_id = min(buffered_ids)
+            newest_id = max(buffered_ids)
+            if last_event_id < oldest_id or last_event_id > newest_id:
+                need_snapshot = True
+
+    if need_snapshot:
+        eid = await _allocate_event_id(owner_id)
+        data_json = json.dumps(snapshot_data)
+        await _record_event(owner_id, eid, "snapshot", data_json)
+        yield f"id: {eid}\nevent: snapshot\ndata: {data_json}\n\n".encode("utf-8")
+        for a in snapshot_data["agents"]:
+            prev_by_name[a["name"]] = a
+            prev_recap[a["name"]] = a.get("last_recap", "") or ""
+            prev_decision[a["name"]] = a.get("decision")
+    elif last_event_id > 0:
+        replay = await _get_buffered_events_after(owner_id, last_event_id)
+        for eid, event_type, data_json in replay:
+            yield f"id: {eid}\nevent: {event_type}\ndata: {data_json}\n\n".encode("utf-8")
+        base_agents = await assemble_lock_agents(request, owner_id=owner_id)
+        transformed = [
+            await _transform_agent(a, agent_messages)
+            for a in base_agents
+            if not a.get("system")
+        ]
+        for a in transformed:
+            prev_by_name[a["name"]] = a
+            prev_recap[a["name"]] = a.get("last_recap", "") or ""
+            prev_decision[a["name"]] = a.get("decision")
+    else:
+        for a in transformed:
+            prev_by_name[a["name"]] = a
+            prev_recap[a["name"]] = a.get("last_recap", "") or ""
+            prev_decision[a["name"]] = a.get("decision")
+            eid = await _allocate_event_id(owner_id)
+            data_json = json.dumps(a)
+            await _record_event(owner_id, eid, "agent.upsert", data_json)
+            yield f"id: {eid}\nevent: agent.upsert\ndata: {data_json}\n\n".encode("utf-8")
 
     last_poll = _clock()
     last_heartbeat = _clock()
@@ -224,62 +270,70 @@ async def _events_stream(request: Request, device: dict):
             for name, agent in current_by_name.items():
                 prev = prev_by_name.get(name)
                 if prev is None:
-                    eid = _event_id + 1
-                    _record_event(eid, "agent.upsert")
-                    yield f"id: {eid}\nevent: agent.upsert\ndata: {json.dumps(agent)}\n\n".encode("utf-8")
+                    eid = await _allocate_event_id(owner_id)
+                    data_json = json.dumps(agent)
+                    await _record_event(owner_id, eid, "agent.upsert", data_json)
+                    yield f"id: {eid}\nevent: agent.upsert\ndata: {data_json}\n\n".encode("utf-8")
                 else:
                     if _agent_change_key(agent) != _agent_change_key(prev):
-                        eid = _event_id + 1
-                        _record_event(eid, "agent.upsert")
-                        yield f"id: {eid}\nevent: agent.upsert\ndata: {json.dumps(agent)}\n\n".encode("utf-8")
+                        eid = await _allocate_event_id(owner_id)
+                        data_json = json.dumps(agent)
+                        await _record_event(owner_id, eid, "agent.upsert", data_json)
+                        yield f"id: {eid}\nevent: agent.upsert\ndata: {data_json}\n\n".encode("utf-8")
 
                     # Recap change.
                     current_recap = agent.get("last_recap", "") or ""
                     if current_recap != prev_recap.get(name, ""):
-                        eid = _event_id + 1
-                        _record_event(eid, "agent.recap")
+                        eid = await _allocate_event_id(owner_id)
+                        data_json = json.dumps({"name": name, "last_recap": current_recap})
+                        await _record_event(owner_id, eid, "agent.recap", data_json)
                         yield (
                             f"id: {eid}\nevent: agent.recap\n"
-                            f"data: {json.dumps({'name': name, 'last_recap': current_recap})}\n\n"
+                            f"data: {data_json}\n\n"
                         ).encode("utf-8")
 
                     # Decision open/close.
                     current_dec = agent.get("decision")
                     prev_dec = prev_decision.get(name)
                     if current_dec and not prev_dec:
-                        eid = _event_id + 1
-                        _record_event(eid, "decision.open")
+                        eid = await _allocate_event_id(owner_id)
+                        data_json = json.dumps({"name": name, "decision": current_dec})
+                        await _record_event(owner_id, eid, "decision.open", data_json)
                         yield (
                             f"id: {eid}\nevent: decision.open\n"
-                            f"data: {json.dumps({'name': name, 'decision': current_dec})}\n\n"
+                            f"data: {data_json}\n\n"
                         ).encode("utf-8")
                     elif not current_dec and prev_dec:
-                        eid = _event_id + 1
-                        _record_event(eid, "decision.close")
-                        yield f"id: {eid}\nevent: decision.close\ndata: {json.dumps({'name': name})}\n\n".encode("utf-8")
+                        eid = await _allocate_event_id(owner_id)
+                        data_json = json.dumps({"name": name})
+                        await _record_event(owner_id, eid, "decision.close", data_json)
+                        yield f"id: {eid}\nevent: decision.close\ndata: {data_json}\n\n".encode("utf-8")
                     elif current_dec and prev_dec:
                         # Check if decision IDs differ
                         current_id = current_dec.get("id") or ""
                         prev_id = prev_dec.get("id") or ""
                         if current_id != prev_id:
                             # Emit decision.close for old id
-                            eid = _event_id + 1
-                            _record_event(eid, "decision.close")
-                            yield f"id: {eid}\nevent: decision.close\ndata: {json.dumps({'name': name, 'decision_id': prev_id})}\n\n".encode("utf-8")
+                            eid = await _allocate_event_id(owner_id)
+                            data_json = json.dumps({"name": name, "decision_id": prev_id})
+                            await _record_event(owner_id, eid, "decision.close", data_json)
+                            yield f"id: {eid}\nevent: decision.close\ndata: {data_json}\n\n".encode("utf-8")
                             # Emit decision.open for new id
-                            eid = _event_id + 1
-                            _record_event(eid, "decision.open")
+                            eid = await _allocate_event_id(owner_id)
+                            data_json = json.dumps({"name": name, "decision": current_dec})
+                            await _record_event(owner_id, eid, "decision.open", data_json)
                             yield (
                                 f"id: {eid}\nevent: decision.open\n"
-                                f"data: {json.dumps({'name': name, 'decision': current_dec})}\n\n"
+                                f"data: {data_json}\n\n"
                             ).encode("utf-8")
 
                 # Removed agents.
                 for name in prev_by_name:
                     if name not in current_by_name:
-                        eid = _event_id + 1
-                        _record_event(eid, "agent.remove")
-                        yield f"id: {eid}\nevent: agent.remove\ndata: {json.dumps({'name': name})}\n\n".encode("utf-8")
+                        eid = await _allocate_event_id(owner_id)
+                        data_json = json.dumps({"name": name})
+                        await _record_event(owner_id, eid, "agent.remove", data_json)
+                        yield f"id: {eid}\nevent: agent.remove\ndata: {data_json}\n\n".encode("utf-8")
 
                 prev_by_name = current_by_name
                 prev_recap = {n: a.get("last_recap", "") or "" for n, a in current_by_name.items()}
@@ -288,9 +342,7 @@ async def _events_stream(request: Request, device: dict):
         # Heartbeat.
         if now - last_heartbeat >= _HEARTBEAT_INTERVAL_S:
             last_heartbeat = now
-            eid = _event_id + 1
-            _record_event(eid, "heartbeat")
-            yield f"id: {eid}\n: ping\n\n".encode("utf-8")
+            yield ": ping\n\n".encode("utf-8")
 
         # Sleep in small steps so disconnect and device-check stay fresh.
         await asyncio.sleep(_SLEEP_STEP_S)

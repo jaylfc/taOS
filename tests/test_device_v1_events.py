@@ -151,6 +151,13 @@ def _make_mock_request(app, headers, last_event_id="0"):
     return req
 
 
+@pytest_asyncio.fixture(autouse=True)
+async def _clear_owner_buffers():
+    from tinyagentos.routes import device_state as ds_mod
+    ds_mod._owner_buffers.clear()
+    yield
+
+
 # (d) SSE route exists and emits agent.upsert events keyed by name.
 @pytest.mark.asyncio
 async def test_events_emits_upsert_keyed_by_name(vapp, monkeypatch):
@@ -185,46 +192,70 @@ async def test_events_emits_upsert_keyed_by_name(vapp, monkeypatch):
 async def test_events_last_event_id_resume(vapp, monkeypatch):
     from tinyagentos.routes import auth as auth_mod
     from tinyagentos.demo_mode import write_demo_mode
-    from tinyagentos.routes import device_state as ds_mod
 
     _patch_intervals(monkeypatch)
+    _ticking_clock(monkeypatch)
 
     app = vapp
     monkeypatch.setattr(auth_mod, "_request_is_console", lambda _r: True)
 
     write_demo_mode(app.state.data_dir, False)
     app.state.config.agents = [
-        {"name": "bob", "framework": "openclaw", "user_id": "u1", "status": "running"},
+        {"name": "resume-bob", "framework": "openclaw", "user_id": "u1", "status": "running"},
     ]
 
     tok = await _device(app, user_id="u1", scopes=("agents:read",))
     headers = {"authorization": f"Bearer {tok}"}
-
     device = {"user_id": "u1"}
 
-    # First connection: collect initial events and record the first event ID.
+    # First connection: consume initial events and first heartbeat.
     gen1 = _events_stream(_make_mock_request(app, headers), device)
-    chunks1, _ = await _collect_from_stream(gen1, max_chunks=20, timeout=3.0)
+    first_chunks = await _read_until_ping(gen1)
 
-    first_id = None
-    for line in "".join(c.decode("utf-8") if isinstance(c, bytes) else c for c in chunks1).splitlines():
+    # Trigger one agent change on the next poll tick.
+    app.state.config.agents = [
+        {"name": "resume-bob", "framework": "hermes", "user_id": "u1", "status": "running"},
+    ]
+
+    # Read the next poll diff and heartbeat from stream 1.
+    second_chunks = await _read_until_ping(gen1)
+
+    change_id = None
+    for chunk in second_chunks:
+        text = chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk
+        for line in text.splitlines():
+            if line.startswith("id:"):
+                change_id = line.split(":", 1)[1].strip()
+
+    assert change_id is not None
+    change_id_int = int(change_id)
+
+    # Second connection with Last-Event-ID just before the change.
+    gen2 = _events_stream(
+        _make_mock_request(app, headers, last_event_id=str(change_id_int - 1)),
+        device,
+    )
+    resume_chunks = await _read_until_ping(gen2)
+
+    # First frame must be the buffered upsert, not a snapshot.
+    first_text = resume_chunks[0].decode("utf-8") if isinstance(resume_chunks[0], bytes) else resume_chunks[0]
+    assert "event: agent.upsert" in first_text
+    assert "event: snapshot" not in first_text
+
+    resume_id = None
+    for line in first_text.splitlines():
         if line.startswith("id:"):
-            first_id = line.split(":", 1)[1].strip()
+            resume_id = line.split(":", 1)[1].strip()
             break
 
-    assert first_id is not None
+    assert resume_id == change_id
 
-    # Second connection with Last-Event-ID should resume (produce events with IDs).
-    gen2 = _events_stream(_make_mock_request(app, headers, last_event_id=first_id), device)
-    chunks2, _ = await _collect_from_stream(gen2, max_chunks=20, timeout=3.0)
+    for chunk in resume_chunks:
+        text = chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk
+        assert "event: snapshot" not in text
 
-    resumed = False
-    for line in "".join(c.decode("utf-8") if isinstance(c, bytes) else c for c in chunks2).splitlines():
-        if line.startswith("id:"):
-            resumed = True
-            break
-
-    assert resumed
+    await gen1.aclose()
+    await gen2.aclose()
 
 
 # (e) Stale Last-Event-ID gets a snapshot event.
@@ -235,6 +266,7 @@ async def test_events_stale_id_gets_snapshot(vapp, monkeypatch):
     from tinyagentos.routes import device_state as ds_mod
 
     _patch_intervals(monkeypatch)
+    _ticking_clock(monkeypatch)
 
     app = vapp
     monkeypatch.setattr(auth_mod, "_request_is_console", lambda _r: True)
@@ -259,6 +291,40 @@ async def test_events_stale_id_gets_snapshot(vapp, monkeypatch):
             break
 
     assert got_snapshot
+
+
+# (n) Heartbeat carries no id line.
+@pytest.mark.asyncio
+async def test_heartbeat_has_no_id(vapp, monkeypatch):
+    from tinyagentos.routes import auth as auth_mod
+    from tinyagentos.demo_mode import write_demo_mode
+
+    _patch_intervals(monkeypatch)
+    _ticking_clock(monkeypatch)
+
+    app = vapp
+    monkeypatch.setattr(auth_mod, "_request_is_console", lambda _r: True)
+
+    write_demo_mode(app.state.data_dir, False)
+    app.state.config.agents = [
+        {"name": "heartbeat-agent", "framework": "openclaw", "user_id": "u1", "status": "running"},
+    ]
+
+    tok = await _device(app, user_id="u1", scopes=("agents:read",))
+    headers = {"authorization": f"Bearer {tok}"}
+    device = {"user_id": "u1"}
+
+    gen = _events_stream(_make_mock_request(app, headers), device)
+    chunks = await _read_until_ping(gen)
+
+    for chunk in chunks:
+        text = chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk
+        if ": ping" in text:
+            for line in text.splitlines():
+                assert not line.startswith("id:"), "heartbeat frame must not contain an id line"
+            break
+
+    await gen.aclose()
 
 
 # (f) Revoking the device closes the stream.
