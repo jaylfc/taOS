@@ -1060,7 +1060,7 @@ that SAME canonical_id instead:
 **Auth model.** When `POST /api/agents/auth-requests` receives an Authorization header, it calls `check_agent_identity` and records the proven canonical id (or None on rejection). A `proof_status` field now indicates the result:
    - `"none"` when no Authorization header is present
    - `"accepted"` when a token validates and the record's `proven_canonical_id` is set
-   - `"rejected"` when a token is present but validation raises 401/403
+   - `"rejected"` when an Authorization header is present but validation raises OR returns no identity (empty or non-Bearer header value)
    The status is exposed in the response so the caller can distinguish these three states.
 
 - `POST /api/agents/registry/{canonical_id}/scope-requests`
@@ -1296,7 +1296,10 @@ registry token in the mandatory header:
 Authorization: Bearer <registry token>
 ```
 
-Without a valid registry token the request returns **401**. The token subject is
+Without a valid registry token the request returns **401**. The `proof_status`
+field on the response is always `"accepted"` on this path, because an unproven
+caller receives 401 before any auth-request record is created; the path never
+returns `"none"` or `"rejected"`. The token subject is
 the only source of the canonical agent id. The body's `identity_claim` must equal the registry handle of the agent the token was minted for; a mismatch returns **403**. The body
 carries the desired project name, slug, and purpose:
 
