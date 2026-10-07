@@ -1004,6 +1004,7 @@ covers:
 - `POST /api/chat/messages` — scope `chat:send`
 - `POST /api/device/v1/voice`, `POST /api/device/v1/voice/tts` — scope `voice:stt` / `voice:tts`
 - `GET /api/device/v1/state` — scope `agents:read` (owner-filtered agent list)
+- `GET /api/device/v1/events` -- scope `agents:read` (SSE of owner-filtered agent changes; `Last-Event-ID` resume, closes on revoke or scope loss; see docs/routes.d/16-device-v1.md)
 
 ## Share destinations (device bearer)
 
