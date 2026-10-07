@@ -1,4 +1,4 @@
-### Fixed device events stream handling:
+Fixed device events stream handling:
 
 - Fixed `_next_event_id()` function to increment event_id before returning it, ensuring close and open events during decision replacement don't share an ID
 - Restored poll block indentation and semantics for proper agent upsert, remove, recap, and decision event handling

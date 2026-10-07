@@ -203,11 +203,13 @@ async def test_legacy_null_scope_token_gate(dapp, platform, method, path, scope,
     (voice, added after S1: legacy tokens never silently gain new scopes)."""
     from tinyagentos.device_scopes import LEGACY_SCOPES
 
-    # For the SSE /api/device/v1/events endpoint, we need to mock the event stream
-    # to avoid hanging on an infinite stream.
+    print(f"DEBUG: path={path!r}, method={method!r}")
     if path == "/api/device/v1/events" and method == "GET":
-        async def mock_events_stream(request, device):
+        print("DEBUG: Setting mock for events")
+        async def mock_events_stream(*args, **kwargs):
+            print("DEBUG: Mock called, yielding")
             yield b": ping\n\n"
+            print("DEBUG: Mock done")
         monkeypatch.setattr("tinyagentos.routes.device_state._events_stream", mock_events_stream)
 
     tok = await _raw_legacy(dapp, platform)
