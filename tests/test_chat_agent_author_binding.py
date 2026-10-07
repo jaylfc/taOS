@@ -7,7 +7,7 @@ supplied author_id/slug for post, reaction, typing, thinking, delta and state.
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -229,3 +229,65 @@ class TestChatAgentAuthorBinding:
                 json={"channel_id": ch["id"], "delta": " intruder"},
             )
         assert resp.status_code == 403
+
+    async def test_bound_agent_delta_without_channel_broadcasts_on_message_channel(self, client, app):
+        """post_message_delta broadcasts on msg.channel_id when a bound agent omits channel_id in body.
+        
+        A bound agent-authored message in channel C, POST delta with the agent token and
+        no channel_id, asserts the hub broadcast went to C (mirroring the existing
+        delta tests' hub fixture).
+        """
+        from tinyagentos.chat.typing_registry import TypingRegistry
+        
+        # Mock the chat_hub to verify broadcast calls - need AsyncMock for broadcast
+        mock_hub = MagicMock()
+        mock_hub.next_seq = MagicMock(return_value=1)
+        mock_hub.broadcast = AsyncMock()  # Need AsyncMock for async broadcast method
+        app.state.chat_hub = mock_hub
+        
+        # Create a channel and a message authored by agent-a
+        app.state.typing = TypingRegistry()
+        ch = await _create_channel_dm(app)
+        msg_store = app.state.chat_messages
+        msg = await msg_store.send_message(
+            channel_id=ch["id"],
+            author_id="agent-a",
+            author_type="agent",
+            content="agent message",
+            state="streaming",
+        )
+        
+        # Verify the message was created
+        assert msg["author_id"] == "agent-a"
+        assert msg["channel_id"] == ch["id"]
+        
+        # POST delta with bound agent token but no channel_id in body
+        async with _bound_client(app, "agent-a") as c:
+            resp = await c.post(
+                f"/api/chat/messages/{msg['id']}/delta",
+                json={"delta": " test delta"},
+                # Note: channel_id is omitted from body
+            )
+        
+        # Verify the delta was accepted (success response)
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "sent"
+        
+        # Verify the hub.broadcast was called with the message's channel_id, not empty
+        mock_hub.broadcast.assert_called_once()
+        call_args = mock_hub.broadcast.call_args
+        # broadcast is called with positional args: channel_id, dict
+        called_channel_id = call_args.args[0]
+
+        assert called_channel_id == ch["id"], (
+            f"Expected hub.broadcast to be called with channel_id={ch['id']}, "
+            f"but it was called with {called_channel_id}"
+        )
+
+        # Verify the broadcast message contains the correct data
+        broadcast_dict = call_args.args[1]
+
+        assert broadcast_dict["type"] == "message_delta"
+        assert broadcast_dict["message_id"] == msg["id"]
+        assert broadcast_dict["channel_id"] == ch["id"]
+        assert broadcast_dict["delta"] == " test delta"
