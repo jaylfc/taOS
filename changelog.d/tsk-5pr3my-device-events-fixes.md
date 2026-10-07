@@ -1,13 +1,4 @@
----
-author: jaylfc
-pr: #3521
-status: merged
-date: "2026-10-06"
-title: "Device events: close stream on agents:read loss, emit close+open on decision replace"
-project: taOS
----
-
-Fixed device events stream handling:
+### Fixed device events stream handling:
 
 - Fixed `_next_event_id()` function to increment event_id before returning it, ensuring close and open events during decision replacement don't share an ID
 - Restored poll block indentation and semantics for proper agent upsert, remove, recap, and decision event handling

@@ -197,11 +197,19 @@ async def test_migration_adds_nullable_column(tmp_path):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("platform", ["ios", "watchos", "android"])
 @pytest.mark.parametrize("method,path,scope", _all_gate_cases())
-async def test_legacy_null_scope_token_gate(dapp, platform, method, path, scope):
+async def test_legacy_null_scope_token_gate(dapp, platform, method, path, scope, monkeypatch):
     """A NULL-scope legacy token reaches every path whose scope is in LEGACY_SCOPES
     and is refused 403 device_scope_missing on every other classified path
     (voice, added after S1: legacy tokens never silently gain new scopes)."""
     from tinyagentos.device_scopes import LEGACY_SCOPES
+
+    # For the SSE /api/device/v1/events endpoint, we need to mock the event stream
+    # to avoid hanging on an infinite stream.
+    if path == "/api/device/v1/events" and method == "GET":
+        async def mock_events_stream(request, device):
+            yield b": ping\n\n"
+        monkeypatch.setattr("tinyagentos.routes.device_state._events_stream", mock_events_stream)
+
     tok = await _raw_legacy(dapp, platform)
     async with _client(dapp) as c:
         r = await c.request(method, path, headers=_bearer(tok), **_body(method, path))
