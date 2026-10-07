@@ -498,7 +498,7 @@ class IngestPipeline:
         # re-embedding (e.g. after an update or algorithm change) does not leave
         # orphaned chunks from a previous run.
         try:
-            await self._http_client.post(
+            resp = await self._http_client.post(
                 f"{self._qmd_base_url}/delete-chunk",
                 json={
                     "collection": "knowledge",
@@ -506,6 +506,8 @@ class IngestPipeline:
                 },
                 timeout=30,
             )
+            if not (200 <= resp.status_code < 300):
+                logger.warning("QMD delete-chunk failed for item %s: %s", item_id, resp.status_code)
         except Exception as exc:
             logger.warning("QMD delete-chunk failed for item %s: %s", item_id, exc)
         failures = 0

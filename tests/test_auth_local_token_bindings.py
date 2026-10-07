@@ -128,3 +128,53 @@ class TestBindLocalTokenAgentCorruptStore:
         alice_hash = hashlib.sha256("first-token".encode()).hexdigest()
         original_data = json.loads(original_content)
         assert original_data[alice_hash] == "first"
+
+
+class TestRemintRevokesPreviousToken:
+    """Re-minting a token for an agent must invalidate the prior token."""
+
+    def test_remint_revokes_previous_token(self, tmp_path):
+        mgr = AuthManager(tmp_path)
+        first = mgr.mint_agent_local_token("agent-a")
+        second = mgr.mint_agent_local_token("agent-a")
+        assert first != second
+        assert mgr.validate_local_token(first) is False
+        assert mgr.get_local_token_agent(first) is None
+        assert mgr.validate_local_token(second) is True
+        assert mgr.get_local_token_agent(second) == "agent-a"
+
+    def test_remint_keeps_other_agents(self, tmp_path):
+        mgr = AuthManager(tmp_path)
+        a_first = mgr.mint_agent_local_token("agent-a")
+        b_token = mgr.mint_agent_local_token("agent-b")
+        a_second = mgr.mint_agent_local_token("agent-a")
+        assert mgr.validate_local_token(b_token) is True
+        assert mgr.get_local_token_agent(b_token) == "agent-b"
+        assert mgr.validate_local_token(a_first) is False
+        assert mgr.validate_local_token(a_second) is True
+
+
+class TestUnbindLocalTokenAgent:
+    """Explicit unbind removes all tokens bound to an agent."""
+
+    def test_unbind_removes_all_tokens_for_agent(self, tmp_path):
+        mgr = AuthManager(tmp_path)
+        t1 = mgr.mint_agent_local_token("agent-a")
+        t2 = mgr.mint_agent_local_token("agent-a")
+        removed = mgr.unbind_local_token_agent("agent-a")
+        assert removed == 1
+        assert mgr.validate_local_token(t1) is False
+        assert mgr.validate_local_token(t2) is False
+        assert mgr.get_local_token_agent(t1) is None
+        assert mgr.get_local_token_agent(t2) is None
+
+    def test_unbind_missing_file_returns_zero(self, tmp_path):
+        mgr = AuthManager(tmp_path)
+        assert mgr.unbind_local_token_agent("no-such-agent") == 0
+
+    def test_host_token_survives_unbind(self, tmp_path):
+        mgr = AuthManager(tmp_path)
+        host_token = mgr.get_local_token()
+        mgr.mint_agent_local_token("agent-a")
+        mgr.unbind_local_token_agent("agent-a")
+        assert mgr.validate_local_token(host_token) is True

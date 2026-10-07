@@ -114,6 +114,11 @@ def register_all_routers(app):
     from tinyagentos.routes.device_state import router as device_state_router
     app.include_router(device_state_router)
 
+    # Device avatar (S2b/S3): device-bearer only, so CSRF-exempt like the pair
+    # routes (the bearer is not an ambient cookie credential).
+    from tinyagentos.routes.device_avatar import router as device_avatar_router
+    app.include_router(device_avatar_router)
+
     from tinyagentos.routes.observatory import router as observatory_router
     app.include_router(observatory_router, dependencies=_csrf)
 

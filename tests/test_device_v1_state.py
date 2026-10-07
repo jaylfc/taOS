@@ -291,3 +291,66 @@ async def test_state_does_not_leak_other_owners_decision(vapp):
     agent = next(a for a in data["agents"] if a["name"] == "shared-agent")
     assert agent.get("decision") is None
     assert "u2's secret decision" not in r.text
+
+
+# (l) an admin owner's device sees unowned (user_id "") pending decisions.
+@pytest.mark.asyncio
+async def test_admin_owner_device_sees_unowned_decision(vapp):
+    app = vapp
+    admin_user = app.state.auth.find_user("admin")
+    admin_id = admin_user["id"]
+
+    app.state.config.agents = [
+        {"name": "shared-agent", "framework": "openclaw", "user_id": ""},
+    ]
+
+    await app.state.decision_store.create(
+        from_agent="shared-agent",
+        question="unowned decision for admin",
+        type="approve_deny",
+        user_id="",
+        options=[{"label": "Approve", "value": "approve"}, {"label": "Deny", "value": "deny"}],
+    )
+
+    tok = await _device(app, user_id=admin_id, scopes=("agents:read",))
+
+    async with _client(app) as c:
+        r = await c.get("/api/device/v1/state", headers=_bearer(tok))
+
+    assert r.status_code == 200, r.text
+    data = r.json()
+    agent = next(a for a in data["agents"] if a["name"] == "shared-agent")
+    assert agent.get("decision") is not None
+
+
+# (m) a non-admin owner's device must not see unowned (user_id "") pending decisions.
+@pytest.mark.asyncio
+async def test_non_admin_owner_does_not_see_unowned_decision(vapp):
+    app = vapp
+    auth = app.state.auth
+    invite_code = auth.add_user_invite("bob", "admin")
+    auth.complete_invite("bob", invite_code, "Bob", "", "testpass1")
+    bob_user = auth.find_user("bob")
+    bob_id = bob_user["id"]
+
+    app.state.config.agents = [
+        {"name": "shared-agent", "framework": "openclaw", "user_id": ""},
+    ]
+
+    await app.state.decision_store.create(
+        from_agent="shared-agent",
+        question="unowned decision for non-admin",
+        type="approve_deny",
+        user_id="",
+        options=[{"label": "Approve", "value": "approve"}, {"label": "Deny", "value": "deny"}],
+    )
+
+    tok = await _device(app, user_id=bob_id, scopes=("agents:read",))
+
+    async with _client(app) as c:
+        r = await c.get("/api/device/v1/state", headers=_bearer(tok))
+
+    assert r.status_code == 200, r.text
+    data = r.json()
+    agent = next(a for a in data["agents"] if a["name"] == "shared-agent")
+    assert agent.get("decision") is None

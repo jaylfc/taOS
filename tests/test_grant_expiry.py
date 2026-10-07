@@ -173,6 +173,7 @@ class TestReusePathWiresExpiry:
             identity_claim="@expiry-agent", framework="openclaw",
             requested_scopes=["project_tasks"], requested_skills=None, reason="",
             duration_secs=duration_secs, project_id="proj-1",
+            proven_canonical_id=existing["canonical_id"],
         )
         monkeypatch.setattr(client._transport.app.state, "agent_registry", registry)
         monkeypatch.setattr(client._transport.app.state, "auth_requests", auth_store)
@@ -417,6 +418,7 @@ class TestAdditivePathsPreserveExpiry:
             reason="",
             duration_secs=None,
             project_id="proj-1",
+            proven_canonical_id=canonical_id,
         )
 
         monkeypatch.setattr(client._transport.app.state, "agent_registry", registry)

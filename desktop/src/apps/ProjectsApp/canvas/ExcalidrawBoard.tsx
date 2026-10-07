@@ -1,3 +1,4 @@
+import "./excalidraw-assets";
 import { useMemo, useState, useEffect, useRef } from "react";
 import type { ComponentProps } from "react";
 import { Excalidraw, convertToExcalidrawElements } from "@excalidraw/excalidraw";

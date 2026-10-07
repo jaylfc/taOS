@@ -467,3 +467,16 @@ typed `agent.upsert` events.
 The stream re-checks the device bearer token on every loop tick. If the
 device is revoked, blocked or the scope is lost (specifically `agents:read`),
 the stream closes immediately.
+
+### GET /api/device/v1/agents/{name}/avatar
+
+**Scope:** `agents:read` (device bearer). `size` (required): `45` or `96`.
+
+LVGL 9 RGB565A8 avatar (`application/x-taos-lvimg`): a 12-byte
+`lv_image_header_t` (magic `0x19`, cf `0x14`), then RGB565 and A8 (circle mask)
+planes, `12 + w*h*3` bytes. `ETag: "<avatar_hash>-<size>"`; a matching
+`If-None-Match` returns `304`.
+
+**Errors:** `400` `size_not_supported`; `401`/`403` as for state; `404`
+`avatar_not_found` (non-owned, unknown, no avatar, undecodable; never
+`403` or `500`).

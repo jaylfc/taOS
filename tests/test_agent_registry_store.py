@@ -571,10 +571,72 @@ class TestRegister:
         assert r1["canonical_id"] != r2["canonical_id"]
 
     @pytest.mark.asyncio
+    async def test_concurrent_register_same_second_gets_suffix(self, store):
+        import asyncio
+        from unittest.mock import patch
+
+        with patch(
+            "tinyagentos.agent_registry_store.mint_canonical_id",
+            lambda slug, ts: f"{slug}-20261005-120000",
+        ):
+            rows = await asyncio.gather(
+                *[
+                    store.register(framework="openclaw", display_name="Racer")
+                    for _ in range(5)
+                ]
+            )
+        assert len(rows) == 5
+        canonical_ids = {r["canonical_id"] for r in rows}
+        assert len(canonical_ids) == 5
+        assert "racer-20261005-120000" in canonical_ids
+
+    @pytest.mark.asyncio
     async def test_not_initialized_raises(self, tmp_path):
         s = AgentRegistryStore(tmp_path / "not_init.db")
         with pytest.raises(RuntimeError, match="not initialised"):
             await s.register(framework="openclaw")
+
+    @pytest.mark.asyncio
+    async def test_collision_rollback_does_not_drop_concurrent_write(self, store):
+        """Concurrent register() calls with the same slug must not lose rows
+        via a shared-transaction rollback from a collision."""
+        import asyncio
+        from unittest.mock import patch
+
+        existing = await store.register(framework="openclaw", display_name="Existing")
+
+        with patch(
+            "tinyagentos.agent_registry_store.mint_canonical_id",
+            lambda slug, ts: f"{slug}-20261005-120000",
+        ):
+            results = await asyncio.gather(
+                *[
+                    store.register(framework="openclaw", display_name="Collision")
+                    for _ in range(50)
+                ],
+                *[
+                    store.update(existing["canonical_id"], display_name=f"Updated-{i}")
+                    for i in range(50)
+                ],
+                return_exceptions=True,
+            )
+
+        register_results = results[:50]
+        update_results = results[50:]
+
+        for r in register_results:
+            assert isinstance(r, dict), f"register raised or returned non-dict: {r}"
+            assert "canonical_id" in r
+
+        canonical_ids = {r["canonical_id"] for r in register_results}
+        assert len(canonical_ids) == 50, (
+            f"Expected 50 distinct canonical_ids, got {len(canonical_ids)}"
+        )
+
+        all_rows = await store.list_all()
+        assert len(all_rows) == 51
+
+        assert all(isinstance(r, dict) for r in update_results)
 
 
 # ---------------------------------------------------------------------------

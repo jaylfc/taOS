@@ -1,0 +1,3 @@
+### Added
+
+ - Auth request `POST /api/agents/auth-requests` now returns a `proof_status` field: `"none"` when no Authorization header is present, `"accepted"` when a token validates and `proven_canonical_id` is set, or `"rejected"` when an Authorization header is present but validation raises OR returns no identity (empty or non-Bearer header). This lets callers distinguish the three states that previously all returned the same status.

@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "check:excalidraw-assets": "node scripts/check-excalidraw-assets.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "^6.11.1",

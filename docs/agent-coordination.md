@@ -788,7 +788,7 @@ purely from a matching active grant. An already-registered agent is added to a
 further project via `POST /api/projects/{project_id}/members/assign-agent`
 (admin/owner gated) or by redeeming an invite whose handle collides with an
 active identity (the existing canonical_id and token are reused instead of
-409ing). The reverse is
+409ing). **To reuse an existing identity for a multi-project approval, the requester must re-submit the request with that agent's registry token as a Bearer header, otherwise the approval returns 409.** The reverse is
 `POST /api/projects/{project_id}/members/revoke-agent` (taOS #2148), which drops
 the agent's grants on that ONE project and leaves its other projects, its other
 scopes and the identity itself standing.
@@ -1057,6 +1057,12 @@ approval, so an agent that already holds an active registry identity cannot use
 it to gain more scopes without duplicating itself. A scope request adds grants to
 that SAME canonical_id instead:
 
+**Auth model.** When `POST /api/agents/auth-requests` receives an Authorization header, it calls `check_agent_identity` and records the proven canonical id (or None on rejection). A `proof_status` field now indicates the result:
+   - `"none"` when no Authorization header is present
+   - `"accepted"` when a token validates and the record's `proven_canonical_id` is set
+   - `"rejected"` when an Authorization header is present but validation raises OR returns no identity (empty or non-Bearer header value)
+   The status is exposed in the response so the caller can distinguish these three states.
+
 - `POST /api/agents/registry/{canonical_id}/scope-requests`
   `{requested_scopes, project_id?, reason?}`: create a pending request. Unlike
   the new-agent auth-request (unauthenticated, since the agent has no creds yet),
@@ -1290,7 +1296,10 @@ registry token in the mandatory header:
 Authorization: Bearer <registry token>
 ```
 
-Without a valid registry token the request returns **401**. The token subject is
+Without a valid registry token the request returns **401**. The `proof_status`
+field on the response is always `"accepted"` on this path, because an unproven
+caller receives 401 before any auth-request record is created; the path never
+returns `"none"` or `"rejected"`. The token subject is
 the only source of the canonical agent id. The body's `identity_claim` must equal the registry handle of the agent the token was minted for; a mismatch returns **403**. The body
 carries the desired project name, slug, and purpose:
 
@@ -1875,7 +1884,9 @@ A `single_select` or `multi_select` decision can be answered off-menu by sending
 - `multi_select`: `value` must still be a list and **every element is still
   validated against the declared options**; the free-text entry is appended, so
   the stored answer is `[*declared_values, other_value.strip()]`. A non-list
-  `value` is a `400`.
+  `value` is a `400`. `value` may be an empty list when `other_value` is
+  non-empty; the stored answer is then `[other_value.strip()]`. An empty
+  `value` with an empty `other_value` is a `400`.
 - `note` is a separate optional field. When present it is appended to the text
   routed to the agent as `<answer> (note: <note>)`.
 - With no `other_value`, the original strict validation is unchanged: the answer
@@ -2000,6 +2011,20 @@ replace the earlier shared-token binding: each deploy mints a fresh token,
 eliminating the last-deploy-wins collision where two agents bound to the same
 host token would overwrite each other's identity. The shared host token remains
 valid for admin/system callers but is no longer bound to any agent name.
+
+## Chat author identity (credential-bound for per-agent local tokens)
+
+`POST /api/chat/messages`, `POST /api/chat/messages/{id}/reactions`,
+`DELETE /api/chat/messages/{id}/reactions/{emoji}`,
+`POST /api/chat/channels/{id}/typing`, `POST /api/chat/channels/{id}/thinking`,
+`POST /api/chat/messages/{id}/delta`, and `POST /api/chat/messages/{id}/state`
+now bind the caller-supplied author to the per-agent local token when one is
+presented. The auth middleware sets `request.state.agent_name` for bound tokens
+(`AuthManager.get_local_token_agent`); the routes use a `_bound_agent(request)`
+helper and override `author_id`/`slug` with that name. The host local token,
+admin sessions, session cookies, and device bearers are not bound, so their
+caller-supplied values are preserved (byte-for-byte compatibility with taosctl
+and the SPA).
 
 ## In-process LLM gateway (`/api/llm/v1`, scoped gateway keys, session or host local token)
 

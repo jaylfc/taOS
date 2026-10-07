@@ -2004,7 +2004,7 @@ if [[ -z "${TAOS_SKIP_QMD:-}" ]]; then
             # npm packages are signed via the registry's package-lock integrity
             # mechanism (sha512 in package-lock.json); pinning the version here
             # is the supply-chain control available at install time.
-            qmd_npm_version="${TAOS_QMD_NPM_VERSION:-2.6.0}"
+            qmd_npm_version="${TAOS_QMD_NPM_VERSION:-2.8.3-taos.2}"
             qmd_install_log=$(mktemp /tmp/taos-qmd-install.XXXXXX)
             mv -- "$qmd_install_log" "${qmd_install_log}.log"
             qmd_install_log="${qmd_install_log}.log"

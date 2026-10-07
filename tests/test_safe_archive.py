@@ -10,11 +10,12 @@ deny.
 
 import io
 import tarfile
+import zlib
 
 import pytest
 
 from tinyagentos import safe_archive
-from tinyagentos.safe_archive import ArchiveError, check_tar_limits
+from tinyagentos.safe_archive import ArchiveError, check_tar_limits, extract_tar_safely, open_tar_gz
 
 _MIB = 1024 * 1024
 
@@ -146,3 +147,291 @@ def test_a_real_tar_with_a_negative_directory_size_is_rejected():
         pytest.raises(ArchiveError, match="member size invalid"),
     ):
         check_tar_limits(tar, kind="backup", max_uncompressed_bytes=1000)
+
+
+def test_gnu_long_name_first_member_refused_before_decompression(monkeypatch):
+    """An 8 MiB GNU long-name helper as the first member must be refused before
+    the gzip payload is fully decompressed."""
+    from tinyagentos.safe_archive import open_tar_gz
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz", format=tarfile.GNU_FORMAT) as tar:
+        info = tarfile.TarInfo("A" * (8 * 1024 * 1024))
+        info.size = 1
+        tar.addfile(info, io.BytesIO(b"x"))
+    raw = buf.getvalue()
+
+    read_bytes = []
+    _original_gzip_read = safe_archive.gzip.GzipFile.read
+
+    def counting_read(self, size=-1):
+        result = _original_gzip_read(self, size)
+        if result:
+            read_bytes.append(len(result))
+        return result
+
+    monkeypatch.setattr(safe_archive.gzip.GzipFile, "read", counting_read)
+    try:
+        with pytest.raises(ArchiveError, match="tar helper record"):
+            with open_tar_gz(io.BytesIO(raw)) as tar:
+                check_tar_limits(tar)
+        total = sum(read_bytes)
+        assert total < 64 * 1024, f"decompressed {total} bytes, expected < 64 KiB"
+    finally:
+        monkeypatch.undo()
+
+
+def test_pax_long_name_second_member_refused_before_decompression(monkeypatch):
+    """A PAX long-name helper as the second member must be refused before the
+    gzip payload is fully decompressed."""
+    from tinyagentos.safe_archive import open_tar_gz
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz", format=tarfile.PAX_FORMAT) as tar:
+        info = tarfile.TarInfo("small.txt")
+        info.size = 1
+        tar.addfile(info, io.BytesIO(b"s"))
+        info2 = tarfile.TarInfo("A" * (8 * 1024 * 1024))
+        info2.size = 1
+        tar.addfile(info2, io.BytesIO(b"x"))
+    raw = buf.getvalue()
+
+    read_bytes = []
+    _original_gzip_read = safe_archive.gzip.GzipFile.read
+
+    def counting_read(self, size=-1):
+        result = _original_gzip_read(self, size)
+        if result:
+            read_bytes.append(len(result))
+        return result
+
+    monkeypatch.setattr(safe_archive.gzip.GzipFile, "read", counting_read)
+    try:
+        with pytest.raises(ArchiveError, match="tar helper record"):
+            with open_tar_gz(io.BytesIO(raw)) as tar:
+                check_tar_limits(tar)
+        total = sum(read_bytes)
+        assert total < 64 * 1024, f"decompressed {total} bytes, expected < 64 KiB"
+    finally:
+        monkeypatch.undo()
+
+
+def test_helper_refused_even_when_reads_are_chunked(monkeypatch):
+    """An 8 MiB GNU long-name helper as the first member must be refused by its
+    declared size even when reads are chunked to 1 MiB (simulating CPython
+    3.13.16's _EXTHEADER_READ_CHUNK behavior)."""
+    from tinyagentos.safe_archive import open_tar_gz, _ReadSizeGuard
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz", format=tarfile.GNU_FORMAT) as tar:
+        info = tarfile.TarInfo("A" * (8 * 1024 * 1024))
+        info.size = 1
+        tar.addfile(info, io.BytesIO(b"x"))
+    raw = buf.getvalue()
+
+    read_bytes = []
+    _original_gzip_read = safe_archive.gzip.GzipFile.read
+
+    def counting_read(self, size=-1):
+        result = _original_gzip_read(self, size)
+        if result:
+            read_bytes.append(len(result))
+        return result
+
+    monkeypatch.setattr(safe_archive.gzip.GzipFile, "read", counting_read)
+    monkeypatch.setattr(_ReadSizeGuard, "read", lambda self, size=-1: self._wrapped.read(size))
+    try:
+        with pytest.raises(ArchiveError, match="tar helper record"):
+            with open_tar_gz(io.BytesIO(raw)) as tar:
+                check_tar_limits(tar)
+        total = sum(read_bytes)
+        assert total < 64 * 1024, f"decompressed {total} bytes, expected < 64 KiB"
+    finally:
+        monkeypatch.undo()
+
+
+def test_pax_helper_refused_even_when_reads_are_chunked(monkeypatch):
+    """A PAX long-name helper as the second member must be refused by its
+    declared size even when reads are chunked to 1 MiB (simulating CPython
+    3.13.16's _EXTHEADER_READ_CHUNK behavior)."""
+    from tinyagentos.safe_archive import open_tar_gz, _ReadSizeGuard
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz", format=tarfile.PAX_FORMAT) as tar:
+        info = tarfile.TarInfo("small.txt")
+        info.size = 1
+        tar.addfile(info, io.BytesIO(b"s"))
+        info2 = tarfile.TarInfo("A" * (8 * 1024 * 1024))
+        info2.size = 1
+        tar.addfile(info2, io.BytesIO(b"x"))
+    raw = buf.getvalue()
+
+    read_bytes = []
+    _original_gzip_read = safe_archive.gzip.GzipFile.read
+
+    def counting_read(self, size=-1):
+        result = _original_gzip_read(self, size)
+        if result:
+            read_bytes.append(len(result))
+        return result
+
+    monkeypatch.setattr(safe_archive.gzip.GzipFile, "read", counting_read)
+    monkeypatch.setattr(_ReadSizeGuard, "read", lambda self, size=-1: self._wrapped.read(size))
+    try:
+        with pytest.raises(ArchiveError, match="tar helper record"):
+            with open_tar_gz(io.BytesIO(raw)) as tar:
+                check_tar_limits(tar)
+        total = sum(read_bytes)
+        assert total < 64 * 1024, f"decompressed {total} bytes, expected < 64 KiB"
+    finally:
+        monkeypatch.undo()
+
+
+def test_truncated_gzip_during_validation_raises_archive_error():
+    """A truncated gzip stream must raise ArchiveError during member iteration,
+    not let tarfile.ReadError or EOFError escape."""
+    from tinyagentos.safe_archive import open_tar_gz, check_tar_limits
+
+    # Build a valid tar.gz with one 64 KiB member
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz", compresslevel=1) as tar:
+        info = tarfile.TarInfo("data.bin")
+        info.size = 64 * 1024
+        tar.addfile(info, io.BufferedReader(_Zeros(64 * 1024)))
+    full = buf.getvalue()
+
+    # Truncate to two thirds so the gzip stream ends mid-member during iteration
+    truncated = full[: len(full) * 2 // 3]
+
+    with pytest.raises(safe_archive.ArchiveError, match="not a valid gzip tarball"):
+        with open_tar_gz(io.BytesIO(truncated)) as tar:
+            check_tar_limits(tar)
+
+
+def test_helper_guard_hook_exists_on_this_python():
+    """The CPython private hook _proc_member must still be present in TarInfo."""
+    import inspect
+    from tarfile import TarInfo
+    
+    assert "_proc_member" in vars(TarInfo)
+    assert "_proc_member(" in inspect.getsource(TarInfo._fromtarfile)
+
+
+@pytest.mark.guards("tinyagentos.safe_archive:open_tar_gz",
+                    replace=[("tarinfo=_HelperSizeGuardTarInfo", "tarinfo=tarfile.TarInfo")])
+def test_helper_guard_override_is_called(monkeypatch):
+    """_HelperSizeGuardTarInfo._proc_member must be called during archive opening."""
+    from tinyagentos.safe_archive import open_tar_gz
+    
+    call_count = 0
+    
+    def mock_proc_member(self, tarfile_obj):
+        nonlocal call_count
+        call_count += 1
+        return tarfile.TarInfo._proc_member(self, tarfile_obj)
+    
+    monkeypatch.setattr(safe_archive._HelperSizeGuardTarInfo, "_proc_member", mock_proc_member)
+    
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz", format=tarfile.GNU_FORMAT) as tar:
+        info = tarfile.TarInfo("small.txt")
+        info.size = 1
+        tar.addfile(info, io.BytesIO(b"x"))
+    raw = buf.getvalue()
+    
+    with open_tar_gz(io.BytesIO(raw)) as tar:
+        list(tar)  # iterate through members
+    
+    assert call_count >= 1, "_HelperSizeGuardTarInfo._proc_member was never called"
+
+
+def test_open_tar_gz_extracts_a_legit_archive(tmp_path):
+    """A legitimate archive extracts correctly through open_tar_gz."""
+    from tinyagentos.safe_archive import open_tar_gz
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz", format=tarfile.GNU_FORMAT) as tar:
+        info = tarfile.TarInfo("big.bin")
+        info.size = 20 * 1024 * 1024
+        tar.addfile(info, io.BufferedReader(_Zeros(20 * 1024 * 1024)))
+        info2 = tarfile.TarInfo("small.txt")
+        info2.size = 5
+        tar.addfile(info2, io.BytesIO(b"hello"))
+    raw = buf.getvalue()
+
+    dest = tmp_path / "out"
+    dest.mkdir()
+    with open_tar_gz(io.BytesIO(raw)) as tar:
+        extract_tar_safely(tar, dest, kind="test")
+    assert (dest / "big.bin").exists()
+    assert (dest / "big.bin").stat().st_size == 20 * 1024 * 1024
+    assert (dest / "small.txt").read_text() == "hello"
+
+
+def test_open_tar_gz_closes_gzip_when_guard_refuses_first_member(monkeypatch):
+    """GzipFile.close must be called even when the read guard refuses the first
+    member during tarfile.open."""
+    import gzip as gzip_mod
+    from tinyagentos.safe_archive import open_tar_gz
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz", format=tarfile.GNU_FORMAT) as tar:
+        info = tarfile.TarInfo("A" * (8 * 1024 * 1024))
+        info.size = 1
+        tar.addfile(info, io.BytesIO(b"x"))
+    raw = buf.getvalue()
+
+    close_calls = []
+
+    class TrackingGzipFile(gzip_mod.GzipFile):
+        def close(self):
+            close_calls.append(True)
+            super().close()
+
+        def __del__(self):
+            pass
+
+    monkeypatch.setattr(safe_archive.gzip, "GzipFile", TrackingGzipFile)
+    try:
+        with pytest.raises(ArchiveError):
+            with open_tar_gz(io.BytesIO(raw)) as tar:
+                pass
+        assert close_calls, "GzipFile.close was not called"
+    finally:
+        monkeypatch.undo()
+
+def test_open_tar_gz_translates_zlib_error_during_iteration():
+    """zlib.error must be translated to ArchiveError during member iteration."""
+    # Build a valid tar.gz in memory (one small member)
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        info = tarfile.TarInfo("small.txt")
+        info.size = 5
+        tar.addfile(info, io.BytesIO(b"hello"))
+    raw = buf.getvalue()
+
+    with pytest.raises(ArchiveError, match="not a valid gzip tarball"):
+        with open_tar_gz(io.BytesIO(raw)) as tar:
+            raise zlib.error("Error -3 while decompressing data: invalid code lengths set")
+
+def test_open_tar_gz_translates_zlib_error_on_open(monkeypatch):
+    """zlib.error on tarfile.open must be translated to ArchiveError."""
+    # Build a valid tar.gz in memory (one small member)
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        info = tarfile.TarInfo("small.txt")
+        info.size = 5
+        tar.addfile(info, io.BytesIO(b"hello"))
+    raw = buf.getvalue()
+
+    # Monkeypatch tarfile.open to raise zlib.error directly
+    def patched_open(*args, **kwargs):
+        return (_ for _ in ()).throw(zlib.error("Error -3"))
+
+    monkeypatch.setattr(safe_archive.tarfile, "open", patched_open)
+    try:
+        with pytest.raises(ArchiveError, match="not a valid gzip tarball"):
+            with open_tar_gz(io.BytesIO(raw)):
+                pass
+    finally:
+        monkeypatch.undo()

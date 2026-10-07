@@ -613,7 +613,9 @@ async def answer_decision(
                     for o in (existing.get("options") or [])
                     if o.get("value") is not None
                 }
-                if valid and (not vals or any(v not in valid for v in vals)):
+                if not vals and not (body.other_value or "").strip():
+                    return JSONResponse({"error": "answer requires at least one option or other_value"}, status_code=400)
+                if valid and any(v not in valid for v in vals):
                     return JSONResponse({"error": "answer must be a subset of the options"}, status_code=400)
         else:
             # Option-only path: existing strict validation.
@@ -1092,7 +1094,9 @@ async def answer_decision_as_agent(
                     for o in (existing.get("options") or [])
                     if o.get("value") is not None
                 }
-                if valid and (not vals or any(v not in valid for v in vals)):
+                if not vals and not (body.other_value or "").strip():
+                    return JSONResponse({"error": "answer requires at least one option or other_value"}, status_code=400)
+                if valid and any(v not in valid for v in vals):
                     return JSONResponse({"error": "answer must be a subset of the options"}, status_code=400)
         else:
             valid = {
