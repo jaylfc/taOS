@@ -149,6 +149,10 @@ class ApproveBody(BaseModel):
     project_id: Optional[str] = None
     defer_binding: bool = False
     renew: bool = False
+    # Make the approved agent the project's lead (membership role + the
+    # projects.lead_member_id pointer). Needs an explicit project_id and a
+    # membership-creating grant; refused otherwise rather than silently ignored.
+    is_lead: bool = False
 
 
 class AssignAgentBody(BaseModel):
@@ -777,6 +781,7 @@ async def approve_request_record(
     display_name: str | None = None,
     defer_binding: bool = False,
     renew: bool = False,
+    is_lead: bool = False,
 ) -> dict:
     """Register an agent, mint its token, write grants + relationships +
     membership + a2a sync, and record the decision.
@@ -973,6 +978,7 @@ async def approve_request_record(
                 project_id=project_id,
                 granted_scopes=granted_scopes,
                 decided_by=decided_by,
+                is_lead=is_lead,
                 expires_at=expires_at,
                 renew=renew,
             )
@@ -1094,8 +1100,13 @@ async def approve_request_record(
                         project_id=binding_project,
                         member_id=canonical_id,
                         member_kind="native",
-                        role="member",
+                        role="lead" if is_lead else "member",
                     )
+                    # The role is only a label; set_lead writes the
+                    # lead_member_id pointer the lead-gated checks read
+                    # (same split as add_agent_to_project, taOS #2113).
+                    if is_lead:
+                        await pstore.set_lead(binding_project, canonical_id)
                     if granted_canvas:
                         await pstore.set_member_canvas(
                             project_id=binding_project,
@@ -1630,6 +1641,20 @@ async def _do_approve(request: Request, request_id: str, body: ApproveBody, user
             status_code=400,
             detail="defer_binding cannot be combined with an explicit project_id",
         )
+    # is_lead makes the agent lead of the EXPLICIT project, so it needs one
+    # (never the agent-supplied fallback) and a grant that creates the
+    # membership row the lead pointer must reference.
+    if body.is_lead:
+        if body.defer_binding or not (body.project_id and body.project_id.strip()):
+            raise HTTPException(
+                status_code=400,
+                detail="is_lead requires an explicit project_id",
+            )
+        if not ("project_tasks" in body.granted_scopes or set(body.granted_scopes) & _CANVAS_SCOPES):
+            raise HTTPException(
+                status_code=400,
+                detail="is_lead requires granting project_tasks or a canvas scope",
+            )
 
     approval_result = await approve_request_record(
         request,
@@ -1640,6 +1665,7 @@ async def _do_approve(request: Request, request_id: str, body: ApproveBody, user
         project_id=body.project_id,
         defer_binding=body.defer_binding,
         renew=body.renew,
+        is_lead=body.is_lead,
     )
 
     # Attach duration information to the approval result.

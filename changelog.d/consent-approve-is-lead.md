@@ -1,0 +1,1 @@
+- Consent approval can now make the approved agent the project's lead. The approve endpoint takes `is_lead` (refused with 400 unless an explicit `project_id` and a `project_tasks` or canvas grant are present) and sets both the member role and the project's lead pointer; the consent card shows a "Make project lead" checkbox when a project-bound grant is being approved.

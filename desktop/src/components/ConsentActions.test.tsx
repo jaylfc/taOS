@@ -178,6 +178,45 @@ describe("ConsentActions", () => {
     });
   });
 
+  it("sends is_lead when Make project lead is ticked", async () => {
+    const fetchMock = vi.fn((url: string) => {
+      const vocab = vocabHit(url);
+      if (vocab) return vocab;
+      if (String(url).startsWith("/api/projects")) {
+        return okJson({ items: [{ id: "p1", name: "Strata" }] });
+      }
+      return okJson({ status: "ok" });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const onResolved = vi.fn();
+    render(
+      <ConsentActions requestId="req-lead" scopes={["project_tasks", "a2a_send"]} onResolved={onResolved} />,
+    );
+    await screen.findByLabelText(/Grant project access for/i);
+    await projectListLoaded();
+    fireEvent.click(screen.getByRole("checkbox", { name: /Make project lead/i }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /allow/i })).not.toBeDisabled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /allow/i }));
+    await waitFor(() => expect(onResolved).toHaveBeenCalledTimes(1));
+
+    const approveCall = fetchMock.mock.calls.find((c) => String(c[0]).includes("/approve"));
+    expect(JSON.parse((approveCall![1] as RequestInit).body as string)).toEqual({
+      granted_scopes: ["project_tasks", "a2a_send"],
+      project_id: "p1",
+      is_lead: true,
+    });
+  });
+
+  it("offers no lead checkbox without a membership scope", async () => {
+    render(<ConsentActions requestId="req-nolead" scopes={["a2a_send"]} />);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /allow/i })).not.toBeDisabled(),
+    );
+    expect(screen.queryByRole("checkbox", { name: /Make project lead/i })).toBeNull();
+  });
+
   it("gates Allow until a project is chosen when several projects exist", async () => {
     const fetchMock = vi.fn((url: string) => {
       const vocab = vocabHit(url);
