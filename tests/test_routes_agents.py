@@ -1,6 +1,7 @@
 import pytest
 from tinyagentos.config import load_config
 from tinyagentos.cluster.worker_protocol import WorkerInfo
+from tinyagentos.cluster.placement import rank
 from tinyagentos.containers.backend import ContainerInfo
 
 
@@ -352,7 +353,7 @@ class TestDeployRouting:
         assert data["pinned_worker"] == "arch-box"
         assert data["available_on"] == ["fedora"]
 
-    async def test_canonical_host_is_alphabetical_when_multiple_workers_have_model(
+    async def test_canonical_host_is_rendezvous_winner_when_multiple_workers_have_model(
         self, client, app
     ):
         _seed_worker(app, "zeta", ["shared-model"])
@@ -365,7 +366,8 @@ class TestDeployRouting:
         })
         assert resp.status_code == 202
         data = resp.json()
-        assert data["worker"] == "alpha"
+        assert data["worker"] == rank("shared-model", ["alpha", "mid", "zeta"])[0]
+        assert data["worker"] == "mid"
         assert data["available_on"] == ["alpha", "mid", "zeta"]
 
     async def test_controller_local_model_falls_through(self, client, app, tmp_data_dir, monkeypatch):
