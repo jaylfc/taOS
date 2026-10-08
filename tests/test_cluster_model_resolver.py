@@ -1,4 +1,4 @@
-"""Unit tests for tinyagentos.cluster.model_resolver._model_matches.
+"""Unit tests for tinyagentos.cluster.model_resolver._model_matches and find_model_hosts.
 
 The resolver uses a loose prefix match so wizard-picked ids like
 ``qwen2.5-7b`` still resolve against backend-reported ids like
@@ -6,7 +6,7 @@ The resolver uses a loose prefix match so wizard-picked ids like
 NOT treat version-number dots as variant boundaries; ``qwen3`` and
 ``qwen3.5`` are different model families.
 """
-from tinyagentos.cluster.model_resolver import _model_matches
+from tinyagentos.cluster.model_resolver import _model_matches, find_model_hosts
 
 
 class TestModelMatches:
@@ -58,3 +58,46 @@ class TestModelMatches:
         # qwen vs qwen3 — no dash or valid extension separator
         assert not _model_matches("qwen", "qwen3")
         assert not _model_matches("qwen3", "qwen34")
+
+
+def _worker(name, status="online", kind="worker", model_name="qwen3-8b"):
+    return {
+        "name": name,
+        "status": status,
+        "kind": kind,
+        "backends": [{"models": [{"name": model_name}]}],
+    }
+
+
+class TestFindModelHosts:
+    def test_rendezvous_canonical_host_not_alphabetical(self):
+        # alpha, bravo, charlie all online holding qwen3-8b:
+        # rendezvous winner is bravo, not alpha (alphabetical).
+        cluster = [_worker("alpha"), _worker("bravo"), _worker("charlie")]
+        loc = find_model_hosts("qwen3-8b", cluster_state=cluster, local_models=[])
+        assert loc.kind == "worker"
+        assert loc.hosts == ["alpha", "bravo", "charlie"]
+        assert loc.canonical_host == "bravo"
+
+    def test_device_worker_excluded(self):
+        cluster = [
+            _worker("alpha"),
+            _worker("device-1", kind="device"),
+            _worker("bravo"),
+        ]
+        loc = find_model_hosts("qwen3-8b", cluster_state=cluster, local_models=[])
+        assert loc.kind == "worker"
+        assert "device-1" not in loc.hosts
+        assert loc.hosts == ["alpha", "bravo"]
+
+    def test_update_available_included_draining_excluded(self):
+        cluster = [
+            _worker("alpha", status="update-available"),
+            _worker("bravo", status="draining"),
+            _worker("charlie"),
+        ]
+        loc = find_model_hosts("qwen3-8b", cluster_state=cluster, local_models=[])
+        assert loc.kind == "worker"
+        assert "alpha" in loc.hosts
+        assert "charlie" in loc.hosts
+        assert "bravo" not in loc.hosts
