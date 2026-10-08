@@ -137,4 +137,32 @@ describe("Launchpad", () => {
     render(<Launchpad open={true} onClose={onClose} onOpenApp={onOpenApp} />);
     expect(screen.queryByText("My Apps")).not.toBeInTheDocument();
   });
+
+  it("sits between the mobile top bar and dock when given insets", () => {
+    render(
+      <Launchpad open={true} onClose={onClose} onOpenApp={onOpenApp} insets={{ top: "44px", bottom: "62px" }} />,
+    );
+    const dialog = screen.getByRole("dialog", { name: /launchpad/i });
+    expect(dialog.style.top).toBe("44px");
+    expect(dialog.style.bottom).toBe("62px");
+  });
+
+  it("keeps the desktop offsets when no insets are given", () => {
+    render(<Launchpad open={true} onClose={onClose} onOpenApp={onOpenApp} />);
+    const dialog = screen.getByRole("dialog", { name: /launchpad/i });
+    expect(dialog.style.top).toBe("");
+    expect(dialog.style.bottom).toBe("0px");
+  });
+
+  it("uses the home screen's 4 columns at phone width", () => {
+    const prev = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 540 });
+    try {
+      render(<Launchpad open={true} onClose={onClose} onOpenApp={onOpenApp} insets={{ top: "44px", bottom: "62px" }} />);
+      const grid = screen.getByText("Platform").nextElementSibling as HTMLElement;
+      expect(grid.style.gridTemplateColumns).toBe("repeat(4, minmax(0, 1fr))");
+    } finally {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: prev });
+    }
+  });
 });

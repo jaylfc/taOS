@@ -9,6 +9,10 @@ interface Props {
   onSearch: () => void;
 }
 
+export const MOBILE_TOP_BAR_ROW_HEIGHT = 44;
+/** Full rendered height, for overlays that must start below the bar. */
+export const MOBILE_TOP_BAR_HEIGHT = `calc(env(safe-area-inset-top, 0px) + ${MOBILE_TOP_BAR_ROW_HEIGHT}px)`;
+
 export function MobileTopBar({ onHome, onSearch }: Props) {
   const unreadCount = useNotificationStore((s) => s.notifications.filter((n) => !n.read).length);
   const toggleCentre = useNotificationStore((s) => s.toggleCentre);
@@ -28,7 +32,7 @@ export function MobileTopBar({ onHome, onSearch }: Props) {
     >
       <div
         className="flex items-center px-2"
-        style={{ height: 44 }}
+        style={{ height: MOBILE_TOP_BAR_ROW_HEIGHT }}
       >
         {/* Left — taOS (tap to go home) */}
         <button

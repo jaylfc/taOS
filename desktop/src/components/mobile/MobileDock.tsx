@@ -21,6 +21,22 @@ function resolveIcon(iconName: string): icons.LucideIcon {
   return (icons[key] as icons.LucideIcon) ?? icons.HelpCircle;
 }
 
+// Dock geometry in one place, so overlays that must stop at the dock's top
+// edge (Launchpad, toasts) use the same numbers the dock renders with.
+// Height = paddingTop + 44px button row + paddingBottom.
+const DOCK_PADDING_TOP = 6;
+const DOCK_ROW_HEIGHT = 44;
+
+export function useMobileDockMetrics(isBrowserMobile = false) {
+  const isSquareViewport = useIsSquareViewport();
+  const browserGap = isSquareViewport ? 12 : 54;
+  const dockBaseGap = isBrowserMobile ? browserGap : 12;
+  return {
+    paddingBottom: `calc(env(safe-area-inset-bottom, 0px) + ${dockBaseGap}px)`,
+    height: `calc(env(safe-area-inset-bottom, 0px) + ${DOCK_PADDING_TOP + DOCK_ROW_HEIGHT + dockBaseGap}px)`,
+  };
+}
+
 export function MobileDock({ onOpenApp, onToggleSwitcher, onOpenLaunchpad, activeAppId, isBrowserMobile = false }: Props) {
   const dockApps = useMobileHomeStore((s) => s.dockApps);
   const windows = useProcessStore((s) => s.windows);
@@ -42,10 +58,7 @@ export function MobileDock({ onOpenApp, onToggleSwitcher, onOpenLaunchpad, activ
   //
   // So keep the full reserve where it was measured and is cheap, and shrink it
   // to the PWA gap on square screens, where dvh is doing the real work anyway.
-  const isSquareViewport = useIsSquareViewport();
-  const browserGap = isSquareViewport ? 12 : 54;
-  const dockBaseGap = isBrowserMobile ? browserGap : 12;
-  const dockPaddingBottom = `calc(env(safe-area-inset-bottom, 0px) + ${dockBaseGap}px)`;
+  const { paddingBottom: dockPaddingBottom } = useMobileDockMetrics(isBrowserMobile);
 
   return (
     <div
@@ -57,7 +70,7 @@ export function MobileDock({ onOpenApp, onToggleSwitcher, onOpenLaunchpad, activ
         alignItems: "center",
         justifyContent: "center",
         gap: 8,
-        paddingTop: 6,
+        paddingTop: DOCK_PADDING_TOP,
         paddingBottom: dockPaddingBottom,
       }}
     >

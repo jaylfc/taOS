@@ -13,6 +13,9 @@ interface Props {
   open: boolean;
   onClose: () => void;
   onOpenApp?: (windowId: string) => void;
+  /** Mobile layout only: the top bar and dock heights, so the overlay sits
+   *  between them instead of covering the top bar and stopping short of the dock. */
+  insets?: { top: string; bottom: string };
 }
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -23,7 +26,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   game: "Games",
 };
 
-export function Launchpad({ open, onClose, onOpenApp }: Props) {
+export function Launchpad({ open, onClose, onOpenApp, insets }: Props) {
   const [query, setQuery] = useState("");
   const openRef = useRef(open);
   openRef.current = open;
@@ -36,6 +39,8 @@ export function Launchpad({ open, onClose, onOpenApp }: Props) {
   useShortcut("Escape", () => { if (openRef.current) onClose(); }, "Close launchpad", "overlay");
   // Detect mobile to skip autoFocus (prevents iOS keyboard popping automatically)
   const isMobile = typeof window !== "undefined" && window.innerWidth < 640;
+  // Phone widths match the home screen grid (MobileHomePages: 4 columns).
+  const gridColumns = isMobile ? "repeat(4, minmax(0, 1fr))" : "repeat(auto-fill, minmax(100px, 1fr))";
 
   const apps = useMemo(() => {
     // Installed services and userspace apps render in their own sections below.
@@ -98,16 +103,21 @@ export function Launchpad({ open, onClose, onOpenApp }: Props) {
       aria-label="Launchpad"
       className="fixed top-0 left-0 right-0 z-[9000] flex flex-col backdrop-blur-md bg-black/40"
       onClick={onClose}
-      style={{
+      style={insets ? {
+        top: insets.top,
+        bottom: insets.bottom,
+        paddingTop: 16,
+      } : {
         bottom: isMobile ? 76 : 0,
         paddingTop: "calc(env(safe-area-inset-top, 0px) + 60px)",
         paddingBottom: isMobile ? 16 : "calc(52px + env(safe-area-inset-bottom, 0px) + 16px)",
       }}
     >
-      {/* Wide outer container: ~90vw, capped at 1600px so ultrawide stays sane */}
+      {/* Wide outer container: ~90vw, capped at 1600px so ultrawide stays sane.
+          On mobile it takes the full width like the home screen does. */}
       <div
-        className="w-full mx-auto flex-1 flex flex-col min-h-0 px-6 sm:px-10"
-        style={{ maxWidth: "min(90vw, 1600px)" }}
+        className={`w-full mx-auto flex-1 flex flex-col min-h-0 ${insets ? "px-4" : "px-6 sm:px-10"}`}
+        style={{ maxWidth: insets ? undefined : "min(90vw, 1600px)" }}
       >
         {/* Search bar: stays a comfortable narrower width, centered */}
         <div
@@ -132,14 +142,20 @@ export function Launchpad({ open, onClose, onOpenApp }: Props) {
           )}
         </div>
 
-        <div className="flex-1 overflow-y-auto space-y-8 pr-1">
+        {/* Touch scrolls without a scrollbar; a classic one steals gutter width
+            and pushes the grid off centre. */}
+        <div
+          className={`flex-1 overflow-y-auto space-y-8 ${insets
+            ? "pb-4 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+            : "pr-1"}`}
+        >
           {Object.entries(grouped).map(([category, categoryApps]) => (
             <div key={category}>
               <h3 className="text-xs font-medium text-shell-text-tertiary uppercase tracking-wide mb-4 px-1">
                 {CATEGORY_LABELS[category] ?? category}
               </h3>
               {/* Responsive grid: auto-fill columns, each icon cell min 100px wide */}
-              <div className="grid gap-2 sm:gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(100px, 1fr))" }}>
+              <div className="grid gap-2 sm:gap-3" style={{ gridTemplateColumns: gridColumns }}>
                 {categoryApps.map((app) => (
                   <LaunchpadIcon key={app.id} app={app} onClick={() => handleLaunch(app.id)} />
                 ))}
@@ -152,7 +168,7 @@ export function Launchpad({ open, onClose, onOpenApp }: Props) {
               <h3 className="text-xs font-medium text-shell-text-tertiary uppercase tracking-wide mb-4 px-1">
                 My Apps
               </h3>
-              <div className="grid gap-2 sm:gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(100px, 1fr))" }}>
+              <div className="grid gap-2 sm:gap-3" style={{ gridTemplateColumns: gridColumns }}>
                 {filteredUserspace.map((app) => (
                   <LaunchpadIcon key={app.id} app={app} onClick={() => handleLaunch(app.id)} />
                 ))}
@@ -165,7 +181,7 @@ export function Launchpad({ open, onClose, onOpenApp }: Props) {
               <h3 className="text-xs font-medium text-shell-text-tertiary uppercase tracking-wide mb-4 px-1">
                 Services
               </h3>
-              <div className="grid gap-2 sm:gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(100px, 1fr))" }}>
+              <div className="grid gap-2 sm:gap-3" style={{ gridTemplateColumns: gridColumns }}>
                 {filteredServices.map((svc) => (
                   <ServiceIcon
                     key={svc.app_id}
