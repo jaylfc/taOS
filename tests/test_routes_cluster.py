@@ -165,6 +165,107 @@ async def test_unregister_worker(client, app):
 
 
 @pytest.mark.asyncio
+async def test_unregister_worker_clears_agent_pin(client, app):
+    import json as _json
+    key = await pair_worker(client, app, "pin-worker", "http://10.0.0.7:9000")
+    reg_body = _json.dumps({"name": "pin-worker", "url": "http://10.0.0.7:9000"}).encode()
+    await client.post(
+        "/api/cluster/workers",
+        content=reg_body,
+        headers={**sign_worker_request(key, "pin-worker", "POST", "/api/cluster/workers", reg_body), "content-type": "application/json"},
+    )
+    # Seed an agent pinned to this worker
+    app.state.config.agents.append({
+        "name": "pinned-agent",
+        "host": "10.0.0.5",
+        "qmd_index": "test",
+        "remote": "pin-worker",
+        "placement_source": "user",
+        "status": "running",
+    })
+    resp = await client.delete("/api/cluster/workers/pin-worker")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "removed"
+    assert data["unpinned_agents"] == ["pinned-agent"]
+    agent = next(a for a in app.state.config.agents if a["name"] == "pinned-agent")
+    assert "remote" not in agent
+    assert "placement_source" not in agent
+    assert agent["host"] == ""
+    assert agent["status"] == "failed"
+    assert "pin-worker" in agent["placement_error"]
+    await app.state.cluster_pairing.close()
+
+
+@pytest.mark.asyncio
+async def test_unregister_other_worker_keeps_pin(client, app):
+    import json as _json
+    key_a = await pair_worker(client, app, "keep-a", "http://10.0.0.7:9000")
+    reg_a = _json.dumps({"name": "keep-a", "url": "http://10.0.0.7:9000"}).encode()
+    await client.post(
+        "/api/cluster/workers",
+        content=reg_a,
+        headers={**sign_worker_request(key_a, "keep-a", "POST", "/api/cluster/workers", reg_a), "content-type": "application/json"},
+    )
+    key_b = await pair_worker(client, app, "keep-b", "http://10.0.0.8:9000", code="other-code-a")
+    reg_b = _json.dumps({"name": "keep-b", "url": "http://10.0.0.8:9000"}).encode()
+    await client.post(
+        "/api/cluster/workers",
+        content=reg_b,
+        headers={**sign_worker_request(key_b, "keep-b", "POST", "/api/cluster/workers", reg_b), "content-type": "application/json"},
+    )
+    # Seed an agent pinned to keep-a
+    app.state.config.agents.append({
+        "name": "pinned-agent",
+        "host": "10.0.0.5",
+        "qmd_index": "test",
+        "remote": "keep-a",
+        "placement_source": "user",
+        "status": "running",
+    })
+    resp = await client.delete("/api/cluster/workers/keep-b")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["unpinned_agents"] == []
+    agent = next(a for a in app.state.config.agents if a["name"] == "pinned-agent")
+    assert agent["remote"] == "keep-a"
+    assert agent["placement_source"] == "user"
+    assert agent["host"] == "10.0.0.5"
+    await app.state.cluster_pairing.close()
+
+
+@pytest.mark.asyncio
+async def test_offline_worker_keeps_pin(client, app):
+    import json as _json
+    key = await pair_worker(client, app, "down-worker", "http://10.0.0.9:9000")
+    reg_body = _json.dumps({"name": "down-worker", "url": "http://10.0.0.9:9000"}).encode()
+    await client.post(
+        "/api/cluster/workers",
+        content=reg_body,
+        headers={**sign_worker_request(key, "down-worker", "POST", "/api/cluster/workers", reg_body), "content-type": "application/json"},
+    )
+    # Seed an agent pinned to this worker
+    app.state.config.agents.append({
+        "name": "pinned-agent",
+        "host": "10.0.0.5",
+        "qmd_index": "test",
+        "remote": "down-worker",
+        "placement_source": "user",
+        "status": "running",
+    })
+    # Mark the worker offline directly (NOT unregistered) -- agent pin must survive
+    cluster = app.state.cluster_manager
+    worker = cluster.get_worker("down-worker")
+    assert worker is not None
+    worker.status = "offline"
+    agent = next(a for a in app.state.config.agents if a["name"] == "pinned-agent")
+    assert agent["remote"] == "down-worker"
+    assert agent["placement_source"] == "user"
+    assert agent["host"] == "10.0.0.5"
+    await app.state.cluster_pairing.close()
+
+
+@pytest.mark.asyncio
 async def test_unregister_unknown_worker(client, app):
     await app.state.cluster_pairing.init()
     resp = await client.delete("/api/cluster/workers/ghost")
