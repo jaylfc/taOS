@@ -972,6 +972,8 @@ class ClusterManager:
                 if epoch is not None and epoch != lease.epoch:
                     logger.warning("lease %s epoch mismatch", lease_id)
                     return False
+                if epoch is None:
+                    logger.debug("lease %s: unfenced release accepted (epoch=None)", lease_id)
                 self._leases.pop(lease_id, None)
                 logger.info("Lease released: %s on %s", lease_id, lease.resource_id)
         return True  # idempotent
@@ -1004,6 +1006,8 @@ class ClusterManager:
             if epoch is not None and epoch != lease.epoch:
                 logger.warning("lease %s epoch mismatch", lease_id)
                 return None, None
+            if epoch is None:
+                logger.debug("lease %s: unfenced renew accepted (epoch=None)", lease_id)
             now = time.time()
             if lease.expires_at <= now:
                 self._leases.pop(lease_id, None)

@@ -656,6 +656,13 @@ class TestClusterManagerLeases:
         assert await unregister_task
         assert len(mgr.get_leases()) == 0
 
+    # ── RED-FIRST: epoch fencing (taOS #893) ───────────────────────────────
+    # RED-FIRST output (unmodified origin/dev, no _generation/_lease_seq):
+    #
+    # > tests/test_leases.py::TestClusterManagerLeases::test_epoch_mismatch_renews_refused FAILED
+    # > E   AttributeError: 'ClusterManager' object has no attribute '_generation'
+    # > (claim_lease at manager.py:948 reads self._generation before start() is ever called)
+
     async def test_epoch_mismatch_renews_refused(self):
         """A late renewal with the wrong epoch must be refused (None)."""
         mgr = ClusterManager()
