@@ -619,3 +619,43 @@ async def test_decision_replace_emits_close_then_open(vapp, monkeypatch):
     evs = await _ticks(gen)
     assert [e for e, _ in evs if e.startswith("decision.")] == ["decision.close"]
     await gen.aclose()
+
+
+async def _resume_after_disconnect(vapp, monkeypatch, change):
+    from tinyagentos.routes import device_state as ds_mod
+    from tinyagentos.routes import auth as auth_mod
+    from tinyagentos.demo_mode import write_demo_mode
+    d = _avatar_dir(vapp, monkeypatch, ["a1"])
+    gen = await _open_stream(vapp, monkeypatch, [_TWO[0]])
+    await _read_until_ping(gen)
+    last = max(e for e, _, _ in ds_mod._owner_buffers["u1"]["events"])
+    await gen.aclose()
+    if change:
+        (d / (_avatar_slug("a1") + ".jpg")).write_bytes(b"changed-while-offline")
+    # Use low-level stream to capture first poll after resume
+    _patch_intervals(monkeypatch)
+    _ticking_clock(monkeypatch)
+    monkeypatch.setattr(auth_mod, "_request_is_console", lambda _r: True)
+    write_demo_mode(vapp.state.data_dir, False)
+    vapp.state.config.agents = [_TWO[0]]
+    tok = await _device(vapp, user_id="u1", scopes=("agents:read",))
+    req = _make_mock_request(vapp, {"authorization": f"Bearer {tok}"}, last_event_id=str(last))
+    gen2 = _events_stream(req, {"user_id": "u1"})
+    frames = await _read_until_ping(gen2)  # captures replay + first poll + heartbeat
+    evs = _parse_events(frames)
+    # Read additional ticks for consistency
+    evs += await _ticks(gen2)
+    await gen2.aclose()
+    return evs
+
+
+@pytest.mark.asyncio
+async def test_resume_delivers_change_made_while_disconnected(vapp, monkeypatch):
+    evs = await _resume_after_disconnect(vapp, monkeypatch, change=True)
+    assert any(e == "agent.upsert" and x.get("name") == "a1" for e, x in evs)
+
+
+@pytest.mark.asyncio
+async def test_resume_quiet_when_nothing_changed(vapp, monkeypatch):
+    evs = await _resume_after_disconnect(vapp, monkeypatch, change=False)
+    assert not any(e in ("agent.upsert", "snapshot") for e, _ in evs)

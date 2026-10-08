@@ -49,6 +49,7 @@ def _get_owner_buffer(owner_id: str) -> dict:
         _owner_buffers[owner_id] = {
             "next_id": 1,
             "events": deque(maxlen=_MAX_HISTORY),
+            "last_by_name": {},
         }
     return _owner_buffers[owner_id]
 
@@ -209,20 +210,16 @@ async def _events_stream(request: Request, device: dict):
             prev_by_name[a["name"]] = a
             prev_recap[a["name"]] = a.get("last_recap", "") or ""
             prev_decision[a["name"]] = a.get("decision")
+        buf = _get_owner_buffer(owner_id)
+        buf["last_by_name"] = dict(prev_by_name)
     elif last_event_id > 0:
         replay = await _get_buffered_events_after(owner_id, last_event_id)
         for eid, event_type, data_json in replay:
             yield f"id: {eid}\nevent: {event_type}\ndata: {data_json}\n\n".encode("utf-8")
-        base_agents = await assemble_lock_agents(request, owner_id=owner_id)
-        transformed = [
-            await _transform_agent(a, agent_messages)
-            for a in base_agents
-            if not a.get("system")
-        ]
-        for a in transformed:
-            prev_by_name[a["name"]] = a
-            prev_recap[a["name"]] = a.get("last_recap", "") or ""
-            prev_decision[a["name"]] = a.get("decision")
+        buf = _get_owner_buffer(owner_id)
+        prev_by_name = dict(buf["last_by_name"])
+        prev_recap = {n: a.get("last_recap", "") or "" for n, a in prev_by_name.items()}
+        prev_decision = {n: a.get("decision") for n, a in prev_by_name.items()}
     else:
         for a in transformed:
             prev_by_name[a["name"]] = a
@@ -232,6 +229,8 @@ async def _events_stream(request: Request, device: dict):
             data_json = json.dumps(a)
             await _record_event(owner_id, eid, "agent.upsert", data_json)
             yield f"id: {eid}\nevent: agent.upsert\ndata: {data_json}\n\n".encode("utf-8")
+        buf = _get_owner_buffer(owner_id)
+        buf["last_by_name"] = dict(prev_by_name)
 
     last_poll = _clock()
     last_heartbeat = _clock()
@@ -338,6 +337,8 @@ async def _events_stream(request: Request, device: dict):
             prev_by_name = current_by_name
             prev_recap = {n: a.get("last_recap", "") or "" for n, a in current_by_name.items()}
             prev_decision = {n: a.get("decision") for n, a in current_by_name.items()}
+            buf = _get_owner_buffer(owner_id)
+            buf["last_by_name"] = dict(current_by_name)
 
         # Heartbeat.
         if now - last_heartbeat >= _HEARTBEAT_INTERVAL_S:
