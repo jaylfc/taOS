@@ -6,7 +6,7 @@ import os
 import subprocess
 import sys
 
-from tinyagentos.cluster.placement import eligible, rank, score
+from tinyagentos.cluster.placement import eligible, rank, score, placement_source
 
 
 class TestScore:
@@ -171,3 +171,24 @@ class TestEligible:
 
     def test_dict_device_kind(self):
         assert eligible({"status": "online", "kind": "device"}) is False
+
+
+class TestPlacementSource:
+    def test_stored_value_returned_unchanged(self):
+        # stored value is returned unchanged
+        agent_user = {"placement_source": "user"}
+        assert placement_source(agent_user) == "user"
+
+        # non-user string is returned unchanged
+        agent_custom = {"placement_source": "custom_string"}
+        assert placement_source(agent_custom) == "custom_string"
+
+    def test_legacy_agent_remote_user(self):
+        # legacy agent with only remote="w1" -> "user"
+        agent_legacy = {"remote": "w1"}
+        assert placement_source(agent_legacy) == "user"
+
+    def test_local_agent_no_remote_none(self):
+        # local agent with no remote -> None
+        agent_local = {"status": "online", "kind": "worker"}
+        assert placement_source(agent_local) is None

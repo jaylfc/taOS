@@ -1793,6 +1793,12 @@ Behaviour common to all three:
   scheduler stops routing tasks to it, rather than waiting out the heartbeat
   timeout. The worker stays REGISTERED and therefore still visible in
   `GET /api/cluster/workers`, which is what makes it unblockable from the UI.
+- `DELETE /api/cluster/workers/{name}` additionally unpins every agent whose
+  `remote` matches the worker name: `remote` and `placement_source` are popped,
+  `host` is set to empty, `status` is set to `failed`, and `placement_error`
+  records the worker name. The response includes `unpinned_agents` (the list of
+  affected agent names, empty when none). Marking a worker offline via revoke or
+  block does NOT unpin agents, only full deletion does.
 
 **Blocked devices keep consuming a per-user slot.** `list_for_user` returns rows
 where `revoked=0 OR blocked=1`, so a blocked device counts against
