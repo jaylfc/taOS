@@ -1,0 +1,2 @@
+### Added
+- Lease epoch fencing: `GpuLease` now carries an `epoch` field (`<generation>.<seq>`), and `ClusterManager` rejects renew/release calls that present a mismatched epoch. `/api/cluster/leases/claim` responses now include `epoch`; `/api/cluster/leases/release` and `/api/cluster/leases/renew` accept an optional `epoch` body field. `taosctl lease-release` and `taosctl lease-renew` gained an optional `--epoch` flag.
