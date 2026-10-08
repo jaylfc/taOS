@@ -14,7 +14,7 @@ def eligible(worker) -> bool:
 
 def score(key: str, node: str, weight: float = 1.0) -> float:
     h = int.from_bytes(hashlib.blake2b(f"{node}\0{key}".encode(), digest_size=8).digest(), "big")
-    u = (h + 0.5) / 2**64
+    u = ((h >> 12) + 0.5) / 2**52
     return -weight / math.log(u)
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import math
 import os
 import subprocess
 import sys
@@ -18,6 +19,22 @@ class TestScore:
 
     def test_no_builtin_hash(self):
         assert "hash" not in score.__code__.co_names
+
+    def test_score_finite_at_hash_extremes(self):
+        import hashlib
+        from unittest.mock import patch
+        # Test with all 1s (hash near 2**64)
+        with patch("tinyagentos.cluster.placement.hashlib.blake2b") as mock:
+            mock.return_value.digest.return_value = b"\xff" * 8
+            s = score("k", "n")
+            assert math.isfinite(s)
+            assert s > 0
+        # Test with all 0s
+        with patch("tinyagentos.cluster.placement.hashlib.blake2b") as mock:
+            mock.return_value.digest.return_value = b"\x00" * 8
+            s = score("k", "n")
+            assert math.isfinite(s)
+            assert s > 0
 
 
 class TestRank:
