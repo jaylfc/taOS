@@ -20,7 +20,7 @@ from httpx import ASGITransport, AsyncClient
 from taos_test_csrf import csrf_event_hooks
 from tinyagentos.agent_registry_store import mint_registry_token
 from tinyagentos.cluster.manager import ClusterManager
-from tinyagentos.cluster.worker_protocol import WorkerInfo
+from tinyagentos.cluster.worker_protocol import GpuLease, WorkerInfo
 from tinyagentos.gpu_lease import claims_for_node, open_claims
 
 _ROUTE_PATCH = "tinyagentos.routes.a2a_gpu_lease.httpx.AsyncClient"
@@ -1099,6 +1099,63 @@ class TestClusterLeaseIntegration:
         # 8192 free - 4096 promised to ourselves = 4096 >= 2048.
         assert data["admitted"] is True
         assert data["claimed_mb"] == 4096
+
+    async def test_renew_with_wrong_epoch_is_refused(
+        self, lease_client, bus, cluster
+    ):
+        """A renew that does not present the held epoch is refused (epoch fence).
+
+        After the route claims a lease, if the controller's lease for that
+        resource is replaced with one of the same lease_id but a different epoch,
+        the route's next renew must be refused, not silently renewed.
+        """
+        claimed = await lease_client.post(
+            "/api/a2a/gpu/claim", json={"node": "linstation", "vram_mb": 4096}
+        )
+        assert claimed.status_code == 200
+        lease_id = claimed.json()["lease_id"]
+        held_epoch = claimed.json()["epoch"]
+        assert lease_id is not None
+        assert held_epoch
+
+        old_lease = cluster._leases.pop(lease_id)
+        new_lease = GpuLease(
+            lease_id=old_lease.lease_id,
+            resource_id=old_lease.resource_id,
+            caller=old_lease.caller,
+            expires_at=old_lease.expires_at + 300,
+            required_vram_mb=old_lease.required_vram_mb,
+            granted_at=old_lease.granted_at,
+            claim_channel=old_lease.claim_channel,
+            epoch="99.99",
+        )
+        cluster._leases[lease_id] = new_lease
+
+        renewed = await lease_client.post(
+            "/api/a2a/gpu/renew",
+            json={"lease_id": lease_id, "ttl_seconds": 600, "epoch": held_epoch},
+        )
+        assert renewed.status_code == 409, renewed.json()
+        assert renewed.json()["error"] == "lease not found or expired"
+
+    async def test_renew_with_held_epoch_succeeds(self, lease_client, bus, cluster):
+        """Renewing while presenting the held epoch succeeds (epoch fence happy path)."""
+        claimed = await lease_client.post(
+            "/api/a2a/gpu/claim", json={"node": "linstation", "vram_mb": 4096}
+        )
+        assert claimed.status_code == 200
+        lease_id = claimed.json()["lease_id"]
+        held_epoch = claimed.json()["epoch"]
+        assert lease_id is not None
+        assert held_epoch
+        before = cluster.get_leases()[0].expires_at
+
+        renewed = await lease_client.post(
+            "/api/a2a/gpu/renew",
+            json={"lease_id": lease_id, "ttl_seconds": 600, "epoch": held_epoch},
+        )
+        assert renewed.status_code == 200
+        assert cluster.get_leases()[0].expires_at > before
 
 
 @pytest.mark.asyncio

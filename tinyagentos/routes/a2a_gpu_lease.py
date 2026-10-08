@@ -450,6 +450,7 @@ class RequestBody(_LeaseBody):
 
 class RenewBody(BaseModel):
     lease_id: str
+    epoch: str | None = None
     ttl_seconds: float = Field(
         default=_DEFAULT_TTL_SECONDS, gt=0, le=MAX_LEASE_TTL_SECONDS
     )
@@ -701,7 +702,9 @@ async def gpu_claim(request: Request, body: ClaimBody):
             # a failed repost must undo exactly this extension (and a renewal
             # that landed meanwhile owns the lease - see the rollback below).
             lease, previous_expiry = await cluster.renew_lease_with_previous(
-                existing.lease_id, ttl_seconds=float(body.ttl_seconds)
+                existing.lease_id,
+                ttl_seconds=float(body.ttl_seconds),
+                epoch=existing.epoch,
             )
             lease_id = existing.lease_id if lease is not None else None
         else:
@@ -756,7 +759,7 @@ async def gpu_claim(request: Request, body: ClaimBody):
         # (CR on #2988).
         if cluster is not None and lease is not None:
             if created_lease and lease_id is not None:
-                await cluster.release_lease(lease_id)
+                await cluster.release_lease(lease_id, epoch=getattr(lease, "epoch", None))
             elif previous_expiry is not None:
                 restored = await cluster.restore_lease_expiry(
                     lease.lease_id,
@@ -778,6 +781,7 @@ async def gpu_claim(request: Request, body: ClaimBody):
         "holder": actor.holder,
         "vram_mb": vram_mb,
         "lease_id": lease_id,
+        "epoch": getattr(lease, "epoch", None),
         "expires_at": getattr(lease, "expires_at", None),
         "claim_expires_at": claim_expires_at,
         "line": line,
@@ -853,13 +857,14 @@ async def gpu_release(request: Request, body: ReleaseBody):
     line = render_release(node, line_actor.holder)
     posted = await _post_line(channel, line_actor, line)
     if released_id is not None and cluster is not None:
-        await cluster.release_lease(released_id)
+        await cluster.release_lease(released_id, epoch=getattr(lease, "epoch", None))
     return {
         "status": "released",
         "node": node,
         "holder": actor.holder,
         "released_holder": line_actor.holder,
         "lease_id": released_id,
+        "epoch": getattr(lease, "epoch", None),
         "line": line,
         "channel": channel,
         "message": posted,
@@ -921,7 +926,9 @@ async def gpu_renew(request: Request, body: RenewBody):
     # seen lapse. Reading the expiry here instead would be stale as soon as a
     # concurrent renewal lands (CR on #2988).
     lease, previous_expiry = await cluster.renew_lease_with_previous(
-        body.lease_id, ttl_seconds=float(body.ttl_seconds)
+        body.lease_id,
+        ttl_seconds=float(body.ttl_seconds),
+        epoch=body.epoch,
     )
     if lease is None:
         return JSONResponse(
@@ -977,6 +984,7 @@ async def gpu_renew(request: Request, body: RenewBody):
     return {
         "status": "renewed",
         "lease_id": lease.lease_id,
+        "epoch": lease.epoch,
         "resource_id": lease.resource_id,
         "expires_at": lease.expires_at,
         "line": line,
