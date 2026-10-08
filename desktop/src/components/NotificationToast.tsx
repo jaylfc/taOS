@@ -265,7 +265,7 @@ function extractTagged(text: string, tag: string): string | undefined {
 /*  ToastItem                                                          */
 /* ------------------------------------------------------------------ */
 
-function ToastItem({ notif, onExpire }: { notif: Notification; onExpire: () => void }) {
+function ToastItem({ notif, onExpire, fullWidth = false }: { notif: Notification; onExpire: () => void; fullWidth?: boolean }) {
   const dismiss = useNotificationStore((s) => s.dismiss);
   const archiveRead = useNotificationStore((s) => s.archiveRead);
   const Icon = LEVEL_ICONS[notif.level];
@@ -288,7 +288,7 @@ function ToastItem({ notif, onExpire }: { notif: Notification; onExpire: () => v
 
   return (
     <div
-      className={`flex items-start gap-3 p-3 rounded-xl border backdrop-blur-lg shadow-xl w-80 ${LEVEL_COLORS[notif.level]}`}
+      className={`flex items-start gap-3 p-3 rounded-xl border backdrop-blur-lg shadow-xl ${fullWidth ? "w-full" : "w-80"} ${LEVEL_COLORS[notif.level]}`}
       style={{ backgroundColor: "var(--color-dock-bg)" }}
       role="alert"
       aria-live="assertive"
@@ -369,6 +369,7 @@ export function NotificationToasts({ bottomInset }: { bottomInset?: string } = {
         <ToastItem
           key={n.id}
           notif={n}
+          fullWidth={!!bottomInset}
           onExpire={() => setToastIds((prev) => prev.filter((id) => id !== n.id))}
         />
       ))}

@@ -336,6 +336,8 @@ export function App() {
     setActiveWindowId(null);
     setCardSwitcherOpen(false);
     setSearchOpen(false);
+    // The top bar stays tappable while the Launchpad is open.
+    setLaunchpadOpen(false);
   }, []);
 
   const handleSelectApp = useCallback((windowId: string) => {
@@ -426,7 +428,7 @@ export function App() {
       <div className={`relative z-[1] flex-1 flex flex-col overflow-hidden transition-all duration-500 ${launched ? "opacity-100 scale-100" : "opacity-0 scale-95"}`}>
         <MobileTopBar
           onHome={handleMobileHome}
-          onSearch={() => { setCardSwitcherOpen(false); setSearchOpen((v) => !v); }}
+          onSearch={() => { setCardSwitcherOpen(false); setLaunchpadOpen(false); setSearchOpen((v) => !v); }}
         />
         {/* Main content area */}
         <div className="flex-1 relative overflow-hidden">

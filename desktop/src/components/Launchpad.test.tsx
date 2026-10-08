@@ -151,7 +151,7 @@ describe("Launchpad", () => {
     render(<Launchpad open={true} onClose={onClose} onOpenApp={onOpenApp} />);
     const dialog = screen.getByRole("dialog", { name: /launchpad/i });
     expect(dialog.style.top).toBe("");
-    expect(dialog.style.bottom).not.toBe("62px");
+    expect(dialog.style.bottom).toBe("0px");
   });
 
   it("uses the home screen's 4 columns at phone width", () => {
