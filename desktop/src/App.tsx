@@ -16,9 +16,9 @@ import { usePushClickHandler } from "@/hooks/use-push-click";
 import { useProcessStore } from "@/stores/process-store";
 import { useDockStore } from "@/stores/dock-store";
 import { getApp, pinnedAppId, pinnedLaunchProps } from "@/registry/app-registry";
-import { MobileDock } from "@/components/mobile/MobileDock";
+import { MobileDock, useMobileDockMetrics } from "@/components/mobile/MobileDock";
 import { CardSwitcher } from "@/components/mobile/CardSwitcher";
-import { MobileTopBar } from "@/components/mobile/MobileTopBar";
+import { MobileTopBar, MOBILE_TOP_BAR_HEIGHT } from "@/components/mobile/MobileTopBar";
 import { MobileAppWindow } from "@/components/mobile/MobileAppWindow";
 import { MobileHomePages } from "@/components/mobile/MobileHomePages";
 import { LoginGate } from "@/components/LoginGate";
@@ -216,6 +216,7 @@ export function App() {
   // Browser-mode flag: when on mobile but not in PWA, apply browser-safe
   // layout that accounts for Safari's dynamic URL bar + share/tab bars
   const isBrowserMobile = mode !== "desktop" && !isPwa;
+  const { height: mobileDockHeight } = useMobileDockMetrics(isBrowserMobile);
 
   // On the handset, the power key locks: see useLockOnScreenOff.
   useLockOnScreenOff();
@@ -463,9 +464,14 @@ export function App() {
           setLaunchpadOpen(true);
         }}
       />
-      <Launchpad open={launchpadOpen} onClose={() => setLaunchpadOpen(false)} onOpenApp={(wid) => setActiveWindowId(wid)} />
+      <Launchpad
+        open={launchpadOpen}
+        onClose={() => setLaunchpadOpen(false)}
+        onOpenApp={(wid) => setActiveWindowId(wid)}
+        insets={{ top: MOBILE_TOP_BAR_HEIGHT, bottom: mobileDockHeight }}
+      />
       <SearchPalette open={searchOpen} onClose={() => setSearchOpen(false)} onOpenApp={(wid) => setActiveWindowId(wid)} />
-      <NotificationToasts />
+      <NotificationToasts bottomInset={mobileDockHeight} />
       <NotificationCentre />
       <TaosAssistantPanel />
       <SafetyFloor />
