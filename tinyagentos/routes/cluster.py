@@ -1376,8 +1376,7 @@ async def release_lease(request: Request, body: LeaseReleaseRequest):
     if denied is not None:
         return denied
     cluster = request.app.state.cluster_manager
-    released_lease = cluster._leases.get(body.lease_id)
-    released = await cluster.release_lease(body.lease_id, epoch=body.epoch)
+    released, epoch = await cluster.release_lease_result(body.lease_id, epoch=body.epoch)
     if not released:
         return JSONResponse({
             "error": "lease epoch mismatch",
@@ -1386,7 +1385,7 @@ async def release_lease(request: Request, body: LeaseReleaseRequest):
     return {
         "status": "released",
         "lease_id": body.lease_id,
-        "epoch": released_lease.epoch if released_lease else "",
+        "epoch": epoch,
     }
 
 
