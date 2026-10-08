@@ -178,3 +178,4 @@ class GpuLease:
     required_vram_mb: int = 0
     granted_at: float = 0.0
     claim_channel: str = ""
+    epoch: str = ""

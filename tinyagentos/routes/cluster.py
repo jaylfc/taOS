@@ -1289,11 +1289,13 @@ class LeaseClaimRequest(BaseModel):
 
 class LeaseReleaseRequest(BaseModel):
     lease_id: str
+    epoch: str | None = None
 
 
 class LeaseRenewRequest(BaseModel):
     lease_id: str
     ttl_seconds: float = Field(default=30, gt=0, le=_LEASE_TTL_MAX)
+    epoch: str | None = None
 
 
 async def _require_lease_access(request: Request) -> JSONResponse | None:
@@ -1360,6 +1362,7 @@ async def claim_lease(request: Request, body: LeaseClaimRequest):
         "status": "claimed",
         "lease_id": lease.lease_id,
         "resource_id": lease.resource_id,
+        "epoch": lease.epoch,
         "expires_at": lease.expires_at,
         "ttl_seconds": int(body.ttl_seconds),
         "required_vram_mb": lease.required_vram_mb,
@@ -1373,8 +1376,18 @@ async def release_lease(request: Request, body: LeaseReleaseRequest):
     if denied is not None:
         return denied
     cluster = request.app.state.cluster_manager
-    await cluster.release_lease(body.lease_id)
-    return {"status": "released", "lease_id": body.lease_id}
+    released_lease = cluster._leases.get(body.lease_id)
+    released = await cluster.release_lease(body.lease_id, epoch=body.epoch)
+    if not released:
+        return JSONResponse({
+            "error": "lease epoch mismatch",
+            "lease_id": body.lease_id,
+        }, status_code=409)
+    return {
+        "status": "released",
+        "lease_id": body.lease_id,
+        "epoch": released_lease.epoch if released_lease else "",
+    }
 
 
 @router.post("/api/cluster/leases/renew")
@@ -1384,7 +1397,7 @@ async def renew_lease(request: Request, body: LeaseRenewRequest):
     if denied is not None:
         return denied
     cluster = request.app.state.cluster_manager
-    lease = await cluster.renew_lease(body.lease_id, ttl_seconds=body.ttl_seconds)
+    lease = await cluster.renew_lease(body.lease_id, ttl_seconds=body.ttl_seconds, epoch=body.epoch)
     if lease is None:
         return JSONResponse({
             "error": "lease not found or expired",
@@ -1393,6 +1406,7 @@ async def renew_lease(request: Request, body: LeaseRenewRequest):
     return {
         "status": "renewed",
         "lease_id": lease.lease_id,
+        "epoch": lease.epoch,
         "expires_at": lease.expires_at,
     }
 
