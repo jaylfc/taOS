@@ -2,8 +2,11 @@ from __future__ import annotations
 import logging
 import httpx
 from tinyagentos.cluster.manager import ClusterManager
+from tinyagentos.cluster.placement import rank as _placement_rank
 
 logger = logging.getLogger(__name__)
+
+OVERFLOW_LOAD = 0.9
 
 
 class TaskRouter:
@@ -19,14 +22,33 @@ class TaskRouter:
         self.http_client = http_client
 
     async def route_request(self, capability: str, method: str, path: str,
-                            body: dict | None = None, timeout: float = 60) -> tuple[dict | None, str | None]:
+                            body: dict | None = None, timeout: float = 60,
+                            affinity_key: str | None = None) -> tuple[dict | None, str | None]:
         """Route a request to the best worker for the given capability.
 
         Returns (response_data, worker_name) or (None, None) if all fail.
         Workers with an open circuit breaker (Fix 3) are skipped.
+        When affinity_key is provided, workers are ordered by rendezvous hash
+        first, then overflowed workers (load >= OVERFLOW_LOAD) are moved to
+        the end so a lightly loaded non-affinity worker is preferred.
         """
         workers = self.cluster.get_workers_for_capability(capability)
         ft = self.cluster.failure_tracker  # may be None (tests without tracker)
+
+        if affinity_key is not None:
+            names = [w.name for w in workers]
+            order = _placement_rank(affinity_key, names)
+            worker_by_name = {w.name: w for w in workers}
+            ordered = []
+            overflow = []
+            for name in order:
+                w = worker_by_name.get(name)
+                if w is not None:
+                    if w.load >= OVERFLOW_LOAD:
+                        overflow.append(w)
+                    else:
+                        ordered.append(w)
+            workers = ordered + overflow
 
         for worker in workers:
             # taOS #640 Fix 3: skip workers whose circuit breaker is tripped.
@@ -86,6 +108,7 @@ class TaskRouter:
         body = {"messages": messages}
         if model:
             body["model"] = model
+            return await self.route_request("chat", "POST", "/v1/chat/completions", body, affinity_key=model)
         return await self.route_request("chat", "POST", "/v1/chat/completions", body)
 
     async def generate_image(self, prompt: str, **kwargs) -> tuple[dict | None, str | None]:

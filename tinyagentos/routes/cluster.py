@@ -308,6 +308,7 @@ class RouteRequest(BaseModel):
     path: str
     body: dict | None = None
     timeout: float = 60
+    affinity_key: str | None = None
 
 
 class MoveRequest(BaseModel):
@@ -859,6 +860,7 @@ async def route_task(request: Request, body: RouteRequest):
         path=body.path,
         body=body.body,
         timeout=body.timeout,
+        affinity_key=body.affinity_key,
     )
     if data is None:
         return JSONResponse(
