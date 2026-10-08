@@ -694,8 +694,26 @@ async def unregister_worker(request: Request, name: str):
     if not removed:
         return JSONResponse({"error": "Worker not found"}, status_code=404)
 
+    # Unpin every agent that was deployed against this worker. Clearing only
+    # `remote` would leave a phantom local agent (restart_orchestrator treats
+    # `host and not remote` as local), so clear all placement fields together.
+    config = request.app.state.config
+    unpinned_agents: list[str] = []
+    for agent in config.agents:
+        if agent.get("remote") == name:
+            unpinned_agents.append(agent["name"])
+            agent.pop("remote", None)
+            agent.pop("placement_source", None)
+            agent["host"] = ""
+            agent["status"] = "failed"
+            agent["placement_error"] = f"worker '{name}' was unregistered"
+    if unpinned_agents:
+        from tinyagentos.config import save_config_locked
+
+        await save_config_locked(config, config.config_path)
+
     _revoke_node_model_keys(request, name)
-    return {"status": "removed", "name": name}
+    return {"status": "removed", "name": name, "unpinned_agents": unpinned_agents}
 
 
 def _revoke_node_model_keys(request: Request, name: str) -> None:

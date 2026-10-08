@@ -934,6 +934,7 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
                         agent["host"] = result.get("ip", "")
                         if deploy_remote:
                             agent["remote"] = deploy_remote
+                            agent["placement_source"] = "user"
                         agent["status"] = "running"
                         agent["llm_key"] = result.get("llm_key")
                         # Save config now so the bootstrap endpoint can return
