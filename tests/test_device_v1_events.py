@@ -659,3 +659,45 @@ async def test_resume_delivers_change_made_while_disconnected(vapp, monkeypatch)
 async def test_resume_quiet_when_nothing_changed(vapp, monkeypatch):
     evs = await _resume_after_disconnect(vapp, monkeypatch, change=False)
     assert not any(e in ("agent.upsert", "snapshot") for e, _ in evs)
+
+
+async def _revoked_before_first_frame(app, monkeypatch, last_event_id):
+    from tinyagentos.routes import auth as auth_mod
+    from tinyagentos.demo_mode import write_demo_mode
+    _patch_intervals(monkeypatch)
+    _ticking_clock(monkeypatch)
+    monkeypatch.setattr(auth_mod, "_request_is_console", lambda _r: True)
+    write_demo_mode(app.state.data_dir, False)
+    app.state.config.agents = _TWO
+    st = app.state.device_store
+    d = await st.register(user_id="u1", platform="ios")
+    await st.set_scopes(d["device_id"], ["agents:read"])
+    req = _make_mock_request(app, {"authorization": f"Bearer {d['scoped_token']}"}, last_event_id=last_event_id)
+    gen = _events_stream(req, {"user_id": "u1"})
+    await st.revoke(d["device_id"])
+    frames = []
+    try:
+        while True:
+            frames.append(await asyncio.wait_for(gen.__anext__(), timeout=5.0))
+    except StopAsyncIteration:
+        pass
+    return [k for k, _ in _parse_events(frames)] if frames else []
+
+
+@pytest.mark.asyncio
+async def test_revoked_before_first_frame_initial_sends_nothing(vapp, monkeypatch):
+    assert await _revoked_before_first_frame(vapp, monkeypatch, "0") == []
+
+
+@pytest.mark.asyncio
+async def test_revoked_before_first_frame_snapshot_sends_nothing(vapp, monkeypatch):
+    assert await _revoked_before_first_frame(vapp, monkeypatch, "999") == []
+
+
+@pytest.mark.asyncio
+async def test_emit_event_ids_recorded_in_order():
+    from tinyagentos.routes import device_state as ds
+    ids = await asyncio.gather(*[ds._emit_event("order-owner", "agent.upsert", "{}") for _ in range(50)])
+    recorded = [eid for eid, _, _ in ds._get_owner_buffer("order-owner")["events"]]
+    assert sorted(ids) == list(range(1, 51))
+    assert recorded == sorted(recorded)
