@@ -4,7 +4,7 @@ type: agent-framework
 verification_status: alpha
 version: 0.1.0
 description: "Stateless agent — no persistent state, pure function execution, ephemeral"
-homepage: https://github.com/nicholasgasior/nullclaw
+homepage: https://github.com/nullclaw/nullclaw
 license: MIT
 requires:
   ram_mb: 32
