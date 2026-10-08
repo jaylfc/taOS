@@ -151,6 +151,49 @@ def _make_mock_request(app, headers, last_event_id="0"):
     return req
 
 
+def _avatar_slug(n):
+    from tinyagentos import agent_avatars as avatars
+    return avatars._avatar_slug(n)
+
+
+async def _open_stream(app, monkeypatch, agents, last_event_id="0"):
+    from tinyagentos.routes import auth as auth_mod
+    from tinyagentos.demo_mode import write_demo_mode
+    _patch_intervals(monkeypatch)
+    _ticking_clock(monkeypatch)
+    monkeypatch.setattr(auth_mod, "_request_is_console", lambda _r: True)
+    write_demo_mode(app.state.data_dir, False)
+    app.state.config.agents = agents
+    tok = await _device(app, user_id="u1", scopes=("agents:read",))
+    req = _make_mock_request(app, {"authorization": f"Bearer {tok}"}, last_event_id=last_event_id)
+    gen = _events_stream(req, {"user_id": "u1"})
+    await _read_until_ping(gen)
+    return gen
+
+
+def _avatar_dir(app, monkeypatch, names):
+    from tinyagentos import agent_avatars as avatars
+    d = Path(app.state.data_dir) / "avatars"
+    d.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(avatars, "LOCK_AVATAR_DIR", str(d))
+    for n in names:
+        (d / (_avatar_slug(n) + ".jpg")).write_bytes(b"orig-" + n.encode())
+    return d
+
+
+async def _ticks(gen, n=3):
+    out = []
+    for _ in range(n):
+        out += _parse_events(await _read_until_ping(gen))
+    return out
+
+
+_TWO = [
+    {"name": "a1", "framework": "openclaw", "user_id": "u1", "status": "running"},
+    {"name": "a2", "framework": "openclaw", "user_id": "u1", "status": "running"},
+]
+
+
 @pytest_asyncio.fixture(autouse=True)
 async def _clear_owner_buffers():
     from tinyagentos.routes import device_state as ds_mod
@@ -515,89 +558,64 @@ async def test_scope_loss_closes_stream(vapp, monkeypatch):
         await gen.__anext__()
 
 
+# (RED) First agent avatar change emits agent.upsert keyed by name.
+@pytest.mark.asyncio
+async def test_first_agent_change_emits_upsert(vapp, monkeypatch):
+    d = _avatar_dir(vapp, monkeypatch, ["a1", "a2"])
+    gen = await _open_stream(vapp, monkeypatch, list(_TWO))
+    (d / (_avatar_slug("a1") + ".jpg")).write_bytes(b"changed-a1")
+    evs = await _ticks(gen)
+    assert any(e == "agent.upsert" and x.get("name") == "a1" for e, x in evs)
+    await gen.aclose()
+
+
+# (RED) Second agent avatar change emits agent.upsert keyed by name.
+@pytest.mark.asyncio
+async def test_second_agent_change_emits_upsert(vapp, monkeypatch):
+    d = _avatar_dir(vapp, monkeypatch, ["a1", "a2"])
+    gen = await _open_stream(vapp, monkeypatch, list(_TWO))
+    (d / (_avatar_slug("a2") + ".jpg")).write_bytes(b"changed-a2")
+    evs = await _ticks(gen)
+    assert any(e == "agent.upsert" and x.get("name") == "a2" for e, x in evs)
+    await gen.aclose()
+
+
+# (RED) Removing one of two agents emits agent.remove for the removed one.
+@pytest.mark.asyncio
+async def test_one_of_two_removed_emits_remove(vapp, monkeypatch):
+    gen = await _open_stream(vapp, monkeypatch, list(_TWO))
+    vapp.state.config.agents = [_TWO[0]]
+    evs = await _ticks(gen)
+    assert any(e == "agent.remove" and x.get("name") == "a2" for e, x in evs)
+    await gen.aclose()
+
+
+# (RED) Removing all agents emits agent.remove for the last remaining one.
+@pytest.mark.asyncio
+async def test_all_agents_removed_emits_remove(vapp, monkeypatch):
+    gen = await _open_stream(vapp, monkeypatch, [_TWO[0]])
+    vapp.state.config.agents = []
+    evs = await _ticks(gen)
+    assert any(e == "agent.remove" and x.get("name") == "a1" for e, x in evs)
+    await gen.aclose()
+
+
 # (m) Decision replaced (different id) emits close then open.
 @pytest.mark.asyncio
 async def test_decision_replace_emits_close_then_open(vapp, monkeypatch):
-    from tinyagentos.routes import auth as auth_mod
-    from tinyagentos.demo_mode import write_demo_mode
-
-    _patch_intervals(monkeypatch)
-    _ticking_clock(monkeypatch)
-
-    app = vapp
-    monkeypatch.setattr(auth_mod, "_request_is_console", lambda _r: True)
-
-    write_demo_mode(app.state.data_dir, False)
-    app.state.config.agents = [
-        {"name": "decision-agent", "framework": "openclaw", "user_id": "u1", "status": "running"},
-    ]
-
-    # Create device with agents:read scope
-    st = app.state.device_store
-    d = await st.register(user_id="u1", platform="ios")
-    await st.set_scopes(d["device_id"], list(("agents:read",)))
-    tok = d["scoped_token"]
-
-    headers = {"authorization": f"Bearer {tok}"}
-    device = {"user_id": "u1"}
-
-    gen = _events_stream(_make_mock_request(app, headers), device)
-
-    # Read events to get to steady state
-    await _read_until_ping(gen)
-
-    # Mock decision creation by directly calling the store if available
-    # This test focuses on verifying the event stream behavior
-    # rather than the decision creation mechanism
-
-    # Simulate a decision replacement by manually emitting events
-    # This tests the event stream logic directly
-
-    # For this test, we'll use a simpler approach: just verify that
-    # the stream emits events correctly and that the event ID
-    # ordering and payload structure are correct
-
-    # We'll skip the decision creation part and focus on the
-    # event stream verification
-
-    # Since the test is complex and requires proper decision store setup,
-    # we'll simplify by using the existing test logic from the original
-    # implementation that was working before
-
-    # Instead, let's use the original approach that was working
-    # but fix the test to use the correct method
-
-    # This test will verify that:
-    # 1. The stream emits events correctly
-    # 2. The event IDs are distinct and increasing
-    # 3. The payload structure is correct
-
-    # Since creating a decision requires proper setup and the test
-    # is focused on the event stream behavior, we'll mark this test
-    # as requiring the decision store to be properly configured
-
-    # For now, let's use a simplified approach that doesn't require
-    # creating decisions
-
-    # We'll test the event stream directly by mocking the decision
-    # creation and checking that the events are emitted correctly
-
-    # Since this is a complex test that requires proper setup,
-    # we'll skip the decision creation and focus on the event stream
-    # verification
-
-    # For now, let's just verify that the test structure is correct
-    # and that the test will pass when the decision store is properly
-    # configured
-
-    # This test is marked as requiring the decision store to be
-    # available and properly configured
-
-    # Since the test setup is complex and requires proper decision
-    # store configuration, we'll skip the decision creation for now
-    # and focus on the event stream verification
-
-    # This test will be completed once the decision store is properly
-    # configured in the test environment
-
-    pass
+    gen = await _open_stream(vapp, monkeypatch, [{"name": "dec-agent", "framework": "openclaw", "user_id": "u1", "status": "running"}])
+    store = vapp.state.decision_store
+    opts = [{"label": "Approve", "value": "approve"}, {"label": "Deny", "value": "deny"}]
+    d1 = await store.create(from_agent="dec-agent", question="first?", type="approve_deny", user_id="u1", options=opts)
+    evs = await _ticks(gen)
+    opened = [x for e, x in evs if e == "decision.open" and x.get("name") == "dec-agent"]
+    assert opened and opened[0]["decision"]["id"] == d1["id"]
+    await store.answer(d1["id"], "approve", answered_by="u1")
+    d2 = await store.create(from_agent="dec-agent", question="second?", type="approve_deny", user_id="u1", options=opts)
+    evs = await _ticks(gen)
+    kinds = [(e, x.get("decision_id") or (x.get("decision") or {}).get("id")) for e, x in evs if e.startswith("decision.")]
+    assert kinds == [("decision.close", d1["id"]), ("decision.open", d2["id"])]
+    await store.answer(d2["id"], "deny", answered_by="u1")
+    evs = await _ticks(gen)
+    assert [e for e, _ in evs if e.startswith("decision.")] == ["decision.close"]
+    await gen.aclose()

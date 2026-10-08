@@ -327,17 +327,17 @@ async def _events_stream(request: Request, device: dict):
                                 f"data: {data_json}\n\n"
                             ).encode("utf-8")
 
-                # Removed agents.
-                for name in prev_by_name:
-                    if name not in current_by_name:
-                        eid = await _allocate_event_id(owner_id)
-                        data_json = json.dumps({"name": name})
-                        await _record_event(owner_id, eid, "agent.remove", data_json)
-                        yield f"id: {eid}\nevent: agent.remove\ndata: {data_json}\n\n".encode("utf-8")
+            # Removed agents.
+            for name in prev_by_name:
+                if name not in current_by_name:
+                    eid = await _allocate_event_id(owner_id)
+                    data_json = json.dumps({"name": name})
+                    await _record_event(owner_id, eid, "agent.remove", data_json)
+                    yield f"id: {eid}\nevent: agent.remove\ndata: {data_json}\n\n".encode("utf-8")
 
-                prev_by_name = current_by_name
-                prev_recap = {n: a.get("last_recap", "") or "" for n, a in current_by_name.items()}
-                prev_decision = {n: a.get("decision") for n, a in current_by_name.items()}
+            prev_by_name = current_by_name
+            prev_recap = {n: a.get("last_recap", "") or "" for n, a in current_by_name.items()}
+            prev_decision = {n: a.get("decision") for n, a in current_by_name.items()}
 
         # Heartbeat.
         if now - last_heartbeat >= _HEARTBEAT_INTERVAL_S:
