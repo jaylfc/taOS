@@ -963,20 +963,31 @@ class ClusterManager:
             )
             return lease
 
-    async def release_lease(self, lease_id: str, epoch: str | None = None) -> bool:
-        """Release a lease by id.  Idempotent — returns True even if the
-        lease was already expired or never existed."""
+    async def release_lease_result(self, lease_id: str, epoch: str | None = None) -> tuple[bool, str]:
+        """Release a lease by id, returning ``(ok, lease_epoch)`` atomically.
+
+        ``lease_epoch`` is the epoch of the lease that was just popped, or an
+        empty string when no lease existed (already released or expired).  On
+        an epoch mismatch the lease is left in place and ``(False, "")`` is
+        returned."""
         async with self._lease_lock:
             lease = self._leases.get(lease_id)
             if lease is not None:
                 if epoch is not None and epoch != lease.epoch:
                     logger.warning("lease %s epoch mismatch", lease_id)
-                    return False
+                    return False, ""
                 if epoch is None:
                     logger.debug("lease %s: unfenced release accepted (epoch=None)", lease_id)
                 self._leases.pop(lease_id, None)
                 logger.info("Lease released: %s on %s", lease_id, lease.resource_id)
-        return True  # idempotent
+                return True, lease.epoch
+        return True, ""  # idempotent
+
+    async def release_lease(self, lease_id: str, epoch: str | None = None) -> bool:
+        """Release a lease by id.  Idempotent, returns True even if the
+        lease was already expired or never existed."""
+        ok, _ = await self.release_lease_result(lease_id, epoch=epoch)
+        return ok
 
     async def renew_lease(self, lease_id: str, ttl_seconds: float = 30, epoch: str | None = None) -> GpuLease | None:
         """Extend a lease's TTL.  Returns the lease, or None if expired/unknown."""
