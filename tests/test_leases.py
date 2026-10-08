@@ -77,6 +77,7 @@ async def test_claim_lease_success(client, app):
     assert data["ttl_seconds"] == 30
     assert data["required_vram_mb"] == 4000
     assert "expires_at" in data
+    assert data["epoch"]
 
 
 @pytest.mark.asyncio
@@ -654,3 +655,64 @@ class TestClusterManagerLeases:
         # Lock released — unregister completes
         assert await unregister_task
         assert len(mgr.get_leases()) == 0
+
+    async def test_epoch_mismatch_renews_refused(self):
+        """A late renewal with the wrong epoch must be refused (None)."""
+        mgr = ClusterManager()
+        mgr._workers["gpu-node"] = _worker("gpu-node", free_vram=8000)
+
+        lease_l = await mgr.claim_lease("gpu-node:gpu-cuda-0", caller="first", ttl_seconds=30)
+        assert lease_l is not None
+        old_epoch = lease_l.epoch
+
+        # Force-expire and sweep
+        lease_l.expires_at = 0.0
+        mgr._sweep_expired_leases()
+
+        # Claim again on the same resource
+        lease_l2 = await mgr.claim_lease("gpu-node:gpu-cuda-0", caller="second", ttl_seconds=30)
+        assert lease_l2 is not None
+        assert lease_l2.lease_id != lease_l.lease_id
+
+        # Renewing with the old epoch must be refused
+        renewed = await mgr.renew_lease(lease_l2.lease_id, epoch=old_epoch, ttl_seconds=30)
+        assert renewed is None
+
+    async def test_epoch_matching_renews_succeeds(self):
+        """Renewing with the correct epoch succeeds."""
+        mgr = ClusterManager()
+        mgr._workers["gpu-node"] = _worker("gpu-node", free_vram=8000)
+
+        lease = await mgr.claim_lease("gpu-node:gpu-cuda-0", caller="first", ttl_seconds=30)
+        assert lease is not None
+        assert lease.epoch
+        original_expiry = lease.expires_at
+
+        renewed = await mgr.renew_lease(lease.lease_id, epoch=lease.epoch, ttl_seconds=60)
+        assert renewed is not None
+        assert renewed.expires_at > original_expiry
+
+    async def test_epoch_none_still_renews_transition(self):
+        """epoch=None still renews (transition period)."""
+        mgr = ClusterManager()
+        mgr._workers["gpu-node"] = _worker("gpu-node", free_vram=8000)
+
+        lease = await mgr.claim_lease("gpu-node:gpu-cuda-0", caller="first", ttl_seconds=30)
+        assert lease is not None
+        original_expiry = lease.expires_at
+
+        renewed = await mgr.renew_lease(lease.lease_id, epoch=None, ttl_seconds=60)
+        assert renewed is not None
+        assert renewed.expires_at > original_expiry
+
+    async def test_release_wrong_epoch_returns_false_and_keeps_lease(self):
+        """Releasing with a wrong epoch returns False and does not remove the lease."""
+        mgr = ClusterManager()
+        mgr._workers["gpu-node"] = _worker("gpu-node", free_vram=8000)
+
+        lease = await mgr.claim_lease("gpu-node:gpu-cuda-0", caller="first", ttl_seconds=30)
+        assert lease is not None
+
+        released = await mgr.release_lease(lease.lease_id, epoch="0.bogus")
+        assert released is False
+        assert lease.lease_id in mgr._leases
