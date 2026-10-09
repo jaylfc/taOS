@@ -54,6 +54,23 @@ class _FakeStore:
             return
         self.messages[message_id]["content_blocks"] = blocks if blocks is not None else []
 
+    async def extend_content_blocks(self, message_id: str, blocks: list, cap: int = 50) -> list:
+        # Simulate the real store: if message_id missing, current is [] (from NULL/'[]' in DB)
+        current = []
+        if message_id in self.messages:
+            current = self.messages[message_id].get("content_blocks") or []
+            if not isinstance(current, list):
+                current = []
+        available = cap - len(current)
+        if available < 0:
+            available = 0
+        to_add = blocks[:available]
+        new_blocks = current + to_add
+        # Only update if the message exists (real store's UPDATE would affect 0 rows if missing)
+        if message_id in self.messages:
+            self.messages[message_id]["content_blocks"] = new_blocks
+        return new_blocks
+
 
 class _FakeChannelStore:
     def __init__(self, channels=None):
