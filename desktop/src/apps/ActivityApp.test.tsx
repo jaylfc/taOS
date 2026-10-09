@@ -291,4 +291,23 @@ describe("ActivityApp", () => {
     const activityCallsAfter = fetchMock.mock.calls.filter((c) => c[0] === "/api/activity").length;
     expect(activityCallsAfter).toBe(activityCallsBefore + 1);
   });
+
+  it("renders the Model Activity header with wrap classes for mobile responsiveness", async () => {
+    vi.stubGlobal("fetch", mockFetch(baseResponses()));
+    render(<ActivityApp windowId="win-1" />);
+    await flush();
+
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { name: "Activity" })).toBeTruthy(),
+    );
+
+    const header = screen.getByRole("heading", { name: "Model Activity" });
+    expect(header).toHaveClass("whitespace-nowrap");
+
+    // Find the filter group by looking for the select's parent div
+    // The filter group has flex-wrap class
+    const select = screen.getByLabelText("Filter by worker");
+    const filterGroup = select.closest("div[class*=\"flex flex-wrap\"]");
+    expect(filterGroup).toHaveClass("flex-wrap");
+  });
 });
