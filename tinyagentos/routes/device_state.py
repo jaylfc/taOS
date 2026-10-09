@@ -11,12 +11,14 @@ import logging
 import sqlite3
 import time
 from collections import deque
+from pathlib import Path
 
 import tinyagentos
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from tinyagentos.agent_avatars import avatar_hash
+from tinyagentos.atomic_io import atomic_write_text
 from tinyagentos.device_auth import device_scope
 from tinyagentos.device_scopes import AGENTS_READ, effective_scopes
 from tinyagentos.routes.auth import assemble_lock_agents, _demo_enabled
@@ -48,6 +50,27 @@ _MAX_HISTORY = 200
 # process. Computed once at module import time.
 _ID_EPOCH = int(time.time() * 1000)
 
+_HWM_PATH: Path | None = None
+_HWM_STEP = 1000
+
+
+def seed_id_epoch(data_dir) -> None:
+    global _ID_EPOCH, _HWM_PATH
+    _HWM_PATH = Path(data_dir) / "device_event_hwm"
+    stored = 0
+    try:
+        if _HWM_PATH.exists():
+            stored = int(_HWM_PATH.read_text().strip())
+    except (ValueError, OSError):
+        stored = 0
+    _ID_EPOCH = max(int(time.time() * 1000), stored + _HWM_STEP)
+    # Atomically write _ID_EPOCH to the HWM file
+    try:
+        _HWM_PATH.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(_HWM_PATH, str(_ID_EPOCH))
+    except OSError:
+        pass
+
 
 def _get_owner_buffer(owner_id: str) -> dict:
     if owner_id not in _owner_buffers:
@@ -77,6 +100,12 @@ async def _emit_event(owner_id: str, event_type: str, data_json: str) -> int:
         eid = buf["next_id"]
         buf["next_id"] += 1
         buf["events"].append((eid, event_type, data_json))
+        if _HWM_PATH is not None and eid % _HWM_STEP == 0:
+            try:
+                _HWM_PATH.parent.mkdir(parents=True, exist_ok=True)
+                atomic_write_text(_HWM_PATH, str(eid))
+            except OSError:
+                logger.warning("failed to write event hwm")
         return eid
 
 
