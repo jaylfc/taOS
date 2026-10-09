@@ -1,0 +1,1 @@
+- Weather widget: on a taOS phone, a fresh GPS fix (under 30 minutes old) now sets the weather location ahead of the saved home. Without a fix it uses the saved home, then the browser's location, then asks you to set one.

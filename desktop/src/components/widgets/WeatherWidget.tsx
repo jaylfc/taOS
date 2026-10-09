@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
-import { getHomeLocation, getTempUnit, getWindUnit, cToF, kmhToMph, UNIT_CHANGED_EVENT } from "@/apps/WeatherApp";
+import { getTempUnit, getWindUnit, cToF, kmhToMph, UNIT_CHANGED_EVENT } from "@/apps/WeatherApp";
 import { useWidgetSize } from "@/hooks/use-widget-size";
 import { useThemeStore } from "@/stores/theme-store";
 import { WeatherIcon, weatherIconName } from "./weather-icons";
 import { conditionGroup, weatherGradient } from "./weather-theme";
+import { resolveWeatherLocation, type WeatherLocation } from "./weather-location";
 
 interface Weather {
   temp: number;
@@ -48,9 +49,7 @@ function codeInfo(code: number) {
   return WEATHER_CODES[code] ?? { label: "Unknown" };
 }
 
-async function fetchWeather(): Promise<Weather | null> {
-  const home = getHomeLocation();
-  if (!home) return null;
+async function fetchWeather(home: WeatherLocation): Promise<Weather | null> {
   try {
     const params = new URLSearchParams({
       latitude: String(home.latitude),
@@ -110,7 +109,7 @@ async function fetchWeather(): Promise<Weather | null> {
 
 export function WeatherWidget() {
   const [weather, setWeather] = useState<Weather | null>(null);
-  const [noHome, setNoHome] = useState(!getHomeLocation());
+  const [noHome, setNoHome] = useState(false);
   const [tempUnit, setTempUnit] = useState(getTempUnit);
   const [windUnit, setWindUnit] = useState(getWindUnit);
   const [containerRef, { tier, height }] = useWidgetSize();
@@ -118,9 +117,10 @@ export function WeatherWidget() {
 
   useEffect(() => {
     const load = () => {
-      const home = getHomeLocation();
-      setNoHome(!home);
-      if (home) fetchWeather().then(setWeather);
+      resolveWeatherLocation().then((home) => {
+        setNoHome(!home);
+        if (home) fetchWeather(home).then(setWeather);
+      });
     };
     const hydrate = async () => {
       try {
