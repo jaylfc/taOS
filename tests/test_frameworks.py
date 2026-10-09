@@ -370,7 +370,7 @@ EXPECTED_FRAMEWORKS = {
     "openclaw", "smolagents", "generic", "pocketflow", "langroid",
     "openai-agents-sdk", "hermes", "opencrabs", "agent_zero", "ironclaw",
     "microclaw", "moltis", "nanoclaw", "nullclaw", "picoclaw", "shibaclaw",
-    "zeroclaw",
+    "zeroclaw", "thclaws",
 }
 
 
