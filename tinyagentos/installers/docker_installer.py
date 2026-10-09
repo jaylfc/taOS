@@ -365,7 +365,7 @@ class DockerInstaller(AppInstaller):
 
         # Add depends_on configuration for the app service to manage companion startup order
         if companion_names:
-            depends_on: dict[str, dict | list] = {}
+            depends_on: dict[str, dict] = {}
             for comp_name in companion_names:
                 comp_service = all_services[comp_name]
                 if "healthcheck" in comp_service:

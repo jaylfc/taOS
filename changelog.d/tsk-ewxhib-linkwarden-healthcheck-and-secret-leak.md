@@ -1,7 +1,6 @@
 ### Fixed
 
 - Docker installer: a companion service that declares a healthcheck is now waited on with `depends_on: {<name>: {condition: service_healthy}}` instead of a bare `depends_on: [<name>]`, so an app such as Linkwarden no longer starts before its postgres database is READY on first boot. A postgres companion with no declared healthcheck gets a default `pg_isready` healthcheck, with the user/db derived from the companion's `POSTGRES_USER`/`POSTGRES_DB` env rather than hard-coded to one app. (#3607)
-- Docker installer: the companion with no healthcheck now renders `depends_on: {<name>: {condition: service_started}}` (mapping form) instead of the invalid list form `depends_on: [<name>]`, which compose-go rejected as unparseable Compose. Any app with a non-postgres companion that declares no healthcheck (e.g. redis) used to generate a compose file `docker compose` refused to parse.
 
 ### Security
 
