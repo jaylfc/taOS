@@ -503,7 +503,10 @@ Rules that matter when you use it:
 
 `check` returns `admitted`, `blockers`, `free_mb`, `capacity_mb`, `claimed_mb`,
 `vram_verified`, `reason`, and the `claims` it folded. `claim` returns the
-`lease_id` (when the node is a cluster worker) and the exact `line` posted.
+`lease_id` and `epoch` (when the node is a cluster worker) and the exact `line`
+posted. `renew` accepts an optional `epoch` body field that must match the lease's
+current epoch; a mismatch is refused with `409` so a replaced lease is not
+silently extended. `release` also accepts an optional `epoch` field.
 
 ## Bus restarts during a controller update
 
