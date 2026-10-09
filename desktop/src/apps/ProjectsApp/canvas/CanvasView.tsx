@@ -1,13 +1,12 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, Suspense, lazy } from "react";
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Download } from "lucide-react";
 import { canvasApi } from "./canvas-api";
 import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import { getCanvasEngine } from "./canvas-engine";
-import { Suspense, lazy } from "react";
 
 const CanvasBoard = lazy(() => import("./CanvasBoard").then((m) => ({ default: m.CanvasBoard })));
-const ExcalidrawCanvas = lazy(() => import("./ExcalidrawCanvas").then((m) => ({ default: m.default })));
+const ExcalidrawCanvas = lazy(() => import("./ExcalidrawCanvas"));
 
 export function CanvasView({
   projectId, projectSlug, elementId,

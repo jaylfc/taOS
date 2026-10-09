@@ -27,28 +27,25 @@ describe("CanvasView engine switching", () => {
     window.history.replaceState({}, "", "/");
   });
 
-  it("renders CanvasBoard by default", async () => {
-    (getCanvasEngine as vi.Mock).mockReturnValue("tldraw");
-    
-    render(<CanvasView projectId="p1" projectSlug="s1" />);
-    
-    // Should render CanvasBoard stub
-    expect(screen.getByTestId("canvas-board-stub")).toBeInTheDocument();
-    // Should not render ExcalidrawCanvas stub
-    expect(screen.queryByTestId("excalidraw-canvas-stub")).not.toBeInTheDocument();
-  });
+   it("renders CanvasBoard by default", async () => {
+     (getCanvasEngine as vi.Mock).mockReturnValue("tldraw");
+     
+     render(<CanvasView projectId="p1" projectSlug="s1" />);
+     
+     // Should render CanvasBoard stub
+     expect(await screen.findByTestId("canvas-board-stub")).toBeInTheDocument();
+     // Should not render ExcalidrawCanvas stub
+     expect(await screen.queryByTestId("excalidraw-canvas-stub")).not.toBeInTheDocument();
+   });
 
-  it("renders ExcalidrawCanvas when ?canvas=excalidraw", async () => {
-    (getCanvasEngine as vi.Mock).mockReturnValue("excalidraw");
-    
-    // Set URL param to excalidraw
-    window.history.replaceState({}, "", "?canvas=excalidraw");
-    
-    render(<CanvasView projectId="p1" projectSlug="s1" />);
-    
-    // Should render ExcalidrawCanvas stub
-    expect(screen.getByTestId("excalidraw-canvas-stub")).toBeInTheDocument();
-    // Should not render CanvasBoard stub
-    expect(screen.queryByTestId("canvas-board-stub")).not.toBeInTheDocument();
-  });
+   it("renders ExcalidrawCanvas when ?canvas=excalidraw", async () => {
+     (getCanvasEngine as vi.Mock).mockReturnValue("excalidraw");
+     
+     render(<CanvasView projectId="p1" projectSlug="s1" />);
+     
+     // Should render ExcalidrawCanvas stub
+     expect(await screen.findByTestId("excalidraw-canvas-stub")).toBeInTheDocument();
+     // Should not render CanvasBoard stub
+     expect(await screen.queryByTestId("canvas-board-stub")).not.toBeInTheDocument();
+   });
 });

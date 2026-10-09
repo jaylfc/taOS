@@ -1,4 +1,5 @@
-import { getCanvasEngine, CanvasEngine } from "../canvas/canvas-engine";
+import { getCanvasEngine } from "../canvas/canvas-engine";
+import { describe, test, expect, beforeEach } from "vitest";
 
 // Mock localStorage
 const localStorageMock = (() => {
