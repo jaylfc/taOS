@@ -630,6 +630,15 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await notif_push_store.init()
         await qmd_client.init()
         await secrets_store.init()
+        # The harness decision ran at create_app time, before the Secrets
+        # store was readable; claude_code needs its token secret, so re-decide
+        # now when that is the preferred harness.
+        _fw_decision = getattr(app.state, "taos_agent_framework_decision", None)
+        if _fw_decision is not None and _fw_decision.preference == "claude_code":
+            from tinyagentos.claude_code_runtime import claude_code_token_present
+            from tinyagentos.taos_agent_runtime import refresh_framework_decision
+            refresh_framework_decision(
+                app.state, claude_code_token_present=await claude_code_token_present(app.state))
         # -------------------------------------------------------------------
         # Migrate legacy github_app_private_key from config.yaml → SecretsStore.
         # The key was previously stored as plaintext in config and re-serialized

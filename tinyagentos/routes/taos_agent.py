@@ -6,7 +6,7 @@ GET  /api/taos-agent/config                    → {model, permitted_models, per
 PUT  /api/taos-agent/permitted-models          → validate + persist permitted_models; re-scope the agent key
 PUT  /api/taos-agent/persona                   → persist persona (system-prompt override)
 PUT  /api/taos-agent/framework                 → set taos_agent.framework / device.class; restarts the agent
-POST /api/taos-agent/chat                      → streams a turn via opencode or PicoClaw (NDJSON)
+POST /api/taos-agent/chat                      → streams a turn via opencode, PicoClaw or Claude Code (NDJSON)
 GET  /api/taos-agent/status                    → scoped agent-loop status (state, turn, queue, subagents)
 POST /api/taos-agent/attachments/upload        → accepts a file, returns a persistent attachment record
 GET  /api/taos-agent/attachments/files/{name}  → serve a stored attachment
@@ -37,16 +37,20 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from pydantic import BaseModel
 
 from tinyagentos.adapters.opencode_adapter import OpenCodeAdapter, OpenCodeConfig
+from tinyagentos.adapters.claude_code_cli_adapter import ClaudeCodeCliAdapter, ClaudeCodeCliConfig
 from tinyagentos.adapters.picoclaw_cli_adapter import PicoClawCliAdapter, PicoClawCliConfig
 from tinyagentos.agent_loop import AgentLoop, LoopAction
+from tinyagentos.claude_code_runtime import ClaudeCodeBinaryNotFoundError, ClaudeCodeTokenMissingError
 from tinyagentos.opencode_runtime import OpenCodeBinaryNotFoundError
 from tinyagentos.picoclaw_runtime import PicoClawBinaryNotFoundError
 from tinyagentos.taos_agent_runtime import (
     DEVICE_CLASS_CHOICES,
     FRAMEWORK_CHOICES,
+    FRAMEWORK_CLAUDE_CODE,
     FRAMEWORK_PICOCLAW,
     FrameworkDecision,
     apply_framework,
+    ensure_taos_claude_code_harness,
     ensure_taos_opencode_server,
     ensure_taos_picoclaw_harness,
     opencode_gateway_problem,
@@ -140,7 +144,7 @@ class PersonaUpdate(BaseModel):
 
 class FrameworkUpdate(BaseModel):
     framework: str | None = None
-    """taos_agent.framework: "auto" | "opencode" | "picoclaw"."""
+    """taos_agent.framework: "auto" | "opencode" | "picoclaw" | "claude_code"."""
     device_class: str | None = None
     """device.class: "auto" | "mobile" | "desktop"."""
 
@@ -470,7 +474,8 @@ async def put_persona(request: Request, body: PersonaUpdate):
 @router.post("/api/taos-agent/chat")
 async def chat(request: Request, body: ChatRequest):
     """Stream a chat turn through the harness that runs the taOS Agent: a host
-    opencode server, or (on a taOSmobile handset) one PicoClaw turn.
+    opencode server, or one PicoClaw turn (a taOSmobile handset), or one
+    Claude Code turn (operator override).
 
     Returns NDJSON where each line is a JSON object with a ``delta`` string
     field, followed by a final ``{"done": true}`` line.  The frontend reads
@@ -512,7 +517,26 @@ async def chat(request: Request, body: ChatRequest):
     else:
         harness = None
 
-    if not use_picoclaw:
+    use_claude_code = system_agent_framework(app_state) == FRAMEWORK_CLAUDE_CODE
+    if use_claude_code:
+        try:
+            harness = await ensure_taos_claude_code_harness(app_state, model, system_prompt)
+        except (ClaudeCodeBinaryNotFoundError, ClaudeCodeTokenMissingError) as exc:
+            logger.error("taos-agent: claude code unavailable: %s", type(exc).__name__)
+            return JSONResponse(
+                {"error": "Claude Code is not ready: add a claude_code_oauth_token secret (the "
+                          "value `claude setup-token` prints) in Secrets, make sure the claude "
+                          "binary is installed, or switch the taOS Agent to opencode."},
+                status_code=503,
+            )
+        except Exception as exc:
+            logger.exception("taos-agent: claude code could not be provisioned")
+            return JSONResponse(
+                {"error": f"taOS agent runtime (claude code) failed to start: {type(exc).__name__}"},
+                status_code=503,
+            )
+
+    if not (use_picoclaw or use_claude_code):
         # opencode is always given the in-process gateway (/api/llm/v1), the
         # only LLM path since LiteLLM removal 2b-2a. When it cannot serve the
         # model, say so up front instead of starting a server that will only
@@ -527,7 +551,7 @@ async def chat(request: Request, body: ChatRequest):
 
     # Ensure the host opencode server is running.
     try:
-        server = None if use_picoclaw else await ensure_taos_opencode_server(request.app.state, model)
+        server = None if (use_picoclaw or use_claude_code) else await ensure_taos_opencode_server(request.app.state, model)
     except OpenCodeBinaryNotFoundError as exc:
         # The binary genuinely isn't reachable (not on PATH, not at the
         # installer's default location) — a clear install instruction, not a
@@ -569,7 +593,10 @@ async def chat(request: Request, body: ChatRequest):
             # final done frame.
             pass
 
-    if use_picoclaw:
+    if use_claude_code:
+        adapter = ClaudeCodeCliAdapter(ClaudeCodeCliConfig(harness=harness, system=system_prompt), sink)
+        adapter.session_id = getattr(app_state, "taos_claude_code_session_id", None)
+    elif use_picoclaw:
         adapter = PicoClawCliAdapter(PicoClawCliConfig(harness=harness, system=system_prompt), sink)
     else:
         cfg = OpenCodeConfig(
@@ -649,17 +676,19 @@ async def chat(request: Request, body: ChatRequest):
     async def _drive() -> None:
         try:
             await adapter.ensure_session()
-            if not use_picoclaw:
+            if not (use_picoclaw or use_claude_code):
                 app_state.taos_opencode_session_id = adapter.session_id
                 # Keep the per-agent session cache in sync (agent-as-a-model path).
                 sess = getattr(app_state, "taos_opencode_sessions", None)
                 if sess is not None:
                     sess[model] = adapter.session_id
             await adapter.prompt(text, trace_id=trace_id, attachments=attachments)
+            if use_claude_code and adapter.session_id:
+                app_state.taos_claude_code_session_id = adapter.session_id
             await adapter.close()
         except Exception as exc:
             logger.exception("taos-agent: drive task error")
-            queue.put_nowait({"error": str(exc)})
+            queue.put_nowait({"error": harness.redact(str(exc)) if use_claude_code else str(exc)})
         finally:
             # The safe point MUST be reached even when the turn raises or is
             # cancelled — skipping it would wedge the loop in WORKING forever.
