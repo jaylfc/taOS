@@ -84,6 +84,9 @@ describe("MobileTopBar edge backdrop", () => {
 
      // Check its style
      expect(backdrop.style.position).toBe("fixed");
+     // A 1px strip at the top, not a full-height bar: the wallpaper shows through.
+     expect(backdrop.style.top).toBe("0px");
+     expect(backdrop.style.height).toBe("1px");
      expect(backdrop.style.backgroundColor).toBe("rgb(20, 20, 21)");
      // Ensure it's not rgba (i.e., opaque)
      expect(backdrop.style.backgroundColor).not.toContain("rgba");

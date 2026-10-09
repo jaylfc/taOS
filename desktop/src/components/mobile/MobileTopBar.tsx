@@ -7,6 +7,7 @@ import { StatusIndicators } from "../StatusIndicators";
 import { useIsPwa } from "@/hooks/use-is-pwa";
 
 export const IOS_EDGE_BACKDROP_COLOR = "#141415";
+export const IOS_EDGE_BACKDROP_HEIGHT = "1px";
 
 interface Props {
   onSearch: () => void;
@@ -43,7 +44,9 @@ export function MobileTopBar({ onSearch }: Props) {
              top: 0,
              left: 0,
              right: 0,
-             height: MOBILE_TOP_BAR_HEIGHT,
+             // A 1px strip only: it masks the iOS 27 blur edge at the very top
+             // while the wallpaper shows through behind the bar.
+             height: IOS_EDGE_BACKDROP_HEIGHT,
              backgroundColor: IOS_EDGE_BACKDROP_COLOR,
              zIndex: 0,
              pointerEvents: "none",
