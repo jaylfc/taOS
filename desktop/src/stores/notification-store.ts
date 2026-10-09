@@ -117,7 +117,7 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
 
   archiveRead(id) {
     set((s) => {
-      const notification = s.notifications.find((n) => n.id === id);
+      const notification = s.notifications.find(n => n.id === id);
       if (!notification) return s;
       if (notification.source === "agent_scope_requests" || notification.source === "auth_requests") {
         return s;
@@ -127,7 +127,7 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
         void archiveServerNotification(id);
       }
       return {
-        notifications: s.notifications.map((n) =>
+        notifications: s.notifications.map(n =>
           n.id === id ? { ...n, archived: true, read: true } : n,
         ),
       };

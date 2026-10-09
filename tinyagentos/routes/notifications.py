@@ -221,15 +221,21 @@ async def archive_notification(request: Request, notif_id: int):
     """Dismiss a notification by archiving it; it stays in the History view."""
     user_id = _notif_user_id(request)
     store = request.app.state.notifications
-    
+
     # Server-side guard: do not archive bells for still-pending requests.
     # Load the row first to check its source and request_id.
     row = await store.get(notif_id)
     if row is not None:
+        # Verify the notification belongs to the calling user (or is a broadcast)
+        row_user_id = row.get("user_id")
+        if row_user_id is not None and row_user_id != user_id:
+            # Not the owner and not a broadcast: treat as not found
+            raise HTTPException(status_code=404, detail="notification not found")
+
         source = row.get("source")
         data = row.get("data") or {}
         request_id = data.get("request_id")
-        
+
         if source == "agent_scope_requests" and request_id is not None:
             scope_store = getattr(request.app.state, "agent_scope_requests", None)
             if scope_store is not None:
@@ -238,7 +244,7 @@ async def archive_notification(request: Request, notif_id: int):
                     # Request is still pending: mark read but do not archive.
                     await store.mark_read(notif_id, user_id=user_id)
                     return {"ok": True, "kept": "pending-request"}
-        
+
         elif source == "auth_requests" and request_id is not None:
             auth_store = getattr(request.app.state, "auth_requests", None)
             if auth_store is not None:
@@ -247,7 +253,7 @@ async def archive_notification(request: Request, notif_id: int):
                     # Request is still pending: mark read but do not archive.
                     await store.mark_read(notif_id, user_id=user_id)
                     return {"ok": True, "kept": "pending-request"}
-    
+
     # Any other case: proceed with normal archive.
     affected = await store.archive(notif_id, user_id=user_id)
     if affected == 0:
