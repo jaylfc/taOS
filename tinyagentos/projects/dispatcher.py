@@ -1,15 +1,14 @@
-"""Dispatcher Service v2 — per-user dispatcher tick logic.
+"""Dispatcher Service v2 - per-user dispatcher tick logic.
 
 This module implements the dispatcher's per-user tick logic using real stores
 and the pure dispatch policy. It is designed to be called from a background
-loop (D3, tsk-mzf37f) but contains no loop logic itself — just the pure
+loop (D3, tsk-mzf37f) but contains no loop logic itself - just the pure
 tick_user/tick functions.
 """
 from __future__ import annotations
 
 import logging
 import time
-from types import SimpleNamespace
 from typing import Any
 
 from tinyagentos.projects.dispatch_policy import (
@@ -196,8 +195,12 @@ class DispatcherService:
                     lease_expires_at=lease_expires_at,
                 )
                 if lease_id is None:
-                    # Should not happen since we just assigned, but handle gracefully
-                    races_skipped += 1
+                    # Duplicate pending lease for this task (integrity error) - another dispatcher
+                    # already created a lease. Task is assigned but we don't own the lease.
+                    logger.warning(
+                        "dispatcher: insert_lease returned None for task %s (duplicate pending lease)",
+                        assignment.task_id,
+                    )
                     continue
 
                 # Stamp last assigned
@@ -244,13 +247,15 @@ class DispatcherService:
                                 content_type="system",
                                 state="complete",
                             )
-                            record_scheduled_wake(data_dir, ref.canonical_id, task_row["project_id"])
-                            wakes += 1
                         except Exception:
                             logger.warning(
                                 "dispatcher: a2a announce failed for task %s", task_row["id"], exc_info=True
                             )
                             # lease stands, no wake recorded
+                            continue
+
+                        record_scheduled_wake(data_dir, ref.canonical_id, task_row["project_id"])
+                        wakes += 1
 
         return {
             "boards_held": boards_held,
