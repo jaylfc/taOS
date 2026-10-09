@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { MobileTopBar } from "../MobileTopBar";
 
 // Mock the stores and hooks with implementations (except useIsPwa)
@@ -75,7 +75,7 @@ describe("MobileTopBar edge backdrop", () => {
     vi.stubGlobal("matchMedia", vi.fn((query: string) => createMql(true)));
 
     // Render the component
-    render(<MobileTopBar onHome={() => {}} onSearch={() => {}} />);
+    render(<MobileTopBar onSearch={() => {}} />);
 
      // Check that the backdrop exists and is a direct child of document.body
      const backdrop = document.body.querySelector('[data-testid="ios-edge-backdrop"]');
@@ -98,10 +98,20 @@ describe("MobileTopBar edge backdrop", () => {
     vi.stubGlobal("matchMedia", vi.fn((query: string) => createMql(false)));
 
     // Render the component
-    render(<MobileTopBar onHome={() => {}} onSearch={() => {}} />);
+    render(<MobileTopBar onSearch={() => {}} />);
 
     // Check that the backdrop does not exist
     const backdrop = document.body.querySelector('[data-testid="ios-edge-backdrop"]');
     expect(backdrop).toBeNull();
+  });
+});
+describe("MobileTopBar layout", () => {
+  it("has no taOS wordmark (the handset camera hole sits there), keeps search and notifications", () => {
+    vi.stubGlobal("matchMedia", vi.fn(() => createMql(false)));
+    render(<MobileTopBar onSearch={() => {}} />);
+    expect(screen.queryByText("taOS")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Go to home screen" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Search" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Notifications/ })).toBeInTheDocument();
   });
 });

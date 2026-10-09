@@ -333,7 +333,7 @@ function ToastItem({ notif, onExpire, fullWidth = false }: { notif: Notification
 // still populates the bell; it just does not pop.
 const TOAST_FRESH_MS = 20_000;
 
-export function NotificationToasts({ bottomInset }: { bottomInset?: string } = {}) {
+export function NotificationToasts({ topInset }: { topInset?: string } = {}) {
   const notifications = useNotificationStore((s) => s.notifications);
   // Each notification toasts at most once per session.
   const toastedRef = useRef<Set<string>>(new Set());
@@ -358,10 +358,10 @@ export function NotificationToasts({ bottomInset }: { bottomInset?: string } = {
 
   return (
     <div
-      // Mobile passes the dock height: toasts sit full width just above the
-      // dock, clear of the top bar and the Launchpad search field.
-      className={`fixed z-[10001] flex flex-col gap-2 pointer-events-auto ${bottomInset ? "left-4 right-4" : "top-12 right-4"}`}
-      style={bottomInset ? { bottom: `calc(${bottomInset} + 8px)` } : undefined}
+      // Mobile passes the top bar height: toasts sit full width just below
+      // the top bar, as on a phone.
+      className={`fixed z-[10001] flex flex-col gap-2 pointer-events-auto ${topInset ? "left-4 right-4" : "top-12 right-4"}`}
+      style={topInset ? { top: `calc(${topInset} + 8px)` } : undefined}
       aria-label="Notifications"
       role="region"
     >
@@ -369,7 +369,7 @@ export function NotificationToasts({ bottomInset }: { bottomInset?: string } = {
         <ToastItem
           key={n.id}
           notif={n}
-          fullWidth={!!bottomInset}
+          fullWidth={!!topInset}
           onExpire={() => setToastIds((prev) => prev.filter((id) => id !== n.id))}
         />
       ))}

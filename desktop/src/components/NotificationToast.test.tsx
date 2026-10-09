@@ -60,7 +60,7 @@ describe("NotificationToasts", () => {
     expect(screen.getByText("A new version of taOS is ready to install.")).toBeInTheDocument();
   });
 
-  it("spans the width above the dock on mobile and keeps w-80 on desktop", () => {
+  it("spans the width below the top bar on mobile and keeps w-80 on desktop", () => {
     mockNotifications.length = 0;
     mockNotifications.push({
       id: "test-width",
@@ -71,10 +71,11 @@ describe("NotificationToasts", () => {
       read: false,
       timestamp: Date.now(),
     });
-    const { unmount } = render(<NotificationToasts bottomInset="62px" />);
+    const { unmount } = render(<NotificationToasts topInset="44px" />);
     const region = screen.getByRole("region", { name: "Notifications" });
-    // jsdom folds the calc: 62px dock + 8px gap.
-    expect(region.style.bottom).toBe("calc(70px)");
+    // jsdom folds the calc: 44px top bar + 8px gap.
+    expect(region.style.top).toBe("calc(52px)");
+    expect(region.style.bottom).toBe("");
     expect(region.className).toContain("left-4 right-4");
     expect(region.firstElementChild?.className).toContain("w-full");
     expect(region.firstElementChild?.className).not.toContain("w-80");
