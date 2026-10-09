@@ -643,7 +643,6 @@ install_systemd_unit() {
         # so pin NPU + DDR from a privileged pre-start instead. '+' = full privileges, '-' = never block the start.
         fix_freq_line="ExecStartPre=-+/bin/bash $fix_freq 0"
     fi
-    
     log "installing $unit"
     sudo tee "$unit" >/dev/null <<EOF
 [Unit]
@@ -660,9 +659,9 @@ Environment=PYTHONUNBUFFERED=1
 # rkllama spawns multiprocessing children that occasionally outlive the
 # parent if it crashes (e.g. during NPU model load). Without this hook
 # the orphans keep listening on the port and the next restart can't bind.
-    ExecStartPre=-/usr/bin/pkill -9 -f $RKLLAMA_VENV/bin/rkllama_server
-    $fix_freq_line
-    ExecStart=$exec_start
+ExecStartPre=-/usr/bin/pkill -9 -f $RKLLAMA_VENV/bin/rkllama_server
+$fix_freq_line
+ExecStart=$exec_start
 Restart=always
 RestartSec=5
 KillMode=mixed

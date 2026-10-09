@@ -5,13 +5,8 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 INSTALL_RKNPU_SH = REPO_ROOT / "scripts/install-rknpu.sh"
 
 
-def test_rkllama_unit_runs_fix_freq_privileged_before_exec_start():
-    text = INSTALL_RKNPU_SH.read_text()
-    # 2. Check that the heredoc contains the line: $fix_freq_line
-    # We need to find the heredoc block. We know it starts after the line with `sudo tee "$unit" >/dev/null <<EOF`
-    # and ends with a line that is just `EOF`.
-    # We'll split the text into lines and find the heredoc block.
-
+def _unit_heredoc_lines(text: str) -> list[str]:
+    """The lines of the rkllama.service heredoc, verbatim (indentation kept)."""
     lines = text.splitlines()
     in_heredoc = False
     heredoc_lines = []
@@ -19,42 +14,41 @@ def test_rkllama_unit_runs_fix_freq_privileged_before_exec_start():
         if line.strip() == 'sudo tee "$unit" >/dev/null <<EOF':
             in_heredoc = True
             continue
-        if in_heredoc and line.strip() == 'EOF':
+        if in_heredoc and line.strip() == "EOF":
             break
         if in_heredoc:
             heredoc_lines.append(line)
+    assert heredoc_lines, "could not find the rkllama.service heredoc"
+    return heredoc_lines
 
-    # 3. Check that the $fix_freq_line line is after the pkill ExecStartPre and before the ExecStart line.
-    # We'll find the indices of the pkill line and the ExecStart line in heredoc_lines.
-    pkill_line = None
-    exec_start_line = None
-    fix_freq_line_index = None
-    for i, line in enumerate(heredoc_lines):
-        stripped = line.strip()
-        if stripped.startswith('ExecStartPre=-/usr/bin/pkill -9 -f $RKLLAMA_VENV/bin/rkllama_server'):
-            pkill_line = i
-        if stripped.startswith('ExecStart=$exec_start'):
-            exec_start_line = i
-        if stripped == '$fix_freq_line':
-            fix_freq_line_index = i
 
-    assert pkill_line is not None, "Could not find pkill ExecStartPre line in heredoc"
-    assert exec_start_line is not None, "Could not find ExecStart line in heredoc"
-    assert fix_freq_line_index is not None, "Could not find $fix_freq_line line in heredoc"
-
-    # Check order: pkill_line < fix_freq_line_index < exec_start_line
-    assert pkill_line < fix_freq_line_index, (
-        f"$fix_freq_line line (index {fix_freq_line_index}) must come after pkill line (index {pkill_line})"
-    )
-    assert fix_freq_line_index < exec_start_line, (
-        f"$fix_freq_line line (index {fix_freq_line_index}) must come before ExecStart line (index {exec_start_line})"
+def test_fix_freq_line_is_a_privileged_non_blocking_prestart_behind_an_existence_guard():
+    text = INSTALL_RKNPU_SH.read_text()
+    # '-+' = never block the start, full privileges regardless of User=.
+    assert re.search(
+        r'^\s*fix_freq_line="ExecStartPre=-\+/bin/bash \$fix_freq 0"$', text, re.MULTILINE
+    ), "fix_freq_line must be a '-+' privileged, non-fatal ExecStartPre"
+    # rk3568 ships no fix_freq script, so the hook is emitted only when the file exists.
+    assert re.search(r'^\s*if \[ -f "\$fix_freq" \]', text, re.MULTILINE), (
+        "fix_freq_line must be guarded by an existence check on $fix_freq"
     )
 
-    # 4. Check that the script contains the existence guard: if [ -f "$fix_freq" ]
-    # We'll look for: if [ -f "$fix_freq" ]
-    # Note: The $fix_freq is a variable, so we need to escape the $ in the regex for the variable part?
-    # We want to match the literal string: if [ -f "$fix_freq" ]
-    # In the script, it is written as: if [ -f "$fix_freq" ]
-    # So we need to escape the $ and the quotes? Actually, we can use a raw string and escape the $.
-    pattern = r'if \[ -f \"\$fix_freq\" \]'
-    assert re.search(pattern, text), f"Expected to find existence guard: {pattern}"
+
+def test_rkllama_unit_runs_fix_freq_privileged_before_exec_start():
+    heredoc_lines = _unit_heredoc_lines(INSTALL_RKNPU_SH.read_text())
+
+    # The heredoc is unquoted (<<EOF), so every byte of indentation is written
+    # into the unit; the directives must sit at column 0 exactly as emitted.
+    pkill_line = heredoc_lines.index(
+        "ExecStartPre=-/usr/bin/pkill -9 -f $RKLLAMA_VENV/bin/rkllama_server"
+    )
+    exec_start_line = heredoc_lines.index("ExecStart=$exec_start")
+    fix_freq_line_index = heredoc_lines.index("$fix_freq_line")
+
+    assert pkill_line < fix_freq_line_index < exec_start_line, (
+        f"$fix_freq_line (index {fix_freq_line_index}) must sit after the pkill "
+        f"ExecStartPre (index {pkill_line}) and before ExecStart (index {exec_start_line})"
+    )
+    assert not any(line != line.lstrip() and line.strip() for line in heredoc_lines), (
+        "no indented directive may be emitted into the unit"
+    )
