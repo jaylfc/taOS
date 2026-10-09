@@ -594,6 +594,13 @@ class ChatMessageStore(BaseStore):
         )
         await self._db.commit()
 
+    async def update_content_blocks(self, message_id: str, blocks: list | None) -> None:
+        await self._db.execute(
+            "UPDATE chat_messages SET content_blocks = ? WHERE id = ?",
+            (json.dumps(blocks or []), message_id),
+        )
+        await self._db.commit()
+
     async def pin_message(self, channel_id: str, message_id: str, pinned_by: str) -> None:
         """Pin a message in a channel. Idempotent. Raises ValueError if pin cap
         (50) would be exceeded by a new pin."""

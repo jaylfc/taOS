@@ -324,6 +324,39 @@ class BridgeSessionRegistry:
             pending_msg_id = session.pop_pending_msg(trace_id)
             channel_id = body.get("channel_id") or await self._resolve_channel(slug)
 
+            # --- Begin: content_blocks handling ---
+            raw_blocks = body.get("content_blocks")
+            validated_blocks = None
+            if raw_blocks is not None:
+                if isinstance(raw_blocks, list):
+                    # Validate each block
+                    allowed_kinds = {"text", "thinking", "tool_call", "status", "question", "decision"}
+                    valid_blocks = []
+                    for block in raw_blocks:
+                        if isinstance(block, dict) and block.get("kind") in allowed_kinds:
+                            valid_blocks.append(block)
+                        else:
+                            logger.warning(
+                                "bridge_session: invalid content block kind in final reply for agent %s: %s",
+                                slug,
+                                block.get("kind") if isinstance(block, dict) else type(block),
+                            )
+                            # Invalidate the entire list if any block is invalid
+                            valid_blocks = None
+                            break
+                    if valid_blocks is not None:
+                        # Apply cap
+                        if len(valid_blocks) > 50:
+                            valid_blocks = valid_blocks[:50]
+                        validated_blocks = valid_blocks
+                else:
+                    logger.warning(
+                        "bridge_session: content_blocks is not a list in final reply for agent %s: %s",
+                        slug,
+                        type(raw_blocks),
+                    )
+            # --- End: content_blocks handling ---
+
             # Write trace event.
             if self._trace_registry:
                 store = await self._trace_registry.get(slug)
@@ -340,15 +373,36 @@ class BridgeSessionRegistry:
                     # Edit the streaming placeholder to final content.
                     await self._chat_messages.edit_message(pending_msg_id, final_content)
                     await self._chat_messages.update_state(pending_msg_id, "complete")
+                    # Update content_blocks if we have validated blocks
+                    if validated_blocks is not None:
+                        # Read current content_blocks to merge with new validated blocks
+                        current_msg = await self._chat_messages.get_message(pending_msg_id)
+                        existing_blocks = []
+                        if current_msg and isinstance(current_msg.get("content_blocks"), list):
+                            existing_blocks = current_msg["content_blocks"]
+                        # Merge: keep existing blocks, append validated blocks, total <= 50
+                        available_slots = 50 - len(existing_blocks)
+                        if available_slots < 0:
+                            available_slots = 0
+                        truncated_new = validated_blocks[:available_slots]
+                        merged_blocks = existing_blocks + truncated_new
+                        await self._chat_messages.update_content_blocks(pending_msg_id, merged_blocks)
+                        validated_blocks_for_broadcast = merged_blocks
+                    else:
+                        validated_blocks_for_broadcast = None
                     session.pending_hops.pop(trace_id, None)
                     if self._chat_hub:
-                        await self._chat_hub.broadcast(channel_id, {
+                        # Broadcast message_edit with content and optionally content_blocks
+                        broadcast_payload = {
                             "type": "message_edit",
                             "seq": self._chat_hub.next_seq(),
                             "message_id": pending_msg_id,
                             "content": final_content,
                             "edited_at": time.time(),
-                        })
+                        }
+                        if validated_blocks is not None:
+                            broadcast_payload["content_blocks"] = validated_blocks_for_broadcast
+                        await self._chat_hub.broadcast(channel_id, broadcast_payload)
                         await self._chat_hub.broadcast(channel_id, {
                             "type": "message_state",
                             "seq": self._chat_hub.next_seq(),
@@ -365,6 +419,7 @@ class BridgeSessionRegistry:
                         author_type="agent",
                         content=final_content,
                         state="complete",
+                        content_blocks=validated_blocks,  # passes None or list, which send_message handles
                         metadata={"trace_id": trace_id, "openclaw_msg_id": msg_id, "hops_since_user": _final_hops},
                     )
                     await self._chat_channels.update_last_message_at(channel_id)
