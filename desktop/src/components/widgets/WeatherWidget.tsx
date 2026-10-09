@@ -1,45 +1,46 @@
 import { useState, useEffect } from "react";
 import { getHomeLocation, getTempUnit, getWindUnit, cToF, kmhToMph, UNIT_CHANGED_EVENT } from "@/apps/WeatherApp";
 import { useWidgetSize } from "@/hooks/use-widget-size";
+import { useThemeStore } from "@/stores/theme-store";
+import { WeatherIcon, weatherIconName } from "./weather-icons";
 
 interface Weather {
   temp: number;
   feelsLike: number;
   condition: string;
-  icon: string;
+  code: number;
+  isDay: boolean;
   humidity: number;
   wind: number;
   location: string;
 }
 
-const WEATHER_CODES: Record<number, { label: string; icon: string }> = {
-  0: { label: "Clear", icon: "☀️" },
-  1: { label: "Mainly clear", icon: "🌤" },
-  2: { label: "Partly cloudy", icon: "⛅" },
-  3: { label: "Overcast", icon: "☁️" },
-  45: { label: "Fog", icon: "🌫" },
-  48: { label: "Fog", icon: "🌫" },
-  51: { label: "Drizzle", icon: "🌦" },
-  53: { label: "Drizzle", icon: "🌦" },
-  55: { label: "Drizzle", icon: "🌧" },
-  61: { label: "Light rain", icon: "🌦" },
-  63: { label: "Rain", icon: "🌧" },
-  65: { label: "Heavy rain", icon: "🌧" },
-  71: { label: "Light snow", icon: "🌨" },
-  73: { label: "Snow", icon: "🌨" },
-  75: { label: "Heavy snow", icon: "❄️" },
-  80: { label: "Showers", icon: "🌦" },
-  81: { label: "Showers", icon: "🌧" },
-  82: { label: "Heavy showers", icon: "⛈" },
-  95: { label: "Thunderstorm", icon: "⛈" },
-  96: { label: "Thunderstorm", icon: "⛈" },
-  99: { label: "Thunderstorm", icon: "⛈" },
+const WEATHER_CODES: Record<number, { label: string }> = {
+  0: { label: "Clear" },
+  1: { label: "Mainly clear" },
+  2: { label: "Partly cloudy" },
+  3: { label: "Overcast" },
+  45: { label: "Fog" },
+  48: { label: "Fog" },
+  51: { label: "Drizzle" },
+  53: { label: "Drizzle" },
+  55: { label: "Drizzle" },
+  61: { label: "Light rain" },
+  63: { label: "Rain" },
+  65: { label: "Heavy rain" },
+  71: { label: "Light snow" },
+  73: { label: "Snow" },
+  75: { label: "Heavy snow" },
+  80: { label: "Showers" },
+  81: { label: "Showers" },
+  82: { label: "Heavy showers" },
+  95: { label: "Thunderstorm" },
+  96: { label: "Thunderstorm" },
+  99: { label: "Thunderstorm" },
 };
 
-function codeInfo(code: number, isDay = true) {
-  const info = WEATHER_CODES[code] ?? { label: "Unknown", icon: "🌤" };
-  if ((code === 0 || code === 1) && !isDay) return { ...info, icon: "🌙" };
-  return info;
+function codeInfo(code: number) {
+  return WEATHER_CODES[code] ?? { label: "Unknown" };
 }
 
 async function fetchWeather(): Promise<Weather | null> {
@@ -55,12 +56,13 @@ async function fetchWeather(): Promise<Weather | null> {
     const resp = await fetch(`https://api.open-meteo.com/v1/forecast?${params}`, { signal: AbortSignal.timeout(5000) });
     if (!resp.ok) return null;
     const data = await resp.json();
-    const info = codeInfo(data.current.weather_code, data.current.is_day === 1);
+    const info = codeInfo(data.current.weather_code);
     return {
       temp: Math.round(data.current.temperature_2m),
       feelsLike: Math.round(data.current.apparent_temperature),
       condition: info.label,
-      icon: info.icon,
+      code: data.current.weather_code,
+      isDay: data.current.is_day === 1,
       humidity: data.current.relative_humidity_2m,
       wind: Math.round(data.current.wind_speed_10m),
       location: home.name,
@@ -76,6 +78,7 @@ export function WeatherWidget() {
   const [tempUnit, setTempUnit] = useState(getTempUnit);
   const [windUnit, setWindUnit] = useState(getWindUnit);
   const [containerRef, { tier }] = useWidgetSize();
+  const reduceEffects = useThemeStore((s) => s.reduceEffects);
 
   useEffect(() => {
     const load = () => {
@@ -122,10 +125,8 @@ export function WeatherWidget() {
         aria-label="Weather widget — no location set"
         role="region"
       >
-        <span style={{ fontSize: tier === "s" ? 20 : 28, lineHeight: 1 }}>🌤</span>
-        {tier !== "s" && (
-          <span style={{ fontSize: "0.72rem", color: "rgba(255,255,255,0.45)" }}>Tap to set location</span>
-        )}
+        <WeatherIcon name="partly-cloudy-day" size={tier === "s" ? 44 : 56} animated={!reduceEffects} label="Weather" />
+        <span style={{ fontSize: "0.7rem", color: "rgba(255,255,255,0.45)" }}>Set location</span>
       </div>
     );
   }
@@ -154,14 +155,14 @@ export function WeatherWidget() {
         /* Small: icon + temp + compact wind/humidity row */
         <div style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", alignItems: "center", height: "100%", padding: "4px 2px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: "1.8rem", lineHeight: 1 }}>{weather.icon}</span>
+            <WeatherIcon name={weatherIconName(weather.code, weather.isDay)} animated={!reduceEffects} label={weather.condition} size={52} />
             <span style={{ fontSize: "1.6rem", fontWeight: 600, color: "rgba(255,255,255,0.95)", lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>
               {displayTemp(weather.temp)}°
             </span>
           </div>
           <div style={{ display: "flex", gap: 8, fontSize: "0.65rem", color: "rgba(255,255,255,0.4)" }}>
-            <span>💧 {weather.humidity}%</span>
-            <span>💨 {displayWind(weather.wind)}</span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 2 }}><WeatherIcon name="humidity" size={tier === "s" ? 18 : 22} animated={false} label="Humidity" />{weather.humidity}%</span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 2 }}><WeatherIcon name="wind" size={tier === "s" ? 18 : 22} animated={false} label="Wind" />{displayWind(weather.wind)}</span>
           </div>
         </div>
       )}
@@ -171,7 +172,7 @@ export function WeatherWidget() {
         <div style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", height: "100%" }}>
           <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ fontSize: "2.2rem", lineHeight: 1 }}>{weather.icon}</span>
+              <WeatherIcon name={weatherIconName(weather.code, weather.isDay)} animated={!reduceEffects} label={weather.condition} size={64} />
               <div>
                 <div style={{ fontSize: "1.8rem", fontWeight: 600, color: "rgba(255,255,255,0.95)", lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>
                   {displayTemp(weather.temp)}°<span style={{ fontSize: "0.85rem", fontWeight: 400, color: "rgba(255,255,255,0.4)", marginLeft: 1 }}>{tempUnit}</span>
@@ -182,8 +183,8 @@ export function WeatherWidget() {
           </div>
           <div style={{ display: "flex", gap: 10, fontSize: "0.7rem", color: "rgba(255,255,255,0.4)" }}>
             <span>Feels {displayTemp(weather.feelsLike)}°</span>
-            <span>💧 {weather.humidity}%</span>
-            <span>💨 {displayWind(weather.wind)}</span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 2 }}><WeatherIcon name="humidity" size={22} animated={false} label="Humidity" />{weather.humidity}%</span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 2 }}><WeatherIcon name="wind" size={22} animated={false} label="Wind" />{displayWind(weather.wind)}</span>
           </div>
           <div style={{ fontSize: "0.68rem", color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: "0.04em", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {weather.location}
@@ -201,7 +202,7 @@ export function WeatherWidget() {
 
           {/* Middle: big icon + temp */}
           <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "4px 0" }}>
-            <span style={{ fontSize: "2.8rem", lineHeight: 1 }}>{weather.icon}</span>
+            <WeatherIcon name={weatherIconName(weather.code, weather.isDay)} animated={!reduceEffects} label={weather.condition} size={84} />
             <div>
               <div style={{ fontSize: "2.4rem", fontWeight: 600, color: "rgba(255,255,255,0.95)", lineHeight: 1, fontVariantNumeric: "tabular-nums", letterSpacing: "-0.02em" }}>
                 {displayTemp(weather.temp)}°<span style={{ fontSize: "1rem", fontWeight: 400, color: "rgba(255,255,255,0.4)", marginLeft: 2 }}>{tempUnit}</span>
@@ -219,12 +220,12 @@ export function WeatherWidget() {
             }}
           >
             {[
-              { icon: "🌡", label: "Feels", value: `${displayTemp(weather.feelsLike)}°` },
-              { icon: "💧", label: "Humidity", value: `${weather.humidity}%` },
-              { icon: "💨", label: "Wind", value: displayWind(weather.wind) },
-            ].map(({ icon, label, value }) => (
+              { icon: "thermometer", alt: "Feels like", label: "Feels", value: `${displayTemp(weather.feelsLike)}°` },
+              { icon: "humidity", alt: "Humidity", label: "Humidity", value: `${weather.humidity}%` },
+              { icon: "wind", alt: "Wind", label: "Wind", value: displayWind(weather.wind) },
+            ].map(({ icon, alt, label, value }) => (
               <div key={label} style={{ display: "flex", flexDirection: "column", alignItems: "center", flex: 1 }}>
-                <span style={{ fontSize: "0.75rem" }}>{icon}</span>
+                <WeatherIcon name={icon} size={22} animated={false} label={alt} />
                 <span style={{ fontSize: "0.72rem", fontWeight: 600, color: "rgba(255,255,255,0.8)", fontVariantNumeric: "tabular-nums" }}>{value}</span>
                 <span style={{ fontSize: "0.58rem", color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: "0.04em" }}>{label}</span>
               </div>
