@@ -21,8 +21,7 @@ apt-get install -y --no-install-recommends \
     libsoup-3.0-0 \
     libssl3 \
     ca-certificates \
-    curl \
-    sha256sum
+    curl
 
 ARCH="$(uname -m)"
 case "$ARCH" in
@@ -111,7 +110,7 @@ log = logging.getLogger("thclaws-bridge")
 BRIDGE_URL = os.environ["TAOS_BRIDGE_URL"]
 AGENT_NAME = os.environ["TAOS_AGENT_NAME"]
 LOCAL_TOKEN = os.environ["TAOS_LOCAL_TOKEN"]
-THCLAWS_URL = os.environ.get("THCLAWS_API_URL", "http://127.0.0.1:8443")
+THCLAWS_URL = os.environ.get("THCLAWS_URL", "http://127.0.0.1:8443")
 THCLAWS_KEY = os.environ.get("LITELLM_API_KEY", "")
 THCLAWS_MODEL = os.environ.get("TAOS_MODEL", "kilo-auto/free")
 RECONNECT_DELAY = 2.0
@@ -195,6 +194,7 @@ async def call_thclaws(client: httpx.AsyncClient, messages: list) -> str:
     payload = {
         "model": "litellm/" + THCLAWS_MODEL,
         "messages": messages,
+        "stream": False,
     }
     headers = {"Content-Type": "application/json"}
     if THCLAWS_KEY:
@@ -270,7 +270,7 @@ async def handle_user_message(client: httpx.AsyncClient, evt: dict, channel: dic
         _seen.add(msg_id)
 
     # Error cooldown: after a final failure, pause before accepting new messages
-    now = asyncio.get_event_loop().time()
+    now = asyncio.get_running_loop().time()
     if now < _error_until[0]:
         log.info("user_message id=%s suppressed during error cooldown (%.1fs remaining)",
                  msg_id, _error_until[0] - now)
@@ -299,7 +299,7 @@ async def handle_user_message(client: httpx.AsyncClient, evt: dict, channel: dic
     # If the reply is an error, start the cooldown to prevent tight retry loops
     if final.startswith("[thclaws "):
         log.warning("thclaws error reply for id=%s -- enabling %.1fs cooldown", msg_id, ERROR_COOLDOWN)
-        _error_until[0] = asyncio.get_event_loop().time() + ERROR_COOLDOWN
+        _error_until[0] = asyncio.get_running_loop().time() + ERROR_COOLDOWN
 
     await post_reply(client, channel["reply_url"], channel["auth_bearer"],
                      msg_id, trace_id, final, cid)
@@ -309,6 +309,7 @@ async def handle_user_message(client: httpx.AsyncClient, evt: dict, channel: dic
 async def sse_loop(client: httpx.AsyncClient, channel: dict, stop: asyncio.Event) -> None:
     seen_ids: set[str] = set()
     error_until: list[float] = [0.0]  # mutable so tasks can update it
+    pending_tasks: set[asyncio.Task] = set()
     while not stop.is_set():
         try:
             log.info("SSE connecting to %s", channel["events_url"])
@@ -331,8 +332,10 @@ async def sse_loop(client: httpx.AsyncClient, channel: dict, stop: asyncio.Event
                         if evt_type == "user_message" and evt_data:
                             try:
                                 evt = json.loads(evt_data)
-                                asyncio.create_task(handle_user_message(
+                                task = asyncio.create_task(handle_user_message(
                                     client, evt, channel, seen_ids, error_until))
+                                pending_tasks.add(task)
+                                task.add_done_callback(pending_tasks.discard)
                             except Exception as e:
                                 log.warning("parse error: %s", e)
                         evt_type, evt_data = "", ""
@@ -347,6 +350,9 @@ async def sse_loop(client: httpx.AsyncClient, channel: dict, stop: asyncio.Event
             log.warning("SSE error: %s; retry in %ds", e, RECONNECT_DELAY)
         if not stop.is_set():
             await asyncio.sleep(RECONNECT_DELAY)
+    # Wait for any in-flight message handlers to complete before exiting
+    if pending_tasks:
+        await asyncio.gather(*pending_tasks, return_exceptions=True)
 
 
 async def main() -> None:
@@ -356,19 +362,6 @@ async def main() -> None:
         loop.add_signal_handler(sig, stop.set)
 
     async with httpx.AsyncClient() as client:
-        # Wait for thClaws server to be healthy
-        for i in range(40):
-            try:
-                r = await client.get(f"{THCLAWS_URL}/health", timeout=5)
-                if r.status_code == 200:
-                    log.info("thClaws server healthy")
-                    break
-            except Exception:
-                pass
-            await asyncio.sleep(3)
-        else:
-            log.warning("thClaws server health never returned 200; continuing anyway")
-
         boot = await fetch_bootstrap(client)
         channel = boot["channel"]
         log.info("bootstrap OK: agent=%s session=%s", boot.get("agent_name"), boot.get("session_id"))
@@ -392,7 +385,7 @@ Environment=TAOS_AGENT_NAME=$AGENT_NAME
 Environment=TAOS_LOCAL_TOKEN=$LOCAL_TOKEN
 Environment=LITELLM_API_KEY=$LLM_KEY
 Environment=TAOS_MODEL=$MODEL
-Environment=THCLAWS_API_URL=http://127.0.0.1:8443
+Environment=THCLAWS_URL=http://127.0.0.1:8443
 ExecStart=/usr/bin/python3 /opt/taos/taos-thclaws-bridge.py
 Restart=on-failure
 RestartSec=5
@@ -405,15 +398,6 @@ UNIT
 systemctl daemon-reload
 systemctl enable thclaws-serve.service
 systemctl start thclaws-serve.service
-
-log "waiting for thClaws :8443 (up to 90s)"
-for i in $(seq 1 30); do
-    sleep 3
-    if curl -fsS http://127.0.0.1:8443/health > /dev/null 2>&1; then
-        log "thClaws server ready"
-        break
-    fi
-done
 
 systemctl enable --now taos-thclaws-bridge.service
 mkdir -p /opt/taos

@@ -3,7 +3,7 @@ name: thClaws
 type: agent-framework
 verification_status: alpha
 version: 0.140.0
-description: "thClaws agent framework — single binary with OpenAI-compatible API, LiteLLM integration, and WebKit/Wayland UI"
+description: "thClaws agent framework - single binary with OpenAI-compatible API, LiteLLM integration, and WebKit/Wayland UI"
 homepage: https://github.com/thClaws/thClaws
 license: "MIT OR Apache-2.0"
 

@@ -169,6 +169,9 @@ class TestCallThclawsRetry:
         assert call_args is not None
         payload = call_args.kwargs.get("json", {})
         assert payload.get("model") == "litellm/test-model"
+        # Check the POST URL contains /v1/chat/completions
+        url = call_args.args[0] if call_args.args else call_args.kwargs.get("url", "")
+        assert "/v1/chat/completions" in url
 
 
 # -- handle_user_message dedup + cooldown tests --------------------------------
