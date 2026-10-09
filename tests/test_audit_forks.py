@@ -8,6 +8,9 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+# semver.org 2.0.0 grammar: no leading zeros in numeric fields, hyphens allowed inside identifiers
+SEMVER_RE = re.compile(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?")
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "audit-forks.py"
 
@@ -203,7 +206,17 @@ class TestReadPinFormat:
         }
         pinned = _read_pin_via_tracked(mod, entry)
         assert pinned is not None
-        assert re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?", pinned), f"qmd pin {pinned!r} not semver"
+        assert SEMVER_RE.fullmatch(pinned), f"qmd pin {pinned!r} not semver"
+
+    def test_semver_re_matches_the_spec(self):
+        # Should match valid SemVer versions
+        assert SEMVER_RE.fullmatch("1.2.3") is not None
+        assert SEMVER_RE.fullmatch("2.8.3-taos.2") is not None
+        assert SEMVER_RE.fullmatch("1.2.3-alpha-beta") is not None
+        # Should NOT match invalid versions
+        assert SEMVER_RE.fullmatch("01.2.3") is None  # leading zero in major
+        assert SEMVER_RE.fullmatch("1.2.3-01") is None  # leading zero in prerelease
+        assert SEMVER_RE.fullmatch("1.2") is None  # missing patch
 
     def test_openclaw_pin_is_semver(self):
         entry = next(e for e in mod.TRACKED if e.get("package") == "openclaw")
