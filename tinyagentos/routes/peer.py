@@ -5,9 +5,12 @@ route family.
 
 Endpoints
 ---------
-POST /api/peer/inbox   — receive a signed envelope from a contact
-POST /api/peer/chat    — receive a chat message envelope
-POST /api/peer/ack     — acknowledge delivery of an envelope
+POST /api/peer/inbox     — receive a signed envelope from a contact
+POST /api/peer/chat      — receive a chat message envelope
+POST /api/peer/ack       — acknowledge delivery of an envelope
+POST /api/peer/handshake — token exchange on friend-accept (no bearer yet:
+                           authenticated by the envelope signature + a
+                           recorded friend-request edge; separate router)
 """
 
 from __future__ import annotations
@@ -19,8 +22,13 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from tinyagentos.contacts_store import generate_peer_token
+from tinyagentos.hub import identity as _identity
+from tinyagentos.hub import relationships
+from tinyagentos.hub.identity import fingerprint as _fingerprint
 from tinyagentos.peer import (
-    resolve_local_identity_id,
+    build_envelope,
+    local_contact_id,
     verify_envelope,
     verify_envelope_signature,
 )
@@ -29,6 +37,21 @@ from tinyagentos.rate_limit import MovingWindowLimiter, retry_after_headers
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/peer", tags=["peer"])
+
+# The handshake is the one peer route WITHOUT the bearer dependency: it is how
+# the bearers get exchanged.  It lives on its own router so the router-level
+# auth on ``router`` stays total for everything else (Kilo #2).
+handshake_router = APIRouter(prefix="/api/peer", tags=["peer"])
+
+# Handshake body limits: a token is a 64-hex peer token; endpoints are the
+# peer's advertised URLs.
+_MAX_PEER_TOKEN_LEN = 256
+_MAX_HANDSHAKE_ENDPOINTS = 8
+
+
+def handshake_accepting() -> bool:
+    """Kill-switch hook point for inbound handshakes (card 5 wires the switch)."""
+    return True
 # Auth is enforced centrally via the router-level ``_peer_auth_dep`` dependency
 # (Kilo #2).  Route handlers read the authenticated ``contact_id`` from
 # ``request.state.peer_contact_id`` — no per-route call to ``_authenticate_peer``
@@ -120,6 +143,51 @@ async def _peer_auth_dep(request: Request) -> str:
 router.dependencies.append(Depends(_peer_auth_dep))
 
 
+def _reject_legacy_row(contact_id: str, contact_rec: dict) -> None:
+    """403 unless the contact row is keyed on its own pinned signing key.
+
+    contact_id is ``hub:<fingerprint(ed25519_pub)>`` for every row written by
+    friend-accept.  A row keyed any other way (a username-form id from the
+    pre-fingerprint schema, or a non-hex key) can never be matched by name:
+    it is refused, so a renamed or colliding username cannot be impersonated.
+    """
+    try:
+        canonical = f"hub:{_fingerprint(contact_rec.get('ed25519_pub') or '')}"
+    except (TypeError, ValueError):
+        canonical = None
+    if contact_id != canonical:
+        logger.warning(
+            "peer: contact row %s is not keyed on its signing fingerprint; refusing",
+            contact_id,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="contact row is not keyed on its signing-key fingerprint",
+        )
+
+
+def _enforce_envelope_size(request: Request, envelope: dict) -> None:
+    """413 when the request or the re-serialised envelope exceeds the cap."""
+    # Reject on Content-Length before we re-serialise.
+    cl = request.headers.get("content-length")
+    if cl is not None:
+        try:
+            cl_int = int(cl)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid Content-Length")
+        if cl_int > _MAX_ENVELOPE_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"request too large: {cl_int} bytes > {_MAX_ENVELOPE_BYTES}",
+            )
+    raw = json.dumps(envelope, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    if len(raw) > _MAX_ENVELOPE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"envelope too large: {len(raw)} bytes > {_MAX_ENVELOPE_BYTES}",
+        )
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -143,24 +211,7 @@ async def peer_inbox(body: PeerEnvelope, request: Request):
             headers=retry_after_headers(_limiter.retry_after(contact_id)),
         )
 
-    # Size limit — reject on Content-Length before we re-serialise.
-    cl = request.headers.get("content-length")
-    if cl is not None:
-        try:
-            cl_int = int(cl)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="invalid Content-Length")
-        if cl_int > _MAX_ENVELOPE_BYTES:
-            raise HTTPException(
-                status_code=413,
-                detail=f"request too large: {cl_int} bytes > {_MAX_ENVELOPE_BYTES}",
-            )
-    raw = json.dumps(body.envelope, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    if len(raw) > _MAX_ENVELOPE_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=f"envelope too large: {len(raw)} bytes > {_MAX_ENVELOPE_BYTES}",
-        )
+    _enforce_envelope_size(request, body.envelope)
 
     envelope = body.envelope
 
@@ -172,10 +223,8 @@ async def peer_inbox(body: PeerEnvelope, request: Request):
             detail=f"from field {from_field!r} does not match authenticated contact {contact_id!r}",
         )
 
-    # Verify recipient: envelope["to"] must match the local hub identity.
-    local_id = await asyncio.to_thread(resolve_local_identity_id, request.app.state.data_dir)
-    if local_id is None:
-        raise HTTPException(status_code=503, detail="hub identity not configured")
+    # Verify recipient: envelope["to"] must be this node's hub:<fingerprint>.
+    local_id = await asyncio.to_thread(local_contact_id)
     to_field = envelope.get("to", "")
     if to_field != local_id:
         raise HTTPException(
@@ -193,6 +242,7 @@ async def peer_inbox(body: PeerEnvelope, request: Request):
     if contact_rec is None:
         raise HTTPException(status_code=404, detail="contact not found")
 
+    _reject_legacy_row(contact_id, contact_rec)
     sender_pubkey = contact_rec.get("ed25519_pub", "")
     if not verify_envelope_signature(envelope, sender_pubkey):
         raise HTTPException(status_code=403, detail="invalid signature")
@@ -216,7 +266,9 @@ async def peer_inbox(body: PeerEnvelope, request: Request):
     body_data = envelope.get("body", {})
 
     if kind == "collab_invite":
-        return await _handle_collab_invite(request, contact_id, envelope, body_data)
+        return await _handle_collab_invite(
+            request, contact_id, envelope, body_data, contact_rec=contact_rec,
+        )
 
     if kind in ("collab_invite_accept", "collab_invite_decline"):
         return await _handle_collab_response(request, contact_id, envelope, body_data, kind)
@@ -248,24 +300,7 @@ async def peer_chat(body: PeerEnvelope, request: Request):
             headers=retry_after_headers(_limiter.retry_after(contact_id)),
         )
 
-    # Size limit — reject on Content-Length before we re-serialise.
-    cl = request.headers.get("content-length")
-    if cl is not None:
-        try:
-            cl_int = int(cl)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="invalid Content-Length")
-        if cl_int > _MAX_ENVELOPE_BYTES:
-            raise HTTPException(
-                status_code=413,
-                detail=f"request too large: {cl_int} bytes > {_MAX_ENVELOPE_BYTES}",
-            )
-    raw = json.dumps(body.envelope, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    if len(raw) > _MAX_ENVELOPE_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=f"envelope too large: {len(raw)} bytes > {_MAX_ENVELOPE_BYTES}",
-        )
+    _enforce_envelope_size(request, body.envelope)
 
     envelope = body.envelope
     if envelope.get("kind") != "chat":
@@ -279,10 +314,8 @@ async def peer_chat(body: PeerEnvelope, request: Request):
             detail=f"from field {from_field!r} does not match authenticated contact {contact_id!r}",
         )
 
-    # Verify recipient: envelope["to"] must match the local hub identity.
-    local_id = await asyncio.to_thread(resolve_local_identity_id, request.app.state.data_dir)
-    if local_id is None:
-        raise HTTPException(status_code=503, detail="hub identity not configured")
+    # Verify recipient: envelope["to"] must be this node's hub:<fingerprint>.
+    local_id = await asyncio.to_thread(local_contact_id)
     to_field = envelope.get("to", "")
     if to_field != local_id:
         raise HTTPException(
@@ -298,6 +331,7 @@ async def peer_chat(body: PeerEnvelope, request: Request):
     if contact_rec is None:
         raise HTTPException(status_code=404, detail="contact not found")
 
+    _reject_legacy_row(contact_id, contact_rec)
     if not verify_envelope_signature(envelope, contact_rec.get("ed25519_pub", "")):
         raise HTTPException(status_code=403, detail="invalid signature")
 
@@ -369,6 +403,8 @@ async def _handle_collab_invite(
     contact_id: str,
     envelope: dict,
     body_data: dict,
+    *,
+    contact_rec: dict | None = None,
 ) -> dict:
     """Handle an incoming collab_invite envelope — create a Decisions card
     so the local human can accept or decline the invitation.
@@ -376,6 +412,10 @@ async def _handle_collab_invite(
     The envelope body is expected to contain:
       invite_id, project_id, project_name, project_slug, inviter,
       pin_required, display_name
+
+    The question names the inviter by the pinned contact row's display name
+    (or hub username), never by the 64-hex ``inviter`` id in the body; the id
+    is kept in the metadata for audit.
     """
     decision_store = getattr(request.app.state, "decision_store", None)
     if decision_store is None:
@@ -388,9 +428,15 @@ async def _handle_collab_invite(
     project_name = body_data.get("project_name", "unknown project")
     inviter = body_data.get("inviter", contact_id)
     pin_required = body_data.get("pin_required", True)
+    rec = contact_rec or {}
+    inviter_label = (
+        (rec.get("display_name") or "").strip()
+        or (rec.get("hub_username") or "").strip()
+        or contact_id
+    )
 
     question = (
-        f"{inviter} invites you to collaborate on project "
+        f"{inviter_label} invites you to collaborate on project "
         f"\"{project_name}\" as a human member. "
         "You will appear in the members list, can chat in the project, "
         "and can later delegate agents to work on it."
@@ -540,3 +586,132 @@ async def _handle_collab_response(
         )
 
     return {"status": "received", "kind": kind, "dispatched": True}
+
+
+@handshake_router.post("/handshake")
+async def peer_handshake(body: PeerEnvelope, request: Request):
+    """Complete the friend-accept token exchange (collab A3).
+
+    The accepting node POSTs a signed ``handshake`` envelope here carrying the
+    inbound token it minted for us, its advertised endpoints and its public
+    keys.  There is no bearer yet, so the sender is authenticated by three
+    facts together: the envelope ``from`` equals ``hub:<fingerprint>`` of the
+    pubkey in the body, the signature verifies against that pubkey, and WE
+    recorded a friend request to (or friendship with) that fingerprint.  Only
+    then are the keys pinned, a peer link stored with THEIR token as our
+    outbound token, and a signed ``handshake_reply`` returned carrying the
+    token we mint for them.
+    """
+    if not handshake_accepting():
+        raise HTTPException(status_code=503, detail="handshake disabled")
+    store = request.app.state.contacts_store
+    if store is None:
+        raise HTTPException(status_code=503, detail="peer channel not available")
+
+    _enforce_envelope_size(request, body.envelope)
+    envelope = body.envelope
+
+    ok, err = verify_envelope(envelope, expected_kind="handshake")
+    if not ok:
+        raise HTTPException(status_code=400, detail=f"invalid envelope: {err}")
+
+    hs = envelope.get("body")
+    if not isinstance(hs, dict):
+        raise HTTPException(status_code=400, detail="handshake body missing")
+    signing_pub = hs.get("signing_pubkey")
+    encryption_pub = hs.get("encryption_pubkey")
+    their_token = hs.get("inbound_token")
+    if not isinstance(signing_pub, str) or not isinstance(encryption_pub, str):
+        raise HTTPException(status_code=400, detail="handshake pubkeys missing")
+    if (
+        not isinstance(their_token, str)
+        or not their_token
+        or len(their_token) > _MAX_PEER_TOKEN_LEN
+    ):
+        raise HTTPException(status_code=400, detail="handshake inbound_token missing")
+
+    # The claimed identity must be the fingerprint of the key that signs.
+    try:
+        fp = _fingerprint(signing_pub)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=403, detail="malformed signing pubkey")
+    from_id = envelope.get("from", "")
+    if from_id != f"hub:{fp}":
+        raise HTTPException(
+            status_code=403,
+            detail=f"from field {from_id!r} is not the fingerprint of the signing pubkey",
+        )
+    local_id = await asyncio.to_thread(local_contact_id)
+    if envelope.get("to", "") != local_id:
+        raise HTTPException(
+            status_code=403,
+            detail=f"envelope addressed to {envelope.get('to', '')!r}, not {local_id!r}",
+        )
+    if not verify_envelope_signature(envelope, signing_pub):
+        raise HTTPException(status_code=403, detail="invalid signature")
+
+    # Only a peer WE asked to befriend (or already befriended) may complete
+    # the exchange; a blocked peer never can.
+    from tinyagentos.routes.hub import _get_store as _get_hub_store
+
+    hub = await _get_hub_store(request)
+    if await hub.has_edge(fp, relationships.REL_BLOCK):
+        raise HTTPException(status_code=403, detail="peer is blocked")
+    if not (
+        await hub.has_edge(fp, relationships.REL_REQUEST_OUT)
+        or await hub.has_edge(fp, relationships.REL_FRIEND)
+    ):
+        raise HTTPException(status_code=403, detail="no friend request recorded for peer")
+    existing = await store.get_contact(from_id)
+    if existing is not None and existing.get("status") in ("blocked", "revoked"):
+        raise HTTPException(status_code=403, detail="contact is not active")
+
+    if not _limiter.check(from_id):
+        raise HTTPException(
+            status_code=429,
+            detail="rate limit exceeded (60/min/contact)",
+            headers=retry_after_headers(_limiter.retry_after(from_id)),
+        )
+    nonce = envelope.get("nonce", "")
+    if not await store.record_nonce(nonce, from_id, "handshake"):
+        raise HTTPException(status_code=409, detail="nonce replay detected")
+
+    endpoints = hs.get("endpoints")
+    if not isinstance(endpoints, list):
+        endpoints = []
+    endpoints = [
+        {"kind": "hub", "url": e, "priority": i} if isinstance(e, str) else e
+        for i, e in enumerate(endpoints[:_MAX_HANDSHAKE_ENDPOINTS])
+        if isinstance(e, (str, dict))
+    ]
+
+    await store.add_contact(
+        contact_id=from_id,
+        hub_username=str(hs.get("username") or ""),
+        display_name=str(hs.get("display_name") or ""),
+        ed25519_pub=signing_pub,
+        x25519_pub=encryption_pub,
+        peer_fingerprint=fp,
+    )
+    our_token = generate_peer_token()
+    await store.establish_peer_link(
+        contact_id=from_id,
+        inbound_token=our_token,
+        outbound_token=their_token,
+        endpoints=endpoints,
+    )
+    author = await asyncio.to_thread(_identity.signing_fingerprint)
+    statement = relationships.sign_statement(
+        relationships.build_friend_statement(fp, author=author)
+    )
+    await hub.put_relationship(fp, relationships.REL_FRIEND, statement=statement)
+
+    reply = await asyncio.to_thread(
+        lambda: build_envelope(
+            to_contact_id=from_id,
+            kind="handshake_reply",
+            body={"inbound_token": our_token},
+        )
+    )
+    logger.info("peer_handshake: completed with %s", from_id)
+    return {"status": "handshake", "envelope": reply}

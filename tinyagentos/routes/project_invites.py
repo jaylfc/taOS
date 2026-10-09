@@ -1114,19 +1114,12 @@ async def mint_collab_invite(
     envelope: dict | None = None
     delivery_error: str | None = None
     try:
-        from tinyagentos.peer import build_envelope, resolve_local_identity_id
+        from tinyagentos.peer import build_envelope, local_contact_id
 
-        # Resolve the local hub identity and the contact's hub username.
-        contact_username = (contact.get("hub_username") or "").strip()
-        if not contact_username:
-            delivery_error = "contact has no hub_username"
-        local_id = await asyncio.to_thread(
-            resolve_local_identity_id, request.app.state.data_dir
-        )
-        if local_id is None:
-            delivery_error = "hub identity not configured"
-        if delivery_error is None and contact_username and local_id:
-            local_username = local_id.removeprefix("hub:")
+        # Both ends are canonical hub:<fingerprint> ids: ours from the
+        # keystore, theirs is the contact row key.  hub_username is display only.
+        local_id = await asyncio.to_thread(local_contact_id)
+        if delivery_error is None:
             envelope_body = {
                 "invite_id": record["invite_id"],
                 "project_id": project_id,
@@ -1137,8 +1130,7 @@ async def mint_collab_invite(
                 "display_name": payload.display_name,
             }
             envelope = build_envelope(
-                from_username=local_username,
-                to_username=contact_username,
+                to_contact_id=payload.contact_id,
                 kind="collab_invite",
                 body=envelope_body,
             )
@@ -1149,31 +1141,14 @@ async def mint_collab_invite(
             if peer_link is None or not peer_link.get("endpoints"):
                 delivery_error = "no peer endpoints for contact"
             else:
-                import httpx
+                # Guarded delivery over the recorded peer link (SSRF guard with
+                # the link's own endpoints as the only private-range allowance).
+                from tinyagentos.peer import deliver_to_peer
 
-                outbound_token = peer_link.get("outbound_token", "")
-                delivered = False
-                for ep in sorted(
-                    peer_link["endpoints"],
-                    key=lambda e: e.get("priority", 99),
-                ):
-                    inbox_url = f"{ep['url'].rstrip('/')}/api/peer/inbox"
-                    try:
-                        async with httpx.AsyncClient(timeout=10.0) as client:
-                            resp = await client.post(
-                                inbox_url,
-                                json={"envelope": envelope},
-                                headers={
-                                    "Authorization": f"Bearer {outbound_token}",
-                                    "Content-Type": "application/json",
-                                },
-                            )
-                            if 200 <= resp.status_code < 300:
-                                delivered = True
-                                break
-                    except Exception:
-                        continue
-                if not delivered:
+                delivered = await deliver_to_peer(
+                    contacts_store, payload.contact_id, "/api/peer/inbox", envelope,
+                )
+                if delivered is None:
                     delivery_error = (
                         "failed to deliver invite envelope to any peer endpoint"
                     )

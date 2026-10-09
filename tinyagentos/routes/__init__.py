@@ -27,7 +27,9 @@ def register_all_routers(app):
 
     # Consent loop - registered before /api/agents/{name} so that
     # /api/agents/auth-requests/* paths are not captured as an agent name.
-    from tinyagentos.routes.agent_auth_requests import router as agent_auth_requests_router
+    from tinyagentos.routes.agent_auth_requests import (
+        router as agent_auth_requests_router,
+    )
     app.include_router(agent_auth_requests_router, dependencies=_csrf)
 
     # Gated delegation (#161) - registered before /api/agents/{name} so that
@@ -101,7 +103,9 @@ def register_all_routers(app):
     # CSRF-exempt like peer_router: the pairing endpoints are called by an
     # external device that has no session cookie yet (the opaque
     # pair_request_id is the capability); CSRF is a cookie-auth defence.
-    from tinyagentos.routes.device_pair_requests import router as device_pair_requests_router
+    from tinyagentos.routes.device_pair_requests import (
+        router as device_pair_requests_router,
+    )
     app.include_router(device_pair_requests_router)
 
     # Device voice (S6/S6b): device-bearer only, so CSRF-exempt like the pair
@@ -191,7 +195,9 @@ def register_all_routers(app):
     from tinyagentos.routes.cluster_migrate import router as cluster_migrate_router
     app.include_router(cluster_migrate_router, dependencies=_csrf)
 
-    from tinyagentos.routes.cluster_capability import router as cluster_capability_router
+    from tinyagentos.routes.cluster_capability import (
+        router as cluster_capability_router,
+    )
     app.include_router(cluster_capability_router, dependencies=_csrf)
 
     from tinyagentos.routes.cluster_map import router as cluster_map_router
@@ -224,7 +230,9 @@ def register_all_routers(app):
     from tinyagentos.routes.project_canvas import router as project_canvas_router
     app.include_router(project_canvas_router, dependencies=_csrf)
 
-    from tinyagentos.routes.project_doc_review import router as project_doc_review_router
+    from tinyagentos.routes.project_doc_review import (
+        router as project_doc_review_router,
+    )
     app.include_router(project_doc_review_router, dependencies=_csrf)
 
     from tinyagentos.routes.project_notes import router as project_notes_router
@@ -261,7 +269,9 @@ def register_all_routers(app):
     from tinyagentos.routes.chat_admin import router as chat_admin_router
     app.include_router(chat_admin_router, dependencies=_csrf)
 
-    from tinyagentos.routes.chat_unified_bus_view import router as chat_unified_bus_view_router
+    from tinyagentos.routes.chat_unified_bus_view import (
+        router as chat_unified_bus_view_router,
+    )
     app.include_router(chat_unified_bus_view_router, dependencies=_csrf)
 
     from tinyagentos.routes.canvas import router as canvas_router
@@ -475,7 +485,9 @@ def register_all_routers(app):
     from tinyagentos.routes.agent_images import router as agent_images_router
     app.include_router(agent_images_router, dependencies=_csrf)
 
-    from tinyagentos.routes.container_requests import router as container_requests_router
+    from tinyagentos.routes.container_requests import (
+        router as container_requests_router,
+    )
     app.include_router(container_requests_router, dependencies=_csrf)
 
     from tinyagentos.routes.notes import router as notes_router
@@ -499,8 +511,12 @@ def register_all_routers(app):
     from tinyagentos.routes import wallhaven as wallhaven_routes
     app.include_router(wallhaven_routes.router, dependencies=_csrf)
 
+    from tinyagentos.routes.peer import handshake_router
     from tinyagentos.routes.peer import router as peer_router
     app.include_router(peer_router)  # CSRF-exempt — bearer-only auth
+    # The handshake carries no bearer yet (it is how the bearers get exchanged):
+    # it authenticates by the envelope signature + a recorded friend-request edge.
+    app.include_router(handshake_router)
 
     from tinyagentos.routes.council import router as council_router
     app.include_router(council_router, dependencies=_csrf)

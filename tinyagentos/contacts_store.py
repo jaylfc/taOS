@@ -357,6 +357,18 @@ class ContactsStore(BaseStore):
         )
         await self._db.commit()
 
+    async def set_outbound_token(self, contact_id: str, outbound_token: str) -> bool:
+        """Record the token THEY minted for us, from a verified handshake reply.
+
+        Returns False when the contact has no peer link row (nothing updated).
+        """
+        cur = await self._db.execute(
+            "UPDATE peer_links SET outbound_token = ? WHERE contact_id = ?",
+            (outbound_token, contact_id),
+        )
+        await self._db.commit()
+        return cur.rowcount > 0
+
     async def get_peer_link(self, contact_id: str) -> Optional[dict]:
         async with self._db.execute(
             "SELECT * FROM peer_links WHERE contact_id = ?", (contact_id,)
