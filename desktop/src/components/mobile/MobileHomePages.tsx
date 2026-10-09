@@ -9,6 +9,7 @@ import { AgentStatusWidget } from "@/components/widgets/AgentStatusWidget";
 import { SystemStatsWidget } from "@/components/widgets/SystemStatsWidget";
 import { WeatherWidget } from "@/components/widgets/WeatherWidget";
 import { QuickNotesWidget } from "@/components/widgets/QuickNotesWidget";
+import { SIDE_WIDGETS, getWidgetSize, isSideWidget, setWidgetSize, type WidgetSize } from "@/stores/mobile-widget-size";
 
 interface Props {
   onOpenApp: (appId: string) => void;
@@ -45,21 +46,119 @@ const WIDGET_APP_MAP: Record<string, string> = {
   "clock": "calendar",
 };
 
-function WidgetCard({ children, style, onClick }: { children: React.ReactNode; style?: React.CSSProperties; onClick?: () => void }) {
+const LONG_PRESS_MS = 500;
+const LONG_PRESS_MOVE_PX = 10;
+
+function WidgetCard({ children, style, onClick, onLongPress }: { children: React.ReactNode; style?: React.CSSProperties; onClick?: () => void; onLongPress?: () => void }) {
+  const timer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const start = React.useRef<{ x: number; y: number } | null>(null);
+  const fired = React.useRef(false);
+
+  const cancel = () => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = null;
+    start.current = null;
+  };
+  React.useEffect(() => cancel, []);
+
+  const longPressProps = onLongPress
+    ? {
+        onPointerDown: (e: React.PointerEvent) => {
+          fired.current = false;
+          cancel();
+          start.current = { x: e.clientX, y: e.clientY };
+          timer.current = setTimeout(() => {
+            timer.current = null;
+            fired.current = true;
+            onLongPress();
+          }, LONG_PRESS_MS);
+        },
+        onPointerMove: (e: React.PointerEvent) => {
+          const s = start.current;
+          if (!s || !timer.current) return;
+          if (Math.hypot(e.clientX - s.x, e.clientY - s.y) > LONG_PRESS_MOVE_PX) cancel();
+        },
+        onPointerUp: cancel,
+        onPointerCancel: cancel,
+        onPointerLeave: cancel,
+        onContextMenu: (e: React.MouseEvent) => e.preventDefault(),
+      }
+    : {};
+
   return (
     <div
-      onClick={onClick}
+      {...longPressProps}
+      onClick={() => {
+        if (fired.current) {
+          fired.current = false;
+          return;
+        }
+        onClick?.();
+      }}
       style={{
         ...CARD_STYLE,
         ...style,
         cursor: onClick ? "pointer" : undefined,
         transition: "background 150ms ease",
+        WebkitTouchCallout: "none",
+        userSelect: "none",
       }}
       onMouseDown={onClick ? (e) => { e.currentTarget.style.background = "rgba(255,255,255,0.1)"; } : undefined}
       onMouseUp={onClick ? (e) => { e.currentTarget.style.background = CARD_STYLE.background as string; } : undefined}
       onMouseLeave={onClick ? (e) => { e.currentTarget.style.background = CARD_STYLE.background as string; } : undefined}
     >
       {children}
+    </div>
+  );
+}
+
+const SHEET_BUTTON: React.CSSProperties = {
+  ...CARD_STYLE,
+  minHeight: 44,
+  width: "100%",
+  color: "rgba(255,255,255,0.95)",
+  fontSize: 15,
+  cursor: "pointer",
+};
+
+function WidgetSizeSheet({ widgetType, onClose }: { widgetType: string; onClose: () => void }) {
+  const current: WidgetSize = getWidgetSize(widgetType);
+  const target: WidgetSize = current === "full" ? "half" : "full";
+  return (
+    <div
+      onClick={onClose}
+      style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,0.4)" }}
+    >
+      <div
+        role="dialog"
+        aria-label="Widget size"
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          ...CARD_STYLE,
+          position: "fixed",
+          left: 12,
+          right: 12,
+          bottom: 12,
+          display: "flex",
+          flexDirection: "column",
+          gap: 8,
+          background: "rgba(30,30,40,0.9)",
+        }}
+      >
+        <button
+          type="button"
+          style={SHEET_BUTTON}
+          onClick={() => {
+            setWidgetSize(widgetType, target);
+            onClose();
+          }}
+        >
+          {target === "full" ? "Full width" : "Half width"}
+        </button>
+        <button type="button" style={SHEET_BUTTON} onClick={onClose}>
+          Cancel
+        </button>
+      </div>
     </div>
   );
 }
@@ -90,6 +189,21 @@ type ItemGroup =
   | { kind: "apps"; items: AppGroupItem[] };
 
 function PageContent({ page, onOpenApp }: { page: HomePage; onOpenApp: (appId: string) => void }) {
+  const [, setTick] = React.useState(0);
+  const [sheetFor, setSheetFor] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    const bump = () => setTick((t) => t + 1);
+    window.addEventListener("taos-mobile-widget-size", bump);
+    window.addEventListener("storage", bump);
+    return () => {
+      window.removeEventListener("taos-mobile-widget-size", bump);
+      window.removeEventListener("storage", bump);
+    };
+  }, []);
+  const sizes: Record<string, WidgetSize> = {};
+  for (const t of SIDE_WIDGETS) sizes[t] = getWidgetSize(t);
+  const pairable = (t: string) => isSideWidget(t) && sizes[t] === "half";
+
   // Group consecutive same-type items
   const groups: ItemGroup[] = [];
 
@@ -116,6 +230,7 @@ function PageContent({ page, onOpenApp }: { page: HomePage; onOpenApp: (appId: s
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+      {sheetFor && <WidgetSizeSheet widgetType={sheetFor} onClose={() => setSheetFor(null)} />}
       {groups.map((group, gi) => {
         if (group.kind === "widgets") {
           const rendered: React.ReactNode[] = [];
@@ -139,18 +254,19 @@ function PageContent({ page, onOpenApp }: { page: HomePage; onOpenApp: (appId: s
               continue;
             }
 
-            const curIsSide = cur.widgetType === "clock" || cur.widgetType === "system-stats" || cur.widgetType === "weather";
-            const nextIsSide = next && (next.widgetType === "clock" || next.widgetType === "system-stats" || next.widgetType === "weather");
+            const curIsSide = pairable(cur.widgetType);
+            const nextIsSide = next && pairable(next.widgetType);
+            const lp = (t: string) => (isSideWidget(t) ? () => setSheetFor(t) : undefined);
 
             if (curIsSide && nextIsSide && next) {
               const curApp = WIDGET_APP_MAP[cur.widgetType];
               const nextApp = WIDGET_APP_MAP[next.widgetType];
               rendered.push(
-                <div key={`pair-${cur.index}`} style={{ display: "flex", gap: "12px" }}>
-                  <WidgetCard style={{ flex: 1 }} onClick={curApp ? () => onOpenApp(curApp) : undefined}>
+                <div key={`pair-${cur.index}`} data-testid="widget-pair" style={{ display: "flex", gap: "12px" }}>
+                  <WidgetCard style={{ flex: 1 }} onClick={curApp ? () => onOpenApp(curApp) : undefined} onLongPress={lp(cur.widgetType)}>
                     {renderWidgetContent(cur.widgetType)}
                   </WidgetCard>
-                  <WidgetCard style={{ flex: 1 }} onClick={nextApp ? () => onOpenApp(nextApp) : undefined}>
+                  <WidgetCard style={{ flex: 1 }} onClick={nextApp ? () => onOpenApp(nextApp) : undefined} onLongPress={lp(next.widgetType)}>
                     {renderWidgetContent(next.widgetType)}
                   </WidgetCard>
                 </div>
@@ -159,7 +275,7 @@ function PageContent({ page, onOpenApp }: { page: HomePage; onOpenApp: (appId: s
             } else {
               const curApp = WIDGET_APP_MAP[cur.widgetType];
               rendered.push(
-                <WidgetCard key={cur.index} onClick={curApp ? () => onOpenApp(curApp) : undefined}>
+                <WidgetCard key={cur.index} onClick={curApp ? () => onOpenApp(curApp) : undefined} onLongPress={lp(cur.widgetType)}>
                   {renderWidgetContent(cur.widgetType)}
                 </WidgetCard>
               );
