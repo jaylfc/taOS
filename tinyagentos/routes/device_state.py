@@ -43,11 +43,16 @@ _owner_buffers: dict[str, dict] = {}
 _BUFFER_LOCK = asyncio.Lock()
 _MAX_HISTORY = 200
 
+# Monotonically increasing epoch (ms since Unix epoch) so that IDs issued
+# after a process restart are always larger than any ID from the previous
+# process. Computed once at module import time.
+_ID_EPOCH = int(time.time() * 1000)
+
 
 def _get_owner_buffer(owner_id: str) -> dict:
     if owner_id not in _owner_buffers:
         _owner_buffers[owner_id] = {
-            "next_id": 1,
+            "next_id": _ID_EPOCH,
             "events": deque(maxlen=_MAX_HISTORY),
             "last_by_name": {},
         }

@@ -763,5 +763,25 @@ async def test_emit_event_ids_recorded_in_order():
     from tinyagentos.routes import device_state as ds
     ids = await asyncio.gather(*[ds._emit_event("order-owner", "agent.upsert", "{}") for _ in range(50)])
     recorded = [eid for eid, _, _ in ds._get_owner_buffer("order-owner")["events"]]
-    assert sorted(ids) == list(range(1, 51))
+    assert sorted(ids) == list(range(ids[0], ids[0] + 50))
     assert recorded == sorted(recorded)
+
+
+# (RED) IDs after restart exceed IDs from previous process.
+@pytest.mark.asyncio
+async def test_ids_after_restart_exceed_ids_from_previous_process(monkeypatch):
+    from tinyagentos.routes import device_state as ds
+
+    # Emit first event and record its id.
+    first_id = await ds._emit_event("restart-owner", "agent.upsert", "{}")
+
+    # Simulate a restart: clear buffers and set _ID_EPOCH to a later value.
+    ds._owner_buffers.clear()
+    later_epoch = ds._ID_EPOCH + 1000
+    monkeypatch.setattr(ds, "_ID_EPOCH", later_epoch)
+
+    # Emit again after "restart".
+    second_id = await ds._emit_event("restart-owner", "agent.upsert", "{}")
+
+    # The new id must be greater than the old one.
+    assert second_id > first_id
