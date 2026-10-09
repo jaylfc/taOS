@@ -102,8 +102,8 @@ describe('useCanvasElements', () => {
   })
 
   it('ignores a listElements response from a superseded elementId', async () => {
-    let resolveA: (value: CanvasElement[]) => void
-    let resolveB: (value: CanvasElement[]) => void
+    let resolveA!: (value: CanvasElement[]) => void
+    let resolveB!: (value: CanvasElement[]) => void
 
     const promiseA = new Promise<CanvasElement[]>((resolve) => {
       resolveA = resolve
