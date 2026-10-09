@@ -162,10 +162,10 @@ export function ModelActivityPanel() {
   return (
     <Card className="col-span-12 p-4">
       <CardContent className="p-0">
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+          <div className="flex items-center gap-2 shrink-0">
             <Radio size={14} className={live ? "text-emerald-400" : "text-white/50"} />
-            <h3 className="text-xs font-semibold text-shell-text">Model Activity</h3>
+            <h3 className="text-xs font-semibold text-shell-text whitespace-nowrap">Model Activity</h3>
             <span
               className="text-[10px] text-shell-text-tertiary"
               data-testid="model-activity-status"
@@ -173,13 +173,13 @@ export function ModelActivityPanel() {
               {live ? "live" : "offline"}
             </span>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2 min-w-0">
             <SlidersHorizontal size={12} className="text-shell-text-tertiary" />
             <label className="sr-only" htmlFor="model-activity-worker">Filter by worker</label>
             <select
               id="model-activity-worker"
               aria-label="Filter by worker"
-              className="text-[11px] bg-white/5 border border-white/10 rounded px-1.5 py-0.5 text-shell-text-secondary"
+              className="text-[11px] bg-white/5 border border-white/10 rounded px-1.5 py-0.5 text-shell-text-secondary min-w-0 max-w-[10rem] truncate"
               value={worker}
               onChange={(e) => setWorker(e.target.value)}
             >
@@ -192,7 +192,7 @@ export function ModelActivityPanel() {
             <select
               id="model-activity-model"
               aria-label="Filter by model"
-              className="text-[11px] bg-white/5 border border-white/10 rounded px-1.5 py-0.5 text-shell-text-secondary"
+              className="text-[11px] bg-white/5 border border-white/10 rounded px-1.5 py-0.5 text-shell-text-secondary min-w-0 max-w-[10rem] truncate"
               value={model}
               onChange={(e) => setModel(e.target.value)}
             >
@@ -205,7 +205,7 @@ export function ModelActivityPanel() {
             <select
               id="model-activity-event"
               aria-label="Filter by event type"
-              className="text-[11px] bg-white/5 border border-white/10 rounded px-1.5 py-0.5 text-shell-text-secondary"
+              className="text-[11px] bg-white/5 border border-white/10 rounded px-1.5 py-0.5 text-shell-text-secondary min-w-0 max-w-[10rem] truncate"
               value={event}
               onChange={(e) => setEvent(e.target.value)}
             >
