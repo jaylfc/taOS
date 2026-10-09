@@ -282,6 +282,32 @@ class TestDockerInstaller:
             calls = [str(c) for c in mock_run.call_args_list]
             assert any("up" in c and "-d" in c for c in calls)
 
+    def test_postgres_default_healthcheck_keeps_names_with_spaces(self, tmp_path):
+        """Postgres companion with spaces in name values uses exec form for healthcheck."""
+        installer = DockerInstaller(apps_dir=tmp_path)
+        compose, _ = installer._generate_compose(
+            "myapp",
+            {
+                "image": "myapp:latest",
+                "ports": [8080],
+                "companions": [
+                    {
+                        "name": "postgres",
+                        "image": "postgres:16-alpine",
+                        "env": {
+                            "POSTGRES_USER": "app user",
+                            "POSTGRES_DB": "my db",
+                        },
+                    }
+                ],
+            },
+        )
+        pg_service = compose["services"]["postgres"]
+        assert "healthcheck" in pg_service
+        healthcheck_test = pg_service["healthcheck"]["test"]
+        assert isinstance(healthcheck_test, list)
+        assert healthcheck_test == ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "app user", "-d", "my db"]
+
 
 class TestLinkwardenSecretSubstitution:
     """tsk-teaogm: {secret_key} must be substituted into install.env, not just
@@ -519,8 +545,7 @@ class TestLinkwardenCompose:
         healthcheck_test = pg_service["healthcheck"]["test"]
         # Default user/db should be "postgres" when env is absent
         assert isinstance(healthcheck_test, list)
-        assert healthcheck_test[0] == "CMD-SHELL"
-        assert "pg_isready -h 127.0.0.1 -U postgres -d postgres" in healthcheck_test[1]
+        assert healthcheck_test == ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "postgres"]
         # depends_on for postgres must be service_healthy
         depends_on = compose["services"]["myapp"]["depends_on"]
         assert depends_on["postgres"] == {"condition": "service_healthy"}
@@ -547,12 +572,9 @@ class TestLinkwardenCompose:
         )
         pg_service = compose["services"]["postgres"]
         healthcheck_test = pg_service["healthcheck"]["test"]
-        # The test should be a list: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U user -d db"]
+        # The test should be a list: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "user", "-d", "db"]
         assert isinstance(healthcheck_test, list)
-        assert healthcheck_test[0] == "CMD-SHELL"
-        assert "-h 127.0.0.1" in healthcheck_test[1]
-        assert "-U user" in healthcheck_test[1]
-        assert "-d db" in healthcheck_test[1]
+        assert healthcheck_test == ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "user", "-d", "db"]
 
     def test_disabled_companion_healthcheck_waits_for_start_only(self, tmp_path):
         """Defect 3: a disabled healthcheck still selects service_healthy"""
