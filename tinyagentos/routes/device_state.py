@@ -54,21 +54,18 @@ _HWM_PATH: Path | None = None
 _HWM_STEP = 1000
 
 
-def seed_id_epoch(data_dir: str | None = None) -> None:
+def seed_id_epoch(data_dir) -> None:
     global _ID_EPOCH, _HWM_PATH
-    if data_dir is not None:
-        _HWM_PATH = Path(data_dir) / "device_event_hwm"
-    else:
-        _HWM_PATH = None
+    _HWM_PATH = Path(data_dir) / "device_event_hwm"
     stored = 0
     try:
-        if _HWM_PATH is not None and _HWM_PATH.exists():
+        _HWM_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if _HWM_PATH.exists():
             stored = int(_HWM_PATH.read_text().strip())
     except (ValueError, OSError):
         stored = 0
     _ID_EPOCH = max(int(time.time() * 1000), stored + _HWM_STEP)
     # Atomically write _ID_EPOCH to the HWM file
-    _HWM_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = str(_HWM_PATH) + ".tmp"
     try:
         with open(tmp_path, "w") as f:

@@ -1756,7 +1756,6 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.config_path = config_path
     app.state.data_dir = data_dir
     device_state.seed_id_epoch(app.state.data_dir)
-    app.state.config_path = config_path
     app.state.agent_workspaces_dir = data_dir / "agent-workspaces"
     app.state.agent_memory_dir = data_dir / "agent-memory"
     app.state.agent_workspaces_dir.mkdir(parents=True, exist_ok=True)

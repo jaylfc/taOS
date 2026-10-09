@@ -767,15 +767,14 @@ async def test_emit_event_ids_recorded_in_order():
     assert recorded == sorted(recorded)
 
 
-# Test: seed_id_epoch survives clock regression across restarts.
 @pytest.mark.asyncio
-async def test_seed_id_epoch_survives_clock_regression(monkeypatch):
+async def test_seed_id_epoch_survives_clock_regression(monkeypatch, tmp_path):
     from tinyagentos.routes import device_state as ds
     import time as _time
     # Write a high-water mark far ahead of the wall clock (simulating regression)
     stored_val = str(int(_time.time() * 1000) + 10_000_000)
     with monkeypatch.context() as mp:
-        tmpdir = Path("/tmp")  # use /tmp for the HWM file
+        tmpdir = tmp_path
         mp.setattr(ds, "_HWM_PATH", tmpdir / "device_event_hwm")
         mp.setattr(ds, "_ID_EPOCH", int(_time.time() * 1000))
         # Write stored value that simulates clock going backwards
