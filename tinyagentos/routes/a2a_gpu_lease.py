@@ -867,7 +867,7 @@ async def gpu_release(request: Request, body: ReleaseBody):
     # If it was replaced between _find_lease and now, refuse without posting.
     if released_id is not None and cluster is not None and fence_epoch is not None:
         current = _find_lease(cluster, released_id)
-        if current is None or getattr(current, "epoch", None) != fence_epoch:
+        if current is not None and getattr(current, "epoch", None) != fence_epoch:
             return JSONResponse(
                 {"status": "denied", "reason": "lease was replaced; nothing released"},
                 status_code=409,

@@ -1263,7 +1263,41 @@ class TestClusterLeaseIntegration:
         assert cluster.get_leases() == []
         # [GPU RELEASE] was posted
         assert released.json()["line"] == "[GPU RELEASE] node=linstation holder=@operator"
+    async def test_release_twice_with_held_epoch_is_idempotent(self, lease_client, bus, cluster):
+        """Releasing an already-gone lease with an epoch must stay idempotent.
 
+        Claim a lease, then release it with the held epoch (should succeed).
+        Release the same lease again with the same epoch (should also succeed
+        and be idempotent, leaving no lease and posting a second [GPU RELEASE]).
+        """
+        claimed = await lease_client.post(
+            "/api/a2a/gpu/claim", json={"node": "linstation", "vram_mb": 4096}
+        )
+        assert claimed.status_code == 200
+        lease_id = claimed.json()["lease_id"]
+        held_epoch = claimed.json()["epoch"]
+        assert lease_id is not None
+        assert held_epoch
+
+        # First release
+        released1 = await lease_client.post(
+            "/api/a2a/gpu/release",
+            json={"node": "linstation", "lease_id": lease_id, "epoch": held_epoch},
+        )
+        assert released1.status_code == 200
+        assert released1.json()["status"] == "released"
+        assert cluster.get_leases() == []
+        assert released1.json()["line"] == "[GPU RELEASE] node=linstation holder=@operator"
+
+        # Second release with the same body (idempotent)
+        released2 = await lease_client.post(
+            "/api/a2a/gpu/release",
+            json={"node": "linstation", "lease_id": lease_id, "epoch": held_epoch},
+        )
+        assert released2.status_code == 200
+        assert released2.json()["status"] == "released"
+        assert cluster.get_leases() == []
+        assert released2.json()["line"] == "[GPU RELEASE] node=linstation holder=@operator"
 
 @pytest.mark.asyncio
 class TestRequest:
