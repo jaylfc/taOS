@@ -87,7 +87,7 @@ export function ExcalidrawBoard({ elements, theme = "light" }: ExcalidrawBoardPr
      // a single call, allowing Excalidraw to match start/end ids within the same batch.
      const liveEls = live(elements);
      const skeletonList: ExcalidrawSkeleton[] = [];
-     const itemList: { kind: 'skeleton' | 'diagram'; element: CanvasElement; skeletonIndex?: number }[] = [];
+     const itemList: { kind: 'skeleton' | 'diagram'; element: CanvasElement }[] = [];
 
       for (const el of liveEls) {
         const diagram = diagrams[el.id];
@@ -98,7 +98,7 @@ export function ExcalidrawBoard({ elements, theme = "light" }: ExcalidrawBoardPr
           // Either a non-diagram or a diagram still converting: use its skeleton.
           const skel = elementToSkeleton(el, { rows: elements });
           skeletonList.push(skel);
-          itemList.push({ kind: 'skeleton', element: el, skeletonIndex: skeletonList.length - 1 });
+          itemList.push({ kind: 'skeleton', element: el });
         }
       }
 
@@ -106,7 +106,14 @@ export function ExcalidrawBoard({ elements, theme = "light" }: ExcalidrawBoardPr
      const convertedList = convertToExcalidrawElements(skeletonList as unknown as SkeletonInput);
 
      // Build a map from converted element id to taos_id for elements that have taos_id.
+     // Build a map from converted element id to taos_id for elements that have taos_id.
      const convertedIdToTaosId = new Map<string, string>();
+     for (const convertedEl of convertedList) {
+       const taosId = convertedEl.customData?.taos_id as string | undefined;
+       if (taosId) {
+         convertedIdToTaosId.set(convertedEl.id, taosId);
+       }
+     }
      // Group converted elements by their taos_id (set via elementToSkeleton -> taosCustomData).
      // Also handle elements without taos_id but with containerId: attach to the group of the
      // converted element whose id matches that containerId.
@@ -119,7 +126,6 @@ export function ExcalidrawBoard({ elements, theme = "light" }: ExcalidrawBoardPr
            groupedElements.set(taosId, []);
          }
          groupedElements.get(taosId)!.push(convertedEl);
-         convertedIdToTaosId.set(convertedEl.id, taosId);
        } else {
          const containerId = (convertedEl as any).containerId;
          if (containerId) {

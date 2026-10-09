@@ -147,49 +147,45 @@ describe("ExcalidrawBoard", () => {
     // The third element should be the note with z_index 2
     expect(mockRef.capturedElements[2]).toHaveProperty("id", "n2");
   });
-it('a bound label text follows its container', () => {
-  // Set up the mock to return skeleton and text element for notes with label
-  mockRef.convertToExcalidrawElementsMock.mockImplementation((skeletonList) => {
-    console.log('MOCK CALLED with skeletonList:', skeletonList);
-    const result = [];
-    for (const skel of skeletonList) {
-      const taosId = skel.customData?.taos_id;
-      // Change the skeleton's id to 'c-'+taosId
-      const newSkel = { ...skel, id: taosId ? `c-${taosId}` : skel.id };
-      result.push(newSkel);
-      // If the skeleton has a label with non-empty text, add a text element
-      if (skel.label && skel.label.text && skel.label.text.trim() !== '') {
-        const textEl = {
-          id: `t-${taosId}`,
-          type: 'text',
-          containerId: taosId ? `c-${taosId}` : undefined,
-        };
-        result.push(textEl);
+  it("a bound label text follows its container", () => {
+    // Set up the mock to return skeleton and text element for notes with label
+    mockRef.convertToExcalidrawElementsMock.mockImplementation((skeletonList) => {
+      const result = [];
+      for (const skel of skeletonList) {
+        const taosId = skel.customData?.taos_id;
+        // Change the skeleton's id to 'c-'+taosId
+        const newSkel = { ...skel, id: taosId ? `c-${taosId}` : skel.id };
+        result.push(newSkel);
+        // If the skeleton has a label with non-empty text, add a text element
+        if (skel.label && skel.label.text && skel.label.text.trim() !== '') {
+          const textEl = {
+            id: `t-${taosId}`,
+            type: 'text',
+            containerId: taosId ? `c-${taosId}` : undefined,
+          };
+          result.push(textEl);
+        }
       }
-    }
-    console.log('MOCK RETURNING:', result);
-    return result;
-  });
+      return result;
+    });
 
-  console.log('mock call count before render:', mockRef.convertToExcalidrawElementsMock.mock.calls.length);
-  const { getByTestId } = render(
-    <ExcalidrawBoard
-      elements={[el({ id: 'n1', kind: 'note', payload: { text: 'hello' } })]}
-    />,
-  );
-  console.log('mock call count after render:', mockRef.convertToExcalidrawElementsMock.mock.calls.length);
-  const ex = getByTestId('excalidraw');
-  console.log('data-count:', ex.getAttribute('data-count'));
-  console.log('capturedElements:', mockRef.capturedElements);
-  expect(ex.getAttribute('data-count')).toBe('2');
-  // Expect the captured elements to be [container, text] in that order
-  expect(mockRef.capturedElements).toHaveLength(2);
-  // First element should be the container (note shape)
-  expect(mockRef.capturedElements[0]).toHaveProperty('id', 'c-n1');
-  expect(mockRef.capturedElements[0]).toHaveProperty('type', 'rectangle');
-  // Second element should be the text label
-  expect(mockRef.capturedElements[1]).toHaveProperty('id', 't-n1');
-  expect(mockRef.capturedElements[1]).toHaveProperty('type', 'text');
-  expect(mockRef.capturedElements[1]).toHaveProperty('containerId', 'c-n1');
-});
+    const { getByTestId } = render(
+      <ExcalidrawBoard
+        elements={[el({ id: 'n1', kind: 'note', payload: { text: 'hello' } })]}
+      />,
+    );
+    const ex = getByTestId('excalidraw');
+    expect(ex.getAttribute('data-count')).toBe('2');
+    // Expect the captured elements to be [container, text] in that order
+    expect(mockRef.capturedElements).toHaveLength(2);
+    // First element should be the container (note shape)
+    expect(mockRef.capturedElements[0]).toHaveProperty('id', 'c-n1');
+    expect(mockRef.capturedElements[0]).toHaveProperty('type', 'rectangle');
+    // Second element should be the text label
+    expect(mockRef.capturedElements[1]).toHaveProperty('id', 't-n1');
+    expect(mockRef.capturedElements[1]).toHaveProperty('type', 'text');
+    expect(mockRef.capturedElements[1]).toHaveProperty('containerId', 'c-n1');
+    // Reset the mock to avoid affecting other tests
+    mockRef.convertToExcalidrawElementsMock.mockReset();
+  });
 });
