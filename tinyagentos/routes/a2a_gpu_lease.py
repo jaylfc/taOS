@@ -829,7 +829,14 @@ async def gpu_release(request: Request, body: ReleaseBody):
                 return JSONResponse(
                     {"error": "not the lease holder", "lease_id": released_id},
                     status_code=403,
-                )
+                 )
+            if lease is None:
+                newer = _lease_for_actor(cluster, _resource_id(_canonical_node(cluster, node), body.resource), actor)
+                if newer is not None and newer.lease_id != released_id:
+                    return JSONResponse(
+                        {"status": "already_released", "node": node, "holder": actor.holder, "lease_id": released_id, "current_lease_id": newer.lease_id}
+                    )
+
         else:
             lease = _lease_for_actor(
                 cluster,
@@ -867,7 +874,7 @@ async def gpu_release(request: Request, body: ReleaseBody):
     # If it was replaced between _find_lease and now, refuse without posting.
     if released_id is not None and cluster is not None and fence_epoch is not None:
         current = _find_lease(cluster, released_id)
-        if current is None or getattr(current, "epoch", None) != fence_epoch:
+        if current is not None and getattr(current, "epoch", None) != fence_epoch:
             return JSONResponse(
                 {"status": "denied", "reason": "lease was replaced; nothing released"},
                 status_code=409,

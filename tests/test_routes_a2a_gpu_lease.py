@@ -1263,7 +1263,89 @@ class TestClusterLeaseIntegration:
         assert cluster.get_leases() == []
         # [GPU RELEASE] was posted
         assert released.json()["line"] == "[GPU RELEASE] node=linstation holder=@operator"
+    async def test_release_twice_with_held_epoch_is_idempotent(self, lease_client, bus, cluster):
+        """Releasing an already-gone lease with an epoch must stay idempotent.
 
+        Claim a lease, then release it with the held epoch (should succeed).
+        Release the same lease again with the same epoch (should also succeed
+        and be idempotent, leaving no lease and posting a second [GPU RELEASE]).
+        """
+        claimed = await lease_client.post(
+            "/api/a2a/gpu/claim", json={"node": "linstation", "vram_mb": 4096}
+        )
+        assert claimed.status_code == 200
+        lease_id = claimed.json()["lease_id"]
+        held_epoch = claimed.json()["epoch"]
+        assert lease_id is not None
+        assert held_epoch
+
+        # First release
+        released1 = await lease_client.post(
+            "/api/a2a/gpu/release",
+            json={"node": "linstation", "lease_id": lease_id, "epoch": held_epoch},
+        )
+        assert released1.status_code == 200
+        assert released1.json()["status"] == "released"
+        assert cluster.get_leases() == []
+        assert released1.json()["line"] == "[GPU RELEASE] node=linstation holder=@operator"
+
+        # Second release with the same body (idempotent)
+        released2 = await lease_client.post(
+            "/api/a2a/gpu/release",
+            json={"node": "linstation", "lease_id": lease_id, "epoch": held_epoch},
+        )
+        assert released2.status_code == 200
+        assert released2.json()["status"] == "released"
+        assert cluster.get_leases() == []
+        assert released2.json()["line"] == "[GPU RELEASE] node=linstation holder=@operator"
+    async def test_stale_release_retry_does_not_clear_newer_claim(self, lease_client, bus, cluster):
+        # claim node linstation (lease A, epoch eA)
+        claim_a = await lease_client.post(
+            "/api/a2a/gpu/claim", json={"node": "linstation", "vram_mb": 4096}
+        )
+        assert claim_a.status_code == 200
+        lease_id_a = claim_a.json()["lease_id"]
+        epoch_a = claim_a.json()["epoch"]
+        assert lease_id_a is not None
+        assert epoch_a
+    
+        # release A with lease_id A + epoch eA (200)
+        released_a = await lease_client.post(
+            "/api/a2a/gpu/release",
+            json={"node": "linstation", "lease_id": lease_id_a, "epoch": epoch_a},
+        )
+        assert released_a.status_code == 200
+        assert released_a.json()["status"] == "released"
+    
+        # claim linstation again (lease B)
+        claim_b = await lease_client.post(
+            "/api/a2a/gpu/claim", json={"node": "linstation", "vram_mb": 4096}
+        )
+        assert claim_b.status_code == 200
+        lease_id_b = claim_b.json()["lease_id"]
+        assert lease_id_b is not None
+        assert lease_id_b != lease_id_a
+    
+        # record n = len(bus.messages)
+        n = len(bus.messages)
+    
+        # POST /api/a2a/gpu/release with lease_id A + epoch eA again
+        released_a_again = await lease_client.post(
+            "/api/a2a/gpu/release",
+            json={"node": "linstation", "lease_id": lease_id_a, "epoch": epoch_a},
+        )
+    
+        # Assert status 200, json status == "already_released"
+        assert released_a_again.status_code == 200
+        assert released_a_again.json()["status"] == "already_released"
+        # len(bus.messages) == n (nothing posted)
+        assert len(bus.messages) == n
+        # B's lease_id is still in [l.lease_id for l in cluster.get_leases()]
+        assert lease_id_b in [l.lease_id for l in cluster.get_leases()]
+        # claims_for_node(open_claims(bus.messages), "linstation") is non-empty
+        from tinyagentos.gpu_lease import claims_for_node, open_claims
+        folded = open_claims(bus.messages)
+        assert claims_for_node(folded, "linstation")
 
 @pytest.mark.asyncio
 class TestRequest:
