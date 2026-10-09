@@ -221,6 +221,34 @@ async def archive_notification(request: Request, notif_id: int):
     """Dismiss a notification by archiving it; it stays in the History view."""
     user_id = _notif_user_id(request)
     store = request.app.state.notifications
+    
+    # Server-side guard: do not archive bells for still-pending requests.
+    # Load the row first to check its source and request_id.
+    row = await store.get(notif_id)
+    if row is not None:
+        source = row.get("source")
+        data = row.get("data") or {}
+        request_id = data.get("request_id")
+        
+        if source == "agent_scope_requests" and request_id is not None:
+            scope_store = getattr(request.app.state, "agent_scope_requests", None)
+            if scope_store is not None:
+                req = await scope_store.get(str(request_id))
+                if req is not None and req.get("status") == "pending":
+                    # Request is still pending: mark read but do not archive.
+                    await store.mark_read(notif_id, user_id=user_id)
+                    return {"ok": True, "kept": "pending-request"}
+        
+        elif source == "auth_requests" and request_id is not None:
+            auth_store = getattr(request.app.state, "auth_requests", None)
+            if auth_store is not None:
+                req = await auth_store.get(str(request_id))
+                if req is not None and req.get("status") == "pending":
+                    # Request is still pending: mark read but do not archive.
+                    await store.mark_read(notif_id, user_id=user_id)
+                    return {"ok": True, "kept": "pending-request"}
+    
+    # Any other case: proceed with normal archive.
     affected = await store.archive(notif_id, user_id=user_id)
     if affected == 0:
         raise HTTPException(status_code=404, detail="notification not found")

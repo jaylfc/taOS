@@ -101,9 +101,6 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
       const newNotifications = s.notifications.map((n) => {
         if (n.id === id) {
           if (n.source === "agent_scope_requests" || n.source === "auth_requests") {
-            // Do not archive agent_scope_requests or auth_requests notifications
-            // Optionally mark as read? We'll leave it as is for now.
-            // We choose to mark as read per the review's permission.
             return { ...n, read: true };
           }
           if (n.id.startsWith("srv-")) {
@@ -120,10 +117,9 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
 
   archiveRead(id) {
     set((s) => {
-      const notification = s.notifications.find(n => n.id === id);
+      const notification = s.notifications.find((n) => n.id === id);
       if (!notification) return s;
       if (notification.source === "agent_scope_requests" || notification.source === "auth_requests") {
-        // Do nothing: the only archive path is _retire_* on approve/deny.
         return s;
       }
       if (id.startsWith("srv-")) {
@@ -150,7 +146,8 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
           void archiveServerNotification(n.id);
           return { ...n, archived: true };
         }
-        return n;
+        // Local (non-srv-) notifications: archive them as before
+        return { ...n, archived: true };
       });
       return { notifications: newNotifications };
     });
