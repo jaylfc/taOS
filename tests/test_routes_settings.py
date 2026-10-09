@@ -572,3 +572,49 @@ class TestLaunchdMigrationWarning:
         assert message.endswith(expected_suffix), (
             f"Expected message to end with {expected_suffix!r}, got {message!r}"
         )
+
+    @pytest.mark.asyncio
+    async def test_rebuild_failure_warning_in_update_message(self, client, monkeypatch):
+        """When desktop rebuild fails, the update message includes a clear warning."""
+        import asyncio
+        from unittest.mock import patch, AsyncMock, MagicMock
+
+        # The rebuild fails with this message
+        rebuild_message = "EACCES writing static/desktop/sw.js"
+
+        async def fake_rebuild(project_dir, force=True):
+            return MagicMock(rebuilt=False, success=False, message=rebuild_message)
+
+        fake_proc = MagicMock()
+        fake_proc.returncode = 0
+        fake_proc.communicate = AsyncMock(return_value=(b"", b""))
+
+        async def fake_install_dependencies(project_dir):
+            return 0, "ok"
+
+        async def fake_smoke_test(*args, **kwargs):
+            return 0, "Import smoke OK"
+
+        with (
+            patch("tinyagentos.routes.settings.asyncio.create_subprocess_exec", return_value=fake_proc),
+            patch("tinyagentos.routes.settings._stash_local_source_changes", new_callable=AsyncMock, return_value=False),
+            patch("tinyagentos.routes.settings._install_dependencies", new=fake_install_dependencies),
+            patch("tinyagentos.routes.settings._run_capture", new=fake_smoke_test),
+            patch("tinyagentos.routes.settings.apply_launchd_migration", new_callable=AsyncMock, return_value=(True, None)),
+            patch("tinyagentos.routes.settings._update_local_taosmd", new_callable=AsyncMock, return_value={}),
+            patch("tinyagentos.routes.system._do_restart"),
+            patch("tinyagentos.restart_orchestrator.write_pending_restart"),
+            patch("tinyagentos.desktop_rebuild.rebuild_desktop_bundle_if_stale", new=fake_rebuild),
+            patch("tinyagentos.update_preflight.check_preflight", return_value=[]),
+        ):
+            resp = await client.post("/api/settings/update")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        message = data.get("message", "")
+
+        # The warning should be part of the message
+        expected_warning = f"Frontend rebuild failed, so the old interface is still loaded: {rebuild_message}. Use Settings > Rebuild frontend after fixing it."
+        assert expected_warning in message, (
+            f"Expected warning not found in message: {message!r}"
+        )
