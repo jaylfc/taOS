@@ -218,8 +218,6 @@ class TestReadPinFormat:
         assert SEMVER_RE.fullmatch("1.2.3-01") is None  # leading zero in prerelease
         assert SEMVER_RE.fullmatch("1.2") is None  # missing patch
 
-
-
     def test_openclaw_pin_is_semver(self):
         entry = next(e for e in mod.TRACKED if e.get("package") == "openclaw")
         pinned = _read_pin_via_tracked(mod, entry)
