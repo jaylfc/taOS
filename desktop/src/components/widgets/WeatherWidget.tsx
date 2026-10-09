@@ -3,6 +3,7 @@ import { getHomeLocation, getTempUnit, getWindUnit, cToF, kmhToMph, UNIT_CHANGED
 import { useWidgetSize } from "@/hooks/use-widget-size";
 import { useThemeStore } from "@/stores/theme-store";
 import { WeatherIcon, weatherIconName } from "./weather-icons";
+import { conditionGroup, weatherGradient } from "./weather-theme";
 
 interface Weather {
   temp: number;
@@ -13,6 +14,10 @@ interface Weather {
   humidity: number;
   wind: number;
   location: string;
+  high: number;
+  low: number;
+  hourly: { time: string; temp: number; code: number; isDay: boolean }[];
+  daily: { date: string; low: number; high: number; code: number }[];
 }
 
 const WEATHER_CODES: Record<number, { label: string }> = {
@@ -51,13 +56,44 @@ async function fetchWeather(): Promise<Weather | null> {
       latitude: String(home.latitude),
       longitude: String(home.longitude),
       current: "temperature_2m,apparent_temperature,is_day,weather_code,relative_humidity_2m,wind_speed_10m",
+      daily: "temperature_2m_max,temperature_2m_min,weather_code",
+      hourly: "temperature_2m,weather_code,is_day",
+      forecast_days: "6",
       timezone: "auto",
     });
     const resp = await fetch(`https://api.open-meteo.com/v1/forecast?${params}`, { signal: AbortSignal.timeout(5000) });
     if (!resp.ok) return null;
     const data = await resp.json();
     const info = codeInfo(data.current.weather_code);
+    const arr = (v: unknown): any[] => (Array.isArray(v) ? v : []);
+    const hTime = arr(data.hourly?.time);
+    const hTemp = arr(data.hourly?.temperature_2m);
+    const hCode = arr(data.hourly?.weather_code);
+    const hDay = arr(data.hourly?.is_day);
+    const now = String(data.current.time ?? "");
+    // ISO local strings of equal shape compare correctly as text.
+    const first = hTime.findIndex((t) => String(t) > now);
+    const hourly: Weather["hourly"] = [];
+    if (first >= 0) {
+      for (let i = first; i < hTime.length && hourly.length < 5; i++) {
+        if (typeof hTemp[i] !== "number") continue;
+        hourly.push({ time: String(hTime[i]), temp: Math.round(hTemp[i]), code: hCode[i] ?? 3, isDay: hDay[i] === 1 });
+      }
+    }
+    const dTime = arr(data.daily?.time);
+    const dMax = arr(data.daily?.temperature_2m_max);
+    const dMin = arr(data.daily?.temperature_2m_min);
+    const dCode = arr(data.daily?.weather_code);
+    const daily: Weather["daily"] = [];
+    for (let i = 1; i < dTime.length && daily.length < 5; i++) {
+      if (typeof dMax[i] !== "number" || typeof dMin[i] !== "number") continue;
+      daily.push({ date: String(dTime[i]), low: Math.round(dMin[i]), high: Math.round(dMax[i]), code: dCode[i] ?? 3 });
+    }
     return {
+      high: typeof dMax[0] === "number" ? Math.round(dMax[0]) : Math.round(data.current.temperature_2m),
+      low: typeof dMin[0] === "number" ? Math.round(dMin[0]) : Math.round(data.current.temperature_2m),
+      hourly,
+      daily,
       temp: Math.round(data.current.temperature_2m),
       feelsLike: Math.round(data.current.apparent_temperature),
       condition: info.label,
@@ -77,7 +113,7 @@ export function WeatherWidget() {
   const [noHome, setNoHome] = useState(!getHomeLocation());
   const [tempUnit, setTempUnit] = useState(getTempUnit);
   const [windUnit, setWindUnit] = useState(getWindUnit);
-  const [containerRef, { tier }] = useWidgetSize();
+  const [containerRef, { tier, height }] = useWidgetSize();
   const reduceEffects = useThemeStore((s) => s.reduceEffects);
 
   useEffect(() => {
@@ -144,93 +180,80 @@ export function WeatherWidget() {
     );
   }
 
+  const t = displayTemp;
+  const white = (a: number) => `rgba(255,255,255,${a})`;
+  const iconSize = Math.min(64, height - 16);
+  const bg = weatherGradient(conditionGroup(weather.code), weather.isDay);
+  const range = (() => {
+    const lows = weather.daily.map((d) => d.low);
+    const highs = weather.daily.map((d) => d.high);
+    const min = Math.min(...lows);
+    const max = Math.max(...highs);
+    return { min, span: Math.max(1, max - min) };
+  })();
+  const weekday = (date: string) => {
+    const d = new Date(`${date}T12:00:00`);
+    return Number.isNaN(d.getTime()) ? date : d.toLocaleDateString(undefined, { weekday: "short" });
+  };
+  const hourLabel = (time: string) => time.slice(11, 13);
+
   return (
     <div
       ref={containerRef}
-      style={{ height: "100%", display: "flex", flexDirection: "column", padding: tier === "s" ? "0 4px" : "2px 4px 6px", overflow: "hidden" }}
-      aria-label={`Weather: ${weather.condition}, ${displayTemp(weather.temp)}°${tempUnit} in ${weather.location}`}
+      style={{
+        height: "100%", display: "flex", flexDirection: "column", justifyContent: "space-between", gap: 6,
+        padding: "8px 12px", overflow: "hidden", borderRadius: 12, color: white(0.95),
+        background: `linear-gradient(rgba(0,0,0,.2),rgba(0,0,0,.2)), ${bg}`,
+        transition: reduceEffects ? "none" : "background 400ms",
+        fontVariantNumeric: "tabular-nums",
+      }}
+      aria-label={`Weather: ${t(weather.temp)} degrees, ${weather.condition}, high ${t(weather.high)}, low ${t(weather.low)}, ${weather.location}`}
       role="region"
     >
-      {tier === "s" && (
-        /* Small: icon + temp + compact wind/humidity row */
-        <div style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", alignItems: "center", height: "100%", padding: "4px 2px" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <WeatherIcon name={weatherIconName(weather.code, weather.isDay)} animated={!reduceEffects} label={weather.condition} size={52} />
-            <span style={{ fontSize: "1.6rem", fontWeight: 600, color: "rgba(255,255,255,0.95)", lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>
-              {displayTemp(weather.temp)}°
-            </span>
-          </div>
-          <div style={{ display: "flex", gap: 8, fontSize: "0.65rem", color: "rgba(255,255,255,0.4)" }}>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 2 }}><WeatherIcon name="humidity" size={tier === "s" ? 18 : 22} animated={false} label="Humidity" />{weather.humidity}%</span>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 2 }}><WeatherIcon name="wind" size={tier === "s" ? 18 : 22} animated={false} label="Wind" />{displayWind(weather.wind)}</span>
-          </div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+        <div>
+          <div style={{ fontSize: "2rem", fontWeight: 600, lineHeight: 1 }}>{t(weather.temp)}°</div>
+          <div style={{ fontSize: "0.7rem", color: white(0.7), marginTop: 2 }}>H {t(weather.high)}° L {t(weather.low)}°</div>
+        </div>
+        <WeatherIcon name={weatherIconName(weather.code, weather.isDay)} animated={!reduceEffects} label="" size={tier === "s" ? iconSize : 64} />
+      </div>
+
+      {tier !== "s" && (
+        <div style={{ display: "flex", gap: 12, fontSize: "0.7rem", color: white(0.8) }}>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 2 }}><WeatherIcon name="humidity" size={20} animated={false} label="Humidity" />{weather.humidity}%</span>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 2 }}><WeatherIcon name="wind" size={20} animated={false} label="Wind" />{displayWind(weather.wind)}</span>
         </div>
       )}
 
-      {tier === "m" && (
-        /* Medium: icon + temp, condition, location, + compact detail row */
-        <div style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", height: "100%" }}>
-          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <WeatherIcon name={weatherIconName(weather.code, weather.isDay)} animated={!reduceEffects} label={weather.condition} size={64} />
-              <div>
-                <div style={{ fontSize: "1.8rem", fontWeight: 600, color: "rgba(255,255,255,0.95)", lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>
-                  {displayTemp(weather.temp)}°<span style={{ fontSize: "0.85rem", fontWeight: 400, color: "rgba(255,255,255,0.4)", marginLeft: 1 }}>{tempUnit}</span>
-                </div>
-                <div style={{ fontSize: "0.72rem", color: "rgba(255,255,255,0.5)", marginTop: 2 }}>{weather.condition}</div>
-              </div>
+      {tier !== "s" && weather.hourly.length > 0 && (
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 4 }}>
+          {weather.hourly.map((h) => (
+            <div key={h.time} data-testid="hourly-slot" style={{ display: "flex", flexDirection: "column", alignItems: "center", flex: 1, fontSize: "0.7rem" }}>
+              <span data-testid="hourly-hour" style={{ color: white(0.7) }}>{hourLabel(h.time)}</span>
+              <WeatherIcon name={weatherIconName(h.code, h.isDay)} animated={!reduceEffects} label="" size={28} />
+              <span style={{ fontWeight: 600 }}>{t(h.temp)}°</span>
             </div>
-          </div>
-          <div style={{ display: "flex", gap: 10, fontSize: "0.7rem", color: "rgba(255,255,255,0.4)" }}>
-            <span>Feels {displayTemp(weather.feelsLike)}°</span>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 2 }}><WeatherIcon name="humidity" size={22} animated={false} label="Humidity" />{weather.humidity}%</span>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 2 }}><WeatherIcon name="wind" size={22} animated={false} label="Wind" />{displayWind(weather.wind)}</span>
-          </div>
-          <div style={{ fontSize: "0.68rem", color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: "0.04em", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {weather.location}
-          </div>
+          ))}
         </div>
       )}
 
-      {tier === "l" && (
-        /* Large: full detail, no empty space */
-        <div style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", height: "100%" }}>
-          {/* Top: location label */}
-          <div style={{ fontSize: "0.65rem", fontWeight: 600, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: "0.06em", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {weather.location}
-          </div>
-
-          {/* Middle: big icon + temp */}
-          <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "4px 0" }}>
-            <WeatherIcon name={weatherIconName(weather.code, weather.isDay)} animated={!reduceEffects} label={weather.condition} size={84} />
-            <div>
-              <div style={{ fontSize: "2.4rem", fontWeight: 600, color: "rgba(255,255,255,0.95)", lineHeight: 1, fontVariantNumeric: "tabular-nums", letterSpacing: "-0.02em" }}>
-                {displayTemp(weather.temp)}°<span style={{ fontSize: "1rem", fontWeight: 400, color: "rgba(255,255,255,0.4)", marginLeft: 2 }}>{tempUnit}</span>
+      {tier === "l" && weather.daily.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          {weather.daily.map((d) => (
+            <div key={d.date} data-testid="daily-row" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "0.72rem" }}>
+              <span style={{ width: 32, color: white(0.8) }}>{weekday(d.date)}</span>
+              <WeatherIcon name={weatherIconName(d.code, true)} animated={!reduceEffects} label="" size={28} />
+              <span style={{ width: 28, textAlign: "right", color: white(0.7) }}>{t(d.low)}°</span>
+              <div style={{ position: "relative", flex: 1, height: 4, borderRadius: 2, background: white(0.2) }}>
+                <div style={{
+                  position: "absolute", top: 0, bottom: 0, borderRadius: 2, background: white(0.85),
+                  left: `${((d.low - range.min) / range.span) * 100}%`,
+                  width: `${Math.max(4, ((d.high - d.low) / range.span) * 100)}%`,
+                }} />
               </div>
-              <div style={{ fontSize: "0.8rem", color: "rgba(255,255,255,0.55)", marginTop: 3 }}>{weather.condition}</div>
+              <span style={{ width: 28, fontWeight: 600 }}>{t(d.high)}°</span>
             </div>
-          </div>
-
-          {/* Bottom: detail row */}
-          <div
-            style={{
-              display: "flex", justifyContent: "space-between",
-              background: "rgba(255,255,255,0.05)", borderRadius: 8,
-              padding: "6px 10px", gap: 4,
-            }}
-          >
-            {[
-              { icon: "thermometer", alt: "Feels like", label: "Feels", value: `${displayTemp(weather.feelsLike)}°` },
-              { icon: "humidity", alt: "Humidity", label: "Humidity", value: `${weather.humidity}%` },
-              { icon: "wind", alt: "Wind", label: "Wind", value: displayWind(weather.wind) },
-            ].map(({ icon, alt, label, value }) => (
-              <div key={label} style={{ display: "flex", flexDirection: "column", alignItems: "center", flex: 1 }}>
-                <WeatherIcon name={icon} size={22} animated={false} label={alt} />
-                <span style={{ fontSize: "0.72rem", fontWeight: 600, color: "rgba(255,255,255,0.8)", fontVariantNumeric: "tabular-nums" }}>{value}</span>
-                <span style={{ fontSize: "0.58rem", color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: "0.04em" }}>{label}</span>
-              </div>
-            ))}
-          </div>
+          ))}
         </div>
       )}
     </div>
