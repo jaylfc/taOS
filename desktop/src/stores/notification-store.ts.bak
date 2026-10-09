@@ -97,24 +97,16 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
   },
 
   dismiss(id) {
-    set((s) => {
-      notifications: s.notifications.map((n) => {
-        if (n.id === id) {
-          # Do not archive agent_scope_requests or auth_requests notifications
-          if (n.source === "agent_scope_requests" || n.source === "auth_requests") {
-            # Optionally mark as read? We'll leave it as is for now.
-            return n;
-          }
-          if (n.id.startsWith("srv-")) {
-            dismissedServerIds.add(n.id);
-            void archiveServerNotification(id);
-          }
-          return { ...n, archived: true };
-        }
-        return n;
-      }),
-    });
-  }
+    if (id.startsWith("srv-")) {
+      dismissedServerIds.add(id);
+      void archiveServerNotification(id);
+    }
+    set((s) => ({
+      notifications: s.notifications.map((n) =>
+        n.id === id ? { ...n, archived: true } : n,
+      ),
+    }));
+  },
 
   archiveRead(id) {
     // Resolving a notification (e.g. answering an agent access-request) both
