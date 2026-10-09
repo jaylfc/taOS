@@ -3,7 +3,9 @@
 # on-click), so it has SWAYSOCK and WAYLAND_DISPLAY already.
 #   back     Alt+Left to the focused window: chromium's back; a native app
 #            that binds nothing to it simply ignores it.
-#   home     the taOS desktop, workspace 1.
+#   home     the taOS desktop, workspace 1, then F13: the PWA's home key
+#            (taOS useHomeKey), so the open app goes to the background and
+#            the home screen shows, as on Android. Nothing else binds F13.
 #   recents  the switcher: its own workspace, started on first use.
 set -eu
 case "${1:-}" in
@@ -11,7 +13,8 @@ back)
     exec wtype -M alt -k Left -m alt
     ;;
 home)
-    exec swaymsg -q workspace 1
+    swaymsg -q workspace 1
+    exec wtype -k F13
     ;;
 recents)
     SHELL_WIN='[app_id="^chrome-shell\.taos__"]'
