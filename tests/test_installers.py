@@ -466,6 +466,92 @@ class TestLinkwardenCompose:
             assert isinstance(value, dict), (
                 f"depends_on[{name!r}] must be a mapping, got {type(value).__name__}"
             )
+    def test_postgres_default_healthcheck_when_not_last_companion(self, tmp_path):
+        """Defect 1: default postgres healthcheck runs only for the LAST companion"""
+        installer = DockerInstaller(apps_dir=tmp_path)
+        compose, _ = installer._generate_compose(
+            "myapp",
+            {
+                "image": "myapp:latest",
+                "ports": [8080],
+                "companions": [
+                    {
+                        "name": "postgres",
+                        "image": "postgres:16-alpine",
+                        "env": {
+                            "POSTGRES_USER": "user",
+                            "POSTGRES_DB": "db",
+                        },
+                    },
+                    {
+                        "name": "redis",
+                        "image": "redis:7-alpine",
+                    },
+                ],
+            },
+        )
+        # postgres service must have a healthcheck
+        pg_service = compose["services"]["postgres"]
+        assert "healthcheck" in pg_service
+        # depends_on for postgres must be service_healthy
+        depends_on = compose["services"]["myapp"]["depends_on"]
+        assert depends_on["postgres"] == {"condition": "service_healthy"}
+
+    def test_postgres_default_healthcheck_probes_tcp(self, tmp_path):
+        """Defect 2: pg_isready over the unix socket passes during image init"""
+        installer = DockerInstaller(apps_dir=tmp_path)
+        compose, _ = installer._generate_compose(
+            "myapp",
+            {
+                "image": "myapp:latest",
+                "ports": [8080],
+                "companions": [
+                    {
+                        "name": "postgres",
+                        "image": "postgres:16-alpine",
+                        "env": {
+                            "POSTGRES_USER": "user",
+                            "POSTGRES_DB": "db",
+                        },
+                    },
+                ],
+            },
+        )
+        pg_service = compose["services"]["postgres"]
+        healthcheck_test = pg_service["healthcheck"]["test"]
+        # The test should be a list: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U user -d db"]
+        assert isinstance(healthcheck_test, list)
+        assert healthcheck_test[0] == "CMD-SHELL"
+        assert "-h 127.0.0.1" in healthcheck_test[1]
+        assert "-U user" in healthcheck_test[1]
+        assert "-d db" in healthcheck_test[1]
+
+    def test_disabled_companion_healthcheck_waits_for_start_only(self, tmp_path):
+        """Defect 3: a disabled healthcheck still selects service_healthy"""
+        installer = DockerInstaller(apps_dir=tmp_path)
+        compose, _ = installer._generate_compose(
+            "myapp",
+            {
+                "image": "myapp:latest",
+                "ports": [8080],
+                "companions": [
+                    {
+                        "name": "disabled",
+                        "image": "redis:7-alpine",
+                        "healthcheck": {"disable": True},
+                    },
+                    {
+                        "name": "none",
+                        "image": "redis:7-alpine",
+                        "healthcheck": {"test": ["NONE"]},
+                    },
+                ],
+            },
+        )
+        depends_on = compose["services"]["myapp"]["depends_on"]
+        # Both companions should wait for service_started, not service_healthy
+        assert depends_on["disabled"] == {"condition": "service_started"}
+        assert depends_on["none"] == {"condition": "service_started"}
 
     @pytest.mark.asyncio
     async def test_generate_compose_linkwarden_secret_key_persisted(self, tmp_path):
