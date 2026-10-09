@@ -68,7 +68,7 @@ def _should_wake(debounce: dict, agent_id: str, task_id: str, now: float) -> boo
     return True
 
 
-async def wake_agent_with_task(app_state, agent: dict, task: dict) -> bool:
+async def _wake_agent_with_task(app_state, agent: dict, task: dict) -> bool:
     """Best-effort wake: enqueue a user_message to the agent's bridge session
     and post a system message into the project's a2a channel. Mirrors
     tinyagentos.projects.routine_runner._wake_and_announce -- each sub-step
@@ -145,7 +145,8 @@ async def wake_agent_with_task(app_state, agent: dict, task: dict) -> bool:
             )
 
     return enqueued
-_wake_agent_with_task = wake_agent_with_task
+
+wake_agent_with_task = _wake_agent_with_task
 
 
 async def _heartbeat_tick(app_state) -> None:
@@ -204,7 +205,7 @@ async def _heartbeat_tick(app_state) -> None:
             # Debounce only a wake that actually reached the agent's queue; a
             # failed enqueue retries next tick instead of silencing the agent
             # for the whole cooldown.
-            if await wake_agent_with_task(app_state, agent, task):
+            if await _wake_agent_with_task(app_state, agent, task):
                 woke_with_task = task
         except Exception:
             logger.exception("heartbeat: tick failed for agent %s", agent.get("name"))
