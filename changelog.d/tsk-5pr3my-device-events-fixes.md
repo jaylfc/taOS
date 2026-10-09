@@ -1,0 +1,8 @@
+- Event ids are allocated and recorded in one locked step (`_emit_event`), so the close and open events of a decision replacement never share an id
+- Restored poll block indentation and semantics for proper agent upsert, remove, recap, and decision event handling
+- Added scope loss handling for AGENTS_READ in device token recheck
+- Added old decision id to `decision.close` payload for client correlation
+- Updated documentation with decision.replace rule and scope loss description
+- Added missing test `test_events_route_refuses_device_without_agents_read`
+- Updated `test_scope_loss_closes_stream` to use `_ticking_clock` for deterministic behavior
+- Enhanced `test_decision_replace_emits_close_then_open` to verify payloads contain correct decision ids

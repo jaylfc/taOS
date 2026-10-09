@@ -414,79 +414,69 @@ Publishes a `decision.note` event on the owner's `user:<id>` channel so open sur
 
 ## Device API v1
 
-The full spec now lives in `docs/device-api-v1.md`; routes under `/api/devices`
-are bearer-authenticated. The following routes are public (no bearer token):
-
-- `POST /api/devices/pair-requests`
-- `GET /api/devices/pair-requests/{pair_request_id}`
+The full spec lives in `docs/device-api-v1.md`; routes under `/api/devices`
+are bearer-authenticated. Public routes: `POST /api/devices/pair-requests`,
+`GET /api/devices/pair-requests/{pair_request_id}`.
 
 ### GET /api/device/v1/state
 
 **Scope:** `agents:read` (device bearer).
 
-Returns the owner-filtered agent list for the paired device, plus the server
-version, current time, and demo flag.
+Returns the owner-filtered agent list plus server version, time, and demo flag.
+String fields are capped: `name` 48, `status` 120, `last_recap` 180,
+`question` 280, each `option` 40.
 
-**Response 200:**
+**Errors:** `401` missing/invalid bearer, `403` scope missing.
 
-All string fields are server-side capped with a trailing ellipsis when they
-exceed the limit: `name` 48, `status` 120, `last_recap` 180, `question` 280,
-each `option` 40.
+### GET /api/device/v1/events
 
-```json
-{
-  "agents": [
-    {
-      "name": "alice-agent",
-      "status": "running",
-      "framework": "openclaw",
-      "avatar": {
-        "hue": 123,
-        "hash": "abc123def4567890"
-      },
-      "attention": true,
-      "last_recap": "recapped message...",
-      "decision": {
-        "id": "",
-        "question": "Ship it?",
-        "options": ["Approve", "Deny"]
-      }
-    }
-  ],
-  "server": {
-    "version": "1.0.0-beta.55"
-  },
-  "time": 1727640000.123,
-  "demo": false
-}
-```
+**Scope:** `agents:read` (device bearer).
 
-**Error codes:**
+SSE stream of owner-filtered agent state changes. Emits one event per change
+and a heartbeat comment every 15 seconds. Events are name-keyed.
 
-- `401` -- missing or invalid device bearer.
-- `403` -- FastAPI's wrapper: `{"detail": {"error": "device_scope_missing", "scope": "agents:read"}}` when the device token lacks the required scope.
+**Events:**
+
+- `agent.upsert` -- agent appeared or changed. Data: full agent object
+  (same shape as one `agents[]` entry of the state body).
+- `agent.remove` -- agent disappeared. Data: `{"name": "<name>"}`.
+- `decision.close` -- decision resolved. Data:
+  `{"name": "<name>", "decision_id": "<old id>"}`.
+- `decision.open` -- decision appeared. Data:
+  `{"name": "<name>", "decision": {...}}`.
+- `agent.recap` -- recap changed. Data:
+  `{"name": "<name>", "last_recap": "<text>"}`.
+- `snapshot` -- full state body, sent when `Last-Event-ID` is outside the
+  server's buffer.
+
+**Heartbeat:**
+
+`: ping` every 15 seconds. Heartbeat frames carry no `id:` line.
+
+**Resume:**
+
+The client may send `Last-Event-ID` to resume. If the ID is inside the
+server's per-owner event buffer, replay only events with a higher id and
+do not send a snapshot. If the ID is older than the oldest buffered event,
+newer than the newest, or the owner has no buffer yet, send one `snapshot`
+first. Fresh connects (no `Last-Event-ID` or `Last-Event-ID: 0`) start with
+typed `agent.upsert` events.
+
+**Close-on-revoke:**
+
+The stream re-checks the device bearer token on every loop tick. If the
+device is revoked, blocked or the scope is lost (specifically `agents:read`),
+the stream closes immediately.
 
 ### GET /api/device/v1/agents/{name}/avatar
 
-**Scope:** `agents:read` (device bearer). `size` query param is required and must
-be `45` or `96`.
+**Scope:** `agents:read` (device bearer). `size` (required): `45` or `96`.
 
-Returns the avatar converted server-side to LVGL 9 RGB565A8 (`Content-Type:
-application/x-taos-lvimg`), so the device never decodes PNG/JPEG. Body: a 12-byte
-little-endian `lv_image_header_t` (magic `0x19`, cf `0x14`, w, h, stride `w*2`),
-then the RGB565 plane (little-endian) and the A8 alpha plane (circle mask):
-`12 + w*h*3` bytes.
+LVGL 9 RGB565A8 avatar (`application/x-taos-lvimg`): a 12-byte
+`lv_image_header_t` (magic `0x19`, cf `0x14`), then RGB565 and A8 (circle mask)
+planes, `12 + w*h*3` bytes. `ETag: "<avatar_hash>-<size>"`; a matching
+`If-None-Match` returns `304`.
 
-`ETag: "<avatar_hash>-<size>"`; a matching `If-None-Match` returns `304`.
-`Cache-Control: private, max-age=86400`.
-
-Server cache: `<data_dir>/cache/device-avatars/<agent_key>/<hash>-<size>.lvimg`,
-written with `atomic_write_bytes`. The key is the content hash, so an avatar change
-is a cache miss; stale entries for the agent are deleted on conversion.
-
-**Error codes:**
-
-- `400` -- `{"detail": {"error": "size_not_supported"}}`.
-- `401` / `403` -- as for `/api/device/v1/state` (scope `agents:read`).
-- `404` -- `{"detail": {"error": "avatar_not_found"}}` for a non-owned or unknown
-  agent, no avatar, or an undecodable image. Never `403` (no name leak), never `500`.
+**Errors:** `400` `size_not_supported`; `401`/`403` as for state; `404`
+`avatar_not_found` (non-owned, unknown, no avatar, undecodable; never
+`403` or `500`).
