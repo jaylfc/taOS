@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from tinyagentos.projects.tx import ProjectsDBStore
+from tinyagentos.projects.ids import new_id
 
 logger = logging.getLogger(__name__)
 

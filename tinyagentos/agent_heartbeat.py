@@ -204,7 +204,7 @@ async def _heartbeat_tick(app_state) -> None:
             # Debounce only a wake that actually reached the agent's queue; a
             # failed enqueue retries next tick instead of silencing the agent
             # for the whole cooldown.
-            if await _wake_agent_with_task(app_state, agent, task):
+            if await wake_agent_with_task(app_state, agent, task):
                 woke_with_task = task
         except Exception:
             logger.exception("heartbeat: tick failed for agent %s", agent.get("name"))
