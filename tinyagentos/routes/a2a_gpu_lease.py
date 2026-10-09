@@ -439,6 +439,7 @@ class ClaimBody(_LeaseBody):
 class ReleaseBody(_LeaseBody):
     lease_id: str | None = None
     holder: str | None = None
+    epoch: str | None = None
 
 
 class RequestBody(_LeaseBody):
@@ -450,6 +451,7 @@ class RequestBody(_LeaseBody):
 
 class RenewBody(BaseModel):
     lease_id: str
+    epoch: str | None = None
     ttl_seconds: float = Field(
         default=_DEFAULT_TTL_SECONDS, gt=0, le=MAX_LEASE_TTL_SECONDS
     )
@@ -701,9 +703,20 @@ async def gpu_claim(request: Request, body: ClaimBody):
             # a failed repost must undo exactly this extension (and a renewal
             # that landed meanwhile owns the lease - see the rollback below).
             lease, previous_expiry = await cluster.renew_lease_with_previous(
-                existing.lease_id, ttl_seconds=float(body.ttl_seconds)
+                existing.lease_id,
+                ttl_seconds=float(body.ttl_seconds),
+                epoch=existing.epoch,
             )
-            lease_id = existing.lease_id if lease is not None else None
+            if lease is None:
+                return JSONResponse(
+                    {
+                        "status": "denied",
+                        **admission,
+                        "reason": f"lease {existing.lease_id} on {resource_id} was replaced or expired; claim again",
+                    },
+                    status_code=409,
+                )
+            lease_id = existing.lease_id
         else:
             lease = await cluster.claim_lease(
                 resource_id=resource_id,
@@ -756,7 +769,7 @@ async def gpu_claim(request: Request, body: ClaimBody):
         # (CR on #2988).
         if cluster is not None and lease is not None:
             if created_lease and lease_id is not None:
-                await cluster.release_lease(lease_id)
+                await cluster.release_lease(lease_id, epoch=getattr(lease, "epoch", None))
             elif previous_expiry is not None:
                 restored = await cluster.restore_lease_expiry(
                     lease.lease_id,
@@ -778,6 +791,7 @@ async def gpu_claim(request: Request, body: ClaimBody):
         "holder": actor.holder,
         "vram_mb": vram_mb,
         "lease_id": lease_id,
+        "epoch": getattr(lease, "epoch", None),
         "expires_at": getattr(lease, "expires_at", None),
         "claim_expires_at": claim_expires_at,
         "line": line,
@@ -845,6 +859,20 @@ async def gpu_release(request: Request, body: ReleaseBody):
         actor if lease is None else await _claim_holder_actor(request, lease, actor)
     )
 
+    # Epoch to fence on: caller-supplied epoch takes precedence, else the
+    # lease's own epoch. This matches the renew path and the docs contract.
+    fence_epoch = body.epoch if body.epoch is not None else getattr(lease, "epoch", None)
+
+    # Before posting, re-check the lease still exists with the same epoch.
+    # If it was replaced between _find_lease and now, refuse without posting.
+    if released_id is not None and cluster is not None and fence_epoch is not None:
+        current = _find_lease(cluster, released_id)
+        if current is None or getattr(current, "epoch", None) != fence_epoch:
+            return JSONResponse(
+                {"status": "denied", "reason": "lease was replaced; nothing released"},
+                status_code=409,
+            )
+
     # Post BEFORE releasing the local lease, so a bus failure changes nothing
     # and the caller can retry. Releasing first would free the node here while
     # peers still read an open claim, i.e. block a node that is actually free
@@ -853,13 +881,24 @@ async def gpu_release(request: Request, body: ReleaseBody):
     line = render_release(node, line_actor.holder)
     posted = await _post_line(channel, line_actor, line)
     if released_id is not None and cluster is not None:
-        await cluster.release_lease(released_id)
+        ok = await cluster.release_lease(released_id, epoch=fence_epoch)
+        if not ok:
+            return JSONResponse(
+                {
+                    "status": "release_refused",
+                    "reason": "lease was replaced after bus post; release not applied",
+                    "line": line,
+                    "channel": channel,
+                },
+                status_code=409,
+            )
     return {
         "status": "released",
         "node": node,
         "holder": actor.holder,
         "released_holder": line_actor.holder,
         "lease_id": released_id,
+        "epoch": getattr(lease, "epoch", None),
         "line": line,
         "channel": channel,
         "message": posted,
@@ -921,7 +960,9 @@ async def gpu_renew(request: Request, body: RenewBody):
     # seen lapse. Reading the expiry here instead would be stale as soon as a
     # concurrent renewal lands (CR on #2988).
     lease, previous_expiry = await cluster.renew_lease_with_previous(
-        body.lease_id, ttl_seconds=float(body.ttl_seconds)
+        body.lease_id,
+        ttl_seconds=float(body.ttl_seconds),
+        epoch=body.epoch,
     )
     if lease is None:
         return JSONResponse(
@@ -977,6 +1018,7 @@ async def gpu_renew(request: Request, body: RenewBody):
     return {
         "status": "renewed",
         "lease_id": lease.lease_id,
+        "epoch": lease.epoch,
         "resource_id": lease.resource_id,
         "expires_at": lease.expires_at,
         "line": line,
