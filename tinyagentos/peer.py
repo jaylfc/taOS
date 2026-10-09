@@ -33,14 +33,27 @@ from tinyagentos.hub.identity import (
 # Signed envelopes
 # ---------------------------------------------------------------------------
 
+def local_contact_id() -> str:
+    """This node's canonical peer identity: ``hub:<signing fingerprint>``.
+
+    The same form ``routes/hub.py`` keys contact rows on at friend-accept, so
+    the ``from`` and ``to`` of every envelope compare directly against
+    ``contacts.contact_id``.  Reads the hub identity keystore (minting it on
+    first use); no hub_authors row is involved.
+    """
+    return f"hub:{signing_fingerprint()}"
+
+
 def build_envelope(
     *,
-    from_username: str,
-    to_username: str,
+    to_contact_id: str,
     kind: str,
     body: dict | None = None,
 ) -> dict:
     """Build a signed envelope from this node to a remote contact.
+
+    ``to_contact_id`` is the recipient's canonical ``hub:<fingerprint>`` id
+    (the contacts row key); ``from`` is this node's :func:`local_contact_id`.
 
     ``kind`` is one of: ``handshake``, ``collab_invite``, ``delegation_request``,
     ``chat``, ``ack``.  ``body`` is the payload dict.
@@ -52,8 +65,8 @@ def build_envelope(
     Envelope shape::
 
         {
-            "from": "hub:jaylfc",
-            "to":   "hub:hogne",
+            "from": "hub:<sender signing fingerprint>",
+            "to":   "hub:<recipient signing fingerprint>",
             "kind": "collab_invite",
             "body": { ... },
             "ts":   1710000000.0,
@@ -66,8 +79,8 @@ def build_envelope(
     nonce = secrets.token_hex(16)
     ts = time.time()
     envelope: dict = {
-        "from": f"hub:{from_username}",
-        "to": f"hub:{to_username}",
+        "from": local_contact_id(),
+        "to": to_contact_id,
         "kind": kind,
         "ts": ts,
         "nonce": nonce,
@@ -181,7 +194,7 @@ def mint_peer_token(sub: str) -> tuple[str, str]:
 
 def send_handshake(
     *,
-    to_username: str,
+    to_contact_id: str,
     inbound_token: str,
     endpoints: list[str],
     signing_pubkey: str,
@@ -198,11 +211,6 @@ def send_handshake(
     for delivering it to the peer's endpoints.
     """
     local_ident = public_identity()
-    from_username = resolve_local_identity_id()
-    if from_username is None:
-        raise RuntimeError("cannot send handshake: no local hub identity")
-    # Strip "hub:" prefix to get bare username
-    bare_from = from_username.split(":", 1)[1] if from_username.startswith("hub:") else from_username
 
     body = {
         "inbound_token": inbound_token,
@@ -211,8 +219,7 @@ def send_handshake(
         "encryption_pubkey": encryption_pubkey or local_ident.get("encryption_pubkey", ""),
     }
     return build_envelope(
-        from_username=bare_from,
-        to_username=to_username,
+        to_contact_id=to_contact_id,
         kind="handshake",
         body=body,
     )
@@ -305,7 +312,10 @@ def _canonical_json(obj: dict) -> bytes:
 
 
 def resolve_local_identity_id(data_dir: str | Path | None = None) -> str | None:
-    """Return this node's local hub identity ID (``"hub:<username>"``), or None.
+    """Return this node's hub DIRECTORY identity (``"hub:<username>"``), or None.
+
+    Username form: only the hub/relay recipient binding (routes/account_proxy.py)
+    uses it.  Peer envelopes use :func:`local_contact_id` instead.
 
     Resolved from the hub identity keystore and the hub_authors table in
     hub.db.  Returns None if the node has not registered a hub identity

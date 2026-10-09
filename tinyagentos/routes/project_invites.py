@@ -1114,19 +1114,12 @@ async def mint_collab_invite(
     envelope: dict | None = None
     delivery_error: str | None = None
     try:
-        from tinyagentos.peer import build_envelope, resolve_local_identity_id
+        from tinyagentos.peer import build_envelope, local_contact_id
 
-        # Resolve the local hub identity and the contact's hub username.
-        contact_username = (contact.get("hub_username") or "").strip()
-        if not contact_username:
-            delivery_error = "contact has no hub_username"
-        local_id = await asyncio.to_thread(
-            resolve_local_identity_id, request.app.state.data_dir
-        )
-        if local_id is None:
-            delivery_error = "hub identity not configured"
-        if delivery_error is None and contact_username and local_id:
-            local_username = local_id.removeprefix("hub:")
+        # Both ends are canonical hub:<fingerprint> ids: ours from the
+        # keystore, theirs is the contact row key.  hub_username is display only.
+        local_id = await asyncio.to_thread(local_contact_id)
+        if delivery_error is None:
             envelope_body = {
                 "invite_id": record["invite_id"],
                 "project_id": project_id,
@@ -1137,8 +1130,7 @@ async def mint_collab_invite(
                 "display_name": payload.display_name,
             }
             envelope = build_envelope(
-                from_username=local_username,
-                to_username=contact_username,
+                to_contact_id=payload.contact_id,
                 kind="collab_invite",
                 body=envelope_body,
             )

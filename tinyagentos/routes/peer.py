@@ -19,8 +19,9 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from tinyagentos.hub.identity import fingerprint as _fingerprint
 from tinyagentos.peer import (
-    resolve_local_identity_id,
+    local_contact_id,
     verify_envelope,
     verify_envelope_signature,
 )
@@ -120,6 +121,29 @@ async def _peer_auth_dep(request: Request) -> str:
 router.dependencies.append(Depends(_peer_auth_dep))
 
 
+def _reject_legacy_row(contact_id: str, contact_rec: dict) -> None:
+    """403 unless the contact row is keyed on its own pinned signing key.
+
+    contact_id is ``hub:<fingerprint(ed25519_pub)>`` for every row written by
+    friend-accept.  A row keyed any other way (a username-form id from the
+    pre-fingerprint schema, or a non-hex key) can never be matched by name:
+    it is refused, so a renamed or colliding username cannot be impersonated.
+    """
+    try:
+        canonical = f"hub:{_fingerprint(contact_rec.get('ed25519_pub') or '')}"
+    except (TypeError, ValueError):
+        canonical = None
+    if contact_id != canonical:
+        logger.warning(
+            "peer: contact row %s is not keyed on its signing fingerprint; refusing",
+            contact_id,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="contact row is not keyed on its signing-key fingerprint",
+        )
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -172,10 +196,8 @@ async def peer_inbox(body: PeerEnvelope, request: Request):
             detail=f"from field {from_field!r} does not match authenticated contact {contact_id!r}",
         )
 
-    # Verify recipient: envelope["to"] must match the local hub identity.
-    local_id = await asyncio.to_thread(resolve_local_identity_id, request.app.state.data_dir)
-    if local_id is None:
-        raise HTTPException(status_code=503, detail="hub identity not configured")
+    # Verify recipient: envelope["to"] must be this node's hub:<fingerprint>.
+    local_id = await asyncio.to_thread(local_contact_id)
     to_field = envelope.get("to", "")
     if to_field != local_id:
         raise HTTPException(
@@ -193,6 +215,7 @@ async def peer_inbox(body: PeerEnvelope, request: Request):
     if contact_rec is None:
         raise HTTPException(status_code=404, detail="contact not found")
 
+    _reject_legacy_row(contact_id, contact_rec)
     sender_pubkey = contact_rec.get("ed25519_pub", "")
     if not verify_envelope_signature(envelope, sender_pubkey):
         raise HTTPException(status_code=403, detail="invalid signature")
@@ -216,7 +239,9 @@ async def peer_inbox(body: PeerEnvelope, request: Request):
     body_data = envelope.get("body", {})
 
     if kind == "collab_invite":
-        return await _handle_collab_invite(request, contact_id, envelope, body_data)
+        return await _handle_collab_invite(
+            request, contact_id, envelope, body_data, contact_rec=contact_rec,
+        )
 
     if kind in ("collab_invite_accept", "collab_invite_decline"):
         return await _handle_collab_response(request, contact_id, envelope, body_data, kind)
@@ -279,10 +304,8 @@ async def peer_chat(body: PeerEnvelope, request: Request):
             detail=f"from field {from_field!r} does not match authenticated contact {contact_id!r}",
         )
 
-    # Verify recipient: envelope["to"] must match the local hub identity.
-    local_id = await asyncio.to_thread(resolve_local_identity_id, request.app.state.data_dir)
-    if local_id is None:
-        raise HTTPException(status_code=503, detail="hub identity not configured")
+    # Verify recipient: envelope["to"] must be this node's hub:<fingerprint>.
+    local_id = await asyncio.to_thread(local_contact_id)
     to_field = envelope.get("to", "")
     if to_field != local_id:
         raise HTTPException(
@@ -298,6 +321,7 @@ async def peer_chat(body: PeerEnvelope, request: Request):
     if contact_rec is None:
         raise HTTPException(status_code=404, detail="contact not found")
 
+    _reject_legacy_row(contact_id, contact_rec)
     if not verify_envelope_signature(envelope, contact_rec.get("ed25519_pub", "")):
         raise HTTPException(status_code=403, detail="invalid signature")
 
@@ -369,6 +393,8 @@ async def _handle_collab_invite(
     contact_id: str,
     envelope: dict,
     body_data: dict,
+    *,
+    contact_rec: dict | None = None,
 ) -> dict:
     """Handle an incoming collab_invite envelope — create a Decisions card
     so the local human can accept or decline the invitation.
@@ -376,6 +402,10 @@ async def _handle_collab_invite(
     The envelope body is expected to contain:
       invite_id, project_id, project_name, project_slug, inviter,
       pin_required, display_name
+
+    The question names the inviter by the pinned contact row's display name
+    (or hub username), never by the 64-hex ``inviter`` id in the body; the id
+    is kept in the metadata for audit.
     """
     decision_store = getattr(request.app.state, "decision_store", None)
     if decision_store is None:
@@ -388,9 +418,15 @@ async def _handle_collab_invite(
     project_name = body_data.get("project_name", "unknown project")
     inviter = body_data.get("inviter", contact_id)
     pin_required = body_data.get("pin_required", True)
+    rec = contact_rec or {}
+    inviter_label = (
+        (rec.get("display_name") or "").strip()
+        or (rec.get("hub_username") or "").strip()
+        or contact_id
+    )
 
     question = (
-        f"{inviter} invites you to collaborate on project "
+        f"{inviter_label} invites you to collaborate on project "
         f"\"{project_name}\" as a human member. "
         "You will appear in the members list, can chat in the project, "
         "and can later delegate agents to work on it."
