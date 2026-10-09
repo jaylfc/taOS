@@ -1,0 +1,2 @@
+### Fixed
+- Installer scripts `install_hermes.sh` and `install_thclaws.sh` no longer swallow `pip3 install` failures with `|| true`, so missing `httpx`/`pyyaml` dependencies now fail the install instead of causing a silent bridge crash-loop.

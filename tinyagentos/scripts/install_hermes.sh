@@ -66,7 +66,7 @@ ENVEOF
 chmod 600 /root/.hermes/.env
 
 log "patching /root/.hermes/config.yaml model.{provider,base_url,api_key}"
-pip3 install --break-system-packages --quiet pyyaml httpx 2>&1 | tail -3 || true
+pip3 install --break-system-packages --quiet pyyaml httpx 2>&1 | tail -3
 # Read MODEL/LLM_KEY via os.environ so any shell-special characters in the
 # values can't break the python literal or be interpreted as code. The
 # unquoted heredoc would otherwise interpolate them as bash strings first.
