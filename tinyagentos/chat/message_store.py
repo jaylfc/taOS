@@ -330,7 +330,15 @@ class ChatMessageStore(BaseStore):
                 "SELECT content_blocks FROM chat_messages WHERE id = ?", (message_id,)
             ) as cursor:
                 row = await cursor.fetchone()
-            current = json.loads(row[0]) if row and row[0] else []
+            current = []
+            if row and row[0]:
+                try:
+                    parsed = json.loads(row[0])
+                    if isinstance(parsed, list):
+                        current = parsed
+                except (json.JSONDecodeError, TypeError):
+                    # If we can't parse or it's not a list, treat as empty
+                    pass
             # Determine how many new blocks we can add without exceeding cap
             available = cap - len(current)
             if available < 0:
