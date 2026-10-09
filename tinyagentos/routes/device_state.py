@@ -275,11 +275,15 @@ async def _events_stream(request: Request, device: dict):
                 if prev is None:
                     data_json = json.dumps(agent)
                     eid = await _emit_event(owner_id, "agent.upsert", data_json)
+                    if not await _device_still_authorized(device_store, token):
+                        return
                     yield f"id: {eid}\nevent: agent.upsert\ndata: {data_json}\n\n".encode("utf-8")
                 else:
                     if _agent_change_key(agent) != _agent_change_key(prev):
                         data_json = json.dumps(agent)
                         eid = await _emit_event(owner_id, "agent.upsert", data_json)
+                        if not await _device_still_authorized(device_store, token):
+                            return
                         yield f"id: {eid}\nevent: agent.upsert\ndata: {data_json}\n\n".encode("utf-8")
 
                     # Recap change.
@@ -287,6 +291,8 @@ async def _events_stream(request: Request, device: dict):
                     if current_recap != prev_recap.get(name, ""):
                         data_json = json.dumps({"name": name, "last_recap": current_recap})
                         eid = await _emit_event(owner_id, "agent.recap", data_json)
+                        if not await _device_still_authorized(device_store, token):
+                            return
                         yield (
                             f"id: {eid}\nevent: agent.recap\n"
                             f"data: {data_json}\n\n"
@@ -298,6 +304,8 @@ async def _events_stream(request: Request, device: dict):
                     if current_dec and not prev_dec:
                         data_json = json.dumps({"name": name, "decision": current_dec})
                         eid = await _emit_event(owner_id, "decision.open", data_json)
+                        if not await _device_still_authorized(device_store, token):
+                            return
                         yield (
                             f"id: {eid}\nevent: decision.open\n"
                             f"data: {data_json}\n\n"
@@ -305,6 +313,8 @@ async def _events_stream(request: Request, device: dict):
                     elif not current_dec and prev_dec:
                         data_json = json.dumps({"name": name, "decision_id": prev_dec.get("id") or ""})
                         eid = await _emit_event(owner_id, "decision.close", data_json)
+                        if not await _device_still_authorized(device_store, token):
+                            return
                         yield f"id: {eid}\nevent: decision.close\ndata: {data_json}\n\n".encode("utf-8")
                     elif current_dec and prev_dec:
                         # Check if decision IDs differ
@@ -314,10 +324,14 @@ async def _events_stream(request: Request, device: dict):
                             # Emit decision.close for old id
                             data_json = json.dumps({"name": name, "decision_id": prev_id})
                             eid = await _emit_event(owner_id, "decision.close", data_json)
+                            if not await _device_still_authorized(device_store, token):
+                                return
                             yield f"id: {eid}\nevent: decision.close\ndata: {data_json}\n\n".encode("utf-8")
                             # Emit decision.open for new id
                             data_json = json.dumps({"name": name, "decision": current_dec})
                             eid = await _emit_event(owner_id, "decision.open", data_json)
+                            if not await _device_still_authorized(device_store, token):
+                                return
                             yield (
                                 f"id: {eid}\nevent: decision.open\n"
                                 f"data: {data_json}\n\n"
@@ -328,6 +342,8 @@ async def _events_stream(request: Request, device: dict):
                 if name not in current_by_name:
                     data_json = json.dumps({"name": name})
                     eid = await _emit_event(owner_id, "agent.remove", data_json)
+                    if not await _device_still_authorized(device_store, token):
+                        return
                     yield f"id: {eid}\nevent: agent.remove\ndata: {data_json}\n\n".encode("utf-8")
 
             prev_by_name = current_by_name

@@ -600,6 +600,26 @@ async def test_all_agents_removed_emits_remove(vapp, monkeypatch):
     await gen.aclose()
 
 
+@pytest.mark.asyncio
+async def test_poll_tick_rechecks_auth_between_frames(vapp, monkeypatch):
+    gen = await _open_stream(vapp, monkeypatch, list(_TWO))
+    vapp.state.config.agents = []   # next poll tick yields TWO agent.remove frames
+    # Read frames until we get an agent.remove event (skip ': ping' frames)
+    while True:
+        chunk = await asyncio.wait_for(gen.__anext__(), timeout=5.0)
+        event = _parse_events([chunk])
+        if event and event[0][0] == "agent.remove":
+            break
+    # Now simulate device revocation
+    async def _revoked(*_a, **_k):
+        return False
+    import tinyagentos.routes.device_state as ds_mod
+    monkeypatch.setattr(ds_mod, "_device_still_authorized", _revoked)
+    # The next read should raise StopAsyncIteration
+    with pytest.raises(StopAsyncIteration):
+        await asyncio.wait_for(gen.__anext__(), timeout=5.0)
+
+
 # (m) Decision replaced (different id) emits close then open.
 @pytest.mark.asyncio
 async def test_decision_replace_emits_close_then_open(vapp, monkeypatch):
