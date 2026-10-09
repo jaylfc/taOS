@@ -621,3 +621,51 @@ async def test_record_reply_final_broadcast_includes_edited_at():
     assert "edited_at" in edits[0]
     # edited_at should be a number (timestamp)
     assert isinstance(edits[0]["edited_at"], (int, float))
+
+
+@pytest.mark.asyncio
+async def test_duplicate_final_reply_is_ingested_once():
+    """A retried or duplicated final POST with the same id must not create a
+    second chat message or broadcast."""
+    reg, msg_store, ch_store, hub, tr = _make_registry()
+    body = {
+        "kind": "final",
+        "id": "m1",
+        "trace_id": "t1",
+        "content": "hi",
+        "channel_id": "c1",
+    }
+    await reg._handle_reply("bot1", body)
+    await reg._handle_reply("bot1", body)
+    # send_message should have been called exactly once -> one message stored
+    assert len(msg_store.messages) == 1
+    # Only one message broadcast
+    broadcasts = [p for _, p in hub.broadcasts if p["type"] == "message"]
+    assert len(broadcasts) == 1
+    # Only one message_out trace event
+    out_events = [e for e in tr._store.events if e["kind"] == "message_out"]
+    assert len(out_events) == 1
+
+
+@pytest.mark.asyncio
+async def test_distinct_final_ids_are_both_ingested():
+    """Two final POSTs with different ids must each create a message."""
+    reg, msg_store, ch_store, hub, tr = _make_registry()
+    await reg._handle_reply("bot1", {
+        "kind": "final",
+        "id": "m1",
+        "trace_id": "t1",
+        "content": "hi",
+        "channel_id": "c1",
+    })
+    await reg._handle_reply("bot1", {
+        "kind": "final",
+        "id": "m2",
+        "trace_id": "t2",
+        "content": "hello",
+        "channel_id": "c1",
+    })
+    # Two distinct ids -> two send_message calls -> two messages stored
+    assert len(msg_store.messages) == 2
+    broadcasts = [p for _, p in hub.broadcasts if p["type"] == "message"]
+    assert len(broadcasts) == 2

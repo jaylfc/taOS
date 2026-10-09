@@ -24,6 +24,7 @@ import json
 import logging
 import time
 import uuid
+from collections import OrderedDict
 from types import SimpleNamespace
 from typing import Any, AsyncIterator
 
@@ -53,6 +54,8 @@ def build_bootstrap_system_prompt(agent) -> str:
 _DISCONNECT = object()
 
 TICK_INTERVAL = 15  # seconds between keepalive ticks
+
+_FINAL_ID_SEEN_CAP = 256  # per-agent bound for seen final reply ids
 
 
 def _now_iso() -> str:
@@ -95,6 +98,8 @@ class _AgentSession:
         self._pending_msg_ids: dict[str, str] = {}
         # Maps trace_id -> hops_since_user from the triggering user_message event.
         self.pending_hops: dict[str, int] = {}
+        # Bounded seen set of final reply ids (keeps newest 256 per agent).
+        self._seen_final_ids: OrderedDict[str, None] = OrderedDict()
 
     def accumulate_delta(self, trace_id: str, content: str) -> None:
         if trace_id not in self._delta_buffers:
@@ -112,6 +117,15 @@ class _AgentSession:
 
     def pop_pending_msg(self, trace_id: str) -> str | None:
         return self._pending_msg_ids.pop(trace_id, None)
+
+    def is_final_id_seen(self, reply_id: str) -> bool:
+        return reply_id in self._seen_final_ids
+
+    def mark_final_id_seen(self, reply_id: str) -> None:
+        """Record a final reply id as seen, evicting the oldest past the cap."""
+        self._seen_final_ids[reply_id] = None
+        if len(self._seen_final_ids) > _FINAL_ID_SEEN_CAP:
+            self._seen_final_ids.popitem(last=False)
 
 
 class BridgeSessionRegistry:
@@ -319,6 +333,13 @@ class BridgeSessionRegistry:
                     })
 
         elif kind == "final":
+            reply_id = body.get("id")
+            if reply_id is not None and session.is_final_id_seen(reply_id):
+                logger.debug(
+                    "bridge_session: duplicate final reply id %s for agent %s, skipping",
+                    reply_id, slug,
+                )
+                return
             accumulated = session.flush_delta(trace_id)
             final_content = content or accumulated
             pending_msg_id = session.pop_pending_msg(trace_id)
@@ -419,6 +440,8 @@ class BridgeSessionRegistry:
                             **new_msg,
                         })
                     persisted = new_msg
+                if reply_id is not None:
+                    session.mark_final_id_seen(reply_id)
 
             # Re-dispatch so other agents in the channel see this reply.
             router = self._router
