@@ -14,14 +14,14 @@ from collections import deque
 from pathlib import Path
 
 import tinyagentos
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from tinyagentos.agent_avatars import avatar_hash
 from tinyagentos.atomic_io import atomic_write_text
 from tinyagentos.device_auth import device_scope
 from tinyagentos.device_scopes import AGENTS_READ, effective_scopes
-from tinyagentos.routes.auth import _demo_enabled, assemble_lock_agents
+from tinyagentos.routes.auth import assemble_lock_agents, _demo_enabled
 
 router = APIRouter()
 
