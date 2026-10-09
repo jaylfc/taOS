@@ -8,20 +8,20 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import sqlite3
 import time
 from collections import deque
 from pathlib import Path
 
 import tinyagentos
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
 from tinyagentos.agent_avatars import avatar_hash
+from tinyagentos.atomic_io import atomic_write_text
 from tinyagentos.device_auth import device_scope
 from tinyagentos.device_scopes import AGENTS_READ, effective_scopes
-from tinyagentos.routes.auth import assemble_lock_agents, _demo_enabled
+from tinyagentos.routes.auth import _demo_enabled, assemble_lock_agents
 
 router = APIRouter()
 
@@ -65,12 +65,9 @@ def seed_id_epoch(data_dir) -> None:
         stored = 0
     _ID_EPOCH = max(int(time.time() * 1000), stored + _HWM_STEP)
     # Atomically write _ID_EPOCH to the HWM file
-    tmp_path = str(_HWM_PATH) + ".tmp"
     try:
         _HWM_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(tmp_path, "w") as f:
-            f.write(str(_ID_EPOCH))
-        os.replace(tmp_path, str(_HWM_PATH))
+        atomic_write_text(_HWM_PATH, str(_ID_EPOCH))
     except OSError:
         pass
 
@@ -106,9 +103,7 @@ async def _emit_event(owner_id: str, event_type: str, data_json: str) -> int:
         if _HWM_PATH is not None and eid % _HWM_STEP == 0:
             try:
                 _HWM_PATH.parent.mkdir(parents=True, exist_ok=True)
-                tmp = _HWM_PATH.parent / (_HWM_PATH.name + ".tmp")
-                tmp.write_text(str(eid))
-                os.replace(tmp, _HWM_PATH)
+                atomic_write_text(_HWM_PATH, str(eid))
             except OSError:
                 logger.warning("failed to write event hwm")
         return eid
