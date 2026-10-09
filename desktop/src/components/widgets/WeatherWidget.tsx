@@ -182,7 +182,7 @@ export function WeatherWidget() {
 
   const t = displayTemp;
   const white = (a: number) => `rgba(255,255,255,${a})`;
-  const iconSize = Math.min(64, height - 16);
+  const iconSize = Math.max(24, Math.min(64, height - 16));
   const bg = weatherGradient(conditionGroup(weather.code), weather.isDay);
   const range = (() => {
     const lows = weather.daily.map((d) => d.low);
