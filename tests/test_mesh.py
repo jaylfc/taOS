@@ -11,6 +11,16 @@ import pytest
 from tinyagentos.taosnet import mesh
 
 
+@pytest.fixture(autouse=True)
+def _daemon_is_the_mesh(monkeypatch):
+    """These tests drive the join/status/logout paths on the mesh's own daemon.
+    The foreign-daemon refusal in front of them has its own suite
+    (tests/test_taosnet_mesh_socket.py); here it always lets the call through."""
+    async def _not_foreign(server):
+        return None
+    monkeypatch.setattr(mesh, "_foreign_daemon", _not_foreign)
+
+
 def _run_returns(rc, out="", err=""):
     async def _fake(args, timeout=30.0):
         return rc, out, err
