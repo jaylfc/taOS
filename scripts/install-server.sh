@@ -1974,9 +1974,10 @@ if [[ -z "${TAOS_SKIP_QMD:-}" ]]; then
             # is the non-RK3588 embedding backend, better-sqlite3 backs qmd's
             # dbPath routing), so we pass --allow-scripts explicitly.
             #
-            # cd /tmp avoids a project-level .npmrc in the invoking user's
-            # checkout from vetoing the global install with
-            # "config prefix cannot be changed from project config".
+            # cd into a root-owned temp dir avoids a project-level .npmrc in
+            # the invoking user's checkout from vetoing the global install with
+            # "config prefix cannot be changed from project config". /tmp itself
+            # is world-writable, so npm's project-config load must not land there.
             # Pre-clean a partial qmd install dir before we try again.
             # If a prior run failed mid-extraction, the leftover directory
             # makes npm's tar extractor stumble on a second attempt with
@@ -2008,8 +2009,9 @@ if [[ -z "${TAOS_SKIP_QMD:-}" ]]; then
             qmd_install_log=$(mktemp /tmp/taos-qmd-install.XXXXXX)
             mv -- "$qmd_install_log" "${qmd_install_log}.log"
             qmd_install_log="${qmd_install_log}.log"
+            _qmd_cwd="$(mktemp -d /tmp/taos-qmd-cwd.XXXXXX)"
             log "npm install -g @jaylfc/qmd@${qmd_npm_version} (log: $qmd_install_log)"
-            if ! ( cd /tmp && sudo HOME=/root npm install -g --allow-scripts=better-sqlite3,node-llama-cpp,tree-sitter-* "@jaylfc/qmd@${qmd_npm_version}" ) >"$qmd_install_log" 2>&1; then
+            if ! ( cd "$_qmd_cwd" && sudo HOME=/root npm install -g '--allow-scripts=better-sqlite3,node-llama-cpp,tree-sitter-*' "@jaylfc/qmd@${qmd_npm_version}" ) >"$qmd_install_log" 2>&1; then
                 if grep -q "TAR_ENTRY_ERROR" "$qmd_install_log" \
                    && grep -q "spawn sh" "$qmd_install_log"; then
                     warn "npm install of qmd hit the node-llama-cpp tar-extraction"
@@ -2026,7 +2028,7 @@ if [[ -z "${TAOS_SKIP_QMD:-}" ]]; then
                 if grep -qiE "ETARGET|No matching version found" "$qmd_install_log" \
                    && [[ "$qmd_npm_version" != "latest" ]]; then
                     warn "qmd ${qmd_npm_version} not found on npm (ETARGET); retrying @latest"
-                     if ( cd /tmp && sudo HOME=/root npm install -g --allow-scripts=better-sqlite3,node-llama-cpp,tree-sitter-* "@jaylfc/qmd@latest" ) >>"$qmd_install_log" 2>&1; then
+                     if ( cd "$_qmd_cwd" && sudo HOME=/root npm install -g '--allow-scripts=better-sqlite3,node-llama-cpp,tree-sitter-*' "@jaylfc/qmd@latest" ) >>"$qmd_install_log" 2>&1; then
                         log "qmd installed via @latest fallback"
                     else
                         tail -20 "$qmd_install_log" >&2
@@ -2038,6 +2040,7 @@ if [[ -z "${TAOS_SKIP_QMD:-}" ]]; then
                 fi
             fi
             rm -f "$qmd_install_log"
+            rm -rf "$_qmd_cwd"
             # Confirm the binary is reachable before we proceed.
             if ! command -v qmd >/dev/null 2>&1; then
                 die "qmd binary not found on PATH after npm install — check npm global prefix and PATH"

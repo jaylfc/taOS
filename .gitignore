@@ -212,3 +212,16 @@ data/store_popularity.json
 # blanket data/ rule, for the reason given there.
 # Verified against every tracked file on origin/dev: 0 become ignored.
 data/*.pem.lock
+
+# App install roots. Added 2026-10-09 after tsk-ujb6hp: the runtime path is
+# `data/apps/` (above), which is fully covered. But the DockerInstaller can be
+# pointed at an app_dir at the REPO ROOT (apps/...) - as a test run did - and
+# then `git add -A` swept a live 64-byte `.secret_key` into the branch as the
+# FIRST committed secret in the repo. The runtime rule does not reach that
+# path, so enumerate the generated artefacts the installer writes under an
+# app dir. Verified against every tracked file on origin/dev: 0 become
+# ignored (nothing is tracked under apps/ at all).
+apps/*/.secret_key
+apps/*/docker-compose.yaml
+apps/*/.env
+apps/*/.env.*

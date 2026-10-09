@@ -145,6 +145,7 @@ async def _wake_agent_with_task(app_state, agent: dict, task: dict) -> bool:
             )
 
     return enqueued
+wake_agent_with_task = _wake_agent_with_task
 
 
 async def _heartbeat_tick(app_state) -> None:

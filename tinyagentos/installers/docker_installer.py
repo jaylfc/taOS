@@ -14,6 +14,17 @@ from tinyagentos.installers.port_allocator import allocate_host_port
 
 logger = logging.getLogger(__name__)
 
+def _healthcheck_enabled(hc) -> bool:
+    """Return True if the healthcheck is enabled, False otherwise."""
+    if not isinstance(hc, dict):
+        return False
+    if hc.get("disable") is True:
+        return False
+    test = hc.get("test")
+    if test == ["NONE"] or test == "NONE":
+        return False
+    return True
+
 
 class DockerInstaller(AppInstaller):
     def __init__(self, apps_dir: Path | None = None):
@@ -261,6 +272,9 @@ class DockerInstaller(AppInstaller):
                     "image": comp["image"],
                     "restart": "unless-stopped",
                 }
+                # Copy healthcheck from manifest if declared
+                if "healthcheck" in comp:
+                    comp_service["healthcheck"] = comp["healthcheck"]
                 comp_named_volumes: dict[str, None] = {}
                 if "volumes" in comp:
                     comp_service["volumes"] = comp["volumes"]
@@ -281,9 +295,28 @@ class DockerInstaller(AppInstaller):
                             extra_hosts.append("host.docker.internal:host-gateway")
                     if extra_hosts:
                         comp_service["extra_hosts"] = extra_hosts
+                # Add default healthcheck for postgres if it doesn't have one.
+                # The installer is app-agnostic, so the user/db are derived from the
+                # companion's declared env (POSTGRES_USER/POSTGRES_DB) rather than
+                # hard-coded to one app. pg_isready tolerates a wrong user/db, so a
+                # stale hard-code here is latent, not breaking -- but it makes the
+                # healthcheck report the wrong database for any other app.
+                if comp_name == "postgres" and "healthcheck" not in comp_service:
+                    comp_env = comp_service.get("environment") or {}
+                    pg_user = comp_env.get("POSTGRES_USER") or "postgres"
+                    pg_db = comp_env.get("POSTGRES_DB") or pg_user
+                    comp_service["healthcheck"] = {
+                        "test": ["CMD-SHELL", f"pg_isready -h 127.0.0.1 -U {pg_user} -d {pg_db}"],
+                        "interval": "5s",
+                        "timeout": "5s",
+                        "retries": 5,
+                        "start_period": "10s"
+                    }
                 companion_services.append(comp_service)
                 for vn in comp_named_volumes:
                     named_volumes[vn] = None
+
+
 
         # Collect the container-internal ports from the manifest.
         # Canonical key is "ports" at the top level of install_config.
@@ -341,6 +374,21 @@ class DockerInstaller(AppInstaller):
         all_services[app_id] = service
         for i, comp_service in enumerate(companion_services):
             all_services[companion_names[i]] = comp_service
+
+        # Add depends_on configuration for the app service to manage companion startup order
+        if companion_names:
+            depends_on: dict[str, dict] = {}
+            for comp_name in companion_names:
+                comp_service = all_services[comp_name]
+                if _healthcheck_enabled(comp_service.get("healthcheck")):
+                    # Use service_healthy condition when companion has a healthcheck
+                    depends_on[comp_name] = {"condition": "service_healthy"}
+                else:
+                    # No readiness signal exists for this companion, so wait for
+                    # START only. Mapping form is required: a bare list value
+                    # ([comp_name]) is rejected by compose-go as invalid Compose.
+                    depends_on[comp_name] = {"condition": "service_started"}
+            all_services[app_id]["depends_on"] = depends_on
 
         # No top-level `version:` — it's obsolete in Compose v2 and emits a
         # warning on every command.

@@ -183,6 +183,40 @@ def test_qmd_npm_install_has_no_unsafe_perm() -> None:
         + "\n".join(f"  {ln}" for ln in bad)
     )
 
+
+def test_qmd_npm_install_allow_scripts_is_quoted() -> None:
+    """The --allow-scripts glob must be single-quoted at both qmd install sites.
+
+    The argument is a pathname-expansion pattern and the command runs with cwd=/tmp
+    (world-writable), so an unquoted '*' lets a local user plant matching filenames
+    that widen which dependencies run lifecycle scripts AS ROOT. Both the pinned
+    install and the @latest ETARGET retry must carry the single-quoted form.
+
+    Red-first: this fails on dev (unquoted) and passes after the fix.
+    """
+    import re
+
+    install_lines = [
+        ln.strip()
+        for ln in _script().splitlines()
+        if "npm install -g" in ln and "@jaylfc/qmd" in ln
+        and not ln.strip().startswith(("log ", "warn "))
+    ]
+    assert len(install_lines) >= 2, (
+        f"expected at least 2 qmd npm install lines, found {len(install_lines)}: {install_lines}"
+    )
+    bad = []
+    for ln in install_lines:
+        if "--allow-scripts=" not in ln:
+            bad.append((ln, "--allow-scripts= is absent"))
+            continue
+        if not re.search(r"'--allow-scripts=[^']*'", ln):
+            bad.append((ln, "--allow-scripts argument is not single-quoted"))
+    assert not bad, (
+        "qmd npm install --allow-scripts must be single-quoted on all sites:\n"
+        + "\n".join(f"  {reason}: {ln}" for ln, reason in bad)
+    )
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 INSTALL_SCRIPT = REPO_ROOT / "scripts" / "install-server.sh"
 

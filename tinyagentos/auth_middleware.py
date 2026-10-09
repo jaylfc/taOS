@@ -305,6 +305,9 @@ _DEVICE_BEARER_PATHS = (
     # S2b: device state (agents read). Device-bearer only; the route names its
     # own scope via device_scope(), this entry is what lets the Bearer past.
     ("GET", re.compile(r"^/api/device/v1/state$"), AGENTS_READ),
+    # P0 S3: device events SSE (agents read). Device-bearer only; the route names
+    # its own scope via device_scope(), this entry is what lets the Bearer past.
+    ("GET", re.compile(r"^/api/device/v1/events$"), AGENTS_READ),
     # S2b/S3: device avatar (agents read). Device-bearer only; the route names
     # its own scope via device_scope(), this entry lets the Bearer past.
     ("GET", re.compile(r"^/api/device/v1/agents/[^/]+/avatar$"), AGENTS_READ),

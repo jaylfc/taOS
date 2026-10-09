@@ -78,6 +78,8 @@ class ChatMessageStore(BaseStore):
         super().__init__(db_path)
         # Serialises concurrent reaction read-modify-write operations
         self._reaction_lock = asyncio.Lock()
+        # Serialises concurrent content_blocks read-modify-write operations
+        self._content_lock = asyncio.Lock()
 
     async def init(self) -> None:
         await super().init()
@@ -291,24 +293,65 @@ class ChatMessageStore(BaseStore):
         into Python, appending and writing it back lets two concurrent appends
         interleave, and the loser is dropped with no error and no log line.
         """
-        cursor = await self._db.execute(
-            "UPDATE chat_messages SET content_blocks = json_insert("
-            "  CASE WHEN content_blocks IS NULL OR content_blocks = '' THEN '[]'"
-            "       ELSE content_blocks END,"
-            "  '$[#]', json(?)"
-            ") WHERE id = ?",
-            (json.dumps(block), message_id),
-        )
-        if cursor.rowcount == 0:
-            return None
-        await self._db.commit()
-        async with self._db.execute(
-            "SELECT content_blocks FROM chat_messages WHERE id = ?", (message_id,)
-        ) as read_cursor:
-            row = await read_cursor.fetchone()
-        if row is None:
-            return None
-        return json.loads(row[0]) if row[0] else []
+        async with self._content_lock:
+            cursor = await self._db.execute(
+                "UPDATE chat_messages SET content_blocks = json_insert("
+                "  CASE WHEN content_blocks IS NULL OR content_blocks = '' THEN '[]'"
+                "       ELSE content_blocks END,"
+                "  '$[#]', json(?)"
+                ") WHERE id = ?",
+                (json.dumps(block), message_id),
+            )
+            if cursor.rowcount == 0:
+                return None
+            await self._db.commit()
+            async with self._db.execute(
+                "SELECT content_blocks FROM chat_messages WHERE id = ?", (message_id,)
+            ) as read_cursor:
+                row = await read_cursor.fetchone()
+            if row is None:
+                return None
+            return json.loads(row[0]) if row[0] else []
+
+    async def extend_content_blocks(self, message_id: str, blocks: list, cap: int = 50) -> list:
+        """Atomically extend a message's content_blocks with new blocks, respecting a cap.
+
+        Existing blocks are kept first; new blocks are appended until the total
+        reaches ``cap``. Any excess new blocks are dropped.
+
+        Returns the resulting content_blocks list.
+
+        This method holds ``self._content_lock`` for the duration of the read-
+        modify-write sequence, so it cannot interleave with ``append_content_block``.
+        """
+        async with self._content_lock:
+            # Read current content_blocks
+            async with self._db.execute(
+                "SELECT content_blocks FROM chat_messages WHERE id = ?", (message_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+            current = []
+            if row and row[0]:
+                try:
+                    parsed = json.loads(row[0])
+                    if isinstance(parsed, list):
+                        current = parsed
+                except (json.JSONDecodeError, TypeError):
+                    # If we can't parse or it's not a list, treat as empty
+                    pass
+            # Determine how many new blocks we can add without exceeding cap
+            available = cap - len(current)
+            if available < 0:
+                available = 0
+            to_add = blocks[:available]
+            new_blocks = current + to_add
+            # Write back
+            await self._db.execute(
+                "UPDATE chat_messages SET content_blocks = ? WHERE id = ?",
+                (json.dumps(new_blocks), message_id),
+            )
+            await self._db.commit()
+            return new_blocks
 
     async def soft_delete_message(self, message_id: str) -> bool:
         """Mark message as soft-deleted; returns True if a row was updated."""
@@ -591,6 +634,13 @@ class ChatMessageStore(BaseStore):
     async def update_state(self, message_id: str, state: str) -> None:
         await self._db.execute(
             "UPDATE chat_messages SET state = ? WHERE id = ?", (state, message_id)
+        )
+        await self._db.commit()
+
+    async def update_content_blocks(self, message_id: str, blocks: list | None) -> None:
+        await self._db.execute(
+            "UPDATE chat_messages SET content_blocks = ? WHERE id = ?",
+            (json.dumps(blocks or []), message_id),
         )
         await self._db.commit()
 
