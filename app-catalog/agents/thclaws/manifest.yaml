@@ -1,0 +1,34 @@
+id: thclaws
+name: thClaws
+type: agent-framework
+verification_status: alpha
+version: 0.140.0
+description: "thClaws agent framework - single binary with OpenAI-compatible API, LiteLLM integration, and WebKit/Wayland UI"
+homepage: https://github.com/thClaws/thClaws
+license: "MIT OR Apache-2.0"
+
+requires:
+  ram_mb: 2048
+  disk_mb: 200
+
+install:
+  method: script
+  note: |
+    In-repo installer: tinyagentos/scripts/install_thclaws.sh
+    Downloads thClaws release binary, verifies SHA256, installs to /usr/local/bin.
+    Creates systemd unit (thclaws-serve.service) for the agent server on :8443.
+    The deployer writes /etc/thclaws/env with LITELLM_BASE_URL and LITELLM_API_KEY.
+
+config_schema:
+  - name: model
+    type: model-select
+    label: LLM Model
+    required: true
+    description: Primary chat model for the thClaws agent (prefixed with litellm/)
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: full

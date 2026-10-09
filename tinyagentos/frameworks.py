@@ -256,6 +256,19 @@ FRAMEWORKS: dict[str, dict] = {
             {"name": "help", "description": "Show ZeroClaw help"},
         ],
     },
+    "thclaws": {
+        "id": "thclaws",
+        "name": "thClaws",
+        "description": "thClaws agent framework (thClaws/thClaws) -- taOS bridge to /v1/chat/completions on :8443",
+        "verification_status": "experimental",
+        "slash_commands": [
+            {"name": "help", "description": "List available commands"},
+        ],
+        "shortcuts": [
+            {"kind": "container-terminal", "label": "Container shell",
+             "icon": "terminal", "requires_capability": "agent.shell"},
+        ],
+    },
 }
 
 _REQUIRED_UPDATE_FIELDS = (
