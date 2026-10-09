@@ -427,6 +427,46 @@ class TestLinkwardenCompose:
         assert isinstance(depends_on["postgres"], dict)
         assert depends_on["postgres"].get("condition") == "service_healthy"
 
+    def test_generate_compose_depends_on_non_postgres_no_healthcheck_uses_condition(
+        self, tmp_path
+    ):
+        """A NON-postgres companion that declares no healthcheck must still
+        render a valid Compose depends_on.
+
+        The previous else-branch emitted ``depends_on[comp_name] = [comp_name]``,
+        i.e. a list value, which compose-go rejects as invalid Compose (mapping
+        values must be objects). Any app with a non-postgres companion that has
+        no healthcheck -- e.g. redis -- generated a compose file ``docker
+        compose`` refused to parse. Use the mapping form with
+        ``condition: service_started`` (wait for START, not READY) and assert it
+        is parseable, not merely that a depends_on key exists.
+        """
+        installer = DockerInstaller(apps_dir=tmp_path)
+        compose, _ = installer._generate_compose(
+            "myapp",
+            {
+                "image": "myapp:latest",
+                "ports": [8080],
+                "companions": [
+                    {
+                        "name": "redis",
+                        "image": "redis:7-alpine",
+                    }
+                ],
+            },
+        )
+        depends_on = compose["services"]["myapp"]["depends_on"]
+        assert "redis" in depends_on
+        # Mapping form only -- a bare list value is invalid Compose.
+        assert isinstance(depends_on["redis"], dict)
+        assert depends_on["redis"].get("condition") == "service_started"
+        # The rendered compose must be parseable by compose-go's schema, i.e.
+        # every depends_on value is a dict (never a list).
+        for name, value in depends_on.items():
+            assert isinstance(value, dict), (
+                f"depends_on[{name!r}] must be a mapping, got {type(value).__name__}"
+            )
+
     @pytest.mark.asyncio
     async def test_generate_compose_linkwarden_secret_key_persisted(self, tmp_path):
         """Verify {secret_key} is replaced with a persisted 64-hex-char secret."""

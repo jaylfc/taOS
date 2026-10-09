@@ -288,10 +288,18 @@ class DockerInstaller(AppInstaller):
                 for vn in comp_named_volumes:
                     named_volumes[vn] = None
 
-            # Add default healthcheck for postgres if it doesn't have one
+            # Add default healthcheck for postgres if it doesn't have one.
+            # The installer is app-agnostic, so the user/db are derived from the
+            # companion's declared env (POSTGRES_USER/POSTGRES_DB) rather than
+            # hard-coded to one app. pg_isready tolerates a wrong user/db, so a
+            # stale hard-code here is latent, not breaking -- but it makes the
+            # healthcheck report the wrong database for any other app.
             if comp_name == "postgres" and "healthcheck" not in comp_service:
+                comp_env = comp_service.get("environment") or {}
+                pg_user = comp_env.get("POSTGRES_USER") or "postgres"
+                pg_db = comp_env.get("POSTGRES_DB") or pg_user
                 comp_service["healthcheck"] = {
-                    "test": ["CMD-SHELL", "pg_isready -U linkwarden -d linkwarden"],
+                    "test": ["CMD-SHELL", f"pg_isready -U {pg_user} -d {pg_db}"],
                     "interval": "5s",
                     "timeout": "5s",
                     "retries": 5,
@@ -364,8 +372,10 @@ class DockerInstaller(AppInstaller):
                     # Use service_healthy condition when companion has a healthcheck
                     depends_on[comp_name] = {"condition": "service_healthy"}
                 else:
-                    # Plain dependency when no healthcheck is declared
-                    depends_on[comp_name] = [comp_name]
+                    # No readiness signal exists for this companion, so wait for
+                    # START only. Mapping form is required: a bare list value
+                    # ([comp_name]) is rejected by compose-go as invalid Compose.
+                    depends_on[comp_name] = {"condition": "service_started"}
             all_services[app_id]["depends_on"] = depends_on
 
         # No top-level `version:` — it's obsolete in Compose v2 and emits a

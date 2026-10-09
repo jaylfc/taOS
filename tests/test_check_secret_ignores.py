@@ -12,6 +12,7 @@ green, so the gate is a live regression guard and not dead code.
 """
 from __future__ import annotations
 
+import secrets
 import subprocess
 import sys
 from pathlib import Path
@@ -145,9 +146,13 @@ class TestCheckPaths:
         _init_repo(repo)
         _commit_gitignore(repo, REAL_GITIGNORE.read_text(encoding="utf-8"))
         # Simulate the artefact the installer writes under a repo-root app dir.
+        # The value is generated at runtime (64 hex chars) -- it is NOT the
+        # compromised secret from tsk-ujb6hp, which was pushed to origin and is
+        # treated as rotated. A literal 64-hex placeholder here would re-commit
+        # the live secret into repo history if it matched the leaked value.
         secret = repo / "apps" / "linkwarden" / ".secret_key"
         secret.parent.mkdir(parents=True, exist_ok=True)
-        secret.write_text("e889b9551313c3b84b59d655f506fe638b6d813c01f5f123cbfd6450676d13ff")
+        secret.write_text(secrets.token_hex(32))
         assert csi.is_path_ignored("apps/linkwarden/.secret_key", repo)
 
 
