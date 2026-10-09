@@ -75,10 +75,12 @@ async def _emit_event(owner_id: str, event_type: str, data_json: str) -> int:
         return eid
 
 
-async def _get_buffered_events_after(owner_id: str, last_event_id: int) -> list:
+async def _replay_and_baseline(owner_id: str, last_event_id: int) -> tuple[list, dict]:
     async with _BUFFER_LOCK:
         buf = _get_owner_buffer(owner_id)
-        return [(eid, etype, data) for eid, etype, data in buf["events"] if eid > last_event_id]
+        replay = [(eid, etype, data) for eid, etype, data in buf["events"] if eid > last_event_id]
+        prev_by_name = dict(buf["last_by_name"])
+        return replay, prev_by_name
 
 
 def _clock() -> float:
@@ -209,10 +211,10 @@ async def _events_stream(request: Request, device: dict):
                 need_snapshot = True
 
     if need_snapshot:
-        data_json = json.dumps(snapshot_data)
-        eid = await _emit_event(owner_id, "snapshot", data_json)
         if not await _device_still_authorized(device_store, token):
             return
+        data_json = json.dumps(snapshot_data)
+        eid = await _emit_event(owner_id, "snapshot", data_json)
         yield f"id: {eid}\nevent: snapshot\ndata: {data_json}\n\n".encode("utf-8")
         for a in snapshot_data["agents"]:
             prev_by_name[a["name"]] = a
@@ -221,15 +223,13 @@ async def _events_stream(request: Request, device: dict):
         buf = _get_owner_buffer(owner_id)
         buf["last_by_name"] = dict(prev_by_name)
     elif last_event_id > 0:
-        replay = await _get_buffered_events_after(owner_id, last_event_id)
+        replay, prev_by_name = await _replay_and_baseline(owner_id, last_event_id)
+        prev_recap = {n: a.get("last_recap", "") or "" for n, a in prev_by_name.items()}
+        prev_decision = {n: a.get("decision") for n, a in prev_by_name.items()}
         for eid, event_type, data_json in replay:
             if not await _device_still_authorized(device_store, token):
                 return
             yield f"id: {eid}\nevent: {event_type}\ndata: {data_json}\n\n".encode("utf-8")
-        buf = _get_owner_buffer(owner_id)
-        prev_by_name = dict(buf["last_by_name"])
-        prev_recap = {n: a.get("last_recap", "") or "" for n, a in prev_by_name.items()}
-        prev_decision = {n: a.get("decision") for n, a in prev_by_name.items()}
     else:
         for a in transformed:
             prev_by_name[a["name"]] = a
@@ -303,7 +303,7 @@ async def _events_stream(request: Request, device: dict):
                             f"data: {data_json}\n\n"
                         ).encode("utf-8")
                     elif not current_dec and prev_dec:
-                        data_json = json.dumps({"name": name})
+                        data_json = json.dumps({"name": name, "decision_id": prev_dec.get("id") or ""})
                         eid = await _emit_event(owner_id, "decision.close", data_json)
                         yield f"id: {eid}\nevent: decision.close\ndata: {data_json}\n\n".encode("utf-8")
                     elif current_dec and prev_dec:

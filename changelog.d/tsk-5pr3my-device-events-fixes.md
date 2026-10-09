@@ -1,4 +1,4 @@
-- Fixed `_next_event_id()` function to increment event_id before returning it, ensuring close and open events during decision replacement don't share an ID
+- Event ids are allocated and recorded in one locked step (`_emit_event`), so the close and open events of a decision replacement never share an id
 - Restored poll block indentation and semantics for proper agent upsert, remove, recap, and decision event handling
 - Added scope loss handling for AGENTS_READ in device token recheck
 - Added old decision id to `decision.close` payload for client correlation

@@ -661,6 +661,51 @@ async def test_resume_quiet_when_nothing_changed(vapp, monkeypatch):
     assert not any(e in ("agent.upsert", "snapshot") for e, _ in evs)
 
 
+@pytest.mark.asyncio
+async def test_resume_gets_change_recorded_by_other_stream_mid_replay(vapp, monkeypatch):
+    from tinyagentos.routes import device_state as ds_mod
+    from tinyagentos.routes import auth as auth_mod
+    from tinyagentos.demo_mode import write_demo_mode
+    d = _avatar_dir(vapp, monkeypatch, ["a1", "a2"])
+    gen_a = await _open_stream(vapp, monkeypatch, list(_TWO))
+    first = min(e for e, _, _ in ds_mod._owner_buffers["u1"]["events"])
+    _patch_intervals(monkeypatch)
+    _ticking_clock(monkeypatch)
+    monkeypatch.setattr(auth_mod, "_request_is_console", lambda _r: True)
+    write_demo_mode(vapp.state.data_dir, False)
+    tok = await _device(vapp, user_id="u1", scopes=("agents:read",))
+    req = _make_mock_request(vapp, {"authorization": f"Bearer {tok}"}, last_event_id=str(first))
+    gen_b = _events_stream(req, {"user_id": "u1"})
+    frames = [await asyncio.wait_for(gen_b.__anext__(), timeout=5.0)]  # one replayed frame; gen_b is suspended mid-replay
+    (d / (_avatar_slug("a1") + ".jpg")).write_bytes(b"changed-mid-replay")
+    await _read_until_ping(gen_a)  # the OTHER stream records the a1 change and advances last_by_name
+    frames += await _read_until_ping(gen_b)
+    evs = _parse_events(frames) + await _ticks(gen_b)
+    await gen_a.aclose()
+    await gen_b.aclose()
+    assert any(e == "agent.upsert" and x.get("name") == "a1" for e, x in evs), evs
+
+
+@pytest.mark.asyncio
+async def test_plain_decision_close_carries_decision_id(monkeypatch, vapp):
+    gen = await _open_stream(vapp, monkeypatch, [{"name": "dec-agent", "framework": "openclaw", "user_id": "u1", "status": "running"}])
+    store = vapp.state.decision_store
+    opts = [{"label": "Approve", "value": "approve"}, {"label": "Deny", "value": "deny"}]
+    d1 = await store.create(from_agent="dec-agent", question="first?", type="approve_deny", user_id="u1", options=opts)
+    evs = await _ticks(gen)
+    opened = [x for e, x in evs if e == "decision.open" and x.get("decision") and x.get("decision", {}).get("id") == d1["id"]]
+    assert opened and opened[0]["decision"]["id"] == d1["id"]
+    await store.answer(d1["id"], "approve", answered_by="u1")
+    d2 = await store.create(from_agent="dec-agent", question="second?", type="approve_deny", user_id="u1", options=opts)
+    evs = await _ticks(gen)
+    kinds = [(e, x.get("decision_id") or (x.get("decision") or {}).get("id")) for e, x in evs if e.startswith("decision.")]
+    assert kinds == [("decision.close", d1["id"]), ("decision.open", d2["id"])]
+    await store.answer(d2["id"], "deny", answered_by="u1")
+    evs = await _ticks(gen)
+    assert [e for e, _ in evs if e.startswith("decision.")] == ["decision.close"]
+    await gen.aclose()
+
+
 async def _revoked_before_first_frame(app, monkeypatch, last_event_id):
     from tinyagentos.routes import auth as auth_mod
     from tinyagentos.demo_mode import write_demo_mode
