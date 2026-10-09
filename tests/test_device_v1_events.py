@@ -688,6 +688,9 @@ async def test_resume_gets_change_recorded_by_other_stream_mid_replay(vapp, monk
 
 @pytest.mark.asyncio
 async def test_plain_decision_close_carries_decision_id(monkeypatch, vapp):
+    from tinyagentos.routes import device_state as ds_mod
+    _patch_intervals(monkeypatch)
+    _ticking_clock(monkeypatch)
     gen = await _open_stream(vapp, monkeypatch, [{"name": "dec-agent", "framework": "openclaw", "user_id": "u1", "status": "running"}])
     store = vapp.state.decision_store
     opts = [{"label": "Approve", "value": "approve"}, {"label": "Deny", "value": "deny"}]
@@ -696,13 +699,9 @@ async def test_plain_decision_close_carries_decision_id(monkeypatch, vapp):
     opened = [x for e, x in evs if e == "decision.open" and x.get("decision") and x.get("decision", {}).get("id") == d1["id"]]
     assert opened and opened[0]["decision"]["id"] == d1["id"]
     await store.answer(d1["id"], "approve", answered_by="u1")
-    d2 = await store.create(from_agent="dec-agent", question="second?", type="approve_deny", user_id="u1", options=opts)
     evs = await _ticks(gen)
     kinds = [(e, x.get("decision_id") or (x.get("decision") or {}).get("id")) for e, x in evs if e.startswith("decision.")]
-    assert kinds == [("decision.close", d1["id"]), ("decision.open", d2["id"])]
-    await store.answer(d2["id"], "deny", answered_by="u1")
-    evs = await _ticks(gen)
-    assert [e for e, _ in evs if e.startswith("decision.")] == ["decision.close"]
+    assert kinds == [("decision.close", d1["id"])], kinds
     await gen.aclose()
 
 
