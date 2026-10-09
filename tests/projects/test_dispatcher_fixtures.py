@@ -1,7 +1,7 @@
 import pytest
 import pytest_asyncio
 
-from tests.projects.conftest import seed_board_with_cards, register_agent_with_grant
+from projects.conftest import seed_board_with_cards, register_agent_with_grant
 
 from tinyagentos.agent_token_auth import active_project_grants
 

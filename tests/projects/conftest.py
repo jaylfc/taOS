@@ -74,6 +74,7 @@ async def seed_board_with_cards(stores, user_id, name, n):
         slug=name.lower().replace(" ", "-"),
         created_by=user_id,
         description="",
+        user_id=user_id,
     )
     pid = project_row["id"]
     tasks = []
