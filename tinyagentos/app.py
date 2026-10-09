@@ -171,6 +171,7 @@ _STARTUP_EXEMPT_PATHS = frozenset({"/api/health", "/api/version", "/setup"})
 _STARTUP_EXEMPT_PREFIXES = ("/static/", "/desktop/", "/chat-pwa/", "/ws/", "/auth/", "/setup/", "/shortcut/")
 
 from tinyagentos.task_utils import _create_supervised_task, cancel_and_wait  # noqa: E402
+from tinyagentos.routes import device_state  # noqa: E402
 
 
 def _resolve_browser_cookie_key(data_dir: "Path") -> str:
@@ -1754,6 +1755,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.config = config
     app.state.config_path = config_path
     app.state.data_dir = data_dir
+    device_state.seed_id_epoch(app.state.data_dir)
+    app.state.config_path = config_path
     app.state.agent_workspaces_dir = data_dir / "agent-workspaces"
     app.state.agent_memory_dir = data_dir / "agent-memory"
     app.state.agent_workspaces_dir.mkdir(parents=True, exist_ok=True)

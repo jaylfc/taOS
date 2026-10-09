@@ -767,6 +767,27 @@ async def test_emit_event_ids_recorded_in_order():
     assert recorded == sorted(recorded)
 
 
+# Test: seed_id_epoch survives clock regression across restarts.
+@pytest.mark.asyncio
+async def test_seed_id_epoch_survives_clock_regression(monkeypatch):
+    from tinyagentos.routes import device_state as ds
+    import time as _time
+    # Write a high-water mark far ahead of the wall clock (simulating regression)
+    stored_val = str(int(_time.time() * 1000) + 10_000_000)
+    with monkeypatch.context() as mp:
+        tmpdir = Path("/tmp")  # use /tmp for the HWM file
+        mp.setattr(ds, "_HWM_PATH", tmpdir / "device_event_hwm")
+        mp.setattr(ds, "_ID_EPOCH", int(_time.time() * 1000))
+        # Write stored value that simulates clock going backwards
+        (tmpdir / "device_event_hwm").write_text(stored_val)
+        # Clear owner buffers as if a restart occurred
+        ds._owner_buffers.clear()
+        ds.seed_id_epoch(tmpdir)
+        # Emit one event and assert its id > the stored value
+        eid = await ds._emit_event("test-owner", "agent.upsert", "{}")
+        assert eid > int(stored_val), f"event id {eid} not > stored {stored_val}"
+
+
 # (RED) IDs after restart exceed IDs from previous process.
 @pytest.mark.asyncio
 async def test_ids_after_restart_exceed_ids_from_previous_process(monkeypatch):

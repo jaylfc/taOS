@@ -8,9 +8,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sqlite3
 import time
 from collections import deque
+from pathlib import Path
 
 import tinyagentos
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -48,6 +50,33 @@ _MAX_HISTORY = 200
 # process. Computed once at module import time.
 _ID_EPOCH = int(time.time() * 1000)
 
+_HWM_PATH: Path | None = None
+_HWM_STEP = 1000
+
+
+def seed_id_epoch(data_dir: str | None = None) -> None:
+    global _ID_EPOCH, _HWM_PATH
+    if data_dir is not None:
+        _HWM_PATH = Path(data_dir) / "device_event_hwm"
+    else:
+        _HWM_PATH = None
+    stored = 0
+    try:
+        if _HWM_PATH is not None and _HWM_PATH.exists():
+            stored = int(_HWM_PATH.read_text().strip())
+    except (ValueError, OSError):
+        stored = 0
+    _ID_EPOCH = max(int(time.time() * 1000), stored + _HWM_STEP)
+    # Atomically write _ID_EPOCH to the HWM file
+    _HWM_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = str(_HWM_PATH) + ".tmp"
+    try:
+        with open(tmp_path, "w") as f:
+            f.write(str(_ID_EPOCH))
+        os.replace(tmp_path, str(_HWM_PATH))
+    except OSError:
+        pass
+
 
 def _get_owner_buffer(owner_id: str) -> dict:
     if owner_id not in _owner_buffers:
@@ -77,6 +106,14 @@ async def _emit_event(owner_id: str, event_type: str, data_json: str) -> int:
         eid = buf["next_id"]
         buf["next_id"] += 1
         buf["events"].append((eid, event_type, data_json))
+        if _HWM_PATH is not None and eid % _HWM_STEP == 0:
+            try:
+                _HWM_PATH.parent.mkdir(parents=True, exist_ok=True)
+                tmp = _HWM_PATH.parent / (_HWM_PATH.name + ".tmp")
+                tmp.write_text(str(eid))
+                os.replace(tmp, _HWM_PATH)
+            except OSError:
+                logger.warning("failed to write event hwm")
         return eid
 
 

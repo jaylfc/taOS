@@ -1,0 +1,3 @@
+### Fixed
+
+- Persist the event-id high-water mark across wall-clock regressions: added `_HWM_PATH` and `_HWM_STEP` module vars, `seed_id_epoch()` function that reads/stored the HWM file atomically via `.tmp` + `os.replace`, and HWM write in `_emit_event()` guarded by `try/except OSError` with warning-level logging. The stored HWM + `_HWM_STEP` ensures new IDs stay above previous process IDs even when the clock goes backwards across a restart (e.g., Raspberry Pi with no RTC, `fake-hwclock` time).
