@@ -64,7 +64,7 @@ LIBRKNNRT_EXPECTED_VERSION="2.3.0"
 
 RKLLAMA_REPO="${TAOS_RKLLAMA_REPO:-https://github.com/jaylfc/rkllama.git}"
 # rknn-llm 1.3.1: feat/rknpu-1.3.1 @ 2faa12f1 (upstream main + the fork patches + the 1.3.1 ABI: RKLLMInput 160 -> 208 bytes). Deployed + smoke-verified on RK3588 2026-10-06.
-# 2faa12f1 = 7e9f4944 + rkllama PR #5: fix_freq pins only NPU and DDR; CPU and GPU pins opt-in (RKLLAMA_PIN_CPU / RKLLAMA_PIN_GPU). Was 7e9f4944.
+# 2faa12f1 = 7e9f4944 + rkllama PR #5: fix_freq pins only NPU and DDR; CPU and GPU pins opt-in (RKLLAMA_PIN_CPU / RKLLAMA_PIN_GPU). Was 7e9f4944. The server only runs fix_freq as root, so the unit below runs it from a privileged ExecStartPre.
 RKLLAMA_REF="${TAOS_RKLLAMA_REF:-2faa12f17b2887296c3957508c3e135a3794a40d}"
 RKLLAMA_PORT="${TAOS_RKLLAMA_PORT:-7833}"
 
@@ -636,7 +636,14 @@ install_systemd_unit() {
     # the audit flagged the previous comment as stale (it referenced the
     # old port 8080 and the pre-consolidation models path).
     exec_start="$RKLLAMA_VENV/bin/python $RKLLAMA_VENV/bin/rkllama_server --processor $SOC --port $RKLLAMA_PORT --models $RKLLAMA_MODELS --preload qwen3-embedding-0.6b,qwen3-reranker-0.6b,qmd-query-expansion"
-
+    local fix_freq="$RKLLAMA_DIR/src/rkllama/lib/fix_freq_${SOC}.sh"
+    local fix_freq_line=""
+    if [ -f "$fix_freq" ]; then
+        # The server runs fix_freq only as root (server.py: os.getuid() == 0) and this unit runs as $TARGET_USER,
+        # so pin NPU + DDR from a privileged pre-start instead. '+' = full privileges, '-' = never block the start.
+        fix_freq_line="ExecStartPre=-+/bin/bash $fix_freq 0"
+    fi
+    
     log "installing $unit"
     sudo tee "$unit" >/dev/null <<EOF
 [Unit]
@@ -653,8 +660,9 @@ Environment=PYTHONUNBUFFERED=1
 # rkllama spawns multiprocessing children that occasionally outlive the
 # parent if it crashes (e.g. during NPU model load). Without this hook
 # the orphans keep listening on the port and the next restart can't bind.
-ExecStartPre=-/usr/bin/pkill -9 -f $RKLLAMA_VENV/bin/rkllama_server
-ExecStart=$exec_start
+    ExecStartPre=-/usr/bin/pkill -9 -f $RKLLAMA_VENV/bin/rkllama_server
+    $fix_freq_line
+    ExecStart=$exec_start
 Restart=always
 RestartSec=5
 KillMode=mixed
