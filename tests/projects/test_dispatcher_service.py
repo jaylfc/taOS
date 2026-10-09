@@ -23,6 +23,7 @@ def app_state_with_stores():
     app_state.project_task_store = AsyncMock()
     app_state.dispatcher_store = AsyncMock()
     app_state.agent_registry = AsyncMock()
+    app_state.agent_grants = AsyncMock()  # Added agent_grants store
 
     # Mock data_dir
     app_state.data_dir = MagicMock()

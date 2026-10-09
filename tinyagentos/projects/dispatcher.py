@@ -65,8 +65,15 @@ class DispatcherService:
             boards = [p["id"] for p in owned_projects]
         else:
             # If boards are specified in config, we still need to get the projects for checking
-            # We'll get all owned projects and filter by the specified boards
+            # We get all owned projects and filter by the specified boards to re-check ownership/activity
             owned_projects = await self.project_store.list_for_user(user_id, status="active")
+            # Filter the boards to only include those that are owned and active
+            filtered_boards = []
+            for board_id in boards:
+                project = next((p for p in owned_projects if p["id"] == board_id), None)
+                if project:
+                    filtered_boards.append(board_id)
+            boards = filtered_boards
 
         # Stage counts
         stage_counts = {"boards_held": 0, "candidates_considered": 0, "assignments_made": 0}
@@ -118,7 +125,7 @@ class DispatcherService:
             for ref in eligible_refs:
                 agent_id = ref.assignee_value()
                 projects = await active_project_grants(
-                    self.agent_registry, None, agent_id, "wake", now
+                    self.agent_registry, self.app_state.agent_grants, agent_id, "wake", now
                 )
                 grants[agent_id] = list(projects)
 
@@ -138,6 +145,9 @@ class DispatcherService:
             canonical_ids = [ref.assignee_value() for ref in eligible_refs]
             last_assigned_at = await self.dispatcher_store.last_assigned_map(canonical_ids)
 
+            # Get card expiry counts from dispatcher store
+            card_expiry_counts = await self.dispatcher_store.expired_counts_48h(now)
+
             # Select assignments
             assignments = select_assignments(
                 candidates,
@@ -147,11 +157,9 @@ class DispatcherService:
                 board_inflight,
                 last_assigned_at,
                 recent_expiries,
-                {},  # card_expiry_counts - not implemented
+                card_expiry_counts,
                 cfg.get("max_concurrent_per_agent", 1),
             )
-
-            stage_counts["assignments_made"] += len(assignments)
 
             # Process each assignment
             for assignment in assignments:
@@ -178,14 +186,15 @@ class DispatcherService:
                     await self.dispatcher_store.stamp_last_assigned(assignment.canonical_id, now)
 
                     # Wake the agent
-                    await self._wake_agent(assignment, data_dir, now, cfg)
+                    await self._wake_agent(assignment, data_dir, now, cfg, user_id)
+                    stage_counts["assignments_made"] += 1
 
         return stage_counts
 
-    async def _wake_agent(self, assignment: Assignment, data_dir: Any, now: float, cfg: Dict[str, Any]) -> None:
+    async def _wake_agent(self, assignment: Assignment, data_dir: Any, now: float, cfg: Dict[str, Any], user_id: str) -> None:
         """Wake an agent for a task."""
-        # For deployed agents: wake_agent_with_task + record_scheduled_wake
-        # For external agents: post to project a2a channel + record_scheduled_wake
+        # For deployed agents: wake_agent_with_task + record_scheduled_wake (outside try/except)
+        # For external agents: post to project a2a channel + record_scheduled_wake (inside try/except with warning)
 
         # Find the agent ref for this assignment
         # We need to get the actual agent configuration to determine if it's deployed
@@ -197,21 +206,17 @@ class DispatcherService:
 
         if agent_config and agent_config.get("deployed"):
             # DEPLOYED agent
-            try:
-                woke = await wake_agent_with_task(self.app_state, agent_config, {
-                    "id": assignment.task_id,
-                    "title": assignment.task_id,  # We don't have title in Assignment
-                    "project_id": assignment.project_id,
-                })
-                if woke:
-                    record_scheduled_wake(data_dir, assignment.canonical_id, assignment.project_id)
-            except Exception as e:
-                logger.warning(f"Failed to wake deployed agent: {e}")
+            woke = await wake_agent_with_task(self.app_state, agent_config, {
+                "id": assignment.task_id,
+                "title": assignment.task_id,  # We don't have title in Assignment
+                "project_id": assignment.project_id,
+            })
+            # record_scheduled_wake OUTSIDE any try/except - must propagate on failure
+            record_scheduled_wake(data_dir, assignment.canonical_id, assignment.project_id)
         else:
             # EXTERNAL agent - post to project a2a channel
             try:
                 from tinyagentos.projects.a2a import ensure_a2a_channel
-                from tinyagentos.projects.chat_messages_store import ChatMessagesStore
 
                 chat_channels = getattr(self.app_state, "chat_channels", None)
                 chat_messages = getattr(self.app_state, "chat_messages", None)
@@ -223,13 +228,13 @@ class DispatcherService:
                     )
                     await chat_messages.send_message(
                         channel_id=channel["id"],
-                        author_id=f"dispatcher:",
+                        author_id=f"dispatcher:{user_id}",
                         author_type="system",
                         content=f"Dispatcher assigned task {assignment.task_id} to agent {assignment.canonical_id}",
                         content_type="system",
                         state="complete",
                     )
-                # Always record scheduled wake for external agents
+                # record_scheduled_wake for external agents - wrap in try/except so lease stands
                 record_scheduled_wake(data_dir, assignment.canonical_id, assignment.project_id)
             except Exception as e:
                 logger.warning(f"Failed to wake external agent: {e}")
@@ -244,23 +249,16 @@ class DispatcherService:
         if now is None:
             now = time.time()
 
-        try:
-            # Get all dispatcher configs
-            configs = await self.dispatcher_store.list_configs()
+        # Get all dispatcher configs
+        configs = await self.dispatcher_store.list_configs()
 
-            for cfg in configs:
-                if not cfg.get("enabled", False):
-                    continue
+        for cfg in configs:
+            if not cfg.get("enabled", False):
+                continue
 
+            try:
                 # Process this user's config
                 await self.tick_user(cfg.user_id, cfg.to_dict(), now)
-
-        except Exception as e:
-            logger.exception("Dispatcher tick failed", exc_info=e)
-            raise
-
-    async def _get_project_by_id(self, project_id: str) -> Dict[str, Any]:
-        """Get project by ID."""
-        # This would need to query the project store
-        # For now, return None
-        return None
+            except Exception as e:
+                logger.exception(f"Dispatcher tick failed for user {cfg.user_id}", exc_info=e)
+                raise
