@@ -386,6 +386,201 @@ class TestLinkwardenCompose:
         assert _POOL_START <= host_port < _POOL_END
         assert host_port not in RESERVED_PORTS
 
+    def test_generate_compose_depends_on_uses_service_healthy(self, tmp_path):
+        """RED (tsk-ujb6hp): a companion that HAS a healthcheck must be waited on
+        with ``condition: service_healthy``, NOT a bare ``depends_on: [name]``.
+
+        A plain depends_on entry waits for the container to START, not to be
+        READY, so linkwarden would hit a not-yet-accepting postgres on first
+        boot. ``service_healthy`` is the whole defect being fixed here.
+        """
+        installer = DockerInstaller(apps_dir=tmp_path)
+        compose, _ = installer._generate_compose(
+            "linkwarden",
+            {
+                "image": "ghcr.io/linkwarden/linkwarden:latest",
+                "volumes": ["data:/data/data"],
+                "ports": [3000],
+                "env": {
+                    "NEXTAUTH_SECRET": "changeme",
+                    "NEXTAUTH_URL": "http://localhost:3000",
+                    "DATABASE_URL": "postgresql://linkwarden:{secret_key}@postgres:5432/linkwarden",
+                },
+                "companions": [
+                    {
+                        "name": "postgres",
+                        "image": "postgres:16-alpine",
+                        "volumes": ["pgdata:/var/lib/postgresql/data"],
+                        "env": {
+                            "POSTGRES_PASSWORD": "{secret_key}",
+                            "POSTGRES_USER": "linkwarden",
+                            "POSTGRES_DB": "linkwarden",
+                        },
+                    }
+                ],
+            },
+        )
+        depends_on = compose["services"]["linkwarden"]["depends_on"]
+        assert "postgres" in depends_on
+        # Must be a condition object, not a bare list/string. A bare list
+        # ([postgres]) waits for START only and is the defect this test guards.
+        assert isinstance(depends_on["postgres"], dict)
+        assert depends_on["postgres"].get("condition") == "service_healthy"
+
+    def test_generate_compose_depends_on_non_postgres_no_healthcheck_uses_condition(
+        self, tmp_path
+    ):
+        """A NON-postgres companion that declares no healthcheck must still
+        render a valid Compose depends_on.
+
+        The previous else-branch emitted ``depends_on[comp_name] = [comp_name]``,
+        i.e. a list value, which compose-go rejects as invalid Compose (mapping
+        values must be objects). Any app with a non-postgres companion that has
+        no healthcheck -- e.g. redis -- generated a compose file ``docker
+        compose`` refused to parse. Use the mapping form with
+        ``condition: service_started`` (wait for START, not READY) and assert it
+        is parseable, not merely that a depends_on key exists.
+        """
+        installer = DockerInstaller(apps_dir=tmp_path)
+        compose, _ = installer._generate_compose(
+            "myapp",
+            {
+                "image": "myapp:latest",
+                "ports": [8080],
+                "companions": [
+                    {
+                        "name": "redis",
+                        "image": "redis:7-alpine",
+                    }
+                ],
+            },
+        )
+        depends_on = compose["services"]["myapp"]["depends_on"]
+        assert "redis" in depends_on
+        # Mapping form only -- a bare list value is invalid Compose.
+        assert isinstance(depends_on["redis"], dict)
+        assert depends_on["redis"].get("condition") == "service_started"
+        # The rendered compose must be parseable by compose-go's schema, i.e.
+        # every depends_on value is a dict (never a list).
+        for name, value in depends_on.items():
+            assert isinstance(value, dict), (
+                f"depends_on[{name!r}] must be a mapping, got {type(value).__name__}"
+            )
+    def test_postgres_default_healthcheck_when_not_last_companion(self, tmp_path):
+        """Defect 1: default postgres healthcheck runs only for the LAST companion"""
+        installer = DockerInstaller(apps_dir=tmp_path)
+        compose, _ = installer._generate_compose(
+            "myapp",
+            {
+                "image": "myapp:latest",
+                "ports": [8080],
+                "companions": [
+                    {
+                        "name": "postgres",
+                        "image": "postgres:16-alpine",
+                        "env": {
+                            "POSTGRES_USER": "user",
+                            "POSTGRES_DB": "db",
+                        },
+                    },
+                    {
+                        "name": "redis",
+                        "image": "redis:7-alpine",
+                    },
+                ],
+            },
+        )
+        # postgres service must have a healthcheck
+        pg_service = compose["services"]["postgres"]
+        assert "healthcheck" in pg_service
+        # depends_on for postgres must be service_healthy
+        depends_on = compose["services"]["myapp"]["depends_on"]
+        assert depends_on["postgres"] == {"condition": "service_healthy"}
+
+    def test_postgres_default_healthcheck_without_env(self, tmp_path):
+        """Postgres companion declared without env must still get default healthcheck."""
+        installer = DockerInstaller(apps_dir=tmp_path)
+        compose, _ = installer._generate_compose(
+            "myapp",
+            {
+                "image": "myapp:latest",
+                "ports": [8080],
+                "companions": [
+                    {
+                        "name": "postgres",
+                        "image": "postgres:16-alpine",
+                    },
+                ],
+            },
+        )
+        # postgres service must have a healthcheck
+        pg_service = compose["services"]["postgres"]
+        assert "healthcheck" in pg_service
+        healthcheck_test = pg_service["healthcheck"]["test"]
+        # Default user/db should be "postgres" when env is absent
+        assert isinstance(healthcheck_test, list)
+        assert healthcheck_test[0] == "CMD-SHELL"
+        assert "pg_isready -h 127.0.0.1 -U postgres -d postgres" in healthcheck_test[1]
+        # depends_on for postgres must be service_healthy
+        depends_on = compose["services"]["myapp"]["depends_on"]
+        assert depends_on["postgres"] == {"condition": "service_healthy"}
+
+    def test_postgres_default_healthcheck_probes_tcp(self, tmp_path):
+        """Defect 2: pg_isready over the unix socket passes during image init"""
+        installer = DockerInstaller(apps_dir=tmp_path)
+        compose, _ = installer._generate_compose(
+            "myapp",
+            {
+                "image": "myapp:latest",
+                "ports": [8080],
+                "companions": [
+                    {
+                        "name": "postgres",
+                        "image": "postgres:16-alpine",
+                        "env": {
+                            "POSTGRES_USER": "user",
+                            "POSTGRES_DB": "db",
+                        },
+                    },
+                ],
+            },
+        )
+        pg_service = compose["services"]["postgres"]
+        healthcheck_test = pg_service["healthcheck"]["test"]
+        # The test should be a list: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U user -d db"]
+        assert isinstance(healthcheck_test, list)
+        assert healthcheck_test[0] == "CMD-SHELL"
+        assert "-h 127.0.0.1" in healthcheck_test[1]
+        assert "-U user" in healthcheck_test[1]
+        assert "-d db" in healthcheck_test[1]
+
+    def test_disabled_companion_healthcheck_waits_for_start_only(self, tmp_path):
+        """Defect 3: a disabled healthcheck still selects service_healthy"""
+        installer = DockerInstaller(apps_dir=tmp_path)
+        compose, _ = installer._generate_compose(
+            "myapp",
+            {
+                "image": "myapp:latest",
+                "ports": [8080],
+                "companions": [
+                    {
+                        "name": "disabled",
+                        "image": "redis:7-alpine",
+                        "healthcheck": {"disable": True},
+                    },
+                    {
+                        "name": "none",
+                        "image": "redis:7-alpine",
+                        "healthcheck": {"test": ["NONE"]},
+                    },
+                ],
+            },
+        )
+        depends_on = compose["services"]["myapp"]["depends_on"]
+        # Both companions should wait for service_started, not service_healthy
+        assert depends_on["disabled"] == {"condition": "service_started"}
+        assert depends_on["none"] == {"condition": "service_started"}
+
     @pytest.mark.asyncio
     async def test_generate_compose_linkwarden_secret_key_persisted(self, tmp_path):
         """Verify {secret_key} is replaced with a persisted 64-hex-char secret."""

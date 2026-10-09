@@ -256,7 +256,7 @@ A curated catalog of 120 vetted model manifests ships in-tree, every download UR
 Pick from 1,467 agent templates, 12 built-in plus 196 from awesome-openclaw-agents and 1,259 from the System Prompt Library, and deploy in one click. Browse by category (28 categories), filter by source, or search. Each template includes a system prompt, recommended framework, model, and resource limits. All templates vendored locally so nothing depends on external services.
 
 ### App Store (109 Catalog Apps + 47 MCP Plugins, including 13 Streaming Apps)
-One-click install for agent frameworks, AI models, and services. Hardware-aware, only shows what works on your device.
+One-click install for agent frameworks, AI models, and services. Hardware-aware, only shows what works on your device. Docker apps that ship a companion service (for example a postgres database) start only after that companion reports healthy.
 
 ### Agent Deployment
 5-step wizard: pick framework → choose model → configure → deploy into an isolated container (LXC on bare metal, Docker on VPS, auto-detected). Each agent gets its own memory system (taOSmd instance), its own file storage, and its own network identity. The framework runs inside the container but taOS manages everything around it: memory, channels, secrets, model access, scheduled tasks, and inter-agent communication. This means the framework is a swappable component, not a lock-in decision.
