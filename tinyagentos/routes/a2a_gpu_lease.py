@@ -829,7 +829,14 @@ async def gpu_release(request: Request, body: ReleaseBody):
                 return JSONResponse(
                     {"error": "not the lease holder", "lease_id": released_id},
                     status_code=403,
-                )
+                 )
+            if lease is None:
+                newer = _lease_for_actor(cluster, _resource_id(_canonical_node(cluster, node), body.resource), actor)
+                if newer is not None and newer.lease_id != released_id:
+                    return JSONResponse(
+                        {"status": "already_released", "node": node, "holder": actor.holder, "lease_id": released_id, "current_lease_id": newer.lease_id}
+                    )
+
         else:
             lease = _lease_for_actor(
                 cluster,
