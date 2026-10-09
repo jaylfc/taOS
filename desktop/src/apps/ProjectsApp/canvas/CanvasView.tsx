@@ -1,20 +1,32 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Download } from "lucide-react";
-import { CanvasBoard } from "./CanvasBoard";
 import { canvasApi } from "./canvas-api";
 import { AppErrorBoundary } from "@/components/AppErrorBoundary";
+import { getCanvasEngine } from "./canvas-engine";
+import { Suspense, lazy } from "react";
+
+const CanvasBoard = lazy(() => import("./CanvasBoard").then((m) => ({ default: m.CanvasBoard })));
+const ExcalidrawCanvas = lazy(() => import("./ExcalidrawCanvas").then((m) => ({ default: m.default })));
 
 export function CanvasView({
   projectId, projectSlug, elementId,
 }: { projectId: string; projectSlug: string; elementId?: string | null }) {
+  const engine = getCanvasEngine();
+
   return (
     <div style={{ position: "relative", height: "100%", padding: 0 }}>
       {/* Contain any canvas/tldraw render crash to a fallback instead of taking
           down the whole Projects app. Keyed by project so switching projects
           gives a fresh boundary. */}
       <AppErrorBoundary key={projectId}>
-        <CanvasBoard projectId={projectId} projectSlug={projectSlug} elementId={elementId} />
+        <Suspense fallback={null}>
+          {engine === "excalidraw" ? (
+            <ExcalidrawCanvas projectId={projectId} elementId={elementId} />
+          ) : (
+            <CanvasBoard projectId={projectId} projectSlug={projectSlug} elementId={elementId} />
+          )}
+        </Suspense>
       </AppErrorBoundary>
       {/* Deliberately a sibling of the engine, not inside it: the recovery
           downloads must survive the drawing-engine swap, the tldraw removal,
