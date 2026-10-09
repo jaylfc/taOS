@@ -283,9 +283,7 @@ class TestDockerInstaller:
             assert any("up" in c and "-d" in c for c in calls)
 
     def test_postgres_default_healthcheck_keeps_names_with_spaces(self, tmp_path):
-        """test_postgres_default_healthcheck_keeps_names_with_spaces: companion {"name": "postgres", "image": "postgres:16-alpine", "env": {"POSTGRES_USER": "app user", "POSTGRES_DB": "my db"}}; assert the healthcheck test == ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "app user", "-d", "my db"].
-        Write it FIRST, run it on origin/dev unchanged, paste the FAILED output in a fenced block in the commit body and the PR body, then implement.
-        """
+        """Postgres companion with spaces in name values uses exec form for healthcheck."""
         installer = DockerInstaller(apps_dir=tmp_path)
         compose, _ = installer._generate_compose(
             "myapp",

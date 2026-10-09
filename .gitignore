@@ -225,4 +225,3 @@ apps/*/.secret_key
 apps/*/docker-compose.yaml
 apps/*/.env
 apps/*/.env.*
-RED-PROOF.md
