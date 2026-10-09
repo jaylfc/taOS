@@ -78,6 +78,7 @@ chmod 600 /etc/thclaws/env
 
 log "writing taOS-thClaws bridge"
 mkdir -p /opt/taos
+pip3 install --break-system-packages --quiet httpx 2>&1 | tail -3 || true
 cat > /opt/taos/taos-thclaws-bridge.py <<'BRIDGE_EOF'
 #!/usr/bin/env python3
 """taOS-thClaws bridge: subscribes to taOS SSE for this agent, forwards

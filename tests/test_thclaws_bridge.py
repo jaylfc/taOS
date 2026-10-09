@@ -272,3 +272,20 @@ class TestInstallScript:
         assert sha256_pos != -1, "sha256sum -c not found in install_thclaws.sh"
         assert install_pos != -1, "install -m 755 not found in install_thclaws.sh"
         assert sha256_pos < install_pos, "sha256sum -c must run before install -m 755"
+
+    def test_pip3_install_line_before_systemctl(self):
+        """Verify the pip3 install httpx line appears before the systemctl enable command."""
+        script_path = Path(__file__).resolve().parent.parent / "tinyagentos" / "scripts" / "install_thclaws.sh"
+        text = script_path.read_text()
+        
+        # Find pip3 install line that mentions httpx
+        pip_lines = [i+1 for i, line in enumerate(text.splitlines()) if re.search(r'^pip3 install .*httpx\b', line)]
+        assert pip_lines, "pip3 install httpx line not found in install_thclaws.sh"
+        pip_line = min(pip_lines)  # first occurrence
+        
+        # Find the systemctl enable --now line
+        enable_lines = [i+1 for i, line in enumerate(text.splitlines()) if "systemctl enable --now taos-thclaws-bridge.service" in line]
+        assert enable_lines, "systemctl enable --now line not found"
+        enable_line = min(enable_lines)
+        
+        assert pip_line < enable_line, f"pip3 install line {pip_line} appears after systemctl enable line {enable_line}"
