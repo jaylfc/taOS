@@ -1,0 +1,2 @@
+### Added
+- Added support for content_blocks in final replies from guest agents, allowing structured blocks (text, thinking, tool_call, status, question, decision) to be persisted and broadcast via the chat hub.
