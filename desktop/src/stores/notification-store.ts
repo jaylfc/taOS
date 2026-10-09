@@ -116,22 +116,18 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
   },
 
   archiveRead(id) {
-    set((s) => {
-      const notification = s.notifications.find(n => n.id === id);
-      if (!notification) return s;
-      if (notification.source === "agent_scope_requests" || notification.source === "auth_requests") {
-        return s;
-      }
-      if (id.startsWith("srv-")) {
-        dismissedServerIds.add(id);
-        void archiveServerNotification(id);
-      }
-      return {
-        notifications: s.notifications.map(n =>
-          n.id === id ? { ...n, archived: true, read: true } : n,
-        ),
-      };
-    });
+    // Resolving a notification (e.g. answering an agent access-request) both
+    // reads and archives it: it leaves the active Inbox and lands in History
+    // rather than being marked read in place or silently removed (#62).
+    if (id.startsWith("srv-")) {
+      dismissedServerIds.add(id);
+      void archiveServerNotification(id);
+    }
+    set((s) => ({
+      notifications: s.notifications.map((n) =>
+        n.id === id ? { ...n, archived: true, read: true } : n,
+      ),
+    }));
   },
 
   clearAll() {
