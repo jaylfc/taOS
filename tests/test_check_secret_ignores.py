@@ -131,6 +131,25 @@ class TestCheckPaths:
         _commit_gitignore(repo, "data/hub/\nidentity.json\n")
         assert csi.is_path_ignored("data/hub/identity.json", repo)
 
+    def test_repo_root_app_dir_secret_key_is_ignored(self, tmp_path: Path):
+        """RED (tsk-ujb6hp): the DockerInstaller can be pointed at an app_dir at
+        the REPO ROOT (apps/...), where it writes a live 64-byte `.secret_key`.
+        Before the fix `.gitignore` only covered the runtime path `data/apps/`,
+        so a `git add -A` swept `apps/linkwarden/.secret_key` into the branch as
+        the first committed secret in the repo.
+
+        Assert via `git check-ignore` (not absence from a listing): absence
+        passes trivially on a clean tree and so CANNOT FAIL on this defect.
+        """
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _commit_gitignore(repo, REAL_GITIGNORE.read_text(encoding="utf-8"))
+        # Simulate the artefact the installer writes under a repo-root app dir.
+        secret = repo / "apps" / "linkwarden" / ".secret_key"
+        secret.parent.mkdir(parents=True, exist_ok=True)
+        secret.write_text("e889b9551313c3b84b59d655f506fe638b6d813c01f5f123cbfd6450676d13ff")
+        assert csi.is_path_ignored("apps/linkwarden/.secret_key", repo)
+
 
 # ---------------------------------------------------------------------------
 # Full guard: green on the real tree, red on a single removed pattern

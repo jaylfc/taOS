@@ -386,6 +386,47 @@ class TestLinkwardenCompose:
         assert _POOL_START <= host_port < _POOL_END
         assert host_port not in RESERVED_PORTS
 
+    def test_generate_compose_depends_on_uses_service_healthy(self, tmp_path):
+        """RED (tsk-ujb6hp): a companion that HAS a healthcheck must be waited on
+        with ``condition: service_healthy``, NOT a bare ``depends_on: [name]``.
+
+        A plain depends_on entry waits for the container to START, not to be
+        READY, so linkwarden would hit a not-yet-accepting postgres on first
+        boot. ``service_healthy`` is the whole defect being fixed here.
+        """
+        installer = DockerInstaller(apps_dir=tmp_path)
+        compose, _ = installer._generate_compose(
+            "linkwarden",
+            {
+                "image": "ghcr.io/linkwarden/linkwarden:latest",
+                "volumes": ["data:/data/data"],
+                "ports": [3000],
+                "env": {
+                    "NEXTAUTH_SECRET": "changeme",
+                    "NEXTAUTH_URL": "http://localhost:3000",
+                    "DATABASE_URL": "postgresql://linkwarden:{secret_key}@postgres:5432/linkwarden",
+                },
+                "companions": [
+                    {
+                        "name": "postgres",
+                        "image": "postgres:16-alpine",
+                        "volumes": ["pgdata:/var/lib/postgresql/data"],
+                        "env": {
+                            "POSTGRES_PASSWORD": "{secret_key}",
+                            "POSTGRES_USER": "linkwarden",
+                            "POSTGRES_DB": "linkwarden",
+                        },
+                    }
+                ],
+            },
+        )
+        depends_on = compose["services"]["linkwarden"]["depends_on"]
+        assert "postgres" in depends_on
+        # Must be a condition object, not a bare list/string. A bare list
+        # ([postgres]) waits for START only and is the defect this test guards.
+        assert isinstance(depends_on["postgres"], dict)
+        assert depends_on["postgres"].get("condition") == "service_healthy"
+
     @pytest.mark.asyncio
     async def test_generate_compose_linkwarden_secret_key_persisted(self, tmp_path):
         """Verify {secret_key} is replaced with a persisted 64-hex-char secret."""
