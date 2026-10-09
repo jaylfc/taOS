@@ -375,7 +375,21 @@ class BridgeSessionRegistry:
                     await self._chat_messages.update_state(pending_msg_id, "complete")
                     # Update content_blocks if we have validated blocks
                     if validated_blocks is not None:
-                        await self._chat_messages.update_content_blocks(pending_msg_id, validated_blocks)
+                        # Read current content_blocks to merge with new validated blocks
+                        current_msg = await self._chat_messages.get_message(pending_msg_id)
+                        existing_blocks = []
+                        if current_msg and isinstance(current_msg.get("content_blocks"), list):
+                            existing_blocks = current_msg["content_blocks"]
+                        # Merge: keep existing blocks, append validated blocks, total <= 50
+                        available_slots = 50 - len(existing_blocks)
+                        if available_slots < 0:
+                            available_slots = 0
+                        truncated_new = validated_blocks[:available_slots]
+                        merged_blocks = existing_blocks + truncated_new
+                        await self._chat_messages.update_content_blocks(pending_msg_id, merged_blocks)
+                        validated_blocks_for_broadcast = merged_blocks
+                    else:
+                        validated_blocks_for_broadcast = None
                     session.pending_hops.pop(trace_id, None)
                     if self._chat_hub:
                         # Broadcast message_edit with content and optionally content_blocks
@@ -384,9 +398,10 @@ class BridgeSessionRegistry:
                             "seq": self._chat_hub.next_seq(),
                             "message_id": pending_msg_id,
                             "content": final_content,
+                            "edited_at": time.time(),
                         }
                         if validated_blocks is not None:
-                            broadcast_payload["content_blocks"] = validated_blocks
+                            broadcast_payload["content_blocks"] = validated_blocks_for_broadcast
                         await self._chat_hub.broadcast(channel_id, broadcast_payload)
                         await self._chat_hub.broadcast(channel_id, {
                             "type": "message_state",

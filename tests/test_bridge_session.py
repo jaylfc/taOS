@@ -529,3 +529,78 @@ async def test_record_reply_final_without_content_blocks():
     broadcasts = [p for _, p in hub.broadcasts if p["type"] == "message"]
     assert len(broadcasts) == 1
     assert broadcasts[0].get("content_blocks") == []
+@pytest.mark.asyncio
+async def test_record_reply_final_preserves_decision_block_and_merges_content_blocks():
+    """delta -> tool_result request_decision -> final with content_blocks should preserve decision block and merge."""
+    reg, msg_store, ch_store, hub, tr = _make_registry()
+    trace_id = "t1"
+
+    # Step 1: delta creates pending placeholder
+    await reg.record_reply("bot1", {
+        "kind": "delta",
+        "trace_id": trace_id,
+        "content": "",
+    })
+    pending_msg_id = reg._sessions["bot1"]._pending_msg_ids[trace_id]
+    assert pending_msg_id is not None
+
+    # Step 2: tool_result for request_decision attaches decision block
+    await reg.record_reply("bot1", {
+        "kind": "tool_result",
+        "trace_id": trace_id,
+        "tool": "request_decision",
+        "result": {"ok": True, "decision_id": "dec-123"},
+        "success": True,
+    })
+
+    # Step 3: final with content_blocks
+    await reg.record_reply("bot1", {
+        "kind": "final",
+        "trace_id": trace_id,
+        "content": "hi",
+        "content_blocks": [{"kind": "text", "text": "hi"}],
+    })
+
+    # Retrieve the message
+    msg = msg_store.messages.get(pending_msg_id)
+    assert msg is not None, "Message should exist"
+
+    blocks = msg.get("content_blocks", [])
+    # Expect decision block first, then text block
+    assert len(blocks) == 2
+    assert blocks[0] == {"kind": "decision", "decision_id": "dec-123"}
+    assert blocks[1] == {"kind": "text", "text": "hi"}
+
+    # Check that the message_edit broadcast from the final step has the same blocks
+    # Look for the broadcast that has the content we set in the final step.
+    edits = [p for _, p in hub.broadcasts if p["type"] == "message_edit" and p["message_id"] == pending_msg_id and p.get("content") == "hi"]
+    assert len(edits) == 1, "Expected exactly one message_edit broadcast for this message with content 'hi'"
+    assert edits[0]["content_blocks"] == blocks
+
+
+@pytest.mark.asyncio
+async def test_record_reply_final_broadcast_includes_edited_at():
+    """final message_edit broadcast must include edited_at field."""
+    reg, msg_store, ch_store, hub, tr = _make_registry()
+    # Create a pending placeholder to trigger the edit path
+    await reg.record_reply("bot1", {
+        "kind": "delta",
+        "trace_id": "t2",
+        "content": "",
+    })
+    pending_msg_id = reg._sessions["bot1"]._pending_msg_ids["t2"]
+    assert pending_msg_id is not None
+
+    # Now send the final
+    await reg.record_reply("bot1", {
+        "kind": "final",
+        "trace_id": "t2",
+        "content": "hello",
+    })
+
+    # Look for the message_edit broadcast for this message
+    edits = [p for _, p in hub.broadcasts if p["type"] == "message_edit" and p["message_id"] == pending_msg_id]
+    assert len(edits) == 1
+    assert "edited_at" in edits[0]
+    # edited_at should be a number (timestamp)
+    assert isinstance(edits[0]["edited_at"], (int, float))
