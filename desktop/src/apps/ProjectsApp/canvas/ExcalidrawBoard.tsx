@@ -1,9 +1,9 @@
+import "./excalidraw-assets";
 import { Excalidraw, convertToExcalidrawElements } from "@excalidraw/excalidraw";
-import { ExcalidrawSkeleton } from "./element-to-excalidraw";
+import type { ExcalidrawSkeleton } from "./element-to-excalidraw";
 import type { CanvasElement } from "./canvas-api";
 import type { ComponentProps } from "react";
 import { useMemo, useState, useEffect, useRef } from "react";
-import "./excalidraw-assets";
 import "@excalidraw/excalidraw/index.css";
 import { elementToSkeleton } from "./element-to-excalidraw";
 import { mermaidToExcalidraw, type ExcalidrawElements } from "./mermaid-to-elements";
@@ -105,19 +105,36 @@ export function ExcalidrawBoard({ elements, theme = "light" }: ExcalidrawBoardPr
      // Convert all skeletons in one batch.
      const convertedList = convertToExcalidrawElements(skeletonList as unknown as SkeletonInput);
 
+     // Build a map from converted element id to taos_id for elements that have taos_id.
+     const convertedIdToTaosId = new Map<string, string>();
      // Group converted elements by their taos_id (set via elementToSkeleton -> taosCustomData).
-     const convertedByTaosId = new Map<string, ExcalidrawElement[]>();
+     // Also handle elements without taos_id but with containerId: attach to the group of the
+     // converted element whose id matches that containerId.
+     const groupedElements = new Map<string, ExcalidrawElement[]>();
      for (const convertedEl of convertedList) {
        const taosId = convertedEl.customData?.taos_id as string | undefined;
        if (taosId) {
-         if (!convertedByTaosId.has(taosId)) {
-           convertedByTaosId.set(taosId, []);
+         // Directly grouped by taosId
+         if (!groupedElements.has(taosId)) {
+           groupedElements.set(taosId, []);
          }
-         convertedByTaosId.get(taosId)!.push(convertedEl);
+         groupedElements.get(taosId)!.push(convertedEl);
+         convertedIdToTaosId.set(convertedEl.id, taosId);
+       } else {
+         const containerId = (convertedEl as any).containerId;
+         if (containerId) {
+           const containerTaosId = convertedIdToTaosId.get(containerId);
+           if (containerTaosId) {
+             if (!groupedElements.has(containerTaosId)) {
+               groupedElements.set(containerTaosId, []);
+             }
+             groupedElements.get(containerTaosId)!.push(convertedEl);
+           }
+           // If containerTaosId is not found, we drop the element (no taos_id and no valid containerId)
+         }
+         // If no containerId, we drop the element (no taos_id and no containerId)
        }
-       // Note: Elements without taos_id (should not happen) are ignored.
      }
-
      // Rebuild the final array in the original order, replacing skeletons with their
      // converted elements and inserting ready diagram elements.
      const finalElements: ExcalidrawElement[] = [];
@@ -126,7 +143,7 @@ export function ExcalidrawBoard({ elements, theme = "light" }: ExcalidrawBoardPr
           finalElements.push(...(diagrams[item.element.id] || []));
         } else {
           const taosId = item.element.id;
-          const convertedForThis = convertedByTaosId.get(taosId) || [];
+          const convertedForThis = groupedElements.get(taosId) || [];
           finalElements.push(...convertedForThis);
         }
       }
