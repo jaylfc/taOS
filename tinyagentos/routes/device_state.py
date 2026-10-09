@@ -59,7 +59,6 @@ def seed_id_epoch(data_dir) -> None:
     _HWM_PATH = Path(data_dir) / "device_event_hwm"
     stored = 0
     try:
-        _HWM_PATH.parent.mkdir(parents=True, exist_ok=True)
         if _HWM_PATH.exists():
             stored = int(_HWM_PATH.read_text().strip())
     except (ValueError, OSError):
@@ -68,6 +67,7 @@ def seed_id_epoch(data_dir) -> None:
     # Atomically write _ID_EPOCH to the HWM file
     tmp_path = str(_HWM_PATH) + ".tmp"
     try:
+        _HWM_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(tmp_path, "w") as f:
             f.write(str(_ID_EPOCH))
         os.replace(tmp_path, str(_HWM_PATH))
