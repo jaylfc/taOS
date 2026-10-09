@@ -13,15 +13,15 @@ import time
 from collections import deque
 from pathlib import Path
 
-import tinyagentos
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
+import tinyagentos
 from tinyagentos.agent_avatars import avatar_hash
 from tinyagentos.atomic_io import atomic_write_text
 from tinyagentos.device_auth import device_scope
 from tinyagentos.device_scopes import AGENTS_READ, effective_scopes
-from tinyagentos.routes.auth import assemble_lock_agents, _demo_enabled
+from tinyagentos.routes.auth import _demo_enabled, assemble_lock_agents
 
 router = APIRouter()
 
@@ -63,13 +63,17 @@ def seed_id_epoch(data_dir) -> None:
             stored = int(_HWM_PATH.read_text().strip())
     except (ValueError, OSError):
         stored = 0
+        logger.warning("device_event_hwm unreadable: %s", _HWM_PATH)
     _ID_EPOCH = max(int(time.time() * 1000), stored + _HWM_STEP)
     # Atomically write _ID_EPOCH to the HWM file
     try:
         _HWM_PATH.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_text(_HWM_PATH, str(_ID_EPOCH))
     except OSError:
-        pass
+        logger.warning("failed to write event hwm seed")
+    # Advance every existing entry in _owner_buffers whose next_id is below _ID_EPOCH
+    for buf in _owner_buffers.values():
+        buf["next_id"] = max(buf["next_id"], _ID_EPOCH)
 
 
 def _get_owner_buffer(owner_id: str) -> dict:
@@ -98,14 +102,15 @@ async def _emit_event(owner_id: str, event_type: str, data_json: str) -> int:
     async with _BUFFER_LOCK:
         buf = _get_owner_buffer(owner_id)
         eid = buf["next_id"]
-        buf["next_id"] += 1
-        buf["events"].append((eid, event_type, data_json))
+        # Write HWM before mutating the buffer
         if _HWM_PATH is not None and eid % _HWM_STEP == 0:
             try:
                 _HWM_PATH.parent.mkdir(parents=True, exist_ok=True)
                 atomic_write_text(_HWM_PATH, str(eid))
             except OSError:
                 logger.warning("failed to write event hwm")
+        buf["next_id"] += 1
+        buf["events"].append((eid, event_type, data_json))
         return eid
 
 
@@ -249,7 +254,7 @@ async def _events_stream(request: Request, device: dict):
             return
         data_json = json.dumps(snapshot_data)
         eid = await _emit_event(owner_id, "snapshot", data_json)
-        yield f"id: {eid}\nevent: snapshot\ndata: {data_json}\n\n".encode("utf-8")
+        yield f"id: {eid}\nevent: snapshot\ndata: {data_json}\n\n".encode()
         for a in snapshot_data["agents"]:
             prev_by_name[a["name"]] = a
             prev_recap[a["name"]] = a.get("last_recap", "") or ""
@@ -263,7 +268,7 @@ async def _events_stream(request: Request, device: dict):
         for eid, event_type, data_json in replay:
             if not await _device_still_authorized(device_store, token):
                 return
-            yield f"id: {eid}\nevent: {event_type}\ndata: {data_json}\n\n".encode("utf-8")
+            yield f"id: {eid}\nevent: {event_type}\ndata: {data_json}\n\n".encode()
     else:
         for a in transformed:
             prev_by_name[a["name"]] = a
@@ -273,7 +278,7 @@ async def _events_stream(request: Request, device: dict):
             eid = await _emit_event(owner_id, "agent.upsert", data_json)
             if not await _device_still_authorized(device_store, token):
                 return
-            yield f"id: {eid}\nevent: agent.upsert\ndata: {data_json}\n\n".encode("utf-8")
+            yield f"id: {eid}\nevent: agent.upsert\ndata: {data_json}\n\n".encode()
         buf = _get_owner_buffer(owner_id)
         buf["last_by_name"] = dict(prev_by_name)
 
@@ -311,14 +316,14 @@ async def _events_stream(request: Request, device: dict):
                     eid = await _emit_event(owner_id, "agent.upsert", data_json)
                     if not await _device_still_authorized(device_store, token):
                         return
-                    yield f"id: {eid}\nevent: agent.upsert\ndata: {data_json}\n\n".encode("utf-8")
+                    yield f"id: {eid}\nevent: agent.upsert\ndata: {data_json}\n\n".encode()
                 else:
                     if _agent_change_key(agent) != _agent_change_key(prev):
                         data_json = json.dumps(agent)
                         eid = await _emit_event(owner_id, "agent.upsert", data_json)
                         if not await _device_still_authorized(device_store, token):
                             return
-                        yield f"id: {eid}\nevent: agent.upsert\ndata: {data_json}\n\n".encode("utf-8")
+                        yield f"id: {eid}\nevent: agent.upsert\ndata: {data_json}\n\n".encode()
 
                     # Recap change.
                     current_recap = agent.get("last_recap", "") or ""
@@ -330,7 +335,7 @@ async def _events_stream(request: Request, device: dict):
                         yield (
                             f"id: {eid}\nevent: agent.recap\n"
                             f"data: {data_json}\n\n"
-                        ).encode("utf-8")
+                        ).encode()
 
                     # Decision open/close.
                     current_dec = agent.get("decision")
@@ -343,13 +348,13 @@ async def _events_stream(request: Request, device: dict):
                         yield (
                             f"id: {eid}\nevent: decision.open\n"
                             f"data: {data_json}\n\n"
-                        ).encode("utf-8")
+                        ).encode()
                     elif not current_dec and prev_dec:
                         data_json = json.dumps({"name": name, "decision_id": prev_dec.get("id") or ""})
                         eid = await _emit_event(owner_id, "decision.close", data_json)
                         if not await _device_still_authorized(device_store, token):
                             return
-                        yield f"id: {eid}\nevent: decision.close\ndata: {data_json}\n\n".encode("utf-8")
+                        yield f"id: {eid}\nevent: decision.close\ndata: {data_json}\n\n".encode()
                     elif current_dec and prev_dec:
                         # Check if decision IDs differ
                         current_id = current_dec.get("id") or ""
@@ -360,7 +365,7 @@ async def _events_stream(request: Request, device: dict):
                             eid = await _emit_event(owner_id, "decision.close", data_json)
                             if not await _device_still_authorized(device_store, token):
                                 return
-                            yield f"id: {eid}\nevent: decision.close\ndata: {data_json}\n\n".encode("utf-8")
+                            yield f"id: {eid}\nevent: decision.close\ndata: {data_json}\n\n".encode()
                             # Emit decision.open for new id
                             data_json = json.dumps({"name": name, "decision": current_dec})
                             eid = await _emit_event(owner_id, "decision.open", data_json)
@@ -369,7 +374,7 @@ async def _events_stream(request: Request, device: dict):
                             yield (
                                 f"id: {eid}\nevent: decision.open\n"
                                 f"data: {data_json}\n\n"
-                            ).encode("utf-8")
+                            ).encode()
 
             # Removed agents.
             for name in prev_by_name:
@@ -378,7 +383,7 @@ async def _events_stream(request: Request, device: dict):
                     eid = await _emit_event(owner_id, "agent.remove", data_json)
                     if not await _device_still_authorized(device_store, token):
                         return
-                    yield f"id: {eid}\nevent: agent.remove\ndata: {data_json}\n\n".encode("utf-8")
+                    yield f"id: {eid}\nevent: agent.remove\ndata: {data_json}\n\n".encode()
 
             prev_by_name = current_by_name
             prev_recap = {n: a.get("last_recap", "") or "" for n, a in current_by_name.items()}
@@ -389,7 +394,7 @@ async def _events_stream(request: Request, device: dict):
         # Heartbeat.
         if now - last_heartbeat >= _HEARTBEAT_INTERVAL_S:
             last_heartbeat = now
-            yield ": ping\n\n".encode("utf-8")
+            yield b": ping\n\n"
 
         # Sleep in small steps so disconnect and device-check stay fresh.
         await asyncio.sleep(_SLEEP_STEP_S)
