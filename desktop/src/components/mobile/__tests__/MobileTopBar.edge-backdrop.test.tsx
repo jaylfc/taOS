@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render } from "@testing-library/react";
 import { MobileTopBar } from "../MobileTopBar";
 
 // Mock the stores and hooks with implementations (except useIsPwa)
@@ -24,7 +24,7 @@ vi.mock("@/stores/process-store", () => ({
   },
 }));
 vi.mock("../StatusIndicators", () => ({
-  StatusIndicators: ({ compact }: { compact?: boolean }) => {
+  StatusIndicators: (_: { compact?: boolean }) => {
     return <div data-testid="status-indicators-mock" />;
   },
 }));
@@ -77,16 +77,16 @@ describe("MobileTopBar edge backdrop", () => {
     // Render the component
     render(<MobileTopBar onHome={() => {}} onSearch={() => {}} />);
 
-    // Check that the backdrop exists and is a direct child of document.body
-    const backdrop = document.body.querySelector('[data-testid="ios-edge-backdrop"]');
-    expect(backdrop).toBeInTheDocument();
-    expect(backdrop.parentElement).toBe(document.body);
+     // Check that the backdrop exists and is a direct child of document.body
+     const backdrop = document.body.querySelector('[data-testid="ios-edge-backdrop"]');
+     expect(backdrop).not.toBeNull();
+     expect(backdrop.parentElement).toBe(document.body);
 
-    // Check its style
-    expect(backdrop.style.position).toBe("fixed");
-    expect(backdrop.style.background).toBe("rgb(20, 20, 21)");
-    // Ensure it's not rgba (i.e., opaque)
-    expect(backdrop.style.background).not.toContain("rgba");
+     // Check its style
+     expect(backdrop.style.position).toBe("fixed");
+     expect(backdrop.style.backgroundColor).toBe("rgb(20, 20, 21)");
+     // Ensure it's not rgba (i.e., opaque)
+     expect(backdrop.style.backgroundColor).not.toContain("rgba");
   });
 
   it("does not render the backdrop when not in standalone mode", () => {

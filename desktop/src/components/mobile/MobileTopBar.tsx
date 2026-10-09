@@ -45,7 +45,7 @@ export function MobileTopBar({ onHome, onSearch }: Props) {
              left: 0,
              right: 0,
              height: MOBILE_TOP_BAR_HEIGHT,
-             background: IOS_EDGE_BACKDROP_COLOR,
+             backgroundColor: IOS_EDGE_BACKDROP_COLOR,
              zIndex: 0,
              pointerEvents: "none",
            }}
