@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import sys
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Request
@@ -406,3 +408,88 @@ async def set_session_mode(request: Request):
             {"error": "switch failed", "detail": out or f"rc={rc}"}, status_code=500,
         )
     return {"ok": True, "mode": mode}
+
+
+# --- Device location (phone/kiosk devices only) ------------------------------
+#
+# On a taOS handset, taos-locationd (taOSmobile pmos/kiosk/bin/taos-locationd)
+# keeps the modem's GNSS engine on and atomically rewrites
+# /run/taos-location/location.json with the latest fix. The directory is a
+# systemd RuntimeDirectory (root:taos 0750), so it exists only while the daemon
+# runs: that is the device gate, a single stat with no modem call, so every
+# other host answers immediately with available=false. The file itself is
+# absent until the first fix ever.
+#
+# The fix is PERSONAL DATA. It is read from the runtime file only, never
+# cached, and never logged at any level. A file that is unreadable, oversized
+# or malformed is reported as "no fix", never as a server error.
+
+_LOCATION_DIR = Path("/run/taos-location")
+_LOCATION_FILE = _LOCATION_DIR / "location.json"
+_LOCATION_MAX_AGE_S = 1800
+_LOCATION_MAX_BYTES = 4096
+_LOCATION_FUTURE_SKEW_S = 60
+
+
+def _is_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _read_location_fix(now: datetime) -> tuple[dict | None, int | None]:
+    """Return (fix, age_s) from the runtime file, (None, None) when unusable."""
+    try:
+        with _LOCATION_FILE.open("rb") as fh:
+            raw = fh.read(_LOCATION_MAX_BYTES + 1)
+    except OSError:
+        return None, None
+    if len(raw) > _LOCATION_MAX_BYTES:
+        return None, None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None, None
+    if not isinstance(data, dict):
+        return None, None
+    lat, lon, acc = data.get("lat"), data.get("lon"), data.get("accuracy_m")
+    if not (_is_number(lat) and -90 <= lat <= 90 and _is_number(lon) and -180 <= lon <= 180):
+        return None, None
+    if acc is not None and not _is_number(acc):
+        return None, None
+    fix_utc = data.get("fix_utc")
+    if not isinstance(fix_utc, str):
+        return None, None
+    try:
+        taken = datetime.fromisoformat(fix_utc.replace("Z", "+00:00"))
+    except ValueError:
+        return None, None
+    if taken.tzinfo is None:
+        return None, None
+    age = (now - taken).total_seconds()
+    if age < -_LOCATION_FUTURE_SKEW_S:
+        return None, None
+    age_s = max(0, int(age))
+    fix = {
+        "lat": lat,
+        "lon": lon,
+        "accuracy_m": acc,
+        "fix_utc": fix_utc,
+        "source": data.get("source") if isinstance(data.get("source"), str) else None,
+    }
+    return fix, age_s
+
+
+def _location_state(now: datetime | None = None) -> dict:
+    if not _LOCATION_DIR.is_dir():
+        return {"available": False, "fix": None, "age_s": None}
+    fix, age_s = _read_location_fix(now or datetime.now(timezone.utc))
+    if fix is not None and age_s > _LOCATION_MAX_AGE_S:
+        fix = None
+    return {"available": True, "fix": fix, "age_s": age_s}
+
+
+@router.get("/api/system/location")
+async def get_location():
+    """Latest GPS fix of this device, if it has a location daemon. Open to any
+    signed-in user, like session-mode: the UI needs it to default the weather
+    location. Never exposed to the agent API, never logged."""
+    return _location_state()
