@@ -16,6 +16,19 @@ hosts; this module only drives it.
 
 The login server (Headscale) defaults to ``https://hs.taos.my`` and is
 overridable via ``TAOS_HEADSCALE_URL`` for staging/self-hosted control servers.
+
+A host may already run a tailscaled for its OWNER'S tailnet (the taOS handset
+does, and it is the only remote path to it). Re-pointing that daemon at the
+mesh, or logging it out, strands the host. So:
+
+* ``TAOS_TAILSCALE_SOCKET`` (optional) names a dedicated tailscaled for the
+  mesh; every call here then passes ``--socket=<path>`` and drives only it.
+* Without it, the default daemon's ControlURL is read from
+  ``tailscale debug prefs`` (``status --json`` does not carry it). Unless that
+  daemon is logged out or already on the configured login server, mesh_up and
+  mesh_down refuse with ``foreign-control-server`` and run nothing, and
+  mesh_status reports ``joined=False``, so the join poll does not mistake the
+  owner's tailnet for the mesh.
 """
 from __future__ import annotations
 
@@ -25,6 +38,7 @@ import logging
 import os
 import shutil
 from typing import Optional
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +54,45 @@ def is_tailscale_installed() -> bool:
     """True when the ``tailscale`` CLI is on PATH (the installer provides it on
     supported hosts). When False, every operation degrades to "not available"."""
     return shutil.which("tailscale") is not None
+
+
+def _ts(*args: str) -> list[str]:
+    """A tailscale argv, aimed at ``TAOS_TAILSCALE_SOCKET`` when it is set."""
+    sock = os.environ.get("TAOS_TAILSCALE_SOCKET", "").strip()
+    return ["tailscale", *([f"--socket={sock}"] if sock else []), *args]
+
+
+def _origin(url: str) -> str:
+    """scheme://host[:port], lowercased, so trailing slashes and paths never
+    make the same control server look foreign."""
+    parsed = urlparse(url.strip())
+    return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+
+
+async def _foreign_daemon(server: str) -> str | None:
+    """Why the daemon must not be driven, or None when it may be.
+
+    A dedicated socket is the mesh's own daemon, so it is never foreign. On the
+    default socket, a daemon whose prefs cannot be read is refused too: a guess
+    here is what logs a host out of its owner's tailnet.
+    """
+    if os.environ.get("TAOS_TAILSCALE_SOCKET", "").strip():
+        return None
+    rc, out, _err = await _run(_ts("debug", "prefs"), timeout=10.0)
+    if rc != 0:
+        return "control-server-unknown"
+    try:
+        prefs = json.loads(out)
+    except (ValueError, TypeError):
+        return "control-server-unknown"
+    if not isinstance(prefs, dict):
+        return "control-server-unknown"
+    if prefs.get("LoggedOut") is True:
+        return None
+    control = str(prefs.get("ControlURL") or "")
+    if control and _origin(control) == _origin(server):
+        return None
+    return "foreign-control-server"
 
 
 async def _run(args: list[str], timeout: float = 30.0) -> tuple[int, str, str]:
@@ -84,13 +137,17 @@ async def mesh_up(
     if not is_tailscale_installed():
         return {"ok": False, "detail": "tailscale not installed"}
     server = ls or login_server()
+    refusal = await _foreign_daemon(server)
+    if refusal:
+        logger.warning("taosgo: mesh join refused (%s): the default tailscaled belongs elsewhere", refusal)
+        return {"ok": False, "detail": refusal}
     rc, _out, err = await _run(
-        [
-            "tailscale", "up",
+        _ts(
+            "up",
             "--login-server", server,
             "--authkey", preauth_key,
             "--hostname", hostname,
-        ],
+        ),
         timeout=timeout,
     )
     if rc == 0:
@@ -136,7 +193,10 @@ async def mesh_status() -> dict:
     ``joined=False`` with a detail, never raises."""
     if not is_tailscale_installed():
         return {"joined": False, "detail": "tailscale not installed"}
-    rc, out, err = await _run(["tailscale", "status", "--json"], timeout=10.0)
+    refusal = await _foreign_daemon(login_server())
+    if refusal:
+        return {"joined": False, "detail": refusal}
+    rc, out, err = await _run(_ts("status", "--json"), timeout=10.0)
     if rc != 0:
         return {"joined": False, "detail": (err.strip() or f"exit {rc}")[:200]}
     try:
@@ -177,10 +237,14 @@ async def is_joined() -> bool:
 
 
 async def mesh_down() -> dict:
-    """Leave the mesh (``tailscale logout``). Fail-soft."""
+    """Leave the mesh (``tailscale logout``). Fail-soft. Never logs out a
+    daemon that is not on the mesh's login server (see the module docstring)."""
     if not is_tailscale_installed():
         return {"ok": False, "detail": "tailscale not installed"}
-    rc, _out, err = await _run(["tailscale", "logout"], timeout=30.0)
+    refusal = await _foreign_daemon(login_server())
+    if refusal:
+        return {"ok": False, "detail": refusal}
+    rc, _out, err = await _run(_ts("logout"), timeout=30.0)
     if rc == 0:
         return {"ok": True, "detail": "left mesh"}
     return {"ok": False, "detail": (err.strip() or f"exit {rc}")[:200]}
