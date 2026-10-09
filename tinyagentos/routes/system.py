@@ -321,7 +321,7 @@ async def restart_status(request: Request):
 # and systemd stops the other side for us.
 #
 # Privilege comes from a polkit rule scoped to exactly these two units (see
-# taOSmobile pmos/kiosk/50-taos-session.rules), NOT from sudo — the controller
+# taOSmobile pmos/kiosk/etc/50-taos-session.rules), NOT from sudo — the controller
 # runs as the unprivileged `taos` user and must not be able to manage arbitrary
 # system services just to offer a UI toggle.
 #
