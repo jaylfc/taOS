@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 import time
+import uuid
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Optional
 
-from tinyagentos.projects.ids import new_id
 from tinyagentos.projects.tx import ProjectsDBStore
 
 logger = logging.getLogger(__name__)
@@ -195,3 +197,128 @@ class DispatcherStore(ProjectsDBStore):
         ) as cur:
             rows = await cur.fetchall()
         return [_row_to_config(r) for r in rows]
+
+    async def insert_lease(self, *, user_id, task_id, project_id, canonical_id, assignee_written, reason, assigned_at, lease_expires_at) -> str | None:
+        """Insert a new lease with state='pending' and return its id, or None if a pending lease for the same task already exists."""
+        lease_id = uuid.uuid4().hex
+        try:
+            async with self._tx():
+                await self._db.execute(
+                    """
+                    INSERT INTO dispatch_ledger
+                        (id, user_id, task_id, project_id, canonical_id, assignee_written, state, reason, assigned_at, lease_expires_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        lease_id,
+                        user_id,
+                        task_id,
+                        project_id,
+                        canonical_id,
+                        assignee_written,
+                        "pending",
+                        reason,
+                        assigned_at,
+                        lease_expires_at,
+                    ),
+                )
+        except sqlite3.IntegrityError:
+            return None
+        return lease_id
+
+    async def pending_for_agent(self, canonical_id) -> list[dict]:
+        """Return state='pending' rows for the given agent (canonical_id)."""
+        async with self._read(
+            """
+            SELECT id, user_id, task_id, project_id, canonical_id, assignee_written, state, reason, assigned_at, lease_expires_at, resolved_at
+            FROM dispatch_ledger
+            WHERE canonical_id = ? AND state = 'pending'
+            """,
+            (canonical_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        # Convert rows to list of dicts
+        result = []
+        for row in rows:
+            result.append(
+                {
+                    "id": row[0],
+                    "user_id": row[1],
+                    "task_id": row[2],
+                    "project_id": row[3],
+                    "canonical_id": row[4],
+                    "assignee_written": row[5],
+                    "state": row[6],
+                    "reason": row[7],
+                    "assigned_at": row[8],
+                    "lease_expires_at": row[9],
+                    "resolved_at": row[10],
+                }
+            )
+        return result
+
+    async def recent_expiries(self, since: float) -> dict[str, tuple[str, ...]]:
+        """task_id -> tuple of canonical_ids from state='expired' rows with resolved_at >= since."""
+        async with self._read(
+            """
+            SELECT task_id, canonical_id
+            FROM dispatch_ledger
+            WHERE state = 'expired' AND resolved_at >= ?
+            """,
+            (since,),
+        ) as cur:
+            rows = await cur.fetchall()
+        # Group by task_id
+        groups = defaultdict(list)
+        for row in rows:
+            task_id = row[0]
+            canonical_id = row[1]
+            groups[task_id].append(canonical_id)
+        # Convert to dict of tuples
+        return {task_id: tuple(canonical_ids) for task_id, canonical_ids in groups.items()}
+
+    async def expired_counts_48h(self, now: float) -> dict[str, int]:
+        """task_id -> count of state='expired' rows with resolved_at >= now - 48*3600."""
+        cutoff = now - 48 * 3600
+        async with self._read(
+            """
+            SELECT task_id, COUNT(*) as count
+            FROM dispatch_ledger
+            WHERE state = 'expired' AND resolved_at >= ?
+            GROUP BY task_id
+            """,
+            (cutoff,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return {row[0]: row[1] for row in rows}
+
+    async def last_assigned_map(self, canonical_ids: list[str]) -> dict[str, float]:
+        """From dispatch_agent_backoff.last_assigned_at (missing agent -> absent key)."""
+        if not canonical_ids:
+            return {}
+        # We'll use a SQL query with IN clause. However, we need to be careful about SQL injection.
+        # Since the canonical_ids are internal, we can use parameter substitution with a variable number of placeholders.
+        placeholders = ", ".join("?" for _ in canonical_ids)
+        async with self._read(
+            f"""
+            SELECT canonical_id, last_assigned_at
+            FROM dispatch_agent_backoff
+            WHERE canonical_id IN ({placeholders})
+            """,
+            canonical_ids,
+        ) as cur:
+            rows = await cur.fetchall()
+        return {row[0]: row[1] for row in rows}
+
+    async def stamp_last_assigned(self, canonical_id, ts: float) -> None:
+        """Upsert (INSERT ... ON CONFLICT(canonical_id) DO UPDATE SET last_assigned_at=excluded.last_assigned_at)."""
+        async with self._tx():
+            await self._db.execute(
+                """
+                INSERT INTO dispatch_agent_backoff (canonical_id, last_assigned_at)
+                VALUES (?, ?)
+                ON CONFLICT(canonical_id) DO UPDATE SET
+                    last_assigned_at = excluded.last_assigned_at
+                """,
+                (canonical_id, ts),
+            )
