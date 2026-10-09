@@ -265,7 +265,7 @@ function extractTagged(text: string, tag: string): string | undefined {
 /*  ToastItem                                                          */
 /* ------------------------------------------------------------------ */
 
-function ToastItem({ notif, onExpire }: { notif: Notification; onExpire: () => void }) {
+function ToastItem({ notif, onExpire, fullWidth = false }: { notif: Notification; onExpire: () => void; fullWidth?: boolean }) {
   const dismiss = useNotificationStore((s) => s.dismiss);
   const archiveRead = useNotificationStore((s) => s.archiveRead);
   const Icon = LEVEL_ICONS[notif.level];
@@ -288,7 +288,7 @@ function ToastItem({ notif, onExpire }: { notif: Notification; onExpire: () => v
 
   return (
     <div
-      className={`flex items-start gap-3 p-3 rounded-xl border backdrop-blur-lg shadow-xl w-80 ${LEVEL_COLORS[notif.level]}`}
+      className={`flex items-start gap-3 p-3 rounded-xl border backdrop-blur-lg shadow-xl ${fullWidth ? "w-full" : "w-80"} ${LEVEL_COLORS[notif.level]}`}
       style={{ backgroundColor: "var(--color-dock-bg)" }}
       role="alert"
       aria-live="assertive"
@@ -333,7 +333,7 @@ function ToastItem({ notif, onExpire }: { notif: Notification; onExpire: () => v
 // still populates the bell; it just does not pop.
 const TOAST_FRESH_MS = 20_000;
 
-export function NotificationToasts() {
+export function NotificationToasts({ bottomInset }: { bottomInset?: string } = {}) {
   const notifications = useNotificationStore((s) => s.notifications);
   // Each notification toasts at most once per session.
   const toastedRef = useRef<Set<string>>(new Set());
@@ -358,7 +358,10 @@ export function NotificationToasts() {
 
   return (
     <div
-      className="fixed top-12 right-4 z-[10001] flex flex-col gap-2 pointer-events-auto"
+      // Mobile passes the dock height: toasts sit full width just above the
+      // dock, clear of the top bar and the Launchpad search field.
+      className={`fixed z-[10001] flex flex-col gap-2 pointer-events-auto ${bottomInset ? "left-4 right-4" : "top-12 right-4"}`}
+      style={bottomInset ? { bottom: `calc(${bottomInset} + 8px)` } : undefined}
       aria-label="Notifications"
       role="region"
     >
@@ -366,6 +369,7 @@ export function NotificationToasts() {
         <ToastItem
           key={n.id}
           notif={n}
+          fullWidth={!!bottomInset}
           onExpire={() => setToastIds((prev) => prev.filter((id) => id !== n.id))}
         />
       ))}

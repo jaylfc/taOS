@@ -25,7 +25,7 @@
 #     TAOS_RKNPU_SETUP        set to 1/true to skip interactive confirmation
 #     TAOS_RKLLAMA_DIR        install dir (default: ~<user>/rkllama)
 #     TAOS_RKLLAMA_REPO       git remote (default: https://github.com/jaylfc/rkllama.git)
-#     TAOS_RKLLAMA_REF        git ref  (default: 7e9f4944c0159b49766dacb2578dc1856a4903d2)
+#     TAOS_RKLLAMA_REF        git ref  (default: 2faa12f17b2887296c3957508c3e135a3794a40d)
 #     TAOS_RKLLAMA_PORT       HTTP port (default: 7833)
 #     TAOS_QMD_EXPANSION_URL  override URL for qmd-query-expansion-1.7B-rk3588.rkllm
 #                             (default is the TAOS HF mirror at
@@ -63,10 +63,9 @@ LIBRKNNRT_DEST="/usr/lib/librknnrt.so"
 LIBRKNNRT_EXPECTED_VERSION="2.3.0"
 
 RKLLAMA_REPO="${TAOS_RKLLAMA_REPO:-https://github.com/jaylfc/rkllama.git}"
-# rknn-llm 1.3.1: feat/rknpu-1.3.1 @ 7e9f4944 (upstream main + the fork patches + the 1.3.1 ABI: RKLLMInput 160 -> 208 bytes). Deployed + smoke-verified on RK3588 2026-10-06.
-# Deployed + smoke-verified on RK3588 2026-10-06.
-# Was dadea413 (1.3.0).
-RKLLAMA_REF="${TAOS_RKLLAMA_REF:-7e9f4944c0159b49766dacb2578dc1856a4903d2}"
+# rknn-llm 1.3.1: feat/rknpu-1.3.1 @ 2faa12f1 (upstream main + the fork patches + the 1.3.1 ABI: RKLLMInput 160 -> 208 bytes). Deployed + smoke-verified on RK3588 2026-10-06.
+# 2faa12f1 = 7e9f4944 + rkllama PR #5: fix_freq pins only NPU and DDR; CPU and GPU pins opt-in (RKLLAMA_PIN_CPU / RKLLAMA_PIN_GPU). Was 7e9f4944.
+RKLLAMA_REF="${TAOS_RKLLAMA_REF:-2faa12f17b2887296c3957508c3e135a3794a40d}"
 RKLLAMA_PORT="${TAOS_RKLLAMA_PORT:-7833}"
 
 # Qwen3-Embedding-0.6B rk3588 rkllm weights.

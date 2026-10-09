@@ -89,6 +89,7 @@ class ClusterManager:
         self._fenced: bool = False  # True when another controller has advanced generation
         # Maximum number of leases a single worker can hold (prevents DoS)
         self._max_leases_per_worker = max_leases_per_worker
+        self._lease_seq = 0
 
     def _spawn_background_task(self, coro: Coroutine) -> asyncio.Task:
         """Create a fire-and-forget task that survives garbage collection.
@@ -943,6 +944,8 @@ class ClusterManager:
                 return None
 
             lease_id = f"l_{secrets.token_hex(16)}"
+            self._lease_seq += 1
+            epoch = f"{self._generation}.{self._lease_seq}"
             lease = GpuLease(
                 lease_id=lease_id,
                 resource_id=resource_id,
@@ -951,6 +954,7 @@ class ClusterManager:
                 required_vram_mb=required_vram_mb,
                 granted_at=time.time(),
                 claim_channel=claim_channel,
+                epoch=epoch,
             )
             self._leases[lease_id] = lease
             logger.info(
@@ -959,24 +963,41 @@ class ClusterManager:
             )
             return lease
 
-    async def release_lease(self, lease_id: str) -> bool:
-        """Release a lease by id.  Idempotent — returns True even if the
-        lease was already expired or never existed."""
-        async with self._lease_lock:
-            lease = self._leases.pop(lease_id, None)
-        if lease is not None:
-            logger.info("Lease released: %s on %s", lease_id, lease.resource_id)
-        return True  # idempotent
+    async def release_lease_result(self, lease_id: str, epoch: str | None = None) -> tuple[bool, str]:
+        """Release a lease by id, returning ``(ok, lease_epoch)`` atomically.
 
-    async def renew_lease(self, lease_id: str, ttl_seconds: float = 30) -> GpuLease | None:
+        ``lease_epoch`` is the epoch of the lease that was just popped, or an
+        empty string when no lease existed (already released or expired).  On
+        an epoch mismatch the lease is left in place and ``(False, "")`` is
+        returned."""
+        async with self._lease_lock:
+            lease = self._leases.get(lease_id)
+            if lease is not None:
+                if epoch is not None and epoch != lease.epoch:
+                    logger.warning("lease %s epoch mismatch", lease_id)
+                    return False, ""
+                if epoch is None:
+                    logger.debug("lease %s: unfenced release accepted (epoch=None)", lease_id)
+                self._leases.pop(lease_id, None)
+                logger.info("Lease released: %s on %s", lease_id, lease.resource_id)
+                return True, lease.epoch
+        return True, ""  # idempotent
+
+    async def release_lease(self, lease_id: str, epoch: str | None = None) -> bool:
+        """Release a lease by id.  Idempotent, returns True even if the
+        lease was already expired or never existed."""
+        ok, _ = await self.release_lease_result(lease_id, epoch=epoch)
+        return ok
+
+    async def renew_lease(self, lease_id: str, ttl_seconds: float = 30, epoch: str | None = None) -> GpuLease | None:
         """Extend a lease's TTL.  Returns the lease, or None if expired/unknown."""
         lease, _previous_expiry = await self.renew_lease_with_previous(
-            lease_id, ttl_seconds=ttl_seconds
+            lease_id, ttl_seconds=ttl_seconds, epoch=epoch
         )
         return lease
 
     async def renew_lease_with_previous(
-        self, lease_id: str, ttl_seconds: float = 30
+        self, lease_id: str, ttl_seconds: float = 30, epoch: str | None = None
     ) -> tuple[GpuLease | None, float | None]:
         """Extend a lease's TTL, returning ``(lease, previous_expiry)``.
 
@@ -993,6 +1014,11 @@ class ClusterManager:
             lease = self._leases.get(lease_id)
             if lease is None:
                 return None, None
+            if epoch is not None and epoch != lease.epoch:
+                logger.warning("lease %s epoch mismatch", lease_id)
+                return None, None
+            if epoch is None:
+                logger.debug("lease %s: unfenced renew accepted (epoch=None)", lease_id)
             now = time.time()
             if lease.expires_at <= now:
                 self._leases.pop(lease_id, None)

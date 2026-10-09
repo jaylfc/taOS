@@ -24,6 +24,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from tinyagentos.cluster import placement
+
 
 @dataclass
 class ModelLocation:
@@ -35,8 +37,7 @@ class ModelLocation:
         hosts: Worker names that report the model (empty unless
             ``kind == "worker"``).
         canonical_host: The worker chosen when multiple have the model.
-            Stubbed as alphabetical pick — Phase 1.5 will consider load
-            and hardware.
+            Rendezvous-hash pick keyed on model id.
         backend_id: Set only when ``kind == "downloaded_backend_down"`` —
             the manifest-declared backend (e.g. ``"rkllama"``) that this
             model needs, confirmed not running right now (see
@@ -155,8 +156,7 @@ def find_model_hosts(
 
     hosts: list[str] = []
     for w in workers:
-        status = getattr(w, "status", None) or (w.get("status") if isinstance(w, dict) else None)
-        if status and status != "online":
+        if not placement.eligible(w):
             continue
         name = getattr(w, "name", None) or (w.get("name") if isinstance(w, dict) else None)
         if not name:
@@ -195,7 +195,7 @@ def find_model_hosts(
         return ModelLocation(
             kind="worker",
             hosts=hosts_sorted,
-            canonical_host=hosts_sorted[0],
+            canonical_host=placement.rank(model_id, hosts_sorted)[0],
         )
 
     # 3. Cloud? Only if nothing on the mesh has it.

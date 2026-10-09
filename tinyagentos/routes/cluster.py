@@ -308,6 +308,7 @@ class RouteRequest(BaseModel):
     path: str
     body: dict | None = None
     timeout: float = 60
+    affinity_key: str | None = None
 
 
 class MoveRequest(BaseModel):
@@ -693,8 +694,26 @@ async def unregister_worker(request: Request, name: str):
     if not removed:
         return JSONResponse({"error": "Worker not found"}, status_code=404)
 
+    # Unpin every agent that was deployed against this worker. Clearing only
+    # `remote` would leave a phantom local agent (restart_orchestrator treats
+    # `host and not remote` as local), so clear all placement fields together.
+    config = request.app.state.config
+    unpinned_agents: list[str] = []
+    for agent in config.agents:
+        if agent.get("remote") == name:
+            unpinned_agents.append(agent["name"])
+            agent.pop("remote", None)
+            agent.pop("placement_source", None)
+            agent["host"] = ""
+            agent["status"] = "failed"
+            agent["placement_error"] = f"worker '{name}' was unregistered"
+    if unpinned_agents:
+        from tinyagentos.config import save_config_locked
+
+        await save_config_locked(config, config.config_path)
+
     _revoke_node_model_keys(request, name)
-    return {"status": "removed", "name": name}
+    return {"status": "removed", "name": name, "unpinned_agents": unpinned_agents}
 
 
 def _revoke_node_model_keys(request: Request, name: str) -> None:
@@ -859,6 +878,7 @@ async def route_task(request: Request, body: RouteRequest):
         path=body.path,
         body=body.body,
         timeout=body.timeout,
+        affinity_key=body.affinity_key,
     )
     if data is None:
         return JSONResponse(
@@ -1287,11 +1307,13 @@ class LeaseClaimRequest(BaseModel):
 
 class LeaseReleaseRequest(BaseModel):
     lease_id: str
+    epoch: str | None = None
 
 
 class LeaseRenewRequest(BaseModel):
     lease_id: str
     ttl_seconds: float = Field(default=30, gt=0, le=_LEASE_TTL_MAX)
+    epoch: str | None = None
 
 
 async def _require_lease_access(request: Request) -> JSONResponse | None:
@@ -1358,6 +1380,7 @@ async def claim_lease(request: Request, body: LeaseClaimRequest):
         "status": "claimed",
         "lease_id": lease.lease_id,
         "resource_id": lease.resource_id,
+        "epoch": lease.epoch,
         "expires_at": lease.expires_at,
         "ttl_seconds": int(body.ttl_seconds),
         "required_vram_mb": lease.required_vram_mb,
@@ -1371,8 +1394,17 @@ async def release_lease(request: Request, body: LeaseReleaseRequest):
     if denied is not None:
         return denied
     cluster = request.app.state.cluster_manager
-    await cluster.release_lease(body.lease_id)
-    return {"status": "released", "lease_id": body.lease_id}
+    released, epoch = await cluster.release_lease_result(body.lease_id, epoch=body.epoch)
+    if not released:
+        return JSONResponse({
+            "error": "lease epoch mismatch",
+            "lease_id": body.lease_id,
+        }, status_code=409)
+    return {
+        "status": "released",
+        "lease_id": body.lease_id,
+        "epoch": epoch,
+    }
 
 
 @router.post("/api/cluster/leases/renew")
@@ -1382,7 +1414,7 @@ async def renew_lease(request: Request, body: LeaseRenewRequest):
     if denied is not None:
         return denied
     cluster = request.app.state.cluster_manager
-    lease = await cluster.renew_lease(body.lease_id, ttl_seconds=body.ttl_seconds)
+    lease = await cluster.renew_lease(body.lease_id, ttl_seconds=body.ttl_seconds, epoch=body.epoch)
     if lease is None:
         return JSONResponse({
             "error": "lease not found or expired",
@@ -1391,6 +1423,7 @@ async def renew_lease(request: Request, body: LeaseRenewRequest):
     return {
         "status": "renewed",
         "lease_id": lease.lease_id,
+        "epoch": lease.epoch,
         "expires_at": lease.expires_at,
     }
 

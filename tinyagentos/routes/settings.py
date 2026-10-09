@@ -897,8 +897,8 @@ async def _install_dependencies(project_dir: Path) -> tuple[int, str]:
 async def _pip_rebuild_restart(project_dir: Path, target_sha: str) -> tuple[int, str, str | None]:
     """Sync deps, rebuild the SPA, flag the pending restart, trigger restart.
 
-    Returns (returncode, output, launchd_warning); non-zero means a step failed.
-    launchd_warning is None on success, or a structured warning message.
+    Returns (returncode, output, warning_message); non-zero means a step failed.
+    warning_message combines rebuild and launchd warnings, or None if none.
     """
     install_returncode, install_output = await _install_dependencies(project_dir)
     if install_returncode != 0:
@@ -966,6 +966,10 @@ async def _pip_rebuild_restart(project_dir: Path, target_sha: str) -> tuple[int,
             "Update pulled but desktop rebuild failed: %s", rebuild_result.message
         )
 
+    # Combine rebuild and launchd warnings for user feedback
+    rebuild_warning = None
+    if not rebuild_result.success:
+        rebuild_warning = f"Frontend rebuild failed, so the old interface is still loaded: {rebuild_result.message}. Use Settings > Rebuild frontend after fixing it."
     if target_sha:
         write_pending_restart(target_sha)
 
@@ -982,7 +986,17 @@ async def _pip_rebuild_restart(project_dir: Path, target_sha: str) -> tuple[int,
     if launchd_warning:
         logger.warning("Launchd migration: %s", launchd_warning)
 
-    return 0, "", launchd_warning
+    # Combine rebuild and launchd warnings for user feedback
+    warning_message = None
+    if launchd_warning and rebuild_warning:
+        warning_message = f"{launchd_warning} {rebuild_warning}"
+    elif launchd_warning:
+        warning_message = launchd_warning
+    elif rebuild_warning:
+        warning_message = rebuild_warning
+    # else warning_message remains None
+
+    return 0, "", warning_message
 
 
 async def _stash_local_source_changes(project_dir) -> bool:

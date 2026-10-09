@@ -4374,3 +4374,177 @@ class TestProjectCreateDocsAndMetadata:
         await registry.close()
         await auth_store.close()
         await pstore.close()
+
+
+class TestApproveIsLead:
+    """ApproveBody.is_lead makes the approved agent the project's lead."""
+
+    async def _setup(self, client, monkeypatch, tmp_path, scopes):
+        from tinyagentos.agent_registry_store import (
+            AgentRegistryStore,
+            load_or_create_signing_keypair,
+        )
+        from tinyagentos.auth_requests_store import AuthRequestsStore
+        from tinyagentos.agent_grants_store import AgentGrantsStore
+        from tinyagentos.projects.project_store import ProjectStore
+
+        registry = AgentRegistryStore(tmp_path / "reg-lead.db")
+        await registry.init()
+        auth_store = AuthRequestsStore(tmp_path / "auth-lead.db")
+        await auth_store.init()
+        grants = AgentGrantsStore(tmp_path / "grants-lead.db")
+        await grants.init()
+        pstore = ProjectStore(tmp_path / "projects-lead.db")
+        await pstore.init()
+        priv, pub = load_or_create_signing_keypair(tmp_path / "keys-lead")
+        project = await pstore.create_project(
+            name="LeadProj", slug="lead-proj", created_by="u"
+        )
+        record = await auth_store.create(
+            identity_claim="@lead-bot",
+            framework="lead-cli",
+            requested_scopes=scopes,
+            requested_skills=None,
+            reason="",
+            duration_secs=None,
+            project_id=project["id"],
+        )
+        state = client._transport.app.state
+        monkeypatch.setattr(state, "agent_registry", registry)
+        monkeypatch.setattr(state, "auth_requests", auth_store)
+        monkeypatch.setattr(state, "agent_grants", grants)
+        monkeypatch.setattr(state, "project_store", pstore)
+        monkeypatch.setattr(state, "agent_registry_keypair", (priv, pub))
+        stores = (registry, auth_store, grants, pstore)
+        return stores, project, record
+
+    async def _close(self, stores):
+        for s in stores:
+            await s.close()
+
+    @pytest.mark.asyncio
+    async def test_approve_with_is_lead_sets_role_and_lead_pointer(
+        self, client, monkeypatch, tmp_path
+    ):
+        stores, project, record = await self._setup(
+            client, monkeypatch, tmp_path, ["project_tasks", "a2a_send"]
+        )
+        pstore = stores[3]
+        resp = await client.post(
+            f"/api/agents/auth-requests/{record['id']}/approve",
+            json={
+                "granted_scopes": ["project_tasks", "a2a_send"],
+                "project_id": project["id"],
+                "is_lead": True,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        cid = resp.json()["canonical_id"]
+        members = await pstore.list_members(project["id"])
+        assert [m["role"] for m in members if m["member_id"] == cid] == ["lead"]
+        refreshed = await pstore.get_project(project["id"])
+        assert refreshed["lead_member_id"] == cid
+        assert resp.json()["lead_assigned"] is True
+        await self._close(stores)
+
+    @pytest.mark.asyncio
+    async def test_approve_with_is_lead_on_canvas_only_grant(
+        self, client, monkeypatch, tmp_path
+    ):
+        stores, project, record = await self._setup(
+            client, monkeypatch, tmp_path, ["canvas_read"]
+        )
+        pstore = stores[3]
+        resp = await client.post(
+            f"/api/agents/auth-requests/{record['id']}/approve",
+            json={
+                "granted_scopes": ["canvas_read"],
+                "project_id": project["id"],
+                "is_lead": True,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        cid = resp.json()["canonical_id"]
+        refreshed = await pstore.get_project(project["id"])
+        assert refreshed["lead_member_id"] == cid
+        await self._close(stores)
+
+    @pytest.mark.asyncio
+    async def test_is_lead_with_unknown_project_is_refused_before_mint(
+        self, client, monkeypatch, tmp_path
+    ):
+        stores, project, record = await self._setup(
+            client, monkeypatch, tmp_path, ["project_tasks"]
+        )
+        auth_store = stores[1]
+        resp = await client.post(
+            f"/api/agents/auth-requests/{record['id']}/approve",
+            json={
+                "granted_scopes": ["project_tasks"],
+                "project_id": "prj-missing",
+                "is_lead": True,
+            },
+        )
+        assert resp.status_code == 400, resp.text
+        assert "not found" in resp.text
+        assert (await auth_store.get(record["id"]))["status"] == "pending"
+        await self._close(stores)
+
+    @pytest.mark.asyncio
+    async def test_approve_without_is_lead_stays_member(
+        self, client, monkeypatch, tmp_path
+    ):
+        stores, project, record = await self._setup(
+            client, monkeypatch, tmp_path, ["project_tasks"]
+        )
+        pstore = stores[3]
+        resp = await client.post(
+            f"/api/agents/auth-requests/{record['id']}/approve",
+            json={"granted_scopes": ["project_tasks"], "project_id": project["id"]},
+        )
+        assert resp.status_code == 200, resp.text
+        cid = resp.json()["canonical_id"]
+        members = await pstore.list_members(project["id"])
+        assert [m["role"] for m in members if m["member_id"] == cid] == ["member"]
+        refreshed = await pstore.get_project(project["id"])
+        assert refreshed["lead_member_id"] is None
+        await self._close(stores)
+
+    @pytest.mark.asyncio
+    async def test_is_lead_without_project_id_is_refused(
+        self, client, monkeypatch, tmp_path
+    ):
+        stores, project, record = await self._setup(
+            client, monkeypatch, tmp_path, ["a2a_send"]
+        )
+        auth_store = stores[1]
+        resp = await client.post(
+            f"/api/agents/auth-requests/{record['id']}/approve",
+            json={"granted_scopes": ["a2a_send"], "is_lead": True},
+        )
+        assert resp.status_code == 400, resp.text
+        assert "is_lead requires an explicit project_id" in resp.text
+        # Refused before anything was minted: the request is still pending.
+        assert (await auth_store.get(record["id"]))["status"] == "pending"
+        await self._close(stores)
+
+    @pytest.mark.asyncio
+    async def test_is_lead_without_membership_scope_is_refused(
+        self, client, monkeypatch, tmp_path
+    ):
+        stores, project, record = await self._setup(
+            client, monkeypatch, tmp_path, ["files_read"]
+        )
+        auth_store = stores[1]
+        resp = await client.post(
+            f"/api/agents/auth-requests/{record['id']}/approve",
+            json={
+                "granted_scopes": ["files_read"],
+                "project_id": project["id"],
+                "is_lead": True,
+            },
+        )
+        assert resp.status_code == 400, resp.text
+        assert "is_lead requires granting project_tasks" in resp.text
+        assert (await auth_store.get(record["id"]))["status"] == "pending"
+        await self._close(stores)

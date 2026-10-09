@@ -768,6 +768,13 @@ A bool, string, float, zero, negative or over-ten-years value is refused with
 and a bound that is set is never silently dropped or lengthened. To explicitly
 renew or extend an existing bound, set `renew: true` on the approve body.
 
+Set `is_lead: true` on the approve body to make the approved agent the
+project's lead: the membership row gets role `lead` and the project's lead
+pointer is set to it. It is refused with **400** unless the body names an
+explicit `project_id` and grants `project_tasks` or a canvas scope (the grants
+that create the membership row), and it cannot be combined with
+`defer_binding`.
+
 Deferred binding (`defer_binding=True`) mints the token and grants UNBOUND
 (project_id=None) with the same `expires_at` from `duration_secs`. When the
 agent is later bound to a project via `POST /api/projects/{id}/members/assign-agent`,
@@ -1784,6 +1791,12 @@ Behaviour common to all three:
   scheduler stops routing tasks to it, rather than waiting out the heartbeat
   timeout. The worker stays REGISTERED and therefore still visible in
   `GET /api/cluster/workers`, which is what makes it unblockable from the UI.
+- `DELETE /api/cluster/workers/{name}` additionally unpins every agent whose
+  `remote` matches the worker name: `remote` and `placement_source` are popped,
+  `host` is set to empty, `status` is set to `failed`, and `placement_error`
+  records the worker name. The response includes `unpinned_agents` (the list of
+  affected agent names, empty when none). Marking a worker offline via revoke or
+  block does NOT unpin agents, only full deletion does.
 
 **Blocked devices keep consuming a per-user slot.** `list_for_user` returns rows
 where `revoked=0 OR blocked=1`, so a blocked device counts against
@@ -2016,16 +2029,18 @@ valid for admin/system callers but is no longer bound to any agent name.
 ## Chat author identity (credential-bound for per-agent local tokens)
 
 `POST /api/chat/messages`, `POST /api/chat/messages/{id}/reactions`,
-`DELETE /api/chat/messages/{id}/reactions/{emoji}`,
-`POST /api/chat/channels/{id}/typing`, `POST /api/chat/channels/{id}/thinking`,
-`POST /api/chat/messages/{id}/delta`, and `POST /api/chat/messages/{id}/state`
-now bind the caller-supplied author to the per-agent local token when one is
-presented. The auth middleware sets `request.state.agent_name` for bound tokens
-(`AuthManager.get_local_token_agent`); the routes use a `_bound_agent(request)`
-helper and override `author_id`/`slug` with that name. The host local token,
-admin sessions, session cookies, and device bearers are not bound, so their
-caller-supplied values are preserved (byte-for-byte compatibility with taosctl
-and the SPA).
+`DELETE /api/chat/messages/{id}/reactions/{emoji}`, and
+`POST /api/chat/channels/{id}/typing` now bind the caller-supplied author to the
+per-agent local token when one is presented. `POST /api/chat/messages/{id}/delta`
+and `POST /api/chat/messages/{id}/state` CHECK message ownership (403 when the
+message is missing or not authored by the bound agent) rather than overriding an
+author field. `POST /api/chat/channels/{id}/thinking` REJECTS a mismatched slug
+(it does not override it). The auth middleware sets `request.state.agent_name`
+for bound tokens (`AuthManager.get_local_token_agent`); the routes use a
+`_bound_agent(request)` helper and override `author_id`/`slug` with that name.
+The host local token, admin sessions, session cookies, and device bearers are
+not bound, so their caller-supplied values are preserved (byte-for-byte
+compatibility with taosctl and the SPA).
 
 ## In-process LLM gateway (`/api/llm/v1`, scoped gateway keys, session or host local token)
 

@@ -392,6 +392,20 @@ class NotificationStore(BaseStore):
             await self._db.commit()
             return cursor.rowcount
 
+    async def get(self, notif_id: int) -> dict | None:
+        """Return a single notification row by id, or None if not found.
+
+        Uses the existing _serialize_row for consistent mapping.
+        """
+        async with self._db.execute(
+            "SELECT id, timestamp, level, title, message, read, source, data, user_id FROM notifications WHERE id = ?",
+            (notif_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        return _serialize_row(row)
+
     async def archive_by_source_ref(self, source: str, request_id) -> int:
         """Archive active notifications whose JSON `data.request_id` matches.
 

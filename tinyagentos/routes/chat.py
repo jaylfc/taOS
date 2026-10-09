@@ -487,7 +487,10 @@ async def post_message_delta(request: Request, message_id: str):
         if body_channel_id and body_channel_id != msg.get("channel_id"):
             return JSONResponse({"error": "forbidden: wrong channel"}, status_code=403)
     hub = request.app.state.chat_hub
-    channel_id = body.get("channel_id", "")
+    if agent:
+        channel_id = msg.get("channel_id")
+    else:
+        channel_id = body.get("channel_id", "")
     await hub.broadcast(channel_id, {
         "type": "message_delta",
         "seq": hub.next_seq(),

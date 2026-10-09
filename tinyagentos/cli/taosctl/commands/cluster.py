@@ -113,11 +113,13 @@ def register(subparsers) -> None:
 
     lr = verbs.add_parser("lease-release", help="Release a lease")
     lr.add_argument("lease_id", help="Lease id")
+    lr.add_argument("--epoch", default=None, help="Lease epoch for fencing")
     lr.set_defaults(func=_lease_release)
 
     ln = verbs.add_parser("lease-renew", help="Renew a lease")
     ln.add_argument("lease_id", help="Lease id")
     ln.add_argument("--ttl", type=float, default=None, help="TTL in seconds")
+    ln.add_argument("--epoch", default=None, help="Lease epoch for fencing")
     ln.set_defaults(func=_lease_renew)
 
     # ---- capability registry ---------------------------------------------
@@ -318,13 +320,18 @@ def _lease_claim(args, client):
 
 
 def _lease_release(args, client):
-    return client.post("/api/cluster/leases/release", body={"lease_id": args.lease_id})
+    body = {"lease_id": args.lease_id}
+    if args.epoch is not None:
+        body["epoch"] = args.epoch
+    return client.post("/api/cluster/leases/release", body=body)
 
 
 def _lease_renew(args, client):
     body = {"lease_id": args.lease_id}
     if args.ttl is not None:
         body["ttl_seconds"] = args.ttl
+    if args.epoch is not None:
+        body["epoch"] = args.epoch
     return client.post("/api/cluster/leases/renew", body=body)
 
 
