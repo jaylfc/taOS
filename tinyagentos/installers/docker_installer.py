@@ -295,23 +295,23 @@ class DockerInstaller(AppInstaller):
                             extra_hosts.append("host.docker.internal:host-gateway")
                     if extra_hosts:
                         comp_service["extra_hosts"] = extra_hosts
-                    # Add default healthcheck for postgres if it doesn't have one.
-                    # The installer is app-agnostic, so the user/db are derived from the
-                    # companion's declared env (POSTGRES_USER/POSTGRES_DB) rather than
-                    # hard-coded to one app. pg_isready tolerates a wrong user/db, so a
-                    # stale hard-code here is latent, not breaking -- but it makes the
-                    # healthcheck report the wrong database for any other app.
-                    if comp_name == "postgres" and "healthcheck" not in comp_service:
-                        comp_env = comp_service.get("environment") or {}
-                        pg_user = comp_env.get("POSTGRES_USER") or "postgres"
-                        pg_db = comp_env.get("POSTGRES_DB") or pg_user
-                        comp_service["healthcheck"] = {
-                            "test": ["CMD-SHELL", f"pg_isready -h 127.0.0.1 -U {pg_user} -d {pg_db}"],
-                            "interval": "5s",
-                            "timeout": "5s",
-                            "retries": 5,
-                            "start_period": "10s"
-                        }
+                # Add default healthcheck for postgres if it doesn't have one.
+                # The installer is app-agnostic, so the user/db are derived from the
+                # companion's declared env (POSTGRES_USER/POSTGRES_DB) rather than
+                # hard-coded to one app. pg_isready tolerates a wrong user/db, so a
+                # stale hard-code here is latent, not breaking -- but it makes the
+                # healthcheck report the wrong database for any other app.
+                if comp_name == "postgres" and "healthcheck" not in comp_service:
+                    comp_env = comp_service.get("environment") or {}
+                    pg_user = comp_env.get("POSTGRES_USER") or "postgres"
+                    pg_db = comp_env.get("POSTGRES_DB") or pg_user
+                    comp_service["healthcheck"] = {
+                        "test": ["CMD-SHELL", f"pg_isready -h 127.0.0.1 -U {pg_user} -d {pg_db}"],
+                        "interval": "5s",
+                        "timeout": "5s",
+                        "retries": 5,
+                        "start_period": "10s"
+                    }
                 companion_services.append(comp_service)
                 for vn in comp_named_volumes:
                     named_volumes[vn] = None
