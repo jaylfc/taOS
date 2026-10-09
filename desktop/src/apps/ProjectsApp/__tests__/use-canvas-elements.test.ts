@@ -100,4 +100,90 @@ describe('useCanvasElements', () => {
     // The unsubscribe function returned by subscribeCanvasStream should have been called
     expect(mockUnsubscribe).toHaveBeenCalled()
   })
+
+  it('ignores a listElements response from a superseded elementId', async () => {
+    let resolveA: (value: CanvasElement[]) => void
+    let resolveB: (value: CanvasElement[]) => void
+
+    const promiseA = new Promise<CanvasElement[]>((resolve) => {
+      resolveA = resolve
+    })
+    const promiseB = new Promise<CanvasElement[]>((resolve) => {
+      resolveB = resolve
+    })
+
+    mockListElements
+      .mockImplementationOnce(() => promiseA)
+      .mockImplementationOnce(() => promiseB)
+
+    const { result, rerender } = renderHook(
+      ({ id }) => useCanvasElements(projectId, id),
+      { initialProps: { id: 'a' } }
+    )
+
+    // Wait for first render (initial empty state)
+    await waitFor(() => {
+      expect(result.current).toEqual([])
+    })
+
+    // Switch to elementId 'b' - this triggers a new effect run
+    rerender({ id: 'b' })
+
+    // Resolve the 'b' promise first
+    const bRow: CanvasElement = {
+      id: 'b1',
+      project_id: projectId,
+      kind: 'note',
+      author_kind: 'user',
+      author_id: 'u1',
+      x: 0,
+      y: 0,
+      w: 100,
+      h: 50,
+      rotation: 0,
+      z_index: 0,
+      payload: {},
+      element_id: 'b',
+      created_at: 0,
+      updated_at: 0,
+      deleted_at: null,
+    }
+    resolveB!([bRow])
+
+    // Wait for the 'b' row to appear
+    await waitFor(() => {
+      expect(result.current).toEqual([bRow])
+    })
+
+    // Now resolve the 'a' promise (stale scope) - this should be ignored
+    const aRow: CanvasElement = {
+      id: 'a1',
+      project_id: projectId,
+      kind: 'note',
+      author_kind: 'user',
+      author_id: 'u1',
+      x: 0,
+      y: 0,
+      w: 100,
+      h: 50,
+      rotation: 0,
+      z_index: 0,
+      payload: {},
+      element_id: 'a',
+      created_at: 0,
+      updated_at: 0,
+      deleted_at: null,
+    }
+    resolveA!([aRow])
+
+    // Flush microtasks to let the stale response propagate through the store subscription
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    // Now check the final result - with the bug, this will be [] because the stale 'a'
+    // response seeds the store with 'a' row, then the subscription filters for 'b' and gets []
+    // After the fix, result.current should remain [bRow]
+    expect(result.current).toEqual([bRow])
+  })
 })
