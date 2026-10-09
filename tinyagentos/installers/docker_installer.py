@@ -306,7 +306,7 @@ class DockerInstaller(AppInstaller):
                     pg_user = comp_env.get("POSTGRES_USER") or "postgres"
                     pg_db = comp_env.get("POSTGRES_DB") or pg_user
                     comp_service["healthcheck"] = {
-                        "test": ["CMD-SHELL", f"pg_isready -h 127.0.0.1 -U {pg_user} -d {pg_db}"],
+                        "test": ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", pg_user, "-d", pg_db],
                         "interval": "5s",
                         "timeout": "5s",
                         "retries": 5,
