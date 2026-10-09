@@ -1,9 +1,10 @@
 import glob
 import os
+from pathlib import Path
 
 def test_installer_pip_install_lines_do_not_swallow_failure():
-    script_dir = 'tinyagentos/scripts'
-    install_scripts = glob.glob(os.path.join(script_dir, 'install_*.sh'))
+    script_dir = Path(__file__).parent.parent / 'tinyagentos' / 'scripts'
+    install_scripts = list(script_dir.glob('install_*.sh'))
     assert install_scripts, f"No installer scripts found in {script_dir}"
     
     for script_path in install_scripts:
