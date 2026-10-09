@@ -98,12 +98,13 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
 
   dismiss(id) {
     set((s) => {
-      notifications: s.notifications.map((n) => {
+      const newNotifications = s.notifications.map((n) => {
         if (n.id === id) {
-          # Do not archive agent_scope_requests or auth_requests notifications
           if (n.source === "agent_scope_requests" || n.source === "auth_requests") {
-            # Optionally mark as read? We'll leave it as is for now.
-            return n;
+            // Do not archive agent_scope_requests or auth_requests notifications
+            // Optionally mark as read? We'll leave it as is for now.
+            // We choose to mark as read per the review's permission.
+            return { ...n, read: true };
           }
           if (n.id.startsWith("srv-")) {
             dismissedServerIds.add(n.id);
@@ -112,36 +113,46 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
           return { ...n, archived: true };
         }
         return n;
-      }),
+      });
+      return { notifications: newNotifications };
     });
-  }
+  },
 
   archiveRead(id) {
-    // Resolving a notification (e.g. answering an agent access-request) both
-    // reads and archives it: it leaves the active Inbox and lands in History
-    // rather than being marked read in place or silently removed (#62).
-    if (id.startsWith("srv-")) {
-      dismissedServerIds.add(id);
-      void archiveServerNotification(id);
-    }
-    set((s) => ({
-      notifications: s.notifications.map((n) =>
-        n.id === id ? { ...n, archived: true, read: true } : n,
-      ),
-    }));
+    set((s) => {
+      const notification = s.notifications.find(n => n.id === id);
+      if (!notification) return s;
+      if (notification.source === "agent_scope_requests" || notification.source === "auth_requests") {
+        // Do nothing: the only archive path is _retire_* on approve/deny.
+        return s;
+      }
+      if (id.startsWith("srv-")) {
+        dismissedServerIds.add(id);
+        void archiveServerNotification(id);
+      }
+      return {
+        notifications: s.notifications.map((n) =>
+          n.id === id ? { ...n, archived: true, read: true } : n,
+        ),
+      };
+    });
   },
 
   clearAll() {
     set((s) => {
-      for (const n of s.notifications) {
+      const newNotifications = s.notifications.map((n) => {
         if (n.id.startsWith("srv-")) {
+          // Do not archive agent_scope_requests or auth_requests notifications
+          if (n.source === "agent_scope_requests" || n.source === "auth_requests") {
+            return n;
+          }
           dismissedServerIds.add(n.id);
           void archiveServerNotification(n.id);
+          return { ...n, archived: true };
         }
-      }
-      return {
-        notifications: s.notifications.map((n) => ({ ...n, archived: true })),
-      };
+        return n;
+      });
+      return { notifications: newNotifications };
     });
   },
 
