@@ -79,7 +79,22 @@ _BLOCKED_NETWORKS = (
 )
 
 
-def validate_url_or_raise(url: str, *, allow_private: bool = False) -> list[str]:
+HostPorts = frozenset[tuple[str, int]]
+
+
+def _hostport(hostname: str, port: int | None, scheme: str) -> tuple[str, int]:
+    """The exact ``(host, port)`` key a known-endpoint allowance is matched on."""
+    if port is None:
+        port = 443 if scheme == "https" else 80
+    return hostname.strip().lower(), int(port)
+
+
+def validate_url_or_raise(
+    url: str,
+    *,
+    allow_private: bool = False,
+    allow_hostports: HostPorts = frozenset(),
+) -> list[str]:
     """Validate that `url` is safe to fetch.
 
     Parses the URL, checks scheme + hostname suffix, resolves DNS, and
@@ -98,6 +113,15 @@ def validate_url_or_raise(url: str, *, allow_private: bool = False) -> list[str]
     refusing loopback, link-local, multicast, reserved, and unspecified
     ranges. CGNAT is NOT permitted by ``allow_private`` — see
     `validate_resolved_addr` for the ranges that stay blocked either way.
+
+    ``allow_hostports`` is the known-endpoint allowance: a set of exact
+    ``(host, port)`` pairs the caller has RECORDED for a peer (never taken
+    from the request being validated). A URL whose host and effective port
+    match one entry may skip only the private-range and CGNAT checks, so a
+    friend's recorded tailnet address is reachable; loopback, link-local,
+    multicast, reserved and unspecified addresses stay blocked even when
+    recorded. Any other host, or the same host on another port, is checked
+    as if the set were empty.
     """
     parsed = urlparse(url)
 
@@ -107,16 +131,26 @@ def validate_url_or_raise(url: str, *, allow_private: bool = False) -> list[str]
     if not parsed.hostname:
         raise SsrfBlockedError("URL has no hostname")
 
-    return resolve_and_validate(parsed.hostname, allow_private=allow_private)
+    try:
+        port = parsed.port
+    except ValueError as e:
+        raise SsrfBlockedError(f"URL has an invalid port: {e}") from e
+    known = _hostport(parsed.hostname, port, parsed.scheme) in allow_hostports
+    return resolve_and_validate(
+        parsed.hostname, allow_private=allow_private, known_endpoint=known,
+    )
 
 
-def resolve_and_validate(hostname: str, *, allow_private: bool = False) -> list[str]:
+def resolve_and_validate(
+    hostname: str, *, allow_private: bool = False, known_endpoint: bool = False,
+) -> list[str]:
     """Resolve `hostname` once and validate every address it answers with.
 
     Returns the checked addresses in resolver order — the first is the one
     a connection should be opened to. Raises `SsrfBlockedError` if the
     hostname carries a blocked suffix, does not resolve, or resolves to any
-    blocked address. See `validate_resolved_addr` for ``allow_private``.
+    blocked address. See `validate_resolved_addr` for ``allow_private`` and
+    ``known_endpoint``.
     """
     host = hostname.strip().lower()
 
@@ -165,12 +199,16 @@ def resolve_and_validate(hostname: str, *, allow_private: bool = False) -> list[
         raise SsrfBlockedError("hostname resolved to no addresses")
 
     for addr in addrs:
-        validate_resolved_addr(addr, allow_private=allow_private)
+        validate_resolved_addr(
+            addr, allow_private=allow_private, known_endpoint=known_endpoint,
+        )
 
     return addrs
 
 
-def validate_resolved_addr(addr: str, *, allow_private: bool = False) -> None:
+def validate_resolved_addr(
+    addr: str, *, allow_private: bool = False, known_endpoint: bool = False,
+) -> None:
     """Validate that a resolved IP address is safe to connect to.
 
     Rejects loopback, RFC1918, link-local, multicast, broadcast,
@@ -183,6 +221,11 @@ def validate_resolved_addr(addr: str, *, allow_private: bool = False) -> None:
     (RFC 6598 ``100.64.0.0/10``) and deprecated IPv6 site-local
     (``fec0::/10``) — stays blocked regardless of allow_private, because
     our own A2A bus lives in the CGNAT range.
+
+    ``known_endpoint=True`` (an exact recorded ``(host, port)`` matched in
+    `validate_url_or_raise` or the pinned backend) skips the private-range
+    check AND the CGNAT block, and nothing else: loopback, link-local,
+    multicast, reserved and unspecified still raise.
     """
     try:
         ip = ipaddress.ip_address(addr)
@@ -201,11 +244,14 @@ def validate_resolved_addr(addr: str, *, allow_private: bool = False) -> None:
     # allow_private=True skips this check, which is what permits RFC1918
     # and IPv6 unique-local for self-hosted LAN services. The
     # _BLOCKED_NETWORKS pass below still applies either way.
-    if not allow_private and ip.is_private:
+    if not allow_private and not known_endpoint and ip.is_private:
         raise SsrfBlockedError(f"resolved address {addr!r} is in the blocklist")
 
     # Always blocked, even when allow_private=True: CGNAT (our own A2A bus
-    # lives in that range) and deprecated IPv6 site-local.
+    # lives in that range) and deprecated IPv6 site-local. Only an exact
+    # recorded peer endpoint (known_endpoint) may sit there.
+    if known_endpoint:
+        return
     for net in _BLOCKED_NETWORKS:
         if ip in net:
             raise SsrfBlockedError(
@@ -227,10 +273,15 @@ class _PinnedResolutionBackend(httpcore.AsyncNetworkBackend):
     """
 
     def __init__(
-        self, inner: httpcore.AsyncNetworkBackend, *, allow_private: bool = False,
+        self,
+        inner: httpcore.AsyncNetworkBackend,
+        *,
+        allow_private: bool = False,
+        allow_hostports: HostPorts = frozenset(),
     ) -> None:
         self._inner = inner
         self._allow_private = allow_private
+        self._allow_hostports = allow_hostports
 
     async def connect_tcp(
         self,
@@ -240,7 +291,10 @@ class _PinnedResolutionBackend(httpcore.AsyncNetworkBackend):
         local_address: str | None = None,
         socket_options: typing.Iterable[typing.Any] | None = None,
     ) -> httpcore.AsyncNetworkStream:
-        addrs = resolve_and_validate(host, allow_private=self._allow_private)
+        known = (host.strip().lower(), int(port)) in self._allow_hostports
+        addrs = resolve_and_validate(
+            host, allow_private=self._allow_private, known_endpoint=known,
+        )
         return await self._inner.connect_tcp(
             addrs[0],
             port,
@@ -272,7 +326,13 @@ class SsrfGuardedAsyncTransport(httpx.AsyncHTTPTransport):
     resolves and validates the hostname as part of opening the connection.
     """
 
-    def __init__(self, *, allow_private: bool = False, **kwargs: typing.Any) -> None:
+    def __init__(
+        self,
+        *,
+        allow_private: bool = False,
+        allow_hostports: HostPorts = frozenset(),
+        **kwargs: typing.Any,
+    ) -> None:
         super().__init__(**kwargs)
         pool = getattr(self, "_pool", None)
         if not hasattr(pool, "_network_backend"):
@@ -284,13 +344,16 @@ class SsrfGuardedAsyncTransport(httpx.AsyncHTTPTransport):
                 "unpinned client."
             )
         pool._network_backend = _PinnedResolutionBackend(
-            pool._network_backend, allow_private=allow_private,
+            pool._network_backend,
+            allow_private=allow_private,
+            allow_hostports=allow_hostports,
         )
 
 
 def guarded_async_client(
     *,
     allow_private: bool = False,
+    allow_hostports: HostPorts = frozenset(),
     verify: typing.Any = True,
     http2: bool = False,
     **kwargs: typing.Any,
@@ -310,7 +373,10 @@ def guarded_async_client(
     """
     return httpx.AsyncClient(
         transport=SsrfGuardedAsyncTransport(
-            allow_private=allow_private, verify=verify, http2=http2,
+            allow_private=allow_private,
+            allow_hostports=allow_hostports,
+            verify=verify,
+            http2=http2,
         ),
         **kwargs,
     )
