@@ -104,6 +104,17 @@ _MEMORY_ROUTES = (
 # Every path that accepts a registry JWT in place of the admin session.  The
 # passthrough is allowlisted to exactly these paths -- a registry JWT must never
 # authenticate any other route (no skeleton key).
+# Self-only chat-session routes for registry agents (taOStalk S1): an agent
+# reaches its own openclaw bridge events stream and reply ingest with a
+# registry JWT holding the chat_session grant. The slug is derived from the
+# token's own registry identity, never from a request body, so an agent can
+# only ever subscribe to and reply as ITSELF. Same passthrough contract as the
+# A2A bus paths: only a Bearer that is NOT the admin local token reaches the
+# route, which verifies the JWT + grant itself.
+_AGENT_CHAT_SESSION_PATHS = frozenset({
+    "/api/agents/self/chat/events",
+    "/api/agents/self/chat/reply",
+})
 # Agent self-serve routes: /api/agents/me/models (GET) and /api/agents/me/model (POST)
 # accept a LiteLLM/Bearer key for agent self-service.
 # Desktop control endpoints (command, screenshot, layout) for the system taOS Agent.
@@ -120,6 +131,7 @@ _AGENT_TOKEN_PATHS = (
     | _A2A_GPU_WRITE_PATHS
     | _OBSERVATORY_PATHS
     | _CONTAINER_REQUEST_PATHS
+    | _AGENT_CHAT_SESSION_PATHS
     | frozenset({
         "/api/agents/me/models",
         "/api/agents/me/model",

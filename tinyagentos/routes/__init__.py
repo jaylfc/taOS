@@ -143,6 +143,13 @@ def register_all_routers(app):
     from tinyagentos.routes.a2a_bus import router as a2a_bus_router
     app.include_router(a2a_bus_router, dependencies=_csrf)
 
+    # Self-only chat-session routes for registry agents (taOStalk S1): bearer
+    # JWT with the chat_session grant, slug derived from the token's own
+    # registry identity. Registered CSRF-gated like the A2A bus; the bearer
+    # itself is exempt from CSRF (see middleware.csrf.verify_csrf).
+    from tinyagentos.routes.agent_chat_session import router as agent_chat_session_router
+    app.include_router(agent_chat_session_router, dependencies=_csrf)
+
     from tinyagentos.routes.a2a_gpu_lease import router as a2a_gpu_lease_router
     app.include_router(a2a_gpu_lease_router, dependencies=_csrf)
 

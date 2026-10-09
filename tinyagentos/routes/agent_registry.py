@@ -104,6 +104,10 @@ _ALLOWED_SCOPES = frozenset({
     "observatory_control",
     "notifications_write",
     "memory_read",
+    # Chat session: an agent's own openclaw bridge events stream + reply
+    # ingest (taOStalk S1). Self-only by construction -- the slug is derived
+    # from the token's own registry identity, never from a request body.
+    "chat_session",
 })
 
 

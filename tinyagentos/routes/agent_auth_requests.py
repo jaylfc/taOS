@@ -110,6 +110,10 @@ VALID_SCOPES = frozenset({
     "project_lists",
     # Memory access: read an agent's own memory index.
     "memory_read",
+    # Chat session: an agent's own openclaw bridge events stream + reply
+    # ingest (taOStalk S1). Self-only by construction -- the slug is derived
+    # from the token's own registry identity, never from a request body.
+    "chat_session",
 })
 
 
