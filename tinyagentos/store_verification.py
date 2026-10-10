@@ -114,6 +114,19 @@ def _check_builds(app_dir: Path) -> dict:
     entry = manifest.get("entry")
     app_type = manifest.get("app_type")
 
+    # If entry is set, resolve it and run containment check FIRST
+    if entry:
+        app_dir_resolved = app_dir.resolve()
+        entry_path = (app_dir / entry).resolve()
+        try:
+            entry_path.relative_to(app_dir_resolved)
+        except ValueError:
+            return {
+                "name": "builds",
+                "status": "fail",
+                "detail": "entry escapes package dir",
+            }
+
     # Check for package.json with scripts.build
     pkg_json = app_dir / "package.json"
     if pkg_json.is_file():
@@ -133,18 +146,8 @@ def _check_builds(app_dir: Path) -> dict:
             "detail": "no build or entry declared",
         }
 
-    # Resolve entry and ensure it doesn't escape the package directory
-    app_dir_resolved = app_dir.resolve()
+    # Declared entry file missing
     entry_path = (app_dir / entry).resolve()
-    try:
-        entry_path.relative_to(app_dir_resolved)
-    except ValueError:
-        return {
-            "name": "builds",
-            "status": "fail",
-            "detail": "entry escapes package dir",
-        }
-
     if not entry_path.is_file():
         return {
             "name": "builds",

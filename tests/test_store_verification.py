@@ -211,3 +211,20 @@ class TestRunChecks:
         builds_check = next(c for c in result["checks"] if c["name"] == "builds")
         assert builds_check["status"] == "fail"
         assert "escapes package dir" in builds_check["detail"]
+
+    @pytest.mark.asyncio
+    async def test_entry_escapes_package_dir_fails_builds_even_with_build_script(self, tmp_path: Path):
+        """Entry escaping package dir should fail builds even if package.json has scripts.build."""
+        p = tmp_path / "escape-entry-build"
+        p.mkdir()
+        _make_manifest_yaml(
+            "id: escape-entry-build\nname: EscapeEntryBuild\nversion: 1.0.0\napp_type: web\n"
+            "entry: ../../etc/passwd\n",
+            p,
+        )
+        (p / "package.json").write_text('{"scripts": {"build": "echo build"}}')
+        result = await run_checks(p)
+        assert result["ok"] is False
+        builds_check = next(c for c in result["checks"] if c["name"] == "builds")
+        assert builds_check["status"] == "fail"
+        assert "escapes package dir" in builds_check["detail"]
