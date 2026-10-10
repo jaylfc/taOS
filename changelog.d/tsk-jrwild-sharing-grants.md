@@ -3,3 +3,4 @@
 
 ### Fixed
 - Security fix for sharing grants: Different owners can no longer reactivate or hijack each other's grants. Now `grant()` raises `PermissionError` when a different owner attempts to activate a revoked or active grant for the same (artifact_id, grantee) pair.
+- Added test to verify that grant by other owner does not reactivate.

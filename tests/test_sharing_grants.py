@@ -142,6 +142,13 @@ class TestSharingGrantStore:
         assert active == []
 
     @pytest.mark.asyncio
+    async def test_list_for_uninitialised_raises(self, tmp_path):
+        store = SharingGrantStore(tmp_path / "sharing_grants.db")
+        with pytest.raises(RuntimeError, match="not initialised"):
+            await store.list_for("grantee1")
+        await store.close()
+
+    @pytest.mark.asyncio
     async def test_grant_by_other_owner_does_not_reactivate(self, store):
         grant1 = await store.grant("art-1", "app", "a", "zed")
         assert grant1["owner_id"] == "a"
@@ -411,7 +418,7 @@ async def test_other_owner_cannot_hijack_active_grant(client, app):
         assert r3.status_code == 200
         assert r3.json() == []
 
-        store = client._transport.app.state.sharing_grants
+        store = app.state.sharing_grants
         current_grant_a = await store.get(grant_a["id"])
         assert current_grant_a["status"] == "active"
         assert current_grant_a["owner_id"] != user_b_record["id"]

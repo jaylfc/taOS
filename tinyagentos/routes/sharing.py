@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from builtins import PermissionError
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
