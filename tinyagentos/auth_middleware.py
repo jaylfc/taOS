@@ -16,46 +16,37 @@ from starlette.responses import HTMLResponse, RedirectResponse
 from tinyagentos.agent_token_auth import _get_keypair, _get_store, check_agent_identity
 from tinyagentos.auth import AuthStoreCorruptError
 from tinyagentos.device_scopes import (
-    AGENTS_READ,
-    CHAT_SEND,
-    DECISIONS_ANSWER,
-    FILES_UPLOAD,
-    LIBRARY_INGEST,
-    PUSH_REGISTER,
-    VOICE_STT,
-    VOICE_TTS,
+    AGENTS_READ, CHAT_SEND, DECISIONS_ANSWER, FILES_UPLOAD, LIBRARY_INGEST,
+    PUSH_REGISTER, VOICE_STT, VOICE_TTS,
 )
 from tinyagentos.device_store import DEVICE_TOKEN_PREFIX
 from tinyagentos.rate_limit import MovingWindowLimiter
 
 logger = logging.getLogger(__name__)
-
-# Agent token route recorder loggers -- logs bound-agent local-token requests
-# to {data_dir}/logs/agent-token-routes.jsonl (rotating, 5MB, 3 backups).
-# Attached lazily on first use per data_dir via _get_agent_token_routes_logger().
-_agent_token_routes_loggers: dict[str, logging.Logger] = {}
-
-
 def _get_agent_token_routes_logger(data_dir: Path) -> logging.Logger:
     """Return the module-level logger for agent token route recording.
 
     The logger writes JSON lines to {data_dir}/logs/agent-token-routes.jsonl
     with a RotatingFileHandler (maxBytes=5MB, backupCount=3). The handler is
-    attached once per data_dir, on first call. propagate=False so logs don't
-    bubble to root.
+    attached once, propagate=False so logs don't bubble to root.
     """
-    global _agent_token_routes_loggers
-    data_dir_str = str(data_dir.resolve())
-    if data_dir_str in _agent_token_routes_loggers:
-        return _agent_token_routes_loggers[data_dir_str]
-
-    log_logger = logging.getLogger(f"taos.agent_token_routes.{data_dir_str}")
+    log_logger = logging.getLogger("taos.agent_token_routes")
     log_logger.propagate = False
     log_logger.setLevel(logging.INFO)
 
     log_dir = data_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "agent-token-routes.jsonl"
+
+    # Attach handler only once if not already attached to this path
+    for handler in log_logger.handlers:
+        if isinstance(handler, logging.handlers.RotatingFileHandler):
+            if handler.baseFilename == str(log_path):
+                return log_logger
+    # Remove any existing handlers before attaching new one
+    for handler in log_logger.handlers[:]:
+        log_logger.removeHandler(handler)
+        handler.close()
 
     handler = logging.handlers.RotatingFileHandler(
         log_path, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
@@ -64,7 +55,6 @@ def _get_agent_token_routes_logger(data_dir: Path) -> logging.Logger:
     handler.setFormatter(logging.Formatter("%(message)s"))
     log_logger.addHandler(handler)
 
-    _agent_token_routes_loggers[data_dir_str] = log_logger
     return log_logger
 
 
