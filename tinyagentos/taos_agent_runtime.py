@@ -1,6 +1,6 @@
 """The system taOS Agent's harness: which one runs it, and its lifecycle.
 
-Two harnesses can run the system taOS Agent:
+Three harnesses can run the system taOS Agent:
 
 - opencode (every host by default): a single host ``opencode serve`` used
   exclusively by the taOS agent chat endpoint, started lazily on the first
@@ -9,6 +9,9 @@ Two harnesses can run the system taOS Agent:
 - PicoClaw (a taOSmobile handset by default): one ``picoclaw agent`` process
   per turn, talking to the controller's own LLM gateway with a scoped key
   (see :mod:`tinyagentos.picoclaw_runtime`).
+- Claude Code (operator override only, never chosen by ``auto``): one
+  ``claude -p`` process per turn, signed in with a ``claude setup-token``
+  token kept in the device Secrets (see :mod:`tinyagentos.claude_code_runtime`).
 
 :func:`decide_framework` is the ONE place the choice is made, from
 ``device.class`` / ``taos_agent.framework`` in config.yaml, the detected
@@ -34,7 +37,8 @@ TAOS_OPENCODE_PORT = 4188  # local-only port for the taOS agent opencode server
 
 FRAMEWORK_OPENCODE = OpenCodeServer.__name__.split("Server")[0].lower()  # "opencode"
 FRAMEWORK_PICOCLAW = "picoclaw"
-FRAMEWORK_CHOICES = ("auto", FRAMEWORK_OPENCODE, FRAMEWORK_PICOCLAW)
+FRAMEWORK_CLAUDE_CODE = "claude_code"
+FRAMEWORK_CHOICES = ("auto", FRAMEWORK_OPENCODE, FRAMEWORK_PICOCLAW, FRAMEWORK_CLAUDE_CODE)
 DEVICE_CLASS_CHOICES = ("auto", "mobile", "desktop")
 
 #: The gateway principal the PicoClaw-run taOS Agent's key is bound to.
@@ -42,6 +46,8 @@ PICOCLAW_PRINCIPAL = "agent:taos-agent"
 
 REASON_GATEWAY_DISABLED = "picoclaw preferred, gateway disabled, using opencode"
 REASON_NO_BINARY = "picoclaw preferred, picoclaw binary not found, using opencode"
+REASON_NO_CLAUDE_BINARY = "claude_code preferred, claude binary not found, using opencode"
+REASON_NO_CLAUDE_TOKEN = "claude_code preferred, no claude_code_oauth_token secret, using opencode"
 
 
 @dataclass(frozen=True)
@@ -73,14 +79,17 @@ def decide_framework(
     detected_device_class: str | None,
     gateway_enabled: bool,
     picoclaw_available: bool,
+    claude_code_available: bool = False,
+    claude_code_token_present: bool = False,
 ) -> FrameworkDecision:
     """Pick the system taOS Agent's harness. Pure: no I/O besides a warning.
 
-    ``taos_agent.framework`` "opencode"/"picoclaw" is an operator override;
+    ``taos_agent.framework`` "opencode"/"picoclaw"/"claude_code" is an operator override;
     "auto" means picoclaw on a mobile device and opencode everywhere else.
     ``device.class`` "auto" takes the detected class (hardware.py's kiosk-unit
     probe). PicoClaw needs the LLM gateway and the binary; without either,
-    opencode runs and the reason says why.
+    opencode runs and the reason says why. Claude Code needs the ``claude``
+    binary and the token secret, not the gateway.
     """
     dev = _setting(device_class_setting, DEVICE_CLASS_CHOICES, "device.class")
     if dev == "auto":
@@ -99,13 +108,23 @@ def decide_framework(
             return FrameworkDecision(FRAMEWORK_OPENCODE, preference, REASON_GATEWAY_DISABLED, device_class)
         if not picoclaw_available:
             return FrameworkDecision(FRAMEWORK_OPENCODE, preference, REASON_NO_BINARY, device_class)
+    if preference == FRAMEWORK_CLAUDE_CODE:
+        if not claude_code_available:
+            return FrameworkDecision(FRAMEWORK_OPENCODE, preference, REASON_NO_CLAUDE_BINARY, device_class)
+        if not claude_code_token_present:
+            return FrameworkDecision(FRAMEWORK_OPENCODE, preference, REASON_NO_CLAUDE_TOKEN, device_class)
     return FrameworkDecision(preference, preference, why, device_class)
 
 
-def refresh_framework_decision(app_state) -> FrameworkDecision:
+def refresh_framework_decision(app_state, *, claude_code_token_present: bool = False) -> FrameworkDecision:
     """Decide from app_state's config, hardware profile and the gateway flag;
-    store it on ``app_state.taos_agent_framework_decision`` and log it."""
+    store it on ``app_state.taos_agent_framework_decision`` and log it.
+
+    The Secrets store is async, so the caller that wants claude_code honoured
+    awaits :func:`tinyagentos.claude_code_runtime.claude_code_token_present`
+    and passes the answer in."""
     from tinyagentos import llm_gateway
+    from tinyagentos.claude_code_runtime import resolve_claude_binary
     from tinyagentos.picoclaw_runtime import resolve_picoclaw_binary
 
     config = getattr(app_state, "config", None)
@@ -116,6 +135,8 @@ def refresh_framework_decision(app_state) -> FrameworkDecision:
         detected_device_class=getattr(profile, "device_class", None),
         gateway_enabled=llm_gateway.enabled(),
         picoclaw_available=resolve_picoclaw_binary() is not None,
+        claude_code_available=resolve_claude_binary() is not None,
+        claude_code_token_present=claude_code_token_present,
     )
     app_state.taos_agent_framework_decision = decision
     if decision.framework != decision.preference:
@@ -635,11 +656,69 @@ async def ensure_taos_picoclaw_harness(app_state):
         return await _provision_picoclaw_locked(app_state, models)
 
 
+async def ensure_taos_claude_code_harness(app_state, model: str, system_prompt: str | None):
+    """The Claude Code harness for ``model`` and ``system_prompt``.
+
+    Reads the token from the Secrets store at provision time (it is never in
+    the controller env) and caches the harness on
+    ``app_state.taos_claude_code_harness``; rebuilt when the model, the system
+    prompt or the token changes. Raises ``ClaudeCodeBinaryNotFoundError`` when
+    ``claude`` is missing and ``ClaudeCodeTokenMissingError`` without the secret.
+    """
+    from tinyagentos.claude_code_runtime import (
+        CLAUDE_CODE_TOKEN_SECRET,
+        ClaudeCodeBinaryNotFoundError,
+        ClaudeCodeHarness,
+        ClaudeCodeTokenMissingError,
+        home_for,
+        resolve_claude_binary,
+    )
+
+    binary = resolve_claude_binary()
+    if binary is None:
+        raise ClaudeCodeBinaryNotFoundError("claude binary not found")
+    store = getattr(app_state, "secrets", None)
+    row = await store.get(CLAUDE_CODE_TOKEN_SECRET) if store is not None else None
+    token = (row or {}).get("value") or ""
+    if not token:
+        raise ClaudeCodeTokenMissingError(CLAUDE_CODE_TOKEN_SECRET)
+    harness = getattr(app_state, "taos_claude_code_harness", None)
+    if (
+        harness is not None
+        and harness.model == model
+        and harness.system == system_prompt
+        and harness.token == token
+        and harness.binary == binary
+    ):
+        return harness
+    harness = ClaudeCodeHarness(
+        home=home_for(app_state.data_dir), token=token, model=model,
+        binary=binary, system=system_prompt,
+    )
+    harness.write_home()
+    app_state.taos_claude_code_harness = harness
+    return harness
+
+
 async def apply_framework(app_state) -> FrameworkDecision:
     """Re-decide and make the running harness match: the agent restarts, the
     controller does not. Leaving PicoClaw revokes its key; entering it stops
-    opencode and provisions PicoClaw (a fresh key, a fresh config)."""
-    decision = refresh_framework_decision(app_state)
+    opencode and provisions PicoClaw (a fresh key, a fresh config). Claude
+    Code needs no provisioning here: its harness is built per chat request
+    from the token in Secrets."""
+    from tinyagentos.claude_code_runtime import claude_code_token_present
+
+    decision = refresh_framework_decision(
+        app_state, claude_code_token_present=await claude_code_token_present(app_state))
+    if decision.framework == FRAMEWORK_CLAUDE_CODE:
+        await stop_taos_opencode_server(app_state)
+        async with _picoclaw_lock(app_state):
+            retire_picoclaw(app_state)
+        app_state.taos_claude_code_harness = None
+        app_state.taos_claude_code_session_id = None
+        return decision
+    app_state.taos_claude_code_harness = None
+    app_state.taos_claude_code_session_id = None
     if decision.framework == FRAMEWORK_PICOCLAW:
         await stop_taos_opencode_server(app_state)
         await provision_picoclaw(app_state)

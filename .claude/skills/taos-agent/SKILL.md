@@ -32,6 +32,10 @@ from `exec` (no leading slash on the path); each reply arrives whole at the
 end of the turn, and image attachments are not supported yet. Your models are whatever the taOS Agent settings permit,
 reached through `taos-default` on the controller's LLM gateway.
 
+An operator can also run you on Claude Code (`framework` = `claude_code`): your
+tools are Claude Code's own, in your workspace, and image attachments are not
+supported yet. The `bin/taos` helper is not provisioned for this harness yet.
+
 ## HARD RULE: Drive the OS only via the control API
 
 Every desktop and window action must go through the control API. There is one channel:

@@ -1,0 +1,2 @@
+### Added
+- Claude Code as a taOS Agent harness (`taos_agent.framework: claude_code`, an operator override, never chosen by `auto`): one `claude -p` stream-json turn per message, signed in with a `claude setup-token` token kept in the `claude_code_oauth_token` Secret and passed to the child only as `CLAUDE_CODE_OAUTH_TOKEN`; falls back to opencode, with the reason logged, when the binary or the secret is missing (tsk-omt4oi).
