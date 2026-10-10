@@ -6,6 +6,7 @@ environment, and run_turn against a fake ``claude`` executable.
 from __future__ import annotations
 
 import stat
+import os
 
 import pytest
 
@@ -175,8 +176,15 @@ async def test_run_turn_first_and_resumed(tmp_path, monkeypatch):
     assert (tmp_path / "dump.stdin").read_text() == "hello there"
     argv = (tmp_path / "dump.argv").read_text().split("\n")[:-1]
     assert argv[:2] == ["-p", "--output-format"]
+    # Check for the new system prompt flag
+    assert "--append-system-prompt-file" in argv
+    idx = argv.index("--append-system-prompt-file")
+    system_prompt_path = argv[idx + 1]
+    assert isinstance(system_prompt_path, str)
+    assert len(system_prompt_path) > 0
+    # Check the other flags
     for flag, val in (("--output-format", "stream-json"), ("--model", "claude-sonnet-5-5"),
-                      ("--permission-mode", "bypassPermissions"), ("--append-system-prompt", "be nice")):
+                      ("--permission-mode", "bypassPermissions")):
         assert argv[argv.index(flag) + 1] == val
     assert "--verbose" in argv
     assert "--resume" not in argv
@@ -189,14 +197,21 @@ async def test_run_turn_first_and_resumed(tmp_path, monkeypatch):
     argv2 = (tmp_path / "dump.argv").read_text().split("\n")[:-1]
     assert argv2[argv2.index("--resume") + 1] == "sess-1"
     assert res2.session_id == "sess-1"
+    env = (tmp_path / "dump.env").read_text()
+    assert f"CLAUDE_CODE_OAUTH_TOKEN={TOKEN}" in env
+    assert "TAOS_SECRET_PROBE" not in env
 
+    res2 = await h.run_turn("again", "sess-1")
+    argv2 = (tmp_path / "dump.argv").read_text().split("\n")[:-1]
+    assert argv2[argv2.index("--resume") + 1] == "sess-1"
+    assert res2.session_id == "sess-1"
 
 @pytest.mark.asyncio
 async def test_no_system_flag_when_system_is_none(tmp_path):
     h = _harness(tmp_path, binary=_fake(tmp_path, _FAKE_OK))
     h.write_home()
     await h.run_turn("x", None)
-    assert "--append-system-prompt" not in (tmp_path / "dump.argv").read_text()
+    assert "--append-system-prompt-file" not in (tmp_path / "dump.argv").read_text()
 
 
 @pytest.mark.asyncio
@@ -237,3 +252,49 @@ async def test_missing_binary_raises(tmp_path):
     h.write_home()
     with pytest.raises(ClaudeCodeBinaryNotFoundError):
         await h.run_turn("x", None)
+
+# ---------------------------------------------------------------- argv
+def test_argv_uses_system_prompt_file(tmp_path):
+    h = _harness(tmp_path, system="hello persona")
+    argv = h._argv(None)
+    assert "--append-system-prompt-file" in argv
+    assert "--append-system-prompt" not in argv
+    idx = argv.index("--append-system-prompt-file")
+    path = argv[idx + 1]
+    assert os.path.exists(path)
+    with open(path) as f:
+        content = f.read()
+    assert content == "hello persona"
+
+
+def test_argv_system_prompt_file_is_private(tmp_path):
+    h = _harness(tmp_path, system="hello persona")
+    argv = h._argv(None)
+    idx = argv.index("--append-system-prompt-file")
+    path = argv[idx + 1]
+    mode = stat.S_IMODE(os.stat(path).st_mode)
+    assert mode == 0o600
+
+
+@pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_system_prompt_file_removed_after_run(tmp_path):
+    body = '''#!/bin/bash
+mkdir -p "$(dirname "$0")/dump"
+printf '%s\n' "$@" > "$(dirname "$0")/dump/argv"
+exit 0
+'''
+    binary_path = _fake(tmp_path, body)
+    h = _harness(tmp_path, binary=binary_path, system="hello persona")
+    h.write_home()
+    await h.run_turn("x", None)
+    argv = (tmp_path / "dump" / "argv").read_text().split("\n")[:-1]
+    try:
+        idx = argv.index("--append-system-prompt-file")
+    except ValueError:
+        raise AssertionError("--append-system-prompt-file not found in argv")
+    path = argv[idx + 1]
+    assert not os.path.exists(path), f"Temp file {path} still exists after run"
+    path = argv[idx + 1]
+    assert not os.path.exists(path), f"Temp file {path} still exists after run"
+

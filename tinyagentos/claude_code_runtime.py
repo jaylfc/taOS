@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import shutil
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -92,6 +93,7 @@ class ClaudeCodeHarness:
     binary: str = "claude"
     turn_timeout: float = 300.0
     system: str | None = None
+    _system_prompt_file: str | None = field(init=False, default=None, repr=False)
     """Appended to Claude Code's system prompt with ``--append-system-prompt``."""
 
     @property
@@ -122,11 +124,26 @@ class ClaudeCodeHarness:
             env["TZ"] = os.environ["TZ"]
         return env
 
+    def _cleanup_system_prompt_file(self) -> None:
+        if self._system_prompt_file is not None:
+            try:
+                os.unlink(self._system_prompt_file)
+            except FileNotFoundError:
+                pass
+            finally:
+                self._system_prompt_file = None
+
     def _argv(self, session_id: str | None) -> list[str]:
         argv = [self.binary, "-p", "--output-format", "stream-json", "--verbose",
                 "--model", self.model, "--permission-mode", "bypassPermissions"]
         if self.system:
-            argv += ["--append-system-prompt", self.system]
+            # Create a temporary file for the system prompt
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+                f.write(self.system)
+                path = f.name
+            os.chmod(path, 0o600)
+            self._system_prompt_file = path
+            argv += ["--append-system-prompt-file", path]
         if session_id:
             argv += ["--resume", session_id]
         return argv
@@ -208,6 +225,8 @@ class ClaudeCodeHarness:
             except ProcessLookupError:
                 pass
             raise
+        finally:
+            self._cleanup_system_prompt_file()
         stderr = self.redact(err.decode("utf-8", "replace"))
         reply = ""
         for evt in events:
