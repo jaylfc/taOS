@@ -1,0 +1,2 @@
+### Added
+- Account-to-account app sharing backend: new `SharingGrantStore` and `/api/sharing/grants*` routes allow creators to privately share apps/games/projects/workflows/studios with specific users by username or email. Recipients see active grants in "Shared apps" section; creators can revoke access at any time.

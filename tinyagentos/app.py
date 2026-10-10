@@ -353,6 +353,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     agent_grants_store = AgentGrantsStore(data_dir / "agent_grants.db")
     from tinyagentos.user_shares_store import UserSharesStore
     user_shares_store = UserSharesStore(data_dir / "user_shares.db")
+    from tinyagentos.sharing_grants import SharingGrantStore
+    sharing_grants_store = SharingGrantStore(data_dir / "sharing_grants.db")
     from tinyagentos.app_grants_store import AppGrantsStore
     app_grants_store = AppGrantsStore(data_dir / "app_grants.db")
     from tinyagentos.knowledge_fetchers.x import XWatchStore
@@ -616,6 +618,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             logger.exception("native agent identity could not be ensured at startup")
         await user_shares_store.init()
         app.state.user_shares = user_shares_store
+        await sharing_grants_store.init()
+        app.state.sharing_grants = sharing_grants_store
         await app_grants_store.init()
         await license_acceptances_store.init()
         await agent_model_key_store.init()
