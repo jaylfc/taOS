@@ -5,8 +5,7 @@ import yaml
 from pathlib import Path
 
 from tinyagentos.installers.port_allocator import RESERVED_PORTS
-
-_ALLOWED_USERSPACE_TYPES = {"web", "container", "tui"}
+from tinyagentos.userspace.package import parse_manifest, PackageError, _ALLOWED_TYPES
 
 _REQUIRED_MANIFEST_FIELDS = ("id", "name", "version", "app_type")
 
@@ -20,29 +19,8 @@ def _find_manifest_path(app_dir: Path) -> Path | None:
     return None
 
 
-def _parse_manifest_raw(text: str) -> dict | None:
-    """Raw manifest parse without allowed_types validation.
-
-    Used for non-userspace app types where parse_manifest would reject
-    app_type values like 'native'.
-    """
-    if not text or not text.strip():
-        return None
-    try:
-        stripped = text.strip()
-        if stripped.startswith("{") or stripped.startswith("["):
-            data = json.loads(text)
-        else:
-            data = yaml.safe_load(text) or {}
-        if not isinstance(data, dict):
-            return None
-        return data
-    except (yaml.YAMLError, json.JSONDecodeError, ValueError):
-        return None
-
-
 def _is_userspace_app_type(app_type: str) -> bool:
-    return app_type in _ALLOWED_USERSPACE_TYPES
+    return app_type in _ALLOWED_TYPES
 
 
 def _check_manifest_valid(app_dir: Path) -> dict:
@@ -76,8 +54,6 @@ def _check_manifest_valid(app_dir: Path) -> dict:
 
     # If it's a userspace app type, validate using the full parser
     if _is_userspace_app_type(manifest.get("app_type")):
-        from tinyagentos.userspace.package import parse_manifest, PackageError
-
         try:
             parse_manifest(text)
         except PackageError as exc:
@@ -138,6 +114,17 @@ def _check_builds(app_dir: Path) -> dict:
     entry = manifest.get("entry")
     app_type = manifest.get("app_type")
 
+    # Check for package.json with scripts.build
+    pkg_json = app_dir / "package.json"
+    if pkg_json.is_file():
+        try:
+            pkg_data = json.loads(pkg_json.read_text(encoding="utf-8"))
+            scripts = pkg_data.get("scripts", {})
+            if isinstance(scripts, dict) and "build" in scripts:
+                return {"name": "builds", "status": "pass", "detail": "package.json scripts.build declared"}
+        except (json.JSONDecodeError, ValueError, OSError):
+            pass
+
     if not entry:
         # No build/entry declared -- warn
         return {
@@ -146,7 +133,18 @@ def _check_builds(app_dir: Path) -> dict:
             "detail": "no build or entry declared",
         }
 
+    # Resolve entry and ensure it doesn't escape the package directory
+    app_dir_resolved = app_dir.resolve()
     entry_path = (app_dir / entry).resolve()
+    try:
+        entry_path.relative_to(app_dir_resolved)
+    except ValueError:
+        return {
+            "name": "builds",
+            "status": "fail",
+            "detail": "entry escapes package dir",
+        }
+
     if not entry_path.is_file():
         return {
             "name": "builds",

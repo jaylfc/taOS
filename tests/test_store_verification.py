@@ -1,8 +1,9 @@
 """Tests for the store verification check runner."""
 
-import json
 import pytest
+from pathlib import Path
 
+import tinyagentos.store_verification as store_verification
 from tinyagentos.store_verification import run_checks
 
 
@@ -10,13 +11,6 @@ def _make_manifest_yaml(text: str, app_dir: Path) -> Path:
     """Write manifest.yaml into app_dir and return the path."""
     p = app_dir / "manifest.yaml"
     p.write_text(text)
-    return p
-
-
-def _make_manifest_json(obj: dict, app_dir: Path) -> Path:
-    """Write manifest.json into app_dir and return the path."""
-    p = app_dir / "manifest.json"
-    p.write_text(json.dumps(obj))
     return p
 
 
@@ -170,11 +164,50 @@ class TestRunChecks:
         assert "reserved low range" in port_check["detail"].lower()
 
     @pytest.mark.asyncio
-    async def test_runner_error_no_exception(self):
+    async def test_runner_error_no_exception(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         """Function must never raise -- on bad input it returns failed checks,
-        not an exception."""
-        result = await run_checks("/nonexistent/path")
+        not an exception. Exercise the runner_error path by forcing an exception."""
+        monkeypatch.setattr(
+            store_verification,
+            "_check_manifest_valid",
+            lambda d: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        result = await run_checks(tmp_path)
         assert result["ok"] is False
-        manifest_check = next(c for c in result["checks"] if c["name"] == "manifest_valid")
-        assert manifest_check["status"] == "fail"
-        assert "missing or unparseable" in manifest_check["detail"]
+        assert any(
+            c["name"] == "runner_error" and "boom" in c["detail"]
+            for c in result["checks"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_package_json_build_scripts_passes_builds(self, tmp_path: Path):
+        """package.json with scripts.build should pass builds check statically."""
+        p = tmp_path / "pkg-build"
+        p.mkdir()
+        _make_manifest_yaml(
+            "id: pkg-build\nname: PkgBuild\nversion: 1.0.0\napp_type: web\n"
+            "entry: index.html\n",
+            p,
+        )
+        (p / "index.html").write_text("<h1>Hello</h1>")
+        (p / "package.json").write_text('{"scripts": {"build": "echo hello"}}')
+        result = await run_checks(p)
+        builds_check = next(c for c in result["checks"] if c["name"] == "builds")
+        assert builds_check["status"] == "pass"
+        assert "scripts.build" in builds_check["detail"]
+
+    @pytest.mark.asyncio
+    async def test_entry_escapes_package_dir_fails_builds(self, tmp_path: Path):
+        """Entry path that escapes package dir should fail builds check."""
+        p = tmp_path / "escape-entry"
+        p.mkdir()
+        _make_manifest_yaml(
+            "id: escape-entry\nname: EscapeEntry\nversion: 1.0.0\napp_type: web\n"
+            "entry: ../../etc/passwd\n",
+            p,
+        )
+        result = await run_checks(p)
+        assert result["ok"] is False
+        builds_check = next(c for c in result["checks"] if c["name"] == "builds")
+        assert builds_check["status"] == "fail"
+        assert "escapes package dir" in builds_check["detail"]
