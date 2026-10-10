@@ -334,6 +334,8 @@ class BridgeSessionRegistry:
 
         elif kind == "final":
             reply_id = body.get("id")
+            if not isinstance(reply_id, str) or not reply_id:
+                reply_id = None
             if reply_id is not None and session.is_final_id_seen(reply_id):
                 logger.debug(
                     "bridge_session: duplicate final reply id %s for agent %s, skipping",
