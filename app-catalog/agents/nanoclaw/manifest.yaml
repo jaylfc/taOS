@@ -4,7 +4,7 @@ type: agent-framework
 verification_status: alpha
 version: 1.0.0
 description: "Lightweight OpenClaw — minimal footprint agent framework"
-homepage: https://github.com/openclaw/nanoclaw
+homepage: https://github.com/nanocoai/nanoclaw
 license: MIT
 
 requires:

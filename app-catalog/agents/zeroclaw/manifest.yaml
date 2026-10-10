@@ -4,7 +4,7 @@ type: agent-framework
 verification_status: alpha
 version: 1.0.0
 description: "Minimal agent — proves agents don't need hundreds of MB RAM. Ultra-lightweight."
-homepage: https://github.com/nicholasgasior/zeroclaw
+homepage: https://github.com/zeroclaw-labs/zeroclaw
 license: MIT
 requires:
   ram_mb: 16

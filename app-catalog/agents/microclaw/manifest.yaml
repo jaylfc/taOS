@@ -4,7 +4,7 @@ type: agent-framework
 verification_status: alpha
 version: 0.1.0
 description: "Micro agent framework — embedded and IoT focused, tiny footprint"
-homepage: https://github.com/nicholasgasior/microclaw
+homepage: https://github.com/microclaw/microclaw
 license: MIT
 requires:
   ram_mb: 32
