@@ -437,7 +437,7 @@ Search across agents, apps, messages, and shared folders from a single endpoint.
 
 | Category | Hardware | Notes |
 |----------|----------|-------|
-| **Apple Silicon** | Mac Mini, MacBook, Mac Studio, Mac Pro (M1-M5) | Ollama (Metal) or MLX backend, 8-192GB unified memory |
+| **Apple Silicon** | Mac Mini, MacBook, Mac Studio, Mac Pro (M1-M5) | Ollama (Metal) or MLX backend: pinned `mlx-lm` runtime installed on demand into its own venv, models pulled from HuggingFace into the shared `models/mlx/` tree, and each installed model pinned in **its own** per-user launchd agent (`~/Library/LaunchAgents/com.taos.mlx-server-<app_id>.plist`) that serves `http://127.0.0.1:<port>/v1` for as long as it is installed — several MLX models are served at once, the first on the reserved `7837` and further models on an allocated free port, 8-192GB unified memory |
 | **ARM + Rockchip NPU** | Orange Pi 5/5 Plus, Rock 5B | 6 TOPS NPU, primary SBC target |
 | **Raspberry Pi** | Pi 4 (8GB), Pi 5 (8/16GB) | CPU-only or with accelerator HATs |
 | **Pi Accelerators** | Hailo-10H (40T), M5Stack LLM-8850 (24T) | LLM-capable accelerators |
