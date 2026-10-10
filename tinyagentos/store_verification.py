@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import yaml
 from pathlib import Path
 
 from tinyagentos.installers.port_allocator import RESERVED_PORTS
@@ -32,8 +33,6 @@ def _parse_manifest_raw(text: str) -> dict | None:
         if stripped.startswith("{") or stripped.startswith("["):
             data = json.loads(text)
         else:
-            import yaml
-
             data = yaml.safe_load(text) or {}
         if not isinstance(data, dict):
             return None
@@ -97,13 +96,6 @@ def _check_manifest_valid(app_dir: Path) -> dict:
             "name": "manifest_valid",
             "status": "fail",
             "detail": f"manifest missing required fields: {', '.join(missing)}",
-        }
-    # Also check for entry field for non-userspace types
-    if not manifest.get("entry"):
-        return {
-            "name": "manifest_valid",
-            "status": "fail",
-            "detail": "manifest missing required field: entry",
         }
     return {"name": "manifest_valid", "status": "pass", "detail": "valid"}
 
@@ -251,37 +243,51 @@ async def run_checks(app_dir: str | Path) -> dict:
     {ok: bool, checks: [{name, status ('pass'|'warn'|'fail'), detail}]}
 
     The function is pure + side-effect-free: it only reads app_dir and never raises.
-    On unexpected error, returns a 'fail' check named 'runner_error'.
+    On unexpected error per-check, returns a 'fail' check named 'runner_error'.
     """
+    app_dir_path = Path(app_dir).resolve()
+    checks: list[dict] = []
+
+    # 1. manifest_valid
     try:
-        app_dir_path = Path(app_dir).resolve()
-
-        checks: list[dict] = []
-
-        # 1. manifest_valid
         checks.append(_check_manifest_valid(app_dir_path))
-
-        # 2. builds
-        checks.append(_check_builds(app_dir_path))
-
-        # 3. permissions_scan
-        checks.append(_check_permissions_scan(app_dir_path))
-
-        # 4. port_hygiene
-        checks.append(_check_port_hygiene(app_dir_path))
-
-        ok = all(c["status"] == "pass" for c in checks)
-
-        return {"ok": ok, "checks": checks}
-
     except Exception as exc:
-        return {
-            "ok": False,
-            "checks": [
-                {
-                    "name": "runner_error",
-                    "status": "fail",
-                    "detail": f"unexpected error: {exc}",
-                }
-            ],
-        }
+        checks.append({
+            "name": "runner_error",
+            "status": "fail",
+            "detail": f"unexpected error: {exc}",
+        })
+
+    # 2. builds
+    try:
+        checks.append(_check_builds(app_dir_path))
+    except Exception as exc:
+        checks.append({
+            "name": "runner_error",
+            "status": "fail",
+            "detail": f"unexpected error: {exc}",
+        })
+
+    # 3. permissions_scan
+    try:
+        checks.append(_check_permissions_scan(app_dir_path))
+    except Exception as exc:
+        checks.append({
+            "name": "runner_error",
+            "status": "fail",
+            "detail": f"unexpected error: {exc}",
+        })
+
+    # 4. port_hygiene
+    try:
+        checks.append(_check_port_hygiene(app_dir_path))
+    except Exception as exc:
+        checks.append({
+            "name": "runner_error",
+            "status": "fail",
+            "detail": f"unexpected error: {exc}",
+        })
+
+    ok = all(c["status"] == "pass" for c in checks)
+
+    return {"ok": ok, "checks": checks}

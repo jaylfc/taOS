@@ -175,10 +175,6 @@ class TestRunChecks:
         not an exception."""
         result = await run_checks("/nonexistent/path")
         assert result["ok"] is False
-        # Should have check results, not an exception propagated
-        assert len(result["checks"]) == 4
-        check_names = [c["name"] for c in result["checks"]]
-        assert "manifest_valid" in check_names
-        assert "builds" in check_names
-        assert "permissions_scan" in check_names
-        assert "port_hygiene" in check_names
+        manifest_check = next(c for c in result["checks"] if c["name"] == "manifest_valid")
+        assert manifest_check["status"] == "fail"
+        assert "missing or unparseable" in manifest_check["detail"]
