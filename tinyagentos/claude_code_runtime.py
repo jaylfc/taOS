@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import shutil
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -92,7 +93,8 @@ class ClaudeCodeHarness:
     binary: str = "claude"
     turn_timeout: float = 300.0
     system: str | None = None
-    """Appended to Claude Code's system prompt with ``--append-system-prompt``."""
+    """Appended to Claude Code's system prompt via ``--append-system-prompt-file``,
+    written to a private per-turn temp file that is removed when the turn ends."""
 
     @property
     def workspace(self) -> Path:
@@ -122,11 +124,11 @@ class ClaudeCodeHarness:
             env["TZ"] = os.environ["TZ"]
         return env
 
-    def _argv(self, session_id: str | None) -> list[str]:
+    def _argv(self, session_id: str | None, system_prompt_file: str | None) -> list[str]:
         argv = [self.binary, "-p", "--output-format", "stream-json", "--verbose",
                 "--model", self.model, "--permission-mode", "bypassPermissions"]
-        if self.system:
-            argv += ["--append-system-prompt", self.system]
+        if system_prompt_file is not None:
+            argv += ["--append-system-prompt-file", system_prompt_file]
         if session_id:
             argv += ["--resume", session_id]
         return argv
@@ -138,87 +140,103 @@ class ClaudeCodeHarness:
         on_event: Callable[[dict], None] | None = None,
     ) -> TurnResult:
         """Run one ``claude -p`` turn. Never raises for a failed turn."""
+        system_prompt_file: str | None = None
+        if self.system:
+            # One private file per turn: the harness is shared across turns.
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False,
+                                             encoding="utf-8") as f:
+                f.write(self.system)
+                system_prompt_file = f.name
+            os.chmod(system_prompt_file, 0o600)
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *self._argv(session_id),
-                cwd=str(self.workspace),
-                env=self._env(),
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-        except FileNotFoundError as exc:
-            raise ClaudeCodeBinaryNotFoundError(f"claude binary not found ({self.binary!r})") from exc
-
-        events: list[dict] = []
-        stdout_lines: list[str] = []
-        found_session: list[str | None] = [None]
-
-        async def _feed() -> None:
             try:
-                proc.stdin.write(text.encode("utf-8"))
-                await proc.stdin.drain()
-            except (BrokenPipeError, ConnectionResetError):
-                pass
-            finally:
+                proc = await asyncio.create_subprocess_exec(
+                    *self._argv(session_id, system_prompt_file),
+                    cwd=str(self.workspace),
+                    env=self._env(),
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+            except FileNotFoundError as exc:
+                raise ClaudeCodeBinaryNotFoundError(f"claude binary not found ({self.binary!r})") from exc
+
+            events: list[dict] = []
+            stdout_lines: list[str] = []
+            found_session: list[str | None] = [None]
+
+            async def _feed() -> None:
                 try:
-                    proc.stdin.close()
-                except Exception:  # noqa: BLE001, S110 - best-effort close of a dead pipe
+                    proc.stdin.write(text.encode("utf-8"))
+                    await proc.stdin.drain()
+                except (BrokenPipeError, ConnectionResetError):
                     pass
-
-        async def _read_stdout() -> None:
-            async for raw in proc.stdout:
-                line = self.redact(raw.decode("utf-8", "replace")).strip()
-                if not line:
-                    continue
-                stdout_lines.append(line)
-                try:
-                    evt = json.loads(line)
-                except ValueError:
-                    continue
-                if not isinstance(evt, dict):
-                    continue
-                if found_session[0] is None and isinstance(evt.get("session_id"), str):
-                    found_session[0] = evt["session_id"]
-                events.append(evt)
-                if on_event is not None:
+                finally:
                     try:
-                        on_event(evt)
-                    except Exception:
-                        logger.exception("claude_code_runtime: on_event raised")
+                        proc.stdin.close()
+                    except Exception:  # noqa: BLE001, S110 - best-effort close of a dead pipe
+                        pass
 
-        async def _run() -> bytes:
-            _, _, err = await asyncio.gather(_feed(), _read_stdout(), proc.stderr.read())
-            await proc.wait()
-            return err
+            async def _read_stdout() -> None:
+                async for raw in proc.stdout:
+                    line = self.redact(raw.decode("utf-8", "replace")).strip()
+                    if not line:
+                        continue
+                    stdout_lines.append(line)
+                    try:
+                        evt = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(evt, dict):
+                        continue
+                    if found_session[0] is None and isinstance(evt.get("session_id"), str):
+                        found_session[0] = evt["session_id"]
+                    events.append(evt)
+                    if on_event is not None:
+                        try:
+                            on_event(evt)
+                        except Exception:
+                            logger.exception("claude_code_runtime: on_event raised")
 
-        try:
-            err = await asyncio.wait_for(_run(), timeout=self.turn_timeout)
-        except TimeoutError:
+            async def _run() -> bytes:
+                _, _, err = await asyncio.gather(_feed(), _read_stdout(), proc.stderr.read())
+                await proc.wait()
+                return err
+
             try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-            await proc.wait()
-            return TurnResult(returncode=-1, reply="", timed_out=True, session_id=found_session[0],
-                              detail=f"claude code turn timed out after {self.turn_timeout:g}s")
-        except asyncio.CancelledError:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-            raise
-        stderr = self.redact(err.decode("utf-8", "replace"))
-        reply = ""
-        for evt in events:
-            if evt.get("type") == "result" and not evt.get("is_error") and isinstance(evt.get("result"), str):
-                reply = evt["result"]
-        detail = ""
-        if proc.returncode != 0 or not reply:
-            tail = [ln for ln in (stderr + "\n" + "\n".join(stdout_lines)).splitlines() if ln.strip()]
-            detail = tail[-1].strip()[:300] if tail else ""
-        return TurnResult(returncode=proc.returncode or 0, reply=reply, detail=detail,
-                          session_id=found_session[0])
+                err = await asyncio.wait_for(_run(), timeout=self.turn_timeout)
+            except TimeoutError:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                await proc.wait()
+                return TurnResult(returncode=-1, reply="", timed_out=True, session_id=found_session[0],
+                                  detail=f"claude code turn timed out after {self.turn_timeout:g}s")
+            except asyncio.CancelledError:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                raise
+            stderr =self.redact(err.decode("utf-8", "replace"))
+            reply = ""
+            for evt in events:
+                if evt.get("type") == "result" and not evt.get("is_error") and isinstance(evt.get("result"), str):
+                    reply = evt["result"]
+            detail = ""
+            if proc.returncode != 0 or not reply:
+                tail = [ln for ln in (stderr + "\n" + "\n".join(stdout_lines)).splitlines() if ln.strip()]
+                detail = tail[-1].strip()[:300] if tail else ""
+            return TurnResult(returncode=proc.returncode or 0, reply=reply, detail=detail,
+                              session_id=found_session[0])
+
+        finally:
+            if system_prompt_file is not None:
+                try:
+                    os.unlink(system_prompt_file)
+                except FileNotFoundError:
+                    pass
 
 
 def scrub_home(data_dir: str | Path) -> None:
