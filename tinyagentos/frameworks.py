@@ -238,6 +238,15 @@ FRAMEWORKS: dict[str, dict] = {
             {"name": "help", "description": "Show PicoClaw help"},
         ],
     },
+    "claude_code": {
+        "id": "claude_code",
+        "name": "Claude Code",
+        "description": "Claude Code CLI as the taOS Agent harness (anthropics/claude-code), signed in with a `claude setup-token` token stored in Secrets",
+        "verification_status": "experimental",
+        "slash_commands": [
+            {"name": "help", "description": "Show Claude Code help"},
+        ],
+    },
     "shibaclaw": {
         "id": "shibaclaw",
         "name": "ShibaClaw",

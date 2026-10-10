@@ -805,3 +805,125 @@ async def test_ids_after_restart_exceed_ids_from_previous_process(monkeypatch):
 
     # The new id must be greater than the old one.
     assert second_id > first_id
+
+
+# (RED) Unreadable HWM file logs warning, not raising, and stores 0.
+@pytest.mark.asyncio
+async def test_seed_id_epoch_logs_unreadable_hwm(monkeypatch, caplog, tmp_path):
+    from tinyagentos.routes import device_state as ds
+    import time as _time
+    import logging
+    
+    caplog.set_level(logging.WARNING)
+    with monkeypatch.context() as mp:
+        # Write a non-integer value to the HWM file to simulate corruption
+        (tmp_path / "device_event_hwm").write_bytes(b"not-a-number")
+        
+        # Clear module state before test
+        mp.setattr(ds, "_HWM_PATH", tmp_path / "device_event_hwm")
+        mp.setattr(ds, "_ID_EPOCH", int(_time.time() * 1000))
+        
+        # Call seed_id_epoch - should log warning but not raise
+        ds.seed_id_epoch(tmp_path)
+        
+        # Verify warning was logged with the expected message
+        assert "device_event_hwm unreadable" in caplog.text
+        # Verify _ID_EPOCH was set to a recent time (within 5 seconds)
+        assert ds._ID_EPOCH >= int(_time.time() * 1000) - 5000
+
+
+# (RED) Silent when HWM file is missing.
+@pytest.mark.asyncio
+async def test_seed_id_epoch_silent_when_hwm_missing(monkeypatch, caplog, tmp_path):
+    from tinyagentos.routes import device_state as ds
+    import time as _time
+    import logging
+    
+    caplog.set_level(logging.WARNING)
+    with monkeypatch.context() as mp:
+        # Do not create the HWM file - it should be silently missing
+        
+        # Clear module state before test
+        mp.setattr(ds, "_HWM_PATH", tmp_path / "device_event_hwm")
+        mp.setattr(ds, "_ID_EPOCH", int(_time.time() * 1000))
+        
+        # Call seed_id_epoch - should not log any unreadable warning
+        ds.seed_id_epoch(tmp_path)
+        
+        # Verify no "unreadable" warning was logged
+        assert "unreadable" not in caplog.text
+
+
+# (RED) seed_id_epoch advances existing buffers whose next_id is below new epoch.
+@pytest.mark.asyncio
+async def test_seed_id_epoch_advances_existing_buffers(monkeypatch, tmp_path):
+    from tinyagentos.routes import device_state as ds
+    import time as _time
+    
+    with monkeypatch.context() as mp:
+        # Clear owner buffers as if a restart occurred
+        ds._owner_buffers.clear()
+        
+        # Create an owner buffer with an old next_id
+        owner_id = "owner-a"
+        buf = ds._get_owner_buffer(owner_id)
+        
+        # Write a HWM file with a value far in the future (epoch + 10 * _HWM_STEP)
+        future_epoch = int(_time.time() * 1000) + 10 * ds._HWM_STEP
+        mp.setattr(ds, "_HWM_PATH", tmp_path / "device_event_hwm")
+        (tmp_path / "device_event_hwm").write_text(str(future_epoch))
+        
+        # Set the current _ID_EPOCH to something in the past
+        current_epoch = int(_time.time() * 1000) - 1000
+        mp.setattr(ds, "_ID_EPOCH", current_epoch)
+        
+        # Call seed_id_epoch with the tmp_path containing our HWM file
+        ds.seed_id_epoch(tmp_path)
+        
+        # Verify that the owner's buffer next_id was advanced to the new _ID_EPOCH
+        assert ds._owner_buffers[owner_id]["next_id"] == ds._ID_EPOCH
+
+
+# (RED) _emit_event logs failed HWM write but still emits the event.
+@pytest.mark.asyncio
+async def test_emit_event_failed_hwm_write_still_emits(monkeypatch, caplog, tmp_path):
+    from tinyagentos.routes import device_state as ds
+    import time as _time
+    import logging
+    
+    caplog.set_level(logging.WARNING)
+    
+    with monkeypatch.context() as mp:
+        # Mock atomic_write_text to always raise OSError
+        original_atomic_write_text = ds.atomic_write_text
+        def mock_atomic_write_text(path, content):
+            raise OSError("Mocked write failure")
+        
+        mp.setattr(ds, "atomic_write_text", mock_atomic_write_text)
+        
+        # Setup a temporary directory for _HWM_PATH
+        mp.setattr(ds, "_HWM_PATH", tmp_path / "device_event_hwm")
+        
+        # Clear owner buffers
+        ds._owner_buffers.clear()
+        
+        # Get owner buffer so we have a known next_id
+        owner_id = "owner-b"
+        buf = ds._get_owner_buffer(owner_id)
+        
+        # Set next_id to a multiple of _HWM_STEP to trigger HWM write
+        current_id = buf["next_id"]
+        while current_id % ds._HWM_STEP != 0:
+            current_id += 1
+        buf["next_id"] = current_id
+        
+        # Emit event - should log warning but still succeed
+        eid = await ds._emit_event(owner_id, "upsert", "{}")
+        
+        # Verify the event was still emitted and is in the buffer
+        assert eid == current_id
+        assert len(ds._owner_buffers[owner_id]["events"]) == 1
+        assert ds._owner_buffers[owner_id]["events"][0][0] == eid
+        
+        # Verify warning was logged
+        assert "failed to write event hwm" in caplog.text

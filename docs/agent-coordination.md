@@ -2197,7 +2197,7 @@ the LiteLLM hook's 429 before anything is forwarded. Revoking, blocking or
 deleting a cluster node, and archiving an agent, revoke the keys bound to it
 in the same request.
 
-## The system taOS Agent's harness (opencode, or PicoClaw on a handset)
+## The system taOS Agent's harness (opencode, PicoClaw on a handset, or Claude Code)
 
 The built-in taOS Agent runs on opencode (a host `opencode serve`) on every
 host, except a taOSmobile handset, where it runs on PicoClaw (the catalog's
@@ -2207,13 +2207,27 @@ the choice is made, from two config.yaml keys:
 - `device.class`: `auto` (default; `hardware._detect_device_class`, which
   reads the `taos-kiosk.service` unit), `mobile` or `desktop`;
 - `taos_agent.framework`: `auto` (default; picoclaw on mobile, opencode
-  elsewhere), `opencode` or `picoclaw` (operator overrides).
+  elsewhere), `opencode`, `picoclaw` or `claude_code` (operator overrides;
+  `auto` never picks `claude_code`).
 
 PicoClaw needs the LLM gateway (on unless `TAOS_LLM_GATEWAY=0`) and a `picoclaw` binary
 (`TAOS_PICOCLAW_BIN`, PATH, `/usr/local/bin`, `/usr/bin`). Without either,
 opencode runs and the reason is logged, e.g. exactly
 `picoclaw preferred, gateway disabled, using opencode`. An unknown config
 value is ignored (treated as `auto`) with a warning.
+
+`claude_code` runs one `claude -p --output-format stream-json` turn per chat
+message (`tinyagentos/claude_code_runtime.py`), continued with `--resume`. It
+signs in with the long-lived token `claude setup-token` prints, stored as the
+Secrets entry `claude_code_oauth_token` (never the controller env); the child
+gets only `HOME`, `PATH`, `LANG`, `NO_COLOR`, `TZ` and
+`CLAUDE_CODE_OAUTH_TOKEN`. It needs the `claude` binary (PATH,
+`~/.local/bin/claude`, `/usr/local/bin/claude`) and that secret, not the
+gateway. Without them opencode runs, with the reason exactly
+`claude_code preferred, claude binary not found, using opencode` or
+`claude_code preferred, no claude_code_oauth_token secret, using opencode`;
+a chat request while it is selected but not ready answers 503 with a plain
+message. Attachments are not supported yet.
 
 - `GET /api/taos-agent/config` and the lock screen (`/auth/lock-widgets`)
   report `framework` = the harness that RUNS the agent (never the
