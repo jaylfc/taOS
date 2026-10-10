@@ -23,6 +23,20 @@ async def _fragment(client) -> str:
     return resp.text
 
 
+async def _fragment_containing(client, needle: str, timeout: float = 5.0) -> str:
+    """Poll the fragment until it contains the needle or timeout."""
+    import time
+    start = time.time()
+    last_body = ""
+    while time.time() - start < timeout:
+        body = await _fragment(client)
+        if needle in body:
+            return body
+        last_body = body
+        await asyncio.sleep(0.01)
+    return last_body  # Return last body for readable failure diffs
+
+
 @pytest.mark.asyncio
 class TestNotificationFragmentEscaping:
     async def test_title_markup_is_escaped(self, client, app):
@@ -88,8 +102,7 @@ class TestNotificationFragmentEscaping:
             status="draining",
             drain_reason="<i>update me</i>",
         )
-        await asyncio.sleep(0.1)
-        body = await _fragment(client)
+        body = await _fragment_containing(client, "self-initiated drain")
         assert "&lt;i&gt;update me&lt;/i&gt;" in body
         assert "<i>" not in body
 
@@ -108,7 +121,6 @@ class TestNotificationFragmentEscaping:
             status="draining",
             drain_reason="it's a test",
         )
-        await asyncio.sleep(0.1)
-        body = await _fragment(client)
+        body = await _fragment_containing(client, "self-initiated drain")
         assert "it&#x27;s a test" in body
         assert "it\\'s a test" not in body
