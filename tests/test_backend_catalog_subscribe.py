@@ -13,7 +13,19 @@ import pytest
 from tinyagentos.scheduler.backend_catalog import BackendCatalog
 
 
+
+async def _until(pred, timeout=5.0):
+    """Wait until predicate is True, polling with 5ms sleeps."""
+    start = asyncio.get_event_loop().time()
+    while not pred():
+        await asyncio.sleep(0.005)
+        if asyncio.get_event_loop().time() - start > timeout:
+            raise asyncio.TimeoutError(f"Predicate did not become true within {timeout}s")
+
+
 @pytest.mark.asyncio
+
+
 async def test_subscriber_fires_on_status_change():
     """A backend flipping from ok to error should trigger the subscriber."""
     state = {"healthy": True}
@@ -54,6 +66,8 @@ async def test_subscriber_fires_on_status_change():
 
 
 @pytest.mark.asyncio
+
+
 async def test_subscriber_fires_on_model_list_change():
     """A backend that loads a new model should trigger subscribers."""
     model_state = {"models": [{"name": "m1"}]}
@@ -87,11 +101,15 @@ async def test_subscriber_fires_on_model_list_change():
 
 
 @pytest.mark.asyncio
+
+
 async def test_subscriber_not_fired_when_signature_stable():
     """Successive identical probe results should NOT fire subscribers."""
     fire_count = {"n": 0}
+    probe_count = {"n": 0}
 
     async def probe(backend: dict) -> dict:
+        probe_count["n"] += 1
         return {"status": "ok", "response_ms": 1, "models": [{"name": "m1"}]}
 
     async def subscriber() -> None:
@@ -106,15 +124,24 @@ async def test_subscriber_not_fired_when_signature_stable():
     catalog.subscribe(subscriber)
     await catalog.start()
     try:
-        await asyncio.sleep(0.08)
-        # Only the first probe should have fired the subscriber —
-        # subsequent probes produced identical state so no change event
+        # Wait for the first probe to complete
+        await catalog.wait_initial_probe()
+
+        # Wait for the subscriber to have fired once
+        await _until(lambda: fire_count["n"] >= 1)
+
+        # Wait for at least 3 probes to have completed (initial + 2 more)
+        await _until(lambda: probe_count["n"] >= 3)
+
+        # Only then assert - identical probe results should not re-fire subscribers
         assert fire_count["n"] == 1
     finally:
         await catalog.stop()
 
 
 @pytest.mark.asyncio
+
+
 async def test_failing_subscriber_does_not_crash_poll_loop():
     """A subscriber raising an exception should be isolated — other
     subscribers still fire and the poll loop keeps running."""
@@ -143,6 +170,8 @@ async def test_failing_subscriber_does_not_crash_poll_loop():
 
 
 @pytest.mark.asyncio
+
+
 async def test_multiple_subscribers_all_fire():
     fires = {"a": 0, "b": 0}
 
