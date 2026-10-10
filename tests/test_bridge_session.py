@@ -648,6 +648,21 @@ async def test_duplicate_final_reply_is_ingested_once():
 
 
 @pytest.mark.asyncio
+async def test_final_reply_with_non_string_id_is_still_ingested():
+    """If the id is not a string (e.g., a list), treat it as absent and still ingest the reply."""
+    reg, msg_store, ch_store, hub, tr = _make_registry()
+    await reg._handle_reply("bot1", {
+        "kind": "final",
+        "id": ["m1"],  # non-string id
+        "trace_id": "t1",
+        "content": "hi",
+        "channel_id": "c1",
+    })
+    # Exactly one message should be stored
+    assert len(msg_store.messages) == 1
+
+
+@pytest.mark.asyncio
 async def test_distinct_final_ids_are_both_ingested():
     """Two final POSTs with different ids must each create a message."""
     reg, msg_store, ch_store, hub, tr = _make_registry()
