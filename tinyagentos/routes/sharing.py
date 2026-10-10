@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from builtins import PermissionError
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -52,6 +53,8 @@ async def create_grant(request: Request, body: GrantBody, current_user: dict = D
         grant = await store.grant(artifact_id, artifact_kind, owner_id, grantee)
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
+    except PermissionError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=403)
     except RuntimeError as exc:
         return JSONResponse({"error": str(exc)}, status_code=503)
     return grant

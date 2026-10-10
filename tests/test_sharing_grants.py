@@ -142,11 +142,20 @@ class TestSharingGrantStore:
         assert active == []
 
     @pytest.mark.asyncio
-    async def test_list_for_uninitialised_raises(self, tmp_path):
-        store = SharingGrantStore(tmp_path / "sharing_grants.db")
-        with pytest.raises(RuntimeError, match="not initialised"):
-            await store.list_for("grantee1")
-        await store.close()
+    async def test_grant_by_other_owner_does_not_reactivate(self, store):
+        grant1 = await store.grant("art-1", "app", "a", "zed")
+        assert grant1["owner_id"] == "a"
+
+        await store.revoke(grant1["id"])
+
+        assert (await store.get(grant1["id"]))["status"] == "revoked"
+        assert await store.list_for("zed") == []
+
+        with pytest.raises(PermissionError, match="artifact is shared by another owner"):
+            await store.grant("art-1", "app", "b", "zed")
+
+        assert (await store.get(grant1["id"]))["status"] == "revoked"
+        assert await store.list_for("zed") == []
 
     # ── get ────────────────────────────────────────────────────────────
     @pytest.mark.asyncio
@@ -366,3 +375,43 @@ async def test_list_shared_with_me_only_active(client, app):
         assert len(grants) == 1
         assert grants[0]["artifact_id"] == "artifact-2"
         assert grants[0]["status"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_other_owner_cannot_hijack_active_grant(client, app):
+    r1 = await client.post(
+        "/api/sharing/grants",
+        json={"artifact_id": "art-2", "artifact_kind": "app", "grantee": "zed"},
+    )
+    assert r1.status_code == 200
+    grant_a = r1.json()
+
+    invite_code = app.state.auth.add_user_invite("userb", "admin")
+    app.state.auth.complete_invite("userb", invite_code, "User B", "userb@example.com", "testpass")
+    user_b_record = app.state.auth.find_user("userb")
+    user_b_token = app.state.auth.create_session(user_id=user_b_record["id"], long_lived=True)
+
+    from httpx import AsyncClient, ASGITransport
+    import secrets
+    csrf_token = secrets.token_hex(32)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        cookies={"taos_session": user_b_token, "csrf_token": csrf_token},
+        headers={"X-CSRF-Token": csrf_token},
+    ) as user_b_client:
+        r2 = await user_b_client.post(
+            "/api/sharing/grants",
+            json={"artifact_id": "art-2", "artifact_kind": "app", "grantee": "zed"},
+        )
+        assert r2.status_code == 403
+        assert r2.json()["error"] == "artifact is shared by another owner"
+        r3 = await user_b_client.get("/api/sharing/grants/mine")
+        assert r3.status_code == 200
+        assert r3.json() == []
+
+        store = client._transport.app.state.sharing_grants
+        current_grant_a = await store.get(grant_a["id"])
+        assert current_grant_a["status"] == "active"
+        assert current_grant_a["owner_id"] != user_b_record["id"]

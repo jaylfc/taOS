@@ -62,7 +62,7 @@ class SharingGrantStore(BaseStore):
         If a revoked grant exists, reactivate it (status -> active, clear revoked_at).
         """
         if self._db is None:
-            raise RuntimeError("SharingGrantStore not initialised — call init() first")
+            raise RuntimeError("SharingGrantStore not initialised: call init() first")
 
         if artifact_kind not in ("app", "game", "project", "workflow", "studio"):
             raise ValueError(f"invalid artifact_kind: {artifact_kind}")
@@ -77,6 +77,8 @@ class SharingGrantStore(BaseStore):
             ).fetchone()
 
             if existing is not None:
+                if existing["owner_id"] != owner_id:
+                    raise PermissionError("artifact is shared by another owner")
                 if existing["status"] == "active":
                     return _row_to_dict(existing)
                 # Reactivate revoked grant
@@ -134,7 +136,7 @@ class SharingGrantStore(BaseStore):
     async def revoke(self, grant_id: str) -> dict | None:
         """Revoke a grant by id. Returns the updated row or None if not found."""
         if self._db is None:
-            raise RuntimeError("SharingGrantStore not initialised — call init() first")
+            raise RuntimeError("SharingGrantStore not initialised: call init() first")
 
         now = int(time.time())
         async with self._write_lock:
