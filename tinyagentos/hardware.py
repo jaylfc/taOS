@@ -139,6 +139,73 @@ def _run(cmd: list[str]) -> str:
         return ""
 
 
+# Scheduler resource class for the Apple Silicon GPU. Apple Silicon has exactly
+# one GPU (unified memory), so the name is unindexed -- matching the resource
+# table in docs/design/resource-scheduler.md -- while CUDA/ROCm hosts keep
+# gpu-cuda-N. It lives here, next to the device probe, because the resource id
+# and "is there a Metal device" are the same fact: the controller's discovery,
+# the worker's advertised inventory (cluster/worker_protocol.py's
+# RESOURCE_CLASS_RE) and the A2A lease default must all agree on it.
+METAL_RESOURCE_NAME = "gpu-metal"
+
+#: Memoised `_probe_metal_support()` answer; None until probed.
+_metal_support: bool | None = None
+
+
+def is_apple_silicon() -> bool:
+    """True on Darwin/arm64 -- the only hardware MLX runs on.
+
+    The machine check matters as much as the OS check: an x86_64 Python under
+    Rosetta reports ``darwin``/``x86_64`` and cannot load MLX at all, so this is
+    the honest gate rather than "is this macOS".
+    """
+    return platform.system() == "Darwin" and platform.machine() == "arm64"
+
+
+def _probe_metal_support() -> bool | None:
+    """Read the ``Metal Support`` line out of ``system_profiler``.
+
+    True when macOS reports a Metal device, False when it reports the display
+    subsystem without one (an arm64 VM), None when the probe could not run at
+    all (not macOS, no ``system_profiler``, or no output).
+    """
+    if platform.system() != "Darwin":
+        return None
+    if shutil.which("system_profiler") is None:
+        return None
+    out = _run(["/usr/sbin/system_profiler", "SPDisplaysDataType"])
+    if not out:
+        return None
+    for line in out.splitlines():
+        key, _, value = line.partition(":")
+        if key.strip().lower() == "metal support":
+            return value.strip().lower().startswith("metal")
+    return False
+
+
+def metal_available() -> bool:
+    """True when this host has a Metal GPU taOS can schedule onto.
+
+    ``is_apple_silicon()`` is the platform floor, not the device question: an
+    arm64 macOS VM (or a machine whose graphics stack never came up) is Apple
+    Silicon yet exposes no Metal device, and registering `gpu-metal` for it
+    would advertise a GPU that cannot serve a task (taOS #329 review).
+
+    Memoised for the process lifetime, because the probe shells out to
+    ``system_profiler``, which takes seconds; a Mac that gains a device is
+    therefore picked up on the next taOS start. A probe that cannot run fails
+    open to the platform answer, mirroring ``normalise_vram_probe``'s "unknown
+    is not the same as zero" convention in scheduler/discovery.py.
+    """
+    global _metal_support
+    if not is_apple_silicon():
+        return False
+    if _metal_support is None:
+        probed = _probe_metal_support()
+        _metal_support = True if probed is None else probed
+    return _metal_support
+
+
 def _soc_from_devicetree(text: str) -> str:
     """Map a lowercased device-tree string to a known SoC id, or "".
 
