@@ -1,0 +1,24 @@
+id: mcp-community-fetch
+name: Fetch
+description: >-
+  Fetch a URL and convert the page to markdown for the model. Useful for
+  reading documentation and articles the agent cannot open in a browser.
+version: 2025.4.7
+author: modelcontextprotocol
+homepage: https://github.com/modelcontextprotocol/servers
+license: MIT
+categories:
+  - web
+transport: stdio
+permissions:
+  - network
+verified: true
+
+install:
+  method: uvx
+  package: mcp-server-fetch
+
+run:
+  command:
+    - uvx
+    - mcp-server-fetch

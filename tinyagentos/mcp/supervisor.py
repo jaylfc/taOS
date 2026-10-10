@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import logging
+import os
 import signal
 import time
 from dataclasses import dataclass, field
@@ -48,6 +49,32 @@ async def _iter_lines(reader: asyncio.StreamReader) -> AsyncIterator[str]:
         yield bytes(buf).decode(errors="replace").rstrip()
 
 
+def _merged_env(config: dict | None) -> dict[str, str] | None:
+    """Return the child environment implied by a server's stored config.
+
+    ``None`` means "inherit the controller's environment" (the previous
+    behaviour, and still the default for every server with no ``env`` block).
+    An ``env`` mapping is merged *over* ``os.environ`` — never used to replace
+    it — so a manifest can add ``FOO=bar`` without stripping ``PATH`` and
+    silently breaking an ``npx``/``uvx`` launch command.
+
+    The per-key type filter is not redundant with the manifest model's
+    ``dict[str, str]``: ``config`` here is the JSON column of ``mcp_servers``,
+    which the ``PUT /api/mcp/servers/{id}/config`` route writes from an
+    unvalidated ``dict`` body, so a non-string value can reach this function.
+    """
+    if not isinstance(config, dict):
+        return None
+    extra = config.get("env")
+    if not isinstance(extra, dict) or not extra:
+        return None
+    merged = dict(os.environ)
+    for key, value in extra.items():
+        if isinstance(key, str) and isinstance(value, str):
+            merged[key] = value
+    return merged
+
+
 @dataclass
 class ServerProcess:
     process: asyncio.subprocess.Process
@@ -82,11 +109,19 @@ class MCPSupervisor:
             logger.error("mcp start: no launch command for %s", server_id)
             return False
 
+        # A marketplace-installed server may declare non-secret environment
+        # defaults in its registry manifest (and requires others, e.g. an API
+        # token, to be supplied by the operator).  Merge them over the
+        # controller's own environment rather than replacing it — replacing it
+        # strips PATH, so `npx`/`uvx`-based servers would not resolve.
+        env = _merged_env(server.get("config"))
+
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=env,
             )
         except Exception as exc:
             logger.exception("mcp start: failed to spawn %s", server_id)

@@ -1,0 +1,30 @@
+id: mcp-community-filesystem
+name: Filesystem
+description: >-
+  Read, write and search files under one allowed directory. The reference MCP
+  filesystem server. Installing this entry provisions a private workspace
+  directory for it — no existing taOS directory (and no secrets) is exposed.
+version: 2025.7.1
+author: modelcontextprotocol
+homepage: https://github.com/modelcontextprotocol/servers
+license: MIT
+categories:
+  - files
+  - dev-tools
+transport: stdio
+permissions:
+  - filesystem:read
+  - filesystem:write
+verified: true
+
+install:
+  method: npm
+  package: "@modelcontextprotocol/server-filesystem"
+
+run:
+  command:
+    - npx
+    - "-y"
+    - "@modelcontextprotocol/server-filesystem"
+  args:
+    - "{workspace}"
