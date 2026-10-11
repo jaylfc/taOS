@@ -947,3 +947,57 @@ async def test_multi_scope_list_applies_limit_after_scoping(client):
         resp = await ac.get("/api/decisions/agent")
     assert resp.status_code == 200, resp.text
     assert [d["id"] for d in resp.json()["items"]] == [old_b["id"]]
+
+
+# ── Decision notification user scoping (tsk-evte7f) ────────────────
+
+
+@pytest.mark.asyncio
+async def test_decision_notification_is_scoped_to_decider_only(client):
+    """The 'Decision needed' notification for a project decision is delivered
+    to the project owner (the decider) only, never broadcast to every user.
+
+    The decision row itself is addressed to ``actor.decider_user_id`` (the
+    project owner); the notification must carry that same user id so it lands
+    in the decider's bell and push devices, not in every user's.
+    """
+    app = client._transport.app
+    admin_id = app.state.auth.find_user("admin")["id"]
+
+    # Create a second user who must NOT receive the decider's notification.
+    auth = app.state.auth
+    invite_code = auth.add_user_invite("bob", "admin")
+    auth.complete_invite("bob", invite_code, "Bob", "", "bobpass123")
+    bob_id = auth.find_user("bob")["id"]
+    assert bob_id != admin_id
+
+    # A granted agent posts a decision into a project owned by the admin.
+    pid = await _new_project(client)  # owned by admin (user A)
+    cid, token = await _mint_agent(app, pid, ("decisions_write",))
+
+    async with _agent_client(app, token) as ac:
+        resp = await ac.post("/api/decisions", json=_decision_body(project_id=pid))
+    assert resp.status_code == 200, resp.text
+    decision = resp.json()
+    did = decision["id"]
+
+    # The newest notification row with source 'decisions' must carry the
+    # decider's (project owner's) user id, not a broadcast (NULL).
+    all_notifs = await app.state.notifications.list(limit=50)
+    decisions_notifs = [n for n in all_notifs if n["source"] == "decisions"]
+    assert decisions_notifs, "expected at least one decision notification"
+    newest = decisions_notifs[0]
+    assert newest["user_id"] == admin_id, (
+        f"decision notification user_id was {newest['user_id']!r}, expected {admin_id!r}"
+    )
+
+    # User B must NOT see the decision notification in their bell -- a broadcast
+    # (user_id IS NULL) would include it, a scoped row would not.
+    bob_notifs = await app.state.notifications.list(limit=50, user_id=bob_id)
+    leaked = [
+        n for n in bob_notifs
+        if n["source"] == "decisions" and (n.get("data") or {}).get("decision_id") == did
+    ]
+    assert not leaked, (
+        f"decision notification leaked to user B: {leaked}"
+    )
