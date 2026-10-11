@@ -44,8 +44,15 @@ SUBCOMMAND_PROGRAMS = frozenset({
     "npm", "npx", "pip", "pip3", "pnpm", "podman", "snap", "systemctl", "uv", "yarn",
 })
 # Options of those programs that take a separate value (``git -C dir status``).
-_OPTIONS_WITH_VALUE = frozenset({"-C", "-c"})
+_OPTIONS_WITH_VALUE = frozenset({"-C", "-c", "--config-env"})
 _SUBCOMMAND = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:+-]*")
+# Writing a file through the shell (``>``, ``>>``, ``&>``) is its own rule:
+# ``echo`` being allowed must not let ``echo x > ~/.bashrc`` through.
+OUTPUT_REDIRECT = "output-redirect"
+# ``git -c`` / ``--config-env`` can set an alias or pager that runs any
+# command, so ``git -c status`` needs this rule on top of ``git status``.
+GIT_CONFIG_OVERRIDE = "git -c"
+_DUP_TARGET = re.compile(r"[0-9]+-?|-")
 
 
 def commands(command: str) -> list[str] | None:
@@ -69,21 +76,33 @@ def commands(command: str) -> list[str] | None:
 
     expect = True
     skip_next = False
+    redirect_target = False  # the next word is the target of an output redirection
     sub_of: str | None = None  # a program still waiting for its subcommand
     for tok in tokens:
         if tok and set(tok) <= _OPERATOR_CHARS:
             if set(tok) & set("<>") and not set(tok) & set(";|()"):
-                skip_next = True  # a redirection: the next word is a file
+                # A redirection: the next word is a file (or an fd for >&).
+                if ">" in tok:
+                    redirect_target = True
+                else:
+                    skip_next = True
                 continue
             if sub_of:
                 add(sub_of)
                 sub_of = None
             expect = True
             continue
+        if redirect_target:
+            redirect_target = False
+            if tok != "/dev/null" and not _DUP_TARGET.fullmatch(tok):
+                add(OUTPUT_REDIRECT)
+            continue
         if skip_next:
             skip_next = False
             continue
         if sub_of:
+            if sub_of == "git" and (tok.startswith(("-c", "--config-env"))):
+                add(GIT_CONFIG_OVERRIDE)
             if tok in _OPTIONS_WITH_VALUE:
                 skip_next = True
             elif not tok.startswith("-"):

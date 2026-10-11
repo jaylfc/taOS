@@ -93,6 +93,31 @@ def test_subshell_and_newline_programs_are_checked(tmp_path):
     assert {a["program"] for a in h.take_shell_asks()} == {"rm", "wget"}
 
 
+def test_output_redirection_needs_its_own_rule(tmp_path):
+    h = _harness(tmp_path, RULES)
+    for command in ("cat x > ~/.bashrc", "cat a >> /etc/x", "ls &> out", "ls 2> err", "ls >& out"):
+        res = _run(h, command)
+        assert res.returncode == 2, command
+        assert "`output-redirect`" in res.stderr
+    assert {a["program"] for a in h.take_shell_asks()} == {"output-redirect"}
+    # Input redirection, fd duplication and /dev/null need no rule.
+    for command in ("cat < in.txt", "ls 2>&1 | cat", "ls > /dev/null", "ls >&2"):
+        assert _run(h, command).returncode == 0, command
+    allowed = {"allow": [*RULES["allow"], "output-redirect"], "deny": []}
+    assert _run(_harness(tmp_path / "b", allowed), "cat x > out.txt").returncode == 0
+
+
+def test_git_config_overrides_need_their_own_rule(tmp_path):
+    h = _harness(tmp_path, RULES)
+    for command in ("git -c alias.status='!rm -rf x' status", "git -calias.log=!x status",
+                    "git --config-env=core.pager=X status"):
+        res = _run(h, command)
+        assert res.returncode == 2, command
+        assert "`git -c`" in res.stderr
+    assert {a["program"] for a in h.take_shell_asks()} == {"git -c"}
+    assert _run(h, "git -C repo status").returncode == 0
+
+
 def test_hard_block_wins_over_an_allow_rule(tmp_path):
     h = _harness(tmp_path, RULES)
     for command in ("gh pr create", "git push origin dev"):
@@ -234,7 +259,9 @@ async def test_settings_routes_list_set_and_revoke(client, ds):
     assert (await client.put("/api/taos-agent/shell-profile/npm", json={"effect": "maybe"})).status_code == 400
     resp = await client.put("/api/taos-agent/shell-profile/npm%20test", json={"effect": "allow"})
     assert "npm test" in resp.json()["allow"]
-    for bad in ("a%20b%20c", "-rf", "x%3By"):
+    resp = await client.put("/api/taos-agent/shell-profile/git%20-c", json={"effect": "deny"})
+    assert "git -c" in resp.json()["deny"]
+    for bad in ("a%20b%20c", "-rf", "x%3By", "git%20-x"):
         assert (await client.put(f"/api/taos-agent/shell-profile/{bad}", json={"effect": "allow"})).status_code == 400
     assert (await client.delete("/api/taos-agent/shell-profile/nothere")).status_code == 404
 

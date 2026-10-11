@@ -37,10 +37,14 @@ DEFAULT_ALLOW = ("cd", "pwd", "ls", "cat", "head", "tail", "wc", "grep", "echo",
                  "git status", "git log", "git diff", "git show")
 
 _RULE = re.compile(r"[A-Za-z0-9._+][A-Za-z0-9._+-]{0,63}( [A-Za-z0-9][A-Za-z0-9._:+-]{0,63})?")
+# ``git -c`` (config overrides) is the one rule whose second word is an option.
+_EXTRA_RULES = frozenset({"git -c"})
 
 
 def valid_program(program: str) -> bool:
     """A rule key: a program name, optionally followed by one subcommand."""
+    if program in _EXTRA_RULES:
+        return True
     return bool(_RULE.fullmatch(program or "")) and program not in (".", "..")
 
 
