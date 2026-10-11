@@ -265,6 +265,19 @@ FRAMEWORKS: dict[str, dict] = {
             {"name": "help", "description": "Show ZeroClaw help"},
         ],
     },
+    "deer-flow": {
+        "id": "deer-flow",
+        "name": "DeerFlow",
+        "description": "DeerFlow LangGraph SuperAgent (bytedance/deer-flow) -- taOS bridge to /api/runs/wait on :8001",
+        "verification_status": "experimental",
+        "slash_commands": [
+            {"name": "help", "description": "Show DeerFlow help"},
+        ],
+        "shortcuts": [
+            {"kind": "container-terminal", "label": "Container shell",
+             "icon": "terminal", "requires_capability": "agent.shell"},
+        ],
+    },
     "thclaws": {
         "id": "thclaws",
         "name": "thClaws",
