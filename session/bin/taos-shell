@@ -43,6 +43,7 @@ recents)
     swaymsg -q exec -- chromium --app=http://shell.taos:6973/ \
         --ozone-platform=wayland --no-first-run --no-default-browser-check \
         --disable-features=TranslateUI --disable-pinch \
+        --overscroll-history-navigation=0 \
         --user-data-dir="$HOME/.config/chromium-app-shell"
     # Hold the lock until the window exists, so a second press focuses it.
     i=0

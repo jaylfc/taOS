@@ -130,6 +130,7 @@ def launch(app: str) -> None:
         swaymsg("workspace", app_workspace(app))
         swaymsg("exec", "chromium --user-data-dir=%s --ozone-platform=wayland "
                 "--no-first-run --no-default-browser-check --disable-pinch "
+                "--overscroll-history-navigation=0 "
                 "--disable-features=TranslateUI '--app=%s'" % (KIOSK_PROFILE, APP_URL % app))
     except (subprocess.SubprocessError, OSError, ValueError) as exc:
         print("taos-shelld: launch %s failed: %s" % (app, exc), file=sys.stderr)

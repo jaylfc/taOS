@@ -13,5 +13,17 @@
   "FeedbackSurveysEnabled": false,
   "SearchSuggestEnabled": false,
   "ShoppingListEnabled": false,
-  "PrivacySandboxPromptEnabled": false
+  "PrivacySandboxPromptEnabled": false,
+  "NotificationsAllowedForUrls": [
+    "http://127.0.0.1:6969",
+    "http://localhost:6969"
+  ],
+  "AudioCaptureAllowedUrls": [
+    "http://127.0.0.1:6969",
+    "http://localhost:6969"
+  ],
+  "VideoCaptureAllowedUrls": [
+    "http://127.0.0.1:6969",
+    "http://localhost:6969"
+  ]
 }

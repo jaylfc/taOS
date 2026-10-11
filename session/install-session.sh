@@ -161,8 +161,9 @@ grep -q 'Exec=/usr/local/bin/taos-session-mode kiosk' /usr/share/applications/ta
 # (all chrome dialogs like this should be suppressed)". Managed policy is the
 # one switch chromium honours for its bubbles -- save password, autofill,
 # translate, sign-in/sync, promos, surveys, the default-browser nag -- where
-# flags cover some and change between releases. Media, notifications and
-# pop-ups are deliberately NOT touched: taOS's own features use them.
+# flags cover some and change between releases. Notifications, microphone and
+# camera are GRANTED to taOS's own origin rather than blocked, because taOS's
+# features use them; a prompt for them was the same tell (Jay 2026-10-11).
 install -d -m 755 /etc/chromium/policies/managed
 install -m 644 "$HERE/etc/chromium-policy-taos-kiosk.json" \
     /etc/chromium/policies/managed/taos-kiosk.json
