@@ -242,3 +242,30 @@ def test_another_app_still_launches_as_a_chromium_window(shelld):
 def test_the_tests_see_a_real_url_check():
     mod = _load()
     assert mod.valid_url("https://example.com/") and not mod.valid_url("file:///x")
+
+
+def test_a_rebound_host_cannot_read_or_drive_the_shell(shelld):
+    # DNS rebinding: evil.example resolves to 127.0.0.1, so to Firefox the
+    # page is same-origin and needs no CORS. Only the Host header tells.
+    port, sway, spawned, _ = shelld
+    evil = {"Host": "evil.example:%d" % port}
+    assert _req(port, "/windows", None, method="GET", headers=evil)[0] == 403
+    assert _req(port, "/", None, method="GET", headers=evil)[0] == 403
+    status, _ = _req(port, "/open-url", {"url": "https://example.com/"},
+                     headers=dict(evil, Origin="http://evil.example:%d" % port))
+    assert status == 403
+    time.sleep(0.2)
+    assert spawned == []
+    # Control: the loopback name still works.
+    assert _req(port, "/windows", None, method="GET")[0] == 200
+
+
+def test_cors_never_allows_another_origin_to_read_windows(shelld):
+    port, _, _, _ = shelld
+    req = urllib.request.Request("http://127.0.0.1:%d/windows" % port,
+                                 headers={"Origin": "https://evil.example"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        assert r.headers.get("Access-Control-Allow-Origin") is None
+    req = urllib.request.Request("http://127.0.0.1:%d/windows" % port, headers={"Origin": DESKTOP})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        assert r.headers.get("Access-Control-Allow-Origin") == DESKTOP

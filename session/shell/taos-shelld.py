@@ -375,7 +375,21 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"ok": True})
         threading.Thread(target=open_url, args=(url,), daemon=True).start()
 
+    def _host_ok(self) -> bool:
+        """DNS rebinding: a page whose name resolves to 127.0.0.1 is
+        same-origin to the browser and needs no CORS to read /windows. Only
+        the Host header gives it away, so answer only to the loopback names."""
+        names = {"127.0.0.1", "localhost", urlsplit(ORIGIN).hostname}
+        want = self.server.server_address[1]
+        try:
+            parts = urlsplit("//" + (self.headers.get("Host") or ""))
+            return parts.hostname in names and parts.port == want
+        except ValueError:
+            return False
+
     def do_GET(self):
+        if not self._host_ok():
+            return self._json({"error": "forbidden"}, 403)
         if self.path == "/":
             return self._send(PAGE.encode(), "text/html; charset=utf-8")
         if self.path == "/windows":
@@ -394,6 +408,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Vary", "Origin")
 
     def do_OPTIONS(self):
+        if not self._host_ok():
+            self.send_response(403)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         # Preflight for the desktop's cross-origin POSTs, and ONLY those: the
         # desktop's own switcher focuses and closes windows through here.
         if (self.path in ("/launch", "/open-url", "/focus", "/close")
@@ -411,6 +430,8 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
+        if not self._host_ok():
+            return self._json({"error": "forbidden"}, 403)
         if self.path == "/launch":
             return self._launch()
         if self.path == "/open-url":
