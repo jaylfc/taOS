@@ -1825,6 +1825,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.routine_store = routine_store
     app.state.project_event_broker = project_event_broker
     app.state.desktop_command_broker = desktop_command_broker
+    # Screencast cast tokens (in memory: a restart revokes every cast).
+    from tinyagentos.cast_tokens import CastTokenStore
+    app.state.cast_tokens = CastTokenStore()
     app.state.project_canvas_store = project_canvas_store
     app.state.doc_review_store = doc_review_store
     app.state.project_notes_store = project_notes_store
