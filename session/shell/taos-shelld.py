@@ -13,7 +13,9 @@ Serves the switcher page and three calls, on LOOPBACK only:
   POST /close      {"con_id": N}  close it
   POST /launch     {"app": "messages"}  open a taOS app as its own window
                    (from the taOS desktop, cross-origin: CORS for exactly
-                   DESKTOP_ORIGIN), or switch to it if it is already open
+                   DESKTOP_ORIGIN), or switch to it if it is already open;
+                   {"app": "browser"} is Firefox
+  POST /open-url   {"url": "https://..."}  open a link in Firefox and show it
 
 Runs in the sway session as taos (exec_always), so it has SWAYSOCK and
 needs no privilege: every action is a swaymsg the session owner could type.
@@ -29,6 +31,8 @@ import re
 import threading
 import subprocess
 import sys
+import time
+from urllib.parse import urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HOST = "127.0.0.1"
@@ -43,6 +47,16 @@ DESKTOP_ORIGIN = os.environ.get("TAOS_SHELLD_DESKTOP_ORIGIN", "http://127.0.0.1:
 KIOSK_PROFILE = os.environ.get("TAOS_SHELLD_KIOSK_PROFILE", "/var/lib/taos-kiosk/chrome")
 APP_URL = DESKTOP_ORIGIN + "/app.html?app=%s"
 _APP_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
+#: The touch browser (Jay 2026-10-09: Firefox + mobile-config-firefox, see
+#: pmos/browser/install-firefox.sh). Measured on the handset: a second
+#: `firefox <url>` opens a tab in the running window and leaves it on its
+#: own workspace, so /open-url switches there itself.
+BROWSER_APP = "browser"
+BROWSER_CMD = os.environ.get("TAOS_SHELLD_BROWSER", "firefox")
+BROWSER_APP_ID = "firefox"
+#: How long a cold Firefox gets to map its window (measured ~10 s).
+BROWSER_WAIT_S = 25.0
+MAX_URL = 4096
 
 #: Windows that are not "apps" to switch between: the kiosk (taOS home and
 #: the lock screen, reached with the home button) and this switcher. EXACT
@@ -123,6 +137,14 @@ def launch(app: str) -> None:
     it. Runs AFTER /launch has answered (see Handler._launch), holding the
     slot claim() took, which it releases a few seconds after it is done."""
     try:
+        if app == BROWSER_APP:
+            # Firefox, wherever it mapped: show it, or start it first. Never
+            # a second window for the same browser.
+            if not show_browser(wait=0):
+                swaymsg("workspace", app_workspace(app))
+                start_browser()
+                show_browser()
+            return
         raw = swaymsg("-t", "get_tree", "-r").stdout
         if raw and app_is_open(json.loads(raw), app):
             swaymsg("workspace", app_workspace(app))
@@ -135,6 +157,63 @@ def launch(app: str) -> None:
         print("taos-shelld: launch %s failed: %s" % (app, exc), file=sys.stderr)
     finally:
         threading.Timer(3.0, lambda: _LAUNCHING.discard(app)).start()
+
+
+def valid_url(url) -> bool:
+    """Only an http(s) link with a host: never javascript:, file:, data: or
+    anything that could reach Firefox as a command-line option."""
+    if not isinstance(url, str) or not url or len(url) > MAX_URL:
+        return False
+    if any(c <= " " or c == "\x7f" for c in url):
+        return False
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    return parts.scheme in ("http", "https") and bool(parts.hostname)
+
+
+def start_browser(url: str | None = None) -> None:
+    """Start Firefox, or hand a running one the URL (a new tab). An argv
+    list, not `swaymsg exec`: that is a shell string and a URL is not
+    constrained the way an app id is. sway started this daemon, so it has
+    the session's WAYLAND_DISPLAY; the window opens on the focused workspace."""
+    argv = [BROWSER_CMD] + ([url] if url else [])
+    subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def show_browser(wait: float = BROWSER_WAIT_S) -> bool:
+    """Put Firefox on its workspace and show it. sway places a new window
+    by the LAUNCHING process's workspace, and this daemon was started on
+    workspace 1: measured on the handset, a Firefox started from here opened
+    behind the taOS desktop, not on app-browser. So find it and move it."""
+    ws = app_workspace(BROWSER_APP)
+    end = time.monotonic() + wait
+    while True:
+        raw = swaymsg("-t", "get_tree", "-r").stdout
+        found = [(c, w) for c, w in _walk(json.loads(raw))
+                 if c.get("app_id") == BROWSER_APP_ID] if raw else []
+        if found:
+            for con, w in found:
+                if w != ws:
+                    swaymsg("[con_id=%d] move container to workspace %s" % (con["id"], ws))
+            swaymsg("workspace", ws)
+            return True
+        if time.monotonic() >= end:
+            return False
+        time.sleep(0.3)
+
+
+def open_url(url: str) -> None:
+    """Show the browser's workspace at once (the tap answered), give Firefox
+    the link, then make sure its window is the one on screen."""
+    try:
+        swaymsg("workspace", app_workspace(BROWSER_APP))
+        start_browser(url)
+        show_browser()
+    except (subprocess.SubprocessError, OSError) as exc:
+        print("taos-shelld: open-url failed: %s" % exc, file=sys.stderr)
 
 
 def current_windows() -> list[dict]:
@@ -281,6 +360,21 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"ok": True})
         threading.Thread(target=launch, args=(app,), daemon=True).start()
 
+    def _open_url(self):
+        if not self._post_allowed((ORIGIN, DESKTOP_ORIGIN)):
+            return self._json({"error": "forbidden"}, 403)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            url = json.loads(self.rfile.read(min(n, MAX_URL + 64)) or b"{}")["url"]
+        except (ValueError, KeyError, TypeError):
+            return self._json({"error": "bad request"}, 400)
+        if not valid_url(url):
+            return self._json({"error": "bad url"}, 400)
+        # Answer first, as /launch does: the caller falls back to opening
+        # the link itself if the shell is slow to say it has taken it.
+        self._json({"ok": True})
+        threading.Thread(target=open_url, args=(url,), daemon=True).start()
+
     def do_GET(self):
         if self.path == "/":
             return self._send(PAGE.encode(), "text/html; charset=utf-8")
@@ -300,8 +394,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Vary", "Origin")
 
     def do_OPTIONS(self):
-        # Preflight for the desktop's cross-origin POST /launch, and ONLY that.
-        if self.path == "/launch" and self.headers.get("Origin") == DESKTOP_ORIGIN:
+        # Preflight for the desktop's cross-origin POSTs, and ONLY those: the
+        # desktop's own switcher focuses and closes windows through here.
+        if (self.path in ("/launch", "/open-url", "/focus", "/close")
+                and self.headers.get("Origin") == DESKTOP_ORIGIN):
             self.send_response(204)
             self.send_header("Access-Control-Allow-Origin", DESKTOP_ORIGIN)
             self.send_header("Access-Control-Allow-Methods", "POST")
@@ -317,9 +413,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path == "/launch":
             return self._launch()
+        if self.path == "/open-url":
+            return self._open_url()
         if self.path not in ("/focus", "/close"):
             return self._json({"error": "not found"}, 404)
-        if not self._post_allowed((ORIGIN,)):
+        if not self._post_allowed((ORIGIN, DESKTOP_ORIGIN)):
             return self._json({"error": "forbidden"}, 403)
         try:
             n = int(self.headers.get("Content-Length") or 0)
