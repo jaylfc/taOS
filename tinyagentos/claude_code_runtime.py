@@ -8,6 +8,11 @@ written to disk by taOS. Mirrors :mod:`tinyagentos.picoclaw_runtime`.
 
 The conversation continues across turns with ``--resume <session-id>``; the
 session id comes from the first stream-json event that carries one.
+
+Permissions are mechanical, not prompt text: ``--permission-mode default``
+with an ``--allowedTools`` list (shell, read tools, edits confined to the
+workspace) and a ``--settings`` file whose PreToolUse hook
+(:mod:`tinyagentos.claude_code_guard`) refuses ``git push`` and ``gh``.
 """
 from __future__ import annotations
 
@@ -15,7 +20,9 @@ import asyncio
 import json
 import logging
 import os
+import shlex
 import shutil
+import sys
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -25,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 CLAUDE_CODE_TOKEN_SECRET = "claude_code_oauth_token"
 HOME_DIRNAME = "taos-agent-claude-code"
+SETTINGS_FILENAME = "taos-settings.json"
 
 _CLAUDE_FALLBACK_PATHS = ("~/.local/bin/claude", "/usr/local/bin/claude")
 
@@ -104,6 +112,29 @@ class ClaudeCodeHarness:
         self.home.mkdir(parents=True, exist_ok=True)
         os.chmod(self.home, 0o700)
         self.workspace.mkdir(parents=True, exist_ok=True)
+        self.write_settings()
+
+    @property
+    def settings_path(self) -> Path:
+        return self.home / SETTINGS_FILENAME
+
+    def write_settings(self) -> None:
+        """The ``--settings`` file: a PreToolUse hook on the shell tool that runs
+        :mod:`tinyagentos.claude_code_guard`. Rewritten before every turn so a
+        shell edit to it in one turn does not carry into the next."""
+        guard = Path(__file__).with_name("claude_code_guard.py")
+        command = f"{shlex.quote(sys.executable)} -I {shlex.quote(str(guard))}"
+        settings = {"hooks": {"PreToolUse": [
+            {"matcher": "Bash", "hooks": [{"type": "command", "command": command}]},
+        ]}}
+        self.settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+        os.chmod(self.settings_path, 0o600)
+
+    def allowed_tools(self) -> list[str]:
+        """Tools that run without a prompt (``-p`` has no one to ask, so every
+        other tool is denied). Edits are confined to the workspace."""
+        ws = str(self.workspace)
+        return ["Read", "Grep", "Glob", "Bash", f"Edit(/{ws}/**)", f"Write(/{ws}/**)"]
 
     def redact(self, text: str) -> str:
         if self.token:
@@ -126,7 +157,9 @@ class ClaudeCodeHarness:
 
     def _argv(self, session_id: str | None, system_prompt_file: str | None) -> list[str]:
         argv = [self.binary, "-p", "--output-format", "stream-json", "--verbose",
-                "--model", self.model, "--permission-mode", "bypassPermissions"]
+                "--model", self.model, "--permission-mode", "default",
+                "--allowedTools", ",".join(self.allowed_tools()),
+                "--settings", str(self.settings_path)]
         if system_prompt_file is not None:
             argv += ["--append-system-prompt-file", system_prompt_file]
         if session_id:
@@ -149,6 +182,7 @@ class ClaudeCodeHarness:
                 system_prompt_file = f.name
             os.chmod(system_prompt_file, 0o600)
         try:
+            self.write_settings()
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *self._argv(session_id, system_prompt_file),
