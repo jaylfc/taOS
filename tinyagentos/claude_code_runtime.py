@@ -33,6 +33,8 @@ logger = logging.getLogger(__name__)
 CLAUDE_CODE_TOKEN_SECRET = "claude_code_oauth_token"
 HOME_DIRNAME = "taos-agent-claude-code"
 SETTINGS_FILENAME = "taos-settings.json"
+SHELL_RULES_FILENAME = "taos-shell-rules.json"
+SHELL_ASKS_FILENAME = "taos-shell-asks.jsonl"
 
 _CLAUDE_FALLBACK_PATHS = ("~/.local/bin/claude", "/usr/local/bin/claude")
 
@@ -103,6 +105,9 @@ class ClaudeCodeHarness:
     system: str | None = None
     """Appended to Claude Code's system prompt via ``--append-system-prompt-file``,
     written to a private per-turn temp file that is removed when the turn ends."""
+    shell_rules: dict | None = None
+    """The chatting user's shell profile (``{"allow": [...], "deny": [...]}``),
+    set before each turn; None applies only the hard ``git push`` / ``gh`` block."""
 
     @property
     def workspace(self) -> Path:
@@ -124,11 +129,38 @@ class ClaudeCodeHarness:
         shell edit to it in one turn does not carry into the next."""
         guard = Path(__file__).with_name("claude_code_guard.py")
         command = f"{shlex.quote(sys.executable)} -I {shlex.quote(str(guard))}"
+        if self.shell_rules is not None:
+            rules = {"allow": sorted(self.shell_rules.get("allow") or ()),
+                     "deny": sorted(self.shell_rules.get("deny") or ())}
+            rules_path = self.home / SHELL_RULES_FILENAME
+            rules_path.write_text(json.dumps(rules), encoding="utf-8")
+            os.chmod(rules_path, 0o600)
+            command += (f" --rules {shlex.quote(str(rules_path))}"
+                        f" --asks {shlex.quote(str(self.home / SHELL_ASKS_FILENAME))}")
         settings = {"hooks": {"PreToolUse": [
             {"matcher": "Bash", "hooks": [{"type": "command", "command": command}]},
         ]}}
         self.settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
         os.chmod(self.settings_path, 0o600)
+
+    def take_shell_asks(self) -> list[dict]:
+        """The undecided shell programs the hook queued since the last call
+        (``{"program", "command"}`` each), then clears the queue."""
+        path = self.home / SHELL_ASKS_FILENAME
+        try:
+            raw = path.read_text(encoding="utf-8")
+            path.unlink()
+        except FileNotFoundError:
+            return []
+        asks: list[dict] = []
+        for line in raw.splitlines():
+            try:
+                ask = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(ask, dict) and isinstance(ask.get("program"), str):
+                asks.append({"program": ask["program"], "command": str(ask.get("command", ""))})
+        return asks
 
     def allowed_tools(self) -> list[str]:
         """Tools that run without a prompt (``-p`` has no one to ask, so every

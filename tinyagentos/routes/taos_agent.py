@@ -8,6 +8,9 @@ PUT  /api/taos-agent/persona                   → persist persona (system-promp
 PUT  /api/taos-agent/framework                 → set taos_agent.framework / device.class; restarts the agent
 POST /api/taos-agent/chat                      → streams a turn via opencode, PicoClaw or Claude Code (NDJSON)
 GET  /api/taos-agent/status                    → scoped agent-loop status (state, turn, queue, subagents)
+GET  /api/taos-agent/shell-profile             → the caller's Claude Code shell profile {allow, deny, asked}
+PUT  /api/taos-agent/shell-profile/{program}   → {effect: allow|deny}: set the caller's rule for a program
+DELETE /api/taos-agent/shell-profile/{program} → revoke the caller's rule (the next use asks again)
 POST /api/taos-agent/attachments/upload        → accepts a file, returns a persistent attachment record
 GET  /api/taos-agent/attachments/files/{name}  → serve a stored attachment
 
@@ -32,7 +35,7 @@ import sys
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, File, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
@@ -40,9 +43,11 @@ from tinyagentos.adapters.opencode_adapter import OpenCodeAdapter, OpenCodeConfi
 from tinyagentos.adapters.claude_code_cli_adapter import ClaudeCodeCliAdapter, ClaudeCodeCliConfig
 from tinyagentos.adapters.picoclaw_cli_adapter import PicoClawCliAdapter, PicoClawCliConfig
 from tinyagentos.agent_loop import AgentLoop, LoopAction
+from tinyagentos.auth_context import CurrentUser, current_user
 from tinyagentos.claude_code_runtime import ClaudeCodeBinaryNotFoundError, ClaudeCodeTokenMissingError
 from tinyagentos.opencode_runtime import OpenCodeBinaryNotFoundError
 from tinyagentos.picoclaw_runtime import PicoClawBinaryNotFoundError
+from tinyagentos import taos_agent_shell_profile as shell_profile
 from tinyagentos.taos_agent_runtime import (
     DEVICE_CLASS_CHOICES,
     FRAMEWORK_CHOICES,
@@ -497,6 +502,37 @@ async def put_persona(request: Request, body: PersonaUpdate):
     return JSONResponse({"persona": body.persona})
 
 
+class ShellRuleUpdate(BaseModel):
+    effect: str
+
+
+@router.get("/api/taos-agent/shell-profile")
+async def get_shell_profile(request: Request, user: CurrentUser = Depends(current_user)):
+    """The caller's shell profile for the Claude Code harness."""
+    return JSONResponse(await shell_profile.load_profile(request.app.state.desktop_settings, user.user_id))
+
+
+@router.put("/api/taos-agent/shell-profile/{program}")
+async def put_shell_rule(request: Request, program: str, body: ShellRuleUpdate,
+                         user: CurrentUser = Depends(current_user)):
+    """Allow or deny one program for the caller's taOS Agent shell."""
+    try:
+        profile = await shell_profile.set_rule(
+            request.app.state.desktop_settings, user.user_id, program, body.effect)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return JSONResponse(profile)
+
+
+@router.delete("/api/taos-agent/shell-profile/{program}")
+async def delete_shell_rule(request: Request, program: str, user: CurrentUser = Depends(current_user)):
+    """Revoke the caller's rule for one program; the agent's next use asks again."""
+    profile = await shell_profile.revoke(request.app.state.desktop_settings, user.user_id, program)
+    if profile is None:
+        return JSONResponse({"error": "no rule for that program"}, status_code=404)
+    return JSONResponse(profile)
+
+
 @router.post("/api/taos-agent/chat")
 async def chat(request: Request, body: ChatRequest):
     """Stream a chat turn through the harness that runs the taOS Agent: a host
@@ -622,7 +658,9 @@ async def chat(request: Request, body: ChatRequest):
             # final done frame.
             pass
 
+    shell_user = getattr(request.state, "user_id", None) or "user"
     if use_claude_code:
+        harness.shell_rules = await shell_profile.rules_for(store, shell_user)
         adapter = ClaudeCodeCliAdapter(ClaudeCodeCliConfig(harness=harness, system=system_prompt), sink)
         adapter.session_id = getattr(app_state, "taos_claude_code_session_id", None)
     elif use_picoclaw:
@@ -719,6 +757,14 @@ async def chat(request: Request, body: ChatRequest):
             logger.exception("taos-agent: drive task error")
             queue.put_nowait({"error": harness.redact(str(exc)) if use_claude_code else str(exc)})
         finally:
+            # Shell commands the user has not decided yet become approve/deny
+            # asks, in Decisions and as inline cards in this chat.
+            if use_claude_code:
+                try:
+                    for ask in await shell_profile.raise_shell_asks(app_state, harness, shell_user):
+                        queue.put_nowait({"shell_ask": ask})
+                except Exception:
+                    logger.exception("taos-agent: raising shell asks failed")
             # The safe point MUST be reached even when the turn raises or is
             # cancelled — skipping it would wedge the loop in WORKING forever.
             try:

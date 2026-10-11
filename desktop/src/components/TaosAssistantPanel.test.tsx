@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { TaosAssistantPanel } from "./TaosAssistantPanel";
 import { useTaosAgentStore } from "@/stores/taos-agent-store";
@@ -196,5 +196,32 @@ describe("TaosAssistantPanel", () => {
     const textarea = screen.getByRole("textbox", { name: /edit agent message/i });
     fireEvent.change(textarea, { target: { value: "   " } });
     expect(screen.getByRole("button", { name: /save edit/i })).toBeDisabled();
+  });
+
+  it("a shell_ask frame from the chat stream shows an inline allow/deny card", async () => {
+    useTaosAgentStore.setState({ model: "qwen3" });
+    const frames = [
+      JSON.stringify({ delta: "I need to run the build." }),
+      JSON.stringify({ shell_ask: { program: "npm run", decision_id: "dec-1", command: "npm run build" } }),
+      JSON.stringify({ done: true }),
+    ].join("\n") + "\n";
+    const body = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(frames));
+        controller.close();
+      },
+    });
+    mockFetch.mockImplementation(async (url: string) =>
+      url === "/api/taos-agent/chat"
+        ? { ok: true, body }
+        : { ok: true, json: async () => ({ model: "qwen3" }) },
+    );
+    render(<TaosAssistantPanel />);
+    fireEvent.change(screen.getByRole("textbox", { name: /message taOS agent/i }), {
+      target: { value: "build it" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(screen.getByLabelText("Allow npm run")).toBeInTheDocument());
+    expect(screen.getByLabelText("Deny npm run")).toBeInTheDocument();
   });
 });
