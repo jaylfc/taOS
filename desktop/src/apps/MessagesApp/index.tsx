@@ -2836,13 +2836,13 @@ className="shrink-0 p-0.5 rounded hover:bg-shell-surface-active transition-color
                 </select>
               </div>
               <div className="space-y-1">
-                <Label htmlFor="new-channel-description-mobile" className="block uppercase tracking-wider">Description</Label>
+                <Label htmlFor="new-channel-topic-mobile" className="block uppercase tracking-wider">Topic</Label>
                 <Input
-                  id="new-channel-description-mobile"
+                  id="new-channel-topic-mobile"
                   value={newChannel.description}
                   onChange={(e) => setNewChannel((s) => ({ ...s, description: e.target.value }))}
                   placeholder="What's this channel about?"
-                  aria-label="Channel description"
+                  aria-label="Channel topic"
                 />
               </div>
               <Button onClick={createChannel} disabled={!newChannel.name.trim()} className="w-full">
@@ -2890,13 +2890,13 @@ className="shrink-0 p-0.5 rounded hover:bg-shell-surface-active transition-color
                   </select>
                 </div>
                 <div className="space-y-1">
-                  <Label htmlFor="new-channel-description" className="block uppercase tracking-wider">Description</Label>
+                  <Label htmlFor="new-channel-topic" className="block uppercase tracking-wider">Topic</Label>
                   <Input
-                    id="new-channel-description"
+                    id="new-channel-topic"
                     value={newChannel.description}
                     onChange={(e) => setNewChannel((s) => ({ ...s, description: e.target.value }))}
                     placeholder="What's this channel about?"
-                    aria-label="Channel description"
+                    aria-label="Channel topic"
                   />
                 </div>
                 <Button
