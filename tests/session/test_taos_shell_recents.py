@@ -1,7 +1,7 @@
 """Test for taos-shell recents arm that opens the taOS app switcher.
 
 This test verifies that the recents) arm of taos-shell properly opens the
-the taOS desktop switcher on workspace 1 then F14, exactly like the home button
+taOS desktop switcher on workspace 1 then F14, exactly like the home button
 does with workspace 1 then F13.
 """
 import pathlib
@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import os
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 def test_taos_shell_recents_opens_switcher():
     """Test that recents) arm opens the taOS app switcher."""
@@ -24,8 +24,8 @@ def test_taos_shell_recents_opens_switcher():
         # Create stub scripts that append to the log file
         for cmd in ["swaymsg", "wtype", "chromium"]:
             stub_content = f'''#!/bin/sh
-echo "$@" >> "{log_file}"
-'''
+ echo "$0 $@" >> "{log_file}"
+ '''
             stub_path = stubs_dir / cmd
             stub_path.write_text(stub_content)
             stub_path.chmod(0o755)
@@ -75,10 +75,10 @@ def test_taos_shell_home_control():
         log_file = pathlib.Path(tmpdir) / "test.log"
         
         # Create stub scripts that append to the log file
-        for cmd in ["swaymsg", "wtype"]:
+        for cmd in ["swaymsg", "wtype", "chromium"]:
             stub_content = f'''#!/bin/sh
-echo "$@" >> "{log_file}"
-'''
+ echo "$0 $@" >> "{log_file}"
+ '''
             stub_path = stubs_dir / cmd
             stub_path.write_text(stub_content)
             stub_path.chmod(0o755)

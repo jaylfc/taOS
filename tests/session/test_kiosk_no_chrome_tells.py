@@ -16,7 +16,6 @@ TAOS_ORIGIN = "http://127.0.0.1:6969"
 # Every file that starts a chromium window on the handset.
 LAUNCHERS = [
     ROOT / "kiosk/bin/taos-kiosk-launch",
-    ROOT / "kiosk/bin/taos-shell",
     ROOT / "apps/taos-app-launch",
     ROOT / "shell/taos-shelld.py",
 ]
