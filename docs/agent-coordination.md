@@ -1982,6 +1982,7 @@ The allowlist is the union of:
 - **Credential rotation** (`POST /api/agents/registry/{id}/rotate-tokens`) -- identity-only, no scope grant: the route requires the JWT's `sub` to equal the path `canonical_id`, so an agent can rotate its own token and nobody else's. Returns the replacement token and the `storage_guidance` string; the superseded token is rejected by the identity's `token_min_iat` cutoff.
 - **Desktop control (system taOS Agent only)**: `POST /api/desktop/command`, `POST /api/desktop/screenshot`, `POST /api/desktop/layout` (native agent's registry JWT sets `user_id` to the owner, so desktop commands are delivered to the owner's desktop).
 - **Skill-exec (system taOS Agent only)**: `POST /api/skill-exec/{skill_id}/call`, `GET /api/skill-exec/tools` (native agent's registry JWT with `SYSTEM_AGENT_API_SCOPES`).
+- **Sign-in broker** (`POST /api/auth-broker/requests`, `GET /api/auth-broker/requests/{id}`, `POST /api/auth-broker/requests/{id}/{code,token}`) -- identity-only, no scope grant: each handler resolves the caller itself (see *Sign-in broker* below). `/code` is on the list only so an agent token gets the route's own `403`, never a `401`.
 
 Task checklist items (`/api/projects/{project_id}/tasks/{task_id}/checklist-items`)
 
@@ -2035,6 +2036,47 @@ Container provisioning request (P1 + P2, agent-container-provisioning spec):
 - `POST /api/containers/requests/{id}/provision` -- provisions an incus/LXC container for an `approved` request. Only the requesting agent may call this, and only when the request is in the `approved` state. On success the request transitions to `provisioned` and the container name is recorded. The container is bound to the agent + project via environment variables (`TAOS_AGENT_CANONICAL_ID`, `TAOS_PROJECT_ID`).
 - `POST /api/containers/requests/{id}/destroy` -- deletes the request row and, if the request was already `provisioned`, destroys the underlying incus container. Quota is returned to the agent on deletion.
 - `GET /api/agents/containers/quota` -- returns the calling agent's quota, threshold, current active (non-terminal) request count, and remaining slots.
+
+## Sign-in broker (`/api/auth-broker/*`)
+
+An agent that must sign in to a Claude subscription runs `claude setup-token`
+(or `claude` login), which prints a URL and waits for a pasted code. No callback
+has to reach the agent, so the same flow works for the root taOS Agent on the
+host and for an agent inside an incus container. Store:
+`tinyagentos/auth_broker.py`; routes: `tinyagentos/routes/auth_broker.py`.
+
+1. `POST /api/auth-broker/requests` (agent only: a bound per-agent local token
+   or a registry JWT; a user session is `403`) with
+   `{"kind": "claude-subscription", "url": "...", "prompt": "..."}`. The url
+   must be `https` on an exact allowlisted host (`claude.ai`,
+   `console.anthropic.com`; no subdomain, userinfo or non-443 port), else `422`:
+   a card the user taps must never open a site the agent chose. Returns
+   `{id, kind, status, host, expires_in_seconds}` and raises an `auth_broker`
+   notification to the agent's owner. An agent the registry cannot attribute (a
+   bound local-token agent with no registry row) gets its card sent to each
+   admin instead; the card is never a broadcast (`user_id` null). With no admin
+   to receive it, create is `409`.
+2. The desktop (bell, toast, Notifications app) renders that notification as a
+   sign-in card: the agent's name, the host, an **Open** button (system browser;
+   Firefox on taOSmobile) and a code field. The card re-checks the same host
+   allowlist before it renders Open.
+3. `POST /api/auth-broker/requests/{id}/code` `{"code": "..."}`: a USER SESSION
+   only (the agent's owner or an admin). Any agent token is `403`, so an agent
+   can never answer its own card. A second code is `409`; an expired request `410`.
+4. `GET /api/auth-broker/requests/{id}`: the requesting agent only (anyone else
+   `404`). Returns `code` exactly once, then clears it.
+5. `POST /api/auth-broker/requests/{id}/token` `{"token": "..."}`: the requesting
+   agent only, after it read the code (`409` otherwise). The token goes to
+   Secrets under a fixed name with `secret_access` = that agent alone:
+   `claude_code_oauth_token` for the native taOS Agent (the name the
+   `claude_code` harness reads), `claude_code_oauth_token:<agent id>` for every
+   other agent. Never logged, never echoed back. The request is claimed under
+   the store lock before the secret is written, so an overlapping post gets
+   `409` and an expired request `410` without touching Secrets; a failed write
+   hands the claim back so the agent can retry.
+
+A request expires 10 minutes after it was created; once the agent has read the
+code it has another 10 minutes to post the token.
 
 ## Skill-exec agent identity (credential-bound, not body-supplied)
 

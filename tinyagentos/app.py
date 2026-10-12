@@ -355,6 +355,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     user_shares_store = UserSharesStore(data_dir / "user_shares.db")
     from tinyagentos.sharing_grants import SharingGrantStore
     sharing_grants_store = SharingGrantStore(data_dir / "sharing_grants.db")
+    from tinyagentos.auth_broker import AuthBrokerStore
+    auth_broker_store = AuthBrokerStore(data_dir / "auth_broker.db")
     from tinyagentos.app_grants_store import AppGrantsStore
     app_grants_store = AppGrantsStore(data_dir / "app_grants.db")
     from tinyagentos.knowledge_fetchers.x import XWatchStore
@@ -620,6 +622,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.user_shares = user_shares_store
         await sharing_grants_store.init()
         app.state.sharing_grants = sharing_grants_store
+        await auth_broker_store.init()
+        app.state.auth_broker = auth_broker_store
         await app_grants_store.init()
         await license_acceptances_store.init()
         await agent_model_key_store.init()

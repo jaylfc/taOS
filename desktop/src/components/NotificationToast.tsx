@@ -4,6 +4,7 @@ import { useNotificationStore, type Notification } from "@/stores/notification-s
 import { useProcessStore } from "@/stores/process-store";
 import { getApp } from "@/registry/app-registry";
 import { ConsentActions, consentPayload } from "./ConsentActions";
+import { SignInActions, signInPayload } from "./SignInActions";
 
 const LEVEL_ICONS = {
   info: Info,
@@ -271,10 +272,11 @@ function ToastItem({ notif, onExpire, fullWidth = false }: { notif: Notification
   const Icon = LEVEL_ICONS[notif.level];
   const isAgentPaused = notif.source === "agent.paused";
   const consent = (notif.source === "auth_requests" || notif.source === "agent_scope_requests") ? consentPayload(notif.data) : null;
+  const signIn = notif.source === "auth_broker" ? signInPayload(notif.data) : null;
   // Stable boolean for the effect dependency — using the `consent` object
   // would recreate the timer on every render because consentPayload() returns
   // a new object reference each time.
-  const isConsentToast = consent !== null;
+  const isConsentToast = consent !== null || signIn !== null;
 
   useEffect(() => {
     // Agent-paused and consent toasts stay until the user explicitly acts.
@@ -310,6 +312,15 @@ function ToastItem({ notif, onExpire, fullWidth = false }: { notif: Notification
             source={notif.source}
             canonicalId={consent.canonicalId}
             humanDuration={consent.humanDuration}
+            onResolved={() => archiveRead(notif.id)}
+          />
+        )}
+        {signIn && (
+          <SignInActions
+            requestId={signIn.requestId}
+            url={signIn.url}
+            host={signIn.host}
+            agent={signIn.agent}
             onResolved={() => archiveRead(notif.id)}
           />
         )}
