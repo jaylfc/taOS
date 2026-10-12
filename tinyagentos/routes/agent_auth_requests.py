@@ -23,6 +23,7 @@ Security notes
 
 import asyncio
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -145,10 +146,16 @@ class CreateScopeRequest(BaseModel):
 
     An ALREADY-REGISTERED agent (or its owner/admin) asks for additional scope
     grants on that same identity. No new identity is minted on approval.
+
+    ``duration_secs`` is the requested grant lifetime (taOS #2985). When the
+    request is accepted, each resulting grant receives ``expires_at = now +
+    duration_secs``. ``None`` (the default) means the agent asked for an
+    unbounded grant whose ``expires_at`` stays NULL forever.
     """
     requested_scopes: list[str]
     project_id: Optional[str] = None
     reason: str = ""
+    duration_secs: Optional[int] = None
 
 
 class ApproveScopeBody(BaseModel):
@@ -234,6 +241,19 @@ async def _retire_scope_request_notification(request: Request, request_id: str) 
 _CANVAS_SCOPES = {"canvas_read", "canvas_write"}
 _FILES_SCOPES = {"files_read", "files_write"}
 _PROJECT_SCOPES = {"project_tasks", "project_tasks_create", "project_tasks_update", "project_lists", "project_notes"} | _CANVAS_SCOPES | _FILES_SCOPES
+
+
+def _compute_expires_at(duration_secs: Optional[int]) -> Optional[str]:
+    """Return ``now + duration_secs`` as an ISO-8601 string, or ``None``.
+
+    ``duration_secs`` is the grant lifetime requested by the agent at scope-request
+    or consent time (taOS #2985). A non-None value produces a bounded grant whose
+    ``expires_at`` the enforcement layer (``_grant_unexpired``) eventually rejects;
+    ``None`` leaves the grant unbounded (``expires_at`` stays NULL forever).
+    """
+    if not duration_secs:
+        return None
+    return (datetime.now(timezone.utc) + timedelta(seconds=duration_secs)).isoformat()
 
 
 def _get_approve_lock(request: Request, request_id: str) -> asyncio.Lock:
@@ -902,8 +922,12 @@ async def approve_request_record(
     # Record grants for each approved scope. When deferring, grants are written
     # unbound (project_id=None); assign-agent later writes the project-bound
     # grant that makes project-scoped calls succeed.
+    expires_at = _compute_expires_at(record.get("duration_secs"))
     for scope in granted_scopes:
-        await grants_store.add_grant(canonical_id, scope, tier="once", project_id=binding_project)
+        await grants_store.add_grant(
+            canonical_id, scope, tier="once", project_id=binding_project,
+            expires_at=expires_at,
+        )
         # Also write a RelationshipManager permission edge so the existing
         # permission-check path (can_communicate etc.) is aware of the agent.
         await rel_mgr.set_permission(canonical_id, "taos-instance", scope)
@@ -986,6 +1010,7 @@ async def add_agent_to_project(
     decided_by: str,
     is_lead: bool = False,
     reconcile: bool = False,
+    expires_at: Optional[str] = None,
 ) -> dict:
     """Add an ALREADY-REGISTERED agent to ANOTHER project (taOS #1862).
 
@@ -1061,7 +1086,8 @@ async def add_agent_to_project(
     # Write the grants bound to this project and the relationship edge.
     for scope in granted_scopes:
         await grants_store.add_grant(
-            canonical_id, scope, tier="once", project_id=project_id
+            canonical_id, scope, tier="once", project_id=project_id,
+            expires_at=expires_at,
         )
         await rel_mgr.set_permission(canonical_id, "taos-instance", scope)
 
@@ -1623,6 +1649,7 @@ async def create_scope_request(
             requested_scopes=body.requested_scopes,
             project_id=body.project_id,
             reason=body.reason,
+            duration_secs=body.duration_secs,
             pending_cap=_SCOPE_REQUEST_PENDING_CAP,
         )
     except PendingCapExceeded as exc:
@@ -1699,6 +1726,7 @@ _PUBLIC_SCOPE_REQUEST_FIELDS = (
     "reason",
     "status",
     "granted_scopes",
+    "duration_secs",
     "created_ts",
     "decided_ts",
 )
@@ -1856,6 +1884,11 @@ async def approve_scope_request(
         grants_store = _get_grants_store(request)
         rel_mgr = _get_relationships(request)
 
+        # Compute the grant expiry from the requester's duration_secs (taOS #2985).
+        # A bounded request gets expires_at = now + duration_secs; an unbounded
+        # request (duration_secs is None) leaves expires_at NULL forever.
+        expires_at = _compute_expires_at(req.get("duration_secs"))
+
         # Global (non-project) grants: write the grant + relationship edge bound
         # to the validated project (None = global). Project-scoped grants: route
         # through add_agent_to_project so the membership + a2a channel are synced,
@@ -1869,7 +1902,8 @@ async def approve_scope_request(
         ]
         for scope in other_scopes:
             await grants_store.add_grant(
-                canonical_id, scope, tier="once", project_id=validated_project
+                canonical_id, scope, tier="once", project_id=validated_project,
+                expires_at=expires_at,
             )
             await rel_mgr.set_permission(canonical_id, "taos-instance", scope)
         if project_scopes:
@@ -1879,6 +1913,7 @@ async def approve_scope_request(
                 project_id=validated_project,
                 granted_scopes=project_scopes,
                 decided_by=user.user_id,
+                expires_at=expires_at,
             )
 
         result = await store.set_decision(

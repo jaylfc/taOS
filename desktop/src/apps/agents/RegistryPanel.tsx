@@ -137,8 +137,10 @@ export interface ScopeRequest {
   requested_scopes: string[];
   project_id: string | null;
   reason: string;
+  duration_secs: number | null;
   status: string;
   created_ts: string;
+  decided_ts: string | null;
 }
 
 /**
@@ -256,6 +258,176 @@ function PendingScopeRequests({
 }
 
 /* ------------------------------------------------------------------ */
+/*  ProjectGrantsPanel                                                  */
+/*                                                                      */
+/*  Per-project grant surface: shows the active grants an agent holds   */
+/*  on each project (grouped by project) and offers a per-scope revoke  */
+/*  button that calls POST                                             */
+/*  /api/projects/{project_id}/members/revoke-agent, the same endpoint  */
+/*  used by assign-agent reconcile. (taOS #2148 follow-up / #2985)      */
+/* ------------------------------------------------------------------ */
+
+interface GrantRow {
+  canonical_id: string;
+  scope: string;
+  tier: string;
+  project_id: string | null;
+  granted_at: string;
+  expires_at: string | null;
+}
+
+async function revokeAgentScopeFromProject(
+  canonicalId: string,
+  projectId: string,
+  scope: string,
+): Promise<void> {
+  const res = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/members/revoke-agent`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ canonical_id: canonicalId, scopes: [scope] }),
+    },
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { error?: string }).error ?? `HTTP ${res.status}`);
+  }
+}
+
+function ProjectGrantsPanel({
+  canonicalId,
+  agentLabel,
+  isAdmin,
+  currentUserId,
+  ownerUserId,
+  onRevoked,
+}: {
+  canonicalId: string;
+  agentLabel: string;
+  isAdmin: boolean;
+  currentUserId: string;
+  ownerUserId: string | null;
+  onRevoked: () => void;
+}) {
+  const canManage = isAdmin || currentUserId === ownerUserId;
+  const [grants, setGrants] = useState<GrantRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [revokingScope, setRevokingScope] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    if (!canManage) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/agents/registry/grants?canonical_id=${encodeURIComponent(canonicalId)}`,
+        { credentials: "include" },
+      );
+      if (!res.ok) {
+        setError(`Failed to load grants (${res.status})`);
+        setGrants([]);
+        return;
+      }
+      const data = (await res.json()) as { grants?: GrantRow[] };
+      setGrants(Array.isArray(data.grants) ? data.grants : []);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Network error");
+    } finally {
+      setLoading(false);
+    }
+  }, [canonicalId, canManage]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  if (!canManage) return null;
+
+  // Group grants by project_id.
+  const byProject = new Map<string | null, GrantRow[]>();
+  for (const g of grants) {
+    const key = g.project_id;
+    const arr = byProject.get(key) ?? [];
+    arr.push(g);
+    byProject.set(key, arr);
+  }
+
+  async function handleRevoke(scope: string, projectId: string | null) {
+    if (projectId === null) return; // Global grants are revoked via the registry entry revoke button.
+    if (!window.confirm(`Revoke \`${scope}\` from ${agentLabel} on this project?`)) return;
+    setRevokingScope(scope);
+    try {
+      await revokeAgentScopeFromProject(canonicalId, projectId, scope);
+      void load();
+      onRevoked();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Network error");
+    } finally {
+      setRevokingScope(null);
+    }
+  }
+
+  return (
+    <section
+      className="mt-2 pt-2 border-t border-white/5"
+      aria-label={`Project grants for ${agentLabel}`}
+    >
+      <div className="flex items-center gap-2 text-[10px] text-shell-text-tertiary uppercase mb-1.5">
+        <ScrollText size={10} />
+        <span>Project grants</span>
+      </div>
+      {loading && (
+        <div className="text-[11px] text-shell-text-tertiary py-1">Loading grants…</div>
+      )}
+      {error && (
+        <div className="text-[11px] text-red-400" role="alert">{error}</div>
+      )}
+      {byProject.size === 0 && !loading && !error && (
+        <div className="text-[11px] text-shell-text-tertiary py-1">
+          No project-bound grants.
+        </div>
+      )}
+      {[...byProject.entries()].map(([projectId, scopes]) => (
+        <div
+          key={projectId ?? "global"}
+          className="mb-2 last:mb-0"
+        >
+          <div className="text-[10px] text-shell-text-tertiary mb-1">
+            {projectId ? `Project: ${projectId}` : "Global"}
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {scopes.map((g) => (
+              <span
+                key={`${g.scope}-${projectId}`}
+                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-white/5 border border-white/10"
+                title={`Granted ${g.granted_at}`}
+              >
+                <code className="font-mono">{g.scope}</code>
+                {projectId && isAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => handleRevoke(g.scope, projectId)}
+                    disabled={revokingScope === g.scope}
+                    className="hover:text-red-400 disabled:opacity-50"
+                    aria-label={`Revoke ${g.scope} from ${agentLabel}`}
+                    title="Revoke this scope"
+                  >
+                    <XCircle size={10} />
+                  </button>
+                )}
+              </span>
+            ))}
+          </div>
+        </div>
+      ))}
+    </section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  RegistryEntryRow                                                    */
 /* ------------------------------------------------------------------ */
 
@@ -266,6 +438,7 @@ function RegistryEntryRow({
   onAction,
   onAssign,
   onPatchHandle,
+  onRevoke,
 }: {
   entry: RegistryEntry;
   isAdmin: boolean;
@@ -273,6 +446,7 @@ function RegistryEntryRow({
   onAction: (id: string, action: "approve" | "reject" | "suspend" | "reactivate" | "revoke") => Promise<void>;
   onAssign: (entry: RegistryEntry) => void;
   onPatchHandle: (id: string, handle: string) => Promise<void>;
+  onRevoke: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -503,10 +677,20 @@ function RegistryEntryRow({
         <p className="text-[11px] text-red-400" role="alert">{err}</p>
       )}
       {entry.status === "active" && (isAdmin || isOwner) && (
-        <PendingScopeRequests
-          canonicalId={entry.canonical_id}
-          agentLabel={stripAt(entry.display_name) || entry.canonical_id}
-        />
+        <>
+          <PendingScopeRequests
+            canonicalId={entry.canonical_id}
+            agentLabel={stripAt(entry.display_name) || entry.canonical_id}
+          />
+          <ProjectGrantsPanel
+            canonicalId={entry.canonical_id}
+            agentLabel={stripAt(entry.display_name) || entry.canonical_id}
+            isAdmin={isAdmin}
+            currentUserId={currentUserId}
+            ownerUserId={entry.user_id}
+            onRevoked={onRevoke}
+          />
+        </>
       )}
     </Card>
   );
@@ -1004,6 +1188,11 @@ export function RegistryPanel() {
     await load({ quiet: true });
   }
 
+  // Reloads the registry after a per-project grant revoke (taOS #2985 Part 2).
+  function handleGrantRevoked() {
+    void load({ quiet: true });
+  }
+
   const pendingCount = entries.filter((e) => e.status === "pending").length;
   // Anything not explicitly retired (revoked/rejected/suspended) is visible
   // by default so future RegistryStatus values are never silently hidden.
@@ -1074,6 +1263,7 @@ export function RegistryPanel() {
                 onAction={handleAction}
                 onAssign={setAssignEntry}
                 onPatchHandle={handlePatchHandle}
+                onRevoke={handleGrantRevoked}
               />
             ))}
 
@@ -1094,6 +1284,7 @@ export function RegistryPanel() {
                       onAction={handleAction}
                       onAssign={setAssignEntry}
                       onPatchHandle={handlePatchHandle}
+                      onRevoke={handleGrantRevoked}
                     />
                   ))}
                 </div>
@@ -1130,6 +1321,7 @@ export function RegistryPanel() {
                       onAction={handleAction}
                       onAssign={setAssignEntry}
                       onPatchHandle={handlePatchHandle}
+                      onRevoke={handleGrantRevoked}
                     />
                   ))}
                 </div>

@@ -359,3 +359,128 @@ class TestAgentGrantsStore:
             assert len(again) == 3
         finally:
             await store.close()
+
+
+# ---------------------------------------------------------------------------
+# Part 1 — time-boxed grants: expires_at is populated from duration_secs
+# and eventually enforced by _grant_unexpired.  (taOS #2985)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_add_grant_bounded_sets_expires_at(tmp_path) -> None:
+    """A bounded grant must carry an expires_at timestamp computed from
+    duration_secs (now + duration_secs), expressed in ISO-8601 UTC."""
+    from datetime import datetime, timedelta, timezone
+    from tinyagentos.agent_grants_store import AgentGrantsStore
+    from tinyagentos.routes.agent_auth_requests import _compute_expires_at
+
+    duration = 3600  # one hour
+    before = datetime.now(timezone.utc)
+
+    store = AgentGrantsStore(tmp_path / "grants.db")
+    await store.init()
+    try:
+        expires_at = _compute_expires_at(duration)
+        grant = await store.add_grant(
+            "agent-test", "files_read", tier="once",
+            expires_at=expires_at,
+        )
+        assert grant["expires_at"] is not None
+        expires = datetime.fromisoformat(grant["expires_at"])
+        after = datetime.now(timezone.utc)
+
+        # expires_at should be roughly duration seconds in the future.
+        delta = (expires - before).total_seconds()
+        assert 3595 <= delta <= 3605 + (after - before).total_seconds()
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_add_grant_unbounded_leaves_expires_at_null(tmp_path) -> None:
+    """An unbounded grant (duration_secs=None) must leave expires_at NULL so
+    the _grant_unexpired filter treats it as always-valid."""
+    from tinyagentos.agent_grants_store import AgentGrantsStore
+    from tinyagentos.routes.agent_auth_requests import _compute_expires_at
+
+    store = AgentGrantsStore(tmp_path / "grants.db")
+    await store.init()
+    try:
+        # duration_secs=None -> _compute_expires_at returns None
+        expires_at = _compute_expires_at(None)
+        assert expires_at is None
+        grant = await store.add_grant(
+            "agent-test", "files_read", tier="once",
+            expires_at=expires_at,
+        )
+        assert grant["expires_at"] is None
+
+        # duration_secs=0 -> also unbounded
+        assert _compute_expires_at(0) is None
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_grant_list_filters_expired(tmp_path) -> None:
+    """Once a bounded grant's expires_at is in the past, list_active_grants
+    must no longer return it — the enforcement layer's view is consistent."""
+    from datetime import datetime, timedelta, timezone
+    from tinyagentos.agent_grants_store import AgentGrantsStore
+
+    store = AgentGrantsStore(tmp_path / "grants.db")
+    await store.init()
+    try:
+        # A grant that expired one hour ago.
+        past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        await store.add_grant(
+            "agent-expired", "files_read", tier="once",
+            expires_at=past,
+        )
+
+        # A grant that expires in the future.
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        await store.add_grant(
+            "agent-expired", "files_write", tier="once",
+            expires_at=future,
+        )
+
+        # list_active_grants filters out the expired row.
+        active = await store.list_active_grants()
+        active_for_agent = [g for g in active if g["canonical_id"] == "agent-expired"]
+        assert len(active_for_agent) == 1
+        assert active_for_agent[0]["scope"] == "files_write"
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_scope_request_store_persists_duration_secs(tmp_path) -> None:
+    """AgentScopeRequestsStore.create must accept and persist duration_secs."""
+    from tinyagentos.agent_scope_requests_store import AgentScopeRequestsStore
+
+    store = AgentScopeRequestsStore(tmp_path / "scope_requests.db")
+    await store.init()
+    try:
+        rec = await store.create(
+            canonical_id="agent-test",
+            requested_scopes=["files_read"],
+            project_id=None,
+            reason="test bounded",
+            duration_secs=1800,
+        )
+        assert rec["duration_secs"] == 1800
+        fetched = await store.get(rec["id"])
+        assert fetched["duration_secs"] == 1800
+
+        # Unbounded request: duration_secs is None.
+        rec2 = await store.create(
+            canonical_id="agent-test",
+            requested_scopes=["files_write"],
+            project_id=None,
+            reason="test unbounded",
+            duration_secs=None,
+        )
+        assert rec2["duration_secs"] is None
+    finally:
+        await store.close()

@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS agent_scope_requests (
     reason            TEXT NOT NULL DEFAULT '',
     status            TEXT NOT NULL DEFAULT 'pending',
     granted_scopes    TEXT,
+    duration_secs     INTEGER,
     created_ts        TEXT NOT NULL,
     decided_ts        TEXT,
     decided_by        TEXT
@@ -54,7 +55,8 @@ _VALID_DECISION_STATUSES = frozenset({"accepted", "refused"})
 # The insert's column list, shared by both ``create`` shapes so the capped and
 # uncapped writes can never drift apart on which columns they set.
 _CREATE_COLUMNS = (
-    "(id, canonical_id, requested_scopes, project_id, reason, status, created_ts)"
+    "(id, canonical_id, requested_scopes, project_id, reason, status, "
+    "duration_secs, created_ts)"
 )
 
 # Makes the pending cap atomic with the insert: SQLite evaluates the count and
@@ -96,6 +98,29 @@ class AgentScopeRequestsStore(BaseStore):
         if self._db is not None:
             self._db.row_factory = aiosqlite.Row
 
+    async def _post_init(self) -> None:
+        """Add the ``duration_secs`` column to an existing agent_scope_requests
+        table that predates taOS #2985 (time-boxed grants).
+
+        ``CREATE TABLE IF NOT EXISTS`` in SCHEMA only creates new columns for
+        fresh databases; existing installs keep their old schema, so add the
+        column with ``ADD COLUMN`` when it is missing. Idempotent: a second init
+        on an already-migrated DB skips the ALTER because the column is present.
+        """
+        if self._db is None:
+            return
+        cols = {
+            row[1]
+            for row in await (
+                await self._db.execute("PRAGMA table_info(agent_scope_requests)")
+            ).fetchall()
+        }
+        if "duration_secs" not in cols:
+            await self._db.execute(
+                "ALTER TABLE agent_scope_requests ADD COLUMN duration_secs INTEGER"
+            )
+            await self._db.commit()
+
     # ------------------------------------------------------------------
     # Write
     # ------------------------------------------------------------------
@@ -107,6 +132,7 @@ class AgentScopeRequestsStore(BaseStore):
         requested_scopes: list[str],
         project_id: Optional[str] = None,
         reason: str = "",
+        duration_secs: Optional[int] = None,
         pending_cap: Optional[int] = None,
     ) -> dict:
         """Create a new pending scope request. Returns the full record.
@@ -118,6 +144,11 @@ class AgentScopeRequestsStore(BaseStore):
         count, pass, and insert — which is how the abuse cap became bypassable
         by exactly the flood it exists to stop. Raises ``PendingCapExceeded``
         when the cap is already full; ``None`` leaves the store uncapped.
+
+        ``duration_secs`` records the requested grant lifetime (taOS #2985). When
+        the request is later accepted, an ``expires_at = now + duration_secs`` is
+        written on each resulting grant. ``None`` (the default) means the agent
+        asked for an unbounded grant whose ``expires_at`` stays NULL.
         """
         if self._db is None:
             raise RuntimeError("AgentScopeRequestsStore not initialised — call init() first")
@@ -130,19 +161,20 @@ class AgentScopeRequestsStore(BaseStore):
             json.dumps(requested_scopes),
             project_id,
             reason,
+            duration_secs,
             now,
         )
 
         if pending_cap is None:
             cur = await self._db.execute(
                 f"INSERT INTO agent_scope_requests {_CREATE_COLUMNS} "
-                "VALUES (?, ?, ?, ?, ?, 'pending', ?)",
+                "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
                 values,
             )
         else:
             cur = await self._db.execute(
                 f"INSERT INTO agent_scope_requests {_CREATE_COLUMNS} "
-                "SELECT ?, ?, ?, ?, ?, 'pending', ? WHERE " + _CAP_GUARD,
+                "SELECT ?, ?, ?, ?, ?, 'pending', ?, ? WHERE " + _CAP_GUARD,
                 (*values, canonical_id, pending_cap),
             )
         await self._db.commit()
