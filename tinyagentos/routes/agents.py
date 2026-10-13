@@ -173,9 +173,20 @@ class IdempotencyCache:
 
 
 @router.get("/api/agents")
-async def list_agents(request: Request):
-    """List all configured agents."""
-    return request.app.state.config.agents
+async def list_agents(request: Request, include_guests: bool = False):
+    """List all configured agents.
+
+    With ``include_guests=1`` also append registry guest agents (active rows
+    holding a ``chat_session`` grant) whose name does not collide with a
+    config agent. Default output is unchanged.
+    """
+    agents = request.app.state.config.agents
+    if not include_guests:
+        return agents
+    from tinyagentos.chat.guest_agents import list_guests
+    taken = {a.get("name") for a in agents}
+    guests = [g for g in await list_guests(request.app.state) if g["name"] not in taken]
+    return [*agents, *guests]
 
 
 @router.get("/api/agents/containers")

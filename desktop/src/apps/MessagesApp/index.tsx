@@ -1055,7 +1055,7 @@ export function MessagesApp({
   const fetchAgentLists = useCallback(async () => {
     try {
       const [liveRes, archRes] = await Promise.all([
-        fetch("/api/agents"),
+        fetch("/api/agents?include_guests=1"),
         fetch("/api/agents/archived"),
       ]);
       if (liveRes.ok) {

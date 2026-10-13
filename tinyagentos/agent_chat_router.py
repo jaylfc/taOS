@@ -213,6 +213,7 @@ class AgentChatRouter:
                     build_context_window,
                     history_token_budget,
                 )
+                from tinyagentos.chat.guest_agents import resolve_guest
                 from tinyagentos.cluster.model_resolver import _find_model_manifest
 
                 known_windows: list[int] = []
@@ -221,6 +222,9 @@ class AgentChatRouter:
                 for agent_name in recipients:
                     agent = find_agent(config, agent_name)
                     if agent is None:
+                        # A registry guest has no model: unknown window.
+                        if await resolve_guest(self._state, agent_name):
+                            any_unknown = True
                         continue
                     model_id = agent.get("model") or ""
                     if not model_id:
@@ -277,9 +281,14 @@ class AgentChatRouter:
                 if policy is not None and not policy.try_acquire(policy_key, agent_name, settings):
                     continue
             agent = find_agent(config, agent_name)
+            guest = None
             if agent is None:
-                continue
-            if agent.get("status") != "running":
+                from tinyagentos.chat.guest_agents import resolve_guest
+                guest = await resolve_guest(self._state, agent_name)
+                if guest is None:
+                    continue
+                agent = guest
+            if guest is None and agent.get("status") != "running":
                 await self._post_system_reply(
                     agent_name, channel["id"],
                     f"[router] agent '{agent_name}' is not running (status={agent.get('status') or 'unknown'}).",
@@ -292,7 +301,7 @@ class AgentChatRouter:
                 )
                 continue
 
-            if agent.get("framework") == "openclaw" and _openclaw_transport() == "acp":
+            if guest is None and agent.get("framework") == "openclaw" and _openclaw_transport() == "acp":
                 # Fork-free path: drive the OpenClaw turn over ACP instead of the
                 # legacy taos-bridge SSE. The agent's gateway session carries its
                 # own history + AGENTS.md, so we send the user message and stream
