@@ -37,7 +37,7 @@ _ANSWER_THREAD = "decisions"
 # surface, not an approval channel), and the agent mirror path must refuse them
 # so an agent cannot self-approve a gate it created.  Keeping the list in one
 # place prevents drift between the two call sites and the applier functions.
-GATE_DECISION_KINDS = ("execution_gate", "delegation_gate", "app_grant")
+GATE_DECISION_KINDS = ("execution_gate", "delegation_gate", "app_grant", "shell_command")
 
 # Server-stamped provenance marker for gate decisions (tsk-mul5pa).  The
 # public create path strips this key so an API caller can never self-stamp a
@@ -721,9 +721,43 @@ async def answer_decision(
     routed_deleg = await _apply_delegation_grant(request, updated, stored_value)
     routed_pair = await _apply_device_pairing_grant(request, updated, stored_value)
     routed_project_create = await _apply_project_create_grant(request, updated, stored_value)
-    if not (routed_app or routed_exec or routed_deleg or routed_pair or routed_project_create):
+    routed_shell = await _apply_shell_command_grant(request, updated, stored_value)
+    if not (routed_app or routed_exec or routed_deleg or routed_pair or routed_project_create
+            or routed_shell):
         await _route_answer_to_agent(updated, stored_value, note=body.note)
     return updated
+
+
+async def _apply_shell_command_grant(request: Request, decision: dict, value) -> bool:
+    """Side effect for a shell_command Decision (the taOS Agent's Claude Code
+    shell profile): the decision's metadata carries {kind: "shell_command",
+    program, user_id}. Approving it adds an allow rule for that program to the
+    user's profile, denying adds a deny rule. Mirrors ``_apply_execution_grant``:
+    the answer is already persisted, so a settings-store hiccup must not fail
+    the answer. There is no asking agent on the bus to route a reply to."""
+    meta = decision.get("metadata") or {}
+    if meta.get("kind") != "shell_command":
+        return False
+    if meta.get(SERVER_RAISED_KEY) is not True:
+        logger.warning(
+            "gate decision %s refused: missing server provenance (kind=%r)",
+            decision.get("id"), meta.get("kind"),
+        )
+        return False
+    store = getattr(request.app.state, "desktop_settings", None)
+    program = meta.get("program")
+    user_id = meta.get("user_id")
+    if store is None or not program or not user_id:
+        return True
+    from tinyagentos.taos_agent_shell_profile import set_rule
+    try:
+        await set_rule(store, user_id, program, "allow" if value == "approve" else "deny")
+    except Exception:
+        logger.warning(
+            "shell profile rule write failed for %s (decision %s)",
+            program, decision.get("id"), exc_info=True,
+        )
+    return True
 
 
 @router.post("/api/decisions/{decision_id}/note")
