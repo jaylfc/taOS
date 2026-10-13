@@ -332,6 +332,7 @@ async def _serve_until_first_exit(main_server, proxy_server=None, *, sidecars=()
     # tls_server is non-essential (like sidecars): its failure is logged but
     # does not take the controller down. It is still included in the shutdown
     # fan-out so it stops gracefully when the main server stops.
+    essential = [main_server] + ([proxy_server] if proxy_server is not None else [])
     all_servers = (*essential, *([tls_server] if tls_server is not None else []), *[s for s, _ in sidecars])
 
     def _request_shutdown() -> None:

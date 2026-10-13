@@ -85,9 +85,19 @@ async def create_agent_controller_app(main_app: ASGIApp, *, identity: str | None
                 elif message["type"] == "lifespan.shutdown":
                     await send({"type": "lifespan.shutdown.complete"})
                     return
+
         if kind != "http":
             if kind == "websocket":
-                await send({"type": "websocket.close", "code": 1008})
+                # Create a rewritten scope for websocket with rewritten client address
+                rewritten_scope = dict(scope)
+                if rewritten_scope.get("client"):
+                    client_host, client_port = rewritten_scope["client"]
+                    rewritten_scope["client"] = (AGENT_CLIENT_HOST, client_port)
+                try:
+                    await main_app(rewritten_scope, receive, send)
+                except Exception:
+                    # Let exceptions propagate - the main app should handle them
+                    raise
             return
 
         async def stamped_send(message):

@@ -537,25 +537,24 @@ async def deploy_agent(req: DeployRequest) -> dict:
                                     "deploy %s: gateway key not minted from the key-store row; the "
                                     "gateway still accepts the plain key", req.name,
                                 )
-            # ... rest of the if block ...
             steps.append("llm: proxy device on the LLM gateway")
             proxy_devices = [
                 ("taos-proxy-litellm", AGENT_LLM_LISTEN_PORT, llm_host_port),
                 ("taos-proxy-taos", req.taos_port, agent_controller_port),
             ]
-                for dev_name, listen_port, connect_port in proxy_devices:
-                    res = await add_proxy_device(
-                        container_name,
-                        dev_name,
-                        listen=f"tcp:127.0.0.1:{listen_port}",
-                        connect=f"tcp:127.0.0.1:{connect_port}",
-                        bind_mode="instance",
+            for dev_name, listen_port, connect_port in proxy_devices:
+                res = await add_proxy_device(
+                    container_name,
+                    dev_name,
+                    listen=f"tcp:127.0.0.1:{listen_port}",
+                    connect=f"tcp:127.0.0.1:{connect_port}",
+                    bind_mode="instance",
+                )
+                if not res.get("success"):
+                    raise RuntimeError(
+                        f"failed to attach proxy device {dev_name}: {res.get('output', '')}"
                     )
-                    if not res.get("success"):
-                        raise RuntimeError(
-                            f"failed to attach proxy device {dev_name}: {res.get('output', '')}"
-                        )
-                steps.append("proxy_devices_attached")
+            steps.append("proxy_devices_attached")
 
         # Step 2: Wait for network
         for _ in range(10):

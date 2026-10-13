@@ -105,6 +105,7 @@ async def _reconcile_agents(
     data_dir: Path,
     controller_port: int,
     listener_ready: bool,
+    legacy_ports: Iterable[int] = None,
     models_problem: Callable[[list], Awaitable["str | None"]] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Point each local agent's LLM proxy device at the controller listener.
@@ -139,6 +140,7 @@ async def _reconcile_agents(
             await _reconcile_one(
                 agent, report, skip, projects=projects, store=store,
                 gw=gw, listener_ready=listener_ready,
+                legacy_ports=legacy_ports,
                 models_problem=models_problem,
             )
         except Exception as exc:  # noqa: BLE001 - one bad container never stops the rest
@@ -147,7 +149,7 @@ async def _reconcile_agents(
 
 
 async def _reconcile_one(agent, report, skip, *, projects, store, gw, listener_ready,
-                         models_problem) -> None:
+                         legacy_ports, models_problem) -> None:
     name = agent["name"]
     if agent.get("remote"):
         skip(name, REMOTE_NO_CONTROLLER_REASON)
@@ -164,7 +166,9 @@ async def _reconcile_one(agent, report, skip, *, projects, store, gw, listener_r
     if current is None:
         skip(name, f"could not read {DEVICE} connect on {container} (project {project})")
         return
-    if current != gw and current != "tcp:127.0.0.1:6969":  # legacy main port
+    # Convert legacy_ports to the expected format (tcp:127.0.0.1:port)
+    legacy_values = {f"tcp:127.0.0.1:{p}" for p in (legacy_ports or [])}
+    if current != gw and current not in legacy_values:
         skip(name, f"unexpected {DEVICE} connect {current!r}: left alone")
         return
 
@@ -215,6 +219,7 @@ async def reconcile_agents(
     data_dir: Path,
     controller_port: int,
     listener_ready: bool,
+    legacy_ports: Iterable[int] = None,
     models_problem: Callable[[list], Awaitable["str | None"]] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Public wrapper for _reconcile_agents."""
@@ -223,6 +228,7 @@ async def reconcile_agents(
         data_dir=data_dir,
         controller_port=controller_port,
         listener_ready=listener_ready,
+        legacy_ports=legacy_ports,
         models_problem=models_problem,
     )
 
@@ -314,13 +320,14 @@ async def run_startup_reconcile(state) -> dict | None:
     if not agents:
         return None
     proxy = getattr(state, "llm_proxy", None)
-    legacy = {"tcp:127.0.0.1:6969"}  # old main controller port
+    # Old controller port is always 6969 (hardcoded, per documentation)
+    legacy_ports = [6969]
     try:
         report = await reconcile_agents(
             agents=agents,
             data_dir=Path(state.data_dir),
             controller_port=port,
-            legacy_ports=[6969],
+            legacy_ports=legacy_ports,
             listener_ready=ready,
             models_problem=None,  # controller has no routing for models
         )
