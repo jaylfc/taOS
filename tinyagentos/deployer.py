@@ -271,14 +271,25 @@ async def deploy_agent(req: DeployRequest) -> dict:
     # gateway authenticates it.
     llm_key = None
     gateway_port = 0
+    agent_controller_port = 0
     if req.extra_config and req.extra_config.get("llm_proxy"):
         proxy = req.extra_config["llm_proxy"]
         gateway_port = _gateway_port_for(req)
+        agent_controller_port = int((req.extra_config or {}).get("agent_controller_port") or 0)
         if not gateway_port:
             msg = (
                 "the LLM gateway agent listener is not verified on this controller "
                 "start (still starting, its port is taken, or it is disabled), so "
                 "the agent would have no LLM path; retry once the controller has "
+                "finished starting"
+            )
+            logger.error("deploy %s: %s", req.name, msg)
+            return {"success": False, "error": msg, "steps": steps}
+        if not agent_controller_port:
+            msg = (
+                "the agent controller listener is not verified on this controller "
+                "start (still starting, its port is taken, or it is disabled), so "
+                "the agent would have no controller path; retry once the controller has "
                 "finished starting"
             )
             logger.error("deploy %s: %s", req.name, msg)
@@ -517,33 +528,34 @@ async def deploy_agent(req: DeployRequest) -> dict:
                         )
                     except Exception as exc:  # noqa: BLE001 - reported, never fatal
                         route_problem = f"routability check failed: {type(exc).__name__}"
-                if route_problem:
-                    logger.warning("deploy %s: the LLM gateway cannot serve its models yet: %s",
-                                   req.name, route_problem)
-                    steps.append(f"llm: warning: the gateway cannot serve its models yet: {route_problem}")
-                if not _mint_gateway_key_for(req, llm_key):
-                    logger.warning(
-                        "deploy %s: gateway key not minted from the key-store row; the "
-                        "gateway still accepts the plain key", req.name,
-                    )
+                        if route_problem:
+                            logger.warning("deploy %s: the LLM gateway cannot serve its models yet: %s",
+                                           req.name, route_problem)
+                            steps.append(f"llm: warning: the gateway cannot serve its models yet: {route_problem}")
+                            if not _mint_gateway_key_for(req, llm_key):
+                                logger.warning(
+                                    "deploy %s: gateway key not minted from the key-store row; the "
+                                    "gateway still accepts the plain key", req.name,
+                                )
+            # ... rest of the if block ...
             steps.append("llm: proxy device on the LLM gateway")
             proxy_devices = [
                 ("taos-proxy-litellm", AGENT_LLM_LISTEN_PORT, llm_host_port),
-                ("taos-proxy-taos", req.taos_port, req.taos_port),
+                ("taos-proxy-taos", req.taos_port, agent_controller_port),
             ]
-            for dev_name, listen_port, connect_port in proxy_devices:
-                res = await add_proxy_device(
-                    container_name,
-                    dev_name,
-                    listen=f"tcp:127.0.0.1:{listen_port}",
-                    connect=f"tcp:127.0.0.1:{connect_port}",
-                    bind_mode="instance",
-                )
-                if not res.get("success"):
-                    raise RuntimeError(
-                        f"failed to attach proxy device {dev_name}: {res.get('output', '')}"
+                for dev_name, listen_port, connect_port in proxy_devices:
+                    res = await add_proxy_device(
+                        container_name,
+                        dev_name,
+                        listen=f"tcp:127.0.0.1:{listen_port}",
+                        connect=f"tcp:127.0.0.1:{connect_port}",
+                        bind_mode="instance",
                     )
-            steps.append("proxy_devices_attached")
+                    if not res.get("success"):
+                        raise RuntimeError(
+                            f"failed to attach proxy device {dev_name}: {res.get('output', '')}"
+                        )
+                steps.append("proxy_devices_attached")
 
         # Step 2: Wait for network
         for _ in range(10):

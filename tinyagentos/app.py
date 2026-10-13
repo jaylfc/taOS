@@ -1497,6 +1497,13 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # go back to). A no-op unless __main__ recorded the listener port.
         from tinyagentos.llm_gateway.cutover import run_startup_reconcile
         _create_supervised_task(run_startup_reconcile(app.state), app.state._background_tasks)
+        
+        # Agent controller cutover: point every agent proxy device still on an old
+        # controller port at the agent controller listener (agents need their own
+        # controller listener so agent requests are never mistaken for the console).
+        # A no-op unless __main__ recorded the listener port.
+        from tinyagentos.agent_controller_cutover import run_startup_reconcile as run_agent_controller_reconcile
+        _create_supervised_task(run_agent_controller_reconcile(app.state), app.state._background_tasks)
 
         app.state._startup_complete = True
         logger.info("startup complete — accepting requests")

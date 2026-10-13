@@ -71,6 +71,11 @@ def main() -> None:
     # 127.0.0.1:4000 proxy device points. The startup reconcile moves any
     # device still on an old LiteLLM port here.
     gateway_port = _gateway_listener_port(config, taken={port, proxy_port, tls_port})
+    
+    # Agent controller listener (loopback only): where each agent's
+    # 127.0.0.1:6969 proxy device points. The startup reconcile moves any
+    # device still on an old controller port here.
+    agent_controller_port = _agent_controller_listener_port(config, taken={port, proxy_port, tls_port, gateway_port})
     if hasattr(app, "state"):
         import secrets
 
@@ -78,6 +83,10 @@ def main() -> None:
         # Per-start nonce the listener stamps on every response; the startup
         # reconcile moves agents only onto a port that answers with it.
         app.state.llm_gateway_listener_identity = secrets.token_urlsafe(24)
+        app.state.agent_controller_agent_port = agent_controller_port
+        # Per-start nonce the listener stamps on every response; the startup
+        # reconcile moves agents only onto a port that answers with it.
+        app.state.agent_controller_listener_identity = secrets.token_urlsafe(24)
 
     if not proxy_port or proxy_port == port:
         # Single-port fallback: the browser proxy stays on the main origin
@@ -104,7 +113,8 @@ def main() -> None:
             return
         _serve_dual_port(app, host=host, port=port, proxy_port=0,
                          gateway_port=gateway_port if _gateway_listener_wanted(gateway_port) else 0,
-                         tls_port=tls_port)
+                         tls_port=tls_port,
+                         agent_controller_port=agent_controller_port if _agent_controller_listener_wanted(agent_controller_port) else 0)
         return
 
     # Advertise the proxy port to the frontend (see proxy_config route) so it
@@ -114,7 +124,8 @@ def main() -> None:
 
     _serve_dual_port(app, host=host, port=port, proxy_port=proxy_port,
                      gateway_port=gateway_port if _gateway_listener_wanted(gateway_port) else 0,
-                     tls_port=tls_port)
+                     tls_port=tls_port,
+                     agent_controller_port=agent_controller_port if _agent_controller_listener_wanted(agent_controller_port) else 0)
 
 
 def _gateway_listener_port(config, *, taken: set) -> int:
@@ -136,14 +147,30 @@ def _gateway_listener_port(config, *, taken: set) -> int:
     return gw
 
 
-def _gateway_listener_wanted(gateway_port: int) -> bool:
-    """True unless the listener port is 0 (disabled or clashing).
+def _agent_controller_listener_port(config, *, taken: set) -> int:
+    """The agent controller listener port, or 0 when unset / clashing with our own ports."""
+    import logging
 
-    The gateway itself is always on since LiteLLM removal 2b-2a."""
-    return bool(gateway_port)
+    DEFAULT_AGENT_CONTROLLER_PORT = 6972
+    try:
+        port = int(config.server.get("agent_controller_port", DEFAULT_AGENT_CONTROLLER_PORT) or 0)
+    except (TypeError, ValueError):
+        logging.getLogger(__name__).error("agent controller: invalid listener port; listener disabled")
+        return 0
+    if port and port in taken:
+        logging.getLogger(__name__).error(
+            "agent controller: listener port %d clashes with a controller port; listener disabled", port,
+        )
+        return 0
+    return port
 
 
-def _serve_dual_port(app, *, host: str, port: int, proxy_port: int, gateway_port: int = 0, tls_port: int = 0) -> None:
+def _agent_controller_listener_wanted(agent_controller_port: int) -> bool:
+    """True unless the listener port is 0 (disabled or clashing)."""
+    return bool(agent_controller_port)
+
+
+def _serve_dual_port(app, *, host: str, port: int, proxy_port: int, gateway_port: int = 0, tls_port: int = 0, agent_controller_port: int = 0) -> None:
     """Run the main app and the browser-proxy origin concurrently.
 
     ``uvicorn.run`` is blocking and we need two or three servers, so we drive
@@ -192,6 +219,19 @@ def _serve_dual_port(app, *, host: str, port: int, proxy_port: int, gateway_port
             host="127.0.0.1", port=gateway_port, backlog=128, lifespan="off",
             timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SECS,
         )
+    agent_controller_config = None
+    if agent_controller_port:
+        # Loopback ONLY, whatever the main bind is: incus proxy devices reach
+        # it from the host side, and nothing off-host may.
+        from tinyagentos.agent_controller_listener import create_agent_controller_app
+
+        agent_controller_config = uvicorn.Config(
+            create_agent_controller_app(
+                app, identity=getattr(app.state, "agent_controller_listener_identity", None),
+            ),
+            host="127.0.0.1", port=agent_controller_port, backlog=128, lifespan="off",
+            timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SECS,
+        )
     tls_config = None
     if tls_port:
         _tls_cert = getattr(app.state, "device_tls_cert_path", None)
@@ -225,7 +265,11 @@ def _serve_dual_port(app, *, host: str, port: int, proxy_port: int, gateway_port
     main_server = _NoSignalServer(main_config)
     proxy_server = _NoSignalServer(proxy_config) if proxy_config is not None else None
     tls_server = _NoSignalServer(tls_config) if tls_config is not None else None
-    sidecars = (_NoSignalServer(gateway_config),) if gateway_config is not None else ()
+    sidecars = []
+    if gateway_config is not None:
+        sidecars.append((_NoSignalServer(gateway_config), "llm gateway agent"))
+    if agent_controller_config is not None:
+        sidecars.append((_NoSignalServer(agent_controller_config), "agent controller listener"))
 
     started = asyncio.run(_serve_until_first_exit(main_server, proxy_server, sidecars=sidecars, tls_server=tls_server))
     if not started:
@@ -238,7 +282,7 @@ def _serve_dual_port(app, *, host: str, port: int, proxy_port: int, gateway_port
 
 
 async def _serve_sidecar(server, *, name: str) -> None:
-    """Serve a non-essential server (LLM gateway agent listener, TLS device listener).
+    """Serve a non-essential server (LLM gateway agent listener, agent controller listener, TLS device listener).
 
     Its failure, including uvicorn's ``sys.exit(1)`` on a port already in use,
     is logged and swallowed here, inside the coroutine, so it can never take
@@ -249,11 +293,17 @@ async def _serve_sidecar(server, *, name: str) -> None:
     try:
         await server.serve()
     except (Exception, SystemExit) as exc:  # noqa: BLE001 - never fatal
+        if name == "llm gateway agent":
+            msg = "agents have no LLM path until it is back"
+        elif name == "agent controller listener":
+            msg = "agents have no controller path until it is back"
+        else:
+            msg = "embedded devices will be unable to connect"
         logging.getLogger(__name__).error(
             "%s listener stopped (%s); %s",
             name,
             type(exc).__name__,
-            "agents have no LLM path until it is back" if name == "llm gateway agent" else "embedded devices will be unable to connect",
+            msg,
         )
 
 
@@ -279,11 +329,10 @@ async def _serve_until_first_exit(main_server, proxy_server=None, *, sidecars=()
 
     loop = asyncio.get_running_loop()
 
-    essential = [main_server] + ([proxy_server] if proxy_server is not None else [])
     # tls_server is non-essential (like sidecars): its failure is logged but
     # does not take the controller down. It is still included in the shutdown
     # fan-out so it stops gracefully when the main server stops.
-    all_servers = (*essential, *([tls_server] if tls_server is not None else []), *sidecars)
+    all_servers = (*essential, *([tls_server] if tls_server is not None else []), *[s for s, _ in sidecars])
 
     def _request_shutdown() -> None:
         for server in all_servers:
@@ -300,7 +349,7 @@ async def _serve_until_first_exit(main_server, proxy_server=None, *, sidecars=()
     tls_task = None
     if tls_server is not None:
         tls_task = (asyncio.create_task(_serve_sidecar(tls_server, name="TLS device")), tls_server)
-    side = [(asyncio.create_task(_serve_sidecar(s, name="llm gateway agent")), s) for s in sidecars]
+    side = [(asyncio.create_task(_serve_sidecar(s, name=n)), s) for s, n in sidecars]
 
     done, pending = await asyncio.wait(
         {t for t, _ in tasks},
