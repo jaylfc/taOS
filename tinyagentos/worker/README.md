@@ -47,6 +47,28 @@ Default name is the machine's hostname.
 2. **Discovers backends** — probes standard ports for Ollama (11434), rkllama (8080), llama.cpp (8080), vLLM (8000)
 3. **Registers** with the controller via `POST /api/cluster/workers`
 4. **Heartbeats** every 5 seconds via `POST /api/cluster/heartbeat` with CPU load
+5. **Self-updates** — installs a new version, restart, health-checks, and rolls back on failure (see below)
+
+## Self-update (taOS #890 C3)
+
+The worker can update itself without manual SSH. The controller drives the
+flow; the worker executes it:
+
+1. **Install** — the controller calls `POST /api/cluster/workers/{name}/deploy`
+   (admin-only); the worker runs the install via `taos-deploy-helper.sh`.
+2. **Restart** — the worker restarts itself after install.
+3. **Health-check** — post-restart, the worker runs its health-check hook
+   (`tinyagentos.worker.self_update.post_update_startup`) as a fire-and-forget
+   task so the heartbeat loop is never blocked by the grace period.
+4. **Outcome** — the worker reports `success`/`rollback` to
+   `POST /api/cluster/workers/{name}/update-outcome` (HMAC-authenticated);
+   on failure it rolls back to the previous version automatically.
+5. **Drain** — the heartbeat response carries `drain_complete`; the worker
+   waits for in-flight leases to release before proceeding, instead of
+   waiting out the full timeout.
+
+Per-worker deploy locks prevent concurrent install/restart calls on the same
+worker from double-installing.
 
 ## Extra backends (`TAOS_EXTRA_BACKENDS`)
 
