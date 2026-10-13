@@ -452,6 +452,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     chat_messages = ChatMessageStore(data_dir / "chat.db")
     chat_channels = ChatChannelStore(data_dir / "chat.db")
     peer_outbox_store = PeerOutboxStore(data_dir / "peer_outbox.db")
+    from tinyagentos.chat.guest_outbox import GuestOutbox
+    guest_outbox = GuestOutbox(data_dir / "guest_outbox.db")
     from tinyagentos.projects.project_store import ProjectStore
     from tinyagentos.projects.task_store import ProjectTaskStore
     from tinyagentos.projects.element_store import ProjectElementStore
@@ -696,6 +698,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await chat_messages.init()
         await chat_channels.init()
         await peer_outbox_store.init()
+        await guest_outbox.init()
+        await guest_outbox.prune()
         await project_store.init()
         await dispatcher_store.init()
         await project_invite_store.init()
@@ -1227,6 +1231,12 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             archive=getattr(app.state, "archive", None),
         )
         app.state.bridge_sessions._router = app.state.agent_chat_router
+        app.state.bridge_sessions._guest_outbox = guest_outbox
+        # A guest is any slug without a config agent of that name.
+        app.state.bridge_sessions._is_guest = lambda slug: not any(
+            str(a.get("name") or "").strip().lower() == str(slug).lower()
+            for a in (getattr(app.state.config, "agents", None) or [])
+        )
 
         # Joined view of the registry cache + live catalog probes.
         # Used by the Store / Dashboard / Models routes instead of
@@ -1646,6 +1656,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await chat_channels.close()
         await chat_messages.close()
         await peer_outbox_store.close()
+        await guest_outbox.close()
         await expert_agents.close()
         await streaming_sessions.close()
         await shared_folders.close()
@@ -1897,6 +1908,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.design_docs = design_docs
     app.state.contacts_store = contacts_store
     app.state.peer_outbox = peer_outbox_store
+    app.state.guest_outbox = guest_outbox
     app.state.coding_workspaces = coding_workspaces_store
     app.state.install_registry = install_registry_store
     app.state.store_submissions = store_submissions

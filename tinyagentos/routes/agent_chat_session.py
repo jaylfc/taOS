@@ -7,6 +7,7 @@ only drain and answer its own chat session.
 """
 from __future__ import annotations
 
+import json
 import logging
 
 from fastapi import APIRouter, Request
@@ -42,6 +43,25 @@ async def _resolve_slug(request: Request) -> str | JSONResponse:
     return slug
 
 
+def _resume_id(request: Request) -> int | None:
+    """Last-Event-ID header (or ?since=) as an int; anything else is absent."""
+    raw = request.headers.get("last-event-id") or request.query_params.get("since")
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
+
+
+def _frame_id(frame: str) -> int | None:
+    if not frame.startswith("id: "):
+        return None
+    try:
+        return int(frame.split("\n", 1)[0][4:])
+    except ValueError:
+        return None
+
+
 @router.get("/api/agents/self/chat/events")
 async def self_chat_events(request: Request):
     """SSE stream of the calling agent's own chat events."""
@@ -52,10 +72,47 @@ async def self_chat_events(request: Request):
     if bridge is None:
         return JSONResponse({"error": "bridge unavailable"}, status_code=503)
 
+    outbox = getattr(request.app.state, "guest_outbox", None)
+    last_id = _resume_id(request)
+    # Replay is read before the live subscribe. A message enqueued after this
+    # read sits in the session queue, which subscribe() carries over, so it is
+    # neither lost nor (via `seen`) delivered twice.
+    replay: list = []
+    if outbox is not None:
+        try:
+            replay = await (
+                outbox.since(slug, last_id) if last_id is not None
+                else outbox.undelivered(slug)
+            )
+        except Exception:
+            logger.exception("guest outbox replay failed for %s", slug)
+    seen = {rid for rid, _ in replay}
+
+    async def _delivered(row_id: int) -> None:
+        if outbox is None:
+            return
+        try:
+            await outbox.mark_delivered(row_id)
+        except Exception:
+            logger.exception("guest outbox mark_delivered failed for %s", slug)
+
     async def event_generator():
         try:
+            for row_id, payload in replay:
+                yield (
+                    f"id: {row_id}\nevent: user_message\n"
+                    f"data: {json.dumps(payload)}\n\n"
+                )
+                await _delivered(row_id)
             async for frame in bridge.subscribe(slug):
+                row_id = _frame_id(frame)
+                if row_id is not None:
+                    if row_id in seen or (last_id is not None and row_id <= last_id):
+                        continue
+                    seen.add(row_id)
                 yield frame
+                if row_id is not None:
+                    await _delivered(row_id)
                 if await request.is_disconnected():
                     break
         except Exception:
