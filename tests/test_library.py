@@ -1897,9 +1897,15 @@ def _mock_stream_callable(mock_resp):
 class TestDocxProcessor:
     @pytest.mark.asyncio
     async def test_extract_docx(self, lib_store, storage_dir):
-        import shutil
+        from docx import Document
         file_path = storage_dir / "doc.docx"
-        shutil.copy("/tmp/test_fixture.docx", file_path)
+        doc = Document()
+        doc.add_paragraph("Hello DOCX world")
+        doc.add_paragraph("Second paragraph here")
+        table = doc.add_table(rows=1, cols=2)
+        table.rows[0].cells[0].text = "Cell A"
+        table.rows[0].cells[1].text = "Cell B"
+        doc.save(file_path)
         item_id = await lib_store.create_item(kind="docx", title="doc.docx", storage_path=str(file_path))
         item = await lib_store.get_item(item_id)
         from tinyagentos.library_pipeline import DocxProcessor
@@ -1922,9 +1928,14 @@ class TestDocxProcessor:
 class TestPptxProcessor:
     @pytest.mark.asyncio
     async def test_extract_pptx(self, lib_store, storage_dir):
-        import shutil
+        from pptx import Presentation
+        from pptx.util import Inches
         file_path = storage_dir / "deck.pptx"
-        shutil.copy("/tmp/test_fixture.pptx", file_path)
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[5])
+        slide.shapes.title.text = "Hello PPTX world"
+        slide.shapes.add_textbox(Inches(1), Inches(1), Inches(4), Inches(1)).text_frame.text = "Second slide text"
+        prs.save(file_path)
         item_id = await lib_store.create_item(kind="pptx", title="deck.pptx", storage_path=str(file_path))
         item = await lib_store.get_item(item_id)
         from tinyagentos.library_pipeline import PptxProcessor
@@ -1944,9 +1955,17 @@ class TestPptxProcessor:
 class TestXlsxProcessor:
     @pytest.mark.asyncio
     async def test_extract_xlsx(self, lib_store, storage_dir):
-        import shutil
+        import openpyxl
         file_path = storage_dir / "data.xlsx"
-        shutil.copy("/tmp/test_fixture.xlsx", file_path)
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Sheet1"
+        ws.append(["Name", "Value"])
+        ws.append(["Alpha", 42])
+        ws.append(["Hello XLSX", "test"])
+        ws2 = wb.create_sheet("Sheet2")
+        ws2.append(["Extra", "data"])
+        wb.save(file_path)
         item_id = await lib_store.create_item(kind="xlsx", title="data.xlsx", storage_path=str(file_path))
         item = await lib_store.get_item(item_id)
         from tinyagentos.library_pipeline import XlsxProcessor
@@ -1968,9 +1987,27 @@ class TestXlsxProcessor:
 class TestEpubProcessor:
     @pytest.mark.asyncio
     async def test_extract_epub(self, lib_store, storage_dir):
-        import shutil
+        import zipfile
         file_path = storage_dir / "book.epub"
-        shutil.copy("/tmp/test_fixture.epub", file_path)
+        # Minimal EPUB: mimetype + container + OPF + 2 chapters
+        container = """<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>"""
+        opf = """<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="BookId" version="2.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Test</dc:title><dc:language>en</dc:language><dc:identifier id="BookId">test</dc:identifier></metadata>
+  <manifest><item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml"/><item id="ch2" href="ch2.xhtml" media-type="application/xhtml+xml"/></manifest>
+  <spine><itemref idref="ch1"/><itemref idref="ch2"/></spine>
+</package>"""
+        ch1 = "<html><body><p>Hello EPUB chapter one</p></body></html>"
+        ch2 = "<html><body><p>Chapter two content here</p></body></html>"
+        with zipfile.ZipFile(file_path, "w") as z:
+            z.writestr("mimetype", "application/epub+zip")
+            z.writestr("META-INF/container.xml", container)
+            z.writestr("OEBPS/content.opf", opf)
+            z.writestr("OEBPS/ch1.xhtml", ch1)
+            z.writestr("OEBPS/ch2.xhtml", ch2)
         item_id = await lib_store.create_item(kind="epub", title="book.epub", storage_path=str(file_path))
         item = await lib_store.get_item(item_id)
         from tinyagentos.library_pipeline import EpubProcessor
