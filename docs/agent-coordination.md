@@ -2342,3 +2342,17 @@ server-side mechanism, so it binds every harness the same way.
   skips the card for another account. Every kind defaults to `ask`.
 
 Another user's action answers 404. Rows live in `taos_agent_actions.db`.
+
+## Worker self-update API (taOS #890 C3)
+
+The worker self-update flow adds one controller route and one auth exemption;
+both are worker-to-controller (HMAC), not agent-facing:
+
+- `POST /api/cluster/workers/{name}/update-outcome` — the worker reports its
+  post-restart outcome (`success`/`rollback`, with `from_version`/`to_version`).
+  Session-exempt in `AuthMiddleware`; the route verifies the worker's HMAC
+  signature itself (same pattern as `/api/cluster/heartbeat`). The agent-token
+  allowlist is unchanged.
+- `POST /api/cluster/workers/{name}/deploy` — documented inline: operator
+  session required (not session-exempt); per-worker deploy locks prevent
+  concurrent install/restart double-installs.
