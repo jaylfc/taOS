@@ -1892,3 +1892,97 @@ def _mock_stream_callable(mock_resp):
     ctx = _mock_stream_ctx(mock_resp)
     fn = MagicMock(return_value=ctx)
     return fn
+
+
+class TestDocxProcessor:
+    @pytest.mark.asyncio
+    async def test_extract_docx(self, lib_store, storage_dir):
+        import shutil
+        file_path = storage_dir / "doc.docx"
+        shutil.copy("/tmp/test_fixture.docx", file_path)
+        item_id = await lib_store.create_item(kind="docx", title="doc.docx", storage_path=str(file_path))
+        item = await lib_store.get_item(item_id)
+        from tinyagentos.library_pipeline import DocxProcessor
+        proc = DocxProcessor(lib_store, storage_dir)
+        artifacts = await proc.process(item)
+        assert len(artifacts) == 1
+        assert artifacts[0]["kind"] == "text"
+        text_path = Path(artifacts[0]["path"])
+        content = text_path.read_text()
+        assert "Hello DOCX world" in content
+        assert "Second paragraph here" in content
+        assert "Cell A | Cell B" in content
+
+    @pytest.mark.asyncio
+    async def test_docx_kind_detection(self):
+        assert detect_kind(file_path="report.docx") == "docx"
+        assert detect_kind(content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document") == "docx"
+
+
+class TestPptxProcessor:
+    @pytest.mark.asyncio
+    async def test_extract_pptx(self, lib_store, storage_dir):
+        import shutil
+        file_path = storage_dir / "deck.pptx"
+        shutil.copy("/tmp/test_fixture.pptx", file_path)
+        item_id = await lib_store.create_item(kind="pptx", title="deck.pptx", storage_path=str(file_path))
+        item = await lib_store.get_item(item_id)
+        from tinyagentos.library_pipeline import PptxProcessor
+        proc = PptxProcessor(lib_store, storage_dir)
+        artifacts = await proc.process(item)
+        assert len(artifacts) == 1
+        assert artifacts[0]["kind"] == "text"
+        content = Path(artifacts[0]["path"]).read_text()
+        assert "Hello PPTX world" in content
+        assert "Second slide text" in content
+
+    @pytest.mark.asyncio
+    async def test_pptx_kind_detection(self):
+        assert detect_kind(file_path="deck.pptx") == "pptx"
+
+
+class TestXlsxProcessor:
+    @pytest.mark.asyncio
+    async def test_extract_xlsx(self, lib_store, storage_dir):
+        import shutil
+        file_path = storage_dir / "data.xlsx"
+        shutil.copy("/tmp/test_fixture.xlsx", file_path)
+        item_id = await lib_store.create_item(kind="xlsx", title="data.xlsx", storage_path=str(file_path))
+        item = await lib_store.get_item(item_id)
+        from tinyagentos.library_pipeline import XlsxProcessor
+        proc = XlsxProcessor(lib_store, storage_dir)
+        artifacts = await proc.process(item)
+        assert len(artifacts) == 1
+        assert artifacts[0]["kind"] == "text"
+        content = Path(artifacts[0]["path"]).read_text()
+        assert "Name" in content and "Value" in content
+        assert "Alpha" in content and "42" in content
+        assert "Hello XLSX" in content
+        assert artifacts[0]["meta"]["sheet_count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_xlsx_kind_detection(self):
+        assert detect_kind(file_path="data.xlsx") == "xlsx"
+
+
+class TestEpubProcessor:
+    @pytest.mark.asyncio
+    async def test_extract_epub(self, lib_store, storage_dir):
+        import shutil
+        file_path = storage_dir / "book.epub"
+        shutil.copy("/tmp/test_fixture.epub", file_path)
+        item_id = await lib_store.create_item(kind="epub", title="book.epub", storage_path=str(file_path))
+        item = await lib_store.get_item(item_id)
+        from tinyagentos.library_pipeline import EpubProcessor
+        proc = EpubProcessor(lib_store, storage_dir)
+        artifacts = await proc.process(item)
+        assert len(artifacts) == 1
+        assert artifacts[0]["kind"] == "text"
+        content = Path(artifacts[0]["path"]).read_text()
+        assert "Hello EPUB chapter one" in content
+        assert "Chapter two content here" in content
+        assert artifacts[0]["meta"]["chapter_count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_epub_kind_detection(self):
+        assert detect_kind(file_path="book.epub") == "epub"

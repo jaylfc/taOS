@@ -36,6 +36,10 @@ _MIME_KIND_MAP: dict[str, str] = {
     "application/zip": "archive",
     "application/gzip": "archive",
     "application/x-tar": "archive",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+    "application/epub+zip": "epub",
 }
 
 _EXT_OVERRIDE_MAP: dict[str, str] = {
@@ -47,6 +51,10 @@ _EXT_OVERRIDE_MAP: dict[str, str] = {
     ".png": "image", ".jpg": "image", ".jpeg": "image",
     ".gif": "image", ".webp": "image", ".svg": "image",
     ".zip": "archive", ".gz": "archive", ".tar": "archive",
+    ".docx": "docx", ".doc": "docx",
+    ".pptx": "pptx", ".ppt": "pptx",
+    ".xlsx": "xlsx", ".xls": "xlsx",
+    ".epub": "epub",
 }
 
 
@@ -265,6 +273,261 @@ class PdfProcessor(Processor):
         artifacts.append({"kind": "metadata", "path": "", "meta": pdf_meta})
 
         return artifacts
+
+
+class DocxProcessor(Processor):
+    """DOCX processor — extracts paragraph + table text via python-docx.
+
+    python-docx is an optional dependency: if it is not installed the
+    processor logs a warning and returns no artifacts rather than failing
+    the whole pipeline (taOS #128 Phase 1).
+    """
+
+    async def process(self, item: dict) -> list[dict]:
+        item_id = item["id"]
+        artifacts: list[dict] = []
+        storage_path = item.get("storage_path", "")
+        if not storage_path:
+            return artifacts
+        p = Path(storage_path)
+        if not p.exists():
+            return artifacts
+        try:
+            from docx import Document
+        except ImportError:
+            logger.warning("DocxProcessor: python-docx not installed, skipping %s", storage_path)
+            return artifacts
+        try:
+            doc = Document(str(p))
+        except Exception:
+            logger.warning("DocxProcessor: could not read %s", storage_path, exc_info=True)
+            return artifacts
+        parts: list[str] = []
+        for para in doc.paragraphs:
+            if para.text.strip():
+                parts.append(para.text)
+        for table in doc.tables:
+            for row in table.rows:
+                cells = [c.text.strip() for c in row.cells if c.text.strip()]
+                if cells:
+                    parts.append(" | ".join(cells))
+        if not parts:
+            return artifacts
+        text_content = "\n".join(parts)
+        text_dir = self.storage_dir / "text"
+        text_dir.mkdir(parents=True, exist_ok=True)
+        text_path = text_dir / f"{item_id}_docx.txt"
+        text_path.write_text(text_content, encoding="utf-8")
+        meta = {"char_count": len(text_content), "paragraph_count": len(doc.paragraphs)}
+        await self.store.add_artifact(item_id, kind="text", path=str(text_path), meta=meta)
+        artifacts.append({"kind": "text", "path": str(text_path), "meta": meta})
+        meta_json = json.loads(item.get("meta_json", "{}"))
+        meta_json["preview"] = text_content[:200]
+        await self.store.update_item(item_id, meta_json=meta_json)
+        return artifacts
+
+
+class PptxProcessor(Processor):
+    """PPTX processor — extracts text from all slides via python-pptx.
+
+    python-pptx is an optional dependency: if it is not installed the
+    processor logs a warning and returns no artifacts (taOS #128 Phase 1).
+    """
+
+    async def process(self, item: dict) -> list[dict]:
+        item_id = item["id"]
+        artifacts: list[dict] = []
+        storage_path = item.get("storage_path", "")
+        if not storage_path:
+            return artifacts
+        p = Path(storage_path)
+        if not p.exists():
+            return artifacts
+        try:
+            from pptx import Presentation
+        except ImportError:
+            logger.warning("PptxProcessor: python-pptx not installed, skipping %s", storage_path)
+            return artifacts
+        try:
+            prs = Presentation(str(p))
+        except Exception:
+            logger.warning("PptxProcessor: could not read %s", storage_path, exc_info=True)
+            return artifacts
+        parts: list[str] = []
+        for slide in prs.slides:
+            for shape in slide.shapes:
+                if shape.has_text_frame:
+                    text = shape.text_frame.text.strip()
+                    if text:
+                        parts.append(text)
+                if shape.has_table:
+                    for row in shape.table.rows:
+                        cells = [c.text.strip() for c in row.cells if c.text.strip()]
+                        if cells:
+                            parts.append(" | ".join(cells))
+        if not parts:
+            return artifacts
+        text_content = "\n".join(parts)
+        text_dir = self.storage_dir / "text"
+        text_dir.mkdir(parents=True, exist_ok=True)
+        text_path = text_dir / f"{item_id}_pptx.txt"
+        text_path.write_text(text_content, encoding="utf-8")
+        meta = {"char_count": len(text_content), "slide_count": len(prs.slides)}
+        await self.store.add_artifact(item_id, kind="text", path=str(text_path), meta=meta)
+        artifacts.append({"kind": "text", "path": str(text_path), "meta": meta})
+        meta_json = json.loads(item.get("meta_json", "{}"))
+        meta_json["preview"] = text_content[:200]
+        await self.store.update_item(item_id, meta_json=meta_json)
+        return artifacts
+
+
+class XlsxProcessor(Processor):
+    """XLSX processor — extracts cell values as tab-separated rows via openpyxl.
+
+    openpyxl is an optional dependency: if it is not installed the
+    processor logs a warning and returns no artifacts (taOS #128 Phase 1).
+    """
+
+    async def process(self, item: dict) -> list[dict]:
+        item_id = item["id"]
+        artifacts: list[dict] = []
+        storage_path = item.get("storage_path", "")
+        if not storage_path:
+            return artifacts
+        p = Path(storage_path)
+        if not p.exists():
+            return artifacts
+        try:
+            from openpyxl import load_workbook
+        except ImportError:
+            logger.warning("XlsxProcessor: openpyxl not installed, skipping %s", storage_path)
+            return artifacts
+        try:
+            wb = load_workbook(str(p), read_only=True, data_only=True)
+        except Exception:
+            logger.warning("XlsxProcessor: could not read %s", storage_path, exc_info=True)
+            return artifacts
+        parts: list[str] = []
+        sheet_count = 0
+        for ws in wb.worksheets:
+            sheet_count += 1
+            parts.append(f"=== Sheet: {ws.title} ===")
+            for row in ws.iter_rows(values_only=True):
+                cells = [str(c) for c in row if c is not None and str(c).strip()]
+                if cells:
+                    parts.append("\t".join(cells))
+        wb.close()
+        if not parts:
+            return artifacts
+        text_content = "\n".join(parts)
+        text_dir = self.storage_dir / "text"
+        text_dir.mkdir(parents=True, exist_ok=True)
+        text_path = text_dir / f"{item_id}_xlsx.txt"
+        text_path.write_text(text_content, encoding="utf-8")
+        meta = {"char_count": len(text_content), "sheet_count": sheet_count}
+        await self.store.add_artifact(item_id, kind="text", path=str(text_path), meta=meta)
+        artifacts.append({"kind": "text", "path": str(text_path), "meta": meta})
+        meta_json = json.loads(item.get("meta_json", "{}"))
+        meta_json["preview"] = text_content[:200]
+        await self.store.update_item(item_id, meta_json=meta_json)
+        return artifacts
+
+
+class EpubProcessor(Processor):
+    """EPUB processor — extracts chapter text via stdlib zipfile + XML.
+
+    EPUB is a zip of XHTML files; no third-party dependency is needed.
+    Reads the OPF spine for chapter order, falls back to alphabetical
+    file order when the spine is absent or unreadable (taOS #128 Phase 1).
+    """
+
+    async def process(self, item: dict) -> list[dict]:
+        item_id = item["id"]
+        artifacts: list[dict] = []
+        storage_path = item.get("storage_path", "")
+        if not storage_path:
+            return artifacts
+        p = Path(storage_path)
+        if not p.exists():
+            return artifacts
+        import zipfile
+        import xml.etree.ElementTree as ET
+
+        try:
+            zf = zipfile.ZipFile(str(p))
+        except Exception:
+            logger.warning("EpubProcessor: could not read %s", storage_path, exc_info=True)
+            return artifacts
+        try:
+            # Find the OPF file via container.xml
+            opf_path = None
+            try:
+                container = ET.fromstring(zf.read("META-INF/container.xml"))
+                ns = {"c": "urn:oasis:names:tc:opendocument:xmlns:container"}
+                rootfile = container.find("c:rootfiles/c:rootfile", ns)
+                if rootfile is not None:
+                    opf_path = rootfile.get("full-path")
+            except Exception:
+                pass
+            # Spine order from OPF, else alphabetical XHTML
+            ordered: list[str] = []
+            if opf_path:
+                try:
+                    opf = ET.fromstring(zf.read(opf_path))
+                    opf_ns = {"o": "http://www.idpf.org/2007/opf"}
+                    base = str(Path(opf_path).parent)
+                    id_to_href: dict[str, str] = {}
+                    for item_el in opf.findall(".//o:manifest/o:item", opf_ns):
+                        if item_el.get("media-type") in ("application/xhtml+xml", "text/html"):
+                            href = item_el.get("href", "")
+                            full = f"{base}/{href}" if base not in ("", ".") else href
+                            id_to_href[item_el.get("id", "")] = full
+                    for ref in opf.findall(".//o:spine/o:itemref", opf_ns):
+                        href = id_to_href.get(ref.get("idref", ""))
+                        if href:
+                            ordered.append(href)
+                except Exception:
+                    pass
+            if not ordered:
+                ordered = sorted(
+                    n for n in zf.namelist()
+                    if n.lower().endswith((".xhtml", ".html", ".htm"))
+                )
+            parts: list[str] = []
+            for name in ordered:
+                try:
+                    raw = zf.read(name)
+                except KeyError:
+                    continue
+                try:
+                    root = ET.fromstring(raw)
+                except ET.ParseError:
+                    continue
+                # Strip tags, keep text (namespace-agnostic)
+                texts: list[str] = []
+                for el in root.iter():
+                    if el.text and el.text.strip():
+                        texts.append(el.text.strip())
+                    if el.tail and el.tail.strip():
+                        texts.append(el.tail.strip())
+                if texts:
+                    parts.append(" ".join(texts))
+            if not parts:
+                return artifacts
+            text_content = "\n\n".join(parts)
+            text_dir = self.storage_dir / "text"
+            text_dir.mkdir(parents=True, exist_ok=True)
+            text_path = text_dir / f"{item_id}_epub.txt"
+            text_path.write_text(text_content, encoding="utf-8")
+            meta = {"char_count": len(text_content), "chapter_count": len(parts)}
+            await self.store.add_artifact(item_id, kind="text", path=str(text_path), meta=meta)
+            artifacts.append({"kind": "text", "path": str(text_path), "meta": meta})
+            meta_json = json.loads(item.get("meta_json", "{}"))
+            meta_json["preview"] = text_content[:200]
+            await self.store.update_item(item_id, meta_json=meta_json)
+            return artifacts
+        finally:
+            zf.close()
 
 
 class ImageProcessor(Processor):
@@ -730,6 +993,10 @@ _PROCESSORS: dict[str, type[Processor]] = {
     "url:youtube": YouTubeProcessor,
     "url:web": WebProcessor,
     "url:civitai": CivitaiProcessor,
+    "docx": DocxProcessor,
+    "pptx": PptxProcessor,
+    "xlsx": XlsxProcessor,
+    "epub": EpubProcessor,
 }
 
 

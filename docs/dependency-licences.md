@@ -28,3 +28,7 @@ offers an extra that would pull in something copyleft.
 `tests/test_config_slugify.py::TestTheGplUnidecodeIsNeverInstalled` enforces the
 blocked row mechanically against `pyproject.toml` and `uv.lock`, so the rule
 fails CI rather than relying on a reviewer noticing it.
+
+| `python-docx` (library extra) | MIT | Accepted as-is. Optional DOCX processor dependency (taOS #128). |
+| `python-pptx` (library extra) | MIT | Accepted as-is. Optional PPTX processor dependency (taOS #128). |
+| `openpyxl` (library extra) | MIT | Accepted as-is. Optional XLSX processor dependency (taOS #128). |
