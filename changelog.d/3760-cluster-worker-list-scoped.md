@@ -1,0 +1,3 @@
+### Added
+
+- **Credential-aware worker list for headless callers**: `GET /api/cluster/workers` now grants a richer view to callers that present a valid credential, without widening the route's auth-exempt gate. A valid local token gets the full admin view; a registry JWT holding an active `cluster_read` grant gets worker detail (capabilities, backends, resources, free VRAM, loaded models) minus host-identifying fields and admin-only pairing state; every other caller still gets the stripped anonymous projection, byte-identical to before. `cluster_read` is added to the valid scope vocabulary (#3227).

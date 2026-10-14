@@ -7,7 +7,7 @@ import time
 import uuid
 from dataclasses import asdict
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 import re
 
+from tinyagentos.agent_token_auth import check_agent_scope
 from tinyagentos.cluster.capabilities import hardware_to_targets, potential_capabilities as _potential_capabilities
 from tinyagentos.cluster.optimiser import ClusterOptimiser
 from tinyagentos.cluster.worker_auth import _HMACError, require_worker_hmac
@@ -317,9 +318,58 @@ class MoveRequest(BaseModel):
     to_worker: str
 
 
+async def _bearer_holds_cluster_read(request: Request, presented: str) -> bool:
+    """True when *presented* is a valid registry JWT for an active agent that
+    holds an unexpired ``cluster_read`` grant.
+
+    Fail-closed and silent by design: a malformed token, an unknown or inactive
+    agent, a rotated (superseded) token, a human-principal token or a
+    missing/expired grant all return False, so the caller falls through to the
+    anonymous projection instead of erroring. Reuses ``check_agent_scope`` (the
+    single registry-JWT verify path) so there is no second signature/scope
+    implementation to drift.
+    """
+    try:
+        canonical_id = await check_agent_scope(request, "cluster_read")
+    except HTTPException:
+        return False
+    except Exception:
+        # A misconfigured app (missing registry/grants store) must not 500 this
+        # public route; deny the richer view instead.
+        return False
+    return bool(canonical_id)
+
+
 @router.get("/api/cluster/workers")
 async def list_workers(request: Request):
     is_admin = getattr(request.state, "is_admin", False)
+    # Headless callers reach this route through the auth-exempt gate
+    # (auth_middleware._is_exempt), so the middleware leaves user_id/is_admin
+    # unset even when they present a real credential (#3227). Two credentials
+    # still earn a richer view here:
+    #   * a valid local token -> the full admin view (same-host trust);
+    #   * a registry JWT holding an active ``cluster_read`` grant -> the "full
+    #     but not admin" view: worker detail without the admin-only pairing
+    #     state (revoked/blocked/live_token) and without host-identifying fields
+    #     (host_lan_ip, hardware).
+    # Everything else -- no credential, an invalid token, or a registry JWT
+    # without the scope -- stays anonymous and keeps the stripped projection,
+    # so anonymous responses are byte-identical to before. Deliberately scoped
+    # to this one route: the exempt gate still ignores bearers everywhere else.
+    cluster_read = False
+    if not is_admin:
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            presented = auth_header[7:].strip()
+            auth_mgr = getattr(request.app.state, "auth", None)
+            if (
+                presented
+                and auth_mgr is not None
+                and auth_mgr.validate_local_token(presented)
+            ):
+                is_admin = True
+            elif presented and await _bearer_holds_cluster_read(request, presented):
+                cluster_read = True
     cluster = request.app.state.cluster_manager
     pairing = getattr(request.app.state, "cluster_pairing", None)
     registry = getattr(request.app.state, "registry", None)
@@ -334,13 +384,27 @@ async def list_workers(request: Request):
         # non-utf8 signing key, and (2) even when serialization didn't
         # crash, the secret has no business being on the wire.
         d.pop("signing_key", None)
-        if not is_admin:
+        if not is_admin and not cluster_read:
             result.append({
                 "name": d["name"],
                 "status": d["status"],
                 "tier_id": d.get("tier_id", ""),
                 "kind": d.get("kind", "worker"),
             })
+            continue
+        if cluster_read and not is_admin:
+            # "full but not admin": drop the host-identifying fields. The
+            # admin-only pairing state is never computed on this path, so
+            # revoked/blocked/live_token stay absent as well.
+            d.pop("host_lan_ip", None)
+            d.pop("hardware", None)
+            if registry is not None:
+                tier_id, pot_caps = _potential_capabilities(w.hardware, registry)
+                d["tier_id"] = tier_id
+                d["potential_capabilities"] = pot_caps
+                w.tier_id = tier_id
+                w.potential_capabilities = pot_caps
+            result.append(d)
             continue
         # Surface the persistent auth state from the pairing store so the
         # Cluster UI can show whether a node's signing key is live (not

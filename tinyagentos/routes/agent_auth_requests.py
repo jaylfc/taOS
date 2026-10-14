@@ -60,6 +60,13 @@ VALID_SCOPES = frozenset({
     "files_read",
     "files_write",
     "registry_feeds_read",
+    # Cluster worker visibility (#3227): grants a headless caller the "full but
+    # not admin" worker list from GET /api/cluster/workers — capabilities,
+    # backends, resources, free_vram_mb and models/loaded_models — without the
+    # admin-only pairing state (revoked/blocked/live_token) or host-identifying
+    # fields (host_lan_ip, hardware). Read-only: it authorizes no cluster
+    # mutation. A valid local token still earns the full admin view.
+    "cluster_read",
     # Least-privilege kanban access: task read + lifecycle + comments for the
     # agent's OWN project only (bound by the token's project_id claim). Does NOT
     # grant task create, member management, or project lifecycle.

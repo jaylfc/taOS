@@ -1886,6 +1886,28 @@ snapshot, not a lock.
   them (`chat`, `image-generation`, `llm-chat`, ...); the endpoint does not
   invent a normalised vocabulary.
 
+## Worker list view by credential (`GET /api/cluster/workers`)
+
+`GET /api/cluster/workers` is auth-exempt (headless callers reach it through
+`auth_middleware._is_exempt`), so the middleware leaves `user_id`/`is_admin`
+unset even when a real credential is presented. A route-level check in
+`tinyagentos/routes/cluster.py` still grants a richer view to two credentials
+without widening the exempt gate on any other path:
+
+- **valid local token** -> the full admin view (same-host trust);
+- **registry JWT with an active `cluster_read` grant** -> the "full but not
+  admin" view: worker detail (capabilities, backends, resources, `free_vram_mb`,
+  `models`/`loaded_models`) minus host-identifying fields (`host_lan_ip`,
+  `hardware`) and the admin-only pairing state (`revoked`/`blocked`/`live_token`);
+- **anything else** (no credential, invalid token, or a registry JWT without the
+  scope) -> the unchanged stripped anonymous projection, byte-identical to
+  before. The check is fail-closed and silent: a malformed token or a missing
+  registry/grants store returns the anonymous view rather than a 500. It reuses
+  `check_agent_scope` as the single registry-JWT verify path so there is no
+  second signature/scope implementation to drift. `signing_key` is stripped on
+  every branch. `cluster_read` is a valid scope in the vocabulary
+  (`agent_auth_requests.VALID_SCOPES` and the registry's allowed set).
+
 ## Controller generation echo (split-brain protection)
 
 Route module `tinyagentos/routes/cluster.py`, manager logic in
@@ -2342,3 +2364,14 @@ server-side mechanism, so it binds every harness the same way.
   skips the card for another account. Every kind defaults to `ask`.
 
 Another user's action answers 404. Rows live in `taos_agent_actions.db`.
+
+
+## Credential-aware worker list (#3760)
+
+GET /api/cluster/workers returns different views based on caller credentials:
+
+- Valid local token: full admin view (all worker fields).
+- Registry JWT with active cluster_read grant: worker detail (capabilities, backends, resources, free VRAM, loaded models) minus host-identifying fields and admin-only pairing state.
+- All other callers: stripped anonymous projection (byte-identical to before).
+
+Fail-closed: if credential validation fails or the grant is inactive, the caller falls through to the anonymous projection. The route auth-exempt gate is unchanged.
