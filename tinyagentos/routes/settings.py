@@ -1553,6 +1553,56 @@ async def put_demo_mode(request: Request):
     return {"ok": True, "enabled": body["enabled"], "available": demo_flags_configured()}
 
 
+@router.get("/api/settings/collaboration")
+async def get_collaboration(request: Request):
+    """The collaboration kill switch: instance-wide flag plus paused contacts."""
+    from tinyagentos.collab_settings import read_collab_settings
+
+    return read_collab_settings(request.app.state.data_dir).to_dict()
+
+
+@router.put("/api/settings/collaboration")
+async def put_collaboration(request: Request):
+    """Flip the kill switch or replace the paused list. Admin-only via this router's dependency.
+
+    Either field may be omitted to keep its current value.  Pausing deletes
+    nothing: the contact row and peer link stay, and un-pausing restores service.
+    """
+    from tinyagentos.collab_settings import (
+        CollabSettings,
+        normalise_contact_id,
+        read_collab_settings,
+        write_collab_settings,
+    )
+
+    try:
+        body = await request.json()
+    except ValueError:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "body must be an object"}, status_code=400)
+    current = read_collab_settings(request.app.state.data_dir)
+    enabled = body.get("enabled", current.enabled)
+    if not isinstance(enabled, bool):
+        return JSONResponse({"error": "'enabled' must be true or false"}, status_code=400)
+    paused_in = body.get("paused_contacts", current.paused_contacts)
+    if not isinstance(paused_in, list) or not all(isinstance(p, str) for p in paused_in):
+        return JSONResponse(
+            {"error": "'paused_contacts' must be a list of contact ids"}, status_code=400,
+        )
+    paused: list[str] = []
+    for raw in paused_in:
+        try:
+            cid = normalise_contact_id(raw)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        if cid not in paused:
+            paused.append(cid)
+    settings = CollabSettings(enabled=enabled, paused_contacts=paused)
+    write_collab_settings(request.app.state.data_dir, settings)
+    return settings.to_dict()
+
+
 @router.get("/api/settings/memory-url")
 async def get_memory_url(request: Request):
     """Return the current taOSmd memory URL with local/reachable probes."""

@@ -19,6 +19,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from tinyagentos.collab_settings import read_collab_settings
 from tinyagentos.hub.identity import fingerprint as _fingerprint
 from tinyagentos.peer import (
     local_contact_id,
@@ -104,6 +105,29 @@ async def _authenticate_peer(request: Request) -> str:
     return contact_id
 
 
+async def _collab_enabled_dep(request: Request) -> None:
+    """Router-level dependency: 503 while the collaboration kill switch is off.
+
+    Runs BEFORE ``_peer_auth_dep``, so a disabled instance does no bearer
+    lookup and no signature work for any caller.  The switch is read from
+    disk on every request so a flip in Settings is immediate.
+
+    Routes outside ``router`` (the handshake route) call this directly.
+    """
+    if not read_collab_settings(request.app.state.data_dir).enabled:
+        raise HTTPException(status_code=503, detail="collaboration disabled")
+
+
+def _raise_if_contact_paused(request: Request, contact_id: str) -> None:
+    """403 when *contact_id* is in the kill switch's paused list.
+
+    Call it once the caller's contact_id is known and before any nonce is
+    recorded, so a paused contact cannot burn nonces.
+    """
+    if read_collab_settings(request.app.state.data_dir).is_paused(contact_id):
+        raise HTTPException(status_code=403, detail="contact paused")
+
+
 async def _peer_auth_dep(request: Request) -> str:
     """Router-level dependency: authenticate EVERY /api/peer route.
 
@@ -113,12 +137,15 @@ async def _peer_auth_dep(request: Request) -> str:
     so route handlers can read it directly.
     """
     contact_id = await _authenticate_peer(request)
+    _raise_if_contact_paused(request, contact_id)
     request.state.peer_contact_id = contact_id
     return contact_id
 
 
-# Apply the dependency to the router now that _peer_auth_dep is defined.
+# Apply the dependencies to the router now that both are defined.  The kill
+# switch goes first so it precedes the bearer lookup.
 router.dependencies.append(Depends(_peer_auth_dep))
+router.dependencies.insert(0, Depends(_collab_enabled_dep))
 
 
 def _reject_legacy_row(contact_id: str, contact_rec: dict) -> None:
