@@ -1003,9 +1003,16 @@ class TestPeerRoutes:
 # ---------------------------------------------------------------------------
 
 
+_REPLY = {"kind": "handshake_reply", "from": "hub:peer", "to": "hub:local"}
+
+
 @pytest.mark.asyncio
 class TestDeliverHandshake:
-    """Tests for peer.deliver_handshake: SSRF guard + dict endpoint handling."""
+    """Tests for peer.deliver_handshake: SSRF guard + dict endpoint handling.
+
+    deliver_handshake returns the peer's handshake_reply envelope (unverified)
+    or None; the mock transport answers every POST with ``_REPLY``.
+    """
 
     @staticmethod
     def _mock_client(seen: dict) -> httpx.AsyncClient:
@@ -1014,7 +1021,7 @@ class TestDeliverHandshake:
         def handler(req: httpx.Request) -> httpx.Response:
             seen["called"] = True
             seen["url"] = str(req.url)
-            return httpx.Response(200)
+            return httpx.Response(200, json={"envelope": _REPLY})
 
         return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
@@ -1032,7 +1039,7 @@ class TestDeliverHandshake:
                 {"envelope": "test"}, ["http://100.64.0.1/"],
                 http_client=client,
             )
-            assert result is False
+            assert result is None
             assert "called" not in seen
         finally:
             await client.aclose()
@@ -1046,7 +1053,7 @@ class TestDeliverHandshake:
                 {"envelope": "test"}, ["http://192.168.1.1/"],
                 http_client=client,
             )
-            assert result is False
+            assert result is None
             assert "called" not in seen
         finally:
             await client.aclose()
@@ -1060,7 +1067,7 @@ class TestDeliverHandshake:
                 {"envelope": "test"}, ["http://127.0.0.1/"],
                 http_client=client,
             )
-            assert result is False
+            assert result is None
             assert "called" not in seen
         finally:
             await client.aclose()
@@ -1074,8 +1081,8 @@ class TestDeliverHandshake:
                 {"envelope": "test"}, ["http://93.184.216.34/"],
                 http_client=client,
             )
-            assert result is True
-            assert seen["url"] == "http://93.184.216.34/api/peer/inbox"
+            assert result == _REPLY
+            assert seen["url"] == "http://93.184.216.34/api/peer/handshake"
         finally:
             await client.aclose()
 
@@ -1111,8 +1118,8 @@ class TestDeliverHandshake:
             result = await deliver_handshake(
                 envelope, link["endpoints"], http_client=client,
             )
-            assert result is True
-            assert seen["url"] == "http://93.184.216.34/api/peer/inbox"
+            assert result == _REPLY
+            assert seen["url"] == "http://93.184.216.34/api/peer/handshake"
         finally:
             await client.aclose()
 
@@ -1126,7 +1133,7 @@ class TestDeliverHandshake:
                 ["http://100.64.0.1/", "http://93.184.216.34/"],
                 http_client=client,
             )
-            assert result is True
-            assert seen["url"] == "http://93.184.216.34/api/peer/inbox"
+            assert result == _REPLY
+            assert seen["url"] == "http://93.184.216.34/api/peer/handshake"
         finally:
             await client.aclose()

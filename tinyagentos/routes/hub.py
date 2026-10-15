@@ -37,6 +37,14 @@ from pydantic import BaseModel
 from tinyagentos.auth_context import CurrentUser, current_user
 from tinyagentos.contacts_store import generate_peer_token
 from tinyagentos.hub import identity, posts, relationships, store as hub_store
+from tinyagentos.peer import (
+    deliver_handshake,
+    known_hostports,
+    local_contact_id,
+    send_handshake,
+    verify_envelope,
+    verify_envelope_signature,
+)
 from tinyagentos.routes.account_proxy import _forward_to
 
 logger = logging.getLogger(__name__)
@@ -195,18 +203,13 @@ async def _try_handshake(
             peer_fingerprint=peer_fingerprint,
         )
 
-        # Mint the inbound token WE give to the remote instance.
-        # NOTE: A2 intentionally stores the inbound token locally but does NOT
-        # deliver it to the remote peer — the token exchange channel doesn't
-        # exist yet.  A3 (the first handshake reply containing the remote's
-        # outbound token) completes the two-way exchange.  Until then, the
-        # inbound auth channel is inert (no remote request will carry this
-        # token) and find_contact_by_inbound_token() will never match.
+        # Mint the inbound token WE give to the remote instance.  The link is
+        # stored first with an empty outbound token, then the handshake is
+        # delivered (A3): the peer's signed reply carries the token THEY mint
+        # for us and _deliver_handshake fills outbound_token in.  If delivery
+        # fails the link stays half-open (outbound "") and the accept still
+        # succeeds.
         inbound_token = generate_peer_token()
-        # The outbound_token is the token THEY mint for us — we don't have it
-        # until the first handshake reply arrives.  Store an empty placeholder
-        # so the peer link row exists; the first handshake reply (future A3)
-        # updates this field.
         outbound_token = ""
 
         await contacts_store.establish_peer_link(
@@ -219,8 +222,72 @@ async def _try_handshake(
             "friend-accept handshake: contact=%s endpoints=%s",
             contact_id, endpoints,
         )
+        await _deliver_handshake(
+            request, contacts_store, contact_id, inbound_token, endpoints, ed25519_pub,
+        )
     except Exception:
         logger.exception("friend-accept handshake failed for %s", contact_id)
+
+
+_MAX_PEER_TOKEN_LEN = 256
+
+
+async def _deliver_handshake(
+    request: Request,
+    contacts_store,
+    contact_id: str,
+    inbound_token: str,
+    endpoints: list,
+    peer_signing_pub: str,
+) -> None:
+    """Send our handshake to the peer's recorded endpoints, store its reply token.
+
+    Best effort: any failure leaves ``outbound_token`` empty and is logged; the
+    accept itself never fails.  The reply is trusted only when it is a fresh
+    ``handshake_reply`` from the contact we just pinned, addressed to us, and
+    signed by the pinned key.  Delivery goes through the SSRF guard with the
+    endpoints we just RECORDED as the only private-range allowance.  Tests
+    inject ``app.state.peer_http_client`` to route the POST in-process.
+    """
+    try:
+        # Our own advertised endpoints are not recorded locally yet; the peer
+        # learns them from the directory's presence lookup.
+        handshake = send_handshake(
+            to_contact_id=contact_id,
+            inbound_token=inbound_token,
+            endpoints=[],
+            signing_pubkey="",
+            encryption_pubkey="",
+        )
+        reply = await deliver_handshake(
+            handshake,
+            endpoints,
+            http_client=getattr(request.app.state, "peer_http_client", None),
+            known_endpoints=known_hostports(endpoints),
+        )
+        if reply is None:
+            logger.warning("friend-accept handshake: no reply from %s", contact_id)
+            return
+        ok, err = verify_envelope(reply, expected_kind="handshake_reply")
+        if (
+            not ok
+            or reply.get("from") != contact_id
+            or reply.get("to") != local_contact_id()
+            or not verify_envelope_signature(reply, peer_signing_pub)
+        ):
+            logger.warning(
+                "friend-accept handshake: reply from %s rejected (%s)",
+                contact_id, err or "identity or signature mismatch",
+            )
+            return
+        token = (reply.get("body") or {}).get("inbound_token")
+        if not isinstance(token, str) or not token or len(token) > _MAX_PEER_TOKEN_LEN:
+            logger.warning("friend-accept handshake: reply from %s has no token", contact_id)
+            return
+        await contacts_store.set_outbound_token(contact_id, token)
+        logger.info("friend-accept handshake completed with %s", contact_id)
+    except Exception:
+        logger.exception("friend-accept handshake delivery failed for %s", contact_id)
 
 
 # --- slice 2: own profile ---------------------------------------------------
