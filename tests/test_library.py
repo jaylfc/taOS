@@ -1897,6 +1897,10 @@ def _mock_stream_callable(mock_resp):
 class TestDocxProcessor:
     @pytest.mark.asyncio
     async def test_extract_docx(self, lib_store, storage_dir):
+        pytest.importorskip(
+            "docx",
+            reason="python-docx is the optional `library` extra; CI shards install no extras",
+        )
         from docx import Document
         file_path = storage_dir / "doc.docx"
         doc = Document()
@@ -1928,6 +1932,10 @@ class TestDocxProcessor:
 class TestPptxProcessor:
     @pytest.mark.asyncio
     async def test_extract_pptx(self, lib_store, storage_dir):
+        pytest.importorskip(
+            "pptx",
+            reason="python-pptx is the optional `library` extra; CI shards install no extras",
+        )
         from pptx import Presentation
         from pptx.util import Inches
         file_path = storage_dir / "deck.pptx"
@@ -1955,6 +1963,10 @@ class TestPptxProcessor:
 class TestXlsxProcessor:
     @pytest.mark.asyncio
     async def test_extract_xlsx(self, lib_store, storage_dir):
+        pytest.importorskip(
+            "openpyxl",
+            reason="openpyxl is the optional `library` extra; CI shards install no extras",
+        )
         import openpyxl
         file_path = storage_dir / "data.xlsx"
         wb = openpyxl.Workbook()
