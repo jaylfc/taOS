@@ -236,6 +236,9 @@ def register_all_routers(app):
     from tinyagentos.routes.desktop_control import router as desktop_control_router
     app.include_router(desktop_control_router, dependencies=_csrf)
 
+    from tinyagentos.routes.cast import router as cast_router
+    app.include_router(cast_router, dependencies=_csrf)
+
     from tinyagentos.routes.shared_folders import router as shared_folders_router
     app.include_router(shared_folders_router, dependencies=_csrf)
 

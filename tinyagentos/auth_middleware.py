@@ -624,6 +624,13 @@ _LLM_GATEWAY_SPEECH = "/api/llm/v1/audio/speech"  # local text-to-speech
 # the client, not as "bad credentials".
 _LLM_GATEWAY_PREFIX = "/api/llm/"
 
+# Screencast media (routes/cast.py): a TV fetches the cast media URL ITSELF and
+# carries no session, cookie or bearer. The cast token in the URL IS the
+# credential and the ROUTE enforces it (401 unknown/expired/revoked, 403 wrong
+# view or device), proven by tests/test_cast_tokens.py. Exactly one prefix,
+# GET/HEAD only; every other method and every /api/cast path stays gated.
+_CAST_MEDIA_PREFIX = "/cast/media/"
+
 
 def _unauthenticated(path: str, body: dict) -> JSONResponse:
     if path.startswith(_LLM_GATEWAY_PREFIX):
@@ -773,6 +780,10 @@ def _is_exempt(method: str, path: str) -> bool:
     if method == "POST" and path == _LLM_GATEWAY_TRANSCRIPTIONS:
         return True
     if method == "POST" and path == _LLM_GATEWAY_SPEECH:
+        return True
+    # Cast media -- cast-token auth lives in the route (see the constants
+    # block above). Read methods only.
+    if method in ("GET", "HEAD") and path.startswith(_CAST_MEDIA_PREFIX):
         return True
     return False
 
