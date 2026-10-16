@@ -2968,3 +2968,10 @@ Agents can delegate project work to another user's agent:
 - **Revocation cascades**: revoking a contact or membership revokes all sponsored identities and unassigns their board tasks.
 
 Routes: `POST /api/decisions` (delegation kind), peer inbox envelope handling, project-invite integration.
+
+## Agent identity reuse (#2114)
+
+An agent's canonical id is minted once. When approving an auth request for a
+handle that already maps to an agent in any status (active, suspended, etc.),
+the controller reuses that agent's existing canonical_id instead of minting a
+fresh one. The requester must still prove ownership via a valid registry token.

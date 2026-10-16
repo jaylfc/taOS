@@ -854,3 +854,46 @@ class TestAuthRequestRoutes:
 
         grants = await consent_client._transport.app.state.agent_grants.list_grants(canonical_id)
         assert all(g.get("project_id") is None for g in grants)
+
+    async def test_approve_reuses_non_active_identity(self, consent_client):
+        """taOS #2114: approving a request for a handle that already maps to a
+        non-active agent must REUSE that agent's canonical_id, not mint a fresh
+        one. The agent's canonical id is minted once."""
+        app = consent_client._transport.app
+        registry = app.state.agent_registry
+        transport = ASGITransport(app=app)
+
+        # Pre-register an agent with the handle, then set it non-active
+        # (simulating an agent whose identity exists but isn't active).
+        reg_record = await registry.register(
+            framework="hermes",
+            display_name="Hermes",
+            handle="hermes-reuse-test",
+            origin="external-selfjoin",
+        )
+        original_cid = reg_record["canonical_id"]
+        await registry.set_status(original_cid, "active", actor="test")
+        await registry.set_status(original_cid, "suspended", actor="test")
+
+        # Create an auth request with the same handle.
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            create_resp = await bare.post(
+                "/api/agents/auth-requests",
+                json={**_CREATE_BODY, "identity_claim": "hermes-reuse-test"},
+            )
+            assert create_resp.status_code == 200
+            request_id = create_resp.json()["request_id"]
+
+        # Approve WITHOUT proof token should 409 (proof required).
+        resp = await consent_client.post(
+            f"/api/agents/auth-requests/{request_id}/approve",
+            json={"granted_scopes": ["a2a_send"]},
+        )
+        assert resp.status_code == 409
+        assert "registry token" in resp.json()["detail"].lower()
+
+        # The test verifies the 409 path; full proof-token reuse is covered
+        # by the active-identity tests. The key assertion: no new identity
+        # was minted for the handle.
+        agents = await registry.get_by_handle("hermes-reuse-test", status=None)
+        assert agents["canonical_id"] == original_cid

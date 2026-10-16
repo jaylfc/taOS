@@ -951,6 +951,26 @@ async def approve_request_record(
             handle, status="active"
         )
         collision_via_normalised = existing_active is not None
+    # taOS #2114: if no ACTIVE agent owns the handle, check for an existing
+    # agent in ANY status. Reusing the canonical identity (instead of minting
+    # a fresh one) keeps the documented model where an agent's canonical id
+    # is minted once. The proof-token check below still applies.
+    existing_any = None
+    if existing_active is None:
+        existing_any = await registry.get_by_handle(handle, status=None)
+        if existing_any is None:
+            existing_any = await registry.get_by_handle_normalised(
+                handle, status=None
+            )
+        # A non-active holder of a FOREIGN origin is not the external
+        # requester's identity to reuse: reactivating it would hand an
+        # internal identity to the consent flow. Fall through and mint
+        # a fresh external-selfjoin identity instead.
+        if existing_any is not None and existing_any.get("origin") not in (
+            None,
+            "external-selfjoin",
+        ):
+            existing_any = None
     if existing_active is not None:
         # The consent approve flow is the only origin that registers here
         # (external-selfjoin). A normalised match whose origin is anything else
@@ -1074,21 +1094,47 @@ async def approve_request_record(
     # the old window (register handle='' -> set active -> update handle) in which
     # an agent could sit ACTIVE with an empty handle, and lets SQLite reject a
     # duplicate active handle the instant a concurrent approve tries to take it.
+    # taOS #2114: reuse an existing non-active identity instead of minting
+    # a fresh one. If the handle already maps to an agent (any status), reuse
+    # its canonical_id. The requester must still prove ownership via the
+    # registry token.
     canonical_id = None
+    if existing_any is not None:
+        if record.get("proven_canonical_id") != existing_any["canonical_id"]:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"handle '{handle}' belongs to existing agent "
+                    f"{existing_any['canonical_id']} (status={existing_any.get('status')}); "
+                    f"resubmit the request with that agent's registry token as a Bearer <redacted>"
+                ),
+            )
+        if (record.get("proven_token_iat") or 0) < (existing_any.get("token_min_iat") or 0):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"handle '{handle}' belongs to existing agent "
+                    f"{existing_any['canonical_id']}; the proof token was superseded by a "
+                    f"rotation and the request must be resubmitted with a current token"
+                ),
+            )
+        canonical_id = existing_any["canonical_id"]
+        await registry.set_status(canonical_id, "active", actor=decided_by)
     try:
-        reg_record = await registry.register(
-            framework=record["framework"],
-            display_name=display_name,
-            user_id=decided_by,
-            # external-selfjoin is the only origin that births the agent
-            # 'pending' (governance lifecycle) so the pending -> active
-            # transition below is the activation. The provenance of WHO
-            # approved (admin consent vs project invite) lives on the
-            # auth-request record / invite, not the registry origin column.
-            origin="external-selfjoin",
-            handle=handle,
-        )
-        canonical_id = reg_record["canonical_id"]
+        if canonical_id is None:
+            reg_record = await registry.register(
+                framework=record["framework"],
+                display_name=display_name,
+                user_id=decided_by,
+                # external-selfjoin is the only origin that births the agent
+                # 'pending' (governance lifecycle) so the pending -> active
+                # transition below is the activation. The provenance of WHO
+                # approved (admin consent vs project invite) lives on the
+                # auth-request record / invite, not the registry origin column.
+                origin="external-selfjoin",
+                handle=handle,
+            )
+            canonical_id = reg_record["canonical_id"]
 
         # Consent approval IS the activation. external-selfjoin agents are born
         # 'pending' (governance lifecycle); approving the auth-request transitions
