@@ -670,6 +670,22 @@ def _is_loopback_client(request: Request) -> bool:
         return False
 
 
+def _is_browser_cross_site(request: Request) -> bool:
+    """Return True when the request carries an Origin header (any value), or a
+    Sec-Fetch-Site header whose value is not ``none``.
+
+    A browser always sends Origin on a cross-origin POST. The prepare-shutdown
+    stop hook (scripts/taos-graceful-stop.sh) is curl and sends neither header.
+    """
+    origin = request.headers.get("Origin")
+    if origin is not None:
+        return True
+    sec_fetch_site = request.headers.get("Sec-Fetch-Site")
+    if sec_fetch_site is not None and sec_fetch_site != "none":
+        return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Per-IP moving-window rate limiter for the unauthenticated project-invite
 # redeem. The cluster pairing manual-claim runs the same 20-per-10s cap from
@@ -855,10 +871,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # Loopback-only shutdown drain: POST /api/system/prepare-shutdown from
         # the local systemd stop hook (curl on 127.0.0.1, no session/token).
         # Remote callers fall through to the normal session gate below.
+        # Browser-initiated cross-origin POSTs are excluded from the loopback
+        # exemption so they fall through to the normal session gate.
         if (
             request.method == "POST"
             and path == _PREPARE_SHUTDOWN
             and _is_loopback_client(request)
+            and not _is_browser_cross_site(request)
         ):
             request.state.user_id = None
             request.state.is_admin = False

@@ -93,3 +93,29 @@ async def test_other_routes_still_gated_from_loopback():
             "/api/agents", headers={"accept": "application/json"}
         )
     assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_prepare_shutdown_blocked_from_loopback_with_origin():
+    """A loopback POST with Origin header is blocked (browser cross-site)."""
+    app = _make_app()
+    transport = ASGITransport(app=app, client=("127.0.0.1", 5555))
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/system/prepare-shutdown",
+            headers={"Origin": "https://evil.example"},
+        )
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_prepare_shutdown_blocked_from_loopback_with_sec_fetch_cross_site():
+    """A loopback POST with Sec-Fetch-Site: cross-site is blocked."""
+    app = _make_app()
+    transport = ASGITransport(app=app, client=("127.0.0.1", 5555))
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/system/prepare-shutdown",
+            headers={"Sec-Fetch-Site": "cross-site"},
+        )
+    assert resp.status_code == 401
