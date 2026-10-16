@@ -92,14 +92,24 @@ def label_for(app_id: str, title: str) -> str:
     return title or app_id or "App"
 
 
+def _app_id(con: dict) -> str:
+    return con.get("app_id") or (con.get("window_properties") or {}).get("class") or ""
+
+
+def _is_hidden(con: dict, ws) -> bool:
+    """Not an app window: the kiosk, the switcher, or a scratchpad window."""
+    app_id = _app_id(con)
+    if app_id in HIDDEN_APP_IDS or any(app_id.startswith(h) for h in HIDDEN_PREFIXES):
+        return True
+    return ws == "__i3_scratch"
+
+
 def list_windows(tree: dict) -> list[dict]:
     out = []
     for con, ws in _walk(tree):
-        app_id = con.get("app_id") or (con.get("window_properties") or {}).get("class") or ""
-        if app_id in HIDDEN_APP_IDS or any(app_id.startswith(h) for h in HIDDEN_PREFIXES):
+        if _is_hidden(con, ws):
             continue
-        if ws == "__i3_scratch":
-            continue
+        app_id = _app_id(con)
         out.append({
             "con_id": con["id"],
             "app_id": app_id,
@@ -117,13 +127,16 @@ def closes_the_view(tree: dict, con_id: int) -> bool:
     on_ws = {}
     target = None
     for con, ws in _walk(tree):
-        on_ws.setdefault(ws, []).append(con)
+        if not _is_hidden(con, ws):
+            # Count only the windows list_windows shows: a hidden one left
+            # on the workspace is not something to stay for.
+            on_ws.setdefault(ws, []).append(con)
         if con.get("id") == con_id:
             target = (con, ws)
     if target is None:
         return False
     con, ws = target
-    return bool(con.get("focused")) and ws != HOME_WORKSPACE and len(on_ws[ws]) == 1
+    return bool(con.get("focused")) and ws != HOME_WORKSPACE and on_ws.get(ws) == [con]
 
 
 def app_workspace(app: str) -> str:

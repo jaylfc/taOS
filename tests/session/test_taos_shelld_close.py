@@ -114,6 +114,28 @@ def test_closing_the_app_in_front_returns_to_the_desktop(shelld):
     assert cmds.index(("[con_id=7] kill",)) < cmds.index(("workspace", "1")), cmds
 
 
+def test_a_hidden_window_on_the_workspace_does_not_keep_it_open(shelld):
+    # The shell's own switcher (chrome-shell.taos__) is not an app: when it
+    # shares the workspace, closing the only app still returns home.
+    port, calls, state = shelld
+    state["tree"] = _tree(_ws("1", _win(1, KIOSK)),
+                          _ws("app-files", _win(7, APP, focused=True),
+                              _win(9, "chrome-shell.taos__-Default")))
+    status, body = _close(port, 7)
+    assert status == 200 and body.get("ok") is True
+    cmds = _commands(calls)
+    assert ("workspace", "1") in cmds, "a hidden window kept app-files open: %r" % cmds
+
+
+def test_a_hidden_window_never_closes_the_view():
+    # /close refuses hidden windows before asking, but closes_the_view must
+    # still answer False for one, not raise or send the app behind it home.
+    tree = _tree(_ws("1", _win(1, KIOSK)),
+                 _ws("app-files", _win(7, APP),
+                     _win(9, "chrome-shell.taos__-Default", focused=True)))
+    assert _load().closes_the_view(tree, 9) is False
+
+
 def test_closing_from_the_desktop_switcher_stays_on_the_desktop(shelld):
     # The desktop's own switcher runs in the kiosk on workspace 1, which holds
     # focus; the app it closes is in the background. No workspace change.
