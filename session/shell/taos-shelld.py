@@ -64,6 +64,8 @@ MAX_URL = 4096
 #: chrome-127.0.0.1__app.html-Default and IS an app.
 HIDDEN_APP_IDS = ("chrome-127.0.0.1__-Default",)
 HIDDEN_PREFIXES = ("chrome-shell.taos__",)
+#: The kiosk's workspace: taOS home, where taos-shell's home button goes.
+HOME_WORKSPACE = "1"
 
 
 def swaymsg(*args) -> subprocess.CompletedProcess:
@@ -107,6 +109,21 @@ def list_windows(tree: dict) -> list[dict]:
             "focused": bool(con.get("focused")),
         })
     return out
+
+
+def closes_the_view(tree: dict, con_id: int) -> bool:
+    """True when *con_id* is the focused window and the only one on its
+    workspace: closing it leaves nothing on the screen."""
+    on_ws = {}
+    target = None
+    for con, ws in _walk(tree):
+        on_ws.setdefault(ws, []).append(con)
+        if con.get("id") == con_id:
+            target = (con, ws)
+    if target is None:
+        return False
+    con, ws = target
+    return bool(con.get("focused")) and ws != HOME_WORKSPACE and len(on_ws[ws]) == 1
 
 
 def app_workspace(app: str) -> str:
@@ -447,12 +464,19 @@ class Handler(BaseHTTPRequestHandler):
             con_id = int(body["con_id"])
         except (ValueError, KeyError, TypeError):
             return self._json({"error": "bad request"}, 400)
+        raw = swaymsg("-t", "get_tree", "-r").stdout
+        tree = json.loads(raw) if raw else {}
         # Only a window the switcher would list: never the kiosk, never an
         # arbitrary container id.
-        if con_id not in {w["con_id"] for w in current_windows()}:
+        if con_id not in {w["con_id"] for w in list_windows(tree)}:
             return self._json({"error": "no such app"}, 404)
         verb = "focus" if self.path == "/focus" else "kill"
         res = swaymsg("[con_id=%d] %s" % (con_id, verb))
+        if res.returncode == 0 and verb == "kill" and closes_the_view(tree, con_id):
+            # Killing the app in front, alone on its workspace, left sway on
+            # that empty workspace: the kiosk stayed hidden and the glass
+            # showed only the splash background. Go home, as the home button does.
+            swaymsg("workspace", HOME_WORKSPACE)
         return self._json({"ok": res.returncode == 0}, 200 if res.returncode == 0 else 502)
 
 
