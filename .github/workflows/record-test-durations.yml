@@ -1,0 +1,110 @@
+name: Record Test Durations
+
+on:
+  workflow_dispatch:
+
+# Manual lead-run workflow. Records per-test durations with pytest-split across
+# the four shards, merges them into tests/.test_durations, and validates that
+# manifest with scripts/check_shard_manifest.py. The manifest is uploaded as an
+# artifact here but NOT committed; a lead-run step lands it (tsk-kqa3e7, part 2).
+
+jobs:
+  shards:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12"]
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Provision Python via uv
+        run: uv python install ${{ matrix.python-version }}
+
+      # tests/test_lock_screen_gestures.py EXECUTES the lock screen gesture
+      # source under node rather than asserting against its text, so provision
+      # it here: a skipped gesture suite would record durations for nothing.
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      # --frozen errors out if the lock is stale rather than silently
+      # re-resolving: dependency versions come from the lock, not a fresh
+      # resolve.
+      - name: Install dependencies
+        run: uv sync --frozen --python ${{ matrix.python-version }}
+
+      - name: Run tests (shard ${{ matrix.shard }}/4, recording durations)
+        run: uv run --no-sync pytest tests/ --tb=short --ignore=tests/e2e -n auto --splits 4 --group ${{ matrix.shard }} --store-durations --durations-path durations-${{ matrix.shard }}.json
+
+      - name: Upload shard durations
+        uses: actions/upload-artifact@v7
+        with:
+          name: durations-${{ matrix.shard }}
+          path: durations-${{ matrix.shard }}.json
+
+  merge:
+    needs: shards
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Provision Python via uv
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --frozen --python 3.12
+
+      - name: Download shard durations
+        uses: actions/download-artifact@v8
+        with:
+          pattern: durations-*
+          merge-multiple: true
+          path: durations
+
+      - name: Merge duration shards
+        run: |
+          set -euo pipefail
+          uv run --no-sync python - <<'PY'
+          import glob
+          import json
+
+          merged = {}
+          for path in sorted(
+              glob.glob("durations/**/durations-*.json", recursive=True)
+          ):
+              with open(path) as fh:
+                  merged.update(json.load(fh))
+          with open("tests/.test_durations", "w") as fh:
+              json.dump(merged, fh, indent=2, sort_keys=True)
+              fh.write("\n")
+          PY
+
+      - name: Collect test ids
+        run: uv run --no-sync pytest tests/ --ignore=tests/e2e --collect-only -q -p no:cacheprovider | grep '::' > collected.txt
+
+      - name: Validate manifest and balance
+        # The guard exits 1 on any manifest problem or shard imbalance, which
+        # fails this job. A missing/empty manifest is a hard failure, not a
+        # silent fallback to an even split.
+        run: uv run --no-sync python scripts/check_shard_manifest.py --manifest tests/.test_durations --collected-file collected.txt --splits 4 --max-ratio 2.0
+
+      - name: Upload test durations
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-durations
+          path: tests/.test_durations
