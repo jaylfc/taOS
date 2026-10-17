@@ -369,3 +369,29 @@ class TestS224_LegacyFallback:
         lease = await mgr.claim_lease("mac-worker:gpu-metal", caller="test")
         assert lease is not None, "the fallback grammar rejected gpu-metal"
         assert await mgr.claim_lease("mac-worker:nonsense", caller="test") is None
+
+
+def test_collect_resources_feeds_metal_resource_name(monkeypatch):
+    """The Apple Silicon class name has exactly one source (hardware.py).
+
+    #3238 landed `_collect_resources()` with the literal "gpu-metal"; the name
+    is what lease ids, worker inventories and the controller's discovery all
+    key off, so the worker must read `METAL_RESOURCE_NAME` instead of spelling
+    it again (taOS #329).
+    """
+    from tinyagentos.hardware import METAL_RESOURCE_NAME
+    from tinyagentos.worker.agent import _collect_resources
+
+    monkeypatch.delenv("TAOS_WORKER_RESOURCES", raising=False)
+
+    mac = _collect_resources([{"type": "mlx"}], "apple", "darwin")
+    assert METAL_RESOURCE_NAME in mac
+    assert "gpu-cuda-0" not in mac
+
+    cuda = _collect_resources([{"type": "vllm"}], "nvidia", "linux")
+    assert "gpu-cuda-0" in cuda
+    assert METAL_RESOURCE_NAME not in cuda
+
+    # Intel Mac: no CUDA/ROCm class on macOS, so the backend serves as CPU.
+    intel_mac = _collect_resources([{"type": "ollama"}], None, "darwin")
+    assert intel_mac == ["cpu-inference"]

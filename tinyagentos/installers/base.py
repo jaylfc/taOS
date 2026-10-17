@@ -56,6 +56,9 @@ def get_installer(method: str, **kwargs) -> AppInstaller:
     elif method == "ollama":
         from tinyagentos.installers.ollama_installer import OllamaInstaller
         return OllamaInstaller(**kwargs)
+    elif method == "mlx":
+        from tinyagentos.installers.mlx_installer import MLXInstaller
+        return MLXInstaller(**kwargs)
     elif method == "script":
         from tinyagentos.installers.script_installer import ScriptInstaller
         return ScriptInstaller(**kwargs)

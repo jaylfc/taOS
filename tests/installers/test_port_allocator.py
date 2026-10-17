@@ -32,6 +32,11 @@ class TestReservedPorts:
         """7836 is the hailo-ollama NPU backend; apps must never be allocated it."""
         assert 7836 in RESERVED_PORTS
 
+    def test_mlx_port_reserved(self):
+        """7837 is the Apple Silicon MLX server port; apps must never be
+        allocated it (taOS #329)."""
+        assert 7837 in RESERVED_PORTS
+
 
 class TestAllocateHostPort:
     def test_deterministic_for_same_app_id(self):
