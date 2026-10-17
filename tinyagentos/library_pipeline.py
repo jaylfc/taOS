@@ -51,9 +51,14 @@ _EXT_OVERRIDE_MAP: dict[str, str] = {
     ".png": "image", ".jpg": "image", ".jpeg": "image",
     ".gif": "image", ".webp": "image", ".svg": "image",
     ".zip": "archive", ".gz": "archive", ".tar": "archive",
-    ".docx": "docx", ".doc": "docx",
-    ".pptx": "pptx", ".ppt": "pptx",
-    ".xlsx": "xlsx", ".xls": "xlsx",
+    # OOXML only. The legacy binary formats (.doc/.ppt/.xls) are NOT
+    # readable by python-docx/python-pptx/openpyxl, so they must not be
+    # routed to the OOXML processors: they fall through to kind "file" and
+    # FileProcessor, which records metadata and byte size instead of
+    # returning nothing.
+    ".docx": "docx",
+    ".pptx": "pptx",
+    ".xlsx": "xlsx",
     ".epub": "epub",
 }
 
@@ -433,12 +438,78 @@ class XlsxProcessor(Processor):
         return artifacts
 
 
+# EPUB uploads are untrusted, so decompression is bounded in three ways:
+# entry count, per-entry bytes and total bytes read. A zip bomb (a small
+# archive whose metadata declares gigabytes of content) is rejected before
+# anything large is materialised. Real books sit far below these caps.
+EPUB_MAX_ENTRIES = 2000
+EPUB_MAX_ENTRY_BYTES = 16 * 1024 * 1024
+EPUB_MAX_TOTAL_BYTES = 64 * 1024 * 1024
+
+
+class EpubSecurityError(Exception):
+    """An EPUB upload exceeded the decompression safety envelope or carried
+    XML that is unsafe to parse (DTD / entity declarations)."""
+
+
+def _parse_epub_xml(raw: bytes):
+    """Parse one untrusted EPUB XML document with no DTD and no entities.
+
+    ``defusedxml`` is used when installed. Without it the document is
+    rejected whenever it declares a DOCTYPE or an entity, which removes the
+    billion-laughs surface entirely, and the stdlib parser is then given
+    input that has no DTD to act on. The stdlib parser performs no network
+    I/O, so an external entity can never be fetched.
+    """
+    lowered = raw.lower()
+    if b"<!doctype" in lowered or b"<!entity" in lowered:
+        raise EpubSecurityError("XML declares a DTD or entity -- rejected")
+    try:
+        from defusedxml.ElementTree import fromstring as _defused_fromstring
+    except ImportError:
+        import xml.etree.ElementTree as ET  # noqa: S314 -- DTD/entities rejected above
+        return ET.fromstring(raw)
+    return _defused_fromstring(raw)
+
+
+def _check_epub_envelope(zf) -> None:
+    """Reject an archive whose entry count or declared size busts the caps."""
+    infos = zf.infolist()
+    if len(infos) > EPUB_MAX_ENTRIES:
+        raise EpubSecurityError(
+            f"{len(infos)} entries exceeds the cap of {EPUB_MAX_ENTRIES}"
+        )
+    declared = sum(info.file_size for info in infos)
+    if declared > EPUB_MAX_TOTAL_BYTES:
+        raise EpubSecurityError(
+            f"declared {declared} uncompressed bytes exceeds the cap of "
+            f"{EPUB_MAX_TOTAL_BYTES}"
+        )
+
+
+def _read_epub_entry(zf, name: str, budget: int) -> bytes:
+    """Read one zip entry, never decompressing more than ``budget`` bytes.
+
+    Reading ``budget + 1`` bytes detects an entry that lies about its
+    declared size in the central directory instead of trusting it.
+    """
+    with zf.open(name) as fh:
+        raw = fh.read(budget + 1)
+    if len(raw) > budget:
+        raise EpubSecurityError(
+            f"entry {name!r} decompresses past the {budget}-byte cap"
+        )
+    return raw
+
+
 class EpubProcessor(Processor):
-    """EPUB processor — extracts chapter text via stdlib zipfile + XML.
+    """EPUB processor -- extracts chapter text via stdlib zipfile + XML.
 
     EPUB is a zip of XHTML files; no third-party dependency is needed.
     Reads the OPF spine for chapter order, falls back to alphabetical
     file order when the spine is absent or unreadable (taOS #128 Phase 1).
+    Untrusted input: decompression is bounded and XML is parsed without
+    DTDs or entity expansion.
     """
 
     async def process(self, item: dict) -> list[dict]:
@@ -451,67 +522,18 @@ class EpubProcessor(Processor):
         if not p.exists():
             return artifacts
         import zipfile
-        import xml.etree.ElementTree as ET
 
         try:
             zf = zipfile.ZipFile(str(p))
-        except Exception:
+        except (zipfile.BadZipFile, OSError):
             logger.warning("EpubProcessor: could not read %s", storage_path, exc_info=True)
             return artifacts
         try:
-            # Find the OPF file via container.xml
-            opf_path = None
             try:
-                container = ET.fromstring(zf.read("META-INF/container.xml"))
-                ns = {"c": "urn:oasis:names:tc:opendocument:xmlns:container"}
-                rootfile = container.find("c:rootfiles/c:rootfile", ns)
-                if rootfile is not None:
-                    opf_path = rootfile.get("full-path")
-            except Exception:
-                pass
-            # Spine order from OPF, else alphabetical XHTML
-            ordered: list[str] = []
-            if opf_path:
-                try:
-                    opf = ET.fromstring(zf.read(opf_path))
-                    opf_ns = {"o": "http://www.idpf.org/2007/opf"}
-                    base = str(Path(opf_path).parent)
-                    id_to_href: dict[str, str] = {}
-                    for item_el in opf.findall(".//o:manifest/o:item", opf_ns):
-                        if item_el.get("media-type") in ("application/xhtml+xml", "text/html"):
-                            href = item_el.get("href", "")
-                            full = f"{base}/{href}" if base not in ("", ".") else href
-                            id_to_href[item_el.get("id", "")] = full
-                    for ref in opf.findall(".//o:spine/o:itemref", opf_ns):
-                        href = id_to_href.get(ref.get("idref", ""))
-                        if href:
-                            ordered.append(href)
-                except Exception:
-                    pass
-            if not ordered:
-                ordered = sorted(
-                    n for n in zf.namelist()
-                    if n.lower().endswith((".xhtml", ".html", ".htm"))
-                )
-            parts: list[str] = []
-            for name in ordered:
-                try:
-                    raw = zf.read(name)
-                except KeyError:
-                    continue
-                try:
-                    root = ET.fromstring(raw)
-                except ET.ParseError:
-                    continue
-                # Strip tags, keep text (namespace-agnostic)
-                texts: list[str] = []
-                for el in root.iter():
-                    if el.text and el.text.strip():
-                        texts.append(el.text.strip())
-                    if el.tail and el.tail.strip():
-                        texts.append(el.tail.strip())
-                if texts:
-                    parts.append(" ".join(texts))
+                parts = self._extract_chapters(zf)
+            except EpubSecurityError as exc:
+                logger.error("EpubProcessor: rejected %s: %s", storage_path, exc)
+                return artifacts
             if not parts:
                 return artifacts
             text_content = "\n\n".join(parts)
@@ -528,6 +550,98 @@ class EpubProcessor(Processor):
             return artifacts
         finally:
             zf.close()
+
+    @staticmethod
+    def _extract_chapters(zf) -> list[str]:
+        """Return one text blob per chapter, in spine order when available.
+
+        Raises :class:`EpubSecurityError` when the archive busts a
+        decompression cap or any XML document declares a DTD/entity.
+        """
+        import xml.etree.ElementTree as ET  # noqa: S314 -- names the parse-error type only
+
+        # ET.ParseError derives from SyntaxError, defusedxml's errors from
+        # ValueError; both mean "this document is unusable".
+        xml_errors = (ValueError, ET.ParseError)
+
+        _check_epub_envelope(zf)
+
+        # Find the OPF file via container.xml
+        opf_path = None
+        try:
+            container = _parse_epub_xml(
+                _read_epub_entry(zf, "META-INF/container.xml", EPUB_MAX_ENTRY_BYTES)
+            )
+            ns = {"c": "urn:oasis:names:tc:opendocument:xmlns:container"}
+            rootfile = container.find("c:rootfiles/c:rootfile", ns)
+            if rootfile is not None:
+                opf_path = rootfile.get("full-path")
+        except KeyError:
+            logger.debug("EpubProcessor: no META-INF/container.xml")
+        except xml_errors as exc:
+            logger.debug("EpubProcessor: unreadable container.xml: %s", exc)
+
+        # Spine order from OPF, else alphabetical XHTML
+        ordered: list[str] = []
+        if opf_path:
+            try:
+                opf = _parse_epub_xml(
+                    _read_epub_entry(zf, opf_path, EPUB_MAX_ENTRY_BYTES)
+                )
+                opf_ns = {"o": "http://www.idpf.org/2007/opf"}
+                base = str(Path(opf_path).parent)
+                id_to_href: dict[str, str] = {}
+                for item_el in opf.findall(".//o:manifest/o:item", opf_ns):
+                    if item_el.get("media-type") in ("application/xhtml+xml", "text/html"):
+                        href = item_el.get("href", "")
+                        full = f"{base}/{href}" if base not in ("", ".") else href
+                        id_to_href[item_el.get("id", "")] = full
+                for ref in opf.findall(".//o:spine/o:itemref", opf_ns):
+                    href = id_to_href.get(ref.get("idref", ""))
+                    if href:
+                        ordered.append(href)
+            except KeyError:
+                logger.debug("EpubProcessor: OPF %s missing from archive", opf_path)
+            except xml_errors as exc:
+                logger.debug("EpubProcessor: unreadable OPF %s: %s", opf_path, exc)
+        if not ordered:
+            ordered = sorted(
+                n for n in zf.namelist()
+                if n.lower().endswith((".xhtml", ".html", ".htm"))
+            )
+
+        parts: list[str] = []
+        consumed = 0
+        for name in ordered:
+            remaining = EPUB_MAX_TOTAL_BYTES - consumed
+            if remaining <= 0:
+                raise EpubSecurityError(
+                    f"decompressed content exceeds the cap of {EPUB_MAX_TOTAL_BYTES} bytes"
+                )
+            try:
+                raw = _read_epub_entry(
+                    zf, name, min(EPUB_MAX_ENTRY_BYTES, remaining)
+                )
+            except KeyError:
+                continue
+            consumed += len(raw)
+            try:
+                root = _parse_epub_xml(raw)
+            except xml_errors:
+                # One malformed chapter must not abort the whole book; a DTD
+                # or entity declaration is fatal and raised above instead.
+                logger.debug("EpubProcessor: skipping unparseable chapter %s", name)
+                continue
+            # Strip tags, keep text (namespace-agnostic)
+            texts: list[str] = []
+            for el in root.iter():
+                if el.text and el.text.strip():
+                    texts.append(el.text.strip())
+                if el.tail and el.tail.strip():
+                    texts.append(el.tail.strip())
+            if texts:
+                parts.append(" ".join(texts))
+        return parts
 
 
 class ImageProcessor(Processor):

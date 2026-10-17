@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import tempfile
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from tinyagentos.library_pipeline import (
     WebProcessor,
     YouTubeProcessor,
     detect_kind,
+    get_processor,
     run_pipeline,
     _extract_readable_text,
 )
@@ -1896,13 +1898,13 @@ def _mock_stream_callable(mock_resp):
 
 class TestDocxProcessor:
     @pytest.mark.asyncio
-    async def test_extract_docx(self, lib_store, storage_dir):
+    async def test_extract_docx(self, lib_store, storage_dir, tmp_path):
         pytest.importorskip(
             "docx",
             reason="python-docx is the optional `library` extra; CI shards install no extras",
         )
         from docx import Document
-        file_path = storage_dir / "doc.docx"
+        file_path = tmp_path / "doc.docx"
         doc = Document()
         doc.add_paragraph("Hello DOCX world")
         doc.add_paragraph("Second paragraph here")
@@ -1931,14 +1933,14 @@ class TestDocxProcessor:
 
 class TestPptxProcessor:
     @pytest.mark.asyncio
-    async def test_extract_pptx(self, lib_store, storage_dir):
+    async def test_extract_pptx(self, lib_store, storage_dir, tmp_path):
         pytest.importorskip(
             "pptx",
             reason="python-pptx is the optional `library` extra; CI shards install no extras",
         )
         from pptx import Presentation
         from pptx.util import Inches
-        file_path = storage_dir / "deck.pptx"
+        file_path = tmp_path / "deck.pptx"
         prs = Presentation()
         slide = prs.slides.add_slide(prs.slide_layouts[5])
         slide.shapes.title.text = "Hello PPTX world"
@@ -1962,13 +1964,13 @@ class TestPptxProcessor:
 
 class TestXlsxProcessor:
     @pytest.mark.asyncio
-    async def test_extract_xlsx(self, lib_store, storage_dir):
+    async def test_extract_xlsx(self, lib_store, storage_dir, tmp_path):
         pytest.importorskip(
             "openpyxl",
             reason="openpyxl is the optional `library` extra; CI shards install no extras",
         )
         import openpyxl
-        file_path = storage_dir / "data.xlsx"
+        file_path = tmp_path / "data.xlsx"
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Sheet1"
@@ -1998,9 +2000,9 @@ class TestXlsxProcessor:
 
 class TestEpubProcessor:
     @pytest.mark.asyncio
-    async def test_extract_epub(self, lib_store, storage_dir):
+    async def test_extract_epub(self, lib_store, storage_dir, tmp_path):
         import zipfile
-        file_path = storage_dir / "book.epub"
+        file_path = tmp_path / "book.epub"
         # Minimal EPUB: mimetype + container + OPF + 2 chapters
         container = """<?xml version="1.0" encoding="UTF-8"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
@@ -2035,3 +2037,243 @@ class TestEpubProcessor:
     @pytest.mark.asyncio
     async def test_epub_kind_detection(self):
         assert detect_kind(file_path="book.epub") == "epub"
+
+
+# ---------------------------------------------------------------------------
+# Legacy Office routing + EPUB hardening (review Majors 1 and 2)
+# ---------------------------------------------------------------------------
+
+_EPUB_CONTAINER_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>"""
+
+
+def _write_epub(path: Path, chapters: dict[str, str | bytes]) -> Path:
+    """Write a minimal EPUB at ``path``.
+
+    ``chapters`` maps a chapter stem to its XHTML payload, and the generated
+    OPF lists every stem in spine order.
+    """
+    import zipfile
+
+    stems = list(chapters)
+    manifest = "".join(
+        f'<item id="{stem}" href="{stem}.xhtml" media-type="application/xhtml+xml"/>'
+        for stem in stems
+    )
+    spine = "".join(f'<itemref idref="{stem}"/>' for stem in stems)
+    opf = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<package xmlns="http://www.idpf.org/2007/opf" version="2.0">'
+        f"<manifest>{manifest}</manifest><spine>{spine}</spine></package>"
+    )
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("mimetype", "application/epub+zip")
+        zf.writestr("META-INF/container.xml", _EPUB_CONTAINER_XML)
+        zf.writestr("OEBPS/content.opf", opf)
+        for stem, payload in chapters.items():
+            zf.writestr(f"OEBPS/{stem}.xhtml", payload)
+    return path
+
+
+class TestLegacyOfficeRouting:
+    """RED PROOF (review Major 1): .doc/.ppt/.xls must not be handed to the
+    OOXML processors, which cannot read them and returned no artifacts at all.
+    They fall back to kind "file" and FileProcessor."""
+
+    def test_legacy_extensions_detect_as_plain_file(self):
+        for ext in (".doc", ".ppt", ".xls"):
+            assert detect_kind(file_path=f"legacy{ext}") == "file"
+
+    def test_legacy_mime_types_detect_as_plain_file(self):
+        for ct in (
+            "application/msword",
+            "application/vnd.ms-powerpoint",
+            "application/vnd.ms-excel",
+        ):
+            assert detect_kind(content_type=ct) == "file"
+
+    def test_legacy_extensions_use_file_processor(self):
+        for ext in (".doc", ".ppt", ".xls"):
+            kind = detect_kind(file_path=f"legacy{ext}")
+            proc = get_processor(kind, store=None, storage_dir=Path("."))
+            assert type(proc) is FileProcessor
+
+    @pytest.mark.asyncio
+    async def test_legacy_doc_still_records_metadata(self, lib_store, storage_dir, tmp_path):
+        """A .doc upload keeps the metadata artifact FileProcessor used to
+        produce -- the regression the OOXML mis-routing caused."""
+        legacy = tmp_path / "letter.doc"
+        legacy.write_bytes(b"\xd0\xcf\x11\xe0 legacy OLE2 payload")
+        item_id = await lib_store.create_item(
+            kind=detect_kind(file_path=str(legacy)),
+            title=legacy.name,
+            storage_path=str(legacy),
+        )
+        item = await lib_store.get_item(item_id)
+        proc = get_processor(item["kind"], lib_store, storage_dir)
+        artifacts = await proc.process(item)
+        assert len(artifacts) == 1
+        assert artifacts[0]["kind"] == "metadata"
+        assert artifacts[0]["meta"]["size_bytes"] == legacy.stat().st_size
+
+
+class TestEpubHardening:
+    """RED PROOF (review Major 2): untrusted EPUBs must not be able to make
+    the processor materialise unbounded data or expand XML entities."""
+
+    @pytest.mark.asyncio
+    async def test_zip_bomb_rejected(self, lib_store, storage_dir, tmp_path, caplog):
+        """A tiny EPUB whose chapter declares more than the per-entry cap is
+        rejected instead of being decompressed in full."""
+        from tinyagentos.library_pipeline import EPUB_MAX_ENTRY_BYTES, EpubProcessor
+
+        payload = (
+            "<html><body><p>"
+            + ("0" * (EPUB_MAX_ENTRY_BYTES + 1024))
+            + "</p></body></html>"
+        )
+        bomb = _write_epub(tmp_path / "bomb.epub", {
+            "ch1": payload,
+            "ch2": "<html><body><p>Clean chapter</p></body></html>",
+        })
+        # The archive on disk is thousands of times smaller than its payload.
+        assert bomb.stat().st_size < EPUB_MAX_ENTRY_BYTES // 100
+
+        item_id = await lib_store.create_item(
+            kind="epub", title="bomb.epub", storage_path=str(bomb),
+        )
+        item = await lib_store.get_item(item_id)
+        with caplog.at_level(logging.ERROR):
+            artifacts = await EpubProcessor(lib_store, storage_dir).process(item)
+
+        assert artifacts == []
+        assert not (storage_dir / "text").exists()
+        assert "rejected" in caplog.text
+        assert "cap" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_total_bytes_cap_rejected(
+        self, lib_store, storage_dir, tmp_path, caplog, monkeypatch,
+    ):
+        """Several chapters that are each under the per-entry cap but together
+        exceed the total cap are rejected mid-archive."""
+        import tinyagentos.library_pipeline as library_pipeline
+
+        monkeypatch.setattr(library_pipeline, "EPUB_MAX_ENTRY_BYTES", 1024 * 1024)
+        monkeypatch.setattr(library_pipeline, "EPUB_MAX_TOTAL_BYTES", 2 * 1024 * 1024)
+        filler = "1" * (1024 * 1024)
+        book = _write_epub(tmp_path / "wide.epub", {
+            "ch1": f"<html><body><p>{filler}</p></body></html>",
+            "ch2": f"<html><body><p>{filler}</p></body></html>",
+            "ch3": f"<html><body><p>{filler}</p></body></html>",
+        })
+        item_id = await lib_store.create_item(
+            kind="epub", title="wide.epub", storage_path=str(book),
+        )
+        item = await lib_store.get_item(item_id)
+        with caplog.at_level(logging.ERROR):
+            artifacts = await library_pipeline.EpubProcessor(
+                lib_store, storage_dir,
+            ).process(item)
+        assert artifacts == []
+        assert "rejected" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_entry_count_cap_rejected(
+        self, lib_store, storage_dir, tmp_path, caplog, monkeypatch,
+    ):
+        """An archive with more entries than the cap is rejected before any
+        chapter is read."""
+        import tinyagentos.library_pipeline as library_pipeline
+
+        monkeypatch.setattr(library_pipeline, "EPUB_MAX_ENTRIES", 3)
+        chapters = {
+            f"ch{i}": f"<html><body><p>chapter {i}</p></body></html>"
+            for i in range(6)
+        }
+        book = _write_epub(tmp_path / "many.epub", chapters)
+        item_id = await lib_store.create_item(
+            kind="epub", title="many.epub", storage_path=str(book),
+        )
+        item = await lib_store.get_item(item_id)
+        with caplog.at_level(logging.ERROR):
+            artifacts = await library_pipeline.EpubProcessor(
+                lib_store, storage_dir,
+            ).process(item)
+        assert artifacts == []
+        assert "entries exceeds the cap" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_xxe_external_entity_not_resolved(
+        self, lib_store, storage_dir, tmp_path, caplog,
+    ):
+        """An XHTML chapter declaring an external entity must not read the
+        file it points at, and must not silently pass through as text."""
+        from tinyagentos.library_pipeline import EpubProcessor
+
+        secret = tmp_path / "secret.txt"
+        secret.write_text("SECRET_XXE_TOKEN")
+        xxe_chapter = (
+            '<?xml version="1.0"?>'
+            f'<!DOCTYPE html [<!ENTITY xxe SYSTEM "file://{secret}">]>'
+            "<html><body><p>&xxe;</p></body></html>"
+        )
+        book = _write_epub(tmp_path / "xxe.epub", {
+            "ch1": xxe_chapter,
+            "ch2": "<html><body><p>Clean chapter</p></body></html>",
+        })
+        item_id = await lib_store.create_item(
+            kind="epub", title="xxe.epub", storage_path=str(book),
+        )
+        item = await lib_store.get_item(item_id)
+        with caplog.at_level(logging.ERROR):
+            artifacts = await EpubProcessor(lib_store, storage_dir).process(item)
+
+        assert artifacts == []
+        text_dir = storage_dir / "text"
+        written = (
+            "".join(p.read_text() for p in text_dir.glob("*"))
+            if text_dir.exists() else ""
+        )
+        assert "SECRET_XXE_TOKEN" not in written
+        assert "Clean chapter" not in written  # whole upload rejected, not half-read
+        assert "rejected" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_entity_expansion_not_performed(
+        self, lib_store, storage_dir, tmp_path, caplog,
+    ):
+        """Billion-laughs style internal entities must not be expanded: the
+        stdlib parser would have expanded them into the extracted text."""
+        from tinyagentos.library_pipeline import EpubProcessor
+
+        laughs = (
+            '<?xml version="1.0"?>'
+            '<!DOCTYPE html ['
+            '<!ENTITY a "LOL">'
+            '<!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;">'
+            '<!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;">'
+            ']>'
+            "<html><body><p>&c;</p></body></html>"
+        )
+        book = _write_epub(tmp_path / "laughs.epub", {
+            "ch1": laughs,
+            "ch2": "<html><body><p>Clean chapter</p></body></html>",
+        })
+        item_id = await lib_store.create_item(
+            kind="epub", title="laughs.epub", storage_path=str(book),
+        )
+        item = await lib_store.get_item(item_id)
+        with caplog.at_level(logging.ERROR):
+            artifacts = await EpubProcessor(lib_store, storage_dir).process(item)
+
+        assert artifacts == []
+        text_dir = storage_dir / "text"
+        written = (
+            "".join(p.read_text() for p in text_dir.glob("*"))
+            if text_dir.exists() else ""
+        )
+        assert "LOL" not in written
+        assert "rejected" in caplog.text
