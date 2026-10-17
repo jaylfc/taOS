@@ -839,15 +839,45 @@ async def search_messages(
     if not q or len(q) < 2:
         return {"results": [], "query": q}
     msg_store = request.app.state.chat_messages
-    results = await msg_store.search(q, channel_id=channel_id, limit=limit)
     ch_store = request.app.state.chat_channels
-    readable: dict[str, bool] = {}
-    for r in results:
-        cid = r.get("channel_id")
-        if cid not in readable:
-            ch = await ch_store.get_channel(cid) if cid else None
-            readable[cid] = caller_can_read_channel(request, ch or {})
-    results = [r for r in results if readable[r.get("channel_id")]]
+
+    # Determine readable channels
+    is_admin = getattr(request.state, "is_admin", False)
+    via = getattr(request.state, "via", None)
+    user_id = getattr(request.state, "user_id", None)
+    if is_admin or via == "local_token":
+        # Can read all channels
+        readable_set = None
+    else:
+        if user_id is None:
+            readable_set = set()
+        else:
+            # Get channels where user is a member
+            channels = await ch_store.list_channels(member_id=str(user_id))
+            readable_set = {ch["id"] for ch in channels}
+
+    # Apply channel_id restriction if provided
+    if channel_id is not None:
+        if readable_set is None:
+            # Admin/local_token can read any channel, so restrict to the given channel
+            channel_ids = [channel_id]
+        else:
+            # Intersection: only if the channel is readable
+            if channel_id in readable_set:
+                channel_ids = [channel_id]
+            else:
+                channel_ids = []  # empty -> no results
+    else:
+        if readable_set is None:
+            channel_ids = None
+        else:
+            channel_ids = list(readable_set) if readable_set else []
+
+    # If channel_ids is empty list, we can return early
+    if channel_ids == []:
+        return {"results": [], "query": q}
+
+    results = await msg_store.search(q, channel_ids=channel_ids, limit=limit)
     return {"results": results, "query": q}
 
 

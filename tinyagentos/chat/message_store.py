@@ -778,12 +778,17 @@ class ChatMessageStore(BaseStore):
         query: str,
         channel_id: str | None = None,
         author_id: str | None = None,
+        channel_ids: list[str] | None = None,
         limit: int = 50,
     ) -> list[dict]:
         pattern = f"%{query}%"
         conditions = ["content LIKE ?"]
         params: list = [pattern]
-        if channel_id is not None:
+        if channel_ids is not None:
+            placeholders = ",".join(["?"] * len(channel_ids))
+            conditions.append(f"channel_id IN ({placeholders})")
+            params.extend(channel_ids)
+        elif channel_id is not None:
             conditions.append("channel_id = ?")
             params.append(channel_id)
         if author_id is not None:

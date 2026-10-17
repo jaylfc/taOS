@@ -150,3 +150,38 @@ async def test_v1_channel_list_member_sees_preview(client, app):
     mine = [c for c in resp.json()["channels"] if c["id"] == ch["id"]]
     assert len(mine) == 1
     assert "zebracorn" in mine[0]["last_preview"]
+
+
+@pytest.mark.asyncio
+async def test_search_limit_respects_readable_channels_before_limit(client, app):
+    limit = 5
+    query = "testsearch123"
+    # Create a readable channel where the user is a member
+    member_client, member_uid = await _member_client(app)
+    ch_readable = await app.state.chat_channels.create_channel(
+        name="readable", type="public", created_by="user", members=["user", member_uid]
+    )
+    # Create a channel that the user is NOT a member of
+    ch_unreadable = await app.state.chat_channels.create_channel(
+        name="unreadable", type="public", created_by="user", members=["other-user", "agent-b"]
+    )
+    try:
+        # Send 1 matching message to the readable channel (older)
+        await app.state.chat_messages.send_message(
+            ch_readable["id"], "user", "user", f"{query} older",
+        )
+        # Send limit matching messages to the unreadable channel (newer)
+        for i in range(limit):
+            await app.state.chat_messages.send_message(
+                ch_unreadable["id"], "user", "user", f"{query} {i}",
+            )
+        # Perform search as the member user
+        resp = await member_client.get("/api/chat/search", params={"q": query, "limit": limit})
+        assert resp.status_code == 200, resp.text
+        results = resp.json()["results"]
+        # Expect exactly one result (the readable channel message)
+        assert len(results) == 1
+        assert results[0]["content"] == f"{query} older"
+        assert results[0]["channel_id"] == ch_readable["id"]
+    finally:
+        await member_client.aclose()
