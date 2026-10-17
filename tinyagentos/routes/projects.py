@@ -470,7 +470,16 @@ async def _revoke_cloud_agent_identity(
     if record is None or record.get("status") == "revoked":
         return
     before_status = record.get("status") or "active"
-    await registry.revoke(canonical_id)
+    try:
+        await registry.revoke(canonical_id)
+    except ValueError:
+        # Re-read to handle concurrent revoke during cloud_agent member removal
+        record = await registry.get(canonical_id)
+        if record is None or record.get("status") == "revoked":
+            # The revoke already happened, continue to remove_member
+            return
+        # Re-raise if the status hasn't changed
+        raise
     await _audit_governance(
         request,
         action="revoke",

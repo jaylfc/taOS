@@ -76,6 +76,30 @@ async def _tasks_with_token(client, pid, token):
 
 
 @pytest.mark.asyncio
+async def test_concurrent_revoke_race(client, app, monkeypatch, tmp_path):
+    """Concurrent revoke during cloud_agent member removal should succeed (tsk-diqvyc)."""
+    await _setup_agent_ecosystem(app, monkeypatch, tmp_path)
+    monkeypatch.setenv("TAOS_CONTROLLER_RELAY_URL", "https://relay.example.test")
+    pid = await _create_project(client, slug="concur")
+    cid, _token = await _invite_and_redeem(client, pid, kind="cloud_agent")
+    
+    # Step 1: Revoke the cloud_agent identity via the registry store directly
+    # This simulates the concurrent DELETE /api/agents/registry/{id} 
+    registry = app.state.agent_registry
+    await registry.revoke(cid)
+    
+    # Step 2: Now call DELETE /api/projects/{pid}/members/{member_id}
+    # The fix in _revoke_cloud_agent_identity should handle this race condition
+    resp = await client.delete(f"/api/projects/{pid}/members/{cid}")
+    assert resp.status_code == 200, resp.text
+    
+    # Step 3: Assert the member is gone (remove_member succeeded)
+    members = await app.state.project_store.list_members(pid)
+    assert cid not in {m["member_id"] for m in members}
+    assert cid in await _revoked_ids(client)
+
+
+@pytest.mark.asyncio
 async def test_remove_cloud_agent_member_revokes_its_token(client, app, monkeypatch, tmp_path):
     await _setup_agent_ecosystem(app, monkeypatch, tmp_path)
     monkeypatch.setenv("TAOS_CONTROLLER_RELAY_URL", "https://relay.example.test")
