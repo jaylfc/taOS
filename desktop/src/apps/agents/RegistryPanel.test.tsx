@@ -945,3 +945,289 @@ describe("RegistryPanel pending scope requests", () => {
     );
   }, 10_000);
 });
+
+/* ------------------------------------------------------------------ */
+/*  Project grants panel (per-project / per-scope revoke)               */
+/* ------------------------------------------------------------------ */
+
+describe("RegistryPanel project grants", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function makeGrantsFetch(
+    grants: Array<Record<string, unknown>>,
+    opts: {
+      isAdmin?: boolean;
+      ownerId?: string;
+      revoke?: { ok: boolean; status?: number; body?: unknown; scopes?: string[] };
+    } = {},
+  ) {
+    const isAdmin = opts.isAdmin ?? true;
+    return vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (url === "/auth/status") {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ user: { is_admin: isAdmin, id: "user-1" } }),
+        });
+      }
+      if (url === "/api/agents/registry") {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve([
+              { ...fakeEntry, user_id: opts.ownerId ?? "user-1" },
+            ]),
+        });
+      }
+      if (url.includes("/api/agents/registry/grants")) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ grants }),
+        });
+      }
+      if (url.includes("/members/revoke-agent")) {
+        expect(init?.method).toBe("POST");
+        expect(JSON.parse(String(init?.body))).toEqual({
+          canonical_id: fakeEntry.canonical_id,
+          scopes: opts.revoke?.scopes ?? ["project_tasks"],
+        });
+        if (opts.revoke && !opts.revoke.ok) {
+          return Promise.resolve({
+            ok: false,
+            status: opts.revoke.status ?? 403,
+            json: () => Promise.resolve(opts.revoke?.body ?? {}),
+          });
+        }
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ revoked: [] }) });
+      }
+      // Pending scope requests and anything else: empty, non-erroring payload.
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+  }
+
+  const projectGrant = {
+    canonical_id: fakeEntry.canonical_id,
+    scope: "project_tasks",
+    tier: "once",
+    project_id: "proj-42",
+    granted_at: "2026-01-01T00:00:00Z",
+    expires_at: null,
+  };
+
+  it("lists an agent's project-bound grants and offers a per-scope revoke", async () => {
+    vi.stubGlobal("fetch", makeGrantsFetch([projectGrant]));
+
+    render(<RegistryPanel />);
+    const toggle = screen.getByRole("button", { name: /agent registry/i });
+    await act(async () => {
+      toggle.click();
+    });
+
+    await waitFor(
+      () => {
+        expect(
+          screen.getByRole("region", { name: /project grants for taOSmd-dev/i }),
+        ).toBeInTheDocument();
+      },
+      { timeout: 3000 },
+    );
+
+    // Grouped under its project, scope shown, revoke affordance present.
+    expect(screen.getByText("Project: proj-42")).toBeInTheDocument();
+    expect(screen.getByText("project_tasks")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /revoke project_tasks from taOSmd-dev/i }),
+    ).toBeInTheDocument();
+  }, 10_000);
+
+  it("revokes one named scope on one project and reloads the panel", async () => {
+    const mockFetch = makeGrantsFetch([projectGrant]);
+    vi.stubGlobal("fetch", mockFetch);
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<RegistryPanel />);
+    const toggle = screen.getByRole("button", { name: /agent registry/i });
+    await act(async () => {
+      toggle.click();
+    });
+
+    const revokeBtn = await screen.findByRole(
+      "button",
+      { name: /revoke project_tasks from taOSmd-dev/i },
+      { timeout: 3000 },
+    );
+    await act(async () => {
+      revokeBtn.click();
+    });
+
+    expect(confirmSpy).toHaveBeenCalled();
+    const revokeCalls = mockFetch.mock.calls.filter((c: unknown[]) =>
+      String(c[0]).includes("/members/revoke-agent"),
+    );
+    expect(revokeCalls.length).toBe(1);
+    expect(String(revokeCalls[0][0])).toBe(
+      "/api/projects/proj-42/members/revoke-agent",
+    );
+
+    // The panel refetches after a revoke so the row disappears from view.
+    await waitFor(
+      () => {
+        const grantFetches = mockFetch.mock.calls.filter((c: unknown[]) =>
+          String(c[0]).includes("/api/agents/registry/grants"),
+        );
+        expect(grantFetches.length).toBeGreaterThan(1);
+      },
+      { timeout: 3000 },
+    );
+  }, 10_000);
+
+  it("marks an expired grant, hides its revoke button, and titles time-boxed grants", async () => {
+    // The admin ?canonical_id= feed is unfiltered: expired rows come back and
+    // must not read as live grants with a revoke button.
+    const expiredGrant = {
+      ...projectGrant,
+      scope: "memory_read",
+      expires_at: "2020-01-01T00:00:00Z",
+    };
+    const timeBoxedGrant = {
+      ...projectGrant,
+      scope: "project_tasks",
+      expires_at: "2099-01-01T00:00:00Z",
+    };
+    vi.stubGlobal("fetch", makeGrantsFetch([expiredGrant, timeBoxedGrant]));
+
+    render(<RegistryPanel />);
+    const toggle = screen.getByRole("button", { name: /agent registry/i });
+    await act(async () => {
+      toggle.click();
+    });
+
+    await waitFor(
+      () => {
+        expect(
+          screen.getByRole("region", { name: /project grants for taOSmd-dev/i }),
+        ).toBeInTheDocument();
+      },
+      { timeout: 3000 },
+    );
+
+    // The expired scope is labelled and offers no revoke control.
+    expect(screen.getByText("memory_read")).toBeInTheDocument();
+    expect(screen.getByText("expired")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /revoke memory_read from taOSmd-dev/i }),
+    ).not.toBeInTheDocument();
+
+    // The live, time-boxed grant keeps its revoke control and shows its expiry
+    // in the row title.
+    expect(
+      screen.getByRole("button", { name: /revoke project_tasks from taOSmd-dev/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("project_tasks").parentElement).toHaveAttribute(
+      "title",
+      expect.stringContaining("2099-01-01T00:00:00Z"),
+    );
+  }, 10_000);
+
+  it("surfaces the server's detail message when a revoke is rejected", async () => {
+    // The revoke route raises HTTPException, so the body is {"detail": ...};
+    // reading only "error" reduced every 400/403/404 to a bare status code.
+    vi.stubGlobal(
+      "fetch",
+      makeGrantsFetch([projectGrant], {
+        revoke: { ok: false, status: 403, body: { detail: "forbidden" } },
+      }),
+    );
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<RegistryPanel />);
+    const toggle = screen.getByRole("button", { name: /agent registry/i });
+    await act(async () => {
+      toggle.click();
+    });
+
+    const revokeBtn = await screen.findByRole(
+      "button",
+      { name: /revoke project_tasks from taOSmd-dev/i },
+      { timeout: 3000 },
+    );
+    await act(async () => {
+      revokeBtn.click();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent("forbidden");
+    });
+    expect(screen.getByRole("alert")).not.toHaveTextContent("HTTP 403");
+  }, 10_000);
+
+  it("keys the busy state on project and scope, not on the scope alone", async () => {
+    // The same scope can be held on several projects: a revoke in flight on
+    // one must not disable the same-named scope on another.
+    const grantA = { ...projectGrant, project_id: "proj-a" };
+    const grantB = { ...projectGrant, project_id: "proj-b" };
+    const baseFetch = makeGrantsFetch([grantA, grantB]);
+    let releaseRevoke: (() => void) | null = null;
+    const mockFetch = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes("/members/revoke-agent")) {
+        return new Promise((resolve) => {
+          releaseRevoke = () =>
+            resolve({ ok: true, json: () => Promise.resolve({ revoked: [] }) });
+        });
+      }
+      return baseFetch(url, init);
+    });
+    vi.stubGlobal("fetch", mockFetch);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<RegistryPanel />);
+    const toggle = screen.getByRole("button", { name: /agent registry/i });
+    await act(async () => {
+      toggle.click();
+    });
+
+    const revokeButtons = await screen.findAllByRole(
+      "button",
+      { name: /revoke project_tasks from taOSmd-dev/i },
+      { timeout: 3000 },
+    );
+    expect(revokeButtons.length).toBe(2);
+    const [btnA, btnB] = revokeButtons;
+
+    await act(async () => {
+      btnA.click();
+    });
+
+    expect(btnA).toBeDisabled();
+    expect(btnB).toBeEnabled();
+
+    await act(async () => {
+      releaseRevoke?.();
+      await Promise.resolve();
+    });
+  }, 10_000);
+
+  it("does not render the panel for a non-admin owner (the feed is admin-only)", async () => {
+    // The owner owns the entry but is not an admin. The grants feed would 403,
+    // so the panel must not be rendered at all rather than surface an error.
+    vi.stubGlobal("fetch", makeGrantsFetch([projectGrant], { isAdmin: false, ownerId: "user-1" }));
+
+    render(<RegistryPanel />);
+    const toggle = screen.getByRole("button", { name: /agent registry/i });
+    await act(async () => {
+      toggle.click();
+    });
+
+    await waitFor(
+      () => {
+        expect(screen.getByText("taOSmd-dev")).toBeInTheDocument();
+      },
+      { timeout: 3000 },
+    );
+
+    expect(
+      screen.queryByRole("region", { name: /project grants for/i }),
+    ).not.toBeInTheDocument();
+  }, 10_000);
+});
