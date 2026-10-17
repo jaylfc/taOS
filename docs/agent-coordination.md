@@ -1970,6 +1970,17 @@ where `revoked=0 OR blocked=1`, so a blocked device counts against
 and the slot frees. Deliberate: a blocked device is a retained safety valve the
 owner can still see and act on.
 
+## Cluster worker list (`GET /api/cluster/workers`)
+
+Auth-exempt. Anonymous callers get a stripped view (`name`, `status`,
+`tier_id`, `kind`). A valid bearer token on this exempt GET upgrades the
+caller to the full view: a local token authenticates as the primary user
+(admin only once a primary user exists), a device token holding
+`agents:read` gets the full worker objects without admin, and a registry
+JWT from an active agent gets them too. A device token without
+`agents:read`, and any invalid token, stay anonymous. `signing_key` is
+stripped for everyone.
+
 ## Cluster capability + placement map (`GET /api/cluster/map`, admin-only)
 
 Route module `tinyagentos/routes/cluster_map.py`. **Admin session only**: the
