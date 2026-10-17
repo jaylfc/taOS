@@ -14,6 +14,11 @@
 #   taos-deploy-helper.sh install-rknpu
 #   taos-deploy-helper.sh update-worker
 #   taos-deploy-helper.sh status
+#   taos-deploy-helper.sh checkpoint
+#   taos-deploy-helper.sh rollback [<tag>]
+#   taos-deploy-helper.sh restart-self
+#   taos-deploy-helper.sh restart-and-verify [<tag>]
+#   taos-deploy-helper.sh health-check
 #
 # Security: this script is allowlisted in sudoers with a fixed path and
 # only the commands below are reachable. The worker cannot execute
@@ -23,6 +28,11 @@ set -euo pipefail
 INSTALL_DIR="${TAOS_INSTALL_DIR:-$HOME/.local/share/tinyagentos-worker}"
 REPO="${TAOS_REPO:-https://github.com/jaylfc/tinyagentos}"
 BRANCH="${TAOS_BRANCH:-master}"
+
+# Absolute path to this script.  A detached job (see _schedule_detached) runs
+# in its own process, so it has to re-invoke the helper by path rather than by
+# calling one of the shell functions below.
+SELF_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
 log() { printf '[taos-deploy] %s\n' "$*"; }
 die() { printf '[taos-deploy] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -325,59 +335,73 @@ _restart_service_by_name() {
     return 1
 }
 
-_detached_restart_worker() {
-    # Build an at(1) script that restarts via both system and user scope,
-    # because atd runs as the original user and can reach --user services.
-    local restart_script
-    restart_script="systemctl restart tinyagentos-worker.service 2>/dev/null || systemctl restart taos-worker.service 2>/dev/null || systemctl --user restart tinyagentos-worker.service 2>/dev/null || systemctl --user restart taos-worker.service 2>/dev/null || true"
+# Schedule a shell command to run detached from the worker's systemd cgroup.
+# Rungs, in order: at(1) -> systemd-run --scope -> inline.  The inline rung
+# races with cgroup teardown, but it is only reached when neither detach
+# mechanism is usable.
+_schedule_detached() {
+    local body="$1"
 
-    # 1 — at(1): schedules the restart after the helper exits (cleanest).
+    # 1 -- at(1): schedules the command after the helper exits (cleanest).
     if command -v at >/dev/null 2>&1; then
-        # Only trust at(1) if the atd daemon is actually running —
+        # Only trust at(1) if the atd daemon is actually running --
         # ``at now`` exits 0 even when atd is stopped (CodeRabbit, Jul 31).
         if systemctl is-active --quiet atd 2>/dev/null || systemctl is-active --quiet atd.service 2>/dev/null; then
-            if echo "$restart_script" | at now 2>/dev/null; then
-                log "worker restart scheduled via at(1)"
+            if echo "$body" | at now 2>/dev/null; then
+                log "detached job scheduled via at(1)"
                 return 0
             fi
         fi
     fi
 
-    # 2 — systemd-run --scope: runs outside the service cgroup.
+    # 2 -- systemd-run --scope: runs outside the service cgroup.
     if command -v systemd-run >/dev/null 2>&1; then
-        # Direct systemctl via systemd-run (system scope).
-        if systemd-run --scope --no-block systemctl restart tinyagentos-worker.service 2>/dev/null; then
-            log "worker restart dispatched via systemd-run"
-            return 0
-        fi
-        if systemd-run --scope --no-block systemctl restart taos-worker.service 2>/dev/null; then
-            log "worker restart dispatched via systemd-run (taos-worker)"
-            return 0
-        fi
-        # Try --user scope via systemd-run.
-        if systemd-run --scope --no-block systemctl --user restart tinyagentos-worker.service 2>/dev/null; then
-            log "worker restart dispatched via systemd-run --user"
-            return 0
-        fi
-        if systemd-run --scope --no-block systemctl --user restart taos-worker.service 2>/dev/null; then
-            log "worker restart dispatched via systemd-run --user (taos-worker)"
+        if systemd-run --scope --no-block bash -c "$body" 2>/dev/null; then
+            log "detached job dispatched via systemd-run"
             return 0
         fi
     fi
 
-    # 3 — Last resort: --no-block may race with cgroup teardown, but the
-    #     helper returns immediately so it often wins.
-    if _restart_service_by_name "tinyagentos-worker.service"; then
-        log "worker restart dispatched via systemctl --no-block"
-        return 0
-    fi
-    if _restart_service_by_name "taos-worker.service"; then
-        log "worker restart dispatched via systemctl --no-block (taos-worker)"
-        return 0
-    fi
+    # 3 -- Last resort: run the job inline.  It may race with cgroup teardown,
+    #     but the helper returns immediately so it often wins.
+    log "WARN: could not detach job -- running inline"
+    bash -c "$body"
+}
 
-    log "WARN: could not restart worker service via any mechanism"
-    return 1
+# Shell command that restarts the worker service in either scope (system and
+# --user).  Self-contained so it can be the payload of a detached job, which
+# runs in its own process with no access to the functions in this script.
+_worker_restart_cmd() {
+    local cmd="systemctl restart tinyagentos-worker.service 2>/dev/null"
+    cmd+=" || systemctl restart taos-worker.service 2>/dev/null"
+    if [[ -n "${SUDO_USER:-}" ]]; then
+        cmd+=" || su -l '$SUDO_USER' -c 'systemctl --user restart tinyagentos-worker.service' 2>/dev/null"
+        cmd+=" || su -l '$SUDO_USER' -c 'systemctl --user restart taos-worker.service' 2>/dev/null"
+    fi
+    cmd+=" || systemctl --user restart tinyagentos-worker.service 2>/dev/null"
+    cmd+=" || systemctl --user restart taos-worker.service 2>/dev/null"
+    cmd+=" || true"
+    printf '%s' "$cmd"
+}
+
+_detached_restart_worker() {
+    _schedule_detached "$(_worker_restart_cmd)"
+}
+
+# Environment assignments for a detached job.  The job runs in its own process
+# with a different HOME and a minimal environment, so anything the helper
+# resolved from its own environment has to be carried across explicitly --
+# otherwise a worker on a non-default port or install dir would be probed (and
+# rolled back) against the wrong target.
+_worker_env_prefix() {
+    local prefix="TAOS_INSTALL_DIR=$(printf '%q' "$INSTALL_DIR")"
+    local var
+    for var in TAOS_WORKER_PORT TAOS_CHECKPOINT_MANIFEST TAOS_VENV; do
+        if [[ -n "${!var:-}" ]]; then
+            prefix+=" $var=$(printf '%q' "${!var}")"
+        fi
+    done
+    printf '%s' "$prefix"
 }
 
 cmd_rollback() {
@@ -440,8 +464,44 @@ cmd_rollback() {
 }
 
 cmd_restart_self() {
-    log "restarting worker service"
-    _detached_restart_worker
+    # Restart, then verify the worker actually comes back, and roll back to the
+    # pre-update checkpoint if it does not.  The verification has to run
+    # detached from the worker's cgroup: if the new code fails to start at all
+    # (an import error, say), there is no worker process left to run the
+    # in-process stale-marker rollback in self_update.post_update_startup.
+    log "restarting worker service (with post-restart health verification)"
+    _schedule_detached "$(_worker_env_prefix) '$SELF_PATH' restart-and-verify"
+}
+
+# Runs inside the detached job scheduled by cmd_restart_self: restart the
+# worker, wait for it to become healthy, and roll back to the checkpoint if it
+# never does.  This is the rollback path that survives the new code failing to
+# boot, because it does not depend on the new code running.
+cmd_restart_and_verify() {
+    local checkpoint_tag="${1:-}"
+    local timeout="${TAOS_RESTART_VERIFY_TIMEOUT:-90}"
+    local interval="${TAOS_RESTART_VERIFY_INTERVAL:-3}"
+
+    log "restart-verify: restarting worker service"
+    # A synchronous restart is safe here: this job is already outside the
+    # worker's cgroup, and the service has to be back before we can probe it.
+    _restart_service_by_name "tinyagentos-worker.service" \
+        || _restart_service_by_name "taos-worker.service" \
+        || log "WARN: could not restart worker service via systemctl"
+
+    log "restart-verify: waiting up to ${timeout}s for the worker to become healthy"
+    local elapsed=0
+    while (( elapsed < timeout )); do
+        if "$SELF_PATH" health-check >/dev/null 2>&1; then
+            log "restart-verify: worker healthy after ${elapsed}s -- update OK"
+            return 0
+        fi
+        sleep "$interval"
+        elapsed=$(( elapsed + interval ))
+    done
+
+    log "restart-verify: worker did not become healthy within ${timeout}s -- rolling back"
+    cmd_rollback "$checkpoint_tag"
 }
 
 cmd_health_check() {
@@ -517,12 +577,14 @@ case "${1:-help}" in
     checkpoint)       cmd_checkpoint ;;
     rollback)         shift; cmd_rollback "$@" ;;
     restart-self)     cmd_restart_self ;;
+    restart-and-verify) shift; cmd_restart_and_verify "$@" ;;
     health-check)     shift; cmd_health_check "$@" ;;
     help|*)
         echo "usage: taos-deploy-helper.sh <command>"
         echo "commands: install-ollama, install-exo, install-llama-cpp [--cuda],"
         echo "          install-vllm, install-rknpu, update-worker, status"
-        echo "          checkpoint, rollback [<tag>], restart-self, health-check"
+        echo "          checkpoint, rollback [<tag>], restart-self,"
+        echo "          restart-and-verify [<tag>], health-check"
         exit 1
         ;;
 esac

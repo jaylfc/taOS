@@ -1213,9 +1213,22 @@ class WorkerAgent:
         heartbeat to confirm readiness for the update. The controller
         can then proceed with the update deploy.
 
+        This is also the abort path. Every failure in
+        ``self_update.run_full_update`` (checkpoint, pull, dependency
+        update or restart) calls this to return the worker to routing, and
+        the run loop re-sends ``self._lifecycle_status`` on every
+        subsequent heartbeat. Clearing the lifecycle state here is what
+        makes the worker routable again: without it the run loop keeps
+        advertising ``"draining"`` forever, and the controller -- which
+        deliberately refuses to un-drain a worker on a status-less
+        heartbeat -- keeps it out of routing until it is restarted by
+        hand.
+
         Returns the HTTP status code from the controller.
         """
         logger.info("worker '%s': drain complete, ready for update", self.name)
+        self._lifecycle_status = None
+        self._lifecycle_reason = None
         return await self.heartbeat()
 
     # ── Self-update trigger (taOS #890 C3) ─────────────────────────────

@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tinyagentos.worker.agent import WorkerAgent
 from tinyagentos.worker.self_update import (
     clear_update_marker,
     read_update_marker,
@@ -398,6 +399,139 @@ class TestRunFullUpdate:
         )
         assert result["ok"] is False
         assert "pull failed" in result["error"]
+
+
+# ── Aborted update must clear the drain state (agent level) ───────────
+
+
+class _RecordingWorkerAgent(WorkerAgent):
+    """A real WorkerAgent whose heartbeat send is stubbed.
+
+    Only the HTTP call is replaced: the state under test (``_lifecycle_status``
+    / ``_lifecycle_reason`` and the abort path through ``notify_drain_complete``)
+    is the agent's own code.  A MagicMock cannot see this -- every lifecycle
+    field it is asked about is just an auto-created attribute.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.heartbeats: list[tuple] = []
+
+    async def heartbeat(self, status=None, drain_reason=None) -> int:
+        self.heartbeats.append((status, drain_reason))
+        return 200
+
+
+class TestAbortedUpdateClearsDrainState:
+    """An aborted self-update must leave the worker routable.
+
+    jaylfc's 2026-10-11 review: after a failed pull, dependency update or
+    restart the worker sends one status-less heartbeat and then the run loop
+    keeps re-sending ``status="draining"`` on every tick, because nothing
+    resets ``_lifecycle_status``.  The controller deliberately refuses to
+    un-drain a worker on a status-less heartbeat, so the worker stays out of
+    routing until it is restarted by hand.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("fail_phase", ["pull", "dependencies", "restart"])
+    async def test_abort_path_clears_lifecycle_state(
+        self, monkeypatch, tmp_path: Path, fail_phase: str,
+    ):
+        import tinyagentos.worker.self_update as su
+
+        state_dir = tmp_path / "worker-state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+
+        agent = _RecordingWorkerAgent(
+            controller_url="http://controller:9898",
+            name="real-worker",
+            state_dir=tmp_path,
+        )
+
+        async def ok_checkpoint():
+            return {
+                "ok": True, "checkpoint_tag": "tag-123", "git_sha": "from-sha",
+                "output": "tag-123", "exit_code": 0,
+            }
+
+        async def ok_pull(target_ref):
+            return {"ok": True, "output": "ok", "exit_code": 0}
+
+        async def bad_pull(target_ref):
+            return {"ok": False, "output": "checkout failed", "exit_code": 1}
+
+        async def ok_deps():
+            return {"ok": True, "output": "ok", "exit_code": 0, "package_manager": "pip"}
+
+        async def bad_deps():
+            return {"ok": False, "output": "pip exploded", "exit_code": 1}
+
+        async def ok_migrations():
+            return {"ok": True, "output": "ok", "exit_code": 0}
+
+        async def ok_restart():
+            return {"ok": True, "output": "restarted", "exit_code": 0}
+
+        async def bad_restart():
+            return {"ok": False, "output": "restart failed", "exit_code": 1}
+
+        async def ok_rollback(checkpoint_tag=None):
+            return {"ok": True, "output": "rolled back", "exit_code": 0}
+
+        async def fake_git(args, cwd=None, timeout=120):
+            return 0, "to-sha-5678\n"
+
+        monkeypatch.setattr(su, "create_checkpoint", ok_checkpoint)
+        monkeypatch.setattr(su, "pull_update", bad_pull if fail_phase == "pull" else ok_pull)
+        monkeypatch.setattr(
+            su, "update_dependencies",
+            bad_deps if fail_phase == "dependencies" else ok_deps,
+        )
+        monkeypatch.setattr(su, "run_migrations", ok_migrations)
+        monkeypatch.setattr(
+            su, "restart_service",
+            bad_restart if fail_phase == "restart" else ok_restart,
+        )
+        monkeypatch.setattr(su, "rollback_to_checkpoint", ok_rollback)
+        monkeypatch.setattr(su, "_run_git", fake_git)
+        monkeypatch.setattr(su, "_write_update_marker", lambda *a, **k: None)
+
+        # The update reaches the drain phase before it aborts.
+        result = await su.run_full_update(
+            target_ref="origin/master",
+            controller_url="http://controller:9898",
+            agent=agent,
+            state_dir=state_dir,
+            graceful=False,
+        )
+
+        assert result["ok"] is False
+        # The worker must be routable again: the run loop re-sends
+        # _lifecycle_status on every heartbeat, so leaving it at "draining"
+        # keeps the worker out of routing forever.
+        assert agent._lifecycle_status is None
+        assert agent._lifecycle_reason is None
+        # The abort heartbeat itself must not re-advertise draining either.
+        assert agent.heartbeats[-1] == (None, None)
+
+    @pytest.mark.asyncio
+    async def test_drain_is_advertised_before_the_abort(self, monkeypatch, tmp_path: Path):
+        """Control: without the abort the agent really is in "draining".
+
+        Proves the assertions above are about the reset, not about the drain
+        never having been entered.
+        """
+        agent = _RecordingWorkerAgent(
+            controller_url="http://controller:9898",
+            name="real-worker",
+            state_dir=tmp_path,
+        )
+
+        await agent.initiate_self_drain(reason="update to origin/master")
+
+        assert agent._lifecycle_status == "draining"
+        assert agent._lifecycle_reason == "update to origin/master"
 
 
 # ── post_update_startup ───────────────────────────────────────────────
