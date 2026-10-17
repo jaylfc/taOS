@@ -173,6 +173,7 @@ class PairSession:
     created_at: float
     caps: list[str] = field(default_factory=list)
     reassembler: "proto.Reassembler" = field(default_factory=proto.Reassembler)
+    label_pin: str = ""
 
 
 class BlePairingManager:
@@ -360,6 +361,9 @@ class BlePairingManager:
             if not isinstance(caps_raw, list):
                 caps_raw = []
             caps = [c for c in caps_raw if isinstance(c, str)]
+            label_pin = info.get("label_pin", "")
+            if not isinstance(label_pin, str):
+                label_pin = ""
             if not isinstance(board_id, str) or not board_id:
                 raise PairError(504, "bad or missing info from board")
             if state != "unpaired" or not pairable:
@@ -400,6 +404,7 @@ class BlePairingManager:
             created_at=time.time(),
             caps=caps,
             reassembler=reassembler,
+            label_pin=label_pin,
         )
         async with self._lock:
             self._sweep_expired_locked()
@@ -407,9 +412,9 @@ class BlePairingManager:
                 await conn.close()
                 raise PairError(429, "too many concurrent pairing sessions")
             self._sessions[session_id] = sess
-        return {"session": session_id, "code": code, "board_id": board_id, "name": sess.board_name}
+        return {"session": session_id, "code": code, "board_id": board_id, "name": sess.board_name, "label_pin": label_pin}
 
-    async def confirm(self, session_id: str) -> dict:
+    async def confirm(self, session_id: str, label_pin: str = "") -> dict:
         """Mint the node credential, register kind=device, and send the
         sealed provision. Rolls back the credential + registration on any
         board error or transport failure."""
@@ -418,6 +423,10 @@ class BlePairingManager:
             sess = self._sessions.pop(session_id, None)
         if sess is None:
             raise PairError(404, "unknown or expired pairing session")
+
+        if sess.label_pin and label_pin != sess.label_pin:
+            await self._close_session(sess)
+            raise PairError(403, "wrong label pin")
 
         platform = _platform_from_caps(sess.caps)
         if sess.board_name:

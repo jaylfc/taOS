@@ -11,6 +11,7 @@ routes: scan -> start -> confirm -> the node is listed with kind=device.
 """
 from __future__ import annotations
 
+import json
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -155,6 +156,43 @@ async def test_pair_confirm_unknown_session_is_404(client, app):
     _wire_fake_manager(app, {})
     resp = await client.post("/api/cluster/ble/pair/confirm", json={"session": "ghost"})
     assert resp.status_code == 404
+    await app.state.cluster_pairing.close()
+
+
+@pytest.mark.asyncio
+async def test_pair_confirm_wrong_label_pin_returns_403(client, app):
+    await app.state.cluster_pairing.init()
+    board = FakeBoard(board_id="PIN1")
+    original_info = board.info_bytes
+    def info_with_pin():
+        frame = json.loads(original_info())
+        frame["label_pin"] = "123456"
+        return json.dumps(frame).encode("utf-8")
+    board.info_bytes = info_with_pin
+    _wire_fake_manager(app, {"addr1": board})
+    started = await client.post("/api/cluster/ble/pair/start", json={"address": "addr1"})
+    assert started.status_code == 200
+    session = started.json()["session"]
+    resp = await client.post("/api/cluster/ble/pair/confirm", json={"session": session, "label_pin": "wrong"})
+    assert resp.status_code == 403
+    workers = (await client.get("/api/cluster/workers")).json()
+    assert not any(w["name"] == board.name for w in workers)
+    await app.state.cluster_pairing.close()
+
+
+@pytest.mark.asyncio
+async def test_pair_confirm_right_label_pin_succeeds(client, app):
+    await app.state.cluster_pairing.init()
+    board = FakeBoard(board_id="PIN2")
+    _wire_fake_manager(app, {"addr1": board})
+    started = await client.post("/api/cluster/ble/pair/start", json={"address": "addr1"})
+    assert started.status_code == 200
+    session = started.json()["session"]
+    resp = await client.post("/api/cluster/ble/pair/confirm", json={"session": session, "label_pin": "123456"})
+    assert resp.status_code == 200
+    node = resp.json()["node"]
+    assert node["name"] == board.name
+    assert node["kind"] == "device"
     await app.state.cluster_pairing.close()
 
 
