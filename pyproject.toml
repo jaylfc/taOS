@@ -97,6 +97,11 @@ torrent = ["libtorrent>=2.0.9"]
 # bluetooth_unavailable when it (or an adapter) is missing, instead of every
 # install failing to boot without it.
 ble = ["bleak>=0.22.0"]
+# Library document processors (taOS #128 Phase 1): python-docx / python-pptx /
+# openpyxl are optional — the processors guard the import and degrade
+# gracefully when absent, so minimal installs keep working. EPUB uses
+# stdlib zipfile + XML and needs no extra dependency.
+library = ["python-docx>=1.1.0", "python-pptx>=1.0.0", "openpyxl>=3.1.0"]
 # DEPRECATED, intentionally empty. The LiteLLM process is gone (#3313), but the
 # updater that RUNS an update is the OLD code already on the box, and before
 # #3313 it called `uv sync --frozen --extra proxy`. uv refuses an undefined
