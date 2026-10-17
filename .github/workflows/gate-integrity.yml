@@ -70,12 +70,12 @@ jobs:
       # the base-ref checker (and this workflow) execute from base.
       # The resolve step above sets BASE_REF to the PR's actual base
       # branch via the GitHub API; github.base_ref is the fallback.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
         with:
           ref: ${{ env.BASE_REF || github.base_ref }}
           fetch-depth: 1
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.12"
 
