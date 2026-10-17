@@ -16,7 +16,7 @@ The file format is::
       "models": [
         {
           "model_id": "<logical name>",
-          "software": "llamacpp|embed|kokoro|whisper",
+          "software": "llamacpp|embed|whisper|kokoro|moss",
           "port": 9090,
           "vram_required_gb": 5.3,
           "health_url": "http://127.0.0.1:9090/health",
@@ -48,10 +48,15 @@ logger = logging.getLogger(__name__)
 DEFAULT_MANIFEST_PATH = "/etc/taos/worker-models.json"
 
 # Map software names to TAOS backend types so the worker can attach manifest
-# entries to the correct backend dict.
+# entries to the correct backend dict. Speech software maps to the ASR/TTS
+# backend types in BACKEND_CAPABILITIES so a worker running a whisper or
+# TTS server is routable as an 'asr'/'tts' capability (#3231).
 SOFTWARE_TO_BACKEND_TYPE: dict[str, str] = {
     "llamacpp": "llama-cpp",
     "embed": "llama-cpp",
+    "whisper": "whisper-cpp",
+    "kokoro": "kokoro",
+    "moss": "sglang",
 }
 
 

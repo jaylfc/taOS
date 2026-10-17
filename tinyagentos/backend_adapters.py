@@ -176,6 +176,79 @@ class OpenAICompatAdapter(BackendAdapter):
             }
 
 
+class WhisperAdapter(BackendAdapter):
+    """Adapter for speech-to-text servers (faster-whisper, whisper.cpp).
+
+    Both expose the OpenAI-compatible ``/v1/audio/transcriptions`` surface
+    and answer ``GET /health`` with ``{"status": "ok"}`` once the model is
+    loaded. The loaded checkpoint is server-fixed, so the model list is a
+    best-effort read of ``GET /v1/models`` for servers that expose one.
+    """
+
+    async def health(self, client: httpx.AsyncClient, url: str) -> dict:
+        start = time.monotonic()
+        base = url.rstrip("/")
+        try:
+            resp = await client.get(f"{base}/health", timeout=10)
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            resp.raise_for_status()
+            models = []
+            try:
+                model_resp = await client.get(f"{base}/v1/models", timeout=10)
+                if model_resp.status_code == 200:
+                    models = [
+                        {"name": m.get("id", ""), "size_mb": 0}
+                        for m in model_resp.json().get("data", [])
+                    ]
+            except Exception:
+                pass
+            return {"status": "ok", "response_ms": elapsed_ms, "models": models}
+        except Exception as exc:
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            return {
+                "status": "error",
+                "response_ms": elapsed_ms,
+                "models": [],
+                "error": _describe_health_error(exc, base),
+            }
+
+
+class TTSAdapter(BackendAdapter):
+    """Adapter for OpenAI-compatible text-to-speech servers.
+
+    Kokoro (kokoro-onnx / kokoro-tts) and MOSS served via SGLang / vLLM-Omni
+    all answer ``GET /health`` and expose ``GET /v1/models`` listing the
+    loaded voice model.
+    """
+
+    async def health(self, client: httpx.AsyncClient, url: str) -> dict:
+        start = time.monotonic()
+        base = url.rstrip("/")
+        try:
+            resp = await client.get(f"{base}/health", timeout=10)
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            resp.raise_for_status()
+            models = []
+            try:
+                model_resp = await client.get(f"{base}/v1/models", timeout=10)
+                if model_resp.status_code == 200:
+                    models = [
+                        {"name": m.get("id", ""), "size_mb": 0}
+                        for m in model_resp.json().get("data", [])
+                    ]
+            except Exception:
+                pass
+            return {"status": "ok", "response_ms": elapsed_ms, "models": models}
+        except Exception as exc:
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            return {
+                "status": "error",
+                "response_ms": elapsed_ms,
+                "models": [],
+                "error": _describe_health_error(exc, base),
+            }
+
+
 class CloudAPIAdapter(BackendAdapter):
     """Adapter for hosted cloud AI APIs (OpenAI, Anthropic, OpenRouter, Kilo).
 
@@ -250,6 +323,13 @@ _ADAPTERS: dict[str, BackendAdapter] = {
     # flux-fill is served behind an A1111-compatible image server in practice;
     # reuse the sd-cpp probe shape (it answers /sdapi/v1/options).
     "flux-fill": StableDiffusionCppAdapter(),
+    # ASR: faster-whisper / whisper.cpp answer /health + /v1/models.
+    "faster-whisper": WhisperAdapter(),
+    "whisper-cpp": WhisperAdapter(),
+    # TTS: OpenAI-compatible speech servers (kokoro, SGLang/vLLM-Omni MOSS).
+    "kokoro": TTSAdapter(),
+    "sglang": TTSAdapter(),
+    "vllm-omni": TTSAdapter(),
 }
 
 

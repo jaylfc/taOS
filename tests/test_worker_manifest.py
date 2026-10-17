@@ -27,10 +27,21 @@ class TestSoftwareMapping:
     def test_embed_maps_to_llama_cpp(self):
         assert SOFTWARE_TO_BACKEND_TYPE['embed'] == 'llama-cpp'
 
+    def test_whisper_maps_to_whisper_cpp(self):
+        """#3231: a whisper worker is routable as an 'asr' capability."""
+        assert SOFTWARE_TO_BACKEND_TYPE['whisper'] == 'whisper-cpp'
+
+    def test_kokoro_maps_to_kokoro(self):
+        """#3231: a kokoro TTS worker is routable as a 'tts' capability."""
+        assert SOFTWARE_TO_BACKEND_TYPE['kokoro'] == 'kokoro'
+
+    def test_moss_maps_to_sglang(self):
+        """#3231: MOSS rides the SGLang serving stack, so it maps there."""
+        assert SOFTWARE_TO_BACKEND_TYPE['moss'] == 'sglang'
+
     def test_unrecognised_software_not_in_mapping(self):
-        """kokoro and whisper are no longer mapped -- no probe candidates exist."""
-        assert 'kokoro' not in SOFTWARE_TO_BACKEND_TYPE
-        assert 'whisper' not in SOFTWARE_TO_BACKEND_TYPE
+        """Unknown software names still do not appear in the mapping."""
+        assert 'totally-bogus' not in SOFTWARE_TO_BACKEND_TYPE
 
 
 # ---------------------------------------------------------------------------

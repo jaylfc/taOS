@@ -51,6 +51,17 @@ BACKEND_CAPABILITIES: dict[str, set[str]] = {
     "iopaint": {"image-editing", "background-removal", "upscale"},
     # FLUX.1-Fill served via an inpaint/outpaint endpoint — the quality tier.
     "flux-fill": {"image-editing"},
+    # ASR: speech-to-text servers. Both faster-whisper and whisper.cpp
+    # answer the OpenAI-compatible /v1/audio/transcriptions surface; they
+    # are CPU/GPU inference backends, not catalog-only models.
+    "faster-whisper": {"asr"},
+    "whisper-cpp": {"asr"},
+    # TTS: OpenAI-compatible speech servers. Kokoro is served by
+    # kokoro-onnx / kokoro-tts directly; MOSS ships as an SGLang /
+    # vLLM-Omni model, so it rides those serving stacks.
+    "kokoro": {"tts"},
+    "sglang": {"tts"},
+    "vllm-omni": {"tts"},
 }
 
 

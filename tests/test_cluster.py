@@ -458,6 +458,47 @@ class TestTaskRouter:
         assert data is None
         assert worker_name is None
 
+    @pytest.mark.asyncio
+    async def test_router_selects_worker_by_asr_capability(self):
+        """Acceptance (#3231): a worker running a whisper server is
+        selected by TaskRouter.route_request("asr")."""
+        mgr = ClusterManager()
+        # whisper worker advertises 'asr'; a plain LLM worker does not.
+        await mgr.register_worker(_make_worker(
+            "whisper-box", capabilities=["asr"], load=0.1, url="http://whisper:9090"))
+        await mgr.register_worker(_make_worker(
+            "llm-box", capabilities=["chat", "embed"], load=0.1, url="http://llm:8000"))
+
+        ok_resp = MagicMock()
+        ok_resp.raise_for_status.return_value = None
+        ok_resp.json.return_value = {"text": "hello world"}
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.post.return_value = ok_resp
+
+        router = TaskRouter(mgr, mock_client)
+        data, worker_name = await router.route_request(
+            "asr", "POST", "/v1/audio/transcriptions", {"file": "clip.wav"})
+
+        assert data == {"text": "hello world"}
+        assert worker_name == "whisper-box"
+        # Routed to the whisper worker's URL, not the LLM worker's.
+        called_url = mock_client.post.call_args[0][0]
+        assert called_url.startswith("http://whisper:9090")
+
+    @pytest.mark.asyncio
+    async def test_router_asr_skips_non_asr_workers(self):
+        """An 'asr' request must not fall through to an LLM worker."""
+        mgr = ClusterManager()
+        await mgr.register_worker(_make_worker(
+            "llm-box", capabilities=["chat"], load=0.1, url="http://llm:8000"))
+
+        router = TaskRouter(mgr, AsyncMock(spec=httpx.AsyncClient))
+        data, worker_name = await router.route_request(
+            "asr", "POST", "/v1/audio/transcriptions", {})
+
+        assert data is None
+        assert worker_name is None
+
 
 @pytest.mark.asyncio
 class TestWorkerDrain:

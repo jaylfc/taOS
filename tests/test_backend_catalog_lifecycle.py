@@ -14,6 +14,74 @@ def test_hailo_ollama_capability_entry_exists():
     assert BACKEND_CAPABILITIES["hailo-ollama"] == {"llm-chat"}
 
 
+class TestSpeechCapabilities:
+    """#3231: ASR/TTS backend types must carry speech capability labels so
+    TaskRouter.route_request("asr"/"tts") can select them."""
+
+    def test_asr_backend_types_claim_asr(self):
+        for backend_type in ("faster-whisper", "whisper-cpp"):
+            assert backend_type in BACKEND_CAPABILITIES
+            assert BACKEND_CAPABILITIES[backend_type] == {"asr"}
+
+    def test_tts_backend_types_claim_tts(self):
+        for backend_type in ("kokoro", "sglang", "vllm-omni"):
+            assert backend_type in BACKEND_CAPABILITIES
+            assert BACKEND_CAPABILITIES[backend_type] == {"tts"}
+
+    def test_speech_types_do_not_claim_llm_chat(self):
+        """Speech servers are not LLM backends — no cross-contamination."""
+        for backend_type in ("faster-whisper", "whisper-cpp",
+                             "kokoro", "sglang", "vllm-omni"):
+            caps = BACKEND_CAPABILITIES[backend_type]
+            assert "llm-chat" not in caps
+            assert "embedding" not in caps
+
+    @pytest.mark.asyncio
+    async def test_whisper_backend_routable_by_asr_capability(self):
+        """Acceptance (#3231): a worker running a whisper server reports
+        'asr' and is selected by backends_with_capability("asr")."""
+
+        async def probe(backend: dict) -> dict:
+            return {"status": "ok", "response_ms": 1, "models": []}
+
+        backends = [
+            {"name": "whisper-local", "type": "whisper-cpp",
+             "url": "http://localhost:9090", "priority": 1},
+        ]
+        catalog = BackendCatalog(backends=backends, probe_fn=probe, interval_seconds=3600)
+        await catalog.start()
+        await catalog.wait_initial_probe()
+        try:
+            matches = catalog.backends_with_capability("asr")
+            assert len(matches) == 1
+            assert matches[0].name == "whisper-local"
+            assert matches[0].capabilities == {"asr"}
+        finally:
+            await catalog.stop()
+
+    @pytest.mark.asyncio
+    async def test_tts_backend_routable_by_tts_capability(self):
+        """A kokoro TTS server is selected by backends_with_capability("tts")."""
+
+        async def probe(backend: dict) -> dict:
+            return {"status": "ok", "response_ms": 1, "models": []}
+
+        backends = [
+            {"name": "kokoro-local", "type": "kokoro",
+             "url": "http://localhost:8880", "priority": 1},
+        ]
+        catalog = BackendCatalog(backends=backends, probe_fn=probe, interval_seconds=3600)
+        await catalog.start()
+        await catalog.wait_initial_probe()
+        try:
+            matches = catalog.backends_with_capability("tts")
+            assert len(matches) == 1
+            assert matches[0].name == "kokoro-local"
+            assert matches[0].capabilities == {"tts"}
+        finally:
+            await catalog.stop()
+
+
 @pytest.mark.asyncio
 async def test_disabled_backend_excluded_from_routing():
     """A backend with enabled=False must not appear in backends_with_capability."""

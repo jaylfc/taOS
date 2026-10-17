@@ -75,6 +75,34 @@ class TestDetectCapabilities:
         assert "image-generation" in caps
         assert "embedding" not in caps
 
+    def test_speech_backends_expose_speech_capabilities(self):
+        """#3231: whisper (asr) and kokoro/moss (tts) backends must surface
+        their speech capability labels in detect_capabilities()."""
+        agent = WorkerAgent("http://localhost:6969")
+        backends = [
+            {"type": "whisper-cpp", "url": "http://localhost:9090"},
+            {"type": "faster-whisper", "url": "http://localhost:9091"},
+            {"type": "kokoro", "url": "http://localhost:8880"},
+            {"type": "sglang", "url": "http://localhost:30000"},
+            {"type": "vllm-omni", "url": "http://localhost:8001"},
+        ]
+        with patch("shutil.which", return_value=None):
+            caps = agent.detect_capabilities(backends)
+        assert "asr" in caps
+        assert "tts" in caps
+
+    def test_speech_capabilities_do_not_leak_llm_labels(self):
+        """Speech backends must not be mistaken for LLM/embedding backends."""
+        agent = WorkerAgent("http://localhost:6969")
+        backends = [
+            {"type": "whisper-cpp", "url": "http://localhost:9090"},
+            {"type": "kokoro", "url": "http://localhost:8880"},
+        ]
+        with patch("shutil.which", return_value=None):
+            caps = agent.detect_capabilities(backends)
+        assert "llm-chat" not in caps
+        assert "embedding" not in caps
+
     def test_respects_preattached_capabilities(self):
         """If the caller attaches a per-backend capabilities field (modern
         detect_backends shape from live probing), detect_capabilities uses
@@ -861,6 +889,116 @@ class TestManifestStoppedBackends:
                 backends = await agent.detect_backends()
 
         assert backends == []
+
+    async def test_manifest_whisper_entry_creates_asr_backend(self):
+        """#3231: a manifest entry with software='whisper' must produce a
+        synthetic whisper-cpp backend carrying the 'asr' capability, so the
+        worker is routable by TaskRouter.route_request("asr")."""
+        agent = WorkerAgent("http://localhost:6969")
+
+        with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.get = AsyncMock(side_effect=Exception("connection refused"))
+            mock_client_cls.return_value = mock_client
+
+            manifest = {
+                "resource_id": "w1",
+                "models": [
+                    {
+                        "model_id": "whisper-tiny",
+                        "capability": "asr",
+                        "software": "whisper",
+                        "port": 9090,
+                        "vram_required_gb": 0.5,
+                        "health_url": "http://localhost:9090/health",
+                    },
+                ],
+            }
+            with patch("tinyagentos.worker.worker_manifest.load_manifest",
+                       return_value=manifest):
+                backends = await agent.detect_backends()
+
+        assert len(backends) == 1
+        assert backends[0]["type"] == "whisper-cpp"
+        assert backends[0]["status"] == "stopped"
+        assert "asr" in backends[0]["capabilities"]
+        avail = backends[0].get("available_models", [])
+        assert len(avail) == 1
+        assert avail[0]["model_id"] == "whisper-tiny"
+        assert avail[0]["capability"] == "asr"
+
+    async def test_manifest_kokoro_entry_creates_tts_backend(self):
+        """#3231: a manifest entry with software='kokoro' must produce a
+        synthetic kokoro backend carrying the 'tts' capability."""
+        agent = WorkerAgent("http://localhost:6969")
+
+        with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.get = AsyncMock(side_effect=Exception("connection refused"))
+            mock_client_cls.return_value = mock_client
+
+            manifest = {
+                "resource_id": "w1",
+                "models": [
+                    {
+                        "model_id": "kokoro-tts",
+                        "capability": "tts",
+                        "software": "kokoro",
+                        "port": 8880,
+                        "vram_required_gb": 1.0,
+                        "health_url": "http://localhost:8880/health",
+                    },
+                ],
+            }
+            with patch("tinyagentos.worker.worker_manifest.load_manifest",
+                       return_value=manifest):
+                backends = await agent.detect_backends()
+
+        assert len(backends) == 1
+        assert backends[0]["type"] == "kokoro"
+        assert backends[0]["status"] == "stopped"
+        assert "tts" in backends[0]["capabilities"]
+        avail = backends[0].get("available_models", [])
+        assert len(avail) == 1
+        assert avail[0]["model_id"] == "kokoro-tts"
+        assert avail[0]["capability"] == "tts"
+
+    async def test_manifest_moss_entry_creates_sglang_backend(self):
+        """#3231: a manifest entry with software='moss' maps to the SGLang
+        serving stack and carries the 'tts' capability."""
+        agent = WorkerAgent("http://localhost:6969")
+
+        with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.get = AsyncMock(side_effect=Exception("connection refused"))
+            mock_client_cls.return_value = mock_client
+
+            manifest = {
+                "resource_id": "w1",
+                "models": [
+                    {
+                        "model_id": "moss-tts",
+                        "capability": "tts",
+                        "software": "moss",
+                        "port": 30000,
+                        "vram_required_gb": 20.0,
+                        "health_url": "http://localhost:30000/health",
+                    },
+                ],
+            }
+            with patch("tinyagentos.worker.worker_manifest.load_manifest",
+                       return_value=manifest):
+                backends = await agent.detect_backends()
+
+        assert len(backends) == 1
+        assert backends[0]["type"] == "sglang"
+        assert "tts" in backends[0]["capabilities"]
 
     async def test_manifest_enrichment_failure_graceful(self):
         """If the manifest enrichment raises, detect_backends still returns

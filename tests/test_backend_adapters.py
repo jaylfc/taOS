@@ -130,6 +130,102 @@ class TestOllamaAdapter:
         assert result["status"] == "ok"
         assert len(result["models"]) == 1
 
+class TestWhisperAdapter:
+    """#3231: faster-whisper / whisper.cpp answer /health + /v1/models."""
+
+    @pytest.mark.asyncio
+    async def test_health_ok(self):
+        from tinyagentos.backend_adapters import WhisperAdapter
+        adapter = WhisperAdapter()
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        health_resp = MagicMock()
+        health_resp.status_code = 200
+        health_resp.raise_for_status = MagicMock(return_value=None)
+        models_resp = MagicMock()
+        models_resp.status_code = 200
+        models_resp.json.return_value = {"data": [{"id": "whisper-tiny"}]}
+        mock_client.get.side_effect = [health_resp, models_resp]
+        result = await adapter.health(mock_client, "http://localhost:9090")
+        assert result["status"] == "ok"
+        assert result["models"] == [{"name": "whisper-tiny", "size_mb": 0}]
+        assert "response_ms" in result
+        # Probed /health first, then /v1/models.
+        mock_client.get.assert_any_call("http://localhost:9090/health", timeout=10)
+        mock_client.get.assert_any_call("http://localhost:9090/v1/models", timeout=10)
+
+    @pytest.mark.asyncio
+    async def test_health_ok_without_models_endpoint(self):
+        """Some whisper servers have no /v1/models — status must still be ok."""
+        from tinyagentos.backend_adapters import WhisperAdapter
+        adapter = WhisperAdapter()
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        health_resp = MagicMock()
+        health_resp.status_code = 200
+        health_resp.raise_for_status = MagicMock(return_value=None)
+        models_resp = MagicMock()
+        models_resp.status_code = 404
+        mock_client.get.side_effect = [health_resp, models_resp]
+        result = await adapter.health(mock_client, "http://localhost:9090")
+        assert result["status"] == "ok"
+        assert result["models"] == []
+
+    @pytest.mark.asyncio
+    async def test_unreachable_returns_error(self):
+        from tinyagentos.backend_adapters import WhisperAdapter
+        adapter = WhisperAdapter()
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.get.side_effect = httpx.ConnectError("Connection refused")
+        result = await adapter.health(mock_client, "http://localhost:9090")
+        assert result["status"] == "error"
+        assert result["models"] == []
+        assert "Connection refused" in result["error"]
+
+    def test_get_adapter_whisper_types(self):
+        from tinyagentos.backend_adapters import WhisperAdapter
+        assert isinstance(get_adapter("whisper-cpp"), WhisperAdapter)
+        assert isinstance(get_adapter("faster-whisper"), WhisperAdapter)
+
+
+class TestTTSAdapter:
+    """#3231: kokoro / SGLang / vLLM-Omni TTS servers answer /health + /v1/models."""
+
+    @pytest.mark.asyncio
+    async def test_health_ok(self):
+        from tinyagentos.backend_adapters import TTSAdapter
+        adapter = TTSAdapter()
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        health_resp = MagicMock()
+        health_resp.status_code = 200
+        health_resp.raise_for_status = MagicMock(return_value=None)
+        models_resp = MagicMock()
+        models_resp.status_code = 200
+        models_resp.json.return_value = {"data": [{"id": "kokoro-tts"}]}
+        mock_client.get.side_effect = [health_resp, models_resp]
+        result = await adapter.health(mock_client, "http://localhost:8880")
+        assert result["status"] == "ok"
+        assert result["models"] == [{"name": "kokoro-tts", "size_mb": 0}]
+        assert "response_ms" in result
+        mock_client.get.assert_any_call("http://localhost:8880/health", timeout=10)
+        mock_client.get.assert_any_call("http://localhost:8880/v1/models", timeout=10)
+
+    @pytest.mark.asyncio
+    async def test_unreachable_returns_error(self):
+        from tinyagentos.backend_adapters import TTSAdapter
+        adapter = TTSAdapter()
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.get.side_effect = httpx.ConnectError("Connection refused")
+        result = await adapter.health(mock_client, "http://localhost:8880")
+        assert result["status"] == "error"
+        assert result["models"] == []
+        assert "Connection refused" in result["error"]
+
+    def test_get_adapter_tts_types(self):
+        from tinyagentos.backend_adapters import TTSAdapter
+        assert isinstance(get_adapter("kokoro"), TTSAdapter)
+        assert isinstance(get_adapter("sglang"), TTSAdapter)
+        assert isinstance(get_adapter("vllm-omni"), TTSAdapter)
+
+
 class TestCloudAPIAdapter:
     @pytest.mark.asyncio
     async def test_200_is_ok(self):
