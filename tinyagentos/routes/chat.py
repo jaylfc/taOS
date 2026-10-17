@@ -6,7 +6,7 @@ import logging
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, Response
 
 from tinyagentos.auth_context import (
@@ -1015,4 +1015,94 @@ async def get_typing(channel_id: str, request: Request):
     if reg is None:
         return JSONResponse({"human": [], "agent": []})
     return JSONResponse(reg.list(channel_id))
+
+
+# ── Receipts ────────────────────────────────────────────────────────────────
+
+@router.get("/api/chat/messages/{message_id}/receipts")
+async def get_message_receipts(message_id: str, request: Request, user: CurrentUser = Depends(current_user_or_device)):
+    """Get delivery/seen receipts for a message."""
+    msg_store = request.app.state.chat_messages
+    msg = await msg_store.get_message(message_id)
+    if msg is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    # Load the channel
+    ch_store = request.app.state.chat_channels
+    channel = await ch_store.get_channel(msg["channel_id"])
+    if channel is None:
+        return JSONResponse({"error": "Channel not found"}, status_code=404)
+    # Check membership
+    is_device = getattr(request.state, "_device", None) is not None
+    if is_device:
+        # For device bearers, the user from the dependency is the user associated with the device.
+        pass
+    members = channel.get("members") or []
+    user_id_str = str(user.user_id)
+    if user_id_str not in members:
+        return JSONResponse({"error": "Not a member of this channel"}, status_code=403)
+    receipts = await msg_store.get_receipts(message_id)
+    # SPA's Receipt type uses agent_id = reader_id
+    formatted = [
+        {
+            "message_id": r["message_id"],
+            "agent_id": r["reader_id"],
+            "reader_type": r["reader_type"],
+            "delivered_at": r["delivered_at"],
+            "seen_at": r["seen_at"],
+        }
+        for r in receipts
+    ]
+    return {"receipts": formatted}
+
+
+@router.patch("/api/chat/receipts")
+async def mark_receipt_seen(request: Request, user: CurrentUser = Depends(current_user_or_device)):
+    """Mark a message as seen by the human viewer.
+    
+    Body: {"message_id": str}
+    Takes user_id from the session (taos_session cookie) or device bearer.
+    """
+    # Parse body and ensure it's a dict
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "Expected JSON object"}, status_code=400)
+    message_id = body.get("message_id")
+    if not isinstance(message_id, str) or not message_id:
+        return JSONResponse({"error": "message_id required"}, status_code=400)
+    
+    msg_store = request.app.state.chat_messages
+    msg = await msg_store.get_message(message_id)
+    if msg is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    # Load the channel
+    ch_store = request.app.state.chat_channels
+    channel = await ch_store.get_channel(msg["channel_id"])
+    if channel is None:
+        return JSONResponse({"error": "Channel not found"}, status_code=404)
+    # Check membership
+    is_device = getattr(request.state, "_device", None) is not None
+    if is_device:
+        # For device bearers, the user from the dependency is the user associated with the device.
+        pass
+    members = channel.get("members") or []
+    user_id_str = str(user.user_id)
+    if user_id_str not in members:
+        return JSONResponse({"error": "Not a member of this channel"}, status_code=403)
+    
+    hub = request.app.state.chat_hub
+    receipt_row = await msg_store.mark_seen(message_id, user.user_id, "user")
+    if receipt_row:
+        await hub.broadcast(msg["channel_id"], {
+            "type": "receipt",
+            "seq": hub.next_seq(),
+            "message_id": receipt_row["message_id"],
+            "agent_id": receipt_row["reader_id"],
+            "reader_type": receipt_row["reader_type"],
+            "delivered_at": receipt_row["delivered_at"],
+            "seen_at": receipt_row["seen_at"],
+        })
+    return {"status": "marked"}
 
