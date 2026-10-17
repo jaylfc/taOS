@@ -15,6 +15,63 @@ class GrantBody(BaseModel):
     grantee: str
 
 
+async def _caller_owns_artifact(
+    request: Request, 
+    artifact_kind: str, 
+    artifact_id: str, 
+    owner_id: str
+) -> bool:
+    """Verify that the authenticated user owns the specified artifact.
+    
+    Returns True if the user owns the artifact, False otherwise.
+    """
+    # Check for app and game artifacts - use the app store if available
+    if artifact_kind in ("app", "game"):
+        app_store = getattr(request.app.state, "app_grants", None)
+        if app_store is not None:
+            # For apps and games, check if the app belongs to the user
+            # This depends on the actual schema of the app store
+            # For now, we'll check the app_grants store for ownership
+            try:
+                # Check if the user has granted capabilities for this app
+                # If they have, they likely own or have permission to share it
+                capabilities = await app_store.granted_capabilities(owner_id, artifact_id)
+                return bool(capabilities)
+            except Exception:
+                # If there's an error checking, assume no ownership
+                return False
+    
+    # Check for project artifacts
+    elif artifact_kind == "project":
+        project_store = getattr(request.app.state, "project_store", None)
+        if project_store is not None:
+            project = await project_store.get_project(artifact_id)
+            if project is not None:
+                # Check if the project is owned by the user (user_id field per requirements)
+                return project.get("created_by") == owner_id or project.get("user_id") == owner_id
+        return False
+    
+    # Check for workflow artifacts
+    elif artifact_kind == "workflow":
+        # Check if workflow store exists with an owner field
+        workflow_store = getattr(request.app.state, "workflow_store", None)
+        if workflow_store is not None:
+            # TODO: Implement workflow ownership check when workflow store exists
+            return False
+        return False
+    
+    # Check for studio artifacts  
+    elif artifact_kind == "studio":
+        # Check if studio store exists with an owner field
+        studio_store = getattr(request.app.state, "studio_store", None)
+        if studio_store is not None:
+            # TODO: Implement studio ownership check when studio store exists
+            return False
+        return False
+    
+    return False
+
+
 async def _require_owner(request: Request, grant_id: str, current_user: dict = Depends(get_current_user)) -> str:
     """Verify the authed user owns the grant. Returns owner_id on success."""
     owner_id = current_user.get("id")
@@ -46,6 +103,10 @@ async def create_grant(request: Request, body: GrantBody, current_user: dict = D
         return JSONResponse({"error": "invalid artifact_kind"}, status_code=400)
     if not grantee:
         return JSONResponse({"error": "grantee is required"}, status_code=400)
+
+    # Verify that the caller owns the artifact before creating a grant
+    if not await _caller_owns_artifact(request, artifact_kind, artifact_id, owner_id):
+        return JSONResponse({"error": "you do not own this artifact"}, status_code=403)
 
     store = request.app.state.sharing_grants
     try:
