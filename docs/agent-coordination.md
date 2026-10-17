@@ -1970,6 +1970,10 @@ where `revoked=0 OR blocked=1`, so a blocked device counts against
 and the slot frees. Deliberate: a blocked device is a retained safety valve the
 owner can still see and act on.
 
+## Task report endpoint (`POST /api/cluster/tasks/report`)
+
+External schedulers report job outcomes here so the Observatory and benchmark layers can see external GPU work. Authenticated like lease endpoints (admin session, local token, or worker HMAC). Payload: `worker`, `resource_id`, `lease_id` (optional), `caller`, `model`, `duration_s`, `status` (`success`|`failure`|`cancelled`), `tokens` (optional). Stored in the trace store under the `taos-cluster-tasks` slug with kind `task_report`.
+
 ## Cluster capability + placement map (`GET /api/cluster/map`, admin-only)
 
 Route module `tinyagentos/routes/cluster_map.py`. **Admin session only**: the
