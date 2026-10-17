@@ -33,6 +33,7 @@ from httpx import ASGITransport, AsyncClient
 from taos_test_csrf import csrf_event_hooks
 
 from tinyagentos.auth_requests_store import AuthRequestsStore
+from tinyagentos.agent_registry_store import mint_registry_token
 from tinyagentos.base_store import PendingCapExceeded
 from tinyagentos.agent_grants_store import AgentGrantsStore
 
@@ -855,16 +856,22 @@ class TestAuthRequestRoutes:
         grants = await consent_client._transport.app.state.agent_grants.list_grants(canonical_id)
         assert all(g.get("project_id") is None for g in grants)
 
-    async def test_approve_reuses_non_active_identity(self, consent_client):
-        """taOS #2114: approving a request for a handle that already maps to a
-        non-active agent must REUSE that agent's canonical_id, not mint a fresh
-        one. The agent's canonical id is minted once."""
+    async def test_approve_reuses_pending_identity_returns_200(self, consent_client):
+        """taOS #2114: approving a request whose handle already belongs to a
+        PENDING agent must REUSE that agent's canonical_id and return 200.
+
+        This drives the whole flow end-to-end: the requester files the request
+        with a real registry token for the pending identity, an admin approves,
+        and the existing row is reactivated with exactly one registry row for
+        the handle. Before the fix _classify_proof rejected the token because
+        the identity was not active, so approval always returned 409.
+        """
         app = consent_client._transport.app
         registry = app.state.agent_registry
         transport = ASGITransport(app=app)
 
-        # Pre-register an agent with the handle, then set it non-active
-        # (simulating an agent whose identity exists but isn't active).
+        # external-selfjoin identities are born 'pending'; this row is a
+        # half-finished earlier approval.
         reg_record = await registry.register(
             framework="hermes",
             display_name="Hermes",
@@ -872,28 +879,95 @@ class TestAuthRequestRoutes:
             origin="external-selfjoin",
         )
         original_cid = reg_record["canonical_id"]
-        await registry.set_status(original_cid, "active", actor="test")
-        await registry.set_status(original_cid, "suspended", actor="test")
+        assert reg_record["status"] == "pending"
 
-        # Create an auth request with the same handle.
+        # A real proof token for that canonical_id.
+        private_pem, _public_pem = app.state.agent_registry_keypair
+        proof = mint_registry_token(
+            original_cid, private_pem, user_id="test", framework="hermes"
+        )
+
+        # Create an auth request for the same handle, proving the identity.
         async with AsyncClient(transport=transport, base_url="http://test") as bare:
             create_resp = await bare.post(
                 "/api/agents/auth-requests",
                 json={**_CREATE_BODY, "identity_claim": "hermes-reuse-test"},
+                headers={"Authorization": f"Bearer {proof}"},
+            )
+            assert create_resp.status_code == 200
+            assert create_resp.json()["proof_status"] == "accepted"
+            request_id = create_resp.json()["request_id"]
+
+        # Approve: must succeed (200) and reuse the pending canonical_id.
+        resp = await consent_client.post(
+            f"/api/agents/auth-requests/{request_id}/approve",
+            json={"granted_scopes": ["a2a_send"]},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["canonical_id"] == original_cid
+
+        # The reused agent is now active ...
+        agent = await registry.get(original_cid)
+        assert agent["status"] == "active"
+
+        # ... and no second identity was minted for the handle.
+        rows = [
+            r
+            for r in await registry.list_all()
+            if r.get("handle") == "hermes-reuse-test"
+        ]
+        assert len(rows) == 1
+        assert rows[0]["canonical_id"] == original_cid
+
+        # The approval really completed: polling returns the accepted request
+        # and a token for the reused identity.
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            status_resp = await bare.get(f"/api/agents/auth-requests/{request_id}")
+        body = status_resp.json()
+        assert body["status"] == "accepted"
+        assert body["canonical_id"] == original_cid
+        assert body["token"]
+
+    async def test_approve_non_active_identity_without_proof_returns_409(
+        self, consent_client
+    ):
+        """The genuinely invalid case still 409s: a non-active holder exists but
+        the requester presented no proof token for it."""
+        app = consent_client._transport.app
+        registry = app.state.agent_registry
+        transport = ASGITransport(app=app)
+
+        reg_record = await registry.register(
+            framework="hermes",
+            display_name="Hermes",
+            handle="hermes-no-proof-test",
+            origin="external-selfjoin",
+        )
+        original_cid = reg_record["canonical_id"]
+        assert reg_record["status"] == "pending"
+
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            create_resp = await bare.post(
+                "/api/agents/auth-requests",
+                json={**_CREATE_BODY, "identity_claim": "hermes-no-proof-test"},
             )
             assert create_resp.status_code == 200
             request_id = create_resp.json()["request_id"]
 
-        # Approve WITHOUT proof token should 409 (proof required).
         resp = await consent_client.post(
             f"/api/agents/auth-requests/{request_id}/approve",
             json={"granted_scopes": ["a2a_send"]},
         )
         assert resp.status_code == 409
-        assert "registry token" in resp.json()["detail"].lower()
+        detail = resp.json()["detail"].lower()
+        assert "registry token" in detail or "belongs to existing agent" in detail
 
-        # The test verifies the 409 path; full proof-token reuse is covered
-        # by the active-identity tests. The key assertion: no new identity
-        # was minted for the handle.
-        agents = await registry.get_by_handle("hermes-reuse-test", status=None)
-        assert agents["canonical_id"] == original_cid
+        # No new identity was minted, and the pending row is untouched.
+        agent = await registry.get(original_cid)
+        assert agent["status"] == "pending"
+        rows = [
+            r
+            for r in await registry.list_all()
+            if r.get("handle") == "hermes-no-proof-test"
+        ]
+        assert len(rows) == 1
