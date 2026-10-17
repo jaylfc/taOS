@@ -201,3 +201,45 @@ class TestCloudAPIAdapter:
 
     def test_get_adapter_kilocode(self):
         assert isinstance(get_adapter("kilocode"), CloudAPIAdapter)
+
+
+class TestLMStudioAdapter:
+    @pytest.mark.asyncio
+    async def test_success_returns_ok_with_models(self):
+        from tinyagentos.backend_adapters import LMStudioAdapter
+
+        adapter = LMStudioAdapter()
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.raise_for_status = MagicMock(return_value=None)
+        resp.json.return_value = {
+            "data": [
+                {"id": "qwen2.5-7b-instruct"},
+                {"id": "text-embedding-nomic"},
+            ]
+        }
+        mock_client.get.return_value = resp
+        result = await adapter.health(mock_client, "http://127.0.0.1:1234")
+        assert result["status"] == "ok"
+        assert len(result["models"]) == 2
+        assert result["models"][0]["name"] == "qwen2.5-7b-instruct"
+        assert "response_ms" in result
+
+    @pytest.mark.asyncio
+    async def test_unreachable_returns_error(self):
+        from tinyagentos.backend_adapters import LMStudioAdapter
+
+        adapter = LMStudioAdapter()
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.get.side_effect = httpx.ConnectError("Connection refused")
+        result = await adapter.health(mock_client, "http://127.0.0.1:1234")
+        assert result["status"] == "error"
+        assert result["models"] == []
+        assert "Connection refused" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_get_adapter_lmstudio(self):
+        from tinyagentos.backend_adapters import LMStudioAdapter
+
+        assert isinstance(get_adapter("lmstudio"), LMStudioAdapter)

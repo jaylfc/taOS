@@ -701,6 +701,54 @@ class TestDetectBackends:
         # Capability map entry from S1 must surface in the probe.
         assert "llm-chat" in hailo[0]["capabilities"]
 
+    async def test_lmstudio_running(self):
+        """A host running LM Studio on :1234 must be detected as a live
+        lmstudio backend."""
+        agent = WorkerAgent("http://localhost:6969")
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "data": [{"id": "qwen2.5-7b-instruct"}]
+        }
+
+        with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+
+            async def mock_get(url):
+                if "1234" in url:
+                    return mock_response
+                raise Exception("not running")
+
+            mock_client.get = AsyncMock(side_effect=mock_get)
+            mock_client_cls.return_value = mock_client
+
+            backends = await agent.detect_backends()
+
+        lmstudio = [b for b in backends if b["type"] == "lmstudio"]
+        assert len(lmstudio) == 1
+        assert lmstudio[0]["url"] == "http://localhost:1234"
+        assert lmstudio[0]["name"] == "lmstudio:1234"
+        assert "llm-chat" in lmstudio[0]["capabilities"]
+        assert "embedding" in lmstudio[0]["capabilities"]
+
+    async def test_lmstudio_not_running(self):
+        """When LM Studio is not reachable, no lmstudio backend appears."""
+        agent = WorkerAgent("http://localhost:6969")
+
+        with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.get = AsyncMock(side_effect=Exception("connection refused"))
+            mock_client_cls.return_value = mock_client
+
+            backends = await agent.detect_backends()
+
+        lmstudio = [b for b in backends if b["type"] == "lmstudio"]
+        assert len(lmstudio) == 0
+
     async def test_backend_name_portless_url(self):
         """When a candidate URL has no explicit port, name falls back to bare backend_type."""
         agent = WorkerAgent("http://localhost:6969")
