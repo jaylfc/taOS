@@ -16,6 +16,15 @@ Serves the switcher page and three calls, on LOOPBACK only:
                    DESKTOP_ORIGIN), or switch to it if it is already open;
                    {"app": "browser"} is Firefox
   POST /open-url   {"url": "https://..."}  open a link in Firefox and show it
+  GET  /snapshot/N the picture of window N taken when it was last left
+                   (image/jpeg), or 404; /windows gives each entry
+                   "snapshot": its mtime, or null when none exists yet
+
+Snapshots (Jay 2026-10-17, "snapshot on leave"): when focus moves off an app
+window, that window is captured with grim -T <foreign_toplevel_identifier>,
+which works on a window that is already hidden, so leaving is never delayed.
+Never the kiosk (lock screen, auth pages) or the switcher. Stored per session
+under $XDG_RUNTIME_DIR/taos-shelld/snap, served only for a listed window.
 
 Runs in the sway session as taos (exec_always), so it has SWAYSOCK and
 needs no privilege: every action is a swaymsg the session owner could type.
@@ -28,6 +37,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import socket
+import struct
 import threading
 import subprocess
 import sys
@@ -70,6 +81,14 @@ HOME_WORKSPACE = "1"
 
 def swaymsg(*args) -> subprocess.CompletedProcess:
     return subprocess.run(["swaymsg", *args], capture_output=True, text=True, timeout=5)
+
+
+def grim(*args) -> subprocess.CompletedProcess:
+    return subprocess.run(["grim", *args], capture_output=True, timeout=5)
+
+
+SNAP_DIR = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/run/user/%d" % os.getuid(),
+                        "taos-shelld", "snap")
 
 
 def _walk(node, workspace=None):
@@ -249,7 +268,121 @@ def open_url(url: str) -> None:
 
 def current_windows() -> list[dict]:
     raw = swaymsg("-t", "get_tree", "-r").stdout
-    return list_windows(json.loads(raw)) if raw else []
+    wins = list_windows(json.loads(raw)) if raw else []
+    listed = {w["con_id"] for w in wins}
+    for w in wins:
+        try:
+            w["snapshot"] = os.path.getmtime(snapshot_path(w["con_id"]))
+        except OSError:
+            w["snapshot"] = None
+    # A window that closed while no event reached us leaves its picture.
+    try:
+        names = os.listdir(SNAP_DIR)
+    except OSError:
+        names = []
+    for name in names:
+        stem = name[:-len(".jpg")] if name.endswith(".jpg") else ""
+        if stem.isdigit() and int(stem) not in listed:
+            apply_action(("prune", int(stem)))
+    return wins
+
+
+# -- snapshots on leave --------------------------------------------------------
+
+def snapshot_path(con_id: int) -> str:
+    return os.path.join(SNAP_DIR, "%d.jpg" % int(con_id))
+
+
+def on_window_event(event: dict, last):
+    """Sway window event -> (actions, new last-focused app).
+
+    *last* is (con_id, toplevel identifier) of the app window in front, or
+    None when the kiosk or nothing listable has focus. Leaving it, for any
+    other window, captures it; closing a window prunes its picture."""
+    con = event.get("container") or {}
+    con_id = con.get("id")
+    change = event.get("change")
+    if change == "close":
+        return [("prune", con_id)], (None if last and last[0] == con_id else last)
+    if change != "focus":
+        return [], last
+    actions = []
+    if last and last[0] != con_id:
+        actions.append(("capture", last[0], last[1]))
+    ident = con.get("foreign_toplevel_identifier")
+    # No workspace in an event: the scratchpad rule cannot apply here.
+    new = (con_id, ident) if ident and not _is_hidden(con, None) else None
+    return actions, new
+
+
+def apply_action(action) -> None:
+    if action[0] == "prune":
+        try:
+            os.unlink(snapshot_path(action[1]))
+        except OSError:
+            pass
+        return
+    _, con_id, ident = action
+    final = snapshot_path(con_id)
+    tmp = final + ".part"
+    try:
+        os.makedirs(SNAP_DIR, mode=0o700, exist_ok=True)
+        if grim("-T", ident, "-t", "jpeg", "-q", "70", tmp).returncode == 0:
+            os.replace(tmp, final)
+    except (subprocess.SubprocessError, OSError) as exc:
+        print("taos-shelld: snapshot of %s failed: %s" % (con_id, exc), file=sys.stderr)
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+_IPC_MAGIC = b"i3-ipc"
+_IPC_SUBSCRIBE = 2
+
+
+def ipc_pack(msg_type: int, payload: bytes) -> bytes:
+    return _IPC_MAGIC + struct.pack("=II", len(payload), msg_type) + payload
+
+
+def _ipc_read(sock) -> tuple[int, bytes]:
+    def exactly(n):
+        buf = b""
+        while len(buf) < n:
+            chunk = sock.recv(n - len(buf))
+            if not chunk:
+                raise ConnectionError("sway closed the IPC socket")
+            buf += chunk
+        return buf
+    head = exactly(14)
+    length, msg_type = struct.unpack("=II", head[6:])
+    return msg_type, exactly(length)
+
+
+def watch_windows() -> None:
+    """Follow sway's window events over its own IPC socket (no swaymsg
+    child to outlive us) and apply the leave rule. Reconnects on a drop."""
+    last = None
+    while True:
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                sock.connect(os.environ["SWAYSOCK"])
+                sock.sendall(ipc_pack(_IPC_SUBSCRIBE, b'["window"]'))
+                _ipc_read(sock)  # {"success": true}
+                while True:
+                    _, payload = _ipc_read(sock)
+                    try:
+                        event = json.loads(payload)
+                    except ValueError:
+                        continue
+                    actions, last = on_window_event(event, last)
+                    for action in actions:
+                        apply_action(action)
+        except (OSError, KeyError, ConnectionError) as exc:
+            print("taos-shelld: window events: %s; retrying" % exc, file=sys.stderr)
+            last = None
+            time.sleep(2)
 
 
 PAGE = r"""<!doctype html>
@@ -353,6 +486,9 @@ h1 { font-size: 22px; font-weight: 600; margin: 0; }
 """
 
 
+_SNAPSHOT_RE = re.compile(r"/snapshot/([0-9]{1,10})")
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -425,7 +561,21 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(PAGE.encode(), "text/html; charset=utf-8")
         if self.path == "/windows":
             return self._json(current_windows())
+        m = _SNAPSHOT_RE.fullmatch(self.path)
+        if m:
+            return self._snapshot(int(m.group(1)))
         return self._json({"error": "not found"}, 404)
+
+    def _snapshot(self, con_id: int):
+        # Only a window the switcher lists: never the kiosk, whatever is on disk.
+        if con_id not in {w["con_id"] for w in current_windows()}:
+            return self._json({"error": "not found"}, 404)
+        try:
+            with open(snapshot_path(con_id), "rb") as f:
+                body = f.read()
+        except OSError:
+            return self._json({"error": "no snapshot"}, 404)
+        return self._send(body, "image/jpeg")
 
     def _post_allowed(self, origins) -> bool:
         if self.headers.get("X-taOS-Shell") != "1":
@@ -518,6 +668,13 @@ def main():
     else:
         sys.exit("taos-shelld: port %d stayed busy" % PORT)
     srv.daemon_threads = True
+    # Pictures from a previous session name container ids sway may reuse.
+    for name in (os.listdir(SNAP_DIR) if os.path.isdir(SNAP_DIR) else []):
+        try:
+            os.unlink(os.path.join(SNAP_DIR, name))
+        except OSError:
+            pass
+    threading.Thread(target=watch_windows, daemon=True).start()
     srv.serve_forever()
 
 
