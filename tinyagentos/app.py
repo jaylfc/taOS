@@ -1559,6 +1559,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         from tinyagentos.model_activity import ModelActivityFeed
         app.state.model_activity = ModelActivityFeed()
 
+<<<<<<< HEAD
         # Core-aware model scheduler (tsk-mo6f5o): manages resident model
         # records with NPU-core-aware scheduling and in-use accounting.
         # Constructed with the activity feed for lifecycle events; NO evict_fn
@@ -1569,6 +1570,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             shape_lookup=get_default_shape,
             activity_feed=app.state.model_activity,
         )
+        # Idle TTL eviction (taOS #62): the catalog poll loop drives the sweep.
+        from tinyagentos.scheduler import backend_catalog
+        backend_catalog.attach_idle_sweeper(app.state.model_scheduler.sweep_idle)
 
         # Wire NotificationStore → EventBus so SSE clients get instant push.
         # The emitter is best-effort: failures are logged and never break add().

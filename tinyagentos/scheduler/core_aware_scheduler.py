@@ -329,16 +329,25 @@ class CoreAwareModelScheduler:
         and the Model Activity feed see it exactly like a
         pressure eviction. Returns the evicted residents.
 
-        The sweep does not run on its own — the embedding process
-        drives it on a timer (e.g. from the backend catalog poll
-        loop or the lifecycle manager), so the scheduler stays free
-        of background tasks and tests stay deterministic.
+        The scheduler keeps no background task of its own. The
+        embedding process drives the sweep from an existing periodic
+        loop: at startup it calls
+        ``BackendCatalog.attach_idle_sweeper(scheduler.sweep_idle)``
+        and the catalog's poll loop invokes it on its tick (taOS
+        #62). Tests can drive it directly, so nothing here depends on
+        wall-clock scheduling.
         """
         evicted: list[LoadedModel] = []
+        now = time.time() if now is None else now
         for model in self.idle_expired(now):
-            # The resident may have been touched (or evicted) between
-            # the query and now; re-check membership before evicting.
+            # The resident may have been touched (or evicted) between the
+            # query and now -- evict_fn and the registry are both externally
+            # reachable -- so re-check membership AND expiry before evicting.
+            # A model refreshed during an earlier eviction in this same sweep
+            # must not be evicted mid-request off the stale snapshot.
             if model.model_id not in self._residents:
+                continue
+            if not model.is_idle_expired(now):
                 continue
             await self._evict_reload(model)
             evicted.append(model)
