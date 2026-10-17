@@ -40,6 +40,7 @@ from tinyagentos.agent_registry_store import (
 from tinyagentos.agent_token_auth import check_agent_identity, check_agent_identity_claims
 from tinyagentos.auth_context import CurrentUser, current_user, require_owner_or_admin
 from tinyagentos.base_store import PendingCapExceeded
+from tinyagentos.notification_labels import project_label
 from tinyagentos.routes.projects import _free_suggestions
 
 logger = logging.getLogger(__name__)
@@ -628,9 +629,16 @@ async def create_auth_request(request: Request, body: CreateAuthRequest):
     if notifs is not None:
         try:
             scopes = record["requested_scopes"] or []
+            # Name the requested project so the approver is not left decoding
+            # a prj- id (tsk-i7ghpa); the id still rides in data below.
+            on_project = (
+                f" on {await project_label(request.app.state, record['project_id'])}"
+                if record.get("project_id")
+                else ""
+            )
             await notifs.add(
                 title="Access request",
-                message=f"{record['identity_claim']} is requesting {', '.join(scopes)}{' ' + _human_duration(record.get('duration_secs')) if record.get('duration_secs') else ''}",
+                message=f"{record['identity_claim']} is requesting {', '.join(scopes)}{on_project}{' ' + _human_duration(record.get('duration_secs')) if record.get('duration_secs') else ''}",
                 level="info",
                 source="auth_requests",
                 data={

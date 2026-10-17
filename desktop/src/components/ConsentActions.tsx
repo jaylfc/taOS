@@ -437,6 +437,21 @@ export function ConsentActions({
     }
   }
 
+  // Screen-reader names for the two decisions: what is granted (or refused)
+  // and on which project, so "Allow" is never ambiguous out of context. Allow
+  // follows the picker, because that is the project the grant binds to.
+  const pickedProjectName = creating
+    ? newName.trim()
+    : projects.find((p) => p.id === selectedProjectId)?.name ?? "";
+  const requestedProjectName =
+    resolvedRequestedProject?.name ?? pickedProjectName;
+  const allowLabel = `Allow ${granted.join(", ")}${
+    needsProject && pickedProjectName ? ` on ${pickedProjectName}` : ""
+  }`;
+  const denyLabel = `Deny ${scopes.join(", ")}${
+    needsProject && requestedProjectName ? ` on ${requestedProjectName}` : ""
+  }`;
+
   const allowDisabled =
     busy ||
     projectScopes === null ||
@@ -653,6 +668,7 @@ export function ConsentActions({
                 decide(true);
               }}
               disabled={allowDisabled}
+              aria-label={allowLabel}
               className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 border border-emerald-500/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <CheckCircle size={11} />
@@ -660,6 +676,7 @@ export function ConsentActions({
             </button>
             <button
               type="button"
+              aria-label={denyLabel}
               onClick={(e) => {
                 e.stopPropagation();
                 if (denyReasonRequired) {

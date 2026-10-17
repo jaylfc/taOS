@@ -908,8 +908,8 @@ describe("RegistryPanel pending scope requests", () => {
       screen.getByText("b315b330bea444c2b02958ebf572a4d7"),
     ).toBeInTheDocument();
     // The shared ConsentActions control is what offers Allow / Deny.
-    expect(screen.getByRole("button", { name: "Allow" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Deny" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Allow/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Deny/ })).toBeInTheDocument();
 
     // The list is fetched from the server, narrowed to pending.
     const scopeCalls = mockFetch.mock.calls.filter((c: unknown[]) =>

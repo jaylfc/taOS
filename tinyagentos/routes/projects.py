@@ -18,6 +18,7 @@ from tinyagentos.agent_token_auth import (
     check_agent_scope_for_project,
 )
 from tinyagentos.auth_context import CurrentUser, current_user
+from tinyagentos.notification_labels import actor_label, project_label, task_label
 from tinyagentos.projects.element_store import _SLUG_RE
 from tinyagentos.projects.folders import (
     ensure_element_folder,
@@ -732,6 +733,17 @@ async def _authorize_project_lead(
     return (caller, True, project)
 
 
+async def _task_event_message(
+    request: Request, task: dict, task_id: str, verb: str, actor_id: "str | None"
+) -> str:
+    """Notification text for a task lifecycle event, by name rather than id:
+    '"Fix login" closed by Jay on taOS' (tsk-i7ghpa)."""
+    state = request.app.state
+    actor = await actor_label(state, actor_id)
+    project = await project_label(state, task.get("project_id"))
+    return f"{task_label(task, task_id)} {verb} by {actor} on {project}"
+
+
 def _resolve_actor(
     is_agent: bool, actor_id: str, body_actor: "str | None"
 ) -> "str | None | JSONResponse":
@@ -1140,7 +1152,11 @@ async def claim_task(
     await pstore.log_activity(project_id, claimer_id, "task.claimed", {"task_id": task_id})
     notifs = getattr(request.app.state, "notifications", None)
     if notifs is not None:
-        await notifs.emit_event("task.claimed", "Task claimed", f"{task_id} claimed by {claimer_id}")
+        await notifs.emit_event(
+            "task.claimed",
+            "Task claimed",
+            await _task_event_message(request, existing, task_id, "claimed", claimer_id),
+        )
     return await store.get_task(task_id)
 
 
@@ -1272,7 +1288,11 @@ async def close_task(
     await pstore.log_activity(project_id, closed_by, "task.closed", {"task_id": task_id})
     notifs = getattr(request.app.state, "notifications", None)
     if notifs is not None:
-        await notifs.emit_event("task.closed", "Task closed", f"{task_id} closed by {closed_by}")
+        await notifs.emit_event(
+            "task.closed",
+            "Task closed",
+            await _task_event_message(request, existing, task_id, "closed", closed_by),
+        )
     task = await store.get_task(task_id)
     qmd = getattr(request.app.state, "qmd_client", None)
     if qmd is not None and task is not None:
@@ -1314,7 +1334,11 @@ async def reopen_task(
     await pstore.log_activity(project_id, actor, "task.reopened", {"task_id": task_id})
     notifs = getattr(request.app.state, "notifications", None)
     if notifs is not None:
-        await notifs.emit_event("task.reopened", "Task reopened", f"{task_id} reopened by {actor}")
+        await notifs.emit_event(
+            "task.reopened",
+            "Task reopened",
+            await _task_event_message(request, existing, task_id, "reopened", actor),
+        )
     return await store.get_task(task_id)
 
 
@@ -1349,7 +1373,9 @@ async def unquarantine_task(
     notifs = getattr(request.app.state, "notifications", None)
     if notifs is not None:
         await notifs.emit_event(
-            "task.unquarantined", "Task unquarantined", f"{task_id} unquarantined by {actor_id}"
+            "task.unquarantined",
+            "Task unquarantined",
+            await _task_event_message(request, existing, task_id, "unquarantined", actor_id),
         )
     return await store.get_task(task_id)
 

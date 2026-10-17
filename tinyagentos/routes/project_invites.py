@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field, field_validator
 from tinyagentos.agent_registry_store import _slugify, agent_slug_or_fallback
 from tinyagentos.auth_context import CurrentUser, current_user, require_owner_or_admin
 from tinyagentos.auth_middleware import rate_limit_ok, rate_limit_retry_after
+from tinyagentos.notification_labels import project_label
 from tinyagentos.projects.invite_store import (
     InviteAlreadyRedeemedError,
     InviteExpiredError,
@@ -1432,12 +1433,20 @@ def _notify_pending_invite(request: Request, record: dict) -> None:
         return
     try:
         scopes = record.get("requested_scopes") or []
+        project_id = record.get("project_id")
         import asyncio
 
-        asyncio.create_task(
-            notifs.add(
+        async def _add() -> None:
+            # Name the invite's project and carry its id so the consent
+            # surface can preselect it (tsk-i7ghpa).
+            on_project = (
+                f" on {await project_label(request.app.state, project_id)}"
+                if project_id
+                else ""
+            )
+            await notifs.add(
                 title="Access request",
-                message=f"{record['identity_claim']} is requesting {', '.join(scopes)}",
+                message=f"{record['identity_claim']} is requesting {', '.join(scopes)}{on_project}",
                 level="info",
                 source="auth_requests",
                 data={
@@ -1445,9 +1454,11 @@ def _notify_pending_invite(request: Request, record: dict) -> None:
                     "identity_claim": record["identity_claim"],
                     "framework": record["framework"],
                     "requested_scopes": list(scopes),
+                    "project_id": project_id,
                 },
             )
-        )
+
+        asyncio.create_task(_add())
     except Exception:  # noqa: BLE001
         pass
 

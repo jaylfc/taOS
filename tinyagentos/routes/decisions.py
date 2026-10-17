@@ -21,6 +21,7 @@ from tinyagentos.auth_context import CurrentUser
 from tinyagentos.decisions.decision_store import DECISION_TYPES, PRIORITIES
 from tinyagentos.device_auth import current_user_or_device
 from tinyagentos.events.bus import SystemEvent
+from tinyagentos.notification_labels import actor_label
 
 logger = logging.getLogger(__name__)
 
@@ -409,7 +410,10 @@ async def create_decision(
             ]
             await notifs.add(
                 title="Decision needed",
-                message=f"{from_agent} needs a decision: {body.question[:120]}",
+                message=(
+                    f"{await actor_label(request.app.state, from_agent)} needs a decision: "
+                    f"{body.question[:120]}"
+                ),
                 level="warning" if body.priority == "blocking" else "info",
                 source="decisions",
                 data={
