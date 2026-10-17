@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { getLaunchableApps, getSearchableApps } from "@/registry/app-registry";
 
 describe("tier-3 search discoverability", () => {
-  const TIER3_IDS = ["providers", "mcp", "channels", "notification-archive"];
+  const TIER3_IDS = ["providers", "mcp", "channels", "notification-history"];
 
   it("includes tier-3 apps in search results", () => {
     const ids = getSearchableApps(new Set()).map((a) => a.id);

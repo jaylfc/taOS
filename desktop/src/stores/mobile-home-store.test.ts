@@ -33,7 +33,7 @@ describe("mobile-home-store", () => {
     // via Store/search, not the default mobile home surface.
     const tier3Ids = getAllApps().filter((a) => a.tier === 3).map((a) => a.id);
     expect(tier3Ids).toEqual(
-      expect.arrayContaining(["providers", "mcp", "channels", "notification-archive"]),
+      expect.arrayContaining(["providers", "mcp", "channels", "notification-history"]),
     );
     for (const id of tier3Ids) {
       expect(ids.has(id), `tier-3 app "${id}" should NOT be in default grid`).toBe(false);

@@ -98,7 +98,7 @@ export const apps: AppManifest[] = [
   { id: "agent-browsers", name: "Browsers", icon: "globe", category: "platform", component: () => import("@/apps/AgentBrowsersApp").then((m) => ({ default: m.AgentBrowsersApp })), defaultSize: { w: 1000, h: 650 }, minSize: { w: 550, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16 },
   { id: "feedback", name: "Feedback", icon: "flag", category: "platform", component: () => import("@/apps/FeedbackApp").then((m) => ({ default: m.FeedbackApp })), defaultSize: { w: 700, h: 560 }, minSize: { w: 420, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16.5 },
   { id: "decisions", name: "Decisions", icon: "inbox", category: "platform", component: () => import("@/apps/DecisionsApp").then((m) => ({ default: m.DecisionsApp })), defaultSize: { w: 640, h: 620 }, minSize: { w: 420, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16.6 },
-  { id: "notification-archive", name: "Archive", icon: "archive", category: "platform", component: () => import("@/apps/NotificationArchiveApp").then((m) => ({ default: m.NotificationArchiveApp })), defaultSize: { w: 800, h: 600 }, minSize: { w: 500, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16.65, tier: 3 },
+  { id: "notification-history", name: "Notification History", icon: "history", category: "platform", component: () => import("@/apps/NotificationHistoryApp").then((m) => ({ default: m.NotificationHistoryApp })), defaultSize: { w: 900, h: 600 }, minSize: { w: 500, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16.64, tier: 3 },
   { id: "observatory", name: "Observatory", icon: "radar", category: "platform", component: () => import("@/apps/ObservatoryApp").then((m) => ({ default: m.ObservatoryApp })), defaultSize: { w: 620, h: 600 }, minSize: { w: 420, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16.7, tier: 2, group: "System" },
   { id: "notes", name: "Notes", icon: "sticky-note", category: "platform", component: () => import("@/apps/NotesApp").then((m) => ({ default: m.NotesApp })), defaultSize: { w: 860, h: 620 }, minSize: { w: 520, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16.8 },
   { id: "todo", name: "Todo", icon: "list-checks", category: "platform", component: () => import("@/apps/TodoApp").then((m) => ({ default: m.TodoApp })), defaultSize: { w: 860, h: 620 }, minSize: { w: 520, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16.85 },
@@ -190,15 +190,20 @@ export type PinnedLaunchProps = { section?: string };
  * Pin ids that are not app ids: retired launcher entries the dock may still
  * hold, mapped to the app (and section) they open today.
  *
- * The dock stores *pin ids*, never these resolved targets. Rewriting a pin to
- * its target throws the section away — `notifications` alone cannot say the
- * pin meant the Archive tab — and the dock auto-save then persists the
+* The dock stores *pin ids*, never these resolved targets. Rewriting a pin to
+ * its target throws the section away -- `notifications` alone cannot say the
+ * pin meant the Archive tab -- and the dock auto-save then persists the
  * stripped id, so one reload destroys the pin for good (#2677). Resolution
  * therefore happens where a pin is used: `pinnedAppId` for the icon,
  * `pinnedLaunchProps` for the launch.
+ *
+ * `notification-archive` was a standalone app (the old Archive app, retired by
+ * #3822). Its manifest is gone, so the pin can no longer resolve to it; the
+ * redirect keeps old dock pins and restored sessions landing on the
+ * Notification History app instead.
  */
 export const APP_REDIRECTS: Record<string, { appId: string; section?: string }> = {
-  "notification-archive": { appId: "notifications", section: "archive" },
+  "notification-archive": { appId: "notification-history" },
 };
 
 /**
@@ -224,7 +229,7 @@ export function isDefaultSurfaceApp(app: AppManifest): boolean {
 /**
  * Apps the desktop search should surface: every always-on app, installed
  * optional apps, and tier-3 registry apps (providers, mcp, channels,
- * notification-archive). Tier-3 apps remain hidden from the launcher grids
+ * notification-history). Tier-3 apps remain hidden from the launcher grids
  * and mobile home default surface; they are reachable here via search and
  * still openable by direct id.
  */

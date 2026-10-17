@@ -3,7 +3,7 @@ import { useProcessStore, type SnapPosition } from "@/stores/process-store";
 import { useDockStore } from "@/stores/dock-store";
 import { useThemeStore } from "@/stores/theme-store";
 import { useWidgetStore, type Widget } from "@/stores/widget-store";
-import { getApp } from "@/registry/app-registry";
+import { getApp, resolvePinnedId } from "@/registry/app-registry";
 import { useBrowserStore } from "@/stores/browser-store";
 import { loadWindows as loadBrowserWindows, saveWindows as saveBrowserWindows } from "@/lib/browser-windows-api";
 import type { BrowserWindowState } from "@/apps/BrowserApp/types";
@@ -76,12 +76,17 @@ export function useSessionPersistence() {
       .then((positions: SavedWindow[]) => {
         if (!Array.isArray(positions)) return;
         for (const saved of positions) {
-          const app = getApp(saved.appId);
+          // A retired app id (`notification-archive`) has no manifest anymore;
+          // resolve it through APP_REDIRECTS so a restored session still lands
+          // on its replacement instead of dropping the window (#3822).
+          const resolved = resolvePinnedId(saved.appId);
+          const appId = resolved?.id ?? saved.appId;
+          const app = getApp(appId);
           if (!app) continue;
           // Restoring the saved in-page layout, not a user open: never hand
           // these to the handset shell (that would launch every saved window
           // as its own app at boot).
-          const wid = openWindow(saved.appId, { w: saved.w, h: saved.h }, undefined, { inPage: true });
+          const wid = openWindow(appId, { w: saved.w, h: saved.h }, undefined, { inPage: true });
           updatePosition(wid, saved.x, saved.y);
           updateSize(wid, saved.w, saved.h);
           if (saved.maximized) {
@@ -100,8 +105,8 @@ export function useSessionPersistence() {
       .then((data: { pinned?: string[]; iconSize?: string; position?: string }) => {
         if (data.pinned && Array.isArray(data.pinned)) {
           // Saved pins are restored verbatim. Resolving a redirect id to its
-          // target here (`notification-archive` -> `notifications`) dropped
-          // the section the pin existed to express before the dock, the
+          // target here (`notification-archive` -> `notification-history`)
+          // dropped the section the pin existed to express before the dock, the
           // shortcuts or the app could read it, and the auto-save below then
           // wrote the stripped id back, so one reload lost the pin for good
           // (#2677). Redirects resolve where a pin is used instead; an id no

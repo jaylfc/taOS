@@ -14,9 +14,10 @@ vi.mock("@/registry/app-registry", () => {
     messages: { id: "messages", name: "Messages", icon: "message-circle", singleton: true, defaultSize: { w: 900, h: 600 } },
     projects: { id: "projects", name: "Projects", icon: "folder-kanban", singleton: false, defaultSize: { w: 1100, h: 720 } },
     notifications: { id: "notifications", name: "Notifications", icon: "bell", singleton: true, defaultSize: { w: 900, h: 600 } },
+    "notification-history": { id: "notification-history", name: "Notification History", icon: "history", singleton: true, defaultSize: { w: 900, h: 600 } },
   };
   const mockRedirects: Record<string, { appId: string; section?: string }> = {
-    "notification-archive": { appId: "notifications", section: "archive" },
+    "notification-archive": { appId: "notification-history" },
   };
   const resolve = (id: string) => {
     const redirect = mockRedirects[id];
@@ -108,6 +109,6 @@ describe("DockIcon legacy pin ids (#2677)", () => {
 
   it("renders the app a legacy pin launches, not a blank slot", () => {
     render(<DockIcon appId="notification-archive" isRunning={false} onClick={() => {}} />);
-    expect(screen.getByRole("button", { name: "Open Notifications" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open Notification History" })).toBeInTheDocument();
   });
 });
