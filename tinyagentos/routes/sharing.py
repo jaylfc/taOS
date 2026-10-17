@@ -15,6 +15,36 @@ class GrantBody(BaseModel):
     grantee: str
 
 
+async def _caller_owns_artifact(
+    request: Request, 
+    artifact_kind: str, 
+    artifact_id: str, 
+    owner_id: str
+) -> bool:
+    """Verify that the authenticated user owns the specified artifact.
+    
+    Returns True if the user owns the artifact, False otherwise.
+    """
+    if artifact_kind in ("app", "game"):
+        return False
+    
+    elif artifact_kind == "project":
+        project_store = getattr(request.app.state, "project_store", None)
+        if project_store is not None:
+            project = await project_store.get_project(artifact_id)
+            if project is not None:
+                return project.get("user_id") == owner_id
+        return False
+    
+    elif artifact_kind == "workflow":
+        return False
+    
+    elif artifact_kind == "studio":
+        return False
+    
+    return False
+
+
 async def _require_owner(request: Request, grant_id: str, current_user: dict = Depends(get_current_user)) -> str:
     """Verify the authed user owns the grant. Returns owner_id on success."""
     owner_id = current_user.get("id")
@@ -46,6 +76,10 @@ async def create_grant(request: Request, body: GrantBody, current_user: dict = D
         return JSONResponse({"error": "invalid artifact_kind"}, status_code=400)
     if not grantee:
         return JSONResponse({"error": "grantee is required"}, status_code=400)
+
+    # Verify that the caller owns the artifact before creating a grant
+    if not await _caller_owns_artifact(request, artifact_kind, artifact_id, owner_id):
+        return JSONResponse({"error": "you do not own this artifact"}, status_code=403)
 
     store = request.app.state.sharing_grants
     try:
