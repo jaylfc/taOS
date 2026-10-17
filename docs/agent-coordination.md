@@ -1258,9 +1258,13 @@ target user so the desktop consent actions can approve or deny:
   Once accepted, the module-level helper `user_can_access()` returns True for
   that resource.
 - `POST /api/shares/{id}/deny` -- deny a pending share (target user only).
-  The share row is preserved with `status=denied` for audit.
+   The share row is preserved with `status=denied` for audit.
 - `DELETE /api/shares/{id}` -- revoke a share. Owner or admin only
-  (requires `require_owner_or_admin` against the share's `owner_user_id`).
+   (requires `require_owner_or_admin` against the share's `owner_user_id`).
+### Sharing grants (/api/sharing/grants)
+POST /api/sharing/grants creates a grant only when the caller owns the artifact; for kind `project` ownership is the project's `user_id`; kinds `app`, `game`, `workflow` and `studio` currently fail closed (403); a non-owner gets 403 {"error": "you do not own this artifact"}.
+
+
 
 ## Project invite redeem route (link + PIN)
 

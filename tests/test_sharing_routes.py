@@ -32,8 +32,8 @@ class TestCreateGrantOwnership:
         
         # Create an async client for user B
         from httpx import AsyncClient, ASGITransport
-        import secrets
-        csrf_token = secrets.token_hex(32)
+        from taos_test_csrf import bound_csrf_token
+        csrf_token = bound_csrf_token(app, user_b_token)
         transport = ASGITransport(app=app)
         async with AsyncClient(
             transport=transport,
