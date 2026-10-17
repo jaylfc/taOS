@@ -1262,6 +1262,45 @@ target user so the desktop consent actions can approve or deny:
 - `DELETE /api/shares/{id}` -- revoke a share. Owner or admin only
   (requires `require_owner_or_admin` against the share's `owner_user_id`).
 
+## Cross-user agent delegation (D1)
+
+Cross-user collab delegation lets a user's agent delegate project work to
+another user's agent over the peer channel. It spans several route modules and
+a registry column, so the surface is documented here:
+
+- **Registry sponsorship.** The agent registry gains a `sponsor_contact_id`
+  column. A delegated (sponsored) identity is bound to its sponsor's contact id
+  per `(identity, project)` association, set through the registry's
+  `set_sponsorship(contact_id, project_id, sponsor_contact_id)` helper. The
+  auth-request create/approve paths in `tinyagentos/routes/agent_auth_requests.py`
+  carry the optional `sponsor_contact_id` and record it on the minted identity.
+- **Scope model.** Sponsored agents are validated against three tiers in
+  `tinyagentos/delegation_handler.py`: the default allowlist
+  (`SPONSORED_DEFAULT_SCOPES` = `a2a_send`, `a2a_receive`, `project_tasks`,
+  `canvas_read`, `registry_feeds_read`) may be auto-granted; the denylist
+  (`SPONSORED_DENY_SCOPES` = `files_write`, `decisions_write`) is hard-denied and
+  never granted; everything else is *elevated* and must route to manual approval.
+  An elevated scope is never auto-granted, even when the project has
+  auto-approve on.
+- **Peer envelopes.** The peer inbox (`POST /api/peer/inbox` in
+  `tinyagentos/routes/peer.py`) dispatches the new kinds `collab_invite`,
+  `collab_invite_accept`/`collab_invite_decline`, `delegation_request` (handled
+  by `process_delegation_request`) and `delegation_status`. `delegation_status`
+  persists a durable Decision record keyed on `invite_id` (idempotent on
+  re-delivery) so the requester's agent runner can poll for and redeem it.
+- **Outbound delivery.** `send_envelope()` in `tinyagentos/peer.py` builds a
+  signed envelope addressed to a canonical `hub:<fingerprint>` contact id and
+  delivers it to the contact's peer endpoints in priority order; the envelope
+  `from` is always this node's own signing identity, so the receiver verifies
+  the signature against the pinned pubkey.
+- **Approval path.** A `collab_delegation_gate` Decision (a privileged gate kind,
+  allowlisted and provenance-guarded in `tinyagentos/routes/decisions.py`)
+  carries the request metadata; approving it mints the sponsored project invite
+  via `complete_delegation_approval`. Each project has an
+  `auto_approve_delegation` knob (default **off**).
+- **Cascade revocation.** Revoking a contact or project membership revokes all
+  identities that contact sponsored and unassigns their board tasks.
+
 ## Project invite redeem route (link + PIN)
 
 A project invite lets an external agent join without going through the consent
@@ -2565,3 +2604,15 @@ The trace store refuses either kind with a field missing, and
 signed-in user whose `user_id` it carries, so one account never reads
 another's audit trail. The rows show in the Agents app trace list (kind filter) and in the taOS
 agent's Activity tab.
+
+## Cross-user agent delegation (D1, #2048)
+
+Agents can delegate project work to another user's agent:
+
+- **Sponsor link**: `sponsor_contact_id` on the agent registry links a sponsored identity to its sponsoring contact.
+- **Delegation flow**: a `delegation_request` envelope routes through the peer inbox into a scope-validated delegation handler (`tinyagentos/delegation_handler.py`).
+- **Project knob**: each project has `auto_approve_delegation` (default off). When off, a manual Decisions card gates the delegation.
+- **Default scope**: sponsored agents get a conservative scope (`a2a_send`, `a2a_receive`, `project_tasks`, `canvas_read`, `registry_feeds_read`); `files_write` and `decisions_write` are hard-denied at scope validation.
+- **Revocation cascades**: revoking a contact or membership revokes all sponsored identities and unassigns their board tasks.
+
+Routes: `POST /api/decisions` (delegation kind), peer inbox envelope handling, project-invite integration.
