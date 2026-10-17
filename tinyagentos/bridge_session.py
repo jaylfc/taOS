@@ -100,6 +100,8 @@ class _AgentSession:
         self.pending_hops: dict[str, int] = {}
         # Bounded seen set of final reply ids (keeps newest 256 per agent).
         self._seen_final_ids: OrderedDict[str, None] = OrderedDict()
+        # Set of trace_ids for which mark_seen has been called (idempotent guard).
+        self._seen_trace_ids: set[str] = set()
 
     def accumulate_delta(self, trace_id: str, content: str) -> None:
         if trace_id not in self._delta_buffers:
@@ -180,9 +182,10 @@ class BridgeSessionRegistry:
         trace_id = msg.get("trace_id") or msg.get("id")
         if trace_id is not None:
             session.pending_hops[trace_id] = int(msg.get("hops_since_user") or 0)
+        # Store data as JSON string so subscribe can read id without re-encoding
         await session.queue.put({
             "event": "user_message",
-            "data": msg,
+            "data": json.dumps(msg),
         })
 
         # Record a message_in trace event so the transcript captures both
@@ -255,7 +258,34 @@ class BridgeSessionRegistry:
                 if item is _DISCONNECT:
                     break
                 event_type = item.get("event", "message")
-                data = json.dumps(item.get("data", {}))
+                
+                # Stamp delivered when a user_message is actually yielded to the agent
+                # (not when it was enqueued). The local `data` there is already the JSON string.
+                if event_type == "user_message" and self._chat_messages:
+                    try:
+                        # item['data'] is already the JSON string per the code above
+                        item_data = json.loads(item.get("data", "{}"))
+                        msg_id = item_data.get("id")
+                        if msg_id:
+                            receipt_row = await self._chat_messages.mark_delivered(msg_id, slug)
+                            if receipt_row and self._chat_hub:
+                                # Need channel_id to broadcast; get it from the message
+                                msg = await self._chat_messages.get_message(msg_id)
+                                if msg and msg.get("channel_id"):
+                                    await self._chat_hub.broadcast(msg["channel_id"], {
+                                        "type": "receipt",
+                                        "seq": self._chat_hub.next_seq(),
+                                        "message_id": receipt_row["message_id"],
+                                        "agent_id": receipt_row["reader_id"],
+                                        "reader_type": receipt_row["reader_type"],
+                                        "delivered_at": receipt_row["delivered_at"],
+                                        "seen_at": receipt_row["seen_at"],
+                                    })
+                    except Exception:
+                        logger.exception("bridge_session: mark_delivered failed for %s", slug)
+                
+                # item['data'] is already a JSON string
+                data = item.get("data", "{}")
                 yield f"event: {event_type}\ndata: {data}\n\n"
         finally:
             if tick_task is not None:
@@ -295,6 +325,28 @@ class BridgeSessionRegistry:
             session = self._get_or_create(slug)
 
         if kind == "delta":
+            # Stamp seen on first delta for this trace_id
+            if trace_id not in session._seen_trace_ids and self._chat_messages:
+                try:
+                    msg = await self._chat_messages.get_message(trace_id)
+                    if msg:
+                        receipt_row = await self._chat_messages.mark_seen(trace_id, slug)
+                        if receipt_row and self._chat_hub:
+                            channel_id = msg.get("channel_id")
+                            if channel_id:
+                                await self._chat_hub.broadcast(channel_id, {
+                                    "type": "receipt",
+                                    "seq": self._chat_hub.next_seq(),
+                                    "message_id": receipt_row["message_id"],
+                                    "agent_id": receipt_row["reader_id"],
+                                    "reader_type": receipt_row["reader_type"],
+                                    "delivered_at": receipt_row["delivered_at"],
+                                    "seen_at": receipt_row["seen_at"],
+                                })
+                        session._seen_trace_ids.add(trace_id)
+                except Exception:
+                    logger.exception("bridge_session: mark_seen failed for %s", slug)
+            
             session.accumulate_delta(trace_id, content)
             # Ensure a streaming placeholder chat message exists.
             pending_msg_id = session._pending_msg_ids.get(trace_id)
@@ -333,6 +385,28 @@ class BridgeSessionRegistry:
                     })
 
         elif kind == "final":
+            # Stamp seen on first final for this trace_id (if no delta came before)
+            if trace_id not in session._seen_trace_ids and self._chat_messages:
+                try:
+                    msg = await self._chat_messages.get_message(trace_id)
+                    if msg:
+                        receipt_row = await self._chat_messages.mark_seen(trace_id, slug)
+                        if receipt_row and self._chat_hub:
+                            channel_id = msg.get("channel_id")
+                            if channel_id:
+                                await self._chat_hub.broadcast(channel_id, {
+                                    "type": "receipt",
+                                    "seq": self._chat_hub.next_seq(),
+                                    "message_id": receipt_row["message_id"],
+                                    "agent_id": receipt_row["reader_id"],
+                                    "reader_type": receipt_row["reader_type"],
+                                    "delivered_at": receipt_row["delivered_at"],
+                                    "seen_at": receipt_row["seen_at"],
+                                })
+                        session._seen_trace_ids.add(trace_id)
+                except Exception:
+                    logger.exception("bridge_session: mark_seen failed for %s", slug)
+
             reply_id = body.get("id")
             if not isinstance(reply_id, str) or not reply_id:
                 reply_id = None

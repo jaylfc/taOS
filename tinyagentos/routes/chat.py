@@ -1016,3 +1016,68 @@ async def get_typing(channel_id: str, request: Request):
         return JSONResponse({"human": [], "agent": []})
     return JSONResponse(reg.list(channel_id))
 
+
+# ── Receipts ────────────────────────────────────────────────────────────────
+
+@router.get("/api/chat/messages/{message_id}/receipts")
+async def get_message_receipts(message_id: str, request: Request):
+    """Get delivery/seen receipts for a message."""
+    msg_store = request.app.state.chat_messages
+    msg = await msg_store.get_message(message_id)
+    if msg is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    receipts = await msg_store.get_receipts(message_id)
+    # SPA's Receipt type uses agent_id = reader_id
+    formatted = [
+        {
+            "message_id": r["message_id"],
+            "agent_id": r["reader_id"],
+            "reader_type": r["reader_type"],
+            "delivered_at": r["delivered_at"],
+            "seen_at": r["seen_at"],
+        }
+        for r in receipts
+    ]
+    return {"receipts": formatted}
+
+
+@router.patch("/api/chat/receipts")
+async def mark_receipt_seen(request: Request):
+    """Mark a message as seen by the human viewer.
+    
+    Body: {"message_id": str}
+    Takes user_id ONLY from the session (taos_session cookie).
+    """
+    body = await request.json()
+    message_id = body.get("message_id")
+    if not isinstance(message_id, str) or not message_id:
+        return JSONResponse({"error": "message_id required"}, status_code=400)
+    
+    auth = getattr(request.app.state, "auth", None)
+    session_user = None
+    if auth is not None:
+        token = request.cookies.get("taos_session") or ""
+        if token:
+            session_user = auth.session_user(token, user_agent=request.headers.get("user-agent", ""))
+    if session_user is None:
+        return JSONResponse({"error": "not authenticated"}, status_code=401)
+    
+    msg_store = request.app.state.chat_messages
+    msg = await msg_store.get_message(message_id)
+    if msg is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    
+    hub = request.app.state.chat_hub
+    receipt_row = await msg_store.mark_seen(message_id, session_user["id"], "user")
+    if receipt_row:
+        await hub.broadcast(msg["channel_id"], {
+            "type": "receipt",
+            "seq": hub.next_seq(),
+            "message_id": receipt_row["message_id"],
+            "agent_id": receipt_row["reader_id"],
+            "reader_type": receipt_row["reader_type"],
+            "delivered_at": receipt_row["delivered_at"],
+            "seen_at": receipt_row["seen_at"],
+        })
+    return {"status": "marked"}
+

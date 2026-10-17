@@ -53,6 +53,15 @@ CREATE TABLE IF NOT EXISTS chat_attachments (
     uploaded_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_chat_attachments_message ON chat_attachments(message_id);
+
+CREATE TABLE IF NOT EXISTS chat_receipts (
+    message_id TEXT NOT NULL,
+    reader_id TEXT NOT NULL,
+    reader_type TEXT NOT NULL DEFAULT 'agent',
+    delivered_at REAL,
+    seen_at REAL,
+    PRIMARY KEY (message_id, reader_id)
+);
 """
 
 _JSON_FIELDS = ("content_blocks", "embeds", "components", "attachments", "reactions", "metadata")
@@ -795,3 +804,152 @@ class ChatMessageStore(BaseStore):
             rows = await cursor.fetchall()
             desc = cursor.description
         return [_parse(r, desc) for r in rows]
+
+    async def mark_delivered(
+        self, message_id: str, reader_id: str, reader_type: str = "agent"
+    ) -> dict | None:
+        """Mark a message as delivered to a reader.
+        
+        Upserts the receipt row. First timestamp wins — never overwrites a non-null value.
+        Returns the row dict only when something changed, else None.
+        """
+        # First check if the message exists
+        msg = await self.get_message(message_id)
+        if msg is None:
+            return None
+        
+        now = time.time()
+        # Try to insert first
+        cursor = await self._db.execute(
+            """INSERT OR IGNORE INTO chat_receipts
+               (message_id, reader_id, reader_type, delivered_at)
+               VALUES (?, ?, ?, ?)""",
+            (message_id, reader_id, reader_type, now),
+        )
+        await self._db.commit()
+        
+        if cursor.rowcount == 1:
+            # New row inserted
+            return {
+                "message_id": message_id,
+                "reader_id": reader_id,
+                "reader_type": reader_type,
+                "delivered_at": now,
+                "seen_at": None,
+            }
+        
+        # Row exists — check if delivered_at is null and update it
+        async with self._db.execute(
+            "SELECT delivered_at, seen_at FROM chat_receipts WHERE message_id = ? AND reader_id = ?",
+            (message_id, reader_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+        
+        if row and row[0] is None:
+            # delivered_at is null, update it
+            await self._db.execute(
+                "UPDATE chat_receipts SET delivered_at = ? WHERE message_id = ? AND reader_id = ?",
+                (now, message_id, reader_id),
+            )
+            await self._db.commit()
+            return {
+                "message_id": message_id,
+                "reader_id": reader_id,
+                "reader_type": reader_type,
+                "delivered_at": now,
+                "seen_at": row[1],
+            }
+        
+        return None
+
+    async def mark_seen(
+        self, message_id: str, reader_id: str, reader_type: str = "agent"
+    ) -> dict | None:
+        """Mark a message as seen by a reader.
+        
+        Upserts the receipt row. First timestamp wins — never overwrites a non-null value.
+        Also fills delivered_at when null. Returns the row dict only when something changed, else None.
+        """
+        # First check if the message exists
+        msg = await self.get_message(message_id)
+        if msg is None:
+            return None
+        
+        now = time.time()
+        # Try to insert first
+        cursor = await self._db.execute(
+            """INSERT OR IGNORE INTO chat_receipts
+               (message_id, reader_id, reader_type, delivered_at, seen_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (message_id, reader_id, reader_type, now, now),
+        )
+        await self._db.commit()
+        
+        if cursor.rowcount == 1:
+            # New row inserted with both timestamps
+            return {
+                "message_id": message_id,
+                "reader_id": reader_id,
+                "reader_type": reader_type,
+                "delivered_at": now,
+                "seen_at": now,
+            }
+        
+        # Row exists — check what needs updating
+        async with self._db.execute(
+            "SELECT delivered_at, seen_at FROM chat_receipts WHERE message_id = ? AND reader_id = ?",
+            (message_id, reader_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+        
+        if row is None:
+            return None
+        
+        current_delivered, current_seen = row
+        updates = []
+        params = []
+        
+        if current_delivered is None:
+            updates.append("delivered_at = ?")
+            params.append(now)
+        if current_seen is None:
+            updates.append("seen_at = ?")
+            params.append(now)
+        
+        if not updates:
+            return None
+        
+        params.extend([message_id, reader_id])
+        await self._db.execute(
+            f"UPDATE chat_receipts SET {', '.join(updates)} WHERE message_id = ? AND reader_id = ?",
+            tuple(params),
+        )
+        await self._db.commit()
+        
+        return {
+            "message_id": message_id,
+            "reader_id": reader_id,
+            "reader_type": reader_type,
+            "delivered_at": now if current_delivered is None else current_delivered,
+            "seen_at": now if current_seen is None else current_seen,
+        }
+
+    async def get_receipts(self, message_id: str) -> list[dict]:
+        """Get all receipts for a message."""
+        async with self._db.execute(
+            "SELECT message_id, reader_id, reader_type, delivered_at, seen_at "
+            "FROM chat_receipts WHERE message_id = ?",
+            (message_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        
+        return [
+            {
+                "message_id": row[0],
+                "reader_id": row[1],
+                "reader_type": row[2],
+                "delivered_at": row[3],
+                "seen_at": row[4],
+            }
+            for row in rows
+        ]
