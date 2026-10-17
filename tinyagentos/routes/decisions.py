@@ -1396,6 +1396,22 @@ async def _apply_project_create_grant(request: Request, decision: dict, value) -
                 f"project creation approved, but acceptance failed - auth request {auth_request_id} refused",
             )
             return True
+
+        # Project created and accepted: ensure its A2A channel (taOS #2115).
+        # Best-effort, like the other creation paths; ensure is idempotent.
+        try:
+            from tinyagentos.projects.a2a import ensure_a2a_channel
+
+            await ensure_a2a_channel(
+                request.app.state.chat_channels,
+                pstore,
+                project["id"],
+                config=getattr(request.app.state, "config", None),
+            )
+        except Exception:
+            logger.warning(
+                "a2a ensure failed for project_create decision %s", decision.get("id"), exc_info=True
+            )
     else:
         try:
             await auth_store.set_decision(

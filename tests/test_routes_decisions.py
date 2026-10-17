@@ -1716,3 +1716,81 @@ async def test_withdraw_device_bearer_refused(client, app):
         resp = await bc.post(f"/api/decisions/{d['id']}/withdraw", json={"reason": "x"})
     assert resp.status_code == 401, resp.text
     assert (await app.state.decision_store.get(d["id"]))["status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_project_create_approve_creates_a2a_channel(client, monkeypatch, tmp_path):
+    """taOS #2115: approving a project_create decision must create the project's
+    A2A channel, not just the project row."""
+    import tinyagentos.routes.decisions as dmod
+
+    app = client._transport.app
+
+    from tinyagentos.auth_requests_store import AuthRequestsStore
+    from tinyagentos.agent_grants_store import AgentGrantsStore
+    from tinyagentos.projects.project_store import ProjectStore
+    from tinyagentos.chat.channel_store import ChatChannelStore
+    from tinyagentos.projects.a2a import A2A_KIND
+
+    auth_store = AuthRequestsStore(tmp_path / "auth-a2a.db")
+    await auth_store.init()
+    pstore = ProjectStore(tmp_path / "projects-a2a.db")
+    await pstore.init()
+    grants = AgentGrantsStore(tmp_path / "grants-a2a.db")
+    await grants.init()
+    channels = ChatChannelStore(tmp_path / "chat-a2a.db")
+    await channels.init()
+
+    monkeypatch.setattr(app.state, "auth_requests", auth_store)
+    monkeypatch.setattr(app.state, "project_store", pstore)
+    monkeypatch.setattr(app.state, "agent_grants", grants)
+    monkeypatch.setattr(app.state, "chat_channels", channels)
+    # No-op the agent reply routing; we only care about the channel.
+    async def _noop_route(decision, value, note=None):
+        return None
+    monkeypatch.setattr(dmod, "_route_answer_to_agent", _noop_route)
+
+    auth_request = await auth_store.create(
+        identity_claim="@agent-a",
+        framework="openclaw",
+        requested_scopes=[],
+        requested_skills=[],
+        reason="",
+        kind="project_create",
+        requested_project_name="A2A Test Project",
+        requested_project_slug="a2a-test-project",
+        purpose="test",
+    )
+
+    d = await app.state.decision_store.create(
+        from_agent="@agent-a",
+        question="Create test project?",
+        type="approve_deny",
+        user_id="u",
+        metadata={
+            dmod.SERVER_RAISED_KEY: True,
+            "kind": "project_create",
+            "auth_request_id": auth_request["id"],
+            "requested_name": "A2A Test Project",
+            "requested_slug": "a2a-test-project",
+            "from_agent": "@agent-a",
+        },
+    )
+
+    resp = await client.post(f"/api/decisions/{d['id']}/answer", json={"value": "approve"})
+    assert resp.status_code == 200, resp.text
+
+    # Find the created project and check its A2A channel exists.
+    projects = await pstore.list_projects(status="active")
+    created = [p for p in projects if p["slug"] == "a2a-test-project"]
+    assert len(created) == 1, f"expected one project, got {len(created)}"
+    project_id = created[0]["id"]
+
+    all_channels = await channels.list_channels(project_id=project_id)
+    a2a = [c for c in all_channels if (c.get("settings") or {}).get("kind") == A2A_KIND]
+    assert len(a2a) == 1, f"expected one A2A channel, got {len(a2a)}"
+
+    await channels.close()
+    await grants.close()
+    await pstore.close()
+    await auth_store.close()
