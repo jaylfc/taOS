@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { AppManifest } from "./app-registry";
-import { getApp, getOrRegisterServiceApp, getAllApps, getLaunchableApps, isDefaultSurfaceApp, prefetchApp, resolveApp, apps, APP_REDIRECTS, resolvePinnedId, pinnedAppId, pinnedLaunchProps } from "./app-registry";
+import { getApp, getOrRegisterServiceApp, getAllApps, getLaunchableApps, getSearchableApps, isDefaultSurfaceApp, prefetchApp, resolveApp, apps, APP_REDIRECTS, resolvePinnedId, pinnedAppId, pinnedLaunchProps } from "./app-registry";
 
 describe("resolveApp (deep-navigation token resolver)", () => {
   it("resolves an exact app id", () => {
@@ -357,8 +357,16 @@ describe("Import app retirement (tsk-6gtsvj)", () => {
     expect(ids).not.toContain("import");
   });
 
-  it("import is not in all apps list", () => {
-    const ids = getAllApps().map((a) => a.id);
-    expect(ids).not.toContain("import");
+    it("import is not in all apps list", () => {
+      const ids = getAllApps().map((a) => a.id);
+      expect(ids).not.toContain("import");
+    });
   });
-});
+
+  describe("getSearchableApps", () => {
+    it("excludes notification-archive when no optional apps installed", () => {
+      const apps = getSearchableApps(new Set());
+      expect(apps.some((a) => a.id === "notification-archive")).toBe(false);
+      expect(apps.some((a) => a.id === "notification-history")).toBe(true);
+    });
+  });

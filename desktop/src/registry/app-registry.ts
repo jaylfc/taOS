@@ -227,17 +227,17 @@ export function isDefaultSurfaceApp(app: AppManifest): boolean {
 
 /**
  * Apps the desktop search should surface: every always-on app, installed
- * optional apps, and tier-3 registry apps (providers, mcp, channels,
- * notification-archive). Tier-3 apps remain hidden from the launcher grids
+ * optional apps, and tier-3 registry apps (providers, mcp, channels). Tier-3 apps remain hidden from the launcher grids
  * and mobile home default surface; they are reachable here via search and
  * still openable by direct id.
  */
 export function getSearchableApps(installedOptional: Set<string>): AppManifest[] {
   return getAllApps().filter(
     (a) =>
-      a.optional
+      !APP_REDIRECTS[a.id] && // Exclude redirected apps
+      (a.optional
         ? installedOptional.has(a.id)
-        : (isDefaultSurfaceApp(a) || a.tier === 3),
+        : (isDefaultSurfaceApp(a) || a.tier === 3)),
   );
 }
 

@@ -189,12 +189,12 @@ export function NotificationHistoryApp({ windowId: _windowId }: { windowId: stri
 
   const localArchived = useMemo(() => {
     const { since, until } = rangeBounds(range, customFrom, customTo);
+    const search = q.trim().toLowerCase();
     return notifications
       .filter(n => n.archived && !n.id.startsWith("srv-"))
       .filter(n => {
         // Apply text search
-        if (q.trim() !== "") {
-          const search = q.toLowerCase();
+        if (search) {
           const title = n.title.toLowerCase();
           const body = n.body.toLowerCase();
           if (!title.includes(search) && !body.includes(search)) {
@@ -229,7 +229,7 @@ export function NotificationHistoryApp({ windowId: _windowId }: { windowId: stri
             return true;
         }
       })
-      .sort((a, b) => b.timestamp - a.timestamp); // newest first
+      .sort((a, b) => b.timestamp - a.timestamp);
   }, [notifications, q, sources, levels, range, customFrom, customTo, stateFilter]);
 
   // First page: refetch from the top whenever any filter changes.
@@ -309,7 +309,7 @@ export function NotificationHistoryApp({ windowId: _windowId }: { windowId: stri
     ? "Loading history"
     : error
       ? "Failed to load history"
-      : `${items.length}${nextBefore ? "+" : ""} notification${items.length !== 1 ? "s" : ""}`;
+      : `${items.length + localArchived.length}${nextBefore ? "+" : ""} notification${items.length + localArchived.length !== 1 ? "s" : ""}`;
 
   return (
     <div className="flex flex-col h-full bg-shell-bg text-shell-text">
@@ -477,7 +477,7 @@ export function NotificationHistoryApp({ windowId: _windowId }: { windowId: stri
                Retry
              </button>
            </div>
-         ) : items.length === 0 ? (
+         ) : items.length === 0 && localArchived.length === 0 ? (
            <div className="px-4 py-16 text-center">
              <History size={24} className="mx-auto text-shell-text-tertiary mb-2" aria-hidden="true" />
              <p className="text-xs text-shell-text-tertiary">

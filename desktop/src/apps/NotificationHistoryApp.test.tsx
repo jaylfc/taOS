@@ -3,6 +3,7 @@ import { render, screen, fireEvent, act, within } from "@testing-library/react";
 import { NotificationHistoryApp } from "./NotificationHistoryApp";
 import { rangeBounds } from "./NotificationHistoryApp";
 import { useNotificationStore } from "@/stores/notification-store";
+import { SEARCH_DEBOUNCE_MS } from "./NotificationHistoryApp";
 
 type Row = {
   id: number;
@@ -188,34 +189,105 @@ describe("NotificationHistoryApp", () => {
      expect(btn).toHaveAttribute("aria-expanded", "true");
    });
 
-   it("shows locally dismissed notifications under On this device", async () => {
-     // Seed the store with a client notification
-     useNotificationStore.getState().addNotification({
-       source: "system",
-       title: "Local thing",
-       body: "b",
-       level: "info",
-     });
-     const state = useNotificationStore.getState();
-     const id = state.notifications[0].id;
-     // Dismiss it
-     state.dismiss(id);
+    it("shows locally dismissed notifications under On this device", async () => {
+      // Seed the store with a client notification
+      useNotificationStore.getState().addNotification({
+        source: "system",
+        title: "Local thing",
+        body: "b",
+        level: "info",
+      });
+      const state = useNotificationStore.getState();
+      const id = state.notifications[0].id;
+      // Dismiss it
+      state.dismiss(id);
 
-     // Mock server history to be empty
-     historyPages = [{ items: [], next_before: null }];
+      // Mock server history to be empty
+      historyPages = [{ items: [], next_before: null }];
 
-     render(<NotificationHistoryApp windowId="w1" />);
-     await settle();
+      render(<NotificationHistoryApp windowId="w1" />);
+      await settle();
 
-     // Expect to see the local archived section and the notification
-     const deviceList = screen.getByRole("list", { name: /notifications on this device/i });
-     expect(deviceList).toBeInTheDocument();
-     expect(deviceList).toHaveTextContent("Local thing");
-   });
+      // Expect to see the local archived section and the notification
+      const deviceList = screen.getByRole("list", { name: /notifications on this device/i });
+      expect(deviceList).toBeInTheDocument();
+      expect(deviceList).toHaveTextContent("Local thing");
+    });
 
-   it("custom range ends at the next local midnight minus one second", async () => {
-     expect(rangeBounds("custom", "", "2025-03-09").until).toBe(
-       Math.floor(new Date(2025, 2, 10).getTime() / 1000) - 1
-     );
-   });
+    it("searches local archived notifications ignoring trailing spaces", async () => {
+      // Seed the store with a client notification
+      useNotificationStore.getState().addNotification({
+        source: "system",
+        title: "Local thing",
+        body: "b",
+        level: "info",
+      });
+      const state = useNotificationStore.getState();
+      const id = state.notifications[0].id;
+      // Dismiss it
+      state.dismiss(id);
+
+      // Mock server history to be empty
+      historyPages = [{ items: [], next_before: null }];
+
+      render(<NotificationHistoryApp windowId="w1" />);
+      await settle();
+
+      // Set search input with trailing space
+      fireEvent.change(screen.getByLabelText("Search notification history"), {
+        target: { value: "local thing " },
+      });
+      // Wait for debounce
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS + 100);
+      });
+
+      // Expect to see the local archived section and the notification
+      const deviceList = screen.getByRole("list", { name: /notifications on this device/i });
+      expect(deviceList).toBeInTheDocument();
+      expect(deviceList).toHaveTextContent("Local thing");
+    });
+
+    it("does not show empty state when local archived notifications exist", async () => {
+      // Seed the store with a client notification
+      useNotificationStore.getState().addNotification({
+        source: "system",
+        title: "Local thing",
+        body: "b",
+        level: "info",
+      });
+      const state = useNotificationStore.getState();
+      const id = state.notifications[0].id;
+      // Dismiss it
+      state.dismiss(id);
+
+      // Mock server history to be empty
+      historyPages = [{ items: [], next_before: null }];
+
+      render(<NotificationHistoryApp windowId="w1" />);
+      await settle();
+
+      // Expect to see the local archived section and the notification
+      const deviceList = screen.getByRole("list", { name: /notifications on this device/i });
+      expect(deviceList).toBeInTheDocument();
+      expect(deviceList).toHaveTextContent("Local thing");
+
+      // Expect that the empty state text is NOT in the document
+      expect(screen.queryByText(/No notifications yet/i)).not.toBeInTheDocument();
+      // Instead, we should see the On this device heading
+      expect(screen.getByText(/On this device/i)).toBeInTheDocument();
+    });
+
+    it("custom range ends at the next local midnight minus one second", async () => {
+      const originalTZ = process.env.TZ;
+      try {
+        process.env.TZ = "America/New_York";
+        const result = rangeBounds("custom", "2025-03-09", "2025-03-09");
+        expect(result.since).toBe(1741496400);
+        expect(result.until).toBe(1741579199);
+        expect(result.until - result.since + 1).toBe(23 * 3600);
+      } finally {
+        process.env.TZ = originalTZ;
+      }
+    });
  });
