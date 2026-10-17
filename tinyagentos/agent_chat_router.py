@@ -60,6 +60,9 @@ class AgentChatRouter:
         """Drive one OpenClaw ACP turn, serialized per agent by its AgentLoop."""
         from tinyagentos.openclaw_acp_runtime import drive_turn
 
+        chat_messages = self._state.chat_messages
+        chat_hub = self._state.chat_hub
+
         loop = self._agent_loops.setdefault(agent_name, AgentLoop())
         action = await loop.handle_message(text, msg_id=trace_id)
         if action is LoopAction.QUEUED:
@@ -73,6 +76,26 @@ class AgentChatRouter:
         pending: list[tuple[str, Any]] = [(text, trace_id)]
         while pending:
             cur_text, cur_trace = pending.pop(0)
+            # Stamp delivered for this trace_id right before driving the turn
+            if chat_messages:
+                try:
+                    msg = await chat_messages.get_message(cur_trace)
+                    if msg:
+                        receipt_row = await chat_messages.mark_delivered(cur_trace, agent_name)
+                        if receipt_row and chat_hub:
+                            channel_id = msg.get("channel_id")
+                            if channel_id:
+                                await chat_hub.broadcast(channel_id, {
+                                    "type": "receipt",
+                                    "seq": chat_hub.next_seq(),
+                                    "message_id": receipt_row["message_id"],
+                                    "agent_id": receipt_row["reader_id"],
+                                    "reader_type": receipt_row["reader_type"],
+                                    "delivered_at": receipt_row["delivered_at"],
+                                    "seen_at": receipt_row["seen_at"],
+                                })
+                except Exception:
+                    logger.exception("agent_chat_router: mark_delivered failed for %s", agent_name)
             try:
                 await drive_turn(
                     slug=agent_name, text=cur_text, trace_id=cur_trace,
