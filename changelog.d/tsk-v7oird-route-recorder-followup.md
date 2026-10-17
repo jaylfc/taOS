@@ -1,0 +1,1 @@
+- Agent-token route recorder: write and rollover failures now reach the warning log instead of being swallowed.
