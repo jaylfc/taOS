@@ -26,6 +26,7 @@ import {
 } from "@/lib/cluster";
 import { useRefreshOnFocus } from "@/hooks/use-refresh-on-focus";
 import { copyText } from "@/lib/clipboard";
+import { WorkerBenchmarksSection } from "./ClusterApp.benchmarks";
 
 type SortKey = "name" | "status" | "last_seen";
 type Tab = "nodes" | "map" | "devices";
@@ -593,6 +594,9 @@ function WorkerDetail({
         </Section>
         </>
         )}
+
+        {/* Benchmarks */}
+        {!isDevice && <WorkerBenchmarksSection workerName={worker.name} />}
 
         {/* Actions */}
         <Section title="Actions" icon={<Wand2 size={14} className="text-white/70" />}>
