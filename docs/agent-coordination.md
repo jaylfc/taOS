@@ -2281,6 +2281,26 @@ The host local token, admin sessions, session cookies, and device bearers are
 not bound, so their caller-supplied values are preserved (byte-for-byte
 compatibility with taosctl and the SPA).
 
+## Self-only chat session routes (`chat_session` scope)
+
+A registry agent (for example a self-joined external CLI) can take part in chat
+with its own registry JWT once it holds the `chat_session` grant:
+
+- `GET /api/agents/self/chat/events` is an SSE stream of the agent's own chat
+  events (the same queue the host-token `/api/openclaw/sessions/{agent}/events`
+  route drains).
+- `POST /api/agents/self/chat/reply` records a reply (`delta`, `final`,
+  `tool_call`, `tool_result`, `error`, `reasoning`) for the agent.
+
+The session slug is the agent's registry handle without the leading `@`,
+derived from the token only. Any `agent`, `slug`, `from` or `author` field in a
+reply body is ignored for identity, so an agent can never read or answer
+another agent's session. A handle equal to a locally configured agent's name
+is refused with 403 (`handle collides with a local agent`), so a guest can
+never drain or answer a local agent's session. A request with no Bearer is refused by the auth
+middleware before the route runs (401); a JWT without the grant gets 403; an
+unavailable bridge registry gets 503.
+
 ## In-process LLM gateway (`/api/llm/v1`, scoped gateway keys, session or host local token)
 
 `tinyagentos/llm_gateway/` is the in-controller replacement for the LiteLLM

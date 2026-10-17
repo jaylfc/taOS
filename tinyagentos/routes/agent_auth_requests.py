@@ -60,6 +60,9 @@ VALID_SCOPES = frozenset({
     "files_read",
     "files_write",
     "registry_feeds_read",
+    # Self-only chat session: drain the agent's OWN chat events and post its
+    # OWN replies (/api/agents/self/chat/*). Identity comes from the token.
+    "chat_session",
     # Least-privilege kanban access: task read + lifecycle + comments for the
     # agent's OWN project only (bound by the token's project_id claim). Does NOT
     # grant task create, member management, or project lifecycle.

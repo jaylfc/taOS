@@ -143,6 +143,9 @@ def register_all_routers(app):
     from tinyagentos.routes.a2a_bus import router as a2a_bus_router
     app.include_router(a2a_bus_router, dependencies=_csrf)
 
+    from tinyagentos.routes.agent_chat_session import router as agent_chat_session_router
+    app.include_router(agent_chat_session_router, dependencies=_csrf)
+
     from tinyagentos.routes.a2a_gpu_lease import router as a2a_gpu_lease_router
     app.include_router(a2a_gpu_lease_router, dependencies=_csrf)
 

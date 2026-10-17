@@ -93,6 +93,13 @@ _A2A_BUS_READ_PATHS = frozenset({
 _A2A_BUS_WRITE_PATHS = frozenset({
     "/api/a2a/bus/send",
 })
+# Self-only chat session routes: an agent drains its own chat events and posts
+# its own replies with its registry JWT (scope chat_session, verified by the
+# route, which derives the session slug from the token and never from the body).
+_AGENT_CHAT_SESSION_PATHS = frozenset({
+    "/api/agents/self/chat/events",
+    "/api/agents/self/chat/reply",
+})
 # A2A GPU lease coordination (taOS #893). Read (CHECK) needs a2a_receive; the
 # mutating actions (CLAIM/RELEASE/REQUEST/RENEW) need a2a_send. The route
 # resolves the acting identity from the token itself and forces the bus `from`
@@ -156,6 +163,7 @@ _AGENT_TOKEN_PATHS = (
     _REGISTRY_FEED_PATHS
     | _A2A_BUS_READ_PATHS
     | _A2A_BUS_WRITE_PATHS
+    | _AGENT_CHAT_SESSION_PATHS
     | _A2A_GPU_READ_PATHS
     | _A2A_GPU_WRITE_PATHS
     | _OBSERVATORY_PATHS
