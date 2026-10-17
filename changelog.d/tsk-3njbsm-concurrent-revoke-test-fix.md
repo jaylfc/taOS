@@ -1,0 +1,3 @@
+### Fixed
+
+- Test `test_concurrent_revoke_race` is no longer vacuous: it now monkeypatches `registry.revoke` to simulate a race where the first call succeeds (concurrent DELETE) and the second call raises `ValueError('lifecycle transition conflict')`, properly testing the except branch in `_revoke_cloud_agent_identity`. Also added `test_revoke_value_error_without_state_change_is_raised` to ensure ValueErrors without state changes propagate correctly (tsk-3njbsm).
