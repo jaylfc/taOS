@@ -63,8 +63,24 @@ class AppManifest(BaseModel):
     install: dict[str, Any] = Field(default_factory=dict)
     hardware_tiers: dict[str, Any] = Field(default_factory=dict)
     config_schema: list[Any] = Field(default_factory=list)
+    # Models only. Each variant is a dict with at least id/format/size_mb.
+    # Capability envelope (taOS #148): optional per-variant keys the
+    # scheduler's pick_variant() reads:
+    #   vram_floor_mb: int — minimum VRAM in MB to run this variant (0 = unknown).
+    #   approx_tok_s_by_profile: dict[str, float] — measured tok/s keyed by
+    #     hardware profile id (e.g. "gaming-pc-nvidia"); benchmark results
+    #     override these at runtime, never written back to the manifest.
     variants: list[Any] = Field(default_factory=list)   # models only
     context_window: int = 0                              # model token context window; 0 = unknown
+    # Model family (taOS #148): groups variants of one base model across
+    # quantisations/sizes, e.g. "qwen3", "llama-3", "whisper". Empty = unknown.
+    # pick_variant() resolves a capability request to a family, then picks
+    # the best-fitting variant for the target worker.
+    family: str = ""
+    # Context window range (taOS #148): min_context / max_context bound the
+    # supported context window; 0 = unknown (falls back to context_window).
+    min_context: int = 0
+    max_context: int = 0
     capabilities: list[Any] = Field(default_factory=list)
     lifecycle: dict[str, Any] = Field(default_factory=dict)
     manifest_dir: Path | None = None
