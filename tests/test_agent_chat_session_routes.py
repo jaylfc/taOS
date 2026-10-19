@@ -177,6 +177,65 @@ class TestChatSessionEvents:
 
 
 @pytest.mark.asyncio
+class TestReplayReceipt:
+    async def test_replayed_guest_message_marks_chat_delivered(self, chat_app):
+        # A guest outbox row already exists before the stream opens (replay),
+        # with no live enqueue. The replayed chat message must still get its
+        # delivered receipt stamped even though no live subscribe happened.
+        _cid, token = await _agent(chat_app, "@guest-replay")
+        slug = "guest-replay"
+        msg_id = "m-replay-1"
+        payload = {"id": msg_id, "text": "replayed"}
+        row_id = 42
+
+        fake_messages = AsyncMock()
+        fake_messages.mark_delivered.return_value = {
+            "message_id": msg_id,
+            "reader_id": slug,
+            "reader_type": "agent",
+            "delivered_at": 1.0,
+            "seen_at": None,
+        }
+        fake_messages.get_message.return_value = None
+
+        delivered_rows: list[int] = []
+
+        class FakeOutbox:
+            async def undelivered(self, slug_):
+                return [(row_id, payload)]
+
+            async def since(self, slug_, last_id):
+                return [(row_id, payload)]
+
+            async def mark_delivered(self, row_id_):
+                delivered_rows.append(row_id_)
+
+        fake_outbox = FakeOutbox()
+
+        registry = chat_app.state.bridge_sessions
+        registry._guest_outbox = fake_outbox
+        registry._is_guest = lambda s: s == slug
+        registry._chat_messages = fake_messages
+        chat_app.state.guest_outbox = fake_outbox
+
+        async def _done(slug_):
+            return
+            yield ""  # pragma: no cover
+
+        registry.subscribe = _done
+
+        async with _bare(chat_app) as c:
+            r = await c.get(EVENTS, headers=_hdr(token))
+
+        assert r.status_code == 200
+        assert "replayed" in r.text
+        # The outbox row was stamped delivered by the route's replay loop.
+        assert delivered_rows == [row_id]
+        # THE KEY ASSERTION: the chat message's delivered receipt is stamped.
+        fake_messages.mark_delivered.assert_awaited_once_with(msg_id, slug)
+
+
+@pytest.mark.asyncio
 class TestChatSessionReply:
     async def test_reply_records_under_own_slug(self, chat_app):
         _cid, token = await _agent(chat_app, "@guest-a")
