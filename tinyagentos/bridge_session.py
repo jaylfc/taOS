@@ -158,6 +158,10 @@ class BridgeSessionRegistry:
         self._sessions: dict[str, _AgentSession] = {}
         self._lock = asyncio.Lock()
         self._router = None
+        # Durable outbox for guest (registry agent) sessions, wired by app.py.
+        # _is_guest(slug) is True when no config agent has that name.
+        self._guest_outbox = None
+        self._is_guest = None
 
     def _get_or_create(self, slug: str) -> _AgentSession:
         if slug not in self._sessions:
@@ -183,10 +187,14 @@ class BridgeSessionRegistry:
         if trace_id is not None:
             session.pending_hops[trace_id] = int(msg.get("hops_since_user") or 0)
         # Store data as JSON string so subscribe can read id without re-encoding
-        await session.queue.put({
-            "event": "user_message",
-            "data": json.dumps(msg),
-        })
+        event: dict = {"event": "user_message", "data": json.dumps(msg)}
+        outbox = self._guest_outbox
+        if outbox is not None and self._is_guest is not None and self._is_guest(slug):
+            try:
+                event["outbox_id"] = await outbox.append(slug, msg)
+            except Exception:
+                logger.exception("bridge_session: guest outbox append failed for %s", slug)
+        await session.queue.put(event)
 
         # Record a message_in trace event so the transcript captures both
         # sides in order. Envelope payload follows ENVELOPE_V1_SCHEMA's
@@ -284,9 +292,12 @@ class BridgeSessionRegistry:
                     except Exception:
                         logger.exception("bridge_session: mark_delivered failed for %s", slug)
                 
-                # item['data'] is already a JSON string
+                # user_message data is already a JSON string; tick data is a dict
                 data = item.get("data", "{}")
-                yield f"event: {event_type}\ndata: {data}\n\n"
+                if not isinstance(data, str):
+                    data = json.dumps(data)
+                id_line = f"id: {item['outbox_id']}\n" if item.get("outbox_id") else ""
+                yield f"{id_line}event: {event_type}\ndata: {data}\n\n"
         finally:
             if tick_task is not None:
                 tick_task.cancel()

@@ -2347,6 +2347,11 @@ with its own registry JWT once it holds the `chat_session` grant:
 - `GET /api/agents/self/chat/events` is an SSE stream of the agent's own chat
   events (the same queue the host-token `/api/openclaw/sessions/{agent}/events`
   route drains).
+- Guest messages are persisted at enqueue time in `guest_outbox.db`, so a
+  controller restart does not lose them. Each streamed `user_message` carries
+  an SSE `id`; reconnect with `Last-Event-ID` (or `?since=N`) to replay only
+  newer messages, or with neither to replay the ones never delivered. A
+  non-integer value is ignored, and replay is always for the token's own slug.
 - `POST /api/agents/self/chat/reply` records a reply (`delta`, `final`,
   `tool_call`, `tool_result`, `error`, `reasoning`) for the agent.
 
