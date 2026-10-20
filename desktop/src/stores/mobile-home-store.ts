@@ -23,7 +23,7 @@ const DEFAULT_PAGES: HomePage[] = [
   {
     // Optional apps (Reddit/YouTube/GitHub/X) are excluded from the default
     // home grid; they ship uninstalled and are added from the Store. tier 3
-    // apps (providers, mcp, channels, notification-archive) are discoverable
+    // apps (providers, mcp, channels, notification-history) are discoverable
     // via Store/search rather than the default surface; the shared helper
     // keeps this rule in lockstep with the desktop launcher (issue #2517).
     items: getAllApps()
