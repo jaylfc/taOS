@@ -25,6 +25,13 @@ from tinyagentos.device_store import DEVICE_TOKEN_PREFIX
 from tinyagentos.rate_limit import MovingWindowLimiter
 
 logger = logging.getLogger(__name__)
+
+
+class _RaisingRotatingFileHandler(logging.handlers.RotatingFileHandler):
+    def handleError(self, record):
+        raise
+
+
 def _get_agent_token_routes_logger(data_dir: Path) -> logging.Logger:
     """Return the module-level logger for agent token route recording.
 
@@ -50,7 +57,7 @@ def _get_agent_token_routes_logger(data_dir: Path) -> logging.Logger:
         log_logger.removeHandler(handler)
         handler.close()
 
-    handler = logging.handlers.RotatingFileHandler(
+    handler = _RaisingRotatingFileHandler(
         log_path, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
     )
     # JSON line formatter: just the message (we format as JSON in the caller)
