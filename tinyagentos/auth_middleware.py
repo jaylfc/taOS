@@ -678,6 +678,21 @@ def _is_loopback_client(request: Request) -> bool:
         return False
 
 
+def _is_browser_cross_site(request: Request) -> bool:
+    """True if the request is from a browser and targets a cross-site origin.
+
+    Stop hook is curl and sends neither header; a browser always sends Origin on
+    a cross-origin POST.
+    """
+    origin = request.headers.get("origin")
+    if origin:
+        return True
+    sec_fetch_site = request.headers.get("sec-fetch-site")
+    if sec_fetch_site and sec_fetch_site != "none":
+        return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Per-IP moving-window rate limiter for the unauthenticated project-invite
 # redeem. The cluster pairing manual-claim runs the same 20-per-10s cap from
@@ -867,6 +882,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             request.method == "POST"
             and path == _PREPARE_SHUTDOWN
             and _is_loopback_client(request)
+            and not _is_browser_cross_site(request)
         ):
             request.state.user_id = None
             request.state.is_admin = False
