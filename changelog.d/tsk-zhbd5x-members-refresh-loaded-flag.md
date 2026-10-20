@@ -1,0 +1,2 @@
+### Fixed
+- Fix race condition in ProjectMembers where unresolved members could disappear when refresh resolves before mount effect. The reloadExternalRegistry function now sets externalRegistryLoaded flag for both the mount effect and user-action reloads.

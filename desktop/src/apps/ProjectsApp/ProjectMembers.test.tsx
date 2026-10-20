@@ -670,3 +670,95 @@ describe("ProjectMembers registry race condition guard", () => {
     expect(within(mainList).queryByText("agent-new")).not.toBeInTheDocument();
   });
 });
+describe("ProjectMembers refresh race condition with unresolved member", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("keeps unresolved member in main list when refresh resolves before mount effect", async () => {
+    // Race: mount registry fetch (call 1) deferred, user-action refresh (call 2) resolves first.
+    // The unresolved member must remain in the main list after both settle.
+    let resolveMountRegistry!: (value: unknown) => void;
+    const mountRegistryPromise = new Promise((resolve) => {
+      resolveMountRegistry = resolve;
+    });
+
+    let totalRegistryCallCount = 0;
+    let reloadCallCount = 0;
+    let refreshResolved = false;
+    const fetchMock = vi.fn().mockImplementation((input: string) => {
+      if (input === "/api/projects/prj-test/members") {
+        // One native agent (in /api/agents) + one unresolved member (in no registry, not in /api/agents)
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            items: [memberRow("agent-a"), memberRow("unresolved-member")],
+          }),
+          text: async () => "",
+        });
+      }
+      if (input === "/api/agents") {
+        // agent-a exists so its canvas checkbox renders
+        return Promise.resolve({ ok: true, json: async () => [agentA], text: async () => "" });
+      }
+      if (input === "/api/agents/registry") {
+        totalRegistryCallCount++;
+        if (totalRegistryCallCount === 1) {
+          // Mount effect: deferred, resolves LAST with empty
+          return mountRegistryPromise.then(() => {
+            return { ok: true, json: async () => [], text: async () => "" };
+          });
+        }
+        // Reload call (refresh from user action or unresolved-member effect)
+        reloadCallCount++;
+        // Refresh call (user action): resolves FIRST with empty
+        if (reloadCallCount === 1) {
+          refreshResolved = true;
+          return Promise.resolve({ ok: true, json: async () => [], text: async () => "" });
+        }
+        // Unresolved-member effect reload: resolves with empty
+        return Promise.resolve({ ok: true, json: async () => [], text: async () => "" });
+      }
+      // Mock the canvas permission PATCH that the checkbox handler sends
+      if (input === "/api/projects/prj-test/canvas/permissions/agent-a") {
+        return Promise.resolve({ ok: true, json: async () => ({ ok: true }), text: async () => "" });
+      }
+      throw new Error(`Unmocked fetch: ${input}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ProjectMembers project={baseProject} onChanged={vi.fn()} />);
+    await flush();
+
+    // Wait for mount effect to start (it will hit the deferred promise)
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    await flush();
+
+    // Click the "Can read canvas" checkbox for agent-a -> triggers onRefresh -> refresh -> reloadExternalRegistry
+    const readCheckbox = screen.getByLabelText("Can read canvas for Alpha") as HTMLInputElement;
+    await act(async () => {
+      fireEvent.click(readCheckbox);
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    await flush();
+
+    // After refresh resolves, unresolved-member effect also fires (both are reload calls)
+    expect(reloadCallCount).toBe(2);
+    expect(refreshResolved).toBe(true);
+
+    // Now resolve the MOUNT call (call 1) last
+    resolveMountRegistry({});
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    await flush();
+
+    // Assert: exactly 2 reload calls were made (refresh + unresolved-member effect)
+    expect(reloadCallCount).toBe(2);
+    // Assert: unresolved-member is rendered in the main Project members list
+    const mainList = screen.getByRole("list", { name: "Project members" });
+    expect(within(mainList).getByText("unresolved-member")).toBeInTheDocument();
+  });
+});
