@@ -8,6 +8,7 @@ sees the content; an admin session keeps full access.
 from __future__ import annotations
 
 import pytest
+import time
 
 from test_chat_read_authz import FORBIDDEN, _member_client
 
@@ -150,3 +151,58 @@ async def test_v1_channel_list_member_sees_preview(client, app):
     mine = [c for c in resp.json()["channels"] if c["id"] == ch["id"]]
     assert len(mine) == 1
     assert "zebracorn" in mine[0]["last_preview"]
+
+
+@pytest.mark.asyncio
+async def test_search_limit_respects_readable_channels_before_limit(client, app):
+    """Search should return readable results up to limit, not waste limit on unreadable channels."""
+    # Create a member user
+    member, uid = await _member_client(app)
+
+    # Create a readable channel (member is in it)
+    readable_ch = await app.state.chat_channels.create_channel(
+        name="readable", type="dm", created_by="user", members=["user", uid],
+    )
+
+    # Create an unreadable channel (member is NOT in it)
+    unreadable_ch = await app.state.chat_channels.create_channel(
+        name="unreadable", type="dm", created_by="user", members=["user", "agent-a"],
+    )
+
+    # Add `limit` newer matching messages to the unreadable channel
+    limit = 5
+    search_term = "needleunique123"
+    now = time.time()
+    for i in range(limit):
+        await app.state.chat_messages.ensure_message({
+            "id": f"unreadable-{i}",
+            "channel_id": unreadable_ch["id"],
+            "author_id": "user",
+            "author_type": "user",
+            "content": f"{search_term} unreadable {i}",
+            "created_at": now + i + 1,  # newer timestamps
+        })
+
+    # Add 1 older matching message to the readable channel
+    await app.state.chat_messages.ensure_message({
+        "id": "readable-0",
+        "channel_id": readable_ch["id"],
+        "author_id": "user",
+        "author_type": "user",
+        "content": f"{search_term} readable",
+        "created_at": now,  # older timestamp
+    })
+
+    try:
+        # Search with the limit - should return the 1 readable message
+        resp = await member.get("/api/chat/search", params={"q": search_term, "limit": limit})
+    finally:
+        await member.aclose()
+
+    assert resp.status_code == 200, resp.text
+    results = resp.json()["results"]
+    # Should get the readable message, not 0 results (which would happen if
+    # unreadable messages ate the LIMIT before filtering)
+    assert len(results) == 1, f"Expected 1 readable result, got {len(results)}"
+    assert results[0]["channel_id"] == readable_ch["id"]
+    assert "readable" in results[0]["content"]
