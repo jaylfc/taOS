@@ -47,9 +47,11 @@ class Client:
 
     def _session(self, begin_type, begin_payload_, sends, progress, total, begin_timeout=90.0):
         """BEGIN (the device erases and may compact: long timeout), DATA frames, END; ABORT on any failure."""
-        rp = self.request(begin_type, begin_payload_, timeout=begin_timeout)
-        entry = struct.unpack_from("<I", rp, 1)[0]
+        begun = False
         try:
+            rp = self.request(begin_type, begin_payload_, timeout=begin_timeout)
+            begun = True
+            entry = struct.unpack_from("<I", rp, 1)[0]
             done = 0
             for frame_payload, n in sends:
                 self.request(T_DATA, frame_payload, timeout=10.0)
@@ -57,7 +59,9 @@ class Client:
                 if progress:
                     progress(done, total)
             self.request(T_END, timeout=30.0)
-        except BaseException:
+        except BaseException as e:
+            if not begun and isinstance(e, NakError):   # a refused BEGIN opened no session
+                raise
             try:
                 self._send(T_ABORT)
             except Exception:

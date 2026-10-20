@@ -713,3 +713,55 @@ class Cli(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ------------------------------------------------- taOS port review fixes (PR #3869) ----
+class InterruptedSerial(FakeSerial):
+    """The user presses Ctrl-C while the client waits for the BEGIN ACK (the device may take ~90 s to erase)."""
+
+    def read(self, n):
+        raise KeyboardInterrupt
+
+
+class PortReviewFixes(unittest.TestCase):
+    setUp, tearDown, run_cli = Cli.setUp, Cli.tearDown, Cli.run_cli
+
+    def test_begin_wait_interrupted_sends_abort(self):
+        exts = [ob.Extent("orb_app", 0, 0x1F, 1, 0, img("guest_a"))]
+        ser = InterruptedSerial([])
+        with self.assertRaises(KeyboardInterrupt):
+            ob.Client(ser).install_app("oh", "OH", exts)
+        self.assertEqual(ser.written[-1], FR["abort"])
+
+    def test_naked_begin_sends_no_abort(self):
+        exts = [ob.Extent("orb_app", 0, 0x1F, 1, 0, img("guest_a"))]
+        ser = FakeSerial([[nak(ob.T_BEGIN_APP, 12)]])
+        with self.assertRaises(ob.NakError):
+            ob.Client(ser).install_app("oh", "OH", exts)
+        self.assertEqual(len(ser.written), 1)
+
+    def test_shadowed_entry_is_not_reported_as_pinned(self):
+        b = img("guest_b")
+        ser = FakeSerial([[info_frame([TAOS, entry_for(0, b, "xiaozhi"), entry_for(1, b, "xiaozhi")])]])
+        rc = self.run_cli(["update", "1", "--catalog", self.cat], ser)
+        self.assertEqual(rc, 0, self.err.getvalue())
+        self.assertNotIn("pinned", self.out.getvalue())
+        self.assertIn("shadowed", self.out.getvalue())
+
+    def test_update_all_continues_past_a_planning_error(self):
+        # xiaozhi 1.1 already sits in entry 1 (installed with --add), so planning entry 0's update fails; xz2 still updates
+        dev = info_frame([TAOS, entry_for(0, img("guest_b"), "xiaozhi"), entry_for(1, img("guest_b2"), "xiaozhi"),
+                          entry_for(2, img("guest_a"), "xz2")])
+        ser = FakeSerial([[dev], [ack(ob.T_BEGIN_APP, 2)], [ack(ob.T_DATA, 0)], [ack(ob.T_DATA, 0)], [ack(ob.T_DATA, 0)],
+                          [ack(ob.T_END, 0)]])
+        rc = self.run_cli(["update", "--all", "--catalog", self.cat], ser)
+        self.assertEqual(rc, 1)
+        self.assertIn("already installed", self.err.getvalue())
+        begins = [w for w in ser.written if w[4] == ob.T_BEGIN_APP]
+        self.assertEqual(len(begins), 1)
+        self.assertEqual(begins[0][7:14], b"xz2\0\0\0\0")
+
+    def test_usage_names_the_module_entry_point(self):
+        with contextlib.redirect_stderr(self.err), self.assertRaises(SystemExit):
+            ob.main([])
+        self.assertIn("python -m tinyagentos.orb.cli", self.err.getvalue())

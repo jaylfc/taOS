@@ -33,7 +33,7 @@ def _do_install(cl, cat, dev, plan, name, add):
 
 
 def main(argv=None, opener=None):
-    ap = argparse.ArgumentParser(prog="orb_store.py", description="Install apps into the Orb's block storage over USB.")
+    ap = argparse.ArgumentParser(prog="python -m tinyagentos.orb.cli", description="Install apps into the Orb's block storage over USB.")
     ap.add_argument("-p", "--port", help="serial port (default: first /dev/cu.usbmodem* or /dev/ttyACM*)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     pl = sub.add_parser("list", help="show slot 0, the installed apps and the free blocks")
@@ -93,14 +93,26 @@ def main(argv=None, opener=None):
                 dev = cl.hello()
                 todo, skipped = plan_updates(cat, dev, None if args.all else args.entry)
                 for s in skipped:
-                    print("skipping pinned entry %d (%s)" % (s["index"], s["display_name"] or s["app_id"]))
+                    name = s["display_name"] or s["app_id"]
+                    if s["pinned"]:
+                        print("skipping pinned entry %d (%s)" % (s["index"], name))
+                    else:
+                        print("skipping entry %d (%s): shadowed by an earlier entry of the same app" % (s["index"], name))
                 if not todo:
                     print("nothing to update")
+                failed = 0
                 for n, t in enumerate(todo):
-                    plan = plan_install(cat, dev, t["app"]["id"], t["version"]["version"])
+                    try:
+                        plan = plan_install(cat, dev, t["app"]["id"], t["version"]["version"])
+                    except OrbError as e:                  # one unplannable entry must not stop the rest
+                        print("error: skipping %s: %s" % (t["app"]["id"], e), file=sys.stderr)
+                        failed += 1
+                        continue
                     _do_install(cl, cat, dev, plan, None, False)
                     if n + 1 < len(todo):
                         dev = cl.hello()                   # entry indexes change after an update: look again
+                if failed:
+                    return 1
             elif args.cmd == "remove":
                 cl.remove(args.entry)
                 print("entry %d removed" % args.entry)
