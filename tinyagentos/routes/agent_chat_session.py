@@ -103,6 +103,7 @@ async def self_chat_events(request: Request):
                     f"id: {row_id}\nevent: user_message\n"
                     f"data: {json.dumps(payload)}\n\n"
                 )
+                await bridge.mark_user_message_delivered(slug, payload)
                 await _delivered(row_id)
             async for frame in bridge.subscribe(slug):
                 row_id = _frame_id(frame)
