@@ -1426,17 +1426,24 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             logger.exception("canvas snapshotter failed to start")
             app.state.canvas_snapshotter = None
 
-        # mDNS publisher — advertises http://taos.local:<port>/ on the LAN.
+        # mDNS publisher -- advertises http://taos.local:<port>/ on the LAN.
         # Failure must never break startup; the publisher swallows its own
         # errors but wrap it again here for belt-and-braces.
-        try:
-            from tinyagentos.services.mdns_publisher import MdnsPublisher
-            mdns_publisher = MdnsPublisher(port=config.server.get("port", 6969))
-            await mdns_publisher.start()
-            app.state.mdns_publisher = mdns_publisher
-        except Exception:
-            logger.exception("mdns publisher failed to start — continuing without")
+        if not config.mdns.get("enabled", True) or (
+            os.environ.get("TAOS_MDNS", "") == "0"
+        ):
             app.state.mdns_publisher = None
+        else:
+            try:
+                from tinyagentos.services.mdns_publisher import MdnsPublisher
+                mdns_publisher = MdnsPublisher(
+                    data_dir=data_dir, port=config.server.get("port", 6969),
+                )
+                await mdns_publisher.start()
+                app.state.mdns_publisher = mdns_publisher
+            except Exception:
+                logger.exception("mdns publisher failed to start — continuing without")
+                app.state.mdns_publisher = None
 
         # Bundled mDNS reflector for cast discovery across a container
         # bridge. Opt-in via config.yaml ``mdns_reflector.enabled``; when on,
