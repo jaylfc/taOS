@@ -13,7 +13,12 @@ import logging
 
 import httpx
 
-from tinyagentos.providers import CHAT_BACKEND_TYPE_MAP, CLOUD_TYPES as CLOUD_BACKEND_TYPES, NEEDS_API_BASE_TYPES
+from tinyagentos.providers import (
+    CHAT_BACKEND_TYPE_MAP,
+    CLOUD_TYPES as CLOUD_BACKEND_TYPES,
+    NEEDS_API_BASE_TYPES,
+    inference_api_base,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -204,9 +209,13 @@ def build_model_list(
             "model": f"{prefix}/{model_name}",
         }
 
-        # Set api_base for local/self-hosted backends and openai-compatible
+        # Set api_base for local/self-hosted backends and openai-compatible.
+        # ``inference_api_base`` adds any version prefix the backend's OpenAI
+        # surface requires (LM Studio serves under /v1); the worker's probe URL
+        # stays unversioned.
+        api_base = inference_api_base(backend_type, url)
         if backend_type in NEEDS_API_BASE_TYPES:
-            litellm_params["api_base"] = url
+            litellm_params["api_base"] = api_base
 
         # API key from secrets reference
         if backend.get("api_key_secret"):
@@ -232,11 +241,11 @@ def build_model_list(
                 }
                 # kilocode isn't a native LiteLLM provider — must set api_base
                 if backend_type == "kilocode":
-                    per_model_params["api_base"] = url
+                    per_model_params["api_base"] = api_base
                 elif url and backend_type not in ("openai",):
                     # For openrouter and other pass-through types, set api_base
                     # when an explicit url is provided
-                    per_model_params["api_base"] = url
+                    per_model_params["api_base"] = api_base
                 # API key resolution
                 if backend.get("api_key_secret"):
                     per_model_params["api_key"] = f"os.environ/{backend['api_key_secret']}"
@@ -279,13 +288,13 @@ def build_model_list(
                 # (multi-backend failover) and must NOT be skipped.
                 if any(
                     e.get("model_name") == manifest_id
-                    and e.get("litellm_params", {}).get("api_base") == url
+                    and e.get("litellm_params", {}).get("api_base") == api_base
                     for e in model_list
                 ):
                     continue
                 per_model_params: dict = {
                     "model": f"{prefix}/{manifest_id}",
-                    "api_base": url,
+                    "api_base": api_base,
                 }
                 if backend.get("api_key_secret"):
                     per_model_params["api_key"] = f"os.environ/{backend['api_key_secret']}"

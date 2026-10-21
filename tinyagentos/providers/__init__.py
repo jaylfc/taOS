@@ -27,6 +27,7 @@ ALL_TYPES: set[str] = {
     "vllm",
     "exo",
     "mlx",
+    "lmstudio",
     # -- cloud LLM providers --
     "openai",
     "anthropic",
@@ -60,6 +61,32 @@ LOCAL_TYPES: set[str] = ALL_TYPES - CLOUD_TYPES
 IMAGE_GEN_TYPES: set[str] = {"sd-cpp", "iopaint", "flux-fill"}
 NEEDS_API_BASE_TYPES: set[str] = (LOCAL_TYPES - IMAGE_GEN_TYPES) | {"openai-compatible"}
 
+# Inference base path per backend type. LiteLLM's ``openai`` provider appends
+# ``/chat/completions`` to whatever api_base it is given, and the taOS gateway
+# appends ``/chat/completions`` / ``/embeddings`` the same way, so a backend
+# whose OpenAI surface lives under a version prefix must carry that prefix in
+# api_base. Measured against a live LM Studio on :1234: POST /chat/completions
+# answers HTTP 200 with {"error":"Unexpected endpoint or method"} while
+# /v1/chat/completions is the real endpoint, so a bare base fails silently
+# rather than with a 404. The worker's *probe* URL stays unversioned: it builds
+# ``<url>/v1/models`` itself.
+INFERENCE_BASE_SUFFIX: dict[str, str] = {
+    "lmstudio": "/v1",
+}
+
+
+def inference_api_base(backend_type: str, url: str) -> str:
+    """api_base for *backend_type* at *url*, with any required version prefix.
+
+    Idempotent: a url that already ends with the suffix is returned unchanged.
+    """
+    base = (url or "").rstrip("/")
+    suffix = INFERENCE_BASE_SUFFIX.get(backend_type, "")
+    if suffix and not base.endswith(suffix):
+        return f"{base}{suffix}"
+    return base
+
+
 # ---------------------------------------------------------------------------
 # LiteLLM routing maps
 # ---------------------------------------------------------------------------
@@ -80,6 +107,7 @@ BACKEND_TYPE_MAP: dict[str, str] = {
     "deepseek": "deepseek",  # native LiteLLM provider; api_base set to official base
     "nous": "openai",  # Nous Portal is OpenAI-compatible; api_base set explicitly
     "openai-compatible": "openai",  # user-supplied OpenAI-compatible endpoint
+    "lmstudio": "openai",  # LM Studio serves an OpenAI-compatible API on :1234
 }
 
 # Chat prefix is different from the embedding prefix for ollama-compat

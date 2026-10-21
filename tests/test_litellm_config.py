@@ -202,6 +202,38 @@ class TestGenerateLiteLLMHailoOllamaBackend:
         assert embed_entries[0]["litellm_params"]["model"] == "ollama/nomic-embed-text"
 
 
+class TestGenerateLiteLLMLmStudioBackend:
+    def test_lmstudio_uses_openai_prefix(self):
+        """LM Studio is OpenAI-compatible; the default chat entry must use
+        the openai prefix and point at the LAN URL *under /v1*. LM Studio's
+        OpenAI surface is versioned: POST /chat/completions answers HTTP 200
+        with {"error":"Unexpected endpoint or method"}, so a bare base fails
+        silently instead of 404ing. Measured against a live LM Studio."""
+        backends = [
+            {"name": "lmstudio", "type": "lmstudio", "url": "http://192.168.1.50:1234"}
+        ]
+        config = _model_table(backends)
+        entry = config["model_list"][0]
+        assert entry["litellm_params"]["model"] == "openai/default"
+        assert entry["litellm_params"]["api_base"] == "http://192.168.1.50:1234/v1"
+
+    def test_lmstudio_api_base_is_not_double_versioned(self):
+        """A URL that already carries /v1 must not gain a second one."""
+        backends = [
+            {"name": "lmstudio", "type": "lmstudio", "url": "http://192.168.1.50:1234/v1"}
+        ]
+        config = _model_table(backends)
+        entry = config["model_list"][0]
+        assert entry["litellm_params"]["api_base"] == "http://192.168.1.50:1234/v1"
+
+    def test_lmstudio_is_not_cloud(self):
+        """lmstudio must not be treated as a cloud type — it should produce
+        a single default entry (not per-model entries like cloud types)."""
+        from tinyagentos.providers import CLOUD_TYPES
+
+        assert "lmstudio" not in CLOUD_TYPES
+
+
 # ---------------------------------------------------------------------------
 # model table -- cloud backends
 # ---------------------------------------------------------------------------
