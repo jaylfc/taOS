@@ -24,6 +24,39 @@ function mockAuthStatus(isAdmin: boolean) {
   });
 }
 
+function mockAuthAndVersion(isAdmin: boolean, mdnsHostname: string | null) {
+  return vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes("/auth/status")) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            configured: true,
+            authenticated: true,
+            user: { username: "jay", is_admin: isAdmin },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    }
+    if (url.includes("/api/version")) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            version: "x",
+            mdns_hostname: mdnsHostname,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    }
+    // Every other endpoint (system info, cloud account, memory, etc.) is
+    // irrelevant to this test, so just answer with "not available" and let
+    // the mounted section's own fetches settle quietly.
+    return Promise.resolve(new Response(null, { status: 404 }));
+  });
+}
+
 describe("SettingsApp admin-only sections", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -64,6 +97,35 @@ describe("SettingsApp admin-only sections", () => {
 
     expect(within(nav).getByText("Themes")).toBeInTheDocument();
     expect(within(nav).getByText("Account")).toBeInTheDocument();
+  });
+});
+
+describe("SystemInfoSection local address", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("shows Local address row with link and copy button when mdns_hostname is set", async () => {
+    mockAuthAndVersion(true, "taos-ab12.local");
+    render(<SettingsApp windowId="w1" />);
+
+    await waitFor(() => {
+      // System Information is the default section, so the link should appear
+      expect(screen.getByText(/^http:\/\/taos-ab12\.local:/)).toBeInTheDocument();
+    });
+    expect(screen.getByRole("button", { name: "Copy local address" })).toBeInTheDocument();
+  });
+
+  it("does not render Local address row when mdns_hostname is null", async () => {
+    mockAuthAndVersion(true, null);
+    render(<SettingsApp windowId="w1" />);
+
+    await waitFor(() => {
+      // Wait for the system info to load (CPU row as proxy)
+      expect(screen.getByText("CPU")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Local address")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copy local address" })).not.toBeInTheDocument();
   });
 });
 

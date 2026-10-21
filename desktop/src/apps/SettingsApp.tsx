@@ -121,6 +121,7 @@ function SystemInfoSection() {
   const [info, setInfo] = useState<SystemInfo>(PLACEHOLDER_SYSTEM);
   const [loading, setLoading] = useState(false);
   const [showRestartModal, setShowRestartModal] = useState(false);
+  const [mdnsHostname, setMdnsHostname] = useState<string | null>(null);
 
   const detect = useCallback(async () => {
     setLoading(true);
@@ -185,7 +186,12 @@ function SystemInfoSection() {
     setLoading(false);
   }, []);
 
-  useEffect(() => { detect(); }, [detect]);
+  useEffect(() => {
+    detect();
+    safeFetch<{ mdns_hostname?: string | null } | null>("/api/version", null).then((data) => {
+      if (data?.mdns_hostname) setMdnsHostname(data.mdns_hostname);
+    });
+  }, [detect]);
 
   const rows: [string, string][] = [
     ["CPU", info.cpu],
@@ -195,6 +201,16 @@ function SystemInfoSection() {
     ["Disk", info.disk],
     ["OS", info.os],
   ];
+
+  const port = window.location.port || "6969";
+  const localAddressUrl = mdnsHostname ? `http://${mdnsHostname}:${port}` : null;
+
+  const copyLocalAddress = async () => {
+    if (!localAddressUrl) return;
+    try {
+      await navigator.clipboard.writeText(localAddressUrl);
+    } catch { /* ignore */ }
+  };
 
   return (
     <section aria-label="System information">
@@ -208,6 +224,28 @@ function SystemInfoSection() {
                 <td className="px-5 py-3">{value}</td>
               </tr>
             ))}
+            {mdnsHostname && localAddressUrl && (
+              <tr className="border-b border-white/5 last:border-0">
+                <td className="px-5 py-3 text-shell-text-secondary font-medium w-32">Local address</td>
+                <td className="px-5 py-3 flex items-center gap-2">
+                  <a href={localAddressUrl} target="_blank" rel="noopener noreferrer" className="text-sky-400 hover:underline">
+                    {localAddressUrl}
+                  </a>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={copyLocalAddress}
+                    aria-label="Copy local address"
+                    className="h-6 px-2 py-0"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                    </svg>
+                  </Button>
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
