@@ -1422,10 +1422,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             logger.exception("canvas snapshotter failed to start")
             app.state.canvas_snapshotter = None
 
-        # mDNS publisher — advertises http://taos.local:<port>/ on the LAN.
+        # mDNS publisher -- advertises http://taos.local:<port>/ on the LAN.
         # Failure must never break startup; the publisher swallows its own
         # errors but wrap it again here for belt-and-braces.
-        if config.mdns.get("enabled", True) is False or (
+        if not config.mdns.get("enabled", True) or (
             os.environ.get("TAOS_MDNS", "") == "0"
         ):
             app.state.mdns_publisher = None

@@ -5,3 +5,6 @@
 - Card Decision 4: added `mdns_hostname` (string without trailing dot, or `null` when publisher is absent/not started) to existing `GET /api/version` JSON
 - Persisting the name: replaced hand-rolled temp file + `os.replace` in `choose_hostname` with `tinyagentos.atomic_io.atomic_write_text`
 - Tests: passed `data_dir=tmp_path` in `tests/test_mdns_publisher.py` and stubbed the probe with `_FakeAddressResolver`; added `test_version_endpoint_mdns_hostname_when_active` to verify `GET /api/version` carries `mdns_hostname` when publisher is active
+- mDNS probe failure no longer persists `taos.local`; the next boot re-probes instead of claiming the name forever
+- `config.mdns.enabled` now treats `0`, `false`, or `"0"` as disabled (not just `False`)
+- Version endpoint tests run the lifespan to verify publisher construction is gated by `TAOS_MDNS`

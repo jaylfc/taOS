@@ -9,7 +9,7 @@ loop and does not block startup. The ``server`` field on
 :class:`zeroconf.ServiceInfo` is what makes ``taos.local`` resolve to the
 detected primary LAN IPv4.
 
-This is a *nice-to-have* — if multicast is disabled, a port is already
+This is a *nice-to-have* -- if multicast is disabled, a port is already
 bound by another responder, or anything else goes wrong, we log and move
 on. The controller's HTTP server is still reachable via its IP address.
 
@@ -18,12 +18,11 @@ same multicast group is normal mDNS behaviour, not a conflict.
 
 If two taOS instances run on the same LAN both claiming ``taos.local``,
 zeroconf resolves the collision by suffixing the second one
-(``taos-2.local`` etc.). No special-case code needed here — the library
+(``taos-2.local`` etc.). No special-case code needed here -- the library
 handles it via ``allow_name_change``.
 
 """
-from tinyagentos.atomic_io import atomic_write_text
-
+import asyncio
 import logging
 import os
 import re
@@ -31,6 +30,7 @@ import secrets
 import socket
 from pathlib import Path
 
+from tinyagentos.atomic_io import atomic_write_text
 from zeroconf import ServiceInfo
 from zeroconf.asyncio import AsyncZeroconf
 from zeroconf import AddressResolver
@@ -99,7 +99,8 @@ async def choose_hostname(zc: AsyncZeroconf, data_dir: Path, own_ips: list[str])
        to 5 times on collision.
     3. Write the chosen name to <data_dir>/mdns_hostname (atomic write).
     4. Probe failures (exceptions, multicast off) do NOT block startup:
-       log and fall back to the persisted name or "taos.local.".
+       return "taos.local." for this boot and persist NOTHING. The next
+       boot will re-probe. Successful probes still persist exactly as now.
     """
     hostname_file = data_dir / "mdns_hostname"
     own_ips_set = set(own_ips)
@@ -145,13 +146,13 @@ async def choose_hostname(zc: AsyncZeroconf, data_dir: Path, own_ips: list[str])
                 break
         except Exception as exc:
             # Probe failed (multicast disabled, etc.) - log and fall back
+            # Return immediately without persisting so next boot re-probes
             logger.warning("mDNS: probe for %s failed: %s, falling back", candidate, exc)
-            candidate = "taos.local."
-            break
+            return "taos.local."
 
-    # 3. Write chosen name atomically
+    # 3. Write chosen name atomically (off the event loop)
     try:
-        atomic_write_text(hostname_file, candidate + "\n")
+        await asyncio.to_thread(atomic_write_text, hostname_file, candidate + "\n")
         logger.info("mDNS: wrote hostname %s to %s", candidate, hostname_file)
     except OSError as exc:
         logger.warning("mDNS: failed to write hostname file: %s", exc)

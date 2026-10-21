@@ -236,11 +236,35 @@ async def test_choose_hostname_probe_raises_falls_back(tmp_path, monkeypatch):
     with patch("tinyagentos.services.mdns_publisher.AddressResolver", _RaisingResolver):
         result = await choose_hostname(zc, data_dir, own_ips)
 
-    # Should fall back to taos.local. (no persisted file)
+    # Should fall back to taos.local. but NOT persist it
     assert result == "taos.local."
     hostname_file = data_dir / "mdns_hostname"
-    assert hostname_file.exists()
-    assert hostname_file.read_text().strip() == result
+    assert not hostname_file.exists(), "Probe exception must not persist hostname"
+
+
+@pytest.mark.asyncio
+async def test_probe_exception_returns_default_and_persists_nothing(tmp_path, monkeypatch):
+    """Probe exception (OSError) returns taos.local. and persists nothing."""
+    data_dir = tmp_path
+    own_ips = ["10.0.0.5"]
+    zc = MagicMock()
+    zc.zeroconf = MagicMock()
+
+    class _OSErrorResolver:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def async_request(self, zc, timeout=1500):
+            raise OSError("multicast disabled")
+
+        def parsed_addresses(self):
+            return []
+
+    with patch("tinyagentos.services.mdns_publisher.AddressResolver", _OSErrorResolver):
+        result = await mp.choose_hostname(zc, data_dir, own_ips)
+
+    assert result == "taos.local."
+    assert not (data_dir / "mdns_hostname").exists()
 
 
 @pytest.mark.asyncio
