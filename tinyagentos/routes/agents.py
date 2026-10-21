@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict
 import taosmd.agents as tm_agents
 
 from tinyagentos.agent_db import find_agent, get_agent_summaries
+from tinyagentos.agent_controller_listener import agent_controller_live_port
 from tinyagentos.llm_gateway.cutover import llm_gateway_live_port, llm_gateway_models_check
 from tinyagentos.config import (
     save_config_locked,
@@ -173,9 +174,20 @@ class IdempotencyCache:
 
 
 @router.get("/api/agents")
-async def list_agents(request: Request):
-    """List all configured agents."""
-    return request.app.state.config.agents
+async def list_agents(request: Request, include_guests: bool = False):
+    """List all configured agents.
+
+    With ``include_guests=1`` also append registry guest agents (active rows
+    holding a ``chat_session`` grant) whose name does not collide with a
+    config agent. Default output is unchanged.
+    """
+    agents = request.app.state.config.agents
+    if not include_guests:
+        return agents
+    from tinyagentos.chat.guest_agents import list_guests
+    taken = {a.get("name") for a in agents}
+    guests = [g for g in await list_guests(request.app.state) if g["name"] not in taken]
+    return [*agents, *guests]
 
 
 @router.get("/api/agents/containers")
@@ -920,6 +932,7 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
                         "llm_proxy": llm_proxy,
                         "registry": request.app.state.registry,
                         "llm_gateway_port": llm_gateway_live_port(request.app.state),
+                        "agent_controller_port": agent_controller_live_port(request.app.state),
                         "llm_gateway_models_problem": llm_gateway_models_check(request.app.state),
                     },
                     can_read_user_memory=body.can_read_user_memory,

@@ -13,12 +13,12 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from taos_test_csrf import bound_csrf_token
 
 from tinyagentos.auth import AuthManager
 from tinyagentos.demo_mode import read_demo_mode, write_demo_mode
 
 UA = "Mozilla/5.0 (demo test)"
-CSRF = "c" * 64
 DEMO_ENV = {
     "TAOS_LOCK_DEMO_AGENTS": "Ann:hermes:Drafting,Bob:openclaw:Filing",
     "TAOS_LOCK_DEMO_NOTIFICATIONS": "1",
@@ -63,7 +63,10 @@ def _sign_in(client, app, username):
     mgr = app.state.auth
     token = mgr.create_session(user_id=mgr.find_user(username)["id"], user_agent=UA)
     client.cookies.set("taos_session", token)
-    client.cookies.set("csrf_token", CSRF)
+    # Drop any pre-session token a signed-out request picked up, so the jar
+    # holds exactly one csrf_token: the one bound to this session.
+    client.cookies.delete("csrf_token")
+    client.cookies.set("csrf_token", bound_csrf_token(app, token))
 
 
 @pytest_asyncio.fixture()
@@ -109,14 +112,14 @@ class TestTheSwitchGatesEverySurface:
     async def test_off_hides_every_kind_and_on_restores_them(self, app, console):
         _sign_in(console, app, "admin")
         r = await console.put("/api/settings/demo-mode", json={"enabled": False},
-                              headers={"X-CSRF-Token": CSRF})
+                              headers={"X-CSRF-Token": console.cookies["csrf_token"]})
         assert r.status_code == 200 and r.json()["enabled"] is False
         console.cookies.clear()
         assert await _surfaces(console) == ALL_OFF
 
         _sign_in(console, app, "admin")
         r = await console.put("/api/settings/demo-mode", json={"enabled": True},
-                              headers={"X-CSRF-Token": CSRF})
+                              headers={"X-CSRF-Token": console.cookies["csrf_token"]})
         assert r.status_code == 200
         console.cookies.clear()
         assert await _surfaces(console) == ALL_ON
@@ -137,7 +140,7 @@ class TestTheSwitchGatesEverySurface:
         async with _client(first) as c:
             _sign_in(c, first, "admin")
             r = await c.put("/api/settings/demo-mode", json={"enabled": False},
-                            headers={"X-CSRF-Token": CSRF})
+                            headers={"X-CSRF-Token": c.cookies["csrf_token"]})
             assert r.status_code == 200
         second = _make_app(tmp_path, monkeypatch)
         async with _client(second) as c:
@@ -156,7 +159,7 @@ class TestWhoMayFlipIt:
         mgr.complete_invite("guest", code, "Guest", "", "guest password 1")
         _sign_in(console, app, "guest")
         r = await console.put("/api/settings/demo-mode", json={"enabled": False},
-                              headers={"X-CSRF-Token": CSRF})
+                              headers={"X-CSRF-Token": console.cookies["csrf_token"]})
         assert r.status_code == 403
         assert read_demo_mode(app.state.data_dir) is True
         assert (await console.get("/api/settings/demo-mode")).status_code == 403
@@ -172,7 +175,7 @@ class TestWhoMayFlipIt:
     async def test_a_non_boolean_is_400(self, app, console, body):
         _sign_in(console, app, "admin")
         r = await console.put("/api/settings/demo-mode", json=body,
-                              headers={"X-CSRF-Token": CSRF})
+                              headers={"X-CSRF-Token": console.cookies["csrf_token"]})
         assert r.status_code == 400
         assert read_demo_mode(app.state.data_dir) is True
 

@@ -108,8 +108,8 @@ class TestTaosgoAppJoin:
     def test_signed_in_with_csrf_returns_key(self, app):
         """A real session caller with a valid CSRF double-submit still gets a key."""
         client = TestClient(app)
-        client.get("/")  # obtain csrf_token cookie
         client.cookies.set("taos_session", _session_token(app))
+        client.get("/")  # obtain a csrf_token cookie bound to the session
         csrf = _csrf_token(client)
 
         resp = client.post(

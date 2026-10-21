@@ -1044,3 +1044,98 @@ async def test_direct_heartbeat_negative_vram_age_does_not_move_vram_sampled_at_
         f"vram_sampled_at {worker.vram_sampled_at} should not be in the future after negative age"
     )
 
+
+# ──────────────────────────────────────────────────────────────────────
+# taOS gaming mode: yielded status tests
+# ──────────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_heartbeat_status_yielded_sets_status():
+    """When a worker heartbeats with status='yielded', it enters
+    yielded state."""
+    mgr = ClusterManager()
+    await mgr.register_worker(_make_worker("gpu-box"))
+
+    ok = mgr.heartbeat("gpu-box", status="yielded", drain_reason="gameplay")
+    assert ok is True
+    worker = mgr.get_worker("gpu-box")
+    assert worker.status == "yielded"
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_status_less_keeps_yielded():
+    """A status-less heartbeat preserves yielded (same protection as draining)."""
+    mgr = ClusterManager()
+    await mgr.register_worker(_make_worker("gpu-box"))
+    mgr.heartbeat("gpu-box", status="yielded", drain_reason="gameplay")
+
+    # Status-less heartbeat should keep it yielded
+    mgr.heartbeat("gpu-box", load=0.5)
+    worker = mgr.get_worker("gpu-box")
+    assert worker.status == "yielded"
+    assert worker.load == 0.5
+
+
+@pytest.mark.asyncio
+async def test_monitor_loop_leave_yielded_alone_no_leases():
+    """The draining auto-complete sweep must NOT touch yielded workers.
+    A yielded worker with no leases stays yielded, not offline."""
+    mgr = ClusterManager()
+    await mgr.register_worker(_make_worker("gpu-box"))
+    mgr.heartbeat("gpu-box", status="yielded", drain_reason="gameplay")
+
+    # Run one monitor loop iteration — yielded workers are skipped
+    task = asyncio.create_task(mgr._monitor_loop())
+    try:
+        await asyncio.sleep(0.1)
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    worker = mgr.get_worker("gpu-box")
+    assert worker.status == "yielded"
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_yielded_to_online_resumes():
+    """yielded + heartbeat status=online -> online (resume from yielded)."""
+    mgr = ClusterManager()
+    await mgr.register_worker(_make_worker("gpu-box"))
+    mgr.heartbeat("gpu-box", status="yielded", drain_reason="gameplay")
+
+    # Resume to online
+    ok = mgr.heartbeat("gpu-box", status="online")
+    assert ok is True
+    worker = mgr.get_worker("gpu-box")
+    assert worker.status == "online"
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_online_override_draining_keeps_draining():
+    """heartbeat status=online should NOT override draining (keep today's behaviour)."""
+    mgr = ClusterManager()
+    await mgr.register_worker(_make_worker("gpu-box"))
+    mgr.heartbeat("gpu-box", status="draining", drain_reason="update")
+
+    # Online heartbeat should NOT flip draining back to online
+    ok = mgr.heartbeat("gpu-box", status="online")
+    assert ok is True
+    worker = mgr.get_worker("gpu-box")
+    assert worker.status == "draining"
+
+
+@pytest.mark.asyncio
+async def test_get_workers_for_capability_excludes_yielded():
+    """A yielded worker is excluded from get_workers_for_capability (skips non-online)."""
+    mgr = ClusterManager()
+    await mgr.register_worker(_make_worker("online-gpu", capabilities=["chat"], load=0.1))
+    await mgr.register_worker(_make_worker("yielded-gpu", capabilities=["chat"], load=0.0))
+    mgr.heartbeat("yielded-gpu", status="yielded", drain_reason="gameplay")
+
+    result = mgr.get_workers_for_capability("chat")
+    assert len(result) == 1
+    assert result[0].name == "online-gpu"
+

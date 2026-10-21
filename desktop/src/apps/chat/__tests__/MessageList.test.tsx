@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { MessageList } from "../MessageList";
 import type { MessageRow, MessageListProps } from "../MessageList";
 import type { Channel, LiveAgent, ArchivedAgentEntry } from "../types";
@@ -306,6 +306,73 @@ describe("MessageList", () => {
       });
       // The textarea has the content, not the raw rendered markdown
       expect(screen.getByDisplayValue("old text")).toBeInTheDocument();
+    });
+  });
+
+  /* ---- editing the last agent reply (#834) ---- */
+
+  describe("edit last agent reply", () => {
+    const agentMsgs = () => [
+      msg({ id: "a1", author_id: "tom", author_type: "agent", content: "older reply" }),
+      msg({ id: "u1", content: "question" }),
+      msg({ id: "a2", author_id: "tom", author_type: "agent", content: "latest reply" }),
+    ];
+
+    it("shows the edit button only on the last completed agent message", () => {
+      const onEditAgentReply = vi.fn();
+      const { container } = renderWithMsg({ messages: agentMsgs(), onEditAgentReply });
+      const buttons = screen.getAllByRole("button", { name: "Edit reply" });
+      expect(buttons).toHaveLength(1);
+      const row = container.querySelector('[data-message-id="a2"]');
+      expect(row?.contains(buttons[0])).toBe(true);
+      fireEvent.click(buttons[0]);
+      expect(onEditAgentReply).toHaveBeenCalledWith("a2");
+    });
+
+    it("hides the edit button while the last agent message is streaming", () => {
+      const messages = agentMsgs();
+      messages[2] = { ...messages[2], state: "streaming" };
+      renderWithMsg({ messages, onEditAgentReply: vi.fn() });
+      expect(screen.queryByRole("button", { name: "Edit reply" })).toBeNull();
+    });
+
+    it("hides the edit button on a rich reply with content blocks", () => {
+      const messages = agentMsgs();
+      messages[2] = { ...messages[2], content_blocks: [{ kind: "text", text: "rich" }] };
+      renderWithMsg({ messages, onEditAgentReply: vi.fn() });
+      expect(screen.queryByRole("button", { name: "Edit reply" })).toBeNull();
+    });
+
+    it("scopes 'last' per thread: a newer thread reply keeps the top-level pencil", () => {
+      const messages = [
+        ...agentMsgs(),
+        msg({ id: "t1", author_id: "tom", author_type: "agent", content: "in thread", thread_id: "a2" }),
+      ];
+      const { container } = renderWithMsg({ messages, onEditAgentReply: vi.fn() });
+      const buttons = screen.getAllByRole("button", { name: "Edit reply" });
+      const top = container.querySelector('[data-message-id="a2"]');
+      expect(buttons.some((b) => top?.contains(b))).toBe(true);
+    });
+
+    it("skips ephemeral agent messages when picking the editable reply", () => {
+      const messages = [
+        ...agentMsgs(),
+        msg({ id: "e1", author_id: "tom", author_type: "agent", content: "only you can see this", ephemeral: 1 }),
+      ];
+      const { container } = renderWithMsg({ messages, onEditAgentReply: vi.fn() });
+      const buttons = screen.getAllByRole("button", { name: "Edit reply" });
+      expect(buttons).toHaveLength(1);
+      expect(container.querySelector('[data-message-id="a2"]')?.contains(buttons[0])).toBe(true);
+    });
+
+    it("opens MessageEditor on the agent bubble being edited", () => {
+      renderWithMsg({
+        messages: agentMsgs(),
+        onEditAgentReply: vi.fn(),
+        editingMessageId: "a2",
+      });
+      expect(screen.getByLabelText("Edit message")).toHaveValue("latest reply");
+      expect(screen.queryByRole("button", { name: "Edit reply" })).toBeNull();
     });
   });
 

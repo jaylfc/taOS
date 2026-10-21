@@ -11,3 +11,12 @@
 - Rate limit: 10 posts per 10 minutes per canonical_id. Exceeding returns 429 `{"error": "rate_limited", "retry_after": N}`.
 - Delivery through `store.add`: SSE and web-push fire.
 - Human path unchanged: `_require_admin` gate, any valid level, source from body.
+
+---
+
+# Notification history (session-only)
+
+- `GET /api/notifications/history`
+- `GET /api/notifications/history/sources`
+- `GET /api/notifications/archived` (legacy)
+- Detail: `docs/notifications-history.md`

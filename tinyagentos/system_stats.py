@@ -79,6 +79,41 @@ def read_nvidia_vram() -> tuple[int, int] | None:
         return None
 
 
+def read_rocm_vram() -> tuple[int, int] | None:
+    """Return (used_mb, total_mb) for the first AMD/ROCm GPU, or None."""
+    if not shutil.which("rocm-smi"):
+        return None
+    try:
+        out = subprocess.run(
+            ["rocm-smi", "--showmeminfo", "vram", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return None
+    if out.returncode != 0:
+        return None
+    try:
+        import json
+
+        data = json.loads(out.stdout)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict) or not data:
+        return None
+    first_card = sorted(data.keys())[0]
+    card = data[first_card]
+    if not isinstance(card, dict):
+        return None
+    try:
+        total_b = int(card["VRAM Total Memory (B)"])
+        used_b = int(card["VRAM Total Used Memory (B)"])
+    except (KeyError, ValueError):
+        return None
+    return used_b // (1024 * 1024), total_b // (1024 * 1024)
+
+
 def read_nvidia_gpu_load() -> float | None:
     """Return NVIDIA GPU utilisation as a percentage, or None."""
     if not shutil.which("nvidia-smi"):

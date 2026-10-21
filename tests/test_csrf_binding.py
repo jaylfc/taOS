@@ -8,6 +8,9 @@ one for a given session, and a token minted for session A does not verify for
 session B.
 """
 
+import pytest
+from httpx import ASGITransport, AsyncClient
+
 from tinyagentos.middleware import csrf
 
 SECRET = b"s" * 32
@@ -84,3 +87,151 @@ def test_malformed_inputs_rejected_without_raising():
         assert csrf.verify_bound(SECRET, good, session) is False, session
     for secret in (b"", None, "not-bytes"):
         assert csrf.verify_bound(secret, good, SESSION_A) is False, secret
+
+
+# ---------------------------------------------------------------------------
+# CSRF binding 2/3 (tsk-34qgmt): the middleware and verify_csrf use the helpers.
+# ---------------------------------------------------------------------------
+
+
+def _csrf_cookie_lines(resp) -> list[str]:
+    return [
+        line
+        for line in resp.headers.get_list("set-cookie")
+        if line.partition("=")[0].strip() == "csrf_token"
+    ]
+
+
+def _is_deletion(line: str) -> bool:
+    return "max-age=0" in line.lower().replace(" ", "")
+
+
+def _csrf_cookie_values(resp) -> list[str]:
+    """Values of the csrf_token cookies set (deletions skipped)."""
+    return [
+        line.partition("=")[2].split(";", 1)[0].strip()
+        for line in _csrf_cookie_lines(resp)
+        if not _is_deletion(line)
+    ]
+
+
+def _two_sessions(app, username):
+    auth = app.state.auth
+    auth.setup_user(username, "Binding Test", "", "pass1234!")
+    user_id = auth.find_user(username)["id"]
+    return auth.create_session(user_id=user_id), auth.create_session(user_id=user_id)
+
+
+def _client(app, cookies):
+    return AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test", cookies=cookies
+    )
+
+
+@pytest.mark.asyncio
+async def test_session_a_token_with_session_b_cookie_forbidden(app):
+    session_a, session_b = _two_sessions(app, "bindab")
+    token_a = csrf.mint_csrf_token(csrf.get_csrf_secret(app), session_a)
+    async with _client(app, {"taos_session": session_b, "csrf_token": token_a}) as c:
+        resp = await c.post(
+            "/auth/logout", headers={"X-CSRF-Token": token_a}, follow_redirects=False
+        )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_token_bound_to_own_session_accepted(app):
+    session_a, _ = _two_sessions(app, "bindok")
+    token = csrf.mint_csrf_token(csrf.get_csrf_secret(app), session_a)
+    async with _client(app, {"taos_session": session_a, "csrf_token": token}) as c:
+        resp = await c.post(
+            "/auth/logout", headers={"X-CSRF-Token": token}, follow_redirects=False
+        )
+    assert resp.status_code == 303
+    # A cookie that already verifies is left alone.
+    assert _csrf_cookie_values(resp) == []
+
+
+@pytest.mark.asyncio
+async def test_login_sets_csrf_cookie_bound_to_new_session(app):
+    app.state.auth.setup_user("bindlogin", "Binding Test", "", "pass1234!")
+    # The browser arrives holding the pre-session, unbound token.
+    async with _client(app, {"csrf_token": "ab" * 32}) as c:
+        resp = await c.post(
+            "/auth/login", json={"username": "bindlogin", "password": "pass1234!"}
+        )
+    assert resp.status_code == 200
+    session = resp.cookies.get("taos_session")
+    assert session
+    issued = _csrf_cookie_values(resp)
+    assert len(issued) == 1
+    assert csrf.verify_bound(csrf.get_csrf_secret(app), issued[0], session) is True
+
+
+@pytest.mark.asyncio
+async def test_safe_request_reissues_unbound_cookie_bound_to_session(app):
+    session, _ = _two_sessions(app, "bindsafe")
+    async with _client(app, {"taos_session": session, "csrf_token": "ab" * 32}) as c:
+        resp = await c.get("/auth/status")
+    assert resp.status_code == 200
+    issued = _csrf_cookie_values(resp)
+    assert len(issued) == 1
+    assert csrf.verify_bound(csrf.get_csrf_secret(app), issued[0], session) is True
+
+
+@pytest.mark.asyncio
+async def test_unsafe_request_with_unbound_cookie_403_then_retry_succeeds(app):
+    session, _ = _two_sessions(app, "bindunsafe")
+    legacy = "ab" * 32
+    async with _client(app, {"taos_session": session, "csrf_token": legacy}) as c:
+        resp = await c.post(
+            "/auth/logout", headers={"X-CSRF-Token": legacy}, follow_redirects=False
+        )
+        assert resp.status_code == 403
+        assert resp.json() == {"detail": "CSRF token not bound to session"}
+        # The 403 carries a fresh bound cookie, so one retry that re-reads the
+        # cookie (what the SPA does on every request) goes through.
+        issued = _csrf_cookie_values(resp)
+        assert len(issued) == 1
+        c.cookies.set("csrf_token", issued[0])
+        retry = await c.post(
+            "/auth/logout", headers={"X-CSRF-Token": issued[0]}, follow_redirects=False
+        )
+    assert retry.status_code == 303
+
+
+@pytest.mark.asyncio
+async def test_reissue_deletes_host_cookie_before_setting_the_bound_one(app):
+    # A replaced cookie keeps its creation time, so a newer parent-Domain
+    # cookie planted from a sibling subdomain would stay last in the Cookie
+    # header (the one the server reads) and lock the session into 403s.
+    # Deleting first makes the re-issued cookie the newest, so it sorts last.
+    session, _ = _two_sessions(app, "bindorder")
+    async with _client(app, {"taos_session": session, "csrf_token": "ab" * 32}) as c:
+        resp = await c.get("/auth/status")
+    lines = _csrf_cookie_lines(resp)
+    assert len(lines) == 2, lines
+    assert _is_deletion(lines[0]) and "domain=" not in lines[0].lower()
+    assert not _is_deletion(lines[1])
+    issued = _csrf_cookie_values(resp)
+    assert csrf.verify_bound(csrf.get_csrf_secret(app), issued[0], session) is True
+
+
+@pytest.mark.asyncio
+async def test_pre_session_request_still_gets_unbound_token(app):
+    async with _client(app, {}) as c:
+        resp = await c.get("/auth/status")
+    issued = _csrf_cookie_values(resp)
+    assert len(issued) == 1
+    assert "." not in issued[0]
+    assert len(issued[0]) == 64
+
+
+def test_secret_is_stable_and_derived_from_the_persistent_local_token(app, tmp_data_dir):
+    from tinyagentos.app import create_app
+
+    first = csrf.get_csrf_secret(app)
+    assert isinstance(first, bytes) and len(first) == 32
+    assert csrf.get_csrf_secret(app) == first
+    # A restart (new app over the same data dir) keeps issued tokens valid.
+    assert csrf.get_csrf_secret(create_app(data_dir=tmp_data_dir)) == first

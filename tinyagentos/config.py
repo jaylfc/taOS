@@ -93,6 +93,10 @@ class AppConfig:
     # device, opencode elsewhere), or an operator override: "opencode" /
     # "picoclaw". See taos_agent_runtime.decide_framework.
     taos_agent: dict = field(default_factory=lambda: {"framework": "auto"})
+    # Bundled mDNS reflector for cast discovery across a container bridge
+    # (services/mdns_reflector.py). Opt-in: off unless ``enabled`` is true.
+    # Optional ``interfaces`` (names to bridge) and ``silence_window_s``.
+    mdns_reflector: dict = field(default_factory=lambda: {"enabled": False})
     config_path: Path | None = None
 
     def to_dict(self) -> dict:
@@ -125,6 +129,8 @@ class AppConfig:
             d["device"] = self.device
         if (self.taos_agent or {}).get("framework", "auto") != "auto":
             d["taos_agent"] = self.taos_agent
+        if (self.mdns_reflector or {}) != {"enabled": False}:
+            d["mdns_reflector"] = self.mdns_reflector
         return d
 
 # rkllama's taOS default port moved from the upstream 8080 to 7833. Installs
@@ -246,6 +252,10 @@ def load_config(path: Path) -> AppConfig:
         taos_agent=(
             dict(data["taos_agent"]) if isinstance(data.get("taos_agent"), dict)
             else {"framework": "auto"}
+        ),
+        mdns_reflector=(
+            dict(data["mdns_reflector"]) if isinstance(data.get("mdns_reflector"), dict)
+            else {"enabled": False}
         ),
         config_path=path,
         wallhaven_api_key=wallhaven_api_key,

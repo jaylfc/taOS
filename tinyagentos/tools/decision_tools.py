@@ -136,6 +136,8 @@ async def execute_request_decision(args: dict, request: Request) -> dict:
                     "priority": priority,
                     "from_agent": from_agent,
                 },
+                # Only the asked user's bell and push devices, never a broadcast.
+                user_id=user_id,
             )
         except Exception:
             pass

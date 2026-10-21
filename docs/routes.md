@@ -174,14 +174,13 @@ See docs/project-invite-api.md (link + PIN redeem, auth-exempt endpoints).
 
 ## Grant shaping which decisions come back
 
-- **Global (null-project) grant**: null-project decisions ONLY
-- **Exactly one project grant**: that project's decisions, filtered in the store query
-- **Two or more projects**: fetched by agent, filtered in Python
+- **Global (null-project) grant**: null-project decisions, plus granted projects
+- **Exactly one granted scope**: those decisions, filtered in the store query
+- **Two or more scopes**: one store query per scope, merged newest first
 
 ### Limit interaction
 
-- The global and single-project paths push the project filter into the store query, so the 500 limit applies AFTER scoping (issue #2194)
-- The two-or-more-project path still fetches up to 500 rows then filters in Python, so an agent with several project grants and more than 500 decisions in total can still lose allowed-project rows to the limit (same shape as the original bug, narrower blast radius)
+- Every scope pushes the project filter into the store query, and the merged list is capped at 500, so the limit applies AFTER scoping (issue #2194)
 
 ---
 
@@ -324,14 +323,14 @@ See docs/project-invite-api.md (link + PIN redeem, auth-exempt endpoints).
 
 # Admin gates on global resources
 
-A session alone doesn't authorize these: non-admin members get `403`; the host local token (`taosctl`, agents) passes. Single-user installs are unaffected.
+Non-admin members get `403`; the host local token (`taosctl`, agents) passes.
 
 | Router | Gated | Open / owner-scoped |
 |---|---|---|
-| secrets | list, get, add, update, delete, `categories` | `GET /api/secrets/agent/{agent}`: the agent's owner (registry `user_id`) or admin |
+| secrets | list, get, add, update, delete, `categories` | `GET /api/secrets/agent/{agent}`: owner (registry `user_id`) or admin |
 | system | `restart/prepare`, `ai-stack/restart`, non-loopback `prepare-shutdown` | loopback `prepare-shutdown`, `restart/status`, `hardware/refresh` |
 | providers | create, patch, delete, `start`, `stop` | `GET /api/providers` (model pickers) with `api_key` stripped for non-admins |
-| mcp | `start`/`stop`/`restart`, uninstall, `config` PUT, `env`, permission attach/detach, `/api/mcp/call` | list, logs, capabilities, permissions list, `config` GET |
+| mcp | `start`/`stop`/`restart`, uninstall, `config` PUT, `env`, permission attach/detach, `/api/mcp/call`, marketplace install/uninstall/reload | list, logs, capabilities, permissions, `config` GET, marketplace browse/detail |
 | agent-model-keys | `POST /api/agent-model-keys` mints only for agents the caller owns (admin: any) | |
 
 ---
@@ -409,6 +408,15 @@ Publishes a `decision.note` event on the owner's `user:<id>` channel so open sur
 - Rate limit: 10 posts per 10 minutes per canonical_id. Exceeding returns 429 `{"error": "rate_limited", "retry_after": N}`.
 - Delivery through `store.add`: SSE and web-push fire.
 - Human path unchanged: `_require_admin` gate, any valid level, source from body.
+
+---
+
+# Notification history (session-only)
+
+- `GET /api/notifications/history`
+- `GET /api/notifications/history/sources`
+- `GET /api/notifications/archived` (legacy)
+- Detail: `docs/notifications-history.md`
 
 ---
 

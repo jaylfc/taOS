@@ -1,0 +1,1 @@
+- BLE pairing protocol: a board label PIN can be mixed into the provision seal key (HKDF); the PIN never travels over BLE.

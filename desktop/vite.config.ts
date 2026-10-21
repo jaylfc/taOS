@@ -117,6 +117,8 @@ export function resolveExcalidrawFontPath(
 function excalidrawAssetsPlugin() {
   let outDir = "";
   let srcFonts = "";
+  let excalidrawRoot = "";
+  let mermaidRoot = "";
   return {
     name: "taos-excalidraw-assets",
     configResolved(config: import("vite").ResolvedConfig) {
@@ -129,6 +131,18 @@ function excalidrawAssetsPlugin() {
         "dist",
         "prod",
         "fonts",
+      );
+      excalidrawRoot = path.resolve(
+        __dirname,
+        "node_modules",
+        "@excalidraw",
+        "excalidraw",
+      );
+      mermaidRoot = path.resolve(
+        __dirname,
+        "node_modules",
+        "@excalidraw",
+        "mermaid-to-excalidraw",
       );
     },
     generateBundle() {
@@ -161,6 +175,15 @@ function excalidrawAssetsPlugin() {
     writeBundle() {
       if (!existsSync(srcFonts)) return;
       copyTree(srcFonts, outDir, "excalidraw-assets/fonts");
+      // Copy LICENSE files for third-party notices
+      const licensesDir = path.join(outDir, "licenses");
+      rmSync(licensesDir, { recursive: true, force: true });
+      if (existsSync(path.join(excalidrawRoot, "LICENSE"))) {
+        cpSync(path.join(excalidrawRoot, "LICENSE"), path.join(licensesDir, "excalidraw-LICENSE"));
+      }
+      if (existsSync(path.join(mermaidRoot, "LICENSE"))) {
+        cpSync(path.join(mermaidRoot, "LICENSE"), path.join(licensesDir, "mermaid-to-excalidraw-LICENSE"));
+      }
     },
     configureServer(server) {
       if (!existsSync(srcFonts)) return;

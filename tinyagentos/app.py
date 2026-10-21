@@ -130,6 +130,10 @@ from tinyagentos.knowledge_ingest import IngestPipeline
 from tinyagentos.knowledge_categories import CategoryEngine
 from tinyagentos.knowledge_monitor import MonitorService
 from tinyagentos.mcp import MCPServerStore, MCPSupervisor
+from tinyagentos.mcp.marketplace import (
+    MCPMarketplace,
+    MCPRegistry,
+)
 from tinyagentos.frameworks import FRAMEWORKS, FrameworkManifestError, validate_framework_manifest
 
 PROJECT_DIR = Path(__file__).parent.parent
@@ -380,6 +384,21 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     notif_store = NotificationStore(data_dir / "notifications.db")
     notif_push_store = NotificationPushStore(data_dir / "notif_push.db")
     mcp_store = MCPServerStore(data_dir / "mcp.db")
+    # The marketplace registry is a directory of YAML manifests shipped with
+    # the package; loading is deferred, so building it here costs nothing at
+    # boot.  The supervisor is attached by the lifespan (the install path only
+    # needs the store; uninstall uses the supervisor when one is wired).
+    # Resolved from catalog_dir (not the source tree) so a relocated catalog
+    # — e.g. create_app(catalog_dir=...) in tests — serves its own registry.
+    mcp_marketplace = MCPMarketplace(
+        registry=MCPRegistry(catalog_dir / "mcp-registry"),
+        store=mcp_store,
+        # Where a manifest's `{workspace}` placeholder is expanded to, and the
+        # directory the install flow creates for it.  Deliberately NOT data_dir
+        # itself: a filesystem/git MCP server pointed at the data dir would see
+        # the secrets store and the SQLite databases.
+        workspace_root=data_dir / "mcp-servers",
+    )
     qmd_client = QmdClient(config.qmd.get("url", "http://localhost:7832"))
     http_client = httpx.AsyncClient(timeout=30)
     torrent_settings_store = TorrentSettingsStore(data_dir / "torrent_settings.json")
@@ -454,6 +473,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     chat_messages = ChatMessageStore(data_dir / "chat.db")
     chat_channels = ChatChannelStore(data_dir / "chat.db")
     peer_outbox_store = PeerOutboxStore(data_dir / "peer_outbox.db")
+    from tinyagentos.chat.guest_outbox import GuestOutbox, prune_loop
+    guest_outbox = GuestOutbox(data_dir / "guest_outbox.db")
     from tinyagentos.projects.project_store import ProjectStore
     from tinyagentos.projects.task_store import ProjectTaskStore
     from tinyagentos.projects.element_store import ProjectElementStore
@@ -511,6 +532,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     chat_hub = ChatHub()
     canvas_store = CanvasStore(data_dir / "canvas.db")
     desktop_settings = DesktopSettingsStore(data_dir / "desktop.db")
+    from tinyagentos.taos_agent_actions import TaosAgentActionStore
+    taos_agent_actions = TaosAgentActionStore(data_dir / "taos_agent_actions.db")
     from tinyagentos.device_store import DeviceStore
     device_store = DeviceStore(data_dir / "devices.db")
     from tinyagentos.device_pair_requests_store import DevicePairRequestsStore
@@ -700,6 +723,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await chat_messages.init()
         await chat_channels.init()
         await peer_outbox_store.init()
+        await guest_outbox.init()
+        await guest_outbox.prune()
         await project_store.init()
         await dispatcher_store.init()
         await project_invite_store.init()
@@ -725,6 +750,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         projects_root.mkdir(parents=True, exist_ok=True)
         await canvas_store.init()
         await desktop_settings.init()
+        await taos_agent_actions.init()
         await device_store.init()
         await device_pair_requests_store.init()
         await user_memory.init()
@@ -753,6 +779,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await mcp_store.init()
         mcp_supervisor = MCPSupervisor(mcp_store, catalog=registry, notif_store=notif_store, secrets_store=secrets_store)
         app.state.mcp_supervisor = mcp_supervisor
+        # The marketplace uninstall path delegates to the supervisor (it drops
+        # the server's attachments and mcp:<id>: secrets with it).
+        mcp_marketplace.supervisor = mcp_supervisor
         await knowledge_monitor.start()
         await agent_browsers.init()
         app.state.agent_browsers = agent_browsers
@@ -951,6 +980,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                 await _asyncio.sleep(300)
 
         _create_supervised_task(_browser_reap_loop(app), app.state._background_tasks)
+
+        _create_supervised_task(prune_loop(app.state.guest_outbox), app.state._background_tasks)
 
         # Per-agent state lives on the host and is mounted into containers.
         # See docs/design/framework-agnostic-runtime.md.
@@ -1231,6 +1262,12 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             archive=getattr(app.state, "archive", None),
         )
         app.state.bridge_sessions._router = app.state.agent_chat_router
+        app.state.bridge_sessions._guest_outbox = guest_outbox
+        # A guest is any slug without a config agent of that name.
+        app.state.bridge_sessions._is_guest = lambda slug: not any(
+            str(a.get("name") or "").strip().lower() == str(slug).lower()
+            for a in (getattr(app.state.config, "agents", None) or [])
+        )
 
         # Joined view of the registry cache + live catalog probes.
         # Used by the Store / Dashboard / Models routes instead of
@@ -1371,6 +1408,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         from tinyagentos.agent_heartbeat import agent_heartbeat_loop
         _create_supervised_task(agent_heartbeat_loop(app.state), app.state._background_tasks)
 
+        from tinyagentos.projects.dispatcher import DispatcherService, dispatcher_tick_loop
+        app.state.dispatcher_service = DispatcherService(app.state)
+        _create_supervised_task(dispatcher_tick_loop(app.state), app.state._background_tasks)
+
         try:
             canvas_snapshotter = CanvasSnapshotter(
                 project_store=project_store,
@@ -1396,6 +1437,22 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         except Exception:
             logger.exception("mdns publisher failed to start — continuing without")
             app.state.mdns_publisher = None
+
+        # Bundled mDNS reflector for cast discovery across a container
+        # bridge. Opt-in via config.yaml ``mdns_reflector.enabled``; when on,
+        # start() never raises and a broken bridge is reported by
+        # GET /api/cast/discovery/status rather than hidden.
+        app.state.mdns_reflector = None
+        app.state.mdns_reflector_start_error = None
+        if (config.mdns_reflector or {}).get("enabled") is True:
+            try:
+                from tinyagentos.services.mdns_reflector import MdnsReflector
+                mdns_reflector = MdnsReflector.from_config(config.mdns_reflector)
+                await mdns_reflector.start()
+                app.state.mdns_reflector = mdns_reflector
+            except Exception as exc:
+                logger.exception("mdns reflector failed to start, continuing without")
+                app.state.mdns_reflector_start_error = str(exc) or type(exc).__name__
 
         # System event bus — unified typed-event broadcast.
         from tinyagentos.events import EventBus, SystemEventStore
@@ -1485,6 +1542,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # go back to). A no-op unless __main__ recorded the listener port.
         from tinyagentos.llm_gateway.cutover import run_startup_reconcile
         _create_supervised_task(run_startup_reconcile(app.state), app.state._background_tasks)
+        from tinyagentos.agent_controller_listener import run_startup_reconcile as _agent_ctl_reconcile
+        _create_supervised_task(_agent_ctl_reconcile(app.state), app.state._background_tasks)
 
         app.state._startup_complete = True
         logger.info("startup complete — accepting requests")
@@ -1515,6 +1574,12 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                 await _mdns.stop()
             except Exception:
                 logger.exception("mdns publisher stop failed")
+        _refl = getattr(app.state, "mdns_reflector", None)
+        if _refl is not None:
+            try:
+                await _refl.stop()
+            except Exception:
+                logger.exception("mdns reflector stop failed")
         adapter_manager.stop_all()
         for c in list(getattr(app.state, "channel_hub_connectors", {}).values()):
             await c.stop()
@@ -1584,6 +1649,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await install_registry_store.close()
         await user_memory.close()
         await desktop_settings.close()
+        await taos_agent_actions.close()
         await device_store.close()
         await device_pair_requests_store.close()
         # Close the APNs sender's httpx client (self-created by HttpApnsSender);
@@ -1628,6 +1694,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await chat_channels.close()
         await chat_messages.close()
         await peer_outbox_store.close()
+        await guest_outbox.close()
         await expert_agents.close()
         await streaming_sessions.close()
         await shared_folders.close()
@@ -1829,6 +1896,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.routine_store = routine_store
     app.state.project_event_broker = project_event_broker
     app.state.desktop_command_broker = desktop_command_broker
+    # Screencast cast tokens (in memory: a restart revokes every cast).
+    from tinyagentos.cast_tokens import CastTokenStore, install_access_log_redaction
+    app.state.cast_tokens = CastTokenStore()
+    install_access_log_redaction()
     app.state.project_canvas_store = project_canvas_store
     app.state.doc_review_store = doc_review_store
     app.state.project_notes_store = project_notes_store
@@ -1855,6 +1926,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.typing = None
     app.state.canvas_store = canvas_store
     app.state.desktop_settings = desktop_settings
+    # taOS Agent action gate (spec section 3.1): pending/confirmed rows plus
+    # the per-kind executors that run a confirmed action exactly once.
+    app.state.taos_agent_actions = taos_agent_actions
+    app.state.taos_agent_action_executors = {}
     # Which harness runs the system taOS Agent (opencode, or PicoClaw on a
     # taOSmobile handset). Decided now so the lock screen and the config
     # endpoint report it from the first request; a PicoClaw key left over
@@ -1879,6 +1954,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.design_docs = design_docs
     app.state.contacts_store = contacts_store
     app.state.peer_outbox = peer_outbox_store
+    app.state.guest_outbox = guest_outbox
     app.state.coding_workspaces = coding_workspaces_store
     app.state.install_registry = install_registry_store
     app.state.store_submissions = store_submissions
@@ -1888,6 +1964,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.ingest_pipeline = knowledge_ingest
     app.state.knowledge_monitor = knowledge_monitor
     app.state.mcp_store = mcp_store
+    app.state.mcp_marketplace = mcp_marketplace
     # mcp_supervisor, orchestrator, trace_registry, bridge_sessions,
     # copilot_ticket_store, copilot_hub, and vapid_keypair are all created by
     # the lifespan.  Setting None here ensures attribute-existence checks in

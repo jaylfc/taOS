@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import secrets
-
 import pytest
 import pytest_asyncio
 import yaml
 from httpx import ASGITransport, AsyncClient
+from taos_test_csrf import bound_csrf_token
 
 from tinyagentos.app import create_app
 from tinyagentos.todo.todo_store import TodoStore
@@ -43,7 +42,7 @@ async def client(tmp_path):
     token = app.state.auth.create_session(user_id=record["id"], long_lived=True)
     app.state._startup_complete = True
 
-    csrf_token = secrets.token_hex(32)
+    csrf_token = bound_csrf_token(app, token)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(
@@ -82,8 +81,8 @@ async def two_user_clients(tmp_path):
     app.state._startup_complete = True
     transport = ASGITransport(app=app)
 
-    alice_csrf = secrets.token_hex(32)
-    bob_csrf = secrets.token_hex(32)
+    alice_csrf = bound_csrf_token(app, alice_token)
+    bob_csrf = bound_csrf_token(app, bob_token)
 
     async with AsyncClient(
         transport=transport, base_url="http://test",

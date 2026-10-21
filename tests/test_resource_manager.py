@@ -25,6 +25,8 @@ from tinyagentos.scheduling.resource_manager import (
     _get_available_ram_mb,
 )
 
+from tinyagentos.hardware import NpuInfo
+
 
 # ---------------------------------------------------------------------------
 # ResourceSnapshot
@@ -113,11 +115,46 @@ class TestCountCpuCores:
 
 
 class TestDetectNpu:
-    def test_returns_3_when_rknn_path_exists(self, tmp_path: Path):
-        rknn = tmp_path / "npu"
-        rknn.mkdir()
-        with patch("tinyagentos.scheduling.resource_manager.Path", side_effect=lambda p: rknn if p == "/proc/device-tree/npu" else Path(p)):
-            assert _detect_npu() == 3
+    def test_returns_3_when_rknn_path_exists(self, tmp_path: Path, monkeypatch):
+        # After the fix, _detect_npu delegates to hardware._detect_npu().
+        # Monkeypatch the hardware detector so that /proc/device-tree/model contains rk3588
+        # and the rknpu paths are present, asserting _detect_npu() == 3.
+        import tinyagentos.hardware as hw_mod
+        from pathlib import Path as _Path
+
+        real_safe = hw_mod._path_exists_safe
+        def fake_path_exists(p):
+            s = str(p)
+            if "/dev/rknpu" in s:
+                return True  # rknpu path present
+            if "model" in s:
+                return True  # model path present
+            return real_safe(p)
+        monkeypatch.setattr(hw_mod, "_path_exists_safe", fake_path_exists)
+
+        real_glob = _Path.glob
+        def fake_glob(self, pattern):
+            if str(self) == "/sys/bus/platform/drivers" and pattern == "RKNPU":
+                return iter([_Path("/sys/bus/platform/drivers/RKNPU")])
+            if str(self) == "/sys/class/drm" and pattern == "renderD*":
+                return iter([])
+            return real_glob(self, pattern)
+        monkeypatch.setattr(_Path, "glob", fake_glob)
+
+        real_read_text = _Path.read_text
+        def fake_read_text(self, *args, **kwargs):
+            if str(self) == "/proc/device-tree/model":
+                return "Orange Pi 5 Plus rockchip,rk3588"
+            return real_read_text(self, *args, **kwargs)
+        monkeypatch.setattr(_Path, "read_text", fake_read_text)
+
+        real_run = hw_mod._run
+        def fake_run(*a, **k):
+            return ""
+        monkeypatch.setattr(hw_mod, "_run", fake_run)
+
+        result = _detect_npu()
+        assert result == 3
 
     def test_returns_0_when_no_npu_paths(self):
         fake_paths = {
@@ -126,6 +163,15 @@ class TestDetectNpu:
         }
         with patch("tinyagentos.scheduling.resource_manager.Path", side_effect=lambda p: fake_paths.get(p, Path(p))):
             assert _detect_npu() == 0
+
+    def test_returns_3_when_hardware_npu_detected(self, monkeypatch):
+        # After the fix, _detect_npu delegates to hardware._detect_npu().
+        # Mock hardware._detect_npu to return rknpu with 3 cores,
+        # verifying the delegation works regardless of Mali node presence.
+        with patch("tinyagentos.hardware._detect_npu") as mock_hw_npu:
+            mock_hw_npu.return_value = NpuInfo(type="rknpu", cores=3)
+            result = _detect_npu()
+            assert result == 3
 
 
 class TestDetectGpu:

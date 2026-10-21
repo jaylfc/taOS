@@ -1,0 +1,1 @@
+- Health monitor poll loop now uses `asyncio.timeout` instead of `asyncio.wait_for`, so on Python 3.11 a cancel that lands as a poll cycle finishes stops the loop instead of being swallowed. This hang crashed the 3.11 nightly CI shard.

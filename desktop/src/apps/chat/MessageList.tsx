@@ -13,6 +13,7 @@ import {
   Check,
   CheckCheck,
   Globe,
+  Pencil,
 } from "lucide-react";
 import Picker, { Theme } from "emoji-picker-react";
 import { Button } from "@/components/ui";
@@ -98,6 +99,7 @@ export interface MessageRow {
   reactions?: Record<string, string[]>;
   edited_at?: number | string;
   deleted_at?: number | null;
+  ephemeral?: number | boolean;
   delivered_at?: number | null;
   attachments?: AttachmentRecord[];
   reply_count?: number;
@@ -137,6 +139,10 @@ export interface MessageListProps {
   editingMessageId: string | null;
   onCancelEdit: () => void;
   onSaveEdit: (msgId: string, content: string) => void;
+  /** Start editing the last completed agent reply in place. */
+  onEditAgentReply?: (msgId: string) => void;
+  /** Error message when saving an edit fails. */
+  editError?: string | null;
 
   /* ---- reactions ---- */
   onToggleReaction: (messageId: string, emoji: string) => void;
@@ -215,6 +221,8 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
   editingMessageId,
   onCancelEdit,
   onSaveEdit,
+  onEditAgentReply,
+  editError,
   onToggleReaction,
   showEmoji,
   onShowEmoji,
@@ -248,6 +256,16 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
       messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     },
   }), []);
+
+  // Only the most recent non-ephemeral agent reply of each thread (top level keyed "") is
+  // editable, and only once it has finished streaming; the server applies
+  // the same per-thread rule and refuses anything else.
+  const lastAgentByThread = new Map<string, string>();
+  for (const m of messages) {
+    if (m.author_type === "agent" && !m.deleted_at && !m.ephemeral) {
+      lastAgentByThread.set(m.thread_id ?? "", m.id);
+    }
+  }
 
   if (!selectedChannel) {
     return (
@@ -572,6 +590,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                       initial={msg.content}
                       onSave={(content) => onSaveEdit(msg.id, content)}
                       onCancel={onCancelEdit}
+                      error={editError}
                     />
                   ) : (
                     <div className="relative">
@@ -583,6 +602,20 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                             content={msg.content}
                             className="absolute -top-1 right-0 p-1 rounded opacity-0 group-hover:opacity-100 focus:opacity-100 bg-shell-surface border border-shell-border-strong text-shell-text-secondary hover:text-shell-text transition-opacity select-none z-10"
                           />
+                        )}
+                      {onEditAgentReply &&
+                        msg.id === lastAgentByThread.get(msg.thread_id ?? "") &&
+                        (msg.state ?? "complete") === "complete" &&
+                        !msg.content_blocks?.length && (
+                          <button
+                            type="button"
+                            onClick={() => onEditAgentReply(msg.id)}
+                            aria-label="Edit reply"
+                            title="Edit reply"
+                            className="absolute -top-1 right-7 p-1 rounded opacity-0 group-hover:opacity-100 focus:opacity-100 bg-shell-surface border border-shell-border-strong text-shell-text-secondary hover:text-shell-text transition-opacity select-none z-10"
+                          >
+                            <Pencil size={14} aria-hidden="true" />
+                          </button>
                         )}
                       <div
                         className={`${isMobile ? "text-[14px]" : "text-[15px]"} leading-[1.46] whitespace-pre-wrap break-words select-text ${

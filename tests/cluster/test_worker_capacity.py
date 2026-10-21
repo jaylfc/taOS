@@ -192,3 +192,14 @@ def test_gpu_vram_snapshot_read_nvidia_vram_none() -> None:
     """Test gpu_vram_snapshot when read_nvidia_vram returns None."""
     with patch("tinyagentos.system_stats.read_nvidia_vram", return_value=None):
         assert gpu_vram_snapshot() is None
+
+
+def test_gpu_vram_snapshot_rocm_fallback() -> None:
+    """Test gpu_vram_snapshot falls back to read_rocm_vram when nvidia unavailable."""
+    with patch("tinyagentos.system_stats.read_nvidia_vram", return_value=None):
+        with patch("tinyagentos.system_stats.read_rocm_vram", return_value=(1000, 16000)):
+            result = gpu_vram_snapshot()
+            assert result is not None
+            assert result["free_vram_mb"] == 15000
+            assert result["used_vram_mb"] == 1000
+            assert "sampled_at" in result

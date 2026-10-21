@@ -1,7 +1,7 @@
 {
   "name": "tinyagentos-desktop",
   "private": true,
-  "version": "1.0.0-beta.55",
+  "version": "1.0.0-beta.56",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -41,8 +41,6 @@
     "@tiptap/pm": "^3.31.4",
     "@tiptap/react": "^3.26.1",
     "@tiptap/starter-kit": "^3.31.4",
-    "@tldraw/assets": "4.5.12",
-    "@tldraw/tldraw": "^4.5.10",
     "@tonejs/midi": "^2.0.28",
     "@tsparticles/engine": "^3.9.1",
     "@tsparticles/react": "^3.0.0",

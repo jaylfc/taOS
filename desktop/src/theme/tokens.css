@@ -53,6 +53,16 @@
   --color-snap-preview: rgba(139, 146, 163, 0.15);
   --color-snap-border: rgba(139, 146, 163, 0.4);
 
+  /* App-type indicator badge/outline colours, one per runtime. Distinct hues so
+     the type is never colour-only: every mode also carries an accessible label.
+     Dark values are tuned for the graphite shell; the light-scheme block below
+     inverts them. */
+  --app-type-linux: #8E9AAF;
+  --app-type-android: #3DDC84;
+  --app-type-web: #5B8DEF;
+  --app-type-container: #9B8ECB;
+  --app-type-agent: #F5A623;
+
   /* Spacing */
   --spacing-topbar-h: 32px;
   --spacing-dock-h: 64px;
@@ -171,6 +181,14 @@
   --color-accent-strong: #4b5160;
   --color-unread: #3b6fd4;
   --color-bubble-self: rgba(107, 114, 128, 0.12);
+  /* App-type indicator: the dark values above are saturated and would read
+     as a coloured smudge on the light graphite background, so the light
+     scheme desaturates and lightens them in lockstep. */
+  --app-type-linux: #5E6B7D;
+  --app-type-android: #29A868;
+  --app-type-web: #3B6FD4;
+  --app-type-container: #6B5FA0;
+  --app-type-agent: #C87A1A;
 }
 
 /* Hover overlays: re-assert the inverted fill on :hover so the affordance

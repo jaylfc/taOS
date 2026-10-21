@@ -350,6 +350,213 @@ describe("DecisionsApp", () => {
     expect(sent.granted_scopes).toEqual(["memory_read", "a2a_send"]);
   });
 
+  describe("agent scope requests (tsk-6ghcrv)", () => {
+    // The live request from the card: decisions_read + decisions_write with no
+    // project binding, i.e. the wider OS-wide grant.
+    const LIVE_ID = "a818d008ef5245f493c9fde4c68a2100";
+    const LIVE_CID = "taos-dev-20260718-013717";
+    function liveRequest() {
+      return {
+        id: LIVE_ID,
+        canonical_id: LIVE_CID,
+        agent_display_name: "taos-dev",
+        requested_scopes: ["decisions_read", "decisions_write"],
+        project_id: null,
+        reason: "raise decisions for Jay instead of a markdown file",
+        status: "pending",
+        granted_scopes: null,
+        created_ts: new Date(Date.now() - 2 * 3600_000).toISOString(),
+        decided_ts: null,
+      };
+    }
+    function baseResponses(scopeList: MockResponse): Record<string, MockResponse> {
+      return {
+        "GET /api/decisions?status=pending": { ok: true, body: [] },
+        "GET /api/decisions?status=answered": { ok: true, body: [] },
+        "GET /api/decisions?status=withdrawn": { ok: true, body: [] },
+        "GET /api/agents/auth-requests?status=pending": { ok: true, body: { requests: [] } },
+        "GET /api/agents/scope-requests?status=pending": scopeList,
+      };
+    }
+
+    it("lists a pending scope request with agent, scopes, reason, age and an explicit OS-wide binding", async () => {
+      const scopeList = { ok: true, body: { requests: [liveRequest()] } };
+      vi.stubGlobal("fetch", mockFetch(baseResponses(scopeList)));
+      render(<DecisionsApp windowId="w1" />);
+      await flush();
+
+      const region = await screen.findByRole("region", { name: /scope requests/i });
+      expect(within(region).getByText(/scope requests \(1\)/i)).toBeTruthy();
+      expect(within(region).getByText(LIVE_CID)).toBeTruthy();
+      expect(within(region).getByText(/raise decisions for Jay/)).toBeTruthy();
+      expect(within(region).getByText("2h ago")).toBeTruthy();
+      // A null project_id is the WIDER grant: it must say so, never render blank.
+      expect(within(region).getByText(/OS-wide \(all projects\)/i)).toBeTruthy();
+      expect(
+        within(region).getByRole("checkbox", { name: /grant decisions_read/i }),
+      ).toBeChecked();
+      expect(
+        within(region).getByRole("checkbox", { name: /grant decisions_write/i }),
+      ).toBeChecked();
+    });
+
+    it("labels an agent-supplied project as requested and shows the grant lands OS-wide", async () => {
+      // decisions_* is global-capable: approve sends no project_id, so the
+      // grant is OS-wide whatever project the agent named.
+      const req = { ...liveRequest(), project_id: "prj-agent-picked" };
+      const scopeList: MockResponse = { ok: true, body: { requests: [req] } };
+      const fetchMock = mockFetch({
+        ...baseResponses(scopeList),
+        [`POST /api/agents/registry/${LIVE_CID}/scope-requests/${LIVE_ID}/approve`]: {
+          ok: true,
+          body: { status: "accepted" },
+        },
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      render(<DecisionsApp windowId="w1" />);
+      await flush();
+
+      const region = await screen.findByRole("region", { name: /scope requests/i });
+      expect(within(region).getByText(/requested project/i)).toBeTruthy();
+      expect(await within(region).findByText(/grants OS-wide \(all projects\)/i)).toBeTruthy();
+
+      const allow = within(region).getByRole("button", { name: /allow/i });
+      await waitFor(() => expect(allow).not.toBeDisabled());
+      fireEvent.click(allow);
+      await flush();
+      const post = fetchMock.mock.calls.find(
+        (c) => (c[1] as RequestInit)?.method === "POST",
+      );
+      expect(JSON.parse((post![1] as RequestInit).body as string).project_id).toBeUndefined();
+    });
+
+    it("still lists scope requests when the decisions inbox fails to load", async () => {
+      const scopeList = { ok: true, body: { requests: [liveRequest()] } };
+      const inner = mockFetch(baseResponses(scopeList));
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockImplementation((input: string, init?: RequestInit) =>
+          input === "/api/decisions?status=pending"
+            ? Promise.reject(new TypeError("network down"))
+            : inner(input, init),
+        ),
+      );
+      render(<DecisionsApp windowId="w1" />);
+      await flush();
+
+      const region = await screen.findByRole("region", { name: /scope requests/i });
+      expect(within(region).getByText(LIVE_CID)).toBeTruthy();
+    });
+
+    it("caps the deny reason at the route's 2000-character limit", async () => {
+      const scopeList = { ok: true, body: { requests: [liveRequest()] } };
+      vi.stubGlobal("fetch", mockFetch(baseResponses(scopeList)));
+      render(<DecisionsApp windowId="w1" />);
+      await flush();
+
+      const region = await screen.findByRole("region", { name: /scope requests/i });
+      fireEvent.click(within(region).getByRole("button", { name: /^deny/i }));
+      expect(
+        within(region).getByLabelText(/reason for denying/i).getAttribute("maxlength"),
+      ).toBe("2000");
+    });
+
+    it("approving with a subset grants exactly that subset and the row leaves pending", async () => {
+      const scopeList: MockResponse = { ok: true, body: { requests: [liveRequest()] } };
+      const fetchMock = mockFetch({
+        ...baseResponses(scopeList),
+        [`POST /api/agents/registry/${LIVE_CID}/scope-requests/${LIVE_ID}/approve`]: {
+          ok: true,
+          body: { status: "accepted" },
+        },
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      render(<DecisionsApp windowId="w1" />);
+      await flush();
+
+      const region = await screen.findByRole("region", { name: /scope requests/i });
+      fireEvent.click(within(region).getByRole("checkbox", { name: /grant decisions_write/i }));
+      const allow = within(region).getByRole("button", { name: /allow/i });
+      await waitFor(() => expect(allow).not.toBeDisabled());
+
+      // The server now reports nothing pending: the refetch must drop the row.
+      scopeList.body = { requests: [] };
+      fireEvent.click(allow);
+      await flush();
+
+      const post = fetchMock.mock.calls.find(
+        (c) => (c[1] as RequestInit)?.method === "POST",
+      );
+      expect(post![0]).toBe(
+        `/api/agents/registry/${LIVE_CID}/scope-requests/${LIVE_ID}/approve`,
+      );
+      const sent = JSON.parse((post![1] as RequestInit).body as string);
+      expect(sent.granted_scopes).toEqual(["decisions_read"]);
+      // A global-capable grant carries no project_id: OS-wide is what was shown.
+      expect(sent.project_id).toBeUndefined();
+      await waitFor(() =>
+        expect(screen.queryByRole("region", { name: /scope requests/i })).toBeNull(),
+      );
+    });
+
+    it("cannot approve with every scope unticked", async () => {
+      const scopeList = { ok: true, body: { requests: [liveRequest()] } };
+      vi.stubGlobal("fetch", mockFetch(baseResponses(scopeList)));
+      render(<DecisionsApp windowId="w1" />);
+      await flush();
+
+      const region = await screen.findByRole("region", { name: /scope requests/i });
+      fireEvent.click(within(region).getByRole("checkbox", { name: /grant decisions_read/i }));
+      fireEvent.click(within(region).getByRole("checkbox", { name: /grant decisions_write/i }));
+      await flush();
+      expect(within(region).getByRole("button", { name: /allow/i })).toBeDisabled();
+    });
+
+    it("denying requires a reason, sends it, and the row leaves pending", async () => {
+      const scopeList: MockResponse = { ok: true, body: { requests: [liveRequest()] } };
+      const fetchMock = mockFetch({
+        ...baseResponses(scopeList),
+        [`POST /api/agents/registry/${LIVE_CID}/scope-requests/${LIVE_ID}/deny`]: {
+          ok: true,
+          body: { status: "refused" },
+        },
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      render(<DecisionsApp windowId="w1" />);
+      await flush();
+
+      const region = await screen.findByRole("region", { name: /scope requests/i });
+      fireEvent.click(within(region).getByRole("button", { name: /^deny/i }));
+      // Deny is a two-step action here: nothing is posted until a reason is given.
+      expect(
+        fetchMock.mock.calls.some((c) => (c[1] as RequestInit)?.method === "POST"),
+      ).toBe(false);
+      const confirm = within(region).getByRole("button", { name: /confirm deny/i });
+      expect(confirm).toBeDisabled();
+      fireEvent.change(within(region).getByLabelText(/reason for denying/i), {
+        target: { value: "too broad for an OS-wide grant" },
+      });
+      expect(confirm).not.toBeDisabled();
+
+      scopeList.body = { requests: [] };
+      fireEvent.click(confirm);
+      await flush();
+
+      const post = fetchMock.mock.calls.find(
+        (c) => (c[1] as RequestInit)?.method === "POST",
+      );
+      expect(post![0]).toBe(
+        `/api/agents/registry/${LIVE_CID}/scope-requests/${LIVE_ID}/deny`,
+      );
+      expect(JSON.parse((post![1] as RequestInit).body as string)).toEqual({
+        reason: "too broad for an OS-wide grant",
+      });
+      await waitFor(() =>
+        expect(screen.queryByRole("region", { name: /scope requests/i })).toBeNull(),
+      );
+    });
+  });
+
   it("shows answered decisions in the archive tab", async () => {
     const answered = {
       ...singleSelect,

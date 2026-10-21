@@ -40,6 +40,15 @@ describe("getCsrfToken", () => {
     expect(getCsrfToken()).toBe("abc/def=");
   });
 
+  it("returns the last csrf_token when a parent-domain cookie shares the name", () => {
+    // The server reads the last same-name cookie and re-issues its own as the
+    // newest, so the header must carry the last one too.
+    vi.stubGlobal("document", {
+      cookie: "csrf_token=planted; session=abc123; csrf_token=issued",
+    } as unknown as Document);
+    expect(getCsrfToken()).toBe("issued");
+  });
+
   it("returns null when csrf_token value is empty", () => {
     vi.stubGlobal("document", {
       cookie: "csrf_token=; other=val",

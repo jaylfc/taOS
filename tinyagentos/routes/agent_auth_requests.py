@@ -40,6 +40,7 @@ from tinyagentos.agent_registry_store import (
 from tinyagentos.agent_token_auth import check_agent_identity, check_agent_identity_claims
 from tinyagentos.auth_context import CurrentUser, current_user, require_owner_or_admin
 from tinyagentos.base_store import PendingCapExceeded
+from tinyagentos.notification_labels import project_label
 from tinyagentos.routes.projects import _free_suggestions
 
 logger = logging.getLogger(__name__)
@@ -60,6 +61,9 @@ VALID_SCOPES = frozenset({
     "files_read",
     "files_write",
     "registry_feeds_read",
+    # Self-only chat session: drain the agent's OWN chat events and post its
+    # OWN replies (/api/agents/self/chat/*). Identity comes from the token.
+    "chat_session",
     # Least-privilege kanban access: task read + lifecycle + comments for the
     # agent's OWN project only (bound by the token's project_id claim). Does NOT
     # grant task create, member management, or project lifecycle.
@@ -187,6 +191,16 @@ class ApproveScopeBody(BaseModel):
     granted_scopes: list[str]
     project_id: Optional[str] = None
     renew: bool = False
+
+
+class DenyScopeBody(BaseModel):
+    """Optional body for POST .../scope-requests/{req_id}/deny.
+
+    ``reason`` is the approver's explanation, recorded on the row and returned
+    as ``deny_reason`` by the read routes so the agent learns why. The body is
+    optional so a bare deny (the bell / toast) stays valid.
+    """
+    reason: str = Field(default="", max_length=2000)
 
 
 # ---------------------------------------------------------------------------
@@ -618,9 +632,16 @@ async def create_auth_request(request: Request, body: CreateAuthRequest):
     if notifs is not None:
         try:
             scopes = record["requested_scopes"] or []
+            # Name the requested project so the approver is not left decoding
+            # a prj- id (tsk-i7ghpa); the id still rides in data below.
+            on_project = (
+                f" on {await project_label(request.app.state, record['project_id'])}"
+                if record.get("project_id")
+                else ""
+            )
             await notifs.add(
                 title="Access request",
-                message=f"{record['identity_claim']} is requesting {', '.join(scopes)}{' ' + _human_duration(record.get('duration_secs')) if record.get('duration_secs') else ''}",
+                message=f"{record['identity_claim']} is requesting {', '.join(scopes)}{on_project}{' ' + _human_duration(record.get('duration_secs')) if record.get('duration_secs') else ''}",
                 level="info",
                 source="auth_requests",
                 data={
@@ -780,6 +801,7 @@ async def approve_request_record(
     project_id: str | None = None,
     display_name: str | None = None,
     defer_binding: bool = False,
+    sponsor_contact_id: str | None = None,
     renew: bool = False,
     is_lead: bool = False,
 ) -> dict:
@@ -800,6 +822,10 @@ async def approve_request_record(
     until the agent is later bound to a project via
     ``POST /api/projects/{id}/members/assign-agent``. This complements the
     create-new path (which binds to the picked project at mint time).
+
+    ``sponsor_contact_id`` is set for delegated agents (cross-user collab D1)
+    — the contact_id of the human who sponsored this agent.  Omitted (None) for
+    normal consent and invite flows.
 
     Returns ``{"status": "accepted", "canonical_id": ...}``.
 
@@ -972,6 +998,14 @@ async def approve_request_record(
                 framework=record["framework"],
                 project_id=project_id,
             )
+            # For sponsored agents (cross-user collab D1), record the
+            # sponsorship as a per-(identity, project) association, not a
+            # stamp on the reused identity — so each project's contact finds
+            # exactly what they sponsored.
+            if sponsor_contact_id:
+                await registry.set_sponsorship(
+                    existing_cid, project_id, sponsor_contact_id
+                )
             await add_agent_to_project(
                 request,
                 canonical_id=existing_cid,
@@ -1033,6 +1067,15 @@ async def approve_request_record(
         # them to 'active' so they are NOT in the bus inactive/revocation feed and
         # @taOSmd's identity-AND-grant gate accepts them.
         await registry.set_status(canonical_id, "active", actor=decided_by)
+
+        # Record sponsorship as a per-(identity, project) association (D1
+        # rework): the delegation was for THIS project, so the association is
+        # keyed to it rather than stamped on the identity.  project_id is always
+        # set for a delegated agent (the delegation flow requires it).
+        if sponsor_contact_id and project_id:
+            await registry.set_sponsorship(
+                canonical_id, project_id, sponsor_contact_id
+            )
     except IntegrityError:
         # A concurrent approve already took this active handle (the partial
         # unique index fired). Roll back the failed write and remove the
@@ -1988,6 +2031,7 @@ _PUBLIC_SCOPE_REQUEST_FIELDS = (
     "granted_scopes",
     "created_ts",
     "decided_ts",
+    "deny_reason",
 )
 
 
@@ -2268,9 +2312,13 @@ async def deny_scope_request(
     request: Request,
     canonical_id: str,
     req_id: str,
+    body: Optional[DenyScopeBody] = None,
     user: CurrentUser = Depends(current_user),
 ):
-    """Deny a pending scope request (owner/admin only)."""
+    """Deny a pending scope request (owner/admin only).
+
+    An optional ``{"reason": "..."}`` body is recorded as ``deny_reason``.
+    """
     registry = _get_registry_store(request)
     record = await registry.get(canonical_id)
     if record is None:
@@ -2298,7 +2346,10 @@ async def deny_scope_request(
                 detail=f"request is already {req['status']!r}; cannot deny",
             )
 
-        result = await store.set_decision(req_id, "refused", decided_by=user.user_id)
+        deny_reason = (body.reason.strip() if body else "") or None
+        result = await store.set_decision(
+            req_id, "refused", decided_by=user.user_id, deny_reason=deny_reason
+        )
         if result is None:
             raise HTTPException(
                 status_code=409,

@@ -1,0 +1,1 @@
+- Task, decision and access-request notifications now name the task, project, agent and user (for example `"Fix login" closed by Jay on taOS`) instead of raw tsk-/prj-/user ids, invite access requests carry their project so the approval view preselects it, and the Allow / Deny controls carry ARIA labels naming the scopes and project (tsk-i7ghpa).

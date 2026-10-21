@@ -146,6 +146,9 @@ MAX_RETRIES = 3
 RETRY_BACKOFF_BASE = 2.0  # seconds — grows to 2, 4, 8 for retries 1-3
 ERROR_COOLDOWN = 5.0      # seconds after a final error before accepting new messages
 
+_MAX_INFLIGHT = 4
+_SEMAPHORE = asyncio.Semaphore(_MAX_INFLIGHT)
+
 
 async def fetch_bootstrap(client: httpx.AsyncClient) -> dict:
     url = f"{BRIDGE_URL}/api/openclaw/bootstrap?agent={AGENT_NAME}"
@@ -190,6 +193,16 @@ def _suppress(reply, force):
         return reply
     stripped = (reply or "").strip().lower().strip(".!,;:")
     return None if stripped == "no_response" else reply
+
+async def _run_handle_user_message_limited(
+    client: httpx.AsyncClient,
+    evt: dict,
+    channel: dict,
+    _seen: set,
+    _error_until: list,
+) -> bool:
+    async with _SEMAPHORE:
+        return await handle_user_message(client, evt, channel, _seen, _error_until)
 
 
 async def _thinking(c: httpx.AsyncClient, ch_id, state: str, *,
@@ -255,7 +268,7 @@ async def call_hermes(client: httpx.AsyncClient, messages: list) -> str:
 
 
 async def post_reply(client: httpx.AsyncClient, reply_url: str, token: str,
-                     msg_id: str, trace_id: str, content: str, cid=None) -> None:
+                     msg_id: str, trace_id: str, content: str, cid=None) -> bool:
     body = {"kind": "final", "id": msg_id, "trace_id": trace_id, "content": content}
     if cid: body["channel_id"] = cid
     try:
@@ -265,8 +278,11 @@ async def post_reply(client: httpx.AsyncClient, reply_url: str, token: str,
                                   timeout=30)
         if resp.status_code >= 400:
             log.warning("reply POST %s: %s", resp.status_code, resp.text[:300])
+            return False
+        return True
     except Exception as e:
         log.warning("reply POST failed: %s", e)
+        return False
 
 
 async def handle_user_message(client: httpx.AsyncClient, evt: dict, channel: dict,
@@ -288,11 +304,6 @@ async def handle_user_message(client: httpx.AsyncClient, evt: dict, channel: dic
     if msg_id and msg_id in _seen:
         log.info("user_message id=%s already processed — skipping", msg_id)
         return False
-    if msg_id:
-        if len(_seen) >= _MAX_SEEN:
-            # Discard oldest half to keep memory bounded
-            _seen.clear()
-        _seen.add(msg_id)
 
     # Error cooldown: after a final failure, pause before accepting new messages
     now = asyncio.get_event_loop().time()
@@ -326,14 +337,21 @@ async def handle_user_message(client: httpx.AsyncClient, evt: dict, channel: dic
         log.warning("hermes error reply for id=%s — enabling %.1fs cooldown", msg_id, ERROR_COOLDOWN)
         _error_until[0] = asyncio.get_event_loop().time() + ERROR_COOLDOWN
 
-    await post_reply(client, channel["reply_url"], channel["auth_bearer"],
+    # Only mark as seen after successful reply POST
+    posted = await post_reply(client, channel["reply_url"], channel["auth_bearer"],
                      msg_id, trace_id, final, cid)
-    return True
+    if posted and msg_id:
+        if len(_seen) >= _MAX_SEEN:
+            # Discard oldest half to keep memory bounded
+            _seen.clear()
+        _seen.add(msg_id)
+    return posted
 
 
 async def sse_loop(client: httpx.AsyncClient, channel: dict, stop: asyncio.Event) -> None:
     seen_ids: set[str] = set()
     error_until: list[float] = [0.0]  # mutable so tasks can update it
+    pending_tasks: set[asyncio.Task] = set()
     while not stop.is_set():
         try:
             log.info("SSE connecting to %s", channel["events_url"])
@@ -356,8 +374,10 @@ async def sse_loop(client: httpx.AsyncClient, channel: dict, stop: asyncio.Event
                         if evt_type == "user_message" and evt_data:
                             try:
                                 evt = json.loads(evt_data)
-                                asyncio.create_task(handle_user_message(
+                                task = asyncio.create_task(_run_handle_user_message_limited(
                                     client, evt, channel, seen_ids, error_until))
+                                pending_tasks.add(task)
+                                task.add_done_callback(pending_tasks.discard)
                             except Exception as e:
                                 log.warning("parse error: %s", e)
                         evt_type, evt_data = "", ""
@@ -372,6 +392,8 @@ async def sse_loop(client: httpx.AsyncClient, channel: dict, stop: asyncio.Event
             log.warning("SSE error: %s; retry in %ds", e, RECONNECT_DELAY)
         if not stop.is_set():
             await asyncio.sleep(RECONNECT_DELAY)
+    if pending_tasks:
+        await asyncio.gather(*pending_tasks, return_exceptions=True)
 
 
 async def main() -> None:

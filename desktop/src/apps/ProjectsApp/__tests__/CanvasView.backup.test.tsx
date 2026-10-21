@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 
-// The drawing engine (tldraw today, Excalidraw next) cannot run in jsdom, and the
-// backup control must not depend on it at all: it has to survive the engine swap
-// and the tldraw removal. Stub the engine to a plain div.
-vi.mock("../canvas/CanvasBoard", () => ({
-  CanvasBoard: () => <div data-testid="engine-stub" />,
+// The drawing engine (Excalidraw) cannot run in jsdom, and the
+// backup control must not depend on it at all. Stub the engine to a plain div.
+vi.mock("../canvas/ExcalidrawCanvas", () => ({
+  ExcalidrawCanvas: () => <div data-testid="engine-stub" />,
+  default: () => <div data-testid="engine-stub" />,
 }));
 
 import { CanvasView } from "../canvas/CanvasView";

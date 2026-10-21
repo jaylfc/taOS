@@ -200,6 +200,18 @@ def _gateway_port_for(req: DeployRequest) -> int:
         return 0
 
 
+def _agent_controller_port_for(req: DeployRequest) -> int:
+    """The verified agent controller listener port for a LOCAL deploy, or 0.
+
+    Non-zero only when the caller passed the port of a listener this start
+    verified (``extra_config["agent_controller_port"]``, set from ``app.state``).
+    """
+    try:
+        return int((req.extra_config or {}).get("agent_controller_port") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _mint_local_scoped_key(req: DeployRequest, models: list[str]) -> str | None:
     """A scoped per-agent key straight from the local key store."""
     from tinyagentos.litellm_keystore import LiteLLMKeyStore, default_keystore_path
@@ -249,6 +261,19 @@ async def deploy_agent(req: DeployRequest) -> dict:
         from tinyagentos.llm_gateway.cutover import REMOTE_NO_GATEWAY_REASON
 
         msg = f"remote deploy of {req.name} to {req.remote} refused: {REMOTE_NO_GATEWAY_REASON}"
+        logger.error("deploy %s: %s", req.name, msg)
+        return {"success": False, "error": msg, "steps": steps}
+
+    # The agent's route back to the controller is the dedicated agent
+    # controller listener. Refuse before anything is created if it is not live.
+    agent_controller_port = _agent_controller_port_for(req)
+    if not agent_controller_port:
+        msg = (
+            "the agent controller listener is not verified on this controller "
+            "start (still starting, its port is taken, or it is disabled), so "
+            "the agent would have no route to the controller; retry once the "
+            "controller has finished starting"
+        )
         logger.error("deploy %s: %s", req.name, msg)
         return {"success": False, "error": msg, "steps": steps}
 
@@ -529,7 +554,7 @@ async def deploy_agent(req: DeployRequest) -> dict:
             steps.append("llm: proxy device on the LLM gateway")
             proxy_devices = [
                 ("taos-proxy-litellm", AGENT_LLM_LISTEN_PORT, llm_host_port),
-                ("taos-proxy-taos", req.taos_port, req.taos_port),
+                ("taos-proxy-taos", req.taos_port, agent_controller_port),
             ]
             for dev_name, listen_port, connect_port in proxy_devices:
                 res = await add_proxy_device(

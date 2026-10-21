@@ -21,6 +21,7 @@ def test_main_uses_env_host_port(monkeypatch):
     # Disable dual-port: these tests only exercise host/port env-var resolution.
     monkeypatch.setenv("TAOS_BROWSER_PROXY_PORT", "0")
     monkeypatch.setenv("TAOS_LLM_GATEWAY_PORT", "0")  # and the gateway agent listener
+    monkeypatch.setenv("TAOS_AGENT_CONTROLLER_PORT", "0")  # and the agent controller listener
     from tinyagentos import __main__ as m
 
     _disable_tls_device_listener(monkeypatch, m)
@@ -45,6 +46,7 @@ def test_main_falls_back_to_config_when_env_unset(monkeypatch):
     # Disable dual-port: these tests only exercise host/port env-var resolution.
     monkeypatch.setenv("TAOS_BROWSER_PROXY_PORT", "0")
     monkeypatch.setenv("TAOS_LLM_GATEWAY_PORT", "0")  # and the gateway agent listener
+    monkeypatch.setenv("TAOS_AGENT_CONTROLLER_PORT", "0")  # and the agent controller listener
     from tinyagentos import __main__ as m
 
     _disable_tls_device_listener(monkeypatch, m)

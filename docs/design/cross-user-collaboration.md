@@ -138,6 +138,14 @@ CREATE TABLE peer_links (
   scopes. This keeps the JWT/scope world (agents) and the peer world (instances)
   disjoint, so nothing in `VALID_SCOPES` needs to change for humans and the
   equality-tested `_ALLOWED_SCOPES` sync stays untouched.
+- **Token exchange:** the accepter delivers its token in a signed handshake to
+  `POST /api/peer/handshake`, the one peer route with no bearer (the requester
+  holds no token for it yet). It is authenticated by the signature over the key
+  in the envelope body, which must match the `from` fingerprint, plus the
+  requester's own outgoing friend-request (or friend) edge. The requester pins
+  the accepter and answers with a signed `handshake_reply` carrying its own
+  token. Delivery uses the SSRF guard, which allows a private or CGNAT address
+  only for an exact host and port recorded on that contact's peer link.
 
 **Peer token vs. project-level authorization:** the peer token authenticates the
   contact identity and unlocks the route family. However, operations that carry a

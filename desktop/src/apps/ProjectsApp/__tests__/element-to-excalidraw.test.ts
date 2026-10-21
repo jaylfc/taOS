@@ -161,6 +161,11 @@ describe("elementToSkeleton", () => {
     }
   });
 
+  it("customData carries taos_updated_at from the row", () => {
+    const s = elementToSkeleton(el({ id: "u1", updated_at: 123456 }));
+    expect(s.customData).toMatchObject({ taos_updated_at: 123456 });
+  });
+
   it("coerces malformed geometry to defaults instead of crashing", () => {
     const s = elementToSkeleton(
       el({ x: NaN as unknown as number, w: undefined as unknown as number, rotation: "x" as unknown as number }),

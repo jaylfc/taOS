@@ -1,30 +1,38 @@
 import { useState } from "react";
 
 export function MessageEditor({
-  initial, onSave, onCancel,
+  initial, onSave, onCancel, error,
 }: {
   initial: string;
   onSave: (content: string) => void;
   onCancel: () => void;
+  error?: string | null;
 }) {
   const [value, setValue] = useState(initial);
   return (
-    <textarea
-      autoFocus
-      value={value}
-      onChange={(e) => setValue(e.target.value)}
-      onKeyDown={(e) => {
-        if (e.key === "Escape") { e.preventDefault(); onCancel(); }
-        else if (e.key === "Enter" && !e.shiftKey) {
-          e.preventDefault();
-          const trimmed = value.trim();
-          if (trimmed) onSave(trimmed);
-          else onCancel();
-        }
-      }}
-      aria-label="Edit message"
-      rows={1}
-      className="w-full bg-white/5 border border-white/10 rounded px-2 py-1 text-sm"
-    />
+    <div>
+      <textarea
+        autoFocus
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") { e.preventDefault(); onCancel(); }
+          else if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            const trimmed = value.trim();
+            if (trimmed) onSave(trimmed);
+            else onCancel();
+          }
+        }}
+        aria-label="Edit message"
+        rows={1}
+        className="w-full bg-white/5 border border-white/10 rounded px-2 py-1 text-sm"
+      />
+      {error && (
+        <div role="alert" className="text-[11px] text-red-400 mt-1">
+          {error}
+        </div>
+      )}
+    </div>
   );
 }

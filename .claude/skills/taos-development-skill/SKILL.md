@@ -196,6 +196,11 @@ What this means when you write a test:
   It lives in its own module, not in `conftest.py`, because `tests/` is not a package and
   several `conftest.py` files exist, so a bare `from conftest import ...` binds whichever one
   is on `sys.path` first.
+- **The `csrf_token` must be bound to the session.** `verify_csrf` also checks
+  `verify_bound(secret, cookie, taos_session)`, so an arbitrary value next to a real session 403s.
+  The hook mints a bound token for any session made by `AuthManager.create_session`. If you
+  set the cookie and header by hand, mint it:
+  `from taos_test_csrf import bound_csrf_token; token = bound_csrf_token(app, session)`.
 - **`verify_csrf` exempts** safe methods, `Authorization: Bearer` callers, `_CREDENTIAL_PATHS`
   (the sign-in surfaces), and any request with no `taos_session` cookie. A test that never
   authenticates is unaffected.

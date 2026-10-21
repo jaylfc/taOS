@@ -2,6 +2,8 @@
  * API helpers for the taOS system agent configuration endpoints.
  */
 
+export const TAOS_AGENT_CONFIG_URL = "/api/taos-agent/config";
+
 export interface TaosAgentConfig {
   model: string | null;
   permitted_models: string[];
@@ -32,7 +34,7 @@ async function _request(url: string, method: string, body?: unknown): Promise<un
 }
 
 export async function fetchTaosAgentConfig(): Promise<TaosAgentConfig> {
-  return _request("/api/taos-agent/config", "GET") as Promise<TaosAgentConfig>;
+  return _request(TAOS_AGENT_CONFIG_URL, "GET") as Promise<TaosAgentConfig>;
 }
 
 export async function setTaosAgentModel(model: string): Promise<{ model: string }> {

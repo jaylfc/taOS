@@ -1,0 +1,29 @@
+id: nanobot
+name: nanobot
+type: agent-framework
+verification_status: alpha
+version: 0.3.5
+description: "Lightweight personal AI agent with an OpenAI-compatible API server, bridged to taOS chat"
+homepage: https://github.com/HKUDS/nanobot
+license: MIT
+
+requires:
+  ram_mb: 512
+  python: ">=3.11"
+
+install:
+  method: pip
+  package: nanobot-ai
+
+config_schema:
+  - name: model
+    type: model-select
+    label: LLM Model
+    required: true
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: full

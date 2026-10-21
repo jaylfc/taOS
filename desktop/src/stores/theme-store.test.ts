@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { useThemeStore } from "./theme-store";
+import { useThemeStore, loadAppTypeIndicator } from "./theme-store";
 
 const reset = () => {
   useThemeStore.setState({
@@ -160,5 +160,20 @@ describe("theme-store", () => {
     expect(useThemeStore.getState().showDesktopIcons).toBe(false);
     reset();
     expect(useThemeStore.getState().showDesktopIcons).toBe(true);
+  });
+
+  it("setAppTypeIndicator sets the mode and persists it", () => {
+    useThemeStore.getState().setAppTypeIndicator("outline");
+    expect(useThemeStore.getState().appTypeIndicator).toBe("outline");
+    expect(localStorage.getItem("taos-app-type-indicator")).toBe("outline");
+
+    useThemeStore.getState().setAppTypeIndicator("off");
+    expect(useThemeStore.getState().appTypeIndicator).toBe("off");
+    expect(localStorage.getItem("taos-app-type-indicator")).toBe("off");
+  });
+
+  it("loadAppTypeIndicator falls back to badge for an unknown stored value", () => {
+    localStorage.setItem("taos-app-type-indicator", "bogus");
+    expect(loadAppTypeIndicator()).toBe("badge");
   });
 });

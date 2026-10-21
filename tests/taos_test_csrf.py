@@ -29,10 +29,21 @@ bare ``from conftest import ...`` binds whichever one the run happens to put on
 today (card ``tsk-xplzqy``).  A uniquely named module cannot collide.
 """
 
+import functools
+import weakref
 from http.cookies import SimpleCookie
+
+from tinyagentos.auth import AuthManager
+from tinyagentos.middleware.csrf import (
+    csrf_secret_for_auth,
+    get_csrf_secret,
+    mint_csrf_token,
+    verify_bound,
+)
 
 __all__ = [
     "TEST_CSRF_TOKEN",
+    "bound_csrf_token",
     "echo_csrf_cookie_into_header",
     "csrf_event_hooks",
     "sync_csrf_event_hooks",
@@ -40,9 +51,57 @@ __all__ = [
 ]
 
 
-# Any value works — the check is that the header equals the cookie — but it must
-# look like a token so a failure message is self-explanatory.
+# Fallback only, for a session this module cannot trace to an AuthManager
+# (a hand-made token no manager issued).  ``verify_csrf`` now also requires the
+# cookie to be bound to the session (tsk-34qgmt), so a real session always gets
+# a token minted through ``mint_csrf_token`` instead.
 TEST_CSRF_TOKEN = "testsuite-csrf-token-0123456789abcdef0123456789abcdef"
+
+
+def bound_csrf_token(app, session_token: str) -> str:
+    """A ``csrf_token`` bound to ``session_token``, minted the way the server does.
+
+    For tests that set the cookie and header by hand next to a real
+    ``taos_session``.
+    """
+    return mint_csrf_token(get_csrf_secret(app), session_token)
+
+
+# Session token -> the AuthManager that issued it, so the request hook (which
+# sees only the outgoing request, never the app) can mint a token bound to the
+# session with that app's key.  Weak values: a finished test's app is not kept
+# alive by this table.
+_SESSION_OWNERS: "weakref.WeakValueDictionary[str, AuthManager]" = (
+    weakref.WeakValueDictionary()
+)
+
+
+def _track_sessions(create_session):
+    @functools.wraps(create_session)
+    def wrapper(self, *args, **kwargs):
+        token = create_session(self, *args, **kwargs)
+        _SESSION_OWNERS[token] = self
+        return token
+
+    wrapper._taos_test_csrf_tracked = True
+    return wrapper
+
+
+if not getattr(AuthManager.create_session, "_taos_test_csrf_tracked", False):
+    AuthManager.create_session = _track_sessions(AuthManager.create_session)
+
+
+def _session_secret(session_token: str):
+    owner = _SESSION_OWNERS.get(session_token)
+    return csrf_secret_for_auth(owner) if owner is not None else None
+
+
+def _with_cookie(cookie_header: str, name: str, value: str) -> str:
+    """``cookie_header`` with ``name`` set to ``value`` (replaced or appended)."""
+    pairs = [p.strip() for p in cookie_header.split(";") if p.strip()]
+    pairs = [p for p in pairs if p.split("=", 1)[0].strip() != name]
+    pairs.append(f"{name}={value}")
+    return "; ".join(pairs)
 
 
 def _echo(request) -> None:
@@ -66,8 +125,20 @@ def _echo(request) -> None:
     jar = SimpleCookie()
     jar.load(cookie_header)
     morsel = jar.get("csrf_token")
+    session = jar.get("taos_session")
+    secret = _session_secret(session.value) if session is not None else None
 
     if morsel is not None:
+        if secret is not None and not verify_bound(secret, morsel.value, session.value):
+            # The jar holds a token that is not bound to this session (the
+            # pre-session one, picked up before the test injected a session).
+            # A browser would have had it re-issued by the first response that
+            # carried the session; these clients inject the session directly,
+            # so stand in for that response.
+            token = mint_csrf_token(secret, session.value)
+            request.headers["cookie"] = _with_cookie(cookie_header, "csrf_token", token)
+            request.headers["x-csrf-token"] = token
+            return
         request.headers["x-csrf-token"] = morsel.value
         return
 
@@ -79,7 +150,7 @@ def _echo(request) -> None:
     # string and send an empty header.  That is the same shape that broke
     # `test_csrf.py::test_csrf_cookie_set_on_response` when this was seeded on
     # the cookie jar instead.
-    if jar.get("taos_session") is None:
+    if session is None:
         return
 
     # No CSRF cookie yet.  A real browser would already hold one, because
@@ -92,12 +163,11 @@ def _echo(request) -> None:
     # requests still arrive without a CSRF cookie.  The jar applies to every
     # request, and a GET carrying the cookie makes CSRFMiddleware skip issuing
     # one — which silently breaks the tests asserting that it does issue one.
-    request.headers["cookie"] = (
-        f"{cookie_header}; csrf_token={TEST_CSRF_TOKEN}"
-        if cookie_header
-        else f"csrf_token={TEST_CSRF_TOKEN}"
+    token = (
+        mint_csrf_token(secret, session.value) if secret is not None else TEST_CSRF_TOKEN
     )
-    request.headers["x-csrf-token"] = TEST_CSRF_TOKEN
+    request.headers["cookie"] = _with_cookie(cookie_header, "csrf_token", token)
+    request.headers["x-csrf-token"] = token
 
 
 async def echo_csrf_cookie_into_header(request) -> None:

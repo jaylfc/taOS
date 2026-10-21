@@ -1,0 +1,3 @@
+### Added
+
+- Excalidraw write-back: interactive boards now sync local edits to the canvas API via `excalidraw-sync`. `ExcalidrawBoard` accepts optional `projectId`, `elementId`, `getElement`, and `readOnly` props; when `projectId` is set and not read-only the board becomes editable, creates a `SceneSync` instance, calls `markRemote` after every `updateScene`, and forwards `onChange` to `onLocalChange`. `ExcalidrawCanvas` wires `readOnly={useIsMobile()}` and a `getElement` map backed by the live element rows. `taosCustomData` now stamps `taos_updated_at` from the row so conflict detection works.

@@ -519,3 +519,109 @@ class NotificationStore(BaseStore):
             {"event_type": et, "muted": stored.get(et, False)}
             for et in self.EVENT_TYPES
         ]
+
+    async def search(
+        self,
+        user_id: str,
+        q: str | None = None,
+        sources: list[str] | None = None,
+        levels: list[str] | None = None,
+        since: int | None = None,
+        until: int | None = None,
+        state: str = "all",
+        before: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """Search historic notifications for a user with filters and keyset paging.
+
+        User scoping mirrors list_archived: own rows + broadcasts (n.user_id IS NULL),
+        read/archived state from notification_user_state via LEFT JOIN.
+        """
+        if state not in ("all", "unread", "read", "archived", "active"):
+            raise ValueError(f"invalid state: {state}")
+
+        limit = max(1, min(limit, 200))
+
+        conds = ["(n.user_id IS NULL OR n.user_id = ?)"]
+        where_params: list = [user_id]
+
+        if q is not None:
+            escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            conds.append("(n.title LIKE ? ESCAPE '\\' OR n.message LIKE ? ESCAPE '\\')")
+            like_param = f"%{escaped}%"
+            where_params.extend([like_param, like_param])
+
+        if sources:
+            placeholders = ",".join("?" * len(sources))
+            conds.append(f"n.source IN ({placeholders})")
+            where_params.extend(sources)
+
+        if levels:
+            placeholders = ",".join("?" * len(levels))
+            conds.append(f"n.level IN ({placeholders})")
+            where_params.extend(levels)
+
+        if since is not None:
+            conds.append("n.timestamp >= ?")
+            where_params.append(since)
+
+        if until is not None:
+            conds.append("n.timestamp <= ?")
+            where_params.append(until)
+
+        if state == "unread":
+            conds.append("COALESCE(nus.read_at, n.read) = 0")
+        elif state == "read":
+            conds.append("COALESCE(nus.read_at, n.read) != 0")
+        elif state == "archived":
+            conds.append("(n.archived = 1 OR nus.archived_at IS NOT NULL)")
+        elif state == "active":
+            conds.append("(n.archived = 0 AND nus.archived_at IS NULL)")
+
+        if before is not None:
+            try:
+                before_ts, before_id = before.split(":", 1)
+                before_ts = int(before_ts)
+                before_id = int(before_id)
+            except (ValueError, AttributeError):
+                raise ValueError("invalid cursor")
+            conds.append("(n.timestamp < ? OR (n.timestamp = ? AND n.id < ?))")
+            where_params.extend([before_ts, before_ts, before_id])
+
+        where_clause = " AND ".join(conds)
+
+        sql = (
+            "SELECT n.id, n.timestamp, n.level, n.title, n.message, "
+            "COALESCE(nus.read_at, n.read) as read, n.source, n.data, n.user_id, "
+            "CASE WHEN n.archived = 1 OR nus.archived_at IS NOT NULL THEN 1 ELSE 0 END as archived "
+            "FROM notifications n "
+            "LEFT JOIN notification_user_state nus ON n.id = nus.notification_id AND nus.user_id = ? "
+            f"WHERE {where_clause} "
+            "ORDER BY n.timestamp DESC, n.id DESC LIMIT ?"
+        )
+        # Params order: JOIN user_id, WHERE params..., limit
+        full_params = [user_id] + where_params + [limit]
+
+        async with self._db.execute(sql, tuple(full_params)) as cursor:
+            rows = await cursor.fetchall()
+
+        results = []
+        for r in rows:
+            row_dict = _serialize_row(r[:-1])
+            row_dict["archived"] = bool(r[-1])
+            results.append(row_dict)
+        return results
+
+    async def history_sources(self, user_id: str) -> list[str]:
+        """Return distinct sources visible to the user, sorted."""
+        sql = """
+            SELECT DISTINCT n.source
+            FROM notifications n
+            LEFT JOIN notification_user_state nus ON n.id = nus.notification_id AND nus.user_id = ?
+            WHERE (n.user_id IS NULL OR n.user_id = ?)
+              AND n.source IS NOT NULL
+            ORDER BY n.source
+        """
+        async with self._db.execute(sql, (user_id, user_id)) as cursor:
+            rows = await cursor.fetchall()
+        return [r[0] for r in rows]

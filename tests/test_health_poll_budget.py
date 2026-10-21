@@ -92,3 +92,38 @@ async def test_poll_loop_continues_after_timeout_abort():
         pass
 
     assert call_count["n"] >= 2, "loop did not iterate past the timeout"
+
+
+@pytest.mark.asyncio
+async def test_poll_loop_honours_cancel_that_lands_as_cycle_completes():
+    """A cancel arriving as _poll_once finishes must stop the loop.
+
+    On Python 3.11, asyncio.wait_for swallows a cancellation that lands
+    after the inner awaitable has completed but before wait_for resumes,
+    and returns the result instead. The loop then never exits, so stop()
+    hangs. This is what crashed the 3.11 nightly shard.
+    """
+    monitor = _make_monitor(poll_interval=0)
+    monitor._poll_budget_seconds = 5
+    calls = {"n": 0}
+    holder: dict[str, asyncio.Task] = {}
+
+    async def cancel_then_finish() -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            holder["task"].cancel()
+            return
+        await asyncio.sleep(3600)
+
+    monitor._poll_once = cancel_then_finish  # type: ignore[method-assign]
+
+    task = asyncio.create_task(monitor._poll_loop())
+    holder["task"] = task
+    try:
+        await asyncio.wait({task}, timeout=1)
+        assert task.cancelled(), "cancellation was swallowed; loop kept running"
+        assert calls["n"] == 1
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.wait({task}, timeout=1)

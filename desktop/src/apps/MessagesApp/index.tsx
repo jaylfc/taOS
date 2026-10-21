@@ -53,6 +53,7 @@ import { MessageList, type MessageListHandle } from "../chat/MessageList";
 import {
   pinMessage, unpinMessage, listPins,
   editMessage as apiEditMessage, deleteMessage as apiDeleteMessage,
+  editAgentReply as apiEditAgentReply,
   markUnread as apiMarkUnread,
 } from "@/lib/chat-messages-api";
 import { getReceipts, markSeen, type Receipt } from "@/lib/a2a-receipts-api";
@@ -947,6 +948,7 @@ export function MessagesApp({
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const [overflowMenu, setOverflowMenu] = useState<{ messageId: string; x: number; y: number } | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editError, setEditError] = useState<string | null>(null);
   const [pinnedPopoverOpen, setPinnedPopoverOpen] = useState(false);
   const [pinnedMessages, setPinnedMessages] = useState<PinnedMessage[]>([]);
   const [showAllThreads, setShowAllThreads] = useState(false);
@@ -998,7 +1000,9 @@ export function MessagesApp({
   const reconnectDelayRef = useRef(1000);
   const reconnectAttemptsRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const agentListTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevChannelRef = useRef<string | null>(null);
+  const lastFetchRef = useRef<number>(0);
 
   /* ---- fetch channels + unread ---- */
   const fetchChannels = useCallback(async () => {
@@ -1053,7 +1057,7 @@ export function MessagesApp({
   const fetchAgentLists = useCallback(async () => {
     try {
       const [liveRes, archRes] = await Promise.all([
-        fetch("/api/agents"),
+        fetch("/api/agents?include_guests=1"),
         fetch("/api/agents/archived"),
       ]);
       if (liveRes.ok) {
@@ -1303,6 +1307,26 @@ export function MessagesApp({
               ),
             );
             break;
+
+          case "receipt":
+            if (data.message_id) {
+              setReceipts((prev) => {
+                const existing = prev[data.message_id] ?? [];
+                const idx = existing.findIndex((r) => r.agent_id === data.agent_id);
+                const updated: Receipt = {
+                  message_id: data.message_id,
+                  agent_id: data.agent_id,
+                  reader_type: data.reader_type,
+                  delivered_at: data.delivered_at ?? existing[idx]?.delivered_at ?? null,
+                  seen_at: data.seen_at ?? existing[idx]?.seen_at ?? null,
+                };
+                const next = [...existing];
+                if (idx >= 0) next[idx] = updated;
+                else next.push(updated);
+                return { ...prev, [data.message_id]: next };
+              });
+            }
+            break;
         }
       } catch {
         /* bad json */
@@ -1330,42 +1354,6 @@ export function MessagesApp({
     };
 
     wsRef.current = ws;
-  }, []);
-
-  /* ---- A2A bus stream: live receipt updates ---- */
-  useEffect(() => {
-    if (typeof EventSource === "undefined") {
-      console.debug("[MessagesApp] EventSource unavailable, skipping A2A bus stream");
-      return;
-    }
-    const es = new EventSource("/api/a2a/bus/stream");
-    es.onmessage = (ev) => {
-      try {
-        const data = JSON.parse(ev.data);
-        if (data.type === "receipt" && data.message_id) {
-          setReceipts((prev) => {
-            const existing = prev[data.message_id] ?? [];
-            const idx = existing.findIndex((r) => r.agent_id === data.agent_id);
-            const updated: Receipt = {
-              message_id: data.message_id,
-              agent_id: data.agent_id,
-              delivered_at: data.delivered_at ?? existing[idx]?.delivered_at ?? null,
-              seen_at: data.seen_at ?? existing[idx]?.seen_at ?? null,
-            };
-            const next = [...existing];
-            if (idx >= 0) next[idx] = updated;
-            else next.push(updated);
-            return { ...prev, [data.message_id]: next };
-          });
-        }
-      } catch {
-        /* ignore malformed stream event */
-      }
-    };
-    es.onerror = () => {
-      /* let the browser reconnect; do not force-close */
-    };
-    return () => es.close();
   }, []);
 
   /* ---- emoji popover: escape and outside click ---- */
@@ -1408,6 +1396,44 @@ export function MessagesApp({
   }, [fetchChannels, fetchArchivedChannels, fetchAgentLists, connectWs]);
 
   useRefreshOnFocus(fetchChannels);
+
+  /* ---- refresh agent lists on focus/visibility (guest agents granted while open) ---- */
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const THROTTLE_MS = 10000;
+
+    const clearTimer = () => {
+      if (agentListTimerRef.current) {
+        clearTimeout(agentListTimerRef.current);
+        agentListTimerRef.current = null;
+      }
+    };
+
+    const scheduleFetch = () => {
+      const now = Date.now();
+      if (now - lastFetchRef.current < THROTTLE_MS) return;
+      lastFetchRef.current = now;
+      clearTimer();
+      agentListTimerRef.current = setTimeout(() => {
+        agentListTimerRef.current = null;
+        fetchAgentLists();
+      }, 0);
+    };
+
+    const onFocus = () => scheduleFetch();
+    const onVisibilityChange = () => {
+      if (!document.hidden) scheduleFetch();
+    };
+
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      clearTimer();
+    };
+  }, [fetchAgentLists]);
 
   /* ---- keep unreadRef in sync with the unread state without re-running
   * the channel-selection effect (which would re-capture the pending count). ---- */
@@ -1931,12 +1957,12 @@ export function MessagesApp({
       const res = await fetch("/api/chat/channels", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-body: JSON.stringify({
-            name: newChannel.name.trim(),
-            type: newChannel.type,
-            topic: newChannel.topic.trim() || undefined,
-            ...(scope?.projectId ? { project_id: scope.projectId } : {}),
-          }),
+        body: JSON.stringify({
+          name: newChannel.name.trim(),
+          type: newChannel.type,
+          topic: newChannel.topic.trim() || undefined,
+          ...(scope?.projectId ? { project_id: scope.projectId } : {}),
+        }),
       });
       if (res.ok) {
         const ch = await res.json();
@@ -1999,15 +2025,19 @@ body: JSON.stringify({
   /* ---- overflow menu handlers ---- */
   const handleEdit = (msgId: string) => {
     setEditingMessageId(msgId);
+    setEditError(null);
     setOverflowMenu(null);
   };
 
   const handleSaveEdit = async (msgId: string, content: string) => {
+    setEditError(null);
     try {
-      await apiEditMessage(msgId, content);
+      const target = messages.find((m) => m.id === msgId);
+      if (target?.author_type === "agent") await apiEditAgentReply(msgId, content);
+      else await apiEditMessage(msgId, content);
       setEditingMessageId(null);
     } catch (e) {
-      setSendError((e as Error).message);
+      setEditError((e as Error).message);
     }
   };
 
@@ -2306,8 +2336,10 @@ body: JSON.stringify({
             pinnedPopoverOpen={pinnedPopoverOpen}
             onTogglePinnedPopover={() => setPinnedPopoverOpen((o) => !o)}
             editingMessageId={editingMessageId}
-            onCancelEdit={() => setEditingMessageId(null)}
+            onCancelEdit={() => { setEditingMessageId(null); setEditError(null); }}
             onSaveEdit={handleSaveEdit}
+            editError={editError}
+            onEditAgentReply={(id) => { setEditingMessageId(id); setEditError(null); }}
             onToggleReaction={toggleReaction}
             showEmoji={showEmoji}
             onShowEmoji={setShowEmoji}
@@ -2841,9 +2873,9 @@ className="shrink-0 p-0.5 rounded hover:bg-shell-surface-active transition-color
                 </select>
               </div>
               <div className="space-y-1">
-                <Label htmlFor="new-channel-description-mobile" className="block uppercase tracking-wider">Topic</Label>
+                <Label htmlFor="new-channel-topic-mobile" className="block uppercase tracking-wider">Topic</Label>
                 <Input
-                  id="new-channel-description-mobile"
+                  id="new-channel-topic-mobile"
                   value={newChannel.topic}
                   onChange={(e) => setNewChannel((s) => ({ ...s, topic: e.target.value }))}
                   placeholder="What's this channel about?"
@@ -2895,9 +2927,9 @@ className="shrink-0 p-0.5 rounded hover:bg-shell-surface-active transition-color
                   </select>
                 </div>
                 <div className="space-y-1">
-                  <Label htmlFor="new-channel-description" className="block uppercase tracking-wider">Topic</Label>
+                  <Label htmlFor="new-channel-topic" className="block uppercase tracking-wider">Topic</Label>
                   <Input
-                    id="new-channel-description"
+                    id="new-channel-topic"
                     value={newChannel.topic}
                     onChange={(e) => setNewChannel((s) => ({ ...s, topic: e.target.value }))}
                     placeholder="What's this channel about?"

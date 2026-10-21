@@ -32,6 +32,17 @@ export async function editMessage(messageId: string, content: string): Promise<u
   return r.json();
 }
 
+/** Rewrite the last completed agent reply in place (#834). 409 for any other message. */
+export async function editAgentReply(messageId: string, content: string): Promise<unknown> {
+  const r = await fetch(`/api/chat/messages/${messageId}/agent-reply`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
+  await _ensureOk(r);
+  return r.json();
+}
+
 export async function deleteMessage(messageId: string): Promise<void> {
   const r = await fetch(`/api/chat/messages/${messageId}`, { method: "DELETE" });
   await _ensureOk(r);
