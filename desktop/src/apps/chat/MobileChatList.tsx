@@ -32,9 +32,25 @@ const FILTERS: { key: FilterKey; label: string; test: (c: Channel) => boolean }[
   { key: "projects", label: "Projects", test: (c) => Boolean(c.project_id) },
 ];
 
+function toMs(ts: number | string | null | undefined): number {
+  if (ts == null) return NaN;
+  if (typeof ts === "number") {
+    return ts > 1e12 ? ts : ts * 1000;
+  }
+  if (typeof ts === "string") {
+    const num = Number(ts);
+    if (!isNaN(num)) {
+      return num > 1e12 ? num : num * 1000;
+    }
+    const parsed = Date.parse(ts);
+    return Number.isNaN(parsed) ? NaN : parsed;
+  }
+  return NaN;
+}
+
 function sortKey(c: Channel): number {
-  const parsed = c.last_message_at ? Date.parse(c.last_message_at) : NaN;
-  const t = Number.isNaN(parsed) ? Date.parse(c.created_at ?? "") : parsed;
+  const parsed = c.last_message_at ? toMs(c.last_message_at) : NaN;
+  const t = Number.isNaN(parsed) ? toMs(c.created_at ?? "") : parsed;
   return Number.isNaN(t) ? -Infinity : t;
 }
 
@@ -279,7 +295,7 @@ export function MobileChatList(props: MobileChatListProps) {
                           flexShrink: 0,
                         }}
                       >
-                        {formatRelativeTime(ch.last_message_at, nowMs)}
+                        {formatRelativeTime(toMs(ch.last_message_at), nowMs)}
                       </span>
                     )}
                   </div>
