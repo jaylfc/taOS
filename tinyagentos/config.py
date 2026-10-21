@@ -97,6 +97,10 @@ class AppConfig:
     # (services/mdns_reflector.py). Opt-in: off unless ``enabled`` is true.
     # Optional ``interfaces`` (names to bridge) and ``silence_window_s``.
     mdns_reflector: dict = field(default_factory=lambda: {"enabled": False})
+    # mDNS publisher for advertising the controller as taos.local on the LAN.
+    # Enabled by default; set ``enabled: false`` to disable. Can also be
+    # overridden by the TAOS_MDNS=0 environment variable.
+    mdns: dict = field(default_factory=lambda: {"enabled": True})
     config_path: Path | None = None
 
     def to_dict(self) -> dict:

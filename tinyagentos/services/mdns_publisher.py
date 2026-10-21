@@ -25,14 +25,21 @@ handles it via ``allow_name_change``.
 from __future__ import annotations
 
 import logging
+import os
+import re
+import secrets
 import socket
+from pathlib import Path
 
 from zeroconf import ServiceInfo
 from zeroconf.asyncio import AsyncZeroconf
+from zeroconf import AddressResolver
 
 logger = logging.getLogger(__name__)
 
 _SERVICE_TYPE = "_http._tcp.local."
+
+_HOSTNAME_PATTERN = re.compile(r"^taos(-[a-z0-9]{4})?\.local\.$")
 
 
 def _detect_primary_ipv4() -> list[str]:
@@ -82,22 +89,107 @@ def _detect_primary_ipv4() -> list[str]:
     return addrs
 
 
+async def choose_hostname(zc: AsyncZeroconf, data_dir: Path, own_ips: list[str]) -> str:
+    """Choose a stable mDNS hostname, probing for collisions.
+
+    1. If <data_dir>/mdns_hostname exists and holds a valid name
+       (regex ^taos(-[a-z0-9]{4})?\\.local\\.$), use it unchanged.
+    2. Else probe for "taos.local.": if another host owns it, pick
+       "taos-<4 random [a-z0-9]>.local." and probe that too, retry up
+       to 5 times on collision.
+    3. Write the chosen name to <data_dir>/mdns_hostname (atomic write).
+    4. Probe failures (exceptions, multicast off) do NOT block startup:
+       log and fall back to the persisted name or "taos.local.".
+    """
+    hostname_file = data_dir / "mdns_hostname"
+    own_ips_set = set(own_ips)
+
+    # 1. Check for persisted valid hostname
+    if hostname_file.exists():
+        try:
+            persisted = hostname_file.read_text(encoding="utf-8").strip()
+            if _HOSTNAME_PATTERN.match(persisted):
+                logger.info("mDNS: using persisted hostname %s", persisted)
+                return persisted
+            else:
+                logger.warning("mDNS: persisted hostname %r invalid, will re-probe", persisted)
+        except OSError as exc:
+            logger.warning("mDNS: failed to read persisted hostname: %s", exc)
+
+    # 2. Probe for taos.local. first
+    candidate = "taos.local."
+    for attempt in range(5):
+        try:
+            resolver = AddressResolver(candidate)
+            found = await resolver.async_request(zc.zeroconf, 1500)
+            if found:
+                resolved_ips = set(resolver.parsed_addresses())
+                foreign_ips = resolved_ips - own_ips_set
+                if foreign_ips:
+                    logger.info(
+                        "mDNS: %s owned by foreign IP(s) %s, trying suffix",
+                        candidate,
+                        ", ".join(sorted(foreign_ips)),
+                    )
+                    # Generate a new candidate with random suffix
+                    suffix = "".join(secrets.choice("abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(4))
+                    candidate = f"taos-{suffix}.local."
+                    continue
+                else:
+                    # Only our own IPs - this hostname is ours
+                    logger.info("mDNS: %s resolves to our own IP(s), claiming it", candidate)
+                    break
+            else:
+                # No one answered - hostname is available
+                logger.info("mDNS: %s available, claiming it", candidate)
+                break
+        except Exception as exc:
+            # Probe failed (multicast disabled, etc.) - log and fall back
+            logger.warning("mDNS: probe for %s failed: %s, falling back", candidate, exc)
+            candidate = "taos.local."
+            break
+
+    # 3. Write chosen name atomically
+    try:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        temp_file = hostname_file.with_suffix(".tmp")
+        temp_file.write_text(candidate + "\n", encoding="utf-8")
+        os.replace(temp_file, hostname_file)
+        logger.info("mDNS: wrote hostname %s to %s", candidate, hostname_file)
+    except OSError as exc:
+        logger.warning("mDNS: failed to write hostname file: %s", exc)
+
+    return candidate
+
+
 class MdnsPublisher:
     """Publishes the controller as ``_http._tcp`` on the local network."""
 
     def __init__(
         self,
         *,
-        hostname: str = "taos.local.",
+        data_dir: Path,
         service_name: str = "taOS",
         port: int,
     ) -> None:
-        self._hostname = hostname
+        self._data_dir = data_dir
         self._service_name = service_name
         self._port = port
         self._zc: AsyncZeroconf | None = None
         self._info: ServiceInfo | None = None
         self._active = False
+        self._chosen_hostname: str = "taos.local."
+        self._service_instance_name: str | None = None
+
+    @property
+    def hostname(self) -> str:
+        """The chosen hostname without trailing dot (e.g. 'taos.local')."""
+        return self._chosen_hostname.rstrip(".")
+
+    @property
+    def service_instance_name(self) -> str | None:
+        """The service instance name as finally registered by zeroconf."""
+        return self._service_instance_name
 
     async def start(self) -> None:
         """Register the service. Never raises into the caller."""
@@ -108,13 +200,26 @@ class MdnsPublisher:
                     "mDNS: skipping publish — no LAN IPv4 detected"
                 )
                 return
+
+            # Choose hostname before building ServiceInfo
+            zc = AsyncZeroconf()
+            try:
+                self._chosen_hostname = await choose_hostname(zc, self._data_dir, addresses)
+            except Exception:
+                # choose_hostname should never raise, but belt-and-braces
+                logger.exception("mDNS: choose_hostname failed, using taos.local.")
+                self._chosen_hostname = "taos.local."
+            finally:
+                await zc.async_close()
+
+            # Build ServiceInfo with chosen hostname
             info = ServiceInfo(
                 _SERVICE_TYPE,
                 f"{self._service_name}.{_SERVICE_TYPE}",
                 addresses=[socket.inet_aton(ip) for ip in addresses],
                 port=self._port,
                 properties={"path": "/"},
-                server=self._hostname,
+                server=self._chosen_hostname,
             )
             zc = AsyncZeroconf()
             try:
@@ -134,11 +239,12 @@ class MdnsPublisher:
                 raise
             self._zc = zc
             self._info = info
+            self._service_instance_name = info.name
             self._active = True
             logger.info(
                 "mDNS: published %s at http://%s:%d/ (ips=%s)",
                 self._service_name,
-                self._hostname.rstrip("."),
+                self._chosen_hostname.rstrip("."),
                 self._port,
                 ", ".join(addresses),
             )
@@ -160,3 +266,4 @@ class MdnsPublisher:
             self._active = False
             self._zc = None
             self._info = None
+            self._service_instance_name = None
