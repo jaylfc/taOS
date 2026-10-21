@@ -93,6 +93,13 @@ _A2A_BUS_READ_PATHS = frozenset({
 _A2A_BUS_WRITE_PATHS = frozenset({
     "/api/a2a/bus/send",
 })
+# Self-only chat session routes: an agent drains its own chat events and posts
+# its own replies with its registry JWT (scope chat_session, verified by the
+# route, which derives the session slug from the token and never from the body).
+_AGENT_CHAT_SESSION_PATHS = frozenset({
+    "/api/agents/self/chat/events",
+    "/api/agents/self/chat/reply",
+})
 # A2A GPU lease coordination (taOS #893). Read (CHECK) needs a2a_receive; the
 # mutating actions (CLAIM/RELEASE/REQUEST/RENEW) need a2a_send. The route
 # resolves the acting identity from the token itself and forces the bus `from`
@@ -156,6 +163,7 @@ _AGENT_TOKEN_PATHS = (
     _REGISTRY_FEED_PATHS
     | _A2A_BUS_READ_PATHS
     | _A2A_BUS_WRITE_PATHS
+    | _AGENT_CHAT_SESSION_PATHS
     | _A2A_GPU_READ_PATHS
     | _A2A_GPU_WRITE_PATHS
     | _OBSERVATORY_PATHS
@@ -624,6 +632,13 @@ _LLM_GATEWAY_SPEECH = "/api/llm/v1/audio/speech"  # local text-to-speech
 # the client, not as "bad credentials".
 _LLM_GATEWAY_PREFIX = "/api/llm/"
 
+# Screencast media (routes/cast.py): a TV fetches the cast media URL ITSELF and
+# carries no session, cookie or bearer. The cast token in the URL IS the
+# credential and the ROUTE enforces it (401 unknown/expired/revoked, 403 wrong
+# view or device), proven by tests/test_cast_tokens.py. Exactly one prefix,
+# GET/HEAD only; every other method and every /api/cast path stays gated.
+_CAST_MEDIA_PREFIX = "/cast/media/"
+
 
 def _unauthenticated(path: str, body: dict) -> JSONResponse:
     if path.startswith(_LLM_GATEWAY_PREFIX):
@@ -773,6 +788,10 @@ def _is_exempt(method: str, path: str) -> bool:
     if method == "POST" and path == _LLM_GATEWAY_TRANSCRIPTIONS:
         return True
     if method == "POST" and path == _LLM_GATEWAY_SPEECH:
+        return True
+    # Cast media -- cast-token auth lives in the route (see the constants
+    # block above). Read methods only.
+    if method in ("GET", "HEAD") and path.startswith(_CAST_MEDIA_PREFIX):
         return True
     return False
 

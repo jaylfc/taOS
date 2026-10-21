@@ -79,7 +79,6 @@ export const apps: AppManifest[] = [
   { id: "channels", name: "Channels", icon: "radio", category: "platform", component: () => import("@/apps/ChannelsApp").then((m) => ({ default: m.ChannelsApp })), defaultSize: { w: 800, h: 500 }, minSize: { w: 450, h: 350 }, singleton: true, pinned: false, launchpadOrder: 9, tier: 3 },
   { id: "secrets", name: "Secrets", icon: "key-round", category: "platform", component: () => import("@/apps/SecretsApp").then((m) => ({ default: m.SecretsApp })), defaultSize: { w: 750, h: 500 }, minSize: { w: 400, h: 300 }, singleton: true, pinned: false, launchpadOrder: 10, tier: 2, group: "System" },
   { id: "tasks", name: "Routines", icon: "calendar-clock", category: "platform", component: () => import("@/apps/TasksApp").then((m) => ({ default: m.TasksApp })), defaultSize: { w: 800, h: 500 }, minSize: { w: 450, h: 350 }, singleton: true, pinned: false, launchpadOrder: 11 },
-  { id: "import", name: "Import", icon: "upload", category: "platform", component: () => import("@/apps/ImportApp").then((m) => ({ default: m.ImportApp })), defaultSize: { w: 700, h: 450 }, minSize: { w: 400, h: 300 }, singleton: true, pinned: false, launchpadOrder: 12 },
   { id: "images", name: "Images", icon: "image", category: "platform", component: () => import("@/apps/ImagesApp").then((m) => ({ default: m.ImagesApp })), defaultSize: { w: 900, h: 600 }, minSize: { w: 500, h: 400 }, singleton: true, pinned: false, launchpadOrder: 13 },
   { id: "coding-studio", name: "Coding Studio", icon: "code-2", category: "studio", component: () => import("@/apps/CodingStudioApp").then((m) => ({ default: m.CodingStudioApp })), defaultSize: { w: 1080, h: 760 }, minSize: { w: 680, h: 540 }, singleton: true, pinned: false, launchpadOrder: 13.25, optional: true, tier: 5 },
   { id: "design-studio", name: "Design Studio", icon: "palette", category: "studio", component: () => import("@/apps/DesignStudioApp").then((m) => ({ default: m.DesignStudioApp })), defaultSize: { w: 1080, h: 720 }, minSize: { w: 680, h: 520 }, singleton: true, pinned: false, launchpadOrder: 13.26, optional: true, tier: 5 },
@@ -98,6 +97,7 @@ export const apps: AppManifest[] = [
   { id: "agent-browsers", name: "Browsers", icon: "globe", category: "platform", component: () => import("@/apps/AgentBrowsersApp").then((m) => ({ default: m.AgentBrowsersApp })), defaultSize: { w: 1000, h: 650 }, minSize: { w: 550, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16 },
   { id: "feedback", name: "Feedback", icon: "flag", category: "platform", component: () => import("@/apps/FeedbackApp").then((m) => ({ default: m.FeedbackApp })), defaultSize: { w: 700, h: 560 }, minSize: { w: 420, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16.5 },
   { id: "decisions", name: "Decisions", icon: "inbox", category: "platform", component: () => import("@/apps/DecisionsApp").then((m) => ({ default: m.DecisionsApp })), defaultSize: { w: 640, h: 620 }, minSize: { w: 420, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16.6 },
+  { id: "notification-history", name: "Notification History", icon: "history", category: "platform", component: () => import("@/apps/NotificationHistoryApp").then((m) => ({ default: m.NotificationHistoryApp })), defaultSize: { w: 900, h: 600 }, minSize: { w: 500, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16.64, tier: 3 },
   { id: "notification-archive", name: "Archive", icon: "archive", category: "platform", component: () => import("@/apps/NotificationArchiveApp").then((m) => ({ default: m.NotificationArchiveApp })), defaultSize: { w: 800, h: 600 }, minSize: { w: 500, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16.65, tier: 3 },
   { id: "observatory", name: "Observatory", icon: "radar", category: "platform", component: () => import("@/apps/ObservatoryApp").then((m) => ({ default: m.ObservatoryApp })), defaultSize: { w: 620, h: 600 }, minSize: { w: 420, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16.7, tier: 2, group: "System" },
   { id: "notes", name: "Notes", icon: "sticky-note", category: "platform", component: () => import("@/apps/NotesApp").then((m) => ({ default: m.NotesApp })), defaultSize: { w: 860, h: 620 }, minSize: { w: 520, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16.8 },
@@ -196,9 +196,13 @@ export type PinnedLaunchProps = { section?: string };
  * stripped id, so one reload destroys the pin for good (#2677). Resolution
  * therefore happens where a pin is used: `pinnedAppId` for the icon,
  * `pinnedLaunchProps` for the launch.
+ *
+ * `notification-archive` used to open the Notifications app on its Archive
+ * tab. That tab is gone (tsk-i5gygp): the pin now opens the standalone
+ * Notification History app, which needs no section.
  */
 export const APP_REDIRECTS: Record<string, { appId: string; section?: string }> = {
-  "notification-archive": { appId: "notifications", section: "archive" },
+  "notification-archive": { appId: "notification-history" },
 };
 
 /**
@@ -223,17 +227,17 @@ export function isDefaultSurfaceApp(app: AppManifest): boolean {
 
 /**
  * Apps the desktop search should surface: every always-on app, installed
- * optional apps, and tier-3 registry apps (providers, mcp, channels,
- * notification-archive). Tier-3 apps remain hidden from the launcher grids
+ * optional apps, and tier-3 registry apps (providers, mcp, channels). Tier-3 apps remain hidden from the launcher grids
  * and mobile home default surface; they are reachable here via search and
  * still openable by direct id.
  */
 export function getSearchableApps(installedOptional: Set<string>): AppManifest[] {
   return getAllApps().filter(
     (a) =>
-      a.optional
+      !APP_REDIRECTS[a.id] && // Exclude redirected apps
+      (a.optional
         ? installedOptional.has(a.id)
-        : (isDefaultSurfaceApp(a) || a.tier === 3),
+        : (isDefaultSurfaceApp(a) || a.tier === 3)),
   );
 }
 

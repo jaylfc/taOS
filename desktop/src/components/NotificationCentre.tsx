@@ -1,5 +1,5 @@
-import { useState, useEffect, useMemo } from "react";
-import { X, Bell, BellOff, CheckCheck, Trash2, Archive } from "lucide-react";
+import { useState, useEffect } from "react";
+import { X, Bell, BellOff, CheckCheck, Trash2, History } from "lucide-react";
 import { useNotificationStore, type Notification } from "@/stores/notification-store";
 import { useProcessStore } from "@/stores/process-store";
 import { getApp } from "@/registry/app-registry";
@@ -15,7 +15,7 @@ import { ConsentActions, consentPayload } from "./ConsentActions";
 
 const FALLBACK_SIZE = { w: 900, h: 640 };
 
-// Cap the active Inbox list; older items are accessible via the archive window.
+// Cap the active Inbox list; older items are accessible via the Notification History app.
 const INBOX_CAP = 10;
 
 function formatTime(ts: number): string {
@@ -176,10 +176,6 @@ export function NotificationCentre() {
   const [checklistDismissed, setChecklistDismissed] = useState(false);
 
   const active = notifications.filter((n) => !n.archived);
-  const archived = useMemo(
-    () => notifications.filter((n) => n.archived).sort((a, b) => b.timestamp - a.timestamp),
-    [notifications],
-  );
 
   // Optimistic local mark-read, plus a best-effort backend write for server
   // items so the read state persists across reloads. Network never blocks the UI.
@@ -288,23 +284,24 @@ export function NotificationCentre() {
               {active.length > INBOX_CAP && (
                 <div className="px-3 py-2.5 border-t border-white/5">
                   <p className="text-[10px] text-shell-text-tertiary text-center">
-                    +{active.length - INBOX_CAP} more in archive
+                    +{active.length - INBOX_CAP} more in history
                   </p>
                 </div>
               )}
             </>
           )}
-          {/* View archive footer */}
+          {/* View history footer: opens the standalone Notification History app */}
           <div className="border-t border-white/10 px-3 py-2">
             <button
               onClick={() => {
-                const size = getApp("notifications")?.defaultSize ?? { w: 900, h: 600 };
-                openWindow("notifications", size, { section: "archive" });
+                const size = getApp("notification-history")?.defaultSize ?? { w: 900, h: 600 };
+                openWindow("notification-history", size);
               }}
+              aria-label="View history"
               className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-accent hover:bg-white/5 rounded transition-colors"
             >
-              <Archive size={13} />
-              View archive{archived.length > 0 ? ` (${archived.length})` : ""}
+              <History size={13} aria-hidden="true" />
+              View history
             </button>
           </div>
         </div>

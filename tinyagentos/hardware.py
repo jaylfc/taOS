@@ -90,7 +90,10 @@ class HardwareProfile:
 
     @property
     def profile_id(self) -> str:
-        arch = "arm" if self.cpu.arch in ("aarch64", "armv7l") else "x86"
+        # "arm64" is what platform.machine() returns on macOS / Apple Silicon;
+        # without it an M1/M2 Mac was labelled x86 and missed the arm-* tiers.
+        # Matches the arch mapping in cluster/capabilities.py.
+        arch = "arm" if self.cpu.arch in ("aarch64", "armv7l", "arm64") else "x86"
         if self.npu.type != "none":
             accel = "npu"
         elif self.gpu.cuda:
@@ -205,6 +208,20 @@ def _detect_cpu() -> CpuInfo:
 
 
 def _detect_ram() -> int:
+    # macOS / Apple Silicon has no /proc/meminfo. hw.memsize reports total
+    # physical RAM in bytes, and unified memory means that is also the pool the
+    # GPU draws from. Without this branch ram_mb is 0 on a Mac, which collapses
+    # the RAM-derived profile tier and every capacity hint to "unknown".
+    if platform.system() == "Darwin":
+        try:
+            import subprocess
+            mem_bytes = int(subprocess.run(["sysctl", "-n", "hw.memsize"],
+                                           capture_output=True, text=True, timeout=5).stdout.strip())
+            total_mb = mem_bytes // (1024 * 1024)
+            if total_mb > 0:
+                return total_mb
+        except Exception:
+            pass
     try:
         meminfo = Path("/proc/meminfo").read_text()
         for line in meminfo.split("\n"):

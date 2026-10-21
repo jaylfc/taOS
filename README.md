@@ -156,7 +156,7 @@ taOS ships with a full browser-based desktop environment. Open it at `http://you
 
 ### 43 Bundled Desktop Apps
 
-**Platform apps (29):** Messages (WebSocket chat), Mail (IMAP/SMTP accounts, read and send), Projects (Kanban + A2A), Agents (deploy wizard + logs + skills), Store (109+ apps), Settings (multi-section with Memory capture toggles, the lock screen unlock method, and an admin demo-mode switch), Models, Providers (cloud LLM provider management, add/test/remove OpenAI, Anthropic, DeepSeek, and compatible APIs), Memory (User + Agent sections), MCP (plugin manager), Channels, Secrets, Tasks, Import, Images (Image Studio: Create / Library / Edit with tier-aware inpaint + upscale backends), Dashboard (Activity), Cluster (worker management + health), Library (knowledge pipeline, document library with collections and search), Agent Browsers (manage agent browser sessions), Files (real VFS with workspace + shared folders), taOS Agent (Agent-as-a-Model endpoint), Guides, Feedback, Decisions, Notifications, Observatory, Notes, Todo, Hub (taOS hub account and sharing).
+**Platform apps (29):** Messages (WebSocket chat), Mail (IMAP/SMTP accounts, read and send), Projects (Kanban + A2A), Agents (deploy wizard + logs + skills), Store (109+ apps), Settings (multi-section with Memory capture toggles, the lock screen unlock method, and an admin demo-mode switch), Models, Providers (cloud LLM provider management, add/test/remove OpenAI, Anthropic, DeepSeek, and compatible APIs), Memory (User + Agent sections), MCP (plugin manager), Channels, Secrets, Tasks, Images (Image Studio: Create / Library / Edit with tier-aware inpaint + upscale backends), Dashboard (Activity), Cluster (worker management + health), Library (knowledge pipeline, document library with collections, search, and local-file ingestion), Agent Browsers (manage agent browser sessions), Files (real VFS with workspace + shared folders), taOS Agent (Agent-as-a-Model endpoint), Guides, Feedback, Decisions, Notifications (live inbox + preferences), Notification History (search and filter past notifications by text, source, level, date and state), Observatory, Notes, Todo, Hub (taOS hub account and sharing).
 
 **Optional taOS apps (4):** Reddit (subreddit browser with saved threads and memory ingest), YouTube (video library with transcript extraction), GitHub (repository browser with code search), and X (feed monitor with bookmarks and memory capture) ship in the build but are not installed by default; install or remove them from the Store's "taOS Apps" section.
 
@@ -258,6 +258,9 @@ Pick from 1,467 agent templates, 12 built-in plus 196 from awesome-openclaw-agen
 ### App Store (109 Catalog Apps + 47 MCP Plugins, including 13 Streaming Apps)
 One-click install for agent frameworks, AI models, and services. Hardware-aware, only shows what works on your device. Docker apps that ship a companion service with an enabled healthcheck start only after that companion reports healthy; others start on service_started.
 
+### MCP Server Marketplace
+Beyond the bundled MCP plugins, a curated registry of community MCP servers is browsable and installable in one click — search by name or category, see the permissions each server declares, and install. The registry lives in `app-catalog/mcp-registry/` (one YAML manifest per entry: id, description, version, author, install command, launch command, declared permissions); curated ids live in the `mcp-community-` namespace so they can never collide with the bundled plugins' ids in the shared server table, and an installed server is launched by the same MCP supervisor as the bundled ones. The API is `/api/mcp/marketplace/*` — browse and detail are readable by any signed-in user, install and uninstall are admin-only.
+
 ### Agent Deployment
 5-step wizard: pick framework → choose model → configure → deploy into an isolated container (LXC on bare metal, Docker on VPS, auto-detected). Each agent gets its own memory system (taOSmd instance), its own file storage, and its own network identity. The framework runs inside the container but taOS manages everything around it: memory, channels, secrets, model access, scheduled tasks, and inter-agent communication. This means the framework is a swappable component, not a lock-in decision.
 
@@ -347,7 +350,7 @@ Create shared file spaces for agents, groups, and departments. The design team s
 - **Secrets Manager.** Encrypted storage with per-agent access control
 - **Inter-Agent Relationships.** Groups, departments, lead agents, permissions matrix
 - **Scheduled Tasks.** Cron jobs with presets, per-agent or group assignment
-- **Data Import.** Drag-and-drop file upload to agent memory
+- **Data Import.** Drag-and-drop file upload to Library (ingests .txt, .md, .pdf, .html, .json, .csv; auto-embeds via subscriptions or manual "Embed files into an agent")
 - **Memory Browser.** Keyword + semantic vector search across all agents
 - **Agent Export/Import.** Portable JSON export of agent config, channels, and group memberships
 

@@ -29,7 +29,7 @@ const REGISTRY: Record<string, { id: string; name: string; pwa?: boolean }> = {
 
 async function boot(appId: string) {
   history.replaceState({}, "", `/app.html?app=${encodeURIComponent(appId)}`);
-  await import("./app-standalone-main");
+  await (await import("./app-standalone-main")).booted;
 }
 
 function manifestLink() {

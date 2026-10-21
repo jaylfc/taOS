@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, act } from "@testing-library/react";
-import React from "react";
 import { NotificationsApp } from "@/apps/NotificationsApp";
 import { useNotificationStore, type Notification } from "@/stores/notification-store";
 
@@ -28,30 +27,6 @@ vi.mock("@/lib/notifications-push", () => ({
 vi.mock("@/components/SetupChecklist", () => ({ SetupChecklist: () => null }));
 // Do NOT mock ConsentActions: we want to render the real component so the
 // harness-dependent warning text is observable by this test.
-
-vi.mock("@/components/ui", () => ({
-  Tabs: ({ children, value, onValueChange }: { children: React.ReactNode; value?: string; onValueChange?: (v: string) => void }) => {
-    const items = React.Children.toArray(children);
-    const active = items.filter((child: React.ReactNode) => {
-      if (!React.isValidElement(child)) return false;
-      return child.props.value === value;
-    });
-    return (
-      <div data-testid="tabs" data-value={value}>
-        <button data-testid="tab-notifications" onClick={() => onValueChange?.("notifications")}>Notifications</button>
-        <button data-testid="tab-archive" onClick={() => onValueChange?.("archive")}>Archive</button>
-        {active}
-      </div>
-    );
-  },
-  TabsContent: ({ children, value }: { children: React.ReactNode; value?: string }) => (
-    <div data-testid={`tab-content-${value}`}>{children}</div>
-  ),
-  TabsList: ({ children }: { children: React.ReactNode }) => <div data-testid="tabs-list">{children}</div>,
-  TabsTrigger: ({ children, value, onClick }: { children: React.ReactNode; value?: string; onClick?: () => void }) => (
-    <button data-testid={`trigger-${value}`} onClick={onClick}>{children}</button>
-  ),
-}));
 
 async function flush() {
   await act(async () => {

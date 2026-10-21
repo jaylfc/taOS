@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import pytest
 from unittest.mock import patch
-from tinyagentos.hardware import detect_hardware, get_hardware_profile, HardwareProfile
+from tinyagentos.hardware import detect_hardware, get_hardware_profile, HardwareProfile, CpuInfo
 from tinyagentos import hardware as hardware_mod
 from tinyagentos.hardware import _nvidia_vram_for_model, _amd_vram_for_model
 from tinyagentos.hardware import _soc_from_devicetree
@@ -33,7 +33,7 @@ class TestDetectHardware:
     def test_returns_hardware_profile(self):
         profile = detect_hardware()
         assert isinstance(profile, HardwareProfile)
-        assert profile.cpu.arch in ("aarch64", "x86_64", "armv7l")
+        assert profile.cpu.arch in ("aarch64", "arm64", "x86_64", "armv7l")
         assert profile.ram_mb > 0
         assert profile.disk.total_gb > 0
 
@@ -45,18 +45,54 @@ class TestDetectHardware:
         assert len(parts) >= 3
         assert parts[-1].endswith("gb")
 
+    def test_profile_id_treats_arm64_as_arm(self):
+        # macOS reports platform.machine() == "arm64". It must land in the arm-*
+        # tier; an M1 Mac previously produced "x86-cpu-8gb" and missed the
+        # arm-cpu-* catalog entries.
+        profile = HardwareProfile(cpu=CpuInfo(arch="arm64"), ram_mb=8192)
+        assert profile.profile_id.startswith("arm-")
+
+    def test_detect_ram_reads_hw_memsize_on_darwin(self, monkeypatch):
+        # macOS has no /proc/meminfo; total RAM comes from hw.memsize in bytes.
+        monkeypatch.setattr(hardware_mod.platform, "system", lambda: "Darwin")
+
+        class _Completed:
+            stdout = "17179869184\n"  # 16 GiB, in bytes
+
+        monkeypatch.setattr("subprocess.run", lambda *a, **k: _Completed())
+        assert hardware_mod._detect_ram() == 16384
+
+    def test_detect_ram_blank_memsize_does_not_raise(self, monkeypatch):
+        # A blank hw.memsize must not raise or return a bogus value: the probe
+        # falls through to the /proc path (absent on macOS -> 0; present on
+        # Linux -> the real figure). Either way the result must be a sane int.
+        monkeypatch.setattr(hardware_mod.platform, "system", lambda: "Darwin")
+
+        class _Completed:
+            stdout = "\n"
+
+        monkeypatch.setattr("subprocess.run", lambda *a, **k: _Completed())
+        result = hardware_mod._detect_ram()
+        assert isinstance(result, int)
+        assert result >= 0
+
     def test_npu_detection_returns_type(self):
         profile = detect_hardware()
         assert profile.npu.type in ("rknpu", "hailo", "coral", "qualcomm", "none")
 
     def test_gpu_detection_returns_type(self):
         profile = detect_hardware()
-        assert profile.gpu.type in ("nvidia", "amd", "mali", "intel", "none")
+        assert profile.gpu.type in ("nvidia", "amd", "mali", "intel", "apple", "none")
 
     def test_gpu_panthor_driver_no_mali0(self, monkeypatch):
         # Test that panthor driver is detected in path 2 even without /sys/class/misc/mali0
         # Simulates the mainline panthor GPU driver scenario
         # Mirror the _stub_environment mocking style from TestDetectNpuRknpuModernPaths
+
+        # panthor is a Linux DRM driver, so pin the platform to Linux. On a
+        # Darwin host _detect_gpu returns the Apple Silicon GPU before it ever
+        # reaches the DRM scan, and this simulated /sys tree would be ignored.
+        monkeypatch.setattr(hardware_mod.platform, "system", lambda: "Linux")
 
         # Stub Path.exists: mali0 absent, /sys/class/drm present, card1/device/driver
         # present; all else falls through to real Path.exists

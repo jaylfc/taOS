@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tinyagentos"
-version = "1.0.0-beta.55"
+version = "1.0.0-beta.56"
 description = "Self-hosted AI agent memory system for low-power hardware"
 license = { file = "LICENSE" }
 # Upper-capped at <3.15 because the proxy extra's litellm (pinned
@@ -160,6 +160,7 @@ markers = [
     # workflow); inert in a normal test run.
     "guards(target, replace=None, must_kill=None): guard test's protected function; see scripts/check_non_discriminating.py",
     "skip_if_no_embed_backend: skip when no embed backend can serve the test (qmd unreachable and onnxruntime absent)",
+    "no_opencode_spawn_guard: opt out of the autouse fixture that blocks real opencode spawns (for tests that test resolve_opencode_binary directly)",
 ]
 filterwarnings = [
     # Asyncio teardown emits unraisable RuntimeError("Event loop is closed")

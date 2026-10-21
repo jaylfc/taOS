@@ -55,7 +55,7 @@ describe("app-standalone-main shell link routing", () => {
 
   it("awaits device-class prime before routing links: window.open after boot routes through openUrlInShell on mobile", async () => {
     let booted = false;
-    const bootPromise = import("../app-standalone-main").then(() => {
+    const bootPromise = import("../app-standalone-main").then((m) => m.booted).then(() => {
       booted = true;
     });
 
@@ -79,7 +79,7 @@ describe("app-standalone-main shell link routing", () => {
     vi.useFakeTimers();
 
     let booted = false;
-    const bootPromise = import("../app-standalone-main").then(() => {
+    const bootPromise = import("../app-standalone-main").then((m) => m.booted).then(() => {
       booted = true;
     });
 

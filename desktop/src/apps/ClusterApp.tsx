@@ -8,12 +8,13 @@ import {
 } from "lucide-react";
 import { Button, Card, CardContent, Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import type { ClusterWorker, ClusterDevice, WorkerStatus, BleScanDevice, ClusterMap } from "@/lib/cluster";
+import type { ClusterWorker, ClusterDevice, WorkerStatus, BleScanDevice, ClusterMap, ClusterResources } from "@/lib/cluster";
 import {
   CapabilityMapList,
   CapabilityMapDetail,
   PlacementOverview,
 } from "./ClusterApp.capabilityMap";
+import { ClusterResourcesPanel } from "./ClusterApp.resources";
 import {
   workerStatus,
   workerHardwareSummary,
@@ -28,7 +29,7 @@ import { useRefreshOnFocus } from "@/hooks/use-refresh-on-focus";
 import { copyText } from "@/lib/clipboard";
 
 type SortKey = "name" | "status" | "last_seen";
-type Tab = "nodes" | "map" | "devices";
+type Tab = "nodes" | "map" | "resources" | "devices";
 
 const STATUS_ORDER: Record<WorkerStatus, number> = {
   online: 0,
@@ -855,6 +856,10 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
   const [selectedCapability, setSelectedCapability] = useState<string | null>(null);
   const [mapLoading, setMapLoading] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
+  // Agent offices S10: read-only resource inventory for the Resources tab.
+  const [clusterResources, setClusterResources] = useState<ClusterResources | null>(null);
+  const [resourcesLoading, setResourcesLoading] = useState(false);
+  const [resourcesError, setResourcesError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<{
@@ -868,6 +873,8 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
   // manual refresh button can overlap, and an older response must not
   // overwrite a newer map (or a newer error) with stale data.
   const mapRequestId = useRef(0);
+  // Same guard for the resources fetch.
+  const resourcesRequestId = useRef(0);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -958,18 +965,56 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
     }
   }, []);
 
+  const fetchResources = useCallback(async () => {
+    const requestId = ++resourcesRequestId.current;
+    setResourcesLoading(true);
+    try {
+      const res = await fetch("/api/cluster/resources", { headers: { Accept: "application/json" } });
+      if (requestId !== resourcesRequestId.current) return; // superseded by a newer request
+      if (!res.ok) {
+        setResourcesError(
+          res.status === 403
+            ? "Admin session required to view cluster resources."
+            : `Could not load cluster resources (${res.status}).`,
+        );
+        return;
+      }
+      const json = (await res.json()) as ClusterResources;
+      if (requestId !== resourcesRequestId.current) return;
+      if (json && Array.isArray(json.resources) && Array.isArray(json.errors)) {
+        setClusterResources(json);
+        setResourcesError(null);
+      } else {
+        setResourcesError("Unexpected cluster resources response.");
+      }
+    } catch {
+      if (requestId !== resourcesRequestId.current) return;
+      setResourcesError("Could not load cluster resources.");
+    } finally {
+      if (requestId === resourcesRequestId.current) setResourcesLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (activeTab === "devices") {
       fetchDevices();
     } else if (activeTab === "map") {
       fetchMap();
+    } else if (activeTab === "resources") {
+      fetchResources();
     } else {
       fetchWorkers();
     }
-  }, [activeTab, fetchDevices, fetchMap, fetchWorkers]);
+  }, [activeTab, fetchDevices, fetchMap, fetchResources, fetchWorkers]);
 
   useRefreshOnFocus(
-    activeTab === "devices" ? fetchDevices : activeTab === "map" ? fetchMap : fetchWorkers,
+    activeTab === "devices"
+      ? fetchDevices
+      : activeTab === "map"
+        ? fetchMap
+        : activeTab === "resources"
+          ? fetchResources
+          : fetchWorkers,
     1000,
   );
 
@@ -1402,6 +1447,25 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
             </button>
             <button
               type="button"
+              role="tab"
+              aria-selected={activeTab === "resources"}
+              aria-controls="cluster-resources-panel"
+              onClick={() => {
+                setActiveTab("resources");
+                setSelected(null);
+                setSelectedDevice(null);
+              }}
+              className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
+                activeTab === "resources"
+                  ? "bg-accent text-white"
+                  : "text-shell-text-tertiary hover:text-shell-text hover:bg-white/[0.06]"
+              }`}
+              aria-label="Show cluster resources"
+            >
+              Resources
+            </button>
+            <button
+              type="button"
               onClick={() => {
                 setActiveTab("devices");
                 setSelected(null);
@@ -1425,6 +1489,12 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
           {activeTab === "devices" && (
             <span className="text-xs text-shell-text-tertiary truncate">
               {devices.length} device{devices.length === 1 ? "" : "s"}
+            </span>
+          )}
+          {activeTab === "resources" && (
+            <span className="text-xs text-shell-text-tertiary truncate">
+              {clusterResources?.resources.length ?? 0} resource
+              {(clusterResources?.resources.length ?? 0) === 1 ? "" : "s"}
             </span>
           )}
           {activeTab === "map" && (
@@ -1471,14 +1541,22 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
             variant="ghost"
             size="icon"
             onClick={
-              activeTab === "devices" ? fetchDevices : activeTab === "map" ? fetchMap : fetchWorkers
+              activeTab === "devices"
+                ? fetchDevices
+                : activeTab === "map"
+                  ? fetchMap
+                  : activeTab === "resources"
+                    ? fetchResources
+                    : fetchWorkers
             }
             aria-label={
               activeTab === "devices"
                 ? "Refresh device list"
                 : activeTab === "map"
                   ? "Refresh capability map"
-                  : "Refresh worker list"
+                  : activeTab === "resources"
+                    ? "Refresh cluster resources"
+                    : "Refresh worker list"
             }
           >
             <RefreshCw size={14} />
@@ -1488,6 +1566,20 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
 
       {/* Master-detail */}
       <div className="flex-1 min-h-0 overflow-hidden">
+        {activeTab === "resources" ? (
+          <div
+            id="cluster-resources-panel"
+            role="tabpanel"
+            aria-label="Cluster resources"
+            className="h-full overflow-y-auto"
+          >
+            <ClusterResourcesPanel
+              data={clusterResources}
+              loading={resourcesLoading}
+              error={resourcesError}
+            />
+          </div>
+        ) : (
         <MobileSplitView
           listTitle={
             activeTab === "devices"
@@ -1642,6 +1734,7 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
             )
           }
         />
+        )}
       </div>
 
       {/* Add device modal (manual worker pairing / free-tier, or Bluetooth) */}
