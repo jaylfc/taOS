@@ -8,4 +8,4 @@
 - mDNS probe failure no longer persists `taos.local`; the next boot re-probes instead of claiming the name forever
 - `config.mdns.enabled` now treats `0`, `false`, or `"0"` as disabled (not just `False`)
 - Version endpoint tests run the lifespan to verify publisher construction is gated by `TAOS_MDNS`
-- Test fixes: use direct `choose_hostname` import in probe-exception test; replace class-variable mutation with closure in version endpoint tests for parallel safety
+- /api/version reports mdns_hostname only while the name is actually advertised
