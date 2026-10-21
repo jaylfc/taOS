@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import {
   MessageCircle,
   Hash,
@@ -84,6 +85,7 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
     onSelectChannel,
     unread,
     nowMs,
+    liveAgents,
     archivedChannels,
     archivedExpanded,
     onToggleArchived,
@@ -99,6 +101,16 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
     agentPresence,
   } = props;
 
+  const agentNames = useMemo(
+    () =>
+      liveAgents.flatMap((a) => {
+        const names = [a.name];
+        if (a.display_name) names.push(a.display_name);
+        return names;
+      }),
+    [liveAgents],
+  );
+
   if (isMobile) {
     return (
       <div style={{ padding: "8px 0 16px" }}>
@@ -109,18 +121,19 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
           <EmptyState onOpenAgentsApp={onOpenAgentsApp} />
         ) : (
           <>
-            <MobileChatList
-              sections={sections}
-              projectGroups={projectGroups}
-              selectedChannel={selectedChannel}
-              onSelectChannel={onSelectChannel}
-              unread={unread}
-              nowMs={nowMs}
-              formatRelativeTime={formatRelativeTime}
-              bus={bus}
-              busSelected={busSelected}
-              onSelectBusChannel={onSelectBusChannel}
-            />
+<MobileChatList
+            sections={sections}
+            projectGroups={projectGroups}
+            selectedChannel={selectedChannel}
+            onSelectChannel={onSelectChannel}
+            unread={unread}
+            nowMs={nowMs}
+            formatRelativeTime={formatRelativeTime}
+            bus={bus}
+            busSelected={busSelected}
+            onSelectBusChannel={onSelectBusChannel}
+            agentNames={agentNames}
+          />
           </>
         )}
         {/* Archived channels, mobile (always rendered, not gated by allEmpty) */}
