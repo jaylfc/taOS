@@ -1425,7 +1425,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # mDNS publisher — advertises http://taos.local:<port>/ on the LAN.
         # Failure must never break startup; the publisher swallows its own
         # errors but wrap it again here for belt-and-braces.
-        if (config.mdns or {}).get("enabled", True) is False or (
+        if config.mdns.get("enabled", True) is False or (
             os.environ.get("TAOS_MDNS", "") == "0"
         ):
             app.state.mdns_publisher = None

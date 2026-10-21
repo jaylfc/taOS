@@ -9,9 +9,25 @@ from tinyagentos.services import mdns_publisher as mp
 from tinyagentos.services.mdns_publisher import MdnsPublisher
 
 
+class _FakeAddressResolver:
+    """Fake AddressResolver that simulates probe results — always available."""
+
+    def __init__(self, found: bool, parsed_addrs: list[str]):
+        self._found = found
+        self._parsed_addrs = parsed_addrs
+        self.requested_name = None
+
+    async def async_request(self, zc, timeout: int = 1500) -> bool:
+        self.requested_name = getattr(self, "name", "taos.local.")
+        return self._found
+
+    def parsed_addresses(self) -> list[str]:
+        return self._parsed_addrs
+
+
 @pytest.fixture
 def fake_zc(monkeypatch):
-    """Patch AsyncZeroconf and the IPv4 detector — no real sockets."""
+    """Patch AsyncZeroconf, _detect_primary_ipv4, and AddressResolver — no real sockets."""
     zc_instance = MagicMock()
     zc_instance.async_register_service = AsyncMock()
     zc_instance.async_unregister_service = AsyncMock()
@@ -19,6 +35,8 @@ def fake_zc(monkeypatch):
     factory = MagicMock(return_value=zc_instance)
     monkeypatch.setattr(mp, "AsyncZeroconf", factory)
     monkeypatch.setattr(mp, "_detect_primary_ipv4", lambda: ["192.168.1.42"])
+    # Stub AddressResolver to avoid real mDNS multicast probes
+    monkeypatch.setattr(mp, "AddressResolver", lambda name: _FakeAddressResolver(found=False, parsed_addrs=[]))
     return zc_instance, factory
 
 

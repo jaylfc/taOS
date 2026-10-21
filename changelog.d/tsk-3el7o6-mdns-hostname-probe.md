@@ -1,8 +1,7 @@
 ### Fixed
 
-- Wire mDNS hostname choice into app.py lifespan: pass `data_dir` to `MdnsPublisher` constructor so `start()` is reached on every box start (was causing TypeError and silent mDNS disappearance).
-- Off switch: app.py skips constructing the publisher and sets `app.state.mdns_publisher = None` when `config.mdns.get('enabled', True)` is false or `env TAOS_MDNS == '0'`; config.py parses `mdns` from YAML like `mdns_reflector` and omits it from `to_dict` when default.
-- `/api/version` carries `mdns_hostname` (string without trailing dot, or `null` when publisher absent/not started).
-- Persist hostname via `tinyagentos.atomic_io.atomic_write_text` instead of hand-rolled `temp_file.write_text` + `os.replace`.
-- Updated `tests/test_mdns_publisher.py` to pass `data_dir=tmp_path` in each test.
-- Added tests: `TAOS_MDNS=0` suppresses publisher construction; `GET /api/version` carries `mdns_hostname`.
+- Wire mDNS hostname choice into app.py: pass `data_dir` to `MdnsPublisher` constructor so `start()` is reached on every box start, and respect `config.mdns.get('enabled', True)` and `TAOS_MDNS` env var to skip publisher construction
+- Off switch: app.py skips constructing the publisher and sets `app.state.mdns_publisher = None` when `config.mdns.get('enabled', True)` is false or `TAOS_MDNS == '0'`; `tinyagentos/config.py` parses `mdns` from YAML in `load_config` the same way `mdns_reflector` is parsed, and omits it from `to_dict` when it equals the default `{"enabled": True}`
+- Card Decision 4: added `mdns_hostname` (string without trailing dot, or `null` when publisher is absent/not started) to existing `GET /api/version` JSON
+- Persisting the name: replaced hand-rolled temp file + `os.replace` in `choose_hostname` with `tinyagentos.atomic_io.atomic_write_text`
+- Tests: passed `data_dir=tmp_path` in `tests/test_mdns_publisher.py` and stubbed the probe with `_FakeAddressResolver`; added `test_version_endpoint_mdns_hostname_when_active` to verify `GET /api/version` carries `mdns_hostname` when publisher is active

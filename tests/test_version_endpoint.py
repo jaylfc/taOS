@@ -43,3 +43,23 @@ def test_version_endpoint_mdns_hostname_when_disabled(monkeypatch, tmp_path):
     assert isinstance(body.get("version"), str)
     assert body["version"]  # non-empty
     assert body.get("mdns_hostname") is None
+
+
+def test_version_endpoint_mdns_hostname_when_active(monkeypatch, tmp_path):
+    """When the mdns publisher is active, mdns_hostname is carried in the version response."""
+    import types
+    from unittest.mock import MagicMock
+    monkeypatch.setenv("TAOS_MDNS", "1")
+    app = create_app(data_dir=tmp_path / "data", catalog_dir=tmp_path / "catalog")
+    # Publisher was attempted during lifespan; now inject a mock publisher
+    # with a known hostname so the version route can return it.
+    publisher = MagicMock()
+    publisher.hostname = "taos.local"
+    app.state.mdns_publisher = publisher
+    client = TestClient(app)
+    r = client.get("/api/version")
+    assert r.status_code == 200
+    body = r.json()
+    assert isinstance(body.get("version"), str)
+    assert body["version"]  # non-empty
+    assert body.get("mdns_hostname") == "taos.local"

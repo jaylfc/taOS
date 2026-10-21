@@ -135,7 +135,7 @@ class AppConfig:
             d["taos_agent"] = self.taos_agent
         if (self.mdns_reflector or {}) != {"enabled": False}:
             d["mdns_reflector"] = self.mdns_reflector
-        if (self.mdns or {}) != {"enabled": True}:
+        if self.mdns != {"enabled": True}:
             d["mdns"] = self.mdns
         return d
 
