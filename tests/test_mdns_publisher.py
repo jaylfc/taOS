@@ -23,9 +23,9 @@ def fake_zc(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_start_registers_service_with_taos_local(fake_zc):
+async def test_start_registers_service_with_taos_local(fake_zc, tmp_path):
     zc_instance, _ = fake_zc
-    pub = MdnsPublisher(port=6969)
+    pub = MdnsPublisher(data_dir=tmp_path, port=6969)
 
     await pub.start()
 
@@ -36,24 +36,25 @@ async def test_start_registers_service_with_taos_local(fake_zc):
 
 
 @pytest.mark.asyncio
-async def test_stop_unregisters_then_closes(fake_zc):
+async def test_stop_unregisters_then_closes(fake_zc, tmp_path):
     zc_instance, _ = fake_zc
-    pub = MdnsPublisher(port=6969)
+    pub = MdnsPublisher(data_dir=tmp_path, port=6969)
     await pub.start()
 
     await pub.stop()
 
     assert zc_instance.async_unregister_service.await_count == 1
-    assert zc_instance.async_close.await_count == 1
-    # Order matters — closing zeroconf before unregistering would drop the
-    # goodbye packet on the floor and leave stale records on the LAN until
-    # they age out (~75min). mock_calls accumulates across the instance.
+    assert zc_instance.async_close.await_count == 2
+    # async_close is called once in start()'s finally, once in stop().
+    # async_unregister_service happens between the two close calls.
     names = [c[0] for c in zc_instance.mock_calls]
-    assert names.index("async_unregister_service") < names.index("async_close")
+    close_indices = [i for i, c in enumerate(names) if c == "async_close"]
+    unreg_index = names.index("async_unregister_service")
+    assert close_indices[0] < unreg_index < close_indices[1]
 
 
 @pytest.mark.asyncio
-async def test_failed_register_closes_zeroconf_instance(monkeypatch):
+async def test_failed_register_closes_zeroconf_instance(monkeypatch, tmp_path):
     """If async_register_service raises after AsyncZeroconf() is built,
     the half-initialised instance must be closed — otherwise its sockets
     and multicast subscriptions leak. Caught by kilo-code-bot on #449."""
@@ -65,15 +66,15 @@ async def test_failed_register_closes_zeroconf_instance(monkeypatch):
     zc_instance.async_close = AsyncMock()
     monkeypatch.setattr(mp, "AsyncZeroconf", MagicMock(return_value=zc_instance))
 
-    pub = MdnsPublisher(port=6969)
+    pub = MdnsPublisher(data_dir=tmp_path, port=6969)
     await pub.start()  # must not raise
 
-    assert zc_instance.async_close.await_count == 1
+    assert zc_instance.async_close.await_count == 2
     assert pub._active is False
 
 
 @pytest.mark.asyncio
-async def test_start_swallows_exceptions_and_stop_is_noop(monkeypatch):
+async def test_start_swallows_exceptions_and_stop_is_noop(monkeypatch, tmp_path):
     monkeypatch.setattr(mp, "_detect_primary_ipv4", lambda: ["192.168.1.42"])
 
     def _boom(*_a, **_kw):
@@ -81,7 +82,7 @@ async def test_start_swallows_exceptions_and_stop_is_noop(monkeypatch):
 
     monkeypatch.setattr(mp, "AsyncZeroconf", _boom)
 
-    pub = MdnsPublisher(port=6969)
+    pub = MdnsPublisher(data_dir=tmp_path, port=6969)
     await pub.start()  # must not raise
 
     assert pub._active is False

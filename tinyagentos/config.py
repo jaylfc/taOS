@@ -135,6 +135,8 @@ class AppConfig:
             d["taos_agent"] = self.taos_agent
         if (self.mdns_reflector or {}) != {"enabled": False}:
             d["mdns_reflector"] = self.mdns_reflector
+        if (self.mdns or {}) != {"enabled": True}:
+            d["mdns"] = self.mdns
         return d
 
 # rkllama's taOS default port moved from the upstream 8080 to 7833. Installs
@@ -260,6 +262,10 @@ def load_config(path: Path) -> AppConfig:
         mdns_reflector=(
             dict(data["mdns_reflector"]) if isinstance(data.get("mdns_reflector"), dict)
             else {"enabled": False}
+        ),
+        mdns=(
+            dict(data["mdns"]) if isinstance(data.get("mdns"), dict)
+            else {"enabled": True}
         ),
         config_path=path,
         wallhaven_api_key=wallhaven_api_key,

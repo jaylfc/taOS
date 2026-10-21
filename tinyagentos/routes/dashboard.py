@@ -107,10 +107,14 @@ async def api_health(request: Request, detailed: bool = False):
 
 
 @router.get("/api/version")
-async def get_version():
+async def get_version(request: Request):
     """Cheap version probe. Auth-exempt — the frontend uses this to
     detect when a new backend version has shipped after a restart."""
-    return {"version": tinyagentos.__version__}
+    mdns_hostname = None
+    publisher = getattr(request.app.state, "mdns_publisher", None)
+    if publisher is not None:
+        mdns_hostname = publisher.hostname
+    return {"version": tinyagentos.__version__, "mdns_hostname": mdns_hostname}
 
 
 @router.get("/api/system/info")

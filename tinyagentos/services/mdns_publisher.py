@@ -22,7 +22,7 @@ zeroconf resolves the collision by suffixing the second one
 handles it via ``allow_name_change``.
 
 """
-from __future__ import annotations
+from tinyagentos.atomic_io import atomic_write_text
 
 import logging
 import os
@@ -151,10 +151,7 @@ async def choose_hostname(zc: AsyncZeroconf, data_dir: Path, own_ips: list[str])
 
     # 3. Write chosen name atomically
     try:
-        data_dir.mkdir(parents=True, exist_ok=True)
-        temp_file = hostname_file.with_suffix(".tmp")
-        temp_file.write_text(candidate + "\n", encoding="utf-8")
-        os.replace(temp_file, hostname_file)
+        atomic_write_text(hostname_file, candidate + "\n")
         logger.info("mDNS: wrote hostname %s to %s", candidate, hostname_file)
     except OSError as exc:
         logger.warning("mDNS: failed to write hostname file: %s", exc)
