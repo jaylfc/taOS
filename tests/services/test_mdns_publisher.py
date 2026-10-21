@@ -261,7 +261,7 @@ async def test_probe_exception_returns_default_and_persists_nothing(tmp_path, mo
             return []
 
     with patch("tinyagentos.services.mdns_publisher.AddressResolver", _OSErrorResolver):
-        result = await mp.choose_hostname(zc, data_dir, own_ips)
+        result = await choose_hostname(zc, data_dir, own_ips)
 
     assert result == "taos.local."
     assert not (data_dir / "mdns_hostname").exists()
