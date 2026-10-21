@@ -250,12 +250,34 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
 }: MessageListProps, ref: React.Ref<MessageListHandle>) {
   const messageListRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [selectedMessageId, setSelectedMessageId] = React.useState<string | null>(null);
 
   useImperativeHandle(ref, () => ({
     scrollToBottom: () => {
       messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     },
   }), []);
+
+  React.useEffect(() => {
+    if (!isMobile) {
+      setSelectedMessageId(null);
+      return;
+    }
+    const onDocClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      if (target.closest("[data-message-id]")) {
+        return;
+      }
+      setSelectedMessageId(null);
+    };
+    document.addEventListener("click", onDocClick);
+    return () => document.removeEventListener("click", onDocClick);
+  }, [isMobile]);
+
+  React.useEffect(() => {
+    setSelectedMessageId(null);
+  }, [selectedChannel]);
 
   // Only the most recent non-ephemeral agent reply of each thread (top level keyed "") is
   // editable, and only once it has finished streaming; the server applies
@@ -493,6 +515,15 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                 }`}
                 onMouseEnter={() => onHoverMessage(msg.id)}
                 onMouseLeave={() => onHoverMessage(null)}
+                onClick={(e) => {
+                  if (!isMobile) return;
+                  const target = e.target as HTMLElement | null;
+                  if (!target) return;
+                  if (target.closest("a, button, [role=button]")) {
+                    return;
+                  }
+                  setSelectedMessageId((prev) => (prev === msg.id ? null : msg.id));
+                }}
               >
                 {/* avatar gutter */}
                 <div
@@ -727,7 +758,9 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                     )}
 
                   {/* hover actions */}
-                  {(isMobile || hoveredMessageId === msg.id) &&
+                  {(isMobile
+                    ? selectedMessageId === msg.id
+                    : hoveredMessageId === msg.id) &&
                     (() => {
                       const excerpt = (msg.content || "").slice(0, 80);
                       const msgChannelId =
