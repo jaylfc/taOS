@@ -2304,8 +2304,10 @@ Container provisioning request (P1 + P2, agent-container-provisioning spec):
 
 An agent that must sign in to a Claude subscription runs `claude setup-token`
 (or `claude` login), which prints a URL and waits for a pasted code. No callback
-has to reach the agent, so the same flow works for the root taOS Agent on the
-host and for an agent inside an incus container. Store:
+has to reach the agent, so the handoff works for the root taOS Agent on the
+host and for an agent inside an incus container. A container agent cannot yet
+read the stored `claude_code_oauth_token:<agent id>` secret, so Claude sign-in
+is not usable inside a container until that follow-up lands. Store:
 `tinyagentos/auth_broker.py`; routes: `tinyagentos/routes/auth_broker.py`.
 
 1. `POST /api/auth-broker/requests` (agent only: a bound per-agent local token
