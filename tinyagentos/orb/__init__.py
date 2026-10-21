@@ -3,7 +3,7 @@
 from .catalog import (build_extents, fmt_list, fmt_versions, identify, latest_version, load_catalog, pick_version,
                       plan_install, plan_updates, status_of, version_extents)
 from .cli import main
-from .frames import (MAX_PAYLOAD, NAK_NAMES, NakError, OrbError, FrameDecoder, T_ABORT, T_ACK, T_BEGIN, T_BEGIN_APP,
+from .frames import (MAX_PAYLOAD, NAK_NAMES, NakError, OrbError, TransportUnavailable, FrameDecoder, T_ABORT, T_ACK, T_BEGIN, T_BEGIN_APP,
                      T_DATA, T_END, T_HELLO, T_INFO, T_NAK, T_PIN, T_PROGRESS, T_REMOVE, encode_frame)
 from .image import TAOS_INDEX, check_image, parse_image
 from .protocol import Extent, begin_app_payload, begin_payload, data_frames_ext, parse_info
