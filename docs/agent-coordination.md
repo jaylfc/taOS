@@ -2315,7 +2315,9 @@ is not usable inside a container until that follow-up lands. Store:
    `{"kind": "claude-subscription", "url": "...", "prompt": "..."}`. The url
    must be `https` on an exact allowlisted host (`claude.ai`,
    `console.anthropic.com`; no subdomain, userinfo or non-443 port), else `422`:
-   a card the user taps must never open a site the agent chose. Returns
+   a card the user taps must never open a site the agent chose. An agent may have
+   at most 3 open (non-completed, non-expired) requests at once; the 4th returns
+   `429` with detail ``too many open sign-in requests``. Returns
    `{id, kind, status, host, expires_in_seconds}` and raises an `auth_broker`
    notification to the agent's owner. An agent the registry cannot attribute (a
    bound local-token agent with no registry row) gets its card sent to each
@@ -2332,13 +2334,14 @@ is not usable inside a container until that follow-up lands. Store:
    `404`). Returns `code` exactly once, then clears it.
 5. `POST /api/auth-broker/requests/{id}/token` `{"token": "..."}`: the requesting
    agent only, after it read the code (`409` otherwise). The token goes to
-   Secrets under a fixed name with `secret_access` = that agent alone:
-   `claude_code_oauth_token` for the native taOS Agent (the name the
-   `claude_code` harness reads), `claude_code_oauth_token:<agent id>` for every
-   other agent. Never logged, never echoed back. The request is claimed under
-   the store lock before the secret is written, so an overlapping post gets
-   `409` and an expired request `410` without touching Secrets; a failed write
-   hands the claim back so the agent can retry.
+   Secrets under a fixed name: `claude_code_oauth_token` for the native taOS Agent
+   (the name the `claude_code` harness reads), `claude_code_oauth_token:<agent id>`
+   for every other agent. The secret's `secret_access` list is preserved -- when
+   the native agent stores its token, any existing grants to other agents are kept
+   and the native agent is added. Never logged, never echoed back. The request is
+   claimed under the store lock before the secret is written, so an overlapping
+   post gets `409` and an expired request `410` without touching Secrets; a failed
+   write hands the claim back so the agent can retry.
 
 A request expires 10 minutes after it was created; once the agent has read the
 code it has another 10 minutes to post the token.

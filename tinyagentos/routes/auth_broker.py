@@ -22,7 +22,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from tinyagentos.agent_token_auth import check_agent_identity
-from tinyagentos.auth_broker import EXPIRY_SECONDS, AuthBrokerStore, signin_host
+from tinyagentos.auth_broker import EXPIRY_SECONDS, MAX_OPEN_PER_AGENT, AuthBrokerStore, signin_host
 from tinyagentos.auth_context import (
     current_user,
     require_agent_owner_or_admin,
@@ -103,6 +103,13 @@ async def create_request(request: Request, body: CreateBody):
         raise HTTPException(
             status_code=422,
             detail="url must be https on an allowed sign-in host: claude.ai, console.anthropic.com",
+        )
+    # Cap open requests per agent
+    open_count = await _store(request).count_open(requester)
+    if open_count >= MAX_OPEN_PER_AGENT:
+        raise HTTPException(
+            status_code=429,
+            detail="too many open sign-in requests",
         )
     # The card goes to the agent's owner. An agent the registry cannot attribute
     # (a bound local-token agent with no registry row) goes to the admins, who
@@ -202,12 +209,17 @@ async def store_token(request: Request, request_id: str, body: TokenBody):
     name = _secret_name(requester, native)
     description = "Claude subscription token, stored by the sign-in broker"
     try:
-        if await secrets_store.get(name) is None:
+        existing = await secrets_store.get(name)
+        if existing is None:
             await secrets_store.add(
                 name, body.token, category="tokens", description=description, agents=[requester]
             )
         else:
-            await secrets_store.update(name, value=body.token, description=description, agents=[requester])
+            # Preserve existing grants, add requester if missing (order preserved, no duplicates)
+            agents = list(existing["agents"])
+            if requester not in agents:
+                agents.append(requester)
+            await secrets_store.update(name, value=body.token, description=description, agents=agents)
     except BaseException:
         await store.release(request_id)
         raise
