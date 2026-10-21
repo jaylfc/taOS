@@ -1,0 +1,2 @@
+### Added
+- Register embedding routes for OpenAI-compatible local backends (llama-cpp) by probing `/models` endpoint, enabling `taos-embedding-default` alias for llama.cpp servers with embedding models loaded.

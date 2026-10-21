@@ -13,7 +13,7 @@ import logging
 
 import httpx
 
-from tinyagentos.providers import CHAT_BACKEND_TYPE_MAP, CLOUD_TYPES as CLOUD_BACKEND_TYPES, NEEDS_API_BASE_TYPES
+from tinyagentos.providers import BACKEND_TYPE_MAP, CHAT_BACKEND_TYPE_MAP, CLOUD_TYPES as CLOUD_BACKEND_TYPES, NEEDS_API_BASE_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +65,26 @@ def _discover_ollama_models(url: str, timeout: float = 2.0) -> list[str]:
         return [m.get("name", "") for m in data.get("models", []) if m.get("name")]
     except Exception as exc:
         logger.debug("ollama model probe at %s failed: %s", url, exc)
+        return []
+
+
+def _discover_openai_compatible_models(url: str, timeout: float = 2.0) -> list[str]:
+    """Probe an OpenAI-compatible backend (llama-cpp, lmstudio) for its loaded model names.
+
+    Returns ``[]`` on any failure (backend down, network error, schema
+    drift) — the caller treats an empty list as "no models to auto-wire"
+    and falls back to the ``default`` alias.
+
+    OpenAI /models endpoint returns: {"data": [{"id": "model-name"}, ...]}
+    """
+    try:
+        resp = httpx.get(f"{url.rstrip('/')}/models", timeout=timeout)
+        if resp.status_code != 200:
+            return []
+        data = resp.json()
+        return [m.get("id", "") for m in data.get("data", []) if m.get("id")]
+    except Exception as exc:
+        logger.debug("openai-compatible model probe at %s failed: %s", url, exc)
         return []
 
 
@@ -311,11 +331,21 @@ def build_model_list(
             _probed = (discovered or {}).get(url)
             if _probed is None:
                 _probed = _discover_ollama_models(url) if discover else []
+            embed_prefix = "ollama"
+        elif backend_type in ("llama-cpp",):
+            _probed = (discovered or {}).get(url)
+            if _probed is None:
+                _probed = _discover_openai_compatible_models(url) if discover else []
+            embed_prefix = BACKEND_TYPE_MAP.get(backend_type, "openai")
+        else:
+            _probed = None
+
+        if _probed:
             for discovered_name in _probed:
                 if not _is_embedding_model(discovered_name):
                     continue
                 embed_params = {
-                    "model": f"ollama/{discovered_name}",
+                    "model": f"{embed_prefix}/{discovered_name}",
                     "api_base": url,
                 }
                 model_list.append({
