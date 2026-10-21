@@ -1,2 +1,2 @@
 ### Added
-- Register embedding routes for OpenAI-compatible local backends (llama-cpp) by probing `/models` endpoint, enabling `taos-embedding-default` alias for llama.cpp servers with embedding models loaded.
+- Register embedding routes for OpenAI-compatible local backends (llama-cpp, lmstudio) by probing `/models` endpoint, enabling `taos-embedding-default` alias for servers with embedding models loaded. lmstudio support activates when added to providers.ALL_TYPES.

@@ -13,7 +13,7 @@ import logging
 
 import httpx
 
-from tinyagentos.providers import BACKEND_TYPE_MAP, CHAT_BACKEND_TYPE_MAP, CLOUD_TYPES as CLOUD_BACKEND_TYPES, NEEDS_API_BASE_TYPES
+from tinyagentos.providers import ALL_TYPES, BACKEND_TYPE_MAP, CHAT_BACKEND_TYPE_MAP, CLOUD_TYPES as CLOUD_BACKEND_TYPES, NEEDS_API_BASE_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -331,45 +331,72 @@ def build_model_list(
             _probed = (discovered or {}).get(url)
             if _probed is None:
                 _probed = _discover_ollama_models(url) if discover else []
-            embed_prefix = "ollama"
-        elif backend_type in ("llama-cpp",):
-            _probed = (discovered or {}).get(url)
-            if _probed is None:
-                _probed = _discover_openai_compatible_models(url) if discover else []
-            embed_prefix = BACKEND_TYPE_MAP.get(backend_type, "openai")
-        else:
-            _probed = None
-
-        if _probed:
-            for discovered_name in _probed:
-                if not _is_embedding_model(discovered_name):
-                    continue
-                embed_params = {
-                    "model": f"{embed_prefix}/{discovered_name}",
-                    "api_base": url,
-                }
-                model_list.append({
-                    "model_name": discovered_name,
-                    "litellm_params": embed_params,
-                    "model_info": {"mode": "embedding"},
-                    "metadata": {
-                        "priority": backend.get("priority", 99),
-                        "backend_name": backend.get("name", ""),
-                        "backend_type": backend_type,
-                    },
-                })
-                if not aliased_embedding_claimed:
+            if _probed:
+                for discovered_name in _probed:
+                    if not _is_embedding_model(discovered_name):
+                        continue
+                    embed_params = {
+                        "model": f"ollama/{discovered_name}",
+                        "api_base": url,
+                    }
                     model_list.append({
-                        "model_name": EMBEDDING_ALIAS,
-                        "litellm_params": dict(embed_params),
+                        "model_name": discovered_name,
+                        "litellm_params": embed_params,
                         "model_info": {"mode": "embedding"},
                         "metadata": {
                             "priority": backend.get("priority", 99),
                             "backend_name": backend.get("name", ""),
                             "backend_type": backend_type,
-                            "aliases": discovered_name,
                         },
                     })
-                    aliased_embedding_claimed = True
+                    if not aliased_embedding_claimed:
+                        model_list.append({
+                            "model_name": EMBEDDING_ALIAS,
+                            "litellm_params": dict(embed_params),
+                            "model_info": {"mode": "embedding"},
+                            "metadata": {
+                                "priority": backend.get("priority", 99),
+                                "backend_name": backend.get("name", ""),
+                                "backend_type": backend_type,
+                                "aliases": discovered_name,
+                            },
+                        })
+                        aliased_embedding_claimed = True
+        elif backend_type == "llama-cpp" or (backend_type == "lmstudio" and "lmstudio" in ALL_TYPES):
+            _probed = (discovered or {}).get(url)
+            if _probed is None:
+                _probed = _discover_openai_compatible_models(url) if discover else []
+            if _probed:
+                embed_prefix = BACKEND_TYPE_MAP.get(backend_type, "openai")
+                for discovered_name in _probed:
+                    if not _is_embedding_model(discovered_name):
+                        continue
+                    embed_params = {
+                        "model": f"{embed_prefix}/{discovered_name}",
+                        "api_base": url,
+                    }
+                    model_list.append({
+                        "model_name": discovered_name,
+                        "litellm_params": embed_params,
+                        "model_info": {"mode": "embedding"},
+                        "metadata": {
+                            "priority": backend.get("priority", 99),
+                            "backend_name": backend.get("name", ""),
+                            "backend_type": backend_type,
+                        },
+                    })
+                    if not aliased_embedding_claimed:
+                        model_list.append({
+                            "model_name": EMBEDDING_ALIAS,
+                            "litellm_params": dict(embed_params),
+                            "model_info": {"mode": "embedding"},
+                            "metadata": {
+                                "priority": backend.get("priority", 99),
+                                "backend_name": backend.get("name", ""),
+                                "backend_type": backend_type,
+                                "aliases": discovered_name,
+                            },
+                        })
+                        aliased_embedding_claimed = True
 
     return model_list
