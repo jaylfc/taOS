@@ -15,6 +15,9 @@ This guard scans `.github/workflows/*.yml` / `*.yaml` and FAILS when any
   - `docker://image@sha256:<64 hex>`: a docker reference must carry a digest.
   - `./local/action`: local actions live in this repo and are pinned by the
     checkout itself, so they pass.
+  - A `uses` key in a form the line scanner cannot inspect (a quoted key,
+    a flow mapping such as `- {uses: x}`) fails closed: write it as a plain
+    `uses: <ref>` line.
 
 The assertion is on the REF SHAPE, never on a trailing `# v7` comment: an
 unpinned `uses:` that happens to carry a version comment still fails. Keep the
@@ -42,6 +45,10 @@ WORKFLOWS_DIR = Path(".github") / "workflows"
 _USES_RE = re.compile(
     r"""^\s*(?:-\s+)?uses:\s*(?P<q>['"]?)(?P<value>[^\s'"#]+)(?P=q)\s*(?:\#.*)?$"""
 )
+# Any `uses` key in any YAML spelling: bare, quoted, or inside a flow mapping
+# (`- "uses": x`, `- {uses: x}`). A line that carries one but does not match
+# _USES_RE is a form this text scanner cannot inspect, so it fails closed.
+_ANY_USES_KEY_RE = re.compile(r"""(?:^|[\s{,-])(['"]?)uses\1\s*:""")
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _DOCKER_DIGEST_RE = re.compile(r"@sha256:[0-9a-f]{64}$")
 
@@ -67,9 +74,16 @@ def check_text(text: str, path: str) -> list[Violation]:
     """Return the unpinned `uses:` references in one workflow file's text."""
     violations: list[Violation] = []
     for lineno, line in enumerate(text.splitlines(), start=1):
+        if line.lstrip().startswith("#"):
+            continue
         m = _USES_RE.match(line)
-        if m and not is_pinned(m.group("value")):
-            violations.append(Violation(path, lineno, m.group("value")))
+        if m:
+            if not is_pinned(m.group("value")):
+                violations.append(Violation(path, lineno, m.group("value")))
+        elif _ANY_USES_KEY_RE.search(line):
+            violations.append(
+                Violation(path, lineno, f"unsupported uses form: {line.strip()}")
+            )
     return violations
 
 

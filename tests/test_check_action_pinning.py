@@ -108,3 +108,23 @@ def test_main_with_no_workflows_fails(tmp_path) -> None:
 
 def test_real_tree_is_pinned() -> None:
     assert cap.check_action_pinning(REPO_ROOT) == []
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        '      - "uses": actions/checkout@v7',
+        "      - 'uses': actions/checkout@v7",
+        "      - {uses: actions/checkout@v7}",
+        "      - {name: x, uses: actions/checkout@v7}",
+        f"      - {{uses: actions/checkout@{SHA}}}",  # pinned, but unscannable form
+    ],
+)
+def test_quoted_key_and_flow_mapping_uses_fail_closed(line: str) -> None:
+    # A YAML spelling the line scanner cannot inspect must not read as clean.
+    violations = cap.check_text("steps:\n" + line + "\n", "wf.yml")
+    assert len(violations) == 1 and violations[0].line == 2
+
+
+def test_uses_in_a_comment_is_ignored() -> None:
+    assert cap.check_text("# - uses: actions/checkout@v7\n", "wf.yml") == []
