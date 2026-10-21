@@ -199,4 +199,45 @@ describe("MobileChatList", () => {
     expect(screen.queryByRole("button", { name: "Agents" })).not.toBeInTheDocument();
     expect(rowNames()).toEqual(["random"]);
   });
+
+  it("excludes a2a-kind channels from All and Projects filters", () => {
+    const props = buildProps({
+      sections: [
+        {
+          items: [
+            ch({
+              id: "a2a-chan",
+              name: "a2a",
+              type: "group",
+              settings: { kind: "a2a" },
+              last_message_at: "2026-10-01T10:00:00Z",
+            }),
+            ch({ id: "g1", name: "real-group", type: "group", last_message_at: "2026-10-02T10:00:00Z" }),
+          ],
+        },
+      ],
+      projectGroups: [
+        { id: "p1", name: "Strata", channels: [ch({ id: "pc1", name: "strata-dev", project_id: "p1", settings: { kind: "a2a" }, last_message_at: "2026-10-03T10:00:00Z" })] },
+      ],
+    });
+    render(<MobileChatList {...props} />);
+    expect(rowNames()).toEqual(["real-group"]);
+    expect(screen.queryByRole("button", { name: "Chat a2a" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Chat strata-dev" })).toBeNull();
+  });
+
+  it("renders a group named a2a when it has no settings.kind", () => {
+    const props = buildProps({
+      sections: [
+        {
+          items: [
+            ch({ id: "g1", name: "a2a", type: "group", last_message_at: "2026-10-01T10:00:00Z" }),
+          ],
+        },
+      ],
+    });
+    render(<MobileChatList {...props} />);
+    expect(rowNames()).toEqual(["a2a"]);
+    expect(screen.getByRole("button", { name: "Chat a2a" })).toBeInTheDocument();
+  });
 });

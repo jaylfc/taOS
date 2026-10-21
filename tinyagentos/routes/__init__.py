@@ -468,6 +468,9 @@ def register_all_routers(app):
     from tinyagentos.routes.sharing import router as sharing_router
     app.include_router(sharing_router, dependencies=_csrf)
 
+    from tinyagentos.routes.auth_broker import router as auth_broker_router
+    app.include_router(auth_broker_router, dependencies=_csrf)
+
     from tinyagentos.routes.store_submissions import router as store_submissions_router
     app.include_router(store_submissions_router, dependencies=_csrf)
     from tinyagentos.routes.install_registry import router as install_registry_router
