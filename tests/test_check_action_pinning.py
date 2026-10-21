@@ -128,3 +128,16 @@ def test_quoted_key_and_flow_mapping_uses_fail_closed(line: str) -> None:
 
 def test_uses_in_a_comment_is_ignored() -> None:
     assert cap.check_text("# - uses: actions/checkout@v7\n", "wf.yml") == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '      - "\\u0075ses": actions/checkout@v7\n',
+        '      - {"\\x75ses": actions/checkout@v7}\n',
+        "      - ? uses\n        : actions/checkout@v7\n",
+    ],
+)
+def test_keys_the_scanner_cannot_read_fail_closed(text: str) -> None:
+    # An escaped or explicit key may decode to `uses`; it must not read as clean.
+    assert cap.check_text("steps:\n" + text, "wf.yml")
