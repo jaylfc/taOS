@@ -199,4 +199,60 @@ describe("MobileChatList", () => {
     expect(screen.queryByRole("button", { name: "Agents" })).not.toBeInTheDocument();
     expect(rowNames()).toEqual(["random"]);
   });
+
+  it("People chip splits human DMs from agent DMs when agentNames is provided", () => {
+    const props = buildProps({
+      agentNames: ["juniper"],
+      sections: [
+        {
+          items: [
+            ch({ id: "dm-agent", name: "juniper", type: "dm", members: ["user", "juniper"], last_message_at: "2026-10-01T10:00:00Z" }),
+            ch({ id: "dm-human", name: "mum", type: "dm", members: ["user", "mum"], last_message_at: "2026-10-02T10:00:00Z" }),
+            ch({ id: "dm-remote", name: "peer", type: "dm-remote", members: ["user", "hub:peer"], last_message_at: "2026-10-03T10:00:00Z" }),
+            ch({ id: "group", name: "crew", type: "group", last_message_at: "2026-10-04T10:00:00Z" }),
+          ],
+        },
+      ],
+    });
+    render(<MobileChatList {...props} />);
+
+    const peopleChip = screen.getByRole("button", { name: "People" });
+    expect(peopleChip).toBeInTheDocument();
+
+    fireEvent.click(peopleChip);
+    expect(peopleChip).toHaveAttribute("aria-pressed", "true");
+    expect(rowNames()).toEqual(["peer", "mum"]);
+
+    const agentsChip = screen.getByRole("button", { name: "Agents" });
+    fireEvent.click(agentsChip);
+    expect(agentsChip).toHaveAttribute("aria-pressed", "true");
+    expect(rowNames()).toEqual(["juniper"]);
+
+    const allChip = screen.getByRole("button", { name: "All" });
+    fireEvent.click(allChip);
+    expect(allChip).toHaveAttribute("aria-pressed", "true");
+    expect(rowNames()).toEqual(["crew", "peer", "mum", "juniper"]);
+  });
+
+  it("without agentNames all DMs stay under Agents and People chip is absent (back-compat)", () => {
+    const props = buildProps({
+      sections: [
+        {
+          items: [
+            ch({ id: "dm-agent", name: "juniper", type: "dm", members: ["user", "juniper"], last_message_at: "2026-10-01T10:00:00Z" }),
+            ch({ id: "dm-human", name: "mum", type: "dm", members: ["user", "mum"], last_message_at: "2026-10-02T10:00:00Z" }),
+            ch({ id: "dm-remote", name: "peer", type: "dm-remote", members: ["user", "hub:peer"], last_message_at: "2026-10-03T10:00:00Z" }),
+          ],
+        },
+      ],
+    });
+    render(<MobileChatList {...props} />);
+
+    expect(screen.queryByRole("button", { name: "People" })).toBeNull();
+
+    const agentsChip = screen.getByRole("button", { name: "Agents" });
+    fireEvent.click(agentsChip);
+    expect(agentsChip).toHaveAttribute("aria-pressed", "true");
+    expect(rowNames()).toEqual(["peer", "mum", "juniper"]);
+  });
 });
