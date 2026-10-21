@@ -20,6 +20,8 @@ export interface ServerNotificationRow {
   read: boolean;
   source: string;
   data?: Record<string, unknown> | null;
+  /** Present on GET /api/notifications/history rows only. */
+  archived?: boolean;
 }
 
 const VALID_LEVELS: ReadonlySet<Notification["level"]> = new Set([
@@ -188,6 +190,83 @@ export async function archiveServerNotification(id: string): Promise<void> {
   } catch {
     // best-effort; the optimistic local update already happened
   }
+}
+
+/** Filters for GET /api/notifications/history. Timestamps are unix seconds. */
+export interface NotificationHistoryQuery {
+  q?: string;
+  sources?: string[];
+  levels?: string[];
+  since?: number;
+  until?: number;
+  state?: "all" | "unread" | "read" | "archived" | "active";
+  before?: string;
+  limit?: number;
+}
+
+export interface NotificationHistoryPage {
+  items: Notification[];
+  /** Opaque keyset cursor for the next (older) page, or null at the end. */
+  nextBefore: string | null;
+}
+
+/**
+ * Build the query string for GET /api/notifications/history. Repeatable
+ * filters (source, level) are appended once per value.
+ */
+export function notificationHistoryParams(query: NotificationHistoryQuery): URLSearchParams {
+  const params = new URLSearchParams();
+  const q = query.q?.trim();
+  if (q) params.set("q", q);
+  for (const s of query.sources ?? []) params.append("source", s);
+  for (const l of query.levels ?? []) params.append("level", l);
+  if (query.since != null) params.set("since", String(query.since));
+  if (query.until != null) params.set("until", String(query.until));
+  if (query.state && query.state !== "all") params.set("state", query.state);
+  if (query.before) params.set("before", query.before);
+  if (query.limit != null) params.set("limit", String(query.limit));
+  return params;
+}
+
+/**
+ * Fetch one page of searchable notification history. Unlike the live feed
+ * helpers above, this throws on failure so the caller can show an error state.
+ */
+export async function fetchNotificationHistory(
+  query: NotificationHistoryQuery,
+  signal?: AbortSignal,
+): Promise<NotificationHistoryPage> {
+  const qs = notificationHistoryParams(query).toString();
+  const res = await fetch(`/api/notifications/history${qs ? `?${qs}` : ""}`, {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  if (!data || typeof data !== "object" || !Array.isArray(data.items)) {
+    throw new Error("unexpected response shape");
+  }
+  return {
+    items: (data.items as ServerNotificationRow[]).map((row) => ({
+      ...mapRow(row),
+      archived: Boolean(row.archived),
+    })),
+    nextBefore: typeof data.next_before === "string" ? data.next_before : null,
+  };
+}
+
+/** Distinct sources visible in the caller's notification history. Throws on failure. */
+export async function fetchNotificationHistorySources(signal?: AbortSignal): Promise<string[]> {
+  const res = await fetch("/api/notifications/history/sources", {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  if (!data || typeof data !== "object" || !Array.isArray(data.sources)) {
+    throw new Error("unexpected response shape");
+  }
+  return (data.sources as unknown[]).filter((s): s is string => typeof s === "string");
 }
 
 /** Mark all server-origin notifications read on the backend. */

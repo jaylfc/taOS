@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useMemo, type Dispatch, type SetStateAction } from "react";
 import { useProcessStore, type SnapPosition } from "@/stores/process-store";
 import { resolveApp } from "@/registry/app-registry";
 
@@ -22,6 +22,10 @@ import { resolveApp } from "@/registry/app-registry";
  * so contract drift is visible instead of silently doing nothing.
  * This is the agent-tool side of the deep-navigation API (#836) and complements
  * `taos:open-app`.
+ *
+ * The phone layout never mounts <Desktop/>, so it registers the same receiver
+ * through `useMobileControl`: there an op picks the one app on screen instead
+ * of placing a window (see runMobile).
  */
 
 export interface DesktopLayout {
@@ -229,8 +233,64 @@ declare global {
   }
 }
 
-export function useDesktopControl(): void {
+/**
+ * The phone layout's view of App state: which app is on screen. A functional
+ * update, so a close can clear the shown app without the receiver tracking it.
+ */
+export interface MobileControl {
+  setActive: Dispatch<SetStateAction<string | null>>;
+}
+
+function runMobile(op: WindowOp, m: MobileControl): string | void {
+  const s = useProcessStore.getState();
+  switch (op.action) {
+    case "open": {
+      const app = op.appId ? resolveApp(op.appId) : undefined;
+      if (!app) return;
+      const id = s.openWindow(app.id, app.defaultSize, op.props, { inPage: true });
+      m.setActive(id);
+      return id;
+    }
+    case "focus":
+    case "restore": {
+      const id = resolveId(op);
+      if (!id || !s.windows.some((w) => w.id === id)) return;
+      if (op.action === "restore") s.restoreWindow(id);
+      s.focusWindow(id);
+      m.setActive(id);
+      return;
+    }
+    case "minimize": {
+      const id = resolveId(op);
+      if (!id) return;
+      s.minimizeWindow(id);
+      m.setActive((prev) => (prev === id ? null : prev));
+      return;
+    }
+    case "close": {
+      // removeWindow, not closeWindow: closeWindow only marks a window closing
+      // for the desktop Window's close animation, which this layout never
+      // mounts, so the app would stay in the switcher.
+      const one = resolveId(op);
+      const ids =
+        !op.windowId && op.appId
+          ? s.windows.filter((w) => w.appId === op.appId).map((w) => w.id)
+          : one
+            ? [one]
+            : [];
+      ids.forEach((id) => s.removeWindow(id));
+      m.setActive((prev) => (prev && ids.includes(prev) ? null : prev));
+      return;
+    }
+    default:
+      // move, resize, maximize, snap, arrange: every app here is full screen.
+      return;
+  }
+}
+
+function useWindowReceiver(runOp: ((op: WindowOp) => string | void) | null): void {
   useEffect(() => {
+    if (!runOp) return;
     const onWindow = (e: Event) => {
       // `op`/`app` are accepted as aliases for `action`/`appId` (see module
       // docstring) since they mirror the sibling taos:open-app payload shape.
@@ -247,13 +307,29 @@ export function useDesktopControl(): void {
       // appId must be a string; a non-string app silently fails the lookup.
       const rawAppId = raw?.appId ?? raw?.app;
       const appId = typeof rawAppId === "string" ? rawAppId : undefined;
-      run({ ...(raw as Partial<WindowOp>), action, appId });
+      runOp({ ...(raw as Partial<WindowOp>), action, appId });
     };
     window.addEventListener("taos:window", onWindow);
-    window.taosDesktop = { getLayout, run };
+    window.taosDesktop = { getLayout, run: runOp };
     return () => {
       window.removeEventListener("taos:window", onWindow);
       delete window.taosDesktop;
     };
-  }, []);
+  }, [runOp]);
+}
+
+export function useDesktopControl(): void {
+  useWindowReceiver(run);
+}
+
+/**
+ * The receiver for the phone layout. `enabled` is false in desktop mode, where
+ * <Desktop/> registers its own and two would delete each other's on unmount.
+ */
+export function useMobileControl({ setActive }: MobileControl, enabled: boolean): void {
+  const runOp = useMemo(
+    () => (enabled ? (op: WindowOp) => runMobile(op, { setActive }) : null),
+    [enabled, setActive],
+  );
+  useWindowReceiver(runOp);
 }

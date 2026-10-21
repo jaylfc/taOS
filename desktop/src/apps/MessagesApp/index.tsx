@@ -1000,7 +1000,9 @@ export function MessagesApp({
   const reconnectDelayRef = useRef(1000);
   const reconnectAttemptsRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const agentListTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevChannelRef = useRef<string | null>(null);
+  const lastFetchRef = useRef<number>(0);
 
   /* ---- fetch channels + unread ---- */
   const fetchChannels = useCallback(async () => {
@@ -1055,7 +1057,7 @@ export function MessagesApp({
   const fetchAgentLists = useCallback(async () => {
     try {
       const [liveRes, archRes] = await Promise.all([
-        fetch("/api/agents"),
+        fetch("/api/agents?include_guests=1"),
         fetch("/api/agents/archived"),
       ]);
       if (liveRes.ok) {
@@ -1305,6 +1307,26 @@ export function MessagesApp({
               ),
             );
             break;
+
+          case "receipt":
+            if (data.message_id) {
+              setReceipts((prev) => {
+                const existing = prev[data.message_id] ?? [];
+                const idx = existing.findIndex((r) => r.agent_id === data.agent_id);
+                const updated: Receipt = {
+                  message_id: data.message_id,
+                  agent_id: data.agent_id,
+                  reader_type: data.reader_type,
+                  delivered_at: data.delivered_at ?? existing[idx]?.delivered_at ?? null,
+                  seen_at: data.seen_at ?? existing[idx]?.seen_at ?? null,
+                };
+                const next = [...existing];
+                if (idx >= 0) next[idx] = updated;
+                else next.push(updated);
+                return { ...prev, [data.message_id]: next };
+              });
+            }
+            break;
         }
       } catch {
         /* bad json */
@@ -1332,42 +1354,6 @@ export function MessagesApp({
     };
 
     wsRef.current = ws;
-  }, []);
-
-  /* ---- A2A bus stream: live receipt updates ---- */
-  useEffect(() => {
-    if (typeof EventSource === "undefined") {
-      console.debug("[MessagesApp] EventSource unavailable, skipping A2A bus stream");
-      return;
-    }
-    const es = new EventSource("/api/a2a/bus/stream");
-    es.onmessage = (ev) => {
-      try {
-        const data = JSON.parse(ev.data);
-        if (data.type === "receipt" && data.message_id) {
-          setReceipts((prev) => {
-            const existing = prev[data.message_id] ?? [];
-            const idx = existing.findIndex((r) => r.agent_id === data.agent_id);
-            const updated: Receipt = {
-              message_id: data.message_id,
-              agent_id: data.agent_id,
-              delivered_at: data.delivered_at ?? existing[idx]?.delivered_at ?? null,
-              seen_at: data.seen_at ?? existing[idx]?.seen_at ?? null,
-            };
-            const next = [...existing];
-            if (idx >= 0) next[idx] = updated;
-            else next.push(updated);
-            return { ...prev, [data.message_id]: next };
-          });
-        }
-      } catch {
-        /* ignore malformed stream event */
-      }
-    };
-    es.onerror = () => {
-      /* let the browser reconnect; do not force-close */
-    };
-    return () => es.close();
   }, []);
 
   /* ---- emoji popover: escape and outside click ---- */
@@ -1410,6 +1396,44 @@ export function MessagesApp({
   }, [fetchChannels, fetchArchivedChannels, fetchAgentLists, connectWs]);
 
   useRefreshOnFocus(fetchChannels);
+
+  /* ---- refresh agent lists on focus/visibility (guest agents granted while open) ---- */
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const THROTTLE_MS = 10000;
+
+    const clearTimer = () => {
+      if (agentListTimerRef.current) {
+        clearTimeout(agentListTimerRef.current);
+        agentListTimerRef.current = null;
+      }
+    };
+
+    const scheduleFetch = () => {
+      const now = Date.now();
+      if (now - lastFetchRef.current < THROTTLE_MS) return;
+      lastFetchRef.current = now;
+      clearTimer();
+      agentListTimerRef.current = setTimeout(() => {
+        agentListTimerRef.current = null;
+        fetchAgentLists();
+      }, 0);
+    };
+
+    const onFocus = () => scheduleFetch();
+    const onVisibilityChange = () => {
+      if (!document.hidden) scheduleFetch();
+    };
+
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      clearTimer();
+    };
+  }, [fetchAgentLists]);
 
   /* ---- keep unreadRef in sync with the unread state without re-running
   * the channel-selection effect (which would re-capture the pending count). ---- */

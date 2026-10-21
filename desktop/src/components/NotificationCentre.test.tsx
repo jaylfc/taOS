@@ -116,7 +116,7 @@ describe("NotificationCentre click routing", () => {
     expect(screen.queryByText("Note 10")).not.toBeInTheDocument();
 
     // Shows overflow indicator text.
-    expect(screen.getByText(/\+2 more in archive/)).toBeInTheDocument();
+    expect(screen.getByText(/\+2 more in history/)).toBeInTheDocument();
   });
 
   it("does not show overflow indicator when there are 10 or fewer items", () => {
@@ -124,36 +124,26 @@ describe("NotificationCentre click routing", () => {
       notif({ id: `srv-${i}`, title: `Note ${i}` }),
     );
     render(<NotificationCentre />);
-    expect(screen.queryByText(/more in archive/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/more in history/)).not.toBeInTheDocument();
   });
 
-  it("renders a View archive button that opens the notifications window with section archive", () => {
+  it("renders a View history button that opens the notification-history window with no section", () => {
     notifications = [
       notif({ id: "srv-1", title: "Active note" }),
       { ...notif({ id: "srv-x", title: "Old note" }), archived: true } as Notification,
     ];
     render(<NotificationCentre />);
 
-    const viewArchive = screen.getByRole("button", { name: /view archive/i });
-    expect(viewArchive).toBeInTheDocument();
-    expect(viewArchive.textContent).toContain("(1)");
+    const viewHistory = screen.getByRole("button", { name: /view history/i });
+    expect(viewHistory).toBeInTheDocument();
 
-    fireEvent.click(viewArchive);
+    fireEvent.click(viewHistory);
 
-    expect(openWindow).toHaveBeenCalledWith(
-      "notifications",
-      expect.objectContaining({ w: 900, h: 600 }),
-      { section: "archive" },
-    );
-  });
-
-  it("shows no archive count when there are no archived items", () => {
-    notifications = [notif({ id: "srv-1", title: "Only active" })];
-    render(<NotificationCentre />);
-
-    const viewArchive = screen.getByRole("button", { name: /view archive/i });
-    expect(viewArchive).toBeInTheDocument();
-    expect(viewArchive.textContent).not.toContain("(");
+    expect(openWindow).toHaveBeenCalledTimes(1);
+    const [appId, size, props] = openWindow.mock.calls[0];
+    expect(appId).toBe("notification-history");
+    expect(size).toEqual(expect.objectContaining({ w: 900, h: 600 }));
+    expect(props).toBeUndefined();
   });
 
   it("renders inline consent actions for an auth_requests notification", () => {

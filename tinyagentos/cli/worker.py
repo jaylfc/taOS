@@ -104,12 +104,26 @@ async def _get_verified_gateway_port() -> int:
         return 0
 
 
+async def _get_agent_controller_port() -> int:
+    """The LOCAL controller's verified agent controller listener port, or 0."""
+    try:
+        resp = await asyncio.to_thread(TaosClient().get, "/api/settings/llm-proxy")
+        return int(resp.get("agent_controller_port") or 0)
+    except Exception:
+        return 0
+
+
 async def _convert_to_lxc(args) -> int:
     # Preflight: verify gateway port against the LOCAL controller before
     # touching anything. If this fails, exit non-zero having deleted nothing.
     print("Verifying gateway port on local controller...")
     gateway_port = await _get_verified_gateway_port()
     if gateway_port == 0:
+        return 1
+    agent_controller_port = await _get_agent_controller_port()
+    if agent_controller_port == 0:
+        print("ERROR: local controller reports the agent controller listener not running.",
+              file=sys.stderr)
         return 1
 
     # Load config and build LLMProxy before touching anything. A bad
@@ -160,7 +174,8 @@ async def _convert_to_lxc(args) -> int:
 
     print("Redeploying agents into worker LXC...")
     agent_cfgs = _load_agents_json(data_dir / "agents.json")
-    failed = await redeploy_agents(agent_cfgs, llm_proxy=llm_proxy, gateway_port=gateway_port)
+    failed = await redeploy_agents(agent_cfgs, llm_proxy=llm_proxy, gateway_port=gateway_port,
+                                    agent_controller_port=agent_controller_port)
     if failed:
         print(f"Redeploy failed for: {', '.join(failed)}", file=sys.stderr)
         return 1

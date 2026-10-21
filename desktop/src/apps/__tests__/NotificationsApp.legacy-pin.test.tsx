@@ -2,20 +2,21 @@
  * Acceptance for the legacy `notification-archive` dock pin, driven through
  * the path a user actually takes: the saved payload from /api/desktop/dock ->
  * session restore -> a click on the dock icon -> the window that click opens
- * -> the Notifications app that window renders.
+ * -> the app that window renders.
  *
  * Nothing between the payload and the app is stubbed: the app registry, the
  * dock store, the process store and the Dock component are all real. A
- * regression anywhere along the chain — a restore that normalises the pin id
- * away, a launch that drops the section, an app that ignores it — turns this
- * red. Asserting on the rendered Archive tab alone would not: that already
- * worked before the pin ever reached it (#2677).
+ * regression anywhere along the chain (a restore that normalises the pin id
+ * away, a launch that lands on the wrong app) turns this red (#2677).
+ *
+ * The Notifications Archive tab is gone (tsk-i5gygp): the pin now opens the
+ * standalone Notification History app, with no section.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import React from "react";
 import { Dock } from "@/components/Dock";
-import { NotificationsApp } from "../NotificationsApp";
+import { NotificationHistoryApp } from "../NotificationHistoryApp";
 import { useSessionPersistence } from "@/hooks/use-session-persistence";
 import { useDockStore } from "@/stores/dock-store";
 import { useProcessStore } from "@/stores/process-store";
@@ -47,7 +48,13 @@ Object.assign(MockEventSourceCtor, { CONNECTING: 0, OPEN: 1, CLOSED: 2 });
 function mockFetch(dock: Record<string, unknown> = SAVED_DOCK) {
   return vi.spyOn(globalThis, "fetch").mockImplementation((input: RequestInfo | URL) => {
     const url = typeof input === "string" ? input : input.toString();
-    const body = url.includes("/api/desktop/dock") ? dock : [];
+    const body = url.includes("/api/desktop/dock")
+      ? dock
+      : url.includes("/api/notifications/history/sources")
+        ? { sources: [] }
+        : url.includes("/api/notifications/history")
+          ? { items: [], next_before: null }
+          : [];
     return Promise.resolve(
       new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json" } }),
     );
@@ -84,25 +91,23 @@ afterEach(() => {
 });
 
 describe("legacy notification-archive dock pin (#2677)", () => {
-  it("opens the Notifications Archive tab when the restored pin is clicked", async () => {
+  it("opens the Notification History app when the restored pin is clicked", async () => {
     mockFetch();
 
     render(<DesktopShell />);
 
-    const icon = await screen.findByLabelText("Open Notifications");
+    const icon = await screen.findByLabelText("Open Notification History");
     fireEvent.click(icon);
 
-    const win = useProcessStore.getState().windows.find((w) => w.appId === "notifications");
+    const win = useProcessStore.getState().windows.find((w) => w.appId === "notification-history");
     expect(win).toBeDefined();
-    expect(win!.props).toEqual({ section: "archive" });
+    expect(useProcessStore.getState().windows.some((w) => w.appId === "notifications")).toBe(false);
+    expect(win!.props ?? {}).not.toHaveProperty("section");
 
-    // The window's props are what the shell hands the app, so render the app
-    // exactly as Window.tsx does — the section is only fixed if it lands on
-    // the Archive tab, not merely if it survives to the window.
-    render(<NotificationsApp windowId={win!.id} {...(win!.props as { section?: string })} />);
+    render(<NotificationHistoryApp windowId={win!.id} />);
 
     await waitFor(() => {
-      expect(screen.getByRole("tab", { name: /archive/i })).toHaveAttribute("data-state", "active");
+      expect(screen.getByRole("heading", { name: "Notification History" })).toBeInTheDocument();
     });
   });
 
@@ -111,7 +116,7 @@ describe("legacy notification-archive dock pin (#2677)", () => {
 
     render(<DesktopShell />);
 
-    await screen.findByLabelText("Open Notifications");
+    await screen.findByLabelText("Open Notification History");
 
     act(() => {
       useDockStore.getState().setIconSize("large");
@@ -132,10 +137,10 @@ describe("legacy notification-archive dock pin (#2677)", () => {
 
     render(<DesktopShell />);
 
-    fireEvent.click(await screen.findByLabelText("Open Notifications"));
+    fireEvent.click(await screen.findByLabelText("Open Notification History"));
 
     await waitFor(() => {
-      expect(screen.getAllByLabelText("Open Notifications")).toHaveLength(1);
+      expect(screen.getAllByLabelText("Open Notification History")).toHaveLength(1);
     });
   });
 });

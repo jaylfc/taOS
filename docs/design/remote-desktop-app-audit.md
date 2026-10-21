@@ -44,7 +44,7 @@ still undefined:
 - **FilesApp** — files live on the host (correct). What's missing is an
   obvious affordance for "I want this file on my MacBook to read offline" and
   for "upload these photos from my phone into taOS Files." Both directions.
-- **ImportApp** — same pattern: "import from this device" needs a first-class
+- **LibraryApp (file ingestion)** — same pattern: "import from this device" needs a first-class
   flow, not a workaround through the browser.
 - **LibraryApp** — books/media on the host, consumed on phone. Streaming vs
   download-for-offline is a meaningful UX choice and currently undefined.
@@ -147,7 +147,7 @@ file transfer below).
 
 ### 6. Bidirectional file transfer — **still open**
 
-Used by Files, Import, Library, Browser downloads, and agent outputs. Should
+Used by Files, Library (file ingestion), Library, Browser downloads, and agent outputs. Should
 be one mechanism, not five. Currently each app would invent its own.
 
 **Recommended:** design as part of the next foundations brainstorm.
@@ -171,7 +171,7 @@ In priority order:
    audit identified as missing or under-specified:
    - **Push notifications** (#5 above) — server → device, multi-device,
      per-user.
-   - **Bidirectional file transfer** (#6 above) — used by Files / Import /
+   - **Bidirectional file transfer** (#6 above) — used by Files / Library /
      Library / Browser downloads / agent outputs.
    - **Multi-user storage tenancy** — confirm the `(user_id, …)` keying is
      consistent across every existing store; refactor any that aren't.
@@ -179,7 +179,7 @@ In priority order:
 3. **App revisits** (separate brainstorms, only as needed):
    - **FilesApp** — adopt the file-transfer primitive, add upload-from-device,
      download-to-device, share affordances.
-   - **ImportApp** — same.
+   - **LibraryApp (file ingestion)** — same.
    - **LibraryApp** — same, plus streaming-vs-download UX choice.
    - **GitHubApp / XApp / RedditApp / YouTubeApp** — confirm per-agent content
      routing model, which is a different design conversation per app.

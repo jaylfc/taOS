@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { AppManifest } from "./app-registry";
-import { getApp, getOrRegisterServiceApp, getAllApps, getLaunchableApps, isDefaultSurfaceApp, prefetchApp, resolveApp, apps, APP_REDIRECTS, resolvePinnedId, pinnedAppId, pinnedLaunchProps } from "./app-registry";
+import { getApp, getOrRegisterServiceApp, getAllApps, getLaunchableApps, getSearchableApps, isDefaultSurfaceApp, prefetchApp, resolveApp, apps, APP_REDIRECTS, resolvePinnedId, pinnedAppId, pinnedLaunchProps } from "./app-registry";
 
 describe("resolveApp (deep-navigation token resolver)", () => {
   it("resolves an exact app id", () => {
@@ -259,8 +259,8 @@ describe("APP_REDIRECTS", () => {
     expect(typeof APP_REDIRECTS).toBe("object");
   });
 
-  it("redirects notification-archive to the notifications app with section archive", () => {
-    expect(APP_REDIRECTS["notification-archive"]).toEqual({ appId: "notifications", section: "archive" });
+  it("redirects notification-archive to the Notification History app with no section", () => {
+    expect(APP_REDIRECTS["notification-archive"]).toEqual({ appId: "notification-history" });
   });
 });
 
@@ -285,15 +285,15 @@ describe("resolvePinnedId", () => {
     delete APP_REDIRECTS["legacy-id"];
   });
 
-  it("resolves notification-archive to notifications with section archive via APP_REDIRECTS", () => {
-    expect(resolvePinnedId("notification-archive")).toEqual({ id: "notifications", section: "archive" });
+  it("resolves notification-archive to notification-history via APP_REDIRECTS", () => {
+    expect(resolvePinnedId("notification-archive")).toEqual({ id: "notification-history" });
   });
 });
 
 describe("pinnedAppId", () => {
   it("returns the app a pin renders and launches as", () => {
     expect(pinnedAppId("messages")).toBe("messages");
-    expect(pinnedAppId("notification-archive")).toBe("notifications");
+    expect(pinnedAppId("notification-archive")).toBe("notification-history");
   });
 
   it("keeps the pin id when no app claims it yet", () => {
@@ -303,7 +303,13 @@ describe("pinnedAppId", () => {
 
 describe("pinnedLaunchProps", () => {
   it("turns a pin's section into the props its launch must carry", () => {
-    expect(pinnedLaunchProps("notification-archive")).toEqual({ section: "archive" });
+    APP_REDIRECTS["legacy-id"] = { appId: "agents", section: "logs" };
+    expect(pinnedLaunchProps("legacy-id")).toEqual({ section: "logs" });
+    delete APP_REDIRECTS["legacy-id"];
+  });
+
+  it("is undefined for the notification-archive pin, which opens History's default view", () => {
+    expect(pinnedLaunchProps("notification-archive")).toBeUndefined();
   });
 
   it("is undefined for a pin that opens the app's default view", () => {
@@ -340,3 +346,27 @@ describe("notification-archive tier and launcher visibility", () => {
     expect(getApp("notifications")?.tier).toBeUndefined();
   });
 });
+
+describe("Import app retirement (tsk-6gtsvj)", () => {
+  it("registry has no import app id", () => {
+    expect(getApp("import")).toBeUndefined();
+  });
+
+  it("import is not in launchable apps", () => {
+    const ids = getLaunchableApps(new Set()).map((a) => a.id);
+    expect(ids).not.toContain("import");
+  });
+
+    it("import is not in all apps list", () => {
+      const ids = getAllApps().map((a) => a.id);
+      expect(ids).not.toContain("import");
+    });
+  });
+
+  describe("getSearchableApps", () => {
+    it("excludes notification-archive when no optional apps installed", () => {
+      const apps = getSearchableApps(new Set());
+      expect(apps.some((a) => a.id === "notification-archive")).toBe(false);
+      expect(apps.some((a) => a.id === "notification-history")).toBe(true);
+    });
+  });

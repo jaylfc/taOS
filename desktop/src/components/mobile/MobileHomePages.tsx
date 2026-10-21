@@ -2,6 +2,8 @@ import React from "react";
 import * as icons from "lucide-react";
 import { useMobileHomeStore, type HomePage } from "@/stores/mobile-home-store";
 import { getApp } from "@/registry/app-registry";
+import { appRuntime } from "@/lib/app-runtime";
+import { AppTypeBadge } from "@/components/AppTypeBadge";
 import { useInstalledOptionalApps } from "@/hooks/use-installed-optional-apps";
 import { GreetingWidget } from "@/components/widgets/GreetingWidget";
 import { ClockWidget } from "@/components/widgets/ClockWidget";
@@ -334,6 +336,7 @@ function PageContent({ page, onOpenApp }: { page: HomePage; onOpenApp: (appId: s
                 >
                   <div
                     style={{
+                      position: "relative",
                       width: 60,
                       height: 60,
                       borderRadius: 16,
@@ -344,6 +347,7 @@ function PageContent({ page, onOpenApp }: { page: HomePage; onOpenApp: (appId: s
                     }}
                   >
                     <Icon size={26} color="rgba(255,255,255,0.9)" />
+                    <AppTypeBadge runtime={appRuntime(app)} size="lg" />
                   </div>
                   <span
                     style={{

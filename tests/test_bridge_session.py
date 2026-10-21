@@ -197,7 +197,10 @@ async def test_enqueue_without_trace_registry_still_queues():
     session = reg._sessions["bot1"]
     item = session.queue.get_nowait()
     assert item["event"] == "user_message"
-    assert item["data"]["id"] == "u1"
+    # data is now stored as JSON string
+    import json
+    data = json.loads(item["data"])
+    assert data["id"] == "u1"
 
 
 @pytest.mark.asyncio

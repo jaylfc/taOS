@@ -269,6 +269,7 @@ async def llm_proxy_status(request: Request):
     start verified the listener as its own. There is no LiteLLM to report.
     """
     from tinyagentos import llm_gateway
+    from tinyagentos.agent_controller_listener import agent_controller_live_port
     from tinyagentos.llm_gateway.cutover import llm_gateway_live_port
 
     state = request.app.state
@@ -279,6 +280,7 @@ async def llm_proxy_status(request: Request):
         "mode": "gateway",
         "running": bool(llm_gateway_live_port(state)),
         "port": port,
+        "agent_controller_port": agent_controller_live_port(state),
         "url": "/api/llm/v1",
         "backends": len(state.config.backends),
     }
@@ -624,7 +626,7 @@ async def check_for_updates(request: Request):
         # `--` forces `branch` to be read as a refspec, never an option, even
         # though resolve_tracked_branch already validates it (defence in depth).
         "git", "fetch", "origin", "--", branch,
-        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
         cwd=project_dir,
     )
     fetch_out, _ = await fetch_proc.communicate()
