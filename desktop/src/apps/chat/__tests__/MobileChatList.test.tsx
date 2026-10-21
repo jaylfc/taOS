@@ -200,3 +200,51 @@ describe("MobileChatList", () => {
     expect(rowNames()).toEqual(["random"]);
   });
 });
+
+  it("sorts channels with epoch-seconds last_message_at in recency order (REAL API values)", () => {
+    const props = buildProps({
+      sections: [
+        {
+          items: [
+            ch({ id: "c1", name: "alpha", last_message_at: 1727788920 }),
+            ch({ id: "c2", name: "beta", last_message_at: 1727875321 }),
+            ch({ id: "c3", name: "gamma", last_message_at: 1727788922 }),
+          ],
+        },
+      ],
+    });
+    render(<MobileChatList {...props} />);
+    expect(rowNames()).toEqual(["beta", "gamma", "alpha"]);
+  });
+
+  it("ISO strings still sort correctly", () => {
+    const props = buildProps({
+      sections: [
+        {
+          items: [
+            ch({ id: "c1", name: "alpha", last_message_at: "2026-10-01T10:00:00Z" }),
+            ch({ id: "c2", name: "beta", last_message_at: "2026-10-03T10:00:00Z" }),
+            ch({ id: "c3", name: "gamma", last_message_at: "2026-10-02T10:00:00Z" }),
+          ],
+        },
+      ],
+    });
+    render(<MobileChatList {...props} />);
+    expect(rowNames()).toEqual(["beta", "gamma", "alpha"]);
+  });
+
+  it("null last_message_at falls back to created_at", () => {
+    const props = buildProps({
+      sections: [
+        {
+          items: [
+            ch({ id: "c1", name: "alpha", created_at: "2026-10-01T10:00:00Z", last_message_at: null }),
+            ch({ id: "c2", name: "beta", created_at: "2026-10-03T10:00:00Z", last_message_at: null }),
+            ch({ id: "c3", name: "gamma", created_at: "2026-10-02T10:00:00Z", last_message_at: null }),
+          ],
+        },
+      ],
+    });
+    render(<MobileChatList {...props} />);
+    expect(rowNames()).toEqual(["beta", "gamma", "alpha"]);
+  });

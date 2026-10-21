@@ -1,3 +1,4 @@
+import { toMs } from "./time";
 import { useMemo, useState, useEffect } from "react";
 import { Bot, Globe, Hash, Radio, Users } from "lucide-react";
 import { MessageAvatar } from "./MessageAvatar";
@@ -32,26 +33,17 @@ const FILTERS: { key: FilterKey; label: string; test: (c: Channel) => boolean }[
   { key: "projects", label: "Projects", test: (c) => Boolean(c.project_id) },
 ];
 
-function toMs(ts: number | string | null | undefined): number {
-  if (ts == null) return NaN;
-  if (typeof ts === "number") {
-    return ts > 1e12 ? ts : ts * 1000;
-  }
-  if (typeof ts === "string") {
-    const num = Number(ts);
-    if (!isNaN(num)) {
-      return num > 1e12 ? num : num * 1000;
-    }
-    const parsed = Date.parse(ts);
-    return Number.isNaN(parsed) ? NaN : parsed;
-  }
-  return NaN;
-}
-
 function sortKey(c: Channel): number {
-  const parsed = c.last_message_at ? toMs(c.last_message_at) : NaN;
-  const t = Number.isNaN(parsed) ? toMs(c.created_at ?? "") : parsed;
-  return Number.isNaN(t) ? -Infinity : t;
+  if (c.last_message_at == null || c.last_message_at === "") {
+    const t = toMs(c.created_at ?? "");
+    return Number.isNaN(t) ? -Infinity : t;
+  }
+  const parsed = toMs(c.last_message_at);
+  if (Number.isNaN(parsed)) {
+    const t = toMs(c.created_at ?? "");
+    return Number.isNaN(t) ? -Infinity : t;
+  }
+  return parsed;
 }
 
 export function MobileChatList(props: MobileChatListProps) {
@@ -295,7 +287,7 @@ export function MobileChatList(props: MobileChatListProps) {
                           flexShrink: 0,
                         }}
                       >
-                        {formatRelativeTime(toMs(ch.last_message_at), nowMs)}
+                        {formatRelativeTime(ch.last_message_at, nowMs)}
                       </span>
                     )}
                   </div>
