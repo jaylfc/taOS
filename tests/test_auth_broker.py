@@ -14,6 +14,8 @@ from tinyagentos.agent_registry_store import (
     load_or_create_signing_keypair,
     mint_registry_token,
 )
+from tinyagentos.auth_broker import MAX_OPEN_PER_AGENT
+from tinyagentos.base_store import PendingCapExceeded
 
 SIGNIN_URL = "https://claude.ai/oauth/authorize?code=true&client_id=abc&state=xyz"
 
@@ -432,3 +434,43 @@ async def test_expired_code_ready_cleared_on_create(client, app, monkeypatch):
     # New request should be unaffected
     new_rec = await app.state.auth_broker.get(new_rid)
     assert new_rec["status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_store_create_enforces_cap_under_lock(tmp_data_dir):
+    """AuthBrokerStore.create enforces MAX_OPEN_PER_AGENT inside its lock.
+
+    Creates MAX_OPEN_PER_AGENT requests for "agent-x", then the next create
+    for the same requester must raise PendingCapExceeded. A different requester
+    can still create successfully.
+    """
+    from tinyagentos.auth_broker import KIND_CLAUDE_SUBSCRIPTION, AuthBrokerStore
+
+    store = AuthBrokerStore(tmp_data_dir / "auth_broker_cap.db")
+    await store.init()
+    try:
+        url = "https://claude.ai/oauth/authorize?code=true&client_id=abc&state=xyz"
+
+        # Create MAX_OPEN_PER_AGENT requests for "agent-x"
+        for _ in range(MAX_OPEN_PER_AGENT):
+            rec = await store.create(
+                requester="agent-x", kind=KIND_CLAUDE_SUBSCRIPTION, url=url
+            )
+            assert rec["status"] == "pending"
+
+        # The (MAX_OPEN_PER_AGENT + 1)th create for "agent-x" must raise
+        with pytest.raises(PendingCapExceeded) as exc_info:
+            await store.create(
+                requester="agent-x", kind=KIND_CLAUDE_SUBSCRIPTION, url=url
+            )
+        assert exc_info.value.key == "agent-x"
+        assert exc_info.value.cap == MAX_OPEN_PER_AGENT
+        assert exc_info.value.pending == MAX_OPEN_PER_AGENT
+
+        # A different requester can still create
+        rec = await store.create(
+            requester="agent-y", kind=KIND_CLAUDE_SUBSCRIPTION, url=url
+        )
+        assert rec["status"] == "pending"
+    finally:
+        await store.close()

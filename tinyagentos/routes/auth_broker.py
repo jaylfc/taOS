@@ -22,12 +22,13 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from tinyagentos.agent_token_auth import check_agent_identity
-from tinyagentos.auth_broker import EXPIRY_SECONDS, MAX_OPEN_PER_AGENT, AuthBrokerStore, signin_host
+from tinyagentos.auth_broker import EXPIRY_SECONDS, AuthBrokerStore, signin_host
 from tinyagentos.auth_context import (
     current_user,
     require_agent_owner_or_admin,
     resolve_agent_owner,
 )
+from tinyagentos.base_store import PendingCapExceeded
 from tinyagentos.claude_code_runtime import CLAUDE_CODE_TOKEN_SECRET
 from tinyagentos.native_agent_identity import NATIVE_AGENT_ORIGIN
 
@@ -104,13 +105,6 @@ async def create_request(request: Request, body: CreateBody):
             status_code=422,
             detail="url must be https on an allowed sign-in host: claude.ai, console.anthropic.com",
         )
-    # Cap open requests per agent
-    open_count = await _store(request).count_open(requester)
-    if open_count >= MAX_OPEN_PER_AGENT:
-        raise HTTPException(
-            status_code=429,
-            detail="too many open sign-in requests",
-        )
     # The card goes to the agent's owner. An agent the registry cannot attribute
     # (a bound local-token agent with no registry row) goes to the admins, who
     # are the only users allowed to answer it. Never user_id=None: that is a
@@ -128,6 +122,11 @@ async def create_request(request: Request, body: CreateBody):
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+    except PendingCapExceeded:
+        raise HTTPException(
+            status_code=429,
+            detail="too many open sign-in requests",
+        )
 
     notifs = getattr(request.app.state, "notifications", None)
     if notifs is not None:
