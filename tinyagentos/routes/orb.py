@@ -12,16 +12,13 @@ fields, no signing key, no mesh_preauth.
 from __future__ import annotations
 
 import asyncio
-import logging
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from tinyagentos.orb.discovery import list_usb_orbs
 from tinyagentos.orb.frames import TransportUnavailable
 from tinyagentos.routes.auth import _require_admin
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
