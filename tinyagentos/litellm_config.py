@@ -116,6 +116,38 @@ async def _discover_ollama_backends_concurrent(
     }
 
 
+async def _discover_openai_compatible_backends_concurrent(
+    backends: list[dict], timeout: float = 2.0
+) -> dict[str, list[str]]:
+    """Probe all OpenAI-compatible backends (llama-cpp, lmstudio) concurrently.
+
+    Mirrors ``_discover_ollama_backends_concurrent`` exactly, but targets
+    backends whose type is ``llama-cpp``, or ``lmstudio`` when ``lmstudio`` is
+    in ``ALL_TYPES`` (the same condition ``build_model_list`` uses). Each probe
+    runs ``_discover_openai_compatible_models`` in a thread via
+    ``asyncio.to_thread`` so blocking httpx calls do not stall the event loop.
+    """
+    import asyncio
+
+    openai_urls = [
+        b.get("url", "").rstrip("/")
+        for b in backends
+        if (b.get("type") == "llama-cpp"
+            or (b.get("type") == "lmstudio" and "lmstudio" in ALL_TYPES))
+        and b.get("url")
+    ]
+    if not openai_urls:
+        return {}
+    results = await asyncio.gather(
+        *(asyncio.to_thread(_discover_openai_compatible_models, url, timeout) for url in openai_urls),
+        return_exceptions=True,
+    )
+    return {
+        url: (res if isinstance(res, list) else [])
+        for url, res in zip(openai_urls, results)
+    }
+
+
 def _local_backend_models_from_registry(
     backend: dict, registry
 ) -> list[str]:
@@ -375,6 +407,13 @@ def build_model_list(
                         "model": f"{embed_prefix}/{discovered_name}",
                         "api_base": url,
                     }
+                    # API key from secrets reference (same precedence as the
+                    # chat entry: api_key_secret first, else api_key), so a
+                    # key-protected server accepts the embedding call.
+                    if backend.get("api_key_secret"):
+                        embed_params["api_key"] = f"os.environ/{backend['api_key_secret']}"
+                    elif backend.get("api_key"):
+                        embed_params["api_key"] = backend["api_key"]
                     model_list.append({
                         "model_name": discovered_name,
                         "litellm_params": embed_params,

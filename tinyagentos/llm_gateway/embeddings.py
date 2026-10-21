@@ -22,6 +22,7 @@ Failover, cooldowns, key handling and error redaction are the chat path's
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -50,17 +51,30 @@ def _backends(state) -> list[dict]:
 
 
 async def _discovered(state) -> dict[str, list[str]]:
-    """``{ollama url: [model names]}``, probed at most once per TTL."""
+    """``{url: [model names]}``, probed at most once per TTL.
+
+    Covers ollama-family backends (ollama, rkllama, hailo-ollama) via the
+    ``/api/tags`` probe and OpenAI-compatible backends (llama-cpp, lmstudio)
+    via the ``/models`` probe. Both probes run concurrently with
+    ``asyncio.gather`` and their results are merged.
+    """
     backends = _backends(state)
     key = json.dumps(sorted(
         (b.get("url") or "").rstrip("/") for b in backends
-        if b.get("type", "ollama") in ("ollama", "rkllama", "hailo-ollama") and b.get("url")
+        if b.get("url")
+        and (b.get("type", "ollama") in ("ollama", "rkllama", "hailo-ollama", "llama-cpp")
+             or (b.get("type") == "lmstudio"
+                 and "lmstudio" in litellm_config.ALL_TYPES))
     ))
     cached = getattr(state, _STATE_CACHE, None)
     now = time.monotonic()
     if isinstance(cached, tuple) and cached[0] == key and now - cached[1] < DISCOVERY_TTL_SECONDS:
         return cached[2]
-    found = await litellm_config._discover_ollama_backends_concurrent(backends, timeout=_PROBE_TIMEOUT)
+    ollama_found, openai_found = await asyncio.gather(
+        litellm_config._discover_ollama_backends_concurrent(backends, timeout=_PROBE_TIMEOUT),
+        litellm_config._discover_openai_compatible_backends_concurrent(backends, timeout=_PROBE_TIMEOUT),
+    )
+    found = {**ollama_found, **openai_found}
     try:
         setattr(state, _STATE_CACHE, (key, now, found))
     except Exception:  # noqa: BLE001 - a frozen state just means no cache
