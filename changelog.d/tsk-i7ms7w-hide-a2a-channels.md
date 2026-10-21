@@ -1,0 +1,2 @@
+### Fixed
+- MobileChatList: hide auto-created a2a channels (settings.kind === "a2a") from the unified chat list and all filter chips (All, Agents, Groups, Projects). Channels named "a2a" without this kind are still shown.
