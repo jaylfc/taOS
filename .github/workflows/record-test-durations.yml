@@ -21,12 +21,12 @@ jobs:
         python-version: ["3.12"]
         shard: [1, 2, 3, 4]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
         with:
           persist-credentials: false
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
 
@@ -37,7 +37,7 @@ jobs:
       # source under node rather than asserting against its text, so provision
       # it here: a skipped gesture suite would record durations for nothing.
       - name: Set up Node
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7
         with:
           node-version: "22"
 
@@ -51,7 +51,7 @@ jobs:
         run: uv run --no-sync pytest tests/ --tb=short --ignore=tests/e2e -n auto --splits 4 --group ${{ matrix.shard }} --store-durations --durations-path durations-${{ matrix.shard }}.json
 
       - name: Upload shard durations
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
         with:
           name: durations-${{ matrix.shard }}
           path: durations-${{ matrix.shard }}.json
@@ -61,12 +61,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
         with:
           persist-credentials: false
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
 
@@ -77,7 +77,7 @@ jobs:
         run: uv sync --frozen --python 3.12
 
       - name: Download shard durations
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8
         with:
           pattern: durations-*
           merge-multiple: true
@@ -111,7 +111,7 @@ jobs:
         run: uv run --no-sync python scripts/check_shard_manifest.py --manifest tests/.test_durations --collected-file collected.txt --splits 4 --max-ratio 2.0
 
       - name: Upload test durations
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
         with:
           name: test-durations
           path: tests/.test_durations
