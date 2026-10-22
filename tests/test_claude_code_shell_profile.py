@@ -218,6 +218,34 @@ def test_uniq_double_dash_positional_counting():
     assert "output-redirect" in keys
 
 
+def test_uniq_output_file_attached_option_values_and_dash():
+    from tinyagentos.claude_code_guard import commands
+    # Attached option values should not swallow the input positional
+    for cmd in ("uniq -f1 a /tmp/x", "uniq -s2 a /tmp/x", "uniq -w3 a /tmp/x",
+                "uniq -cf1 a /tmp/x", "uniq --skip-fields 1 a /tmp/x", "uniq -cf 1 a /tmp/x"):
+        keys = commands(cmd)
+        assert "output-redirect" in keys, cmd
+    # -- resets uniq_pos, positional before -- is dropped
+    keys = commands("uniq a -- /tmp/x")
+    assert "output-redirect" in keys
+    # After --, dash-led token is a positional, not an option
+    keys = commands("uniq -- -in /tmp/x")
+    assert "output-redirect" in keys
+    # Bare - (stdin) is a positional
+    keys = commands("uniq - /tmp/x")
+    assert "output-redirect" in keys
+
+
+def test_uniq_control_commands_no_output_redirect():
+    from tinyagentos.claude_code_guard import commands
+    # These should NOT have output-redirect (only one positional or no second positional)
+    for cmd in ("uniq a", "uniq -f1 a", "uniq -f 1 a", "uniq -cf1 a",
+                "uniq -- a", "uniq -", "uniq --skip-fields=1 a",
+                "uniq --skip-fields 1 a", "cat a | uniq -c"):
+        keys = commands(cmd)
+        assert "output-redirect" not in keys, cmd
+
+
 def test_control_commands_are_allowed():
     from tinyagentos.claude_code_guard import profile_refusal
     from tinyagentos.taos_agent_shell_profile import DEFAULT_ALLOW

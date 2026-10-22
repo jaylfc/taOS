@@ -134,6 +134,7 @@ def commands(command: str) -> list[str] | None:
     sub_of: str | None = None  # a program still waiting for its subcommand
     prog: str | None = None  # the program of the current simple command
     uniq_pos = 0  # positional argument count for uniq (2nd is output file)
+    uniq_end_opts = False  # -- seen for uniq, everything after is positional
     for tok in tokens:
         if tok and set(tok) <= _OPERATOR_CHARS:
             if set(tok) & set("<>") and not set(tok) & set(";|()"):
@@ -148,6 +149,8 @@ def commands(command: str) -> list[str] | None:
                 sub_of = None
             expect = True
             prog = None
+            uniq_pos = 0
+            uniq_end_opts = False
             continue
         if redirect_target:
             redirect_target = False
@@ -196,17 +199,30 @@ def commands(command: str) -> list[str] | None:
                     continue
                 # uniq positional argument counting: 2nd positional is output file
                 if prog == "uniq":
-                    if tok == "--":
-                        # everything after -- is positional; first is input, second is output
-                        uniq_pos = 0
-                    elif tok.startswith("-") and not tok.startswith("--"):
-                        # short options: -f, -s, -w take a value
-                        if any(c in "fsw" for c in tok[1:]):
-                            skip_next = True
-                    elif not tok.startswith("-"):
+                    if uniq_end_opts or tok == "-" or not tok.startswith("-"):
+                        # positional argument (after --, bare -, or non-option)
                         uniq_pos += 1
                         if uniq_pos == 2:
                             add(OUTPUT_REDIRECT)
+                        continue
+                    if tok == "--":
+                        uniq_end_opts = True
+                        continue
+                    if tok.startswith("--"):
+                        # long option: --skip-fields, --skip-chars, --check-chars
+                        opt = tok[2:].split("=", 1)[0]
+                        if "=" not in tok and opt and any(
+                            long_opt.startswith(opt) for long_opt in ("skip-fields", "skip-chars", "check-chars")
+                        ):
+                            skip_next = True
+                        continue
+                    # short cluster: -c, -f, -f1, -cf1, -cf, etc.
+                    for i, ch in enumerate(tok[1:]):
+                        if ch in "fsw":
+                            if i == len(tok) - 2:
+                                skip_next = True
+                            # else the rest of tok is the attached value
+                            break
                     continue
                 # general --output handling (git diff, etc.)
                 if tok == "--output" or tok.startswith("--output="):
@@ -219,6 +235,7 @@ def commands(command: str) -> list[str] | None:
         expect = False
         prog = name
         uniq_pos = 0
+        uniq_end_opts = False
         if name in SUBCOMMAND_PROGRAMS:
             sub_of = name
         else:
