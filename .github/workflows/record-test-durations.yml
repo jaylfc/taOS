@@ -115,3 +115,5 @@ jobs:
         with:
           name: test-durations
           path: tests/.test_durations
+          # upload-artifact skips dotfiles unless asked, even an explicit path.
+          include-hidden-files: true
