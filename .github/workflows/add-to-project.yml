@@ -38,7 +38,7 @@ jobs:
       - name: Add to Project
         if: steps.cfg.outputs.skip != 'true'
         continue-on-error: true
-        uses: actions/add-to-project@v2
+        uses: actions/add-to-project@5afcf98fcd03f1c2f92c3c83f58ae24323cc57fd  # v2
         with:
           project-url: ${{ vars.PROJECT_URL }}
           github-token: ${{ secrets.ADD_TO_PROJECT_PAT }}

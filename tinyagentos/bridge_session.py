@@ -269,28 +269,8 @@ class BridgeSessionRegistry:
                 
                 # Stamp delivered when a user_message is actually yielded to the agent
                 # (not when it was enqueued). The local `data` there is already the JSON string.
-                if event_type == "user_message" and self._chat_messages:
-                    try:
-                        # item['data'] is already the JSON string per the code above
-                        item_data = json.loads(item.get("data", "{}"))
-                        msg_id = item_data.get("id")
-                        if msg_id:
-                            receipt_row = await self._chat_messages.mark_delivered(msg_id, slug)
-                            if receipt_row and self._chat_hub:
-                                # Need channel_id to broadcast; get it from the message
-                                msg = await self._chat_messages.get_message(msg_id)
-                                if msg and msg.get("channel_id"):
-                                    await self._chat_hub.broadcast(msg["channel_id"], {
-                                        "type": "receipt",
-                                        "seq": self._chat_hub.next_seq(),
-                                        "message_id": receipt_row["message_id"],
-                                        "agent_id": receipt_row["reader_id"],
-                                        "reader_type": receipt_row["reader_type"],
-                                        "delivered_at": receipt_row["delivered_at"],
-                                        "seen_at": receipt_row["seen_at"],
-                                    })
-                    except Exception:
-                        logger.exception("bridge_session: mark_delivered failed for %s", slug)
+                if event_type == "user_message":
+                    await self.mark_user_message_delivered(slug, item.get("data", "{}"))
                 
                 # user_message data is already a JSON string; tick data is a dict
                 data = item.get("data", "{}")
@@ -301,6 +281,40 @@ class BridgeSessionRegistry:
         finally:
             if tick_task is not None:
                 tick_task.cancel()
+
+    async def mark_user_message_delivered(self, slug: str, payload) -> None:
+        """Stamp the chat message as delivered and broadcast a receipt.
+
+        Called when a user_message event is yielded to the agent (both from
+        live subscribe and from outbox replay). The payload may be a dict or
+        a JSON string; both are accepted.
+        """
+        if not self._chat_messages:
+            return
+        try:
+            if isinstance(payload, str):
+                item_data = json.loads(payload)
+            else:
+                item_data = payload
+            msg_id = item_data.get("id")
+            if not msg_id:
+                return
+            receipt_row = await self._chat_messages.mark_delivered(msg_id, slug)
+            if receipt_row and self._chat_hub:
+                # Need channel_id to broadcast; get it from the message
+                msg = await self._chat_messages.get_message(msg_id)
+                if msg and msg.get("channel_id"):
+                    await self._chat_hub.broadcast(msg["channel_id"], {
+                        "type": "receipt",
+                        "seq": self._chat_hub.next_seq(),
+                        "message_id": receipt_row["message_id"],
+                        "agent_id": receipt_row["reader_id"],
+                        "reader_type": receipt_row["reader_type"],
+                        "delivered_at": receipt_row["delivered_at"],
+                        "seen_at": receipt_row["seen_at"],
+                    })
+        except Exception:
+            logger.exception("bridge_session: mark_delivered failed for %s", slug)
 
     async def record_reply(self, slug: str, body: dict) -> None:
         """Process a reply POST from openclaw.
