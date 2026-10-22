@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """Tests for tinyagentos/orb/catalog_sig."""
 
+import base64
 import hashlib
 import json
 import pytest
+import stat
+import sys
 from pathlib import Path
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from cryptography.exceptions import InvalidSignature
-
-import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from tinyagentos.orb.frames import OrbError
@@ -21,7 +22,6 @@ def test_key():
     """Generate a test Ed25519 keypair and return (private_key, public_key_raw, key_id)."""
     private_key = Ed25519PrivateKey.generate()
     public_key_raw = private_key.public_key().public_bytes_raw()
-    import base64
     key_id = hashlib.sha256(public_key_raw).hexdigest()[:16]
     return private_key, public_key_raw, key_id
 
@@ -30,13 +30,11 @@ def test_key():
 def keys_dict(test_key):
     """Build keys dict mapping key_id to base64-encoded raw public key."""
     _, public_key_raw, key_id = test_key
-    import base64
     return {key_id: base64.b64encode(public_key_raw).decode("ascii")}
 
 
 def make_sig_json(key_id: str, sig: bytes) -> bytes:
     """Helper to create sig JSON bytes."""
-    import base64
     return json.dumps({"key_id": key_id, "sig": base64.b64encode(sig).decode("ascii")}).encode("utf-8")
 
 
@@ -162,7 +160,6 @@ def test_verify_catalog_unknown_key_id_raises_key_unknown(keys_dict):
     if catalog_sig is None:
         pytest.skip("catalog_sig not yet implemented")
     catalog_bytes = b'{"serial": 1}'
-    import base64
     sig_bytes = json.dumps({"key_id": "ffffffffffffffff", "sig": base64.b64encode(b"x" * 64).decode()}).encode()
     with pytest.raises(catalog_sig.CatalogKeyUnknown):
         catalog_sig.verify_catalog(catalog_bytes, sig_bytes, keys_dict)
@@ -173,7 +170,6 @@ def test_verify_catalog_empty_keys_raises_key_unknown():
     if catalog_sig is None:
         pytest.skip("catalog_sig not yet implemented")
     catalog_bytes = b'{"serial": 1}'
-    import base64
     sig_bytes = json.dumps({"key_id": "abcdef1234567890", "sig": base64.b64encode(b"x" * 64).decode()}).encode()
     with pytest.raises(catalog_sig.CatalogKeyUnknown):
         catalog_sig.verify_catalog(catalog_bytes, sig_bytes, {})
@@ -192,7 +188,6 @@ def test_verify_catalog_two_keys_sig_by_key_b_with_key_a_id_raises_invalid(test_
     public_key_b_raw = private_key_b.public_key().public_bytes_raw()
     key_id_b = hashlib.sha256(public_key_b_raw).hexdigest()[:16]
     
-    import base64
     keys = {
         key_id_a: base64.b64encode(public_key_a_raw).decode("ascii"),
         key_id_b: base64.b64encode(public_key_b_raw).decode("ascii"),
@@ -416,7 +411,6 @@ def test_record_serial_creates_parent_dirs_and_writes_atomic(tmp_path):
     assert state["serial"] == 1
     assert state["sha256"] == digest
     # Check mode is 0o600
-    import stat
     assert stat.S_IMODE(state_path.stat().st_mode) == 0o600
 
 
