@@ -114,6 +114,7 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
       for (const a of archivedAgents) {
         if (a.original?.name) names.add(a.original.name);
         if (a.original?.display_name) names.add(a.original.display_name);
+        if (a.archived_slug) names.add(a.archived_slug);
       }
 
       return Array.from(names);

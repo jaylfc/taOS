@@ -460,6 +460,27 @@ describe("ChannelSidebar — mobile", () => {
     fireEvent.click(agentsChip);
     expect(screen.getByText("old-bot")).toBeInTheDocument();
   });
+
+  it("mobile, archived agent known only by archived_slug: its DM is classified as agent", () => {
+    const dmSlug = makeDmChannel({ id: "dm-slug", name: "old-bot-x", members: ["user", "old-bot-x"] });
+    const dmPerson = makeDmChannel({ id: "dm-mum", name: "mum", members: ["user", "mum"] });
+    const sections = [makeSection("DMs", [dmSlug, dmPerson])];
+    render(
+      <ChannelSidebar
+        {...buildProps({
+          isMobile: true,
+          sections,
+          liveAgents: [{ name: "some-agent" }],
+          archivedAgents: [{ id: "a1", archived_slug: "old-bot-x" }],
+          onSelectChannel: vi.fn(),
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "People" }));
+    expect(screen.queryByText("old-bot-x")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    expect(screen.getByText("old-bot-x")).toBeInTheDocument();
+  });
 });
 
 /* ------------------------------------------------------------------ */
