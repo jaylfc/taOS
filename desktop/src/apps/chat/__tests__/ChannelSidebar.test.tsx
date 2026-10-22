@@ -533,9 +533,10 @@ describe("ChannelSidebar — mobile", () => {
           sections,
           liveAgents: [{ name: "some-agent" }],
           archivedAgents: [{ id: "a1", archived_slug: "old-bot-x" }],
+          agentRosterReady: true,
           onSelectChannel: vi.fn(),
         })}
-      />,
+      />
     );
     fireEvent.click(screen.getByRole("button", { name: "People" }));
     expect(screen.queryByText("old-bot-x")).not.toBeInTheDocument();

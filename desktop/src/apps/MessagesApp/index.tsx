@@ -1056,13 +1056,19 @@ export function MessagesApp({
       if (liveRes.ok) {
         const ct = liveRes.headers.get("content-type") ?? "";
         if (ct.includes("application/json")) {
-          liveData = await liveRes.json();
+          const data = await liveRes.json();
+          if (Array.isArray(data)) {
+            liveData = data;
+          }
         }
       }
       if (archRes.ok) {
         const ct = archRes.headers.get("content-type") ?? "";
         if (ct.includes("application/json")) {
-          archivedData = await archRes.json();
+          const data = await archRes.json();
+          if (Array.isArray(data)) {
+            archivedData = data;
+          }
         }
       }
       if (liveData !== null && archivedData !== null) {
