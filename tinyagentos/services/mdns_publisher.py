@@ -189,6 +189,11 @@ class MdnsPublisher:
         """The service instance name as finally registered by zeroconf."""
         return self._service_instance_name
 
+    @property
+    def active(self) -> bool:
+        """True once the service is registered and not yet stopped."""
+        return self._active
+
     async def start(self) -> None:
         """Register the service. Never raises into the caller."""
         try:
