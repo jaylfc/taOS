@@ -57,6 +57,11 @@ async def _discovered(state) -> dict[str, list[str]]:
     ``/api/tags`` probe and OpenAI-compatible backends (llama-cpp, lmstudio)
     via the ``/models`` probe. Both probes run concurrently with
     ``asyncio.gather`` and their results are merged.
+
+    For llama-cpp/lmstudio backends, the probe includes an Authorization
+    header when the backend has an api_key or api_key_secret, so key-protected
+    servers return models instead of 401. The resolved key is NOT included in
+    the cache key.
     """
     backends = _backends(state)
     key = json.dumps(sorted(
@@ -70,9 +75,21 @@ async def _discovered(state) -> dict[str, list[str]]:
     now = time.monotonic()
     if isinstance(cached, tuple) and cached[0] == key and now - cached[1] < DISCOVERY_TTL_SECONDS:
         return cached[2]
+
+    # Build URL -> resolved API key mapping for llama-cpp/lmstudio backends.
+    # Keys are NOT included in the cache key above.
+    keys: dict[str, str | None] = {}
+    for b in backends:
+        url = (b.get("url") or "").rstrip("/")
+        if not url:
+            continue
+        if b.get("type") == "llama-cpp" or (b.get("type") == "lmstudio" and "lmstudio" in litellm_config.ALL_TYPES):
+            ref = f"os.environ/{b['api_key_secret']}" if b.get("api_key_secret") else b.get("api_key")
+            keys[url] = await _forward.resolve_api_key(state, ref)
+
     ollama_found, openai_found = await asyncio.gather(
         litellm_config._discover_ollama_backends_concurrent(backends, timeout=_PROBE_TIMEOUT),
-        litellm_config._discover_openai_compatible_backends_concurrent(backends, timeout=_PROBE_TIMEOUT),
+        litellm_config._discover_openai_compatible_backends_concurrent(backends, timeout=_PROBE_TIMEOUT, keys=keys),
     )
     found = {**ollama_found, **openai_found}
     try:

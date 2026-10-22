@@ -68,7 +68,7 @@ def _discover_ollama_models(url: str, timeout: float = 2.0) -> list[str]:
         return []
 
 
-def _discover_openai_compatible_models(url: str, timeout: float = 2.0) -> list[str]:
+def _discover_openai_compatible_models(url: str, timeout: float = 2.0, api_key: str | None = None) -> list[str]:
     """Probe an OpenAI-compatible backend (llama-cpp, lmstudio) for its loaded model names.
 
     Returns ``[]`` on any failure (backend down, network error, schema
@@ -76,9 +76,13 @@ def _discover_openai_compatible_models(url: str, timeout: float = 2.0) -> list[s
     and falls back to the ``default`` alias.
 
     OpenAI /models endpoint returns: {"data": [{"id": "model-name"}, ...]}
+
+    If ``api_key`` is provided, an Authorization header is sent so
+    key-protected servers return models instead of 401.
     """
     try:
-        resp = httpx.get(f"{url.rstrip('/')}/models", timeout=timeout)
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
+        resp = httpx.get(f"{url.rstrip('/')}/models", timeout=timeout, headers=headers)
         if resp.status_code != 200:
             return []
         data = resp.json()
@@ -117,7 +121,7 @@ async def _discover_ollama_backends_concurrent(
 
 
 async def _discover_openai_compatible_backends_concurrent(
-    backends: list[dict], timeout: float = 2.0
+    backends: list[dict], timeout: float = 2.0, keys: dict[str, str | None] | None = None
 ) -> dict[str, list[str]]:
     """Probe all OpenAI-compatible backends (llama-cpp, lmstudio) concurrently.
 
@@ -126,6 +130,10 @@ async def _discover_openai_compatible_backends_concurrent(
     in ``ALL_TYPES`` (the same condition ``build_model_list`` uses). Each probe
     runs ``_discover_openai_compatible_models`` in a thread via
     ``asyncio.to_thread`` so blocking httpx calls do not stall the event loop.
+
+    If ``keys`` is provided, it maps stripped URL -> resolved API key. The key
+    for each backend's URL is passed as ``api_key`` to the probe so
+    key-protected servers return models instead of 401.
     """
     import asyncio
 
@@ -138,8 +146,12 @@ async def _discover_openai_compatible_backends_concurrent(
     ]
     if not openai_urls:
         return {}
+    key_map = keys or {}
     results = await asyncio.gather(
-        *(asyncio.to_thread(_discover_openai_compatible_models, url, timeout) for url in openai_urls),
+        *(
+            asyncio.to_thread(_discover_openai_compatible_models, url, timeout, api_key=key_map.get(url))
+            for url in openai_urls
+        ),
         return_exceptions=True,
     )
     return {
@@ -397,6 +409,9 @@ def build_model_list(
         elif backend_type == "llama-cpp" or (backend_type == "lmstudio" and "lmstudio" in ALL_TYPES):
             _probed = (discovered or {}).get(url)
             if _probed is None:
+                # Authenticated probing (with api_key/api_key_secret) happens
+                # on the gateway request path via _discovered(); the config
+                # writer has no secrets store and calls this keyless probe.
                 _probed = _discover_openai_compatible_models(url) if discover else []
             if _probed:
                 embed_prefix = BACKEND_TYPE_MAP.get(backend_type, "openai")
