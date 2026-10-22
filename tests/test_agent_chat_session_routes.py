@@ -14,6 +14,7 @@ from httpx import ASGITransport, AsyncClient
 
 from tinyagentos.agent_registry_store import mint_registry_token
 from tinyagentos.bridge_session import BridgeSessionRegistry
+from tinyagentos.chat.guest_outbox import GuestOutbox
 from taos_test_csrf import csrf_event_hooks
 
 EVENTS = "/api/agents/self/chat/events"
@@ -215,3 +216,107 @@ def test_chat_session_scope_registered_in_both_sets():
 
     assert "chat_session" in VALID_SCOPES
     assert "chat_session" in _ALLOWED_SCOPES
+
+
+# --- Fake stores for replay receipt test ---
+class _FakeMessageStore:
+    """Minimal fake ChatMessageStore that tracks mark_delivered calls."""
+    def __init__(self):
+        self.messages = {}
+        self.mark_delivered_calls = []
+        self._seq = 0
+
+    async def send_message(self, **kwargs) -> dict:
+        self._seq += 1
+        msg = {"id": f"msg{self._seq}", **kwargs}
+        self.messages[msg["id"]] = msg
+        return msg
+
+    async def get_message(self, message_id: str) -> dict | None:
+        return self.messages.get(message_id)
+
+    async def mark_delivered(self, message_id: str, reader_id: str, reader_type: str = "agent") -> dict | None:
+        """Track calls to mark_delivered and return a fake receipt row."""
+        self.mark_delivered_calls.append((message_id, reader_id, reader_type))
+        msg = await self.get_message(message_id)
+        if msg is None:
+            return None
+        import time
+        return {
+            "message_id": message_id,
+            "reader_id": reader_id,
+            "reader_type": reader_type,
+            "delivered_at": time.time(),
+            "seen_at": None,
+        }
+
+
+@pytest.mark.asyncio
+class TestGuestOutboxReplayReceipt:
+    """Test that replayed guest outbox messages get their chat receipt stamped."""
+
+    async def test_replayed_guest_message_marks_delivered(self, chat_app, tmp_path):
+        """A guest message present in the outbox before the stream opens
+        should have mark_delivered called on its message id during replay."""
+        _cid, token = await _agent(chat_app, "@guest-replay")
+
+        # Set up a fake message store that tracks mark_delivered calls
+        fake_msg_store = _FakeMessageStore()
+        # Pre-create the message that the outbox payload references
+        await fake_msg_store.send_message(
+            channel_id="ch1",
+            author_id="user-123",
+            author_type="user",
+            content="replay me",
+            state="complete",
+            metadata={"trace_id": "trace-replay-1"},
+        )
+        # The message id sent in the outbox payload
+        msg_id = list(fake_msg_store.messages.keys())[0]
+
+        # Create guest outbox with a persisted message
+        outbox = GuestOutbox(tmp_path / "guest_outbox.db")
+        await outbox.init()
+        try:
+            # Append a user_message that references the pre-existing message id
+            await outbox.append("guest-replay", {
+                "id": msg_id,
+                "text": "replay me",
+                "trace_id": "trace-replay-1",
+                "channel_id": "ch1",
+                "from": "user-123",
+            })
+
+            # Wire up bridge session with the fake message store and outbox
+            bridge = BridgeSessionRegistry(
+                trace_registry=None,
+                chat_messages=fake_msg_store,
+                chat_channels=None,
+                chat_hub=None,
+                archive=None,
+            )
+            bridge._guest_outbox = outbox
+            bridge._is_guest = lambda slug: True
+
+            chat_app.state.bridge_sessions = bridge
+            chat_app.state.guest_outbox = outbox
+            chat_app.state.chat_messages = fake_msg_store
+
+            # Make the live subscription end immediately (we only care about replay)
+            async def empty_subscribe(slug):
+                return
+                yield  # make it an async generator
+
+            bridge.subscribe = empty_subscribe
+
+            async with _bare(chat_app) as c:
+                r = await c.get(EVENTS, headers=_hdr(token))
+
+            assert r.status_code == 200
+            # The replay should have yielded the message and called mark_delivered
+            assert len(fake_msg_store.mark_delivered_calls) == 1
+            called_msg_id, called_reader_id, _ = fake_msg_store.mark_delivered_calls[0]
+            assert called_msg_id == msg_id
+            assert called_reader_id == "guest-replay"
+        finally:
+            await outbox.close()

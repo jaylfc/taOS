@@ -520,6 +520,21 @@ def _is_agent_scope_request_path(method: str, path: str) -> bool:
     return any(m == method and rx.match(path) for m, rx in _AGENT_SCOPE_REQUEST_ROUTES)
 
 
+# Sign-in broker (tsk-diqs7d): an agent creates a request, polls it and hands
+# over its token with its own registry JWT. The /code route is reachable too so
+# an agent JWT gets the route's own 403 (user session only) instead of a 401.
+_AGENT_AUTH_BROKER_ROUTES = (
+    ("POST", re.compile(r"^/api/auth-broker/requests$")),
+    ("GET", re.compile(rf"^/api/auth-broker/requests/{_SEG}$")),
+    ("POST", re.compile(rf"^/api/auth-broker/requests/{_SEG}/(code|token)$")),
+)
+
+
+def _is_agent_auth_broker_path(method: str, path: str) -> bool:
+    """True only for the sign-in broker routes; each route verifies the caller."""
+    return any(m == method and rx.match(path) for m, rx in _AGENT_AUTH_BROKER_ROUTES)
+
+
 def _is_agent_rotate_path(method: str, path: str) -> bool:
     """True only for POST /api/agents/registry/{id}/rotate-tokens, which an
     agent may reach with its own registry JWT to rotate its OWN credential. The
@@ -968,6 +983,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     or _is_agent_files_path(request.method, path)
                     or _is_agent_scope_request_path(request.method, path)
                     or _is_agent_rotate_path(request.method, path)
+                    or _is_agent_auth_broker_path(request.method, path)
                     or _is_container_request_action_path(request.method, path)
                     or _is_agent_container_quota_path(request.method, path)
                     or _is_agent_skill_exec_path(request.method, path)

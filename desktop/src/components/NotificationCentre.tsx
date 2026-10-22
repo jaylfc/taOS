@@ -12,6 +12,7 @@ import {
 } from "@/lib/notifications-push";
 import { SetupChecklist } from "./SetupChecklist";
 import { ConsentActions, consentPayload } from "./ConsentActions";
+import { SignInActions, signInPayload } from "./SignInActions";
 
 const FALLBACK_SIZE = { w: 900, h: 640 };
 
@@ -40,6 +41,7 @@ function NotificationItem({
   // Agent access-requests carry inline Allow/Deny actions. These nested buttons
   // live outside the clickable row to keep the markup valid.
   const consent = (n.source === "auth_requests" || n.source === "agent_scope_requests") ? consentPayload(n.data) : null;
+  const signIn = n.source === "auth_broker" ? signInPayload(n.data) : null;
   return (
     <div className={`border-b border-white/5 ${!n.read ? "bg-accent/5" : ""}`}>
       <button
@@ -81,6 +83,17 @@ function NotificationItem({
             canonicalId={consent.canonicalId}
             humanDuration={consent.humanDuration}
             harness={consent.harness}
+            onResolved={() => onResolveConsent(n.id)}
+          />
+        </div>
+      )}
+      {signIn && (
+        <div className="px-4 pb-3">
+          <SignInActions
+            requestId={signIn.requestId}
+            url={signIn.url}
+            host={signIn.host}
+            agent={signIn.agent}
             onResolved={() => onResolveConsent(n.id)}
           />
         </div>
