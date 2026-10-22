@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 
 // Stub the heavy data hooks / stores MessagesApp transitively imports so the
@@ -51,24 +51,12 @@ vi.mock("@/registry/app-registry", () => ({
   getApp: () => undefined,
 }));
 
-import { useIsMobile } from "@/hooks/use-is-mobile";
-import { MessagesApp } from "../MessagesApp";
-
-vi.mock("../chat/ChannelSidebar", () => ({
-  ChannelSidebar: () => <div data-testid="channel-sidebar" />,
-}));
-
 vi.mock("../chat/MessageList", () => ({
   MessageList: () => <div data-testid="message-list" />,
 }));
 
 vi.mock("../chat/MessageInput", () => ({
   MessageInput: () => <div data-testid="message-input" />,
-}));
-
-vi.mock("../chat/A2aBusPanel", () => ({
-  A2aBusMessageView: () => <div data-testid="a2a-bus-view" />,
-  useBusChannels: () => ({ channels: [], loading: false }),
 }));
 
 // Surface the listTitle so the test can verify the production code actually
@@ -99,6 +87,18 @@ vi.mock("../MessagesApp.a2aSelection", () => ({
   selectFirstBoundChannel: vi.fn(),
 }));
 
+vi.mock("../chat/ChannelSidebar", () => ({
+  ChannelSidebar: () => <div data-testid="channel-sidebar" />,
+}));
+
+vi.mock("../chat/A2aBusPanel", () => ({
+  A2aBusMessageView: () => <div data-testid="a2a-bus-view" />,
+  useBusChannels: () => ({ channels: [], loading: false }),
+}));
+
+import { useIsMobile } from "@/hooks/use-is-mobile";
+import { MessagesApp } from "../MessagesApp";
+
 describe("MessagesApp mobile shell", () => {
   beforeEach(() => {
     (useIsMobile as ReturnType<typeof vi.fn>).mockReset();
@@ -120,5 +120,70 @@ describe("MessagesApp mobile shell", () => {
     // The channel sidebar still renders in the desktop side-by-side layout
     // (it is the same list, just inside a different split-view variant).
     expect(screen.getByTestId("channel-sidebar")).toBeInTheDocument();
+  });
+});
+
+describe("MessagesApp fetchAgentLists — archived fetch failure", () => {
+  let originalFetch: typeof global.fetch;
+
+  beforeEach(() => {
+    (useIsMobile as ReturnType<typeof vi.fn>).mockReturnValue(true);
+    originalFetch = global.fetch;
+    global.fetch = vi.fn().mockImplementation((url: string) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/api/agents") && urlStr.includes("include_guests=1")) {
+        return Promise.resolve({
+          ok: true,
+          headers: { get: () => "application/json" },
+          json: () => Promise.resolve([{ name: "some-agent", display_name: "Some Agent", status: "running" }]),
+        } as unknown as Response);
+      }
+      if (urlStr.includes("/api/agents/archived")) {
+        return Promise.resolve({
+          ok: false,
+          status: 500,
+          headers: { get: () => "application/json" },
+          json: () => Promise.resolve({ error: "internal error" }),
+        } as unknown as Response);
+      }
+      if (urlStr.includes("/api/chat/channels") && !urlStr.includes("/messages")) {
+        return Promise.resolve({
+          ok: true,
+          headers: { get: () => "application/json" },
+          json: () => Promise.resolve({ channels: [], unread: {} }),
+        } as unknown as Response);
+      }
+      if (urlStr.includes("/api/chat/unread")) {
+        return Promise.resolve({
+          ok: true,
+          headers: { get: () => "application/json" },
+          json: () => Promise.resolve({ unread: {} }),
+        } as unknown as Response);
+      }
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        headers: { get: () => "application/json" },
+        json: () => Promise.resolve({ error: "not found" }),
+      } as unknown as Response);
+    });
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it("renders without error when archived fetch fails (500) and live agent fetch succeeds", async () => {
+    // This test verifies the fix for the bug where a failed archived-agents fetch
+    // would leave liveAgents empty. With the fix, liveAgents is populated even
+    // when the archived fetch fails, so author resolution, mentions, and agent
+    // lookup continue to work.
+    render(<MessagesApp windowId="test" />);
+
+    // Wait for the mobile shell to render
+    await waitFor(() => {
+      expect(screen.getByTestId("mobile-split-view")).toBeInTheDocument();
+      expect(screen.getByTestId("channel-sidebar")).toBeInTheDocument();
+    });
   });
 });

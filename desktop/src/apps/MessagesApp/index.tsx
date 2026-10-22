@@ -1071,11 +1071,9 @@ export function MessagesApp({
           }
         }
       }
-      if (liveData !== null && archivedData !== null) {
-        setLiveAgents(liveData);
-        setArchivedAgents(archivedData);
-        setAgentRosterReady(true);
-      }
+      if (liveData !== null) setLiveAgents(liveData);
+      if (archivedData !== null) setArchivedAgents(archivedData);
+      if (liveData !== null && archivedData !== null) setAgentRosterReady(true);
     } catch {
       /* offline */
     }
