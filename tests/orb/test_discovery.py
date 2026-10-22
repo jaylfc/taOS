@@ -200,6 +200,7 @@ def build_fake_zeroconf_module():
     fake_zeroconf._collected_names = []
     fake_zeroconf._close_called = False
     fake_zeroconf._raise_on_get_info = None
+    fake_zeroconf._raise_on_browser_init = None
     
     class FakeZeroconf:
         def __init__(self):
@@ -215,6 +216,8 @@ def build_fake_zeroconf_module():
     
     class FakeServiceBrowser:
         def __init__(self, zc, type_, listener):
+            if fake_zeroconf._raise_on_browser_init:
+                raise fake_zeroconf._raise_on_browser_init
             # Immediately call add_service for each preset name
             for name in fake_zeroconf._collected_names:
                 listener.add_service(zc, type_, name)
@@ -269,18 +272,20 @@ class TestLANDiscovery(unittest.TestCase):
             name=name,
             port=port,
             properties=byte_props,
-            parsed_addresses=lambda: sorted(addresses)
+            parsed_addresses=lambda: list(addresses)
         )
     
     def test_two_orbs_out_of_order_sorted_by_name(self):
         """Test two Orbs announced out of order are sorted by name."""
         # Set up service infos
+        # Addresses for orb-living are NOT in lexicographic order ("3" > "20" as strings)
+        # discovery.py's sorted() will sort them lexicographically
         self.fake_zeroconf._service_infos = {
             "orb-living._taos-orb._tcp.local.": self._make_service_info(
                 "orb-living._taos-orb._tcp.local.",
                 port=80,
                 properties={"board": "esp32s3", "app": "orb-companion", "ver": "1.2.3"},
-                addresses=["192.168.1.101", "10.0.0.1"]
+                addresses=["192.168.1.3", "192.168.1.20"]
             ),
             "orb-kitchen._taos-orb._tcp.local.": self._make_service_info(
                 "orb-kitchen._taos-orb._tcp.local.",
@@ -310,8 +315,8 @@ class TestLANDiscovery(unittest.TestCase):
         self.assertEqual(result[0]["app"], "orb-companion")
         self.assertEqual(result[0]["version"], "1.0.0")
         
-        # Check orb-living
-        self.assertEqual(result[1]["addresses"], ["10.0.0.1", "192.168.1.101"])
+        # Check orb-living - addresses should be sorted lexicographically by discovery.py
+        self.assertEqual(result[1]["addresses"], ["192.168.1.20", "192.168.1.3"])
         self.assertEqual(result[1]["port"], 80)
         self.assertEqual(result[1]["board"], "esp32s3")
         self.assertEqual(result[1]["app"], "orb-companion")
@@ -421,6 +426,18 @@ class TestLANDiscovery(unittest.TestCase):
             browse_lan_orbs(timeout=2.0)
         
         self.assertEqual(str(cm.exception), "mDNS error")
+        self.assertTrue(self.fake_zeroconf._close_called)
+    
+    def test_service_browser_init_raises_error_propagates_close_called(self):
+        """Test RuntimeError from ServiceBrowser __init__ propagates and close is called."""
+        self.fake_zeroconf._raise_on_browser_init = RuntimeError("browser init failed")
+        
+        from tinyagentos.orb.discovery import browse_lan_orbs
+        
+        with self.assertRaises(RuntimeError) as cm:
+            browse_lan_orbs(timeout=2.0)
+        
+        self.assertEqual(str(cm.exception), "browser init failed")
         self.assertTrue(self.fake_zeroconf._close_called)
 
 

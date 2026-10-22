@@ -60,7 +60,7 @@ def list_usb_orbs() -> list[dict]:
 
 
 def browse_lan_orbs(timeout: float = 2.0) -> list[dict]:
-    """Browse LAN for taOS Orbs via mDNS. Blocks for `timeout` seconds; async callers must use asyncio.to_thread."""
+    """Browse the LAN for taOS Orbs via mDNS. Browses for `timeout` seconds, then adds up to 1 second per discovered name for service lookups; async callers must use asyncio.to_thread."""
     from zeroconf import ServiceBrowser, Zeroconf
     import time
     
@@ -78,8 +78,8 @@ def browse_lan_orbs(timeout: float = 2.0) -> list[dict]:
             pass
     
     listener = _Listener()
-    browser = ServiceBrowser(zc, ORB_SERVICE_TYPE, listener)
     try:
+        browser = ServiceBrowser(zc, ORB_SERVICE_TYPE, listener)
         time.sleep(timeout)
         
         # Deduplicate names

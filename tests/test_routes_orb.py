@@ -10,7 +10,6 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from tinyagentos.orb.frames import TransportUnavailable
-from tinyagentos.routes.auth import _require_admin
 
 
 @pytest_asyncio.fixture
@@ -50,7 +49,7 @@ async def test_status_non_admin_session_gets_403(client, app, monkeypatch):
 async def test_status_admin_empty_list(client, app, monkeypatch):
     monkeypatch.setattr(
         "tinyagentos.routes.orb.list_usb_orbs",
-        lambda: []
+        list
     )
     resp = await client.get("/api/orb/status")
     assert resp.status_code == 200
