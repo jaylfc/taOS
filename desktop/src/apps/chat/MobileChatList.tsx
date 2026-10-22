@@ -33,17 +33,16 @@ const FILTERS: { key: FilterKey; label: string; test: (c: Channel) => boolean }[
   { key: "projects", label: "Projects", test: (c) => Boolean(c.project_id) },
 ];
 
+function createdKey(c: Channel): number {
+  if (!c.created_at) return -Infinity;
+  const t = toMs(c.created_at);
+  return Number.isNaN(t) ? -Infinity : t;
+}
+
 function sortKey(c: Channel): number {
-  if (c.last_message_at == null || c.last_message_at === "") {
-    const t = toMs(c.created_at ?? "");
-    return Number.isNaN(t) ? -Infinity : t;
-  }
+  if (c.last_message_at == null || c.last_message_at === "") return createdKey(c);
   const parsed = toMs(c.last_message_at);
-  if (Number.isNaN(parsed)) {
-    const t = toMs(c.created_at ?? "");
-    return Number.isNaN(t) ? -Infinity : t;
-  }
-  return parsed;
+  return Number.isNaN(parsed) ? createdKey(c) : parsed;
 }
 
 export function MobileChatList(props: MobileChatListProps) {
