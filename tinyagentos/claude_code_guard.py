@@ -44,15 +44,65 @@ SUBCOMMAND_PROGRAMS = frozenset({
     "npm", "npx", "pip", "pip3", "pnpm", "podman", "snap", "systemctl", "uv", "yarn",
 })
 # Options of those programs that take a separate value (``git -C dir status``).
-_OPTIONS_WITH_VALUE = frozenset({"-C", "-c", "--config-env"})
+_OPTIONS_WITH_VALUE = frozenset({
+    "-C", "-c", "--config-env",
+    "--git-dir", "--work-tree", "--namespace", "--super-prefix",
+})
+# Git options that take no value and are safe to ignore before the subcommand.
+_GIT_NO_VALUE_OPTS = frozenset({
+    "--no-pager", "-p", "--paginate", "-P",
+    "--bare", "--no-replace-objects",
+    "--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--icase-pathspecs",
+    "--no-optional-locks",
+})
 _SUBCOMMAND = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:+-]*")
 # Writing a file through the shell (``>``, ``>>``, ``&>``) is its own rule:
 # ``echo`` being allowed must not let ``echo x > ~/.bashrc`` through.
 OUTPUT_REDIRECT = "output-redirect"
-# ``git -c`` / ``--config-env`` can set an alias or pager that runs any
+# ``git -c`` / ``--config-env`` / ``--exec-path`` can set an alias or pager that runs any
 # command, so ``git -c status`` needs this rule on top of ``git status``.
 GIT_CONFIG_OVERRIDE = "git -c"
 _DUP_TARGET = re.compile(r"[0-9]+-?|-")
+
+
+def _has_command_substitution_in_double_quotes(text: str) -> bool:
+    """Return True if $(...), ${...} or backtick occurs inside double quotes.
+
+    Tracks quote state: single quotes (no escapes), double quotes (backslash
+    escapes allowed), and backslash escapes outside single quotes.
+    """
+    in_single = False
+    in_double = False
+    escape = False
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if escape:
+            escape = False
+            i += 1
+            continue
+        if ch == "\\":
+            if not in_single:
+                escape = True
+            i += 1
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+            i += 1
+            continue
+        if ch == '"' and not in_single:
+            in_double = not in_double
+            i += 1
+            continue
+        if in_double:
+            # Check for $( or ${ or backtick
+            if ch == "$" and i + 1 < n and text[i + 1] in "({":
+                return True
+            if ch == "`":
+                return True
+        i += 1
+    return False
 
 
 def commands(command: str) -> list[str] | None:
@@ -61,6 +111,10 @@ def commands(command: str) -> list[str] | None:
     (``/usr/bin/curl`` is ``curl``), plus the subcommand for the programs in
     :data:`SUBCOMMAND_PROGRAMS` (``npm run``, ``git status``). Pipes, lists,
     subshells, ``$(...)``, backticks and newlines all start a new command."""
+    # Fail closed if command substitution appears inside double quotes.
+    if _has_command_substitution_in_double_quotes(command):
+        return None
+
     text = command.replace("`", ";").replace("\n", ";")
     lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
@@ -101,8 +155,22 @@ def commands(command: str) -> list[str] | None:
             skip_next = False
             continue
         if sub_of:
-            if sub_of == "git" and (tok.startswith(("-c", "--config-env"))):
-                add(GIT_CONFIG_OVERRIDE)
+            if sub_of == "git":
+                if tok.startswith(("-c", "--config-env")):
+                    add(GIT_CONFIG_OVERRIDE)
+                elif tok.startswith("--exec-path"):
+                    add(GIT_CONFIG_OVERRIDE)
+                elif tok == "--output" or tok.startswith("--output="):
+                    add(OUTPUT_REDIRECT)
+                    if tok == "--output":
+                        skip_next = True
+                elif tok.startswith("-") and tok not in _OPTIONS_WITH_VALUE and tok not in _GIT_NO_VALUE_OPTS:
+                    # Unknown git option before subcommand: fail closed.
+                    return None
+            elif sub_of == "sort" and (tok == "-o" or tok.startswith("-o=")):
+                add(OUTPUT_REDIRECT)
+                if tok == "-o":
+                    skip_next = True
             if tok in _OPTIONS_WITH_VALUE:
                 skip_next = True
             elif not tok.startswith("-"):
@@ -123,7 +191,12 @@ def commands(command: str) -> list[str] | None:
 
 
 def _covered(key: str, rules: set[str]) -> bool:
-    """A rule for the bare program covers every subcommand of it."""
+    """A rule for the bare program covers every subcommand of it.
+
+    Exception: GIT_CONFIG_OVERRIDE and OUTPUT_REDIRECT match only an exact rule.
+    """
+    if key in (GIT_CONFIG_OVERRIDE, OUTPUT_REDIRECT):
+        return key in rules
     return key in rules or key.split(" ", 1)[0] in rules
 
 
