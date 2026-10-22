@@ -181,11 +181,38 @@ def test_output_redirect_for_git_diff_and_sort():
         assert "output-redirect" in keys, cmd
 
 
+def test_sort_compress_program_is_refused():
+    from tinyagentos.claude_code_guard import commands
+    for cmd in ("sort --compress-program=sh f", "sort --compress-prog=sh f",
+                "sort --com=sh f", "sort --compress-program sh f"):
+        keys = commands(cmd)
+        assert keys is None, cmd
+
+
+def test_sort_output_redirect_variants():
+    from tinyagentos.claude_code_guard import commands
+    for cmd in ("sort -ro /tmp/x f", "sort -r -o /tmp/x f",
+                "sort --outp=/tmp/x f", "sort --o=/tmp/x f"):
+        keys = commands(cmd)
+        assert "output-redirect" in keys, cmd
+
+
+def test_uniq_output_file_positional():
+    from tinyagentos.claude_code_guard import commands
+    for cmd in ("uniq u /tmp/x", "uniq -c u /tmp/x",
+                "uniq -f 1 u /tmp/x", "uniq -- u /tmp/x"):
+        keys = commands(cmd)
+        assert "output-redirect" in keys, cmd
+
+
 def test_control_commands_are_allowed():
     from tinyagentos.claude_code_guard import profile_refusal
     from tinyagentos.taos_agent_shell_profile import DEFAULT_ALLOW
     allow = set(DEFAULT_ALLOW)
-    for cmd in ('echo "hello world"', "echo '$(not expanded)'", "sort f"):
+    for cmd in ('echo "hello world"', "echo '$(not expanded)'", "sort f",
+                "sort -r f", "sort -k 2 f", "sort --reverse f",
+                "uniq u", "uniq -c u", "uniq -f 1 u",
+                "cat u | uniq", "sort f | uniq -c"):
         refusal, _ = profile_refusal(cmd, allow, set())
         assert refusal is None, cmd
 

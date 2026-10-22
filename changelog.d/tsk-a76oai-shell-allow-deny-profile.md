@@ -5,3 +5,4 @@
 ### Fixed
 
 - The shell guard now detects `--output` / `--output=` after a git subcommand and `sort -o` / `sort -o=` / `sort -o<file>` as output redirections, requiring the `output-redirect` rule.
+- The shell guard now refuses `sort --compress-program` (and `--compress-prog=`, `--com=` prefixes), treats any unambiguous `--output` prefix for `sort` as output redirection, detects clustered short options containing `o` for `sort` (e.g. `-ro`), and treats the second positional argument of `uniq` as output redirection.

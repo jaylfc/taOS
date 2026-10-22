@@ -133,6 +133,7 @@ def commands(command: str) -> list[str] | None:
     redirect_target = False  # the next word is the target of an output redirection
     sub_of: str | None = None  # a program still waiting for its subcommand
     prog: str | None = None  # the program of the current simple command
+    uniq_pos = 0  # positional argument count for uniq (2nd is output file)
     for tok in tokens:
         if tok and set(tok) <= _OPERATOR_CHARS:
             if set(tok) & set("<>") and not set(tok) & set(";|()"):
@@ -176,22 +177,49 @@ def commands(command: str) -> list[str] | None:
                 sub_of = None
             continue
         if not expect or _ASSIGNMENT.fullmatch(tok) or tok in _KEYWORDS:
-            # Handle --output and sort -o in argument position
+            # Handle --output, sort options, and uniq positional output in argument position
             if not expect:
+                # sort --compress-program and its prefixes: fail closed
+                if prog == "sort" and tok.startswith("--"):
+                    opt = tok[2:].split("=", 1)[0]
+                    if len(opt) >= 2 and "compress-program".startswith(opt):
+                        return None
+                    if len(opt) >= 1 and "output".startswith(opt):
+                        add(OUTPUT_REDIRECT)
+                        if "=" not in tok:
+                            skip_next = True
+                        continue
+                # sort clustered short option containing o (e.g. -ro, -o)
+                if prog == "sort" and tok.startswith("-") and not tok.startswith("--") and "o" in tok[1:]:
+                    add(OUTPUT_REDIRECT)
+                    if tok.endswith("o"):
+                        skip_next = True
+                    continue
+                # uniq positional argument counting: 2nd positional is output file
+                if prog == "uniq":
+                    if tok == "--":
+                        # everything after -- is positional; first is input, second is output
+                        uniq_pos = 1
+                    elif tok.startswith("-") and not tok.startswith("--"):
+                        # short options: -f, -s, -w take a value
+                        if any(c in "fsw" for c in tok[1:]):
+                            skip_next = True
+                    elif not tok.startswith("-"):
+                        uniq_pos += 1
+                        if uniq_pos == 2:
+                            add(OUTPUT_REDIRECT)
+                    continue
+                # general --output handling (git diff, etc.)
                 if tok == "--output" or tok.startswith("--output="):
                     add(OUTPUT_REDIRECT)
                     if tok == "--output":
-                        skip_next = True
-                    continue
-                if prog == "sort" and tok.startswith("-o"):
-                    add(OUTPUT_REDIRECT)
-                    if tok == "-o":
                         skip_next = True
                     continue
             continue
         name = os.path.basename(tok) or tok
         expect = False
         prog = name
+        uniq_pos = 0
         if name in SUBCOMMAND_PROGRAMS:
             sub_of = name
         else:
