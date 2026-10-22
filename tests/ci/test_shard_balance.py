@@ -66,18 +66,27 @@ def test_least_duration_split_balances(tmp_path):
     manifest = {
         f"tests/test_balanced_{i}.py::test_{i}": float(i + 1) for i in range(40)
     }
-    totals = csm.least_duration_split(manifest, splits=4)
+    collected = list(manifest)
+    totals = csm.split_shards(manifest, collected, splits=4, algorithm_name="least_duration")
     assert csm.balance_ratio(totals) <= 1.2
 
     unbalanced = {f"tests/test_unb_{i}.py::test_{i}": 1.0 for i in range(10)}
     unbalanced["tests/test_unb_big.py::test_big"] = 100.0
-    totals = csm.least_duration_split(unbalanced, splits=4)
+    collected_unb = list(unbalanced)
+    totals = csm.split_shards(unbalanced, collected_unb, splits=4, algorithm_name="least_duration")
     assert csm.balance_ratio(totals) > 2.0
 
     manifest_path = _write_manifest(tmp_path, unbalanced)
-    collected_path = _write_collected(tmp_path, list(unbalanced))
+    collected_path = _write_collected(tmp_path, collected_unb)
     rc = csm.main(
-        ["--manifest", str(manifest_path), "--collected-file", str(collected_path)]
+        [
+            "--manifest",
+            str(manifest_path),
+            "--collected-file",
+            str(collected_path),
+            "--splitting-algorithm",
+            "least_duration",
+        ]
     )
     assert rc == 1
 
@@ -103,3 +112,34 @@ def test_cli_exit_codes(tmp_path, capsys):
     out = capsys.readouterr().out
     assert rc == 0
     assert out.startswith("OK:")
+
+
+def test_duration_based_chunks_empty_shard_fails(tmp_path):
+    """duration_based_chunks can leave a shard empty; validator must catch it."""
+    # Collection order: a..g with durations 1,1,1,1,1,1,3
+    manifest = {
+        "tests/test_a.py::test_a": 1.0,
+        "tests/test_b.py::test_b": 1.0,
+        "tests/test_c.py::test_c": 1.0,
+        "tests/test_d.py::test_d": 1.0,
+        "tests/test_e.py::test_e": 1.0,
+        "tests/test_f.py::test_f": 1.0,
+        "tests/test_g.py::test_g": 3.0,
+    }
+    collected = list(manifest)
+    manifest_path = _write_manifest(tmp_path, manifest)
+    collected_path = _write_collected(tmp_path, collected)
+    # Default algorithm is duration_based_chunks, max-ratio 2.0
+    rc = csm.main(
+        [
+            "--manifest",
+            str(manifest_path),
+            "--collected-file",
+            str(collected_path),
+            "--splits",
+            "4",
+            "--max-ratio",
+            "2.0",
+        ]
+    )
+    assert rc == 1

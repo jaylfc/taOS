@@ -2,8 +2,8 @@
 """Shard manifest guard.
 
 Validates the pytest-split duration manifest (tests/.test_durations) against
-the currently collected test id set, and checks that a greedy least-duration
-split keeps the shard totals balanced.
+the currently collected test id set, and checks that the configured splitting
+algorithm keeps the shard totals balanced.
 
 The manifest records per-test durations from a real suite run. It must cover the
 collected ids; otherwise pytest-split falls back to an even split with no error
@@ -13,23 +13,37 @@ This guard turns that silent fallback into a hard failure.
 CLI:
     python scripts/check_shard_manifest.py \
         --manifest tests/.test_durations --collected-file collected.txt \
-        --splits 4 --max-ratio 2.0
+        --splits 4 --max-ratio 2.0 [--splitting-algorithm duration_based_chunks]
 
-stdlib only.
+stdlib plus pytest-split.
 """
 from __future__ import annotations
 
 import argparse
-import heapq
 import json
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest_split.algorithms as split_algo
+
 MIN_COVERAGE = 0.95
 DEFAULT_MAX_RATIO = 2.0
 DEFAULT_SPLITS = 4
 DEFAULT_MANIFEST = "tests/.test_durations"
+DEFAULT_ALGORITHM = "duration_based_chunks"
+
+
+class _Item:
+    """Lightweight item with nodeid attribute for pytest-split algorithms."""
+
+    __slots__ = ("nodeid",)
+
+    def __init__(self, nodeid: str):
+        self.nodeid = nodeid
+
+    def __str__(self):
+        return self.nodeid
 
 
 def load_manifest(path) -> dict[str, float]:
@@ -105,21 +119,16 @@ def check_keys(manifest, collected, min_coverage=MIN_COVERAGE) -> list[str]:
     return problems
 
 
-def least_duration_split(manifest, splits=DEFAULT_SPLITS) -> list[float]:
-    """Greedy least-duration split, mirroring pytest-split's algorithm.
+def split_shards(manifest, collected, splits, algorithm_name) -> list[float]:
+    """Compute shard totals using pytest-split's algorithm.
 
-    Sort items by duration descending, then assign each to the shard with the
-    smallest running total (kept in a min-heap). Returns the per-shard totals.
+    Builds lightweight items in collection order, calls the chosen algorithm,
+    and returns the per-shard duration totals.
     """
-    totals = [0.0] * splits
-    heapq.heapify(totals)
-    for _nodeid, duration in sorted(
-        manifest.items(), key=lambda kv: kv[1], reverse=True
-    ):
-        smallest = heapq.heappop(totals)
-        smallest += duration
-        heapq.heappush(totals, smallest)
-    return totals
+    algorithm = split_algo.Algorithms[algorithm_name].value
+    items = [_Item(nodeid) for nodeid in collected]
+    groups = algorithm(splits, items, manifest)
+    return [g.duration for g in groups]
 
 
 def balance_ratio(totals) -> float:
@@ -138,6 +147,11 @@ def main(argv=None) -> int:
     parser.add_argument("--manifest", default=DEFAULT_MANIFEST)
     parser.add_argument("--splits", type=int, default=DEFAULT_SPLITS)
     parser.add_argument("--max-ratio", type=float, default=DEFAULT_MAX_RATIO)
+    parser.add_argument(
+        "--splitting-algorithm",
+        choices=["duration_based_chunks", "least_duration"],
+        default=DEFAULT_ALGORITHM,
+    )
     parser.add_argument("--collected-file", default=None)
     args = parser.parse_args(argv)
 
@@ -158,7 +172,9 @@ def main(argv=None) -> int:
     ratio: float | None = None
     if manifest:
         try:
-            totals = least_duration_split(manifest, splits=args.splits)
+            totals = split_shards(
+                manifest, list(collected), args.splits, args.splitting_algorithm
+            )
             ratio = balance_ratio(totals)
         except ValueError:
             ratio = float("inf")
