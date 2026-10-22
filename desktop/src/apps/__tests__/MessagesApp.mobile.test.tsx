@@ -88,7 +88,13 @@ vi.mock("../MessagesApp.a2aSelection", () => ({
 }));
 
 vi.mock("../chat/ChannelSidebar", () => ({
-  ChannelSidebar: () => <div data-testid="channel-sidebar" />,
+  ChannelSidebar: ({ liveAgents, agentRosterReady }: { liveAgents: unknown; agentRosterReady: unknown }) => (
+    <div
+      data-testid="channel-sidebar"
+      data-live-agents={JSON.stringify(liveAgents)}
+      data-agent-roster-ready={String(agentRosterReady)}
+    />
+  ),
 }));
 
 vi.mock("../chat/A2aBusPanel", () => ({
@@ -184,6 +190,22 @@ describe("MessagesApp fetchAgentLists — archived fetch failure", () => {
     await waitFor(() => {
       expect(screen.getByTestId("mobile-split-view")).toBeInTheDocument();
       expect(screen.getByTestId("channel-sidebar")).toBeInTheDocument();
+    });
+
+    // Wait for fetchAgentLists to complete and verify liveAgents is populated
+    // even though archived fetch failed. The channel-sidebar mock exposes
+    // liveAgents via data-live-agents attribute.
+    await waitFor(() => {
+      const sidebar = screen.getByTestId("channel-sidebar");
+      const liveAgents = JSON.parse(sidebar.getAttribute("data-live-agents") || "[]");
+      expect(liveAgents).toHaveLength(1);
+      expect(liveAgents[0].name).toBe("some-agent");
+    });
+
+    // agentRosterReady should be false since archived fetch failed
+    await waitFor(() => {
+      const sidebar = screen.getByTestId("channel-sidebar");
+      expect(sidebar.getAttribute("data-agent-roster-ready")).toBe("false");
     });
   });
 });
