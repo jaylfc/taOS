@@ -1046,47 +1046,42 @@ export function MessagesApp({
 
   /* ---- fetch agent lists for author resolution ---- */
   const fetchAgentLists = useCallback(async () => {
-    let liveData: LiveAgent[] | null = null;
-    let archivedData: ArchivedAgentEntry[] | null = null;
-    const [liveR, archR] = await Promise.allSettled([
-      fetch("/api/agents?include_guests=1"),
-      fetch("/api/agents/archived"),
-    ]);
-    if (liveR.status === "fulfilled") {
-      const liveRes = liveR.value;
-      if (liveRes.ok) {
-        const ct = liveRes.headers.get("content-type") ?? "";
-        if (ct.includes("application/json")) {
-          try {
-            const data = await liveRes.json();
-            if (Array.isArray(data)) {
-              liveData = data;
-            }
-          } catch {
-            /* ignore parse error */
-          }
+    const loadLive = async (): Promise<LiveAgent[] | null> => {
+      try {
+        const res = await fetch("/api/agents?include_guests=1");
+        if (!res.ok) return null;
+        const ct = res.headers?.get("content-type") ?? "";
+        if (!ct.includes("application/json")) return null;
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setLiveAgents(data);
+          return data;
         }
+        return null;
+      } catch {
+        return null;
       }
-    }
-    if (archR.status === "fulfilled") {
-      const archRes = archR.value;
-      if (archRes.ok) {
-        const ct = archRes.headers.get("content-type") ?? "";
-        if (ct.includes("application/json")) {
-          try {
-            const data = await archRes.json();
-            if (Array.isArray(data)) {
-              archivedData = data;
-            }
-          } catch {
-            /* ignore parse error */
-          }
+    };
+
+    const loadArchived = async (): Promise<ArchivedAgentEntry[] | null> => {
+      try {
+        const res = await fetch("/api/agents/archived");
+        if (!res.ok) return null;
+        const ct = res.headers?.get("content-type") ?? "";
+        if (!ct.includes("application/json")) return null;
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setArchivedAgents(data);
+          return data;
         }
+        return null;
+      } catch {
+        return null;
       }
-    }
-    if (liveData !== null) setLiveAgents(liveData);
-    if (archivedData !== null) setArchivedAgents(archivedData);
-    if (liveData !== null && archivedData !== null) setAgentRosterReady(true);
+    };
+
+    const [live, arch] = await Promise.all([loadLive(), loadArchived()]);
+    if (live !== null && arch !== null) setAgentRosterReady(true);
   }, []);
 
   /* ---- fetch messages for a channel ---- */

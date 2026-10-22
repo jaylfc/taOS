@@ -136,7 +136,7 @@ describe("MessagesApp fetchAgentLists - archived fetch failure", () => {
     global.fetch = originalFetch;
   });
 
-  function setupFetchMock(archivedBehavior: "500" | "reject" | "bad-json") {
+  function setupFetchMock(archivedBehavior: "500" | "reject" | "bad-json" | "neverSettle") {
     (useIsMobile as ReturnType<typeof vi.fn>).mockReturnValue(true);
     originalFetch = global.fetch;
     global.fetch = vi.fn().mockImplementation((url: string) => {
@@ -166,6 +166,9 @@ describe("MessagesApp fetchAgentLists - archived fetch failure", () => {
             headers: { get: () => "application/json" },
             json: () => Promise.reject(new SyntaxError("bad json")),
           } as unknown as Response);
+        }
+        if (archivedBehavior === "neverSettle") {
+          return new Promise(() => {}); // Never resolves
         }
       }
       if (urlStr.includes("/api/chat/channels") && !urlStr.includes("/messages")) {
@@ -224,6 +227,12 @@ describe("MessagesApp fetchAgentLists - archived fetch failure", () => {
 
   it("populates liveAgents when archived fetch returns ok but json() throws", async () => {
     setupFetchMock("bad-json");
+    render(<MessagesApp windowId="test" />);
+    await runCommonAssertions();
+  });
+
+  it("populates liveAgents when archived fetch never settles", async () => {
+    setupFetchMock("neverSettle");
     render(<MessagesApp windowId="test" />);
     await runCommonAssertions();
   });
