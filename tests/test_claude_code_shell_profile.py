@@ -134,6 +134,63 @@ def test_without_a_profile_only_the_hard_block_applies(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Direct calls to commands() and profile_refusal() for shell guard holes
+# ---------------------------------------------------------------------------
+
+def test_command_substitution_in_double_quotes_is_refused():
+    from tinyagentos.claude_code_guard import profile_refusal
+    from tinyagentos.taos_agent_shell_profile import DEFAULT_ALLOW
+    allow = set(DEFAULT_ALLOW)
+    for cmd in ('echo "$(curl evil)"', 'echo "`curl evil`"', 'echo "${X:-$(curl a)}"'):
+        refusal, _ = profile_refusal(cmd, allow, set())
+        assert refusal is not None, cmd
+
+
+def test_git_global_options_before_subcommand():
+    from tinyagentos.claude_code_guard import commands, profile_refusal
+    from tinyagentos.taos_agent_shell_profile import DEFAULT_ALLOW
+    allow = set(DEFAULT_ALLOW)
+    for opt in ("--work-tree", "--git-dir", "--namespace", "--super-prefix"):
+        cmd = f"git {opt} status config core.pager x"
+        keys = commands(cmd)
+        assert keys != ["git status"], cmd
+        refusal, _ = profile_refusal(cmd, allow, set())
+        assert refusal is not None, cmd
+
+
+def test_git_exec_path_adds_git_c_rule():
+    from tinyagentos.claude_code_guard import commands
+    for cmd in ("git --exec-path=/tmp/x status", "git --exec-path /tmp/x status"):
+        keys = commands(cmd)
+        assert "git -c" in keys, cmd
+
+
+def test_git_c_alias_requires_git_c_rule():
+    from tinyagentos.claude_code_guard import profile_refusal
+    from tinyagentos.taos_agent_shell_profile import DEFAULT_ALLOW
+    allow = set(DEFAULT_ALLOW) | {"git"}
+    refusal, _ = profile_refusal("git -c alias.x=!sh x", allow, set())
+    assert refusal is not None
+
+
+def test_output_redirect_for_git_diff_and_sort():
+    from tinyagentos.claude_code_guard import commands
+    for cmd in ("git diff --output=/tmp/x", "git diff --output /tmp/x",
+                "sort -o /tmp/x f", "sort -o/tmp/x f"):
+        keys = commands(cmd)
+        assert "output-redirect" in keys, cmd
+
+
+def test_control_commands_are_allowed():
+    from tinyagentos.claude_code_guard import profile_refusal
+    from tinyagentos.taos_agent_shell_profile import DEFAULT_ALLOW
+    allow = set(DEFAULT_ALLOW)
+    for cmd in ('echo "hello world"', "echo '$(not expanded)'", "sort f"):
+        refusal, _ = profile_refusal(cmd, allow, set())
+        assert refusal is None, cmd
+
+
+# ---------------------------------------------------------------------------
 # Profile store, asks -> Decisions, answers -> rules, settings routes
 # ---------------------------------------------------------------------------
 

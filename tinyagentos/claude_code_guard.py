@@ -132,6 +132,7 @@ def commands(command: str) -> list[str] | None:
     skip_next = False
     redirect_target = False  # the next word is the target of an output redirection
     sub_of: str | None = None  # a program still waiting for its subcommand
+    prog: str | None = None  # the program of the current simple command
     for tok in tokens:
         if tok and set(tok) <= _OPERATOR_CHARS:
             if set(tok) & set("<>") and not set(tok) & set(";|()"):
@@ -145,6 +146,7 @@ def commands(command: str) -> list[str] | None:
                 add(sub_of)
                 sub_of = None
             expect = True
+            prog = None
             continue
         if redirect_target:
             redirect_target = False
@@ -167,10 +169,6 @@ def commands(command: str) -> list[str] | None:
                 elif tok.startswith("-") and tok not in _OPTIONS_WITH_VALUE and tok not in _GIT_NO_VALUE_OPTS:
                     # Unknown git option before subcommand: fail closed.
                     return None
-            elif sub_of == "sort" and (tok == "-o" or tok.startswith("-o=")):
-                add(OUTPUT_REDIRECT)
-                if tok == "-o":
-                    skip_next = True
             if tok in _OPTIONS_WITH_VALUE:
                 skip_next = True
             elif not tok.startswith("-"):
@@ -178,9 +176,22 @@ def commands(command: str) -> list[str] | None:
                 sub_of = None
             continue
         if not expect or _ASSIGNMENT.fullmatch(tok) or tok in _KEYWORDS:
+            # Handle --output and sort -o in argument position
+            if not expect:
+                if tok == "--output" or tok.startswith("--output="):
+                    add(OUTPUT_REDIRECT)
+                    if tok == "--output":
+                        skip_next = True
+                    continue
+                if prog == "sort" and tok.startswith("-o"):
+                    add(OUTPUT_REDIRECT)
+                    if tok == "-o":
+                        skip_next = True
+                    continue
             continue
         name = os.path.basename(tok) or tok
         expect = False
+        prog = name
         if name in SUBCOMMAND_PROGRAMS:
             sub_of = name
         else:
