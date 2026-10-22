@@ -42,6 +42,7 @@ import { LogsSection } from "@/apps/SettingsApp/LogsPanel";
 import { NotificationsPanel } from "@/apps/SettingsApp/NotificationsPanel";
 import { LockScreenPanel } from "@/apps/SettingsApp/LockScreenPanel";
 import { DemoModePanel } from "@/apps/SettingsApp/DemoModePanel";
+import { copyText } from "@/lib/clipboard";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -204,12 +205,12 @@ function SystemInfoSection() {
 
   const port = window.location.port || "6969";
   const localAddressUrl = mdnsHostname ? `http://${mdnsHostname}:${port}` : null;
+  const [copyFailed, setCopyFailed] = useState(false);
 
   const copyLocalAddress = async () => {
     if (!localAddressUrl) return;
-    try {
-      await navigator.clipboard.writeText(localAddressUrl);
-    } catch { /* ignore */ }
+    const ok = await copyText(localAddressUrl);
+    setCopyFailed(!ok);
   };
 
   return (
@@ -243,6 +244,11 @@ function SystemInfoSection() {
                       <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
                     </svg>
                   </Button>
+                  {copyFailed && (
+                    <span role="status" className="text-xs text-red-400 ml-2">
+                      Copy failed, select the address to copy it
+                    </span>
+                  )}
                 </td>
               </tr>
             )}

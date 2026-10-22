@@ -116,14 +116,51 @@ describe("SystemInfoSection local address", () => {
     expect(screen.getByRole("button", { name: "Copy local address" })).toBeInTheDocument();
   });
 
-  it("does not render Local address row when mdns_hostname is null", async () => {
-    mockAuthAndVersion(true, null);
+  it("uses execCommand fallback when navigator.clipboard is undefined", async () => {
+    const fetchSpy = mockAuthAndVersion(true, "taos-ab12.local");
+    const originalClipboard = navigator.clipboard;
+    Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
+    const execCommandSpy = vi.fn(() => true);
+    document.execCommand = execCommandSpy;
     render(<SettingsApp windowId="w1" />);
 
     await waitFor(() => {
-      // Wait for the system info to load (CPU row as proxy)
-      expect(screen.getByText("CPU")).toBeInTheDocument();
+      expect(screen.getByText(/^http:\/\/taos-ab12\.local:/)).toBeInTheDocument();
     });
+    fireEvent.click(screen.getByRole("button", { name: "Copy local address" }));
+    await waitFor(() => {
+      expect(execCommandSpy).toHaveBeenCalledWith("copy");
+    });
+
+    Object.defineProperty(navigator, "clipboard", { value: originalClipboard, configurable: true });
+  });
+
+  it("shows copy failed message when execCommand returns false", async () => {
+    const fetchSpy = mockAuthAndVersion(true, "taos-ab12.local");
+    const originalClipboard = navigator.clipboard;
+    Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
+    const execCommandSpy = vi.fn(() => false);
+    document.execCommand = execCommandSpy;
+    render(<SettingsApp windowId="w1" />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/^http:\/\/taos-ab12\.local:/)).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Copy local address" }));
+    await screen.findByText("Copy failed, select the address to copy it");
+
+    Object.defineProperty(navigator, "clipboard", { value: originalClipboard, configurable: true });
+  });
+
+  it("does not render Local address row when mdns_hostname is null", async () => {
+    const fetchSpy = mockAuthAndVersion(true, null);
+    render(<SettingsApp windowId="w1" />);
+
+    await waitFor(() => {
+      expect(fetchSpy.mock.calls.some(([u]) => String(u).includes("/api/version"))).toBe(true);
+    });
+    await act(async () => { await Promise.resolve(); });
+
     expect(screen.queryByText("Local address")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Copy local address" })).not.toBeInTheDocument();
   });
