@@ -896,6 +896,7 @@ export function MessagesApp({
   const [projectChannelExpanded, setProjectChannelExpanded] = useState<Record<string, boolean>>({});
   const [liveAgents, setLiveAgents] = useState<LiveAgent[]>([]);
   const [archivedAgents, setArchivedAgents] = useState<ArchivedAgentEntry[]>([]);
+  const [agentRosterReady, setAgentRosterReady] = useState(false);
   const [selectedChannel, setSelectedChannel] = useState<string | null>(null);
   // External taOSmd coordination bus (read-only). Selecting a bus channel is a
   // separate mode from the internal project channels: when busSelected is set,
@@ -1045,6 +1046,8 @@ export function MessagesApp({
 
   /* ---- fetch agent lists for author resolution ---- */
   const fetchAgentLists = useCallback(async () => {
+    let liveData: LiveAgent[] | null = null;
+    let archivedData: ArchivedAgentEntry[] | null = null;
     try {
       const [liveRes, archRes] = await Promise.all([
         fetch("/api/agents?include_guests=1"),
@@ -1053,16 +1056,19 @@ export function MessagesApp({
       if (liveRes.ok) {
         const ct = liveRes.headers.get("content-type") ?? "";
         if (ct.includes("application/json")) {
-          const data = await liveRes.json();
-          if (Array.isArray(data)) setLiveAgents(data as LiveAgent[]);
+          liveData = await liveRes.json();
         }
       }
       if (archRes.ok) {
         const ct = archRes.headers.get("content-type") ?? "";
         if (ct.includes("application/json")) {
-          const data = await archRes.json();
-          if (Array.isArray(data)) setArchivedAgents(data as ArchivedAgentEntry[]);
+          archivedData = await archRes.json();
         }
+      }
+      if (liveData !== null && archivedData !== null) {
+        setLiveAgents(liveData);
+        setArchivedAgents(archivedData);
+        setAgentRosterReady(true);
       }
     } catch {
       /* offline */
@@ -2249,6 +2255,7 @@ export function MessagesApp({
       nowMs={nowMs}
       liveAgents={liveAgents}
       archivedAgents={archivedAgents}
+      agentRosterReady={agentRosterReady}
       archivedChannels={archivedChannels}
       archivedExpanded={archivedExpanded}
       onToggleArchived={() => setArchivedExpanded((v) => !v)}

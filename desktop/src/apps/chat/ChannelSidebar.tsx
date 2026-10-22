@@ -66,6 +66,8 @@ export interface ChannelSidebarProps {
   formatRelativeTime: (ts: number | string, nowMs: number) => string;
   /** Per-channel agent presence: "live" | "working" | "idle", keyed by channel id. */
   agentPresence: Record<string, AgentPresence>;
+  /** Whether agent roster (live + archived) has loaded successfully. */
+  agentRosterReady?: boolean;
 }
 
 /* ------------------------------------------------------------------ */
@@ -100,6 +102,7 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
     onSelectBusChannel,
     formatRelativeTime,
     agentPresence,
+    agentRosterReady,
   } = props;
 
   const agentNames = useMemo(
@@ -122,7 +125,7 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
     [liveAgents, archivedAgents],
   );
 
-  const agentNamesToPass = liveAgents.length === 0 && archivedAgents.length === 0 ? undefined : agentNames;
+  const agentNamesToPass = agentRosterReady ? agentNames : undefined;
 
   if (isMobile) {
     return (
