@@ -1,3 +1,4 @@
+import { toMs } from "./time";
 import { useMemo, useState, useEffect } from "react";
 import { Bot, Globe, Hash, Radio, Users } from "lucide-react";
 import { MessageAvatar } from "./MessageAvatar";
@@ -52,10 +53,16 @@ const FILTERS: { key: FilterKey; label: string; test: (c: Channel, agentNames: s
   { key: "projects", label: "Projects", test: (c) => Boolean(c.project_id) },
 ];
 
-function sortKey(c: Channel): number {
-  const parsed = c.last_message_at ? Date.parse(c.last_message_at) : NaN;
-  const t = Number.isNaN(parsed) ? Date.parse(c.created_at ?? "") : parsed;
+function createdKey(c: Channel): number {
+  if (!c.created_at) return -Infinity;
+  const t = toMs(c.created_at);
   return Number.isNaN(t) ? -Infinity : t;
+}
+
+function sortKey(c: Channel): number {
+  if (c.last_message_at == null || c.last_message_at === "") return createdKey(c);
+  const parsed = toMs(c.last_message_at);
+  return Number.isNaN(parsed) ? createdKey(c) : parsed;
 }
 
 export function MobileChatList(props: MobileChatListProps) {
