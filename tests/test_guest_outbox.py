@@ -1,15 +1,17 @@
 """Guest outbox: persisted guest-bound bridge events and Last-Event-ID resume (tsk-ph6mwg)."""
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
 
 from tinyagentos.bridge_session import BridgeSessionRegistry
-from tinyagentos.chat.guest_outbox import GuestOutbox
+from tinyagentos.chat.guest_outbox import GuestOutbox, prune_loop
 
 from test_agent_chat_session_routes import EVENTS, _agent, _bare, _hdr, chat_app  # noqa: F401
 
@@ -210,3 +212,69 @@ class TestGuestStream:
         finally:
             await fresh_outbox.close()
             outbox._db = None
+
+
+@pytest.mark.asyncio
+class TestPruneBackgroundTask:
+    """Test that the periodic prune background task is created and calls prune."""
+
+    async def test_prune_loop_calls_prune(self, outbox):
+        """The prune loop should call prune on the outbox periodically."""
+        prune_calls = []
+        original_prune = outbox.prune
+
+        async def tracking_prune(*args, **kwargs):
+            prune_calls.append((args, kwargs))
+            return await original_prune(*args, **kwargs)
+
+        outbox.prune = tracking_prune
+
+        task = asyncio.create_task(prune_loop(outbox, interval=0.01))
+        try:
+            # Wait for at least 2 prune calls (with 0.01s interval, should happen quickly)
+            for _ in range(100):  # up to 1 second
+                if len(prune_calls) >= 2:
+                    break
+                await asyncio.sleep(0.01)
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        assert len(prune_calls) >= 2
+
+    async def test_prune_loop_continues_after_exception(self, outbox):
+        """The prune loop should continue after prune raises an exception."""
+        prune_calls = []
+        call_count = 0
+        original_prune = outbox.prune
+
+        async def raising_prune(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            prune_calls.append((args, kwargs))
+            if call_count == 1:
+                raise RuntimeError("simulated prune failure")
+            return await original_prune(*args, **kwargs)
+
+        outbox.prune = raising_prune
+
+        task = asyncio.create_task(prune_loop(outbox, interval=0.01))
+        try:
+            # Wait for at least 2 prune calls (first raises, second succeeds)
+            for _ in range(100):  # up to 1 second
+                if len(prune_calls) >= 2:
+                    break
+                await asyncio.sleep(0.01)
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        # First call raised, second call should have been attempted
+        assert len(prune_calls) >= 2
+        assert call_count >= 2
