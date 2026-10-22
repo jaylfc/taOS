@@ -1192,6 +1192,7 @@ async def mint_collab_invite(
                 delivery_error = "peer handshake incomplete: no token for contact"
             elif not await deliver_to_peer(
                 contacts_store, payload.contact_id, "/api/peer/inbox", envelope,
+                data_dir=request.app.state.data_dir,
             ):
                 delivery_error = (
                     "failed to deliver invite envelope to any peer endpoint"

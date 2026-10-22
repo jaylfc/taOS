@@ -231,8 +231,9 @@ async def peer_handshake(body: PeerEnvelope, request: Request):
     if store is None:
         raise HTTPException(status_code=503, detail="peer channel not available")
 
-    # Kill-switch hook point (card 5): a peer-channel off switch goes here,
-    # before any work is done for an unauthenticated caller.
+    # Collaboration kill switch: before any work is done for an
+    # unauthenticated caller.
+    await _collab_enabled_dep(request)
 
     _enforce_size_cap(request, body.envelope)
     envelope = body.envelope
@@ -257,6 +258,7 @@ async def peer_handshake(body: PeerEnvelope, request: Request):
     except (TypeError, ValueError):
         raise HTTPException(status_code=403, detail="invalid signing key")
     contact_id = f"hub:{fp}"
+    _raise_if_contact_paused(request, contact_id)
     if envelope.get("from") != contact_id:
         raise HTTPException(
             status_code=403, detail="from does not match the signing key fingerprint",
