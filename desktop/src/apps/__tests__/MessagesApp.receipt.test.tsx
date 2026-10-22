@@ -222,6 +222,7 @@ describe("MessagesApp receipts over the chat websocket", () => {
     vi.useFakeTimers();
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
+      headers: new Headers({"content-type": "application/json"}),
       json: async () => ({ channels: [], unread: {} }),
     }) as typeof fetch;
 
