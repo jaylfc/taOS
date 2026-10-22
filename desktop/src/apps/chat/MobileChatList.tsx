@@ -4,7 +4,7 @@ import { MessageAvatar } from "./MessageAvatar";
 import { A2aBusSection, type BusChannel } from "./A2aBusPanel";
 import type { Channel, ProjectGroup } from "./types";
 
-type FilterKey = "all" | "agents" | "groups" | "projects";
+type FilterKey = "all" | "agents" | "people" | "groups" | "projects";
 
 export interface MobileChatListProps {
   /** Same shape as ChannelSidebar's `sections`; only `items` is read. */
@@ -18,6 +18,8 @@ export interface MobileChatListProps {
   bus: { channels: BusChannel[]; available: boolean; loaded: boolean };
   busSelected: string | null;
   onSelectBusChannel: (channel: string) => void;
+  /** Agent names (slugs and display names) to classify DMs. If omitted, all DMs stay under Agents for back-compat. */
+  agentNames?: string[];
 }
 
 interface Row {
@@ -25,9 +27,27 @@ interface Row {
   projectName?: string;
 }
 
-const FILTERS: { key: FilterKey; label: string; test: (c: Channel) => boolean }[] = [
+function isAgentDm(channel: Channel, agentNames: string[] | undefined): boolean {
+  if (channel.type !== "dm" && channel.type !== "dm-remote") return false;
+  if (agentNames === undefined) return true; // back-compat: all DMs are agents
+  const members = channel.members ?? [];
+  const lowerAgents = new Set(agentNames.map((n) => n.toLowerCase()));
+  return members.some((m) => m !== "user" && lowerAgents.has(m.toLowerCase()));
+}
+
+function isPeopleDm(channel: Channel, agentNames: string[] | undefined): boolean {
+  if (agentNames === undefined) return false; // back-compat: no people DMs
+  if (channel.type === "dm-remote") return true;
+  if (channel.type !== "dm") return false;
+  const members = channel.members ?? [];
+  const lowerAgents = new Set(agentNames.map((n) => n.toLowerCase()));
+  return !members.some((m) => m !== "user" && lowerAgents.has(m.toLowerCase()));
+}
+
+const FILTERS: { key: FilterKey; label: string; test: (c: Channel, agentNames: string[] | undefined) => boolean }[] = [
   { key: "all", label: "All", test: () => true },
-  { key: "agents", label: "Agents", test: (c) => c.type === "dm" || c.type === "dm-remote" },
+  { key: "agents", label: "Agents", test: (c, agentNames) => isAgentDm(c, agentNames) },
+  { key: "people", label: "People", test: (c, agentNames) => isPeopleDm(c, agentNames) },
   { key: "groups", label: "Groups", test: (c) => c.type === "group" || c.type === "topic" },
   { key: "projects", label: "Projects", test: (c) => Boolean(c.project_id) },
 ];
@@ -50,6 +70,7 @@ export function MobileChatList(props: MobileChatListProps) {
     bus,
     busSelected,
     onSelectBusChannel,
+    agentNames,
   } = props;
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<FilterKey>("all");
@@ -75,13 +96,13 @@ export function MobileChatList(props: MobileChatListProps) {
   }, [sections, projectGroups]);
 
   const visibleFilters = FILTERS.filter(
-    (f) => f.key === "all" || rows.some((r) => f.test(r.channel)),
+    (f) => f.key === "all" || rows.some((r) => f.test(r.channel, agentNames)),
   );
   const activeFilter = FILTERS.find((f) => f.key === filter);
   const needle = query.trim().toLowerCase();
   const shown = rows.filter(
     (r) =>
-      (activeFilter?.test(r.channel) ?? true) &&
+      (activeFilter?.test(r.channel, agentNames) ?? true) &&
       (!needle ||
         r.channel.name.toLowerCase().includes(needle) ||
         (r.channel.lastPreview ?? "").toLowerCase().includes(needle) ||
@@ -90,10 +111,10 @@ export function MobileChatList(props: MobileChatListProps) {
 
   // Reset filter to "all" if the active filter has no matching rows in the current rows
   useEffect(() => {
-    if (filter !== "all" && activeFilter && !rows.some((r) => activeFilter.test(r.channel))) {
+    if (filter !== "all" && activeFilter && !rows.some((r) => activeFilter.test(r.channel, agentNames))) {
       setFilter("all");
     }
-  }, [filter, rows, activeFilter]);
+  }, [filter, rows, activeFilter, agentNames]);
 
   const cardStyle = {
     margin: "0 12px",

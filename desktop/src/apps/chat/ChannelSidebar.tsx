@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import {
   MessageCircle,
   Hash,
@@ -84,6 +85,7 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
     onSelectChannel,
     unread,
     nowMs,
+    liveAgents,
     archivedChannels,
     archivedExpanded,
     onToggleArchived,
@@ -98,6 +100,16 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
     formatRelativeTime,
     agentPresence,
   } = props;
+
+  const agentNames = useMemo(
+    () =>
+      liveAgents.flatMap((a) => {
+        const names = [a.name];
+        if (a.display_name) names.push(a.display_name);
+        return names;
+      }),
+    [liveAgents],
+  );
 
   if (isMobile) {
     return (
@@ -120,6 +132,7 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
               bus={bus}
               busSelected={busSelected}
               onSelectBusChannel={onSelectBusChannel}
+              agentNames={agentNames}
             />
           </>
         )}
