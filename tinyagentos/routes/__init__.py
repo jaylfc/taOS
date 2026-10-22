@@ -206,6 +206,9 @@ def register_all_routers(app):
     from tinyagentos.routes.cluster_ble import router as cluster_ble_router
     app.include_router(cluster_ble_router, dependencies=_csrf)
 
+    from tinyagentos.routes.orb import router as orb_router
+    app.include_router(orb_router, dependencies=_csrf)
+
     from tinyagentos.routes.training import router as training_router
     app.include_router(training_router, dependencies=_csrf)
 
@@ -464,6 +467,9 @@ def register_all_routers(app):
 
     from tinyagentos.routes.sharing import router as sharing_router
     app.include_router(sharing_router, dependencies=_csrf)
+
+    from tinyagentos.routes.auth_broker import router as auth_broker_router
+    app.include_router(auth_broker_router, dependencies=_csrf)
 
     from tinyagentos.routes.store_submissions import router as store_submissions_router
     app.include_router(store_submissions_router, dependencies=_csrf)

@@ -19,6 +19,10 @@ class OrbError(Exception):
     pass
 
 
+class TransportUnavailable(OrbError):
+    """pyserial (the `orb` extra) is not installed"""
+
+
 class NakError(OrbError):
     def __init__(self, for_type, code):
         self.for_type, self.code = for_type, code

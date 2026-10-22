@@ -374,6 +374,31 @@ describe("ChannelSidebar — mobile", () => {
     fireEvent.click(screen.getByRole("button", { name: `Chat ${ch.name}` }));
     expect(onSelectChannel).toHaveBeenCalledWith("ch-1");
   });
+
+  it("renders People chip on mobile when liveAgents are present and filters people DMs", () => {
+    const onSelectChannel = vi.fn();
+    const dmAgent = makeDmChannel({ id: "dm-juniper", name: "juniper", members: ["user", "juniper"] });
+    const dmPerson = makeDmChannel({ id: "dm-mum", name: "mum", members: ["user", "mum"] });
+    const sections = [makeSection("DMs", [dmAgent, dmPerson])];
+    render(
+      <ChannelSidebar
+        {...buildProps({
+          isMobile: true,
+          sections,
+          liveAgents: [{ name: "juniper" }],
+          onSelectChannel,
+        })}
+      />,
+    );
+    // People chip should render
+    const peopleChip = screen.getByRole("button", { name: "People" });
+    expect(peopleChip).toBeInTheDocument();
+    // Click People chip
+    fireEvent.click(peopleChip);
+    // Should show "mum" (person DM) and not "juniper" (agent DM)
+    expect(screen.getByText("mum")).toBeInTheDocument();
+    expect(screen.queryByText("juniper")).not.toBeInTheDocument();
+  });
 });
 
 /* ------------------------------------------------------------------ */
