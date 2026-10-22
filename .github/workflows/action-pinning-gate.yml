@@ -1,0 +1,31 @@
+name: Action-pinning gate
+
+# Fails when any `uses:` in .github/workflows/ references a movable ref (a tag,
+# a branch, a short SHA) instead of a full 40-char commit SHA (tsk-h4lvuu). A
+# retargeted tag runs new code in every workflow on its next run, including the
+# gate workflows, so pinning is asserted here rather than verified by eye.
+#
+# Trigger scope mirrors secret-ignores-gate: push to master/dev/release/* fails
+# the branch an unpinned use lands on, and pull_request to those branches fails
+# it before the merge. The run is pure stdlib (~1s).
+#
+# See scripts/check_action_pinning.py for what counts as pinned.
+
+on:
+  push:
+    branches: [master, dev, release/*]
+  pull_request:
+    branches: [master, dev, release/*]
+
+jobs:
+  action-pinning-gate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.12"
+      - name: Assert every workflow uses is SHA-pinned
+        run: python scripts/check_action_pinning.py

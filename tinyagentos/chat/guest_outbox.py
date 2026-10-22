@@ -6,10 +6,14 @@ written at enqueue time and stamped ``delivered_at`` once streamed.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import time
 
 from tinyagentos.base_store import BaseStore
+
+logger = logging.getLogger(__name__)
 
 GUEST_OUTBOX_SCHEMA = """
 CREATE TABLE IF NOT EXISTS guest_outbox (
@@ -67,3 +71,12 @@ class GuestOutbox(BaseStore):
             (time.time() - older_than_seconds,),
         )
         await self._db.commit()
+
+
+async def prune_loop(outbox: GuestOutbox, interval: float = 6 * 3600) -> None:
+    while True:
+        try:
+            await outbox.prune()
+        except Exception:
+            logger.exception("guest outbox prune failed")
+        await asyncio.sleep(interval)
