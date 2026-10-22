@@ -192,14 +192,13 @@ def commands(command: str) -> list[str] | None:
                 # sort clustered short option containing o (e.g. -ro, -o)
                 if prog == "sort" and tok.startswith("-") and not tok.startswith("--") and "o" in tok[1:]:
                     add(OUTPUT_REDIRECT)
-                    if tok.endswith("o"):
-                        skip_next = True
+                    skip_next = True
                     continue
                 # uniq positional argument counting: 2nd positional is output file
                 if prog == "uniq":
                     if tok == "--":
                         # everything after -- is positional; first is input, second is output
-                        uniq_pos = 1
+                        uniq_pos = 0
                     elif tok.startswith("-") and not tok.startswith("--"):
                         # short options: -f, -s, -w take a value
                         if any(c in "fsw" for c in tok[1:]):

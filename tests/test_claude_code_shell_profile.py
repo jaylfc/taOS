@@ -205,6 +205,19 @@ def test_uniq_output_file_positional():
         assert "output-redirect" in keys, cmd
 
 
+def test_uniq_double_dash_positional_counting():
+    from tinyagentos.claude_code_guard import commands
+    # After --, first positional is input, second is output
+    keys = commands("uniq -- u /tmp/x")
+    assert "output-redirect" in keys
+    # Only one positional after -- should not trigger output-redirect
+    keys = commands("uniq -- /tmp/x")
+    assert "output-redirect" not in keys
+    # Two positionals without -- still works
+    keys = commands("uniq u /tmp/x")
+    assert "output-redirect" in keys
+
+
 def test_control_commands_are_allowed():
     from tinyagentos.claude_code_guard import profile_refusal
     from tinyagentos.taos_agent_shell_profile import DEFAULT_ALLOW
