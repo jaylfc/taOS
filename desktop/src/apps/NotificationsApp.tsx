@@ -12,6 +12,7 @@ import {
 } from "@/lib/notifications-push";
 import { SetupChecklist } from "@/components/SetupChecklist";
 import { ConsentActions, consentPayload } from "@/components/ConsentActions";
+import { SignInActions, signInPayload } from "@/components/SignInActions";
 import { useOsEvents } from "@/hooks/use-os-events";
 
 function formatTime(ts: number): string {
@@ -100,6 +101,7 @@ function NotificationItem({
   onItemClick: (n: Notification) => void;
 }) {
   const consent = (n.source === "auth_requests" || n.source === "agent_scope_requests") ? consentPayload(n.data) : null;
+  const signIn = n.source === "auth_broker" ? signInPayload(n.data) : null;
   return (
     <div className={`border-b border-white/5 ${!n.read ? "bg-accent/5" : ""}`}>
       <div className="flex items-start gap-2">
@@ -138,6 +140,17 @@ function NotificationItem({
             canonicalId={consent.canonicalId}
             humanDuration={consent.humanDuration}
             harness={consent.harness}
+            onResolved={() => onResolveConsent(n.id)}
+          />
+        </div>
+      )}
+      {signIn && (
+        <div className="px-4 pb-3">
+          <SignInActions
+            requestId={signIn.requestId}
+            url={signIn.url}
+            host={signIn.host}
+            agent={signIn.agent}
             onResolved={() => onResolveConsent(n.id)}
           />
         </div>

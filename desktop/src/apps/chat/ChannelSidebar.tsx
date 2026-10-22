@@ -121,19 +121,19 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
           <EmptyState onOpenAgentsApp={onOpenAgentsApp} />
         ) : (
           <>
-<MobileChatList
-            sections={sections}
-            projectGroups={projectGroups}
-            selectedChannel={selectedChannel}
-            onSelectChannel={onSelectChannel}
-            unread={unread}
-            nowMs={nowMs}
-            formatRelativeTime={formatRelativeTime}
-            bus={bus}
-            busSelected={busSelected}
-            onSelectBusChannel={onSelectBusChannel}
-            agentNames={agentNames}
-          />
+            <MobileChatList
+              sections={sections}
+              projectGroups={projectGroups}
+              selectedChannel={selectedChannel}
+              onSelectChannel={onSelectChannel}
+              unread={unread}
+              nowMs={nowMs}
+              formatRelativeTime={formatRelativeTime}
+              bus={bus}
+              busSelected={busSelected}
+              onSelectBusChannel={onSelectBusChannel}
+              agentNames={agentNames}
+            />
           </>
         )}
         {/* Archived channels, mobile (always rendered, not gated by allEmpty) */}

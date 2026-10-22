@@ -80,11 +80,13 @@ export function MobileChatList(props: MobileChatListProps) {
     const byId = new Map<string, Row>();
     for (const section of sections) {
       for (const channel of section.items) {
+        if (channel.settings?.kind === "a2a") continue;
         if (!byId.has(channel.id)) byId.set(channel.id, { channel });
       }
     }
     for (const group of projectGroups) {
       for (const channel of group.channels) {
+        if (channel.settings?.kind === "a2a") continue;
         const existing = byId.get(channel.id);
         if (existing) existing.projectName = group.name;
         else byId.set(channel.id, { channel, projectName: group.name });

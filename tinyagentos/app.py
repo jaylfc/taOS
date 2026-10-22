@@ -359,6 +359,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     user_shares_store = UserSharesStore(data_dir / "user_shares.db")
     from tinyagentos.sharing_grants import SharingGrantStore
     sharing_grants_store = SharingGrantStore(data_dir / "sharing_grants.db")
+    from tinyagentos.auth_broker import AuthBrokerStore
+    auth_broker_store = AuthBrokerStore(data_dir / "auth_broker.db")
     from tinyagentos.app_grants_store import AppGrantsStore
     app_grants_store = AppGrantsStore(data_dir / "app_grants.db")
     from tinyagentos.knowledge_fetchers.x import XWatchStore
@@ -643,6 +645,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.user_shares = user_shares_store
         await sharing_grants_store.init()
         app.state.sharing_grants = sharing_grants_store
+        await auth_broker_store.init()
+        app.state.auth_broker = auth_broker_store
         await app_grants_store.init()
         await license_acceptances_store.init()
         await agent_model_key_store.init()
@@ -1422,17 +1426,24 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             logger.exception("canvas snapshotter failed to start")
             app.state.canvas_snapshotter = None
 
-        # mDNS publisher — advertises http://taos.local:<port>/ on the LAN.
+        # mDNS publisher -- advertises http://taos.local:<port>/ on the LAN.
         # Failure must never break startup; the publisher swallows its own
         # errors but wrap it again here for belt-and-braces.
-        try:
-            from tinyagentos.services.mdns_publisher import MdnsPublisher
-            mdns_publisher = MdnsPublisher(port=config.server.get("port", 6969))
-            await mdns_publisher.start()
-            app.state.mdns_publisher = mdns_publisher
-        except Exception:
-            logger.exception("mdns publisher failed to start — continuing without")
+        if not config.mdns.get("enabled", True) or (
+            os.environ.get("TAOS_MDNS", "") == "0"
+        ):
             app.state.mdns_publisher = None
+        else:
+            try:
+                from tinyagentos.services.mdns_publisher import MdnsPublisher
+                mdns_publisher = MdnsPublisher(
+                    data_dir=data_dir, port=config.server.get("port", 6969),
+                )
+                await mdns_publisher.start()
+                app.state.mdns_publisher = mdns_publisher
+            except Exception:
+                logger.exception("mdns publisher failed to start — continuing without")
+                app.state.mdns_publisher = None
 
         # Bundled mDNS reflector for cast discovery across a container
         # bridge. Opt-in via config.yaml ``mdns_reflector.enabled``; when on,

@@ -13,7 +13,7 @@ import logging
 
 import httpx
 
-from tinyagentos.providers import CHAT_BACKEND_TYPE_MAP, CLOUD_TYPES as CLOUD_BACKEND_TYPES, NEEDS_API_BASE_TYPES
+from tinyagentos.providers import ALL_TYPES, BACKEND_TYPE_MAP, CHAT_BACKEND_TYPE_MAP, CLOUD_TYPES as CLOUD_BACKEND_TYPES, NEEDS_API_BASE_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +68,26 @@ def _discover_ollama_models(url: str, timeout: float = 2.0) -> list[str]:
         return []
 
 
+def _discover_openai_compatible_models(url: str, timeout: float = 2.0) -> list[str]:
+    """Probe an OpenAI-compatible backend (llama-cpp, lmstudio) for its loaded model names.
+
+    Returns ``[]`` on any failure (backend down, network error, schema
+    drift) — the caller treats an empty list as "no models to auto-wire"
+    and falls back to the ``default`` alias.
+
+    OpenAI /models endpoint returns: {"data": [{"id": "model-name"}, ...]}
+    """
+    try:
+        resp = httpx.get(f"{url.rstrip('/')}/models", timeout=timeout)
+        if resp.status_code != 200:
+            return []
+        data = resp.json()
+        return [m.get("id", "") for m in data.get("data", []) if m.get("id")]
+    except Exception as exc:
+        logger.debug("openai-compatible model probe at %s failed: %s", url, exc)
+        return []
+
+
 async def _discover_ollama_backends_concurrent(
     backends: list[dict], timeout: float = 2.0
 ) -> dict[str, list[str]]:
@@ -93,6 +113,38 @@ async def _discover_ollama_backends_concurrent(
     return {
         url: (res if isinstance(res, list) else [])
         for url, res in zip(ollama_urls, results)
+    }
+
+
+async def _discover_openai_compatible_backends_concurrent(
+    backends: list[dict], timeout: float = 2.0
+) -> dict[str, list[str]]:
+    """Probe all OpenAI-compatible backends (llama-cpp, lmstudio) concurrently.
+
+    Mirrors ``_discover_ollama_backends_concurrent`` exactly, but targets
+    backends whose type is ``llama-cpp``, or ``lmstudio`` when ``lmstudio`` is
+    in ``ALL_TYPES`` (the same condition ``build_model_list`` uses). Each probe
+    runs ``_discover_openai_compatible_models`` in a thread via
+    ``asyncio.to_thread`` so blocking httpx calls do not stall the event loop.
+    """
+    import asyncio
+
+    openai_urls = [
+        b.get("url", "").rstrip("/")
+        for b in backends
+        if (b.get("type") == "llama-cpp"
+            or (b.get("type") == "lmstudio" and "lmstudio" in ALL_TYPES))
+        and b.get("url")
+    ]
+    if not openai_urls:
+        return {}
+    results = await asyncio.gather(
+        *(asyncio.to_thread(_discover_openai_compatible_models, url, timeout) for url in openai_urls),
+        return_exceptions=True,
+    )
+    return {
+        url: (res if isinstance(res, list) else [])
+        for url, res in zip(openai_urls, results)
     }
 
 
@@ -311,35 +363,79 @@ def build_model_list(
             _probed = (discovered or {}).get(url)
             if _probed is None:
                 _probed = _discover_ollama_models(url) if discover else []
-            for discovered_name in _probed:
-                if not _is_embedding_model(discovered_name):
-                    continue
-                embed_params = {
-                    "model": f"ollama/{discovered_name}",
-                    "api_base": url,
-                }
-                model_list.append({
-                    "model_name": discovered_name,
-                    "litellm_params": embed_params,
-                    "model_info": {"mode": "embedding"},
-                    "metadata": {
-                        "priority": backend.get("priority", 99),
-                        "backend_name": backend.get("name", ""),
-                        "backend_type": backend_type,
-                    },
-                })
-                if not aliased_embedding_claimed:
+            if _probed:
+                for discovered_name in _probed:
+                    if not _is_embedding_model(discovered_name):
+                        continue
+                    embed_params = {
+                        "model": f"ollama/{discovered_name}",
+                        "api_base": url,
+                    }
                     model_list.append({
-                        "model_name": EMBEDDING_ALIAS,
-                        "litellm_params": dict(embed_params),
+                        "model_name": discovered_name,
+                        "litellm_params": embed_params,
                         "model_info": {"mode": "embedding"},
                         "metadata": {
                             "priority": backend.get("priority", 99),
                             "backend_name": backend.get("name", ""),
                             "backend_type": backend_type,
-                            "aliases": discovered_name,
                         },
                     })
-                    aliased_embedding_claimed = True
+                    if not aliased_embedding_claimed:
+                        model_list.append({
+                            "model_name": EMBEDDING_ALIAS,
+                            "litellm_params": dict(embed_params),
+                            "model_info": {"mode": "embedding"},
+                            "metadata": {
+                                "priority": backend.get("priority", 99),
+                                "backend_name": backend.get("name", ""),
+                                "backend_type": backend_type,
+                                "aliases": discovered_name,
+                            },
+                        })
+                        aliased_embedding_claimed = True
+        elif backend_type == "llama-cpp" or (backend_type == "lmstudio" and "lmstudio" in ALL_TYPES):
+            _probed = (discovered or {}).get(url)
+            if _probed is None:
+                _probed = _discover_openai_compatible_models(url) if discover else []
+            if _probed:
+                embed_prefix = BACKEND_TYPE_MAP.get(backend_type, "openai")
+                for discovered_name in _probed:
+                    if not _is_embedding_model(discovered_name):
+                        continue
+                    embed_params = {
+                        "model": f"{embed_prefix}/{discovered_name}",
+                        "api_base": url,
+                    }
+                    # API key from secrets reference (same precedence as the
+                    # chat entry: api_key_secret first, else api_key), so a
+                    # key-protected server accepts the embedding call.
+                    if backend.get("api_key_secret"):
+                        embed_params["api_key"] = f"os.environ/{backend['api_key_secret']}"
+                    elif backend.get("api_key"):
+                        embed_params["api_key"] = backend["api_key"]
+                    model_list.append({
+                        "model_name": discovered_name,
+                        "litellm_params": embed_params,
+                        "model_info": {"mode": "embedding"},
+                        "metadata": {
+                            "priority": backend.get("priority", 99),
+                            "backend_name": backend.get("name", ""),
+                            "backend_type": backend_type,
+                        },
+                    })
+                    if not aliased_embedding_claimed:
+                        model_list.append({
+                            "model_name": EMBEDDING_ALIAS,
+                            "litellm_params": dict(embed_params),
+                            "model_info": {"mode": "embedding"},
+                            "metadata": {
+                                "priority": backend.get("priority", 99),
+                                "backend_name": backend.get("name", ""),
+                                "backend_type": backend_type,
+                                "aliases": discovered_name,
+                            },
+                        })
+                        aliased_embedding_claimed = True
 
     return model_list
