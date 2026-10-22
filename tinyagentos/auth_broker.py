@@ -140,29 +140,33 @@ class AuthBrokerStore(BaseStore):
         }
         async with self._lock:
             now = _now()
-            await self._db.execute(
-                "UPDATE auth_broker_requests SET code = NULL"
-                " WHERE status = 'code_ready' AND created_at < ?",
-                (now - EXPIRY_SECONDS,),
-            )
-            open_count = 0
-            async with self._db.execute(
-                "SELECT * FROM auth_broker_requests WHERE requester = ? AND status != 'completed'",
-                (requester,),
-            ) as cur:
-                rows = await cur.fetchall()
-            for row in rows:
-                r = _row(row)
-                if not self.expired(r, now):
-                    open_count += 1
-            if open_count >= MAX_OPEN_PER_AGENT:
-                raise PendingCapExceeded(key=requester, cap=MAX_OPEN_PER_AGENT, pending=open_count)
-            await self._db.execute(
-                "INSERT INTO auth_broker_requests (id, requester, kind, url, prompt, status, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (rec["id"], requester, kind, url, prompt, "pending", rec["created_at"]),
-            )
-            await self._db.commit()
+            try:
+                await self._db.execute(
+                    "UPDATE auth_broker_requests SET code = NULL"
+                    " WHERE status = 'code_ready' AND created_at < ?",
+                    (now - EXPIRY_SECONDS,),
+                )
+                open_count = 0
+                async with self._db.execute(
+                    "SELECT * FROM auth_broker_requests WHERE requester = ? AND status != 'completed'",
+                    (requester,),
+                ) as cur:
+                    rows = await cur.fetchall()
+                for row in rows:
+                    r = _row(row)
+                    if not self.expired(r, now):
+                        open_count += 1
+                if open_count >= MAX_OPEN_PER_AGENT:
+                    raise PendingCapExceeded(key=requester, cap=MAX_OPEN_PER_AGENT, pending=open_count)
+                await self._db.execute(
+                    "INSERT INTO auth_broker_requests (id, requester, kind, url, prompt, status, created_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (rec["id"], requester, kind, url, prompt, "pending", rec["created_at"]),
+                )
+                await self._db.commit()
+            except BaseException:
+                await self._db.rollback()
+                raise
         return await self.get(rec["id"])
 
     async def get(self, request_id: str) -> dict | None:

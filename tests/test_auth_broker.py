@@ -474,3 +474,28 @@ async def test_store_create_enforces_cap_under_lock(tmp_data_dir):
         assert rec["status"] == "pending"
     finally:
         await store.close()
+
+
+@pytest.mark.asyncio
+async def test_cap_reject_leaves_no_open_transaction(app):
+    """When the per-agent cap rejects, no transaction stays open on the connection."""
+    from tinyagentos.auth_broker import KIND_CLAUDE_SUBSCRIPTION
+
+    store = app.state.auth_broker
+    url = "https://claude.ai/oauth/authorize?code=true&client_id=abc&state=xyz"
+
+    # Create MAX_OPEN_PER_AGENT requests for one requester
+    for _ in range(MAX_OPEN_PER_AGENT):
+        rec = await store.create(
+            requester="cap-test-agent", kind=KIND_CLAUDE_SUBSCRIPTION, url=url
+        )
+        assert rec["status"] == "pending"
+
+    # The next create must raise PendingCapExceeded
+    with pytest.raises(PendingCapExceeded):
+        await store.create(
+            requester="cap-test-agent", kind=KIND_CLAUDE_SUBSCRIPTION, url=url
+        )
+
+    # No transaction should remain open on the connection
+    assert store._db.in_transaction is False
