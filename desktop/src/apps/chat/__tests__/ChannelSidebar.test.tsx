@@ -399,6 +399,67 @@ describe("ChannelSidebar — mobile", () => {
     expect(screen.getByText("mum")).toBeInTheDocument();
     expect(screen.queryByText("juniper")).not.toBeInTheDocument();
   });
+
+  /* RED-FIRST: test (i) - when liveAgents and archivedAgents are both empty,
+     agentNames is undefined, so all DMs stay under Agents (back-compat) */
+  it("mobile, liveAgents=[] and archivedAgents=[], one dm channel: Agents chip shown, no People chip", () => {
+    const onSelectChannel = vi.fn();
+    const dm = makeDmChannel({ id: "dm-someagent", name: "some-agent", members: ["user", "some-agent"] });
+    const sections = [makeSection("DMs", [dm])];
+    render(
+      <ChannelSidebar
+        {...buildProps({
+          isMobile: true,
+          sections,
+          liveAgents: [],
+          archivedAgents: [],
+          onSelectChannel,
+        })}
+      />,
+    );
+    // Agents chip should be shown (back-compat: all DMs are agents)
+    const agentsChip = screen.getByRole("button", { name: "Agents" });
+    expect(agentsChip).toBeInTheDocument();
+    // People chip should NOT be shown (no agentNames = back-compat)
+    const peopleChip = screen.queryByRole("button", { name: "People" });
+    expect(peopleChip).not.toBeInTheDocument();
+    // Clicking Agents chip should show the DM
+    fireEvent.click(agentsChip);
+    expect(screen.getByText("some-agent")).toBeInTheDocument();
+  });
+
+/* RED-FIRST: test (ii) - with live agent + archived agent,
+     archived agent's name is included in agentNames,
+     so DM with archived agent is classified as agent DM, not people DM */
+  it("mobile, liveAgents + archivedAgents: archived agent DM classified as agent, People chip does NOT list it", () => {
+    const onSelectChannel = vi.fn();
+    const dmArchived = makeDmChannel({ id: "dm-oldbot", name: "old-bot", members: ["user", "old-bot"] });
+    const dmPerson = makeDmChannel({ id: "dm-mum", name: "mum", members: ["user", "mum"] });
+    const sections = [makeSection("DMs", [dmArchived, dmPerson])];
+    render(
+      <ChannelSidebar
+        {...buildProps({
+          isMobile: true,
+          sections,
+          liveAgents: [{ name: "some-agent" }],
+          archivedAgents: [{ id: "a1", archived_slug: "old-bot-x", original: { name: "old-bot" } }],
+          onSelectChannel,
+        })}
+      />,
+    );
+    // Both "Agents" and "People" chips should render (there are DMs in both categories)
+    const agentsChip = screen.getByRole("button", { name: "Agents" });
+    expect(agentsChip).toBeInTheDocument();
+    const peopleChip = screen.getByRole("button", { name: "People" });
+    expect(peopleChip).toBeInTheDocument();
+    // Click People chip - should NOT list the old-bot DM (it's now an agent DM)
+    fireEvent.click(peopleChip);
+    expect(screen.queryByText("old-bot")).not.toBeInTheDocument();
+    expect(screen.getByText("mum")).toBeInTheDocument();
+    // Click Agents chip - should list the old-bot DM
+    fireEvent.click(agentsChip);
+    expect(screen.getByText("old-bot")).toBeInTheDocument();
+  });
 });
 
 /* ------------------------------------------------------------------ */

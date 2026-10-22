@@ -86,6 +86,7 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
     unread,
     nowMs,
     liveAgents,
+    archivedAgents,
     archivedChannels,
     archivedExpanded,
     onToggleArchived,
@@ -102,14 +103,25 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
   } = props;
 
   const agentNames = useMemo(
-    () =>
-      liveAgents.flatMap((a) => {
-        const names = [a.name];
-        if (a.display_name) names.push(a.display_name);
-        return names;
-      }),
-    [liveAgents],
+    () => {
+      const names = new Set<string>();
+
+      for (const a of liveAgents) {
+        names.add(a.name);
+        if (a.display_name) names.add(a.display_name);
+      }
+
+      for (const a of archivedAgents) {
+        if (a.original?.name) names.add(a.original.name);
+        if (a.original?.display_name) names.add(a.original.display_name);
+      }
+
+      return Array.from(names);
+    },
+    [liveAgents, archivedAgents],
   );
+
+  const agentNamesToPass = liveAgents.length === 0 && archivedAgents.length === 0 ? undefined : agentNames;
 
   if (isMobile) {
     return (
@@ -132,7 +144,7 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
               bus={bus}
               busSelected={busSelected}
               onSelectBusChannel={onSelectBusChannel}
-              agentNames={agentNames}
+              agentNames={agentNamesToPass}
             />
           </>
         )}
