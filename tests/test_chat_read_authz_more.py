@@ -206,3 +206,60 @@ async def test_search_limit_respects_readable_channels_before_limit(client, app)
     assert len(results) == 1, f"Expected 1 readable result, got {len(results)}"
     assert results[0]["channel_id"] == readable_ch["id"]
     assert "readable" in results[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_search_excludes_channel_matching_member_only_case_insensitively(client, app):
+    """SQLite LIKE is case-insensitive, so list_channels may return a channel
+    whose stored member id differs from the caller's only by case. The route
+    must re-check with caller_can_read_channel (exact str(uid) in members)
+    so such channels are not searched."""
+    member, uid = await _member_client(app)
+    other = uid.swapcase()
+    assert other != uid  # precondition: test must never pass vacuously
+
+    search_term = "casevariantneedle999"
+    now = time.time()
+
+    # Channel the caller is NOT a real member of (id matches only case-insensitively)
+    excluded_ch = await app.state.chat_channels.create_channel(
+        name="excluded", type="dm", created_by="user", members=["user", other],
+    )
+    await app.state.chat_messages.ensure_message({
+        "id": "excluded-msg",
+        "channel_id": excluded_ch["id"],
+        "author_id": "user",
+        "author_type": "user",
+        "content": f"{search_term} excluded",
+        "created_at": now,
+    })
+
+    try:
+        # Search while only the excluded channel exists: should return nothing
+        # after the exact check filters it out. Before the fix, the case-
+        # insensitive LIKE returns this channel and its message leaks through.
+        resp = await member.get("/api/chat/search", params={"q": search_term})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["results"] == []
+
+        # Control: a readable channel (exact member match) with the same term
+        # IS returned -- exactly one result, that channel id.
+        control_ch = await app.state.chat_channels.create_channel(
+            name="control", type="dm", created_by="user", members=["user", uid],
+        )
+        await app.state.chat_messages.ensure_message({
+            "id": "control-msg",
+            "channel_id": control_ch["id"],
+            "author_id": "user",
+            "author_type": "user",
+            "content": f"{search_term} control",
+            "created_at": now,
+        })
+
+        control_resp = await member.get("/api/chat/search", params={"q": search_term})
+        assert control_resp.status_code == 200, control_resp.text
+        control_results = control_resp.json()["results"]
+        assert len(control_results) == 1, f"Expected 1 control result, got {len(control_results)}"
+        assert control_results[0]["channel_id"] == control_ch["id"]
+    finally:
+        await member.aclose()

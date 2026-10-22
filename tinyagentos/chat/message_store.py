@@ -786,9 +786,10 @@ class ChatMessageStore(BaseStore):
         self,
         query: str,
         channel_id: str | None = None,
-        channel_ids: list[str] | None = None,
         author_id: str | None = None,
         limit: int = 50,
+        *,
+        channel_ids: list[str] | None = None,
     ) -> list[dict]:
         pattern = f"%{query}%"
         conditions = ["content LIKE ?"]

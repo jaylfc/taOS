@@ -1,3 +1,4 @@
 ### Fixed
 
 - Chat search now respects the `limit` parameter on readable channels only. Previously, messages from unreadable channels consumed the LIMIT before filtering, causing fewer (or zero) readable results to be returned. The fix computes readable channel IDs first and passes them to the search query, so the LIMIT applies only to channels the caller can read.
+- Chat search now applies the exact `caller_can_read_channel` check on each channel returned by `list_channels`, so a channel whose stored member id matches the caller only case-insensitively (SQLite LIKE) is excluded from search results.

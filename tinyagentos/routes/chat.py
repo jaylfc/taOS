@@ -852,7 +852,7 @@ async def search_messages(
             readable_channel_ids = []
         else:
             member_channels = await ch_store.list_channels(member_id=str(uid))
-            readable_channel_ids = [c["id"] for c in member_channels]
+            readable_channel_ids = [c["id"] for c in member_channels if caller_can_read_channel(request, c)]
 
     # If a specific channel_id was requested, intersect with readable
     if channel_id is not None:
