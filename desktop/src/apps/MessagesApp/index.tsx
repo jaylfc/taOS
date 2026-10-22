@@ -1048,35 +1048,45 @@ export function MessagesApp({
   const fetchAgentLists = useCallback(async () => {
     let liveData: LiveAgent[] | null = null;
     let archivedData: ArchivedAgentEntry[] | null = null;
-    try {
-      const [liveRes, archRes] = await Promise.all([
-        fetch("/api/agents?include_guests=1"),
-        fetch("/api/agents/archived"),
-      ]);
+    const [liveR, archR] = await Promise.allSettled([
+      fetch("/api/agents?include_guests=1"),
+      fetch("/api/agents/archived"),
+    ]);
+    if (liveR.status === "fulfilled") {
+      const liveRes = liveR.value;
       if (liveRes.ok) {
         const ct = liveRes.headers.get("content-type") ?? "";
         if (ct.includes("application/json")) {
-          const data = await liveRes.json();
-          if (Array.isArray(data)) {
-            liveData = data;
+          try {
+            const data = await liveRes.json();
+            if (Array.isArray(data)) {
+              liveData = data;
+            }
+          } catch {
+            /* ignore parse error */
           }
         }
       }
+    }
+    if (archR.status === "fulfilled") {
+      const archRes = archR.value;
       if (archRes.ok) {
         const ct = archRes.headers.get("content-type") ?? "";
         if (ct.includes("application/json")) {
-          const data = await archRes.json();
-          if (Array.isArray(data)) {
-            archivedData = data;
+          try {
+            const data = await archRes.json();
+            if (Array.isArray(data)) {
+              archivedData = data;
+            }
+          } catch {
+            /* ignore parse error */
           }
         }
       }
-      if (liveData !== null) setLiveAgents(liveData);
-      if (archivedData !== null) setArchivedAgents(archivedData);
-      if (liveData !== null && archivedData !== null) setAgentRosterReady(true);
-    } catch {
-      /* offline */
     }
+    if (liveData !== null) setLiveAgents(liveData);
+    if (archivedData !== null) setArchivedAgents(archivedData);
+    if (liveData !== null && archivedData !== null) setAgentRosterReady(true);
   }, []);
 
   /* ---- fetch messages for a channel ---- */

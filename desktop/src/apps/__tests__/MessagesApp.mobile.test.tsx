@@ -129,10 +129,14 @@ describe("MessagesApp mobile shell", () => {
   });
 });
 
-describe("MessagesApp fetchAgentLists — archived fetch failure", () => {
+describe("MessagesApp fetchAgentLists - archived fetch failure", () => {
   let originalFetch: typeof global.fetch;
 
-  beforeEach(() => {
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  function setupFetchMock(archivedBehavior: "500" | "reject" | "bad-json") {
     (useIsMobile as ReturnType<typeof vi.fn>).mockReturnValue(true);
     originalFetch = global.fetch;
     global.fetch = vi.fn().mockImplementation((url: string) => {
@@ -145,12 +149,24 @@ describe("MessagesApp fetchAgentLists — archived fetch failure", () => {
         } as unknown as Response);
       }
       if (urlStr.includes("/api/agents/archived")) {
-        return Promise.resolve({
-          ok: false,
-          status: 500,
-          headers: { get: () => "application/json" },
-          json: () => Promise.resolve({ error: "internal error" }),
-        } as unknown as Response);
+        if (archivedBehavior === "500") {
+          return Promise.resolve({
+            ok: false,
+            status: 500,
+            headers: { get: () => "application/json" },
+            json: () => Promise.resolve({ error: "internal error" }),
+          } as unknown as Response);
+        }
+        if (archivedBehavior === "reject") {
+          return Promise.reject(new TypeError("network"));
+        }
+        if (archivedBehavior === "bad-json") {
+          return Promise.resolve({
+            ok: true,
+            headers: { get: () => "application/json" },
+            json: () => Promise.reject(new SyntaxError("bad json")),
+          } as unknown as Response);
+        }
       }
       if (urlStr.includes("/api/chat/channels") && !urlStr.includes("/messages")) {
         return Promise.resolve({
@@ -173,28 +189,14 @@ describe("MessagesApp fetchAgentLists — archived fetch failure", () => {
         json: () => Promise.resolve({ error: "not found" }),
       } as unknown as Response);
     });
-  });
+  }
 
-  afterEach(() => {
-    global.fetch = originalFetch;
-  });
-
-  it("renders without error when archived fetch fails (500) and live agent fetch succeeds", async () => {
-    // This test verifies the fix for the bug where a failed archived-agents fetch
-    // would leave liveAgents empty. With the fix, liveAgents is populated even
-    // when the archived fetch fails, so author resolution, mentions, and agent
-    // lookup continue to work.
-    render(<MessagesApp windowId="test" />);
-
-    // Wait for the mobile shell to render
+  async function runCommonAssertions() {
     await waitFor(() => {
       expect(screen.getByTestId("mobile-split-view")).toBeInTheDocument();
       expect(screen.getByTestId("channel-sidebar")).toBeInTheDocument();
     });
 
-    // Wait for fetchAgentLists to complete and verify liveAgents is populated
-    // even though archived fetch failed. The channel-sidebar mock exposes
-    // liveAgents via data-live-agents attribute.
     await waitFor(() => {
       const sidebar = screen.getByTestId("channel-sidebar");
       const liveAgents = JSON.parse(sidebar.getAttribute("data-live-agents") || "[]");
@@ -202,10 +204,27 @@ describe("MessagesApp fetchAgentLists — archived fetch failure", () => {
       expect(liveAgents[0].name).toBe("some-agent");
     });
 
-    // agentRosterReady should be false since archived fetch failed
     await waitFor(() => {
       const sidebar = screen.getByTestId("channel-sidebar");
       expect(sidebar.getAttribute("data-agent-roster-ready")).toBe("false");
     });
+  }
+
+  it("renders without error when archived fetch fails (500) and live agent fetch succeeds", async () => {
+    setupFetchMock("500");
+    render(<MessagesApp windowId="test" />);
+    await runCommonAssertions();
+  });
+
+  it("populates liveAgents when archived fetch rejects with network error", async () => {
+    setupFetchMock("reject");
+    render(<MessagesApp windowId="test" />);
+    await runCommonAssertions();
+  });
+
+  it("populates liveAgents when archived fetch returns ok but json() throws", async () => {
+    setupFetchMock("bad-json");
+    render(<MessagesApp windowId="test" />);
+    await runCommonAssertions();
   });
 });
