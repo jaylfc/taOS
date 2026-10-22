@@ -35,8 +35,9 @@ class PairStartBody(BaseModel):
     address: str
 
 
-class PairSessionBody(BaseModel):
+class PairConfirmBody(BaseModel):
     session: str
+    pin: str = ""
 
 
 def _manager(request: Request):
@@ -83,18 +84,19 @@ async def ble_pair_start(request: Request, body: PairStartBody):
 
 
 @router.post("/api/cluster/ble/pair/confirm")
-async def ble_pair_confirm(request: Request, body: PairSessionBody):
+async def ble_pair_confirm(request: Request, body: PairConfirmBody):
     ok, err = _require_admin(request)
     if not ok:
         return err
     session_id = body.session.strip()
     if not session_id:
         return JSONResponse({"error": "session is required"}, status_code=400)
+    pin = body.pin.strip() if body.pin else ""
     manager = _manager(request)
     if manager is None:
         return JSONResponse({"error": "bluetooth_unavailable"}, status_code=503)
     try:
-        node = await manager.confirm(session_id)
+        node = await manager.confirm(session_id, label_pin=pin)
     except BluetoothError:
         return JSONResponse({"error": "bluetooth_unavailable"}, status_code=503)
     except PairError as exc:
@@ -105,7 +107,7 @@ async def ble_pair_confirm(request: Request, body: PairSessionBody):
 
 
 @router.post("/api/cluster/ble/pair/cancel")
-async def ble_pair_cancel(request: Request, body: PairSessionBody):
+async def ble_pair_cancel(request: Request, body: PairConfirmBody):
     ok, err = _require_admin(request)
     if not ok:
         return err

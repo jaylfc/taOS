@@ -36,7 +36,7 @@ from tinyagentos.cluster.ble.transport import Connection, Transport, chunk_size
 from tinyagentos.cluster.manager import ClusterManager
 from tinyagentos.cluster.pairing_store import ClusterPairingStore
 
-from cluster.conftest import FakeBoard
+from cluster.conftest import FakeBoard, FakeTransport
 
 GRIND_LIMIT = 200_000
 
@@ -209,6 +209,68 @@ async def test_mitm_cannot_force_matching_codes_and_steal_the_node_key(cluster, 
     assert "commitment" in str(refused)
     assert await store.get_signing_key(board.name) is None
     assert cluster.get_worker(board.name) is None
+
+
+# ---------------------------------------------------------------------------
+# Label PIN: second confirmation channel (no screen on the board)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_label_pin_required_at_confirm(cluster, store, tmp_path):
+    """A board with a label PIN requires the correct PIN at confirm time.
+
+    RED: on the current branch, confirm() doesn't accept a PIN parameter,
+    so pairing with a PIN-bound board fails with 502 (board rejects the
+    provision because the controller didn't mix in the PIN).
+
+    After the fix: confirm(pin="123456") succeeds, confirm(pin="wrong") returns 403.
+    """
+    # Test 1: Without PIN -> 502 (board rejects provision)
+    board1 = FakeBoard(board_id="PINTEST1", label_pin="123456")
+    transport1 = FakeTransport({"AA:BB": board1})
+    mgr1 = BlePairingManager(
+        data_dir=tmp_path, cluster_manager=cluster, pairing_store=store,
+        bind_port=6969, transport=transport1, llm_gateway_enabled=False,
+    )
+    started1 = await mgr1.start("AA:BB")
+    assert started1 is not None
+    assert started1["code"] == board1.responder.current_code()
+    with pytest.raises(PairError) as exc_info:
+        await mgr1.confirm(started1["session"])
+    assert exc_info.value.status == 502
+    assert "board_rejected" in str(exc_info.value)
+
+    # Test 2: With correct PIN -> success
+    board2 = FakeBoard(board_id="PINTEST2", label_pin="123456")
+    transport2 = FakeTransport({"AA:BB": board2})
+    mgr2 = BlePairingManager(
+        data_dir=tmp_path, cluster_manager=cluster, pairing_store=store,
+        bind_port=6969, transport=transport2, llm_gateway_enabled=False,
+    )
+    started2 = await mgr2.start("AA:BB")
+    assert started2 is not None
+    result = await mgr2.confirm(started2["session"], label_pin="123456")
+    assert result["name"] == board2.name
+    assert result["kind"] == "device"
+    assert result["board_id"] == board2.board_id
+    assert await store.get_signing_key(board2.name) is not None
+    assert cluster.get_worker(board2.name) is not None
+
+    # Test 3: With wrong PIN -> 403
+    board3 = FakeBoard(board_id="PINTEST3", label_pin="123456")
+    transport3 = FakeTransport({"AA:BB": board3})
+    mgr3 = BlePairingManager(
+        data_dir=tmp_path, cluster_manager=cluster, pairing_store=store,
+        bind_port=6969, transport=transport3, llm_gateway_enabled=False,
+    )
+    started3 = await mgr3.start("AA:BB")
+    assert started3 is not None
+    with pytest.raises(PairError) as exc_info:
+        await mgr3.confirm(started3["session"], label_pin="wrong")
+    assert exc_info.value.status == 403
+    assert "invalid label PIN" in str(exc_info.value)
+    assert await store.get_signing_key(board3.name) is None
+    assert cluster.get_worker(board3.name) is None
 
 
 # ---------------------------------------------------------------------------

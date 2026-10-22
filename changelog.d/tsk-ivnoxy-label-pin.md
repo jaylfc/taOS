@@ -1,0 +1,2 @@
+### Added
+- BLE pairing now requires a label PIN as a second confirmation channel. The admin must enter the 6-digit PIN printed on the board's label sticker at provision time. The controller mixes this PIN into the session key so a substituted board without the label cannot complete pairing. A wrong PIN returns 403; missing PIN when the board requires one returns 502.

@@ -1139,6 +1139,7 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
   const [pairStarting, setPairStarting] = useState(false);
   const [pairConfirming, setPairConfirming] = useState(false);
   const [pairError, setPairError] = useState<string | null>(null);
+  const [pairPin, setPairPin] = useState("");
   const pairCodeRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -1185,6 +1186,7 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
   const handleBlePairStart = useCallback(async (device: BleScanDevice) => {
     setPairStarting(true);
     setPairError(null);
+    setPairPin("");
     try {
       const res = await fetch("/api/cluster/ble/pair/start", {
         method: "POST",
@@ -1223,16 +1225,19 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
       const res = await fetch("/api/cluster/ble/pair/confirm", {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ session: pairSession.session }),
+        body: JSON.stringify({ session: pairSession.session, pin: pairPin.trim() }),
       });
       if (res.ok) {
         const json = await res.json();
         showToast(`Device "${json?.node?.name ?? pairSession.name}" paired`);
         setPairSession(null);
+        setPairPin("");
         setAddOpen(false);
         setBleDevices([]);
         setBleScanned(false);
         fetchWorkers();
+      } else if (res.status === 403) {
+        setPairError("Invalid label PIN. Check the sticker on the device and try again.");
       } else if (res.status === 404) {
         setPairError("Pairing timed out, start again.");
       } else if (res.status === 502) {
@@ -1246,11 +1251,12 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
       setPairError(e instanceof Error ? e.message : "Network error");
     }
     setPairConfirming(false);
-  }, [pairSession, showToast, fetchWorkers]);
+  }, [pairSession, pairPin, showToast, fetchWorkers]);
 
   const handleBlePairCancel = useCallback(() => {
     if (pairSession) cancelBlePairSession(pairSession.session);
     setPairSession(null);
+    setPairPin("");
     setPairError(null);
   }, [pairSession, cancelBlePairSession]);
 
@@ -1826,6 +1832,22 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
                         {pairSession.code.slice(0, 3)} {pairSession.code.slice(3)}
                       </span>
                     </div>
+                    <p className="text-[11px] text-shell-text-tertiary mt-2 mb-1">
+                      Enter the 6-digit PIN from the label on the device (printed on the
+                      sticker near the QR code).
+                    </p>
+                    <input
+                      id="ble-pair-pin"
+                      type="text"
+                      value={pairPin}
+                      onChange={(e) => setPairPin(e.target.value)}
+                      placeholder="123456"
+                      maxLength={6}
+                      autoComplete="off"
+                      onKeyDown={(e) => { if (e.key === "Enter" && !pairConfirming) handleBlePairConfirm(); }}
+                      className="w-full h-9 mb-4 rounded-md border border-white/10 bg-shell-bg px-2.5 text-sm font-mono tracking-widest text-shell-text focus-visible:outline-none focus-visible:border-accent/40 focus-visible:ring-2 focus-visible:ring-accent/20"
+                      aria-label="Label PIN from device sticker"
+                    />
                     {pairError && (
                       <p className="text-[11px] text-red-300 mt-1" role="alert">
                         {pairError}

@@ -37,6 +37,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
 from tinyagentos.cluster.ble import proto
@@ -409,10 +410,15 @@ class BlePairingManager:
             self._sessions[session_id] = sess
         return {"session": session_id, "code": code, "board_id": board_id, "name": sess.board_name}
 
-    async def confirm(self, session_id: str) -> dict:
+    async def confirm(self, session_id: str, *, label_pin: str = "") -> dict:
         """Mint the node credential, register kind=device, and send the
         sealed provision. Rolls back the credential + registration on any
-        board error or transport failure."""
+        board error or transport failure.
+
+        If ``label_pin`` is provided, it is mixed into the session key before
+        sealing the provision. A wrong PIN causes the board to reject the
+        provision with an authentication failure, which is surfaced as 403.
+        """
         async with self._lock:
             self._sweep_expired_locked()
             sess = self._sessions.pop(session_id, None)
@@ -503,10 +509,20 @@ class BlePairingManager:
         }
         secrets_sent = [key.hex()] + ([llm["key"]] if llm else [])
         try:
+            if label_pin:
+                sess.initiator.bind_label_pin(label_pin)
             sealed = sess.initiator.seal_provision(provision)
             await self._write_pair_message(sess.connection, sealed, _MID_PROVISION)
             reply_raw = await self._read_pair_message(sess.connection, sess.reassembler, _PROVISION_TIMEOUT_S)
             reply = sess.initiator.unseal_reply(reply_raw)
+        except InvalidTag:
+            if label_pin:
+                # Controller provided a PIN but it was wrong (board has different/no PIN)
+                await self._rollback(name, key, sess)
+                raise PairError(403, "invalid label PIN")
+            # No PIN provided but board rejected (likely board has PIN)
+            await self._rollback(name, key, sess)
+            raise PairError(502, "board_rejected", why="invalid label PIN")
         except (asyncio.TimeoutError, TimeoutError) as exc:
             await self._rollback(name, key, sess)
             raise PairError(504, "board did not respond to provision") from exc

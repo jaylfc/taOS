@@ -1498,6 +1498,38 @@ Rules that keep it sound:
   no other change, since it forwards every `pair` message to
   `PairResponder.handle_message`.
 
+## taOSusb Bluetooth pairing: label PIN (second confirmation channel)
+
+Since the taOSusb board has no screen (S4), the admin cannot compare the
+6-digit code displayed on the controller against a code shown by the board.
+To prevent a substituted board from being paired, a second confirmation
+channel is used: a short PIN printed on the board's label at provision time
+(stored in `/var/lib/taosusb/id` on the board, surfaced in the `info`
+characteristic as `cap: "pin-bound"`).
+
+- The controller-side `BlePairingManager.confirm()` accepts an optional
+  `label_pin` parameter.
+- When provided, the controller mixes the PIN into the session key via
+  `PairInitiator.bind_label_pin()` before sealing the provision payload.
+- The board (which has the same PIN in its `PairResponder`) mixes the PIN
+  into its session key during the handshake.
+- If the PIN matches, the board decrypts the provision and pairs successfully.
+- If the PIN is wrong or missing, the board cannot decrypt the provision and
+  returns an authentication failure. The controller surfaces this as:
+  - `403 invalid label PIN` when the admin explicitly provided a wrong PIN.
+  - `502 board_rejected (invalid label PIN)` when no PIN was provided but the
+    board requires one (the board has `pin-bound` in its caps).
+
+The `POST /api/cluster/ble/pair/confirm` endpoint accepts an optional `pin`
+field in the request body. The Cluster app's Bluetooth pairing dialog prompts
+for the PIN with the hint "Enter the 6-digit PIN from the label on the device
+(printed on the sticker near the QR code)."
+
+This is defense-in-depth: the commit/reveal protocol (v2) already prevents a
+radio MITM from forcing matching codes. The label PIN additionally prevents a
+physically substituted board from being paired, because the attacker would
+need physical access to the real board's label sticker.
+
 ## OS change-event stream (`GET /api/os/events`, session-only)
 
 Route module `tinyagentos/routes/os_events.py`. A Server-Sent Events stream of
