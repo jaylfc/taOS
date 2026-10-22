@@ -222,11 +222,18 @@ def accept_catalog(catalog_bytes: bytes, sig_bytes: bytes | None, state_path, ke
         CatalogSignatureMissing, CatalogSignatureInvalid, CatalogKeyUnknown,
         CatalogSerialRegression, CatalogStateCorrupt, OrbError: from verify_catalog or check_serial.
     """
+    from filelock import FileLock
+
     catalog = verify_catalog(catalog_bytes, sig_bytes, keys)
     digest = hashlib.sha256(catalog_bytes).hexdigest()
 
-    if check_serial(state_path, catalog["serial"], digest):
-        record_serial(state_path, catalog["serial"], digest)
+    # Hold one lock across check and record so two concurrent callers cannot
+    # write their results in reverse order and lower the stored serial.
+    state_path = Path(state_path)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    with FileLock(str(state_path) + ".lock"):
+        if check_serial(state_path, catalog["serial"], digest):
+            record_serial(state_path, catalog["serial"], digest)
 
     return catalog
 
