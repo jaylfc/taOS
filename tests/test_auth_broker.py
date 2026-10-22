@@ -14,6 +14,8 @@ from tinyagentos.agent_registry_store import (
     load_or_create_signing_keypair,
     mint_registry_token,
 )
+from tinyagentos.auth_broker import MAX_OPEN_PER_AGENT
+from tinyagentos.base_store import PendingCapExceeded
 
 SIGNIN_URL = "https://claude.ai/oauth/authorize?code=true&client_id=abc&state=xyz"
 
@@ -318,3 +320,182 @@ async def test_failed_secret_write_leaves_the_request_retryable(client, app):
         secrets_store.add = real_add
     retry = await client.post(f"{BASE}/{rid}/token", json={"token": "sk-ant-oat01-x"}, headers=hdr)
     assert retry.status_code == 200, retry.text
+
+
+@pytest.mark.asyncio
+async def test_secret_grant_preserves_existing_agents(client, app, monkeypatch, tmp_path):
+    """When the native agent stores the harness token, existing grants to other
+    agents are preserved and the native agent is added."""
+    registry = AgentRegistryStore(tmp_path / "reg.db")
+    await registry.init()
+    priv, pub = load_or_create_signing_keypair(tmp_path / "keys")
+    monkeypatch.setattr(app.state, "agent_registry", registry)
+    monkeypatch.setattr(app.state, "agent_registry_keypair", (priv, pub))
+    admin = app.state.auth.find_user("admin")
+
+    # Register the native taOS agent
+    rec = await registry.register(
+        framework="taos-native", display_name="taOS Agent",
+        user_id=admin["id"], origin="taos-native", handle="@taos-agent",
+        allow_reserved=True,
+    )
+    native_id = rec["canonical_id"]
+    hdr = {"Authorization": f"Bearer {mint_registry_token(native_id, priv, user_id=admin['id'])}"}
+
+    # Pre-grant the harness secret to another agent
+    await app.state.secrets.add(
+        "claude_code_oauth_token", "pre-existing-token", category="tokens",
+        description="Claude subscription token, stored by the sign-in broker", agents=["other-agent"]
+    )
+    before = await app.state.secrets.get("claude_code_oauth_token")
+    assert before["agents"] == ["other-agent"]
+
+    try:
+        # Native agent goes through the broker flow
+        created = await client.post(
+            BASE, json={"kind": "claude-subscription", "url": SIGNIN_URL, "prompt": ""},
+            headers=hdr,
+        )
+        assert created.status_code == 200, created.text
+        rid = created.json()["id"]
+        assert (await client.post(f"{BASE}/{rid}/code", json={"code": "c"})).status_code == 200
+        assert (await client.get(f"{BASE}/{rid}", headers=hdr)).json()["code"] == "c"
+        done = await client.post(f"{BASE}/{rid}/token", json={"token": "sk-native"}, headers=hdr)
+        assert done.status_code == 200, done.text
+        assert done.json()["secret_name"] == "claude_code_oauth_token"
+
+        # Both agents should now have access
+        row = await app.state.secrets.get("claude_code_oauth_token")
+        assert row["value"] == "sk-native"
+        assert "other-agent" in row["agents"]
+        assert native_id in row["agents"]
+        assert row["agents"].index("other-agent") < row["agents"].index(native_id)
+    finally:
+        await registry.close()
+
+
+@pytest.mark.asyncio
+async def test_create_request_cap_per_agent(client, app):
+    """An agent can have at most MAX_OPEN_PER_AGENT open requests."""
+    from tinyagentos.auth_broker import MAX_OPEN_PER_AGENT
+
+    hdr = _bearer(app, "haiku-agent")
+    other_hdr = _bearer(app, "other-agent")
+
+    # Create MAX_OPEN_PER_AGENT requests for haiku-agent
+    for _ in range(MAX_OPEN_PER_AGENT):
+        resp = await _create(client, app, "haiku-agent")
+        assert resp.status_code == 200, resp.text
+
+    # The (MAX_OPEN_PER_AGENT + 1)th request should be rejected with 429
+    resp = await _create(client, app, "haiku-agent")
+    assert resp.status_code == 429, resp.text
+    assert "too many open sign-in requests" in resp.text
+
+    # No 4th notification was added for haiku-agent
+    rows = await app.state.notifications.list(limit=50)
+    haiku_notifs = [r for r in rows if r.get("source") == "auth_broker" and r["data"]["agent"] == "haiku-agent"]
+    assert len(haiku_notifs) == MAX_OPEN_PER_AGENT
+
+    # A different agent can still create
+    resp = await _create(client, app, "other-agent")
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_expired_code_ready_cleared_on_create(client, app, monkeypatch):
+    """When a new request is created, expired code_ready rows have their code cleared."""
+    import tinyagentos.auth_broker as broker
+
+    t0 = 1_800_000_000.0
+    monkeypatch.setattr(broker, "_now", lambda: t0)
+    hdr = _bearer(app, "haiku-agent")
+
+    # Create a request and move it to code_ready
+    rid = await _created_id(client, app)
+    assert (await client.post(f"{BASE}/{rid}/code", json={"code": "secret-code"})).status_code == 200
+
+    # Verify code is present
+    rec = await app.state.auth_broker.get(rid)
+    assert rec["status"] == "code_ready"
+    assert rec["code"] == "secret-code"
+
+    # Advance time past expiry
+    monkeypatch.setattr(broker, "_now", lambda: t0 + broker.EXPIRY_SECONDS + 1)
+
+    # Create a new request - this should clear the expired code
+    new_rid = await _created_id(client, app)
+
+    # The old request's code should now be NULL
+    old_rec = await app.state.auth_broker.get(rid)
+    assert old_rec["code"] is None
+    assert old_rec["status"] == "code_ready"  # status unchanged, only code cleared
+
+    # New request should be unaffected
+    new_rec = await app.state.auth_broker.get(new_rid)
+    assert new_rec["status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_store_create_enforces_cap_under_lock(tmp_data_dir):
+    """AuthBrokerStore.create enforces MAX_OPEN_PER_AGENT inside its lock.
+
+    Creates MAX_OPEN_PER_AGENT requests for "agent-x", then the next create
+    for the same requester must raise PendingCapExceeded. A different requester
+    can still create successfully.
+    """
+    from tinyagentos.auth_broker import KIND_CLAUDE_SUBSCRIPTION, AuthBrokerStore
+
+    store = AuthBrokerStore(tmp_data_dir / "auth_broker_cap.db")
+    await store.init()
+    try:
+        url = "https://claude.ai/oauth/authorize?code=true&client_id=abc&state=xyz"
+
+        # Create MAX_OPEN_PER_AGENT requests for "agent-x"
+        for _ in range(MAX_OPEN_PER_AGENT):
+            rec = await store.create(
+                requester="agent-x", kind=KIND_CLAUDE_SUBSCRIPTION, url=url
+            )
+            assert rec["status"] == "pending"
+
+        # The (MAX_OPEN_PER_AGENT + 1)th create for "agent-x" must raise
+        with pytest.raises(PendingCapExceeded) as exc_info:
+            await store.create(
+                requester="agent-x", kind=KIND_CLAUDE_SUBSCRIPTION, url=url
+            )
+        assert exc_info.value.key == "agent-x"
+        assert exc_info.value.cap == MAX_OPEN_PER_AGENT
+        assert exc_info.value.pending == MAX_OPEN_PER_AGENT
+
+        # A different requester can still create
+        rec = await store.create(
+            requester="agent-y", kind=KIND_CLAUDE_SUBSCRIPTION, url=url
+        )
+        assert rec["status"] == "pending"
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_cap_reject_leaves_no_open_transaction(app):
+    """When the per-agent cap rejects, no transaction stays open on the connection."""
+    from tinyagentos.auth_broker import KIND_CLAUDE_SUBSCRIPTION
+
+    store = app.state.auth_broker
+    url = "https://claude.ai/oauth/authorize?code=true&client_id=abc&state=xyz"
+
+    # Create MAX_OPEN_PER_AGENT requests for one requester
+    for _ in range(MAX_OPEN_PER_AGENT):
+        rec = await store.create(
+            requester="cap-test-agent", kind=KIND_CLAUDE_SUBSCRIPTION, url=url
+        )
+        assert rec["status"] == "pending"
+
+    # The next create must raise PendingCapExceeded
+    with pytest.raises(PendingCapExceeded):
+        await store.create(
+            requester="cap-test-agent", kind=KIND_CLAUDE_SUBSCRIPTION, url=url
+        )
+
+    # No transaction should remain open on the connection
+    assert store._db.in_transaction is False

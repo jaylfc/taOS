@@ -23,9 +23,10 @@ from urllib.parse import urlsplit
 
 import aiosqlite
 
-from tinyagentos.base_store import BaseStore
+from tinyagentos.base_store import BaseStore, PendingCapExceeded
 
 EXPIRY_SECONDS = 600
+MAX_OPEN_PER_AGENT = 3
 
 # A sign-in card opens this URL in the user's browser, so the agent must never
 # choose the site: exact https hosts only (no subdomains, no userinfo, no port).
@@ -106,6 +107,22 @@ class AuthBrokerStore(BaseStore):
             return now - (rec["code_read_at"] or 0) > EXPIRY_SECONDS
         return now - rec["created_at"] > EXPIRY_SECONDS
 
+    async def count_open(self, requester: str) -> int:
+        """Return the number of open (non-completed, non-expired) requests for *requester*."""
+        self._require_db()
+        now = _now()
+        async with self._db.execute(
+            "SELECT * FROM auth_broker_requests WHERE requester = ? AND status != 'completed'",
+            (requester,),
+        ) as cur:
+            rows = await cur.fetchall()
+        count = 0
+        for row in rows:
+            rec = _row(row)
+            if not self.expired(rec, now):
+                count += 1
+        return count
+
     async def create(self, *, requester: str, kind: str, url: str, prompt: str = "") -> dict:
         self._require_db()
         if kind not in KINDS:
@@ -122,12 +139,34 @@ class AuthBrokerStore(BaseStore):
             "created_at": _now(),
         }
         async with self._lock:
-            await self._db.execute(
-                "INSERT INTO auth_broker_requests (id, requester, kind, url, prompt, status, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (rec["id"], requester, kind, url, prompt, "pending", rec["created_at"]),
-            )
-            await self._db.commit()
+            now = _now()
+            try:
+                await self._db.execute(
+                    "UPDATE auth_broker_requests SET code = NULL"
+                    " WHERE status = 'code_ready' AND created_at < ?",
+                    (now - EXPIRY_SECONDS,),
+                )
+                open_count = 0
+                async with self._db.execute(
+                    "SELECT * FROM auth_broker_requests WHERE requester = ? AND status != 'completed'",
+                    (requester,),
+                ) as cur:
+                    rows = await cur.fetchall()
+                for row in rows:
+                    r = _row(row)
+                    if not self.expired(r, now):
+                        open_count += 1
+                if open_count >= MAX_OPEN_PER_AGENT:
+                    raise PendingCapExceeded(key=requester, cap=MAX_OPEN_PER_AGENT, pending=open_count)
+                await self._db.execute(
+                    "INSERT INTO auth_broker_requests (id, requester, kind, url, prompt, status, created_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (rec["id"], requester, kind, url, prompt, "pending", rec["created_at"]),
+                )
+                await self._db.commit()
+            except BaseException:
+                await self._db.rollback()
+                raise
         return await self.get(rec["id"])
 
     async def get(self, request_id: str) -> dict | None:

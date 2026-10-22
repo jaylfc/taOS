@@ -28,6 +28,7 @@ from tinyagentos.auth_context import (
     require_agent_owner_or_admin,
     resolve_agent_owner,
 )
+from tinyagentos.base_store import PendingCapExceeded
 from tinyagentos.claude_code_runtime import CLAUDE_CODE_TOKEN_SECRET
 from tinyagentos.native_agent_identity import NATIVE_AGENT_ORIGIN
 
@@ -121,6 +122,11 @@ async def create_request(request: Request, body: CreateBody):
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+    except PendingCapExceeded:
+        raise HTTPException(
+            status_code=429,
+            detail="too many open sign-in requests",
+        )
 
     notifs = getattr(request.app.state, "notifications", None)
     if notifs is not None:
@@ -202,12 +208,17 @@ async def store_token(request: Request, request_id: str, body: TokenBody):
     name = _secret_name(requester, native)
     description = "Claude subscription token, stored by the sign-in broker"
     try:
-        if await secrets_store.get(name) is None:
+        existing = await secrets_store.get(name)
+        if existing is None:
             await secrets_store.add(
                 name, body.token, category="tokens", description=description, agents=[requester]
             )
         else:
-            await secrets_store.update(name, value=body.token, description=description, agents=[requester])
+            # Preserve existing grants, add requester if missing (order preserved, no duplicates)
+            agents = list(existing["agents"])
+            if requester not in agents:
+                agents.append(requester)
+            await secrets_store.update(name, value=body.token, description=description, agents=agents)
     except BaseException:
         await store.release(request_id)
         raise
