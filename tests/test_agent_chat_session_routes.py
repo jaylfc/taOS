@@ -14,6 +14,8 @@ from httpx import ASGITransport, AsyncClient
 
 from tinyagentos.agent_registry_store import mint_registry_token
 from tinyagentos.bridge_session import BridgeSessionRegistry
+from tinyagentos.chat.channel_store import ChatChannelStore
+from tinyagentos.chat.message_store import ChatMessageStore
 from taos_test_csrf import csrf_event_hooks
 
 EVENTS = "/api/agents/self/chat/events"
@@ -39,6 +41,39 @@ async def chat_app(app, tmp_data_dir):
         store = getattr(app.state, attr)
         if store._db is not None:
             await store.close()
+
+
+@pytest_asyncio.fixture
+async def chat_app_with_stores(app, tmp_data_dir):
+    """Chat app with real chat_channels and chat_messages stores for membership tests."""
+    for attr in ("agent_registry", "agent_grants", "metrics"):
+        store = getattr(app.state, attr)
+        if store._db is None:
+            await store.init()
+    # Initialise real chat stores
+    chat_messages = app.state.chat_messages
+    chat_channels = app.state.chat_channels
+    if chat_messages._db is None:
+        await chat_messages.init()
+    if chat_channels._db is None:
+        await chat_channels.init()
+    app.state.bridge_sessions = BridgeSessionRegistry(
+        trace_registry=None,
+        chat_messages=chat_messages,
+        chat_channels=chat_channels,
+        chat_hub=None,
+        archive=None,
+    )
+    app.state._startup_complete = True
+    yield app
+    for attr in ("agent_registry", "agent_grants", "metrics"):
+        store = getattr(app.state, attr)
+        if store._db is not None:
+            await store.close()
+    if chat_messages._db is not None:
+        await chat_messages.close()
+    if chat_channels._db is not None:
+        await chat_channels.close()
 
 
 async def _agent(app, handle, *, scopes=("chat_session",), display_name=None):
@@ -207,6 +242,126 @@ class TestChatSessionReply:
         slugs = [call.args[0] for call in mock.await_args_list]
         assert slugs == ["guest-a"]
         assert "guest-b" not in slugs
+
+
+@pytest.mark.asyncio
+class TestChatSessionReplyMembership:
+    """Tests for channel membership enforcement on reply (Fix 1)."""
+
+    async def test_reply_foreign_channel_id_gets_403(self, chat_app_with_stores):
+        """Reply with a channel_id the agent is not a member of -> 403."""
+        _cid_a, token_a = await _agent(chat_app_with_stores, "@guest-a")
+        _cid_b, token_b = await _agent(chat_app_with_stores, "@guest-b")
+
+        # Create a channel that only guest-b is a member of
+        channels = chat_app_with_stores.state.chat_channels
+        foreign_channel = await channels.create_channel(
+            name="private",
+            type="group",
+            created_by="user",
+            members=["user", "guest-b"],
+        )
+        foreign_channel_id = foreign_channel["id"]
+
+        mock = AsyncMock()
+        chat_app_with_stores.state.bridge_sessions.record_reply = mock
+
+        async with _bare(chat_app_with_stores) as c:
+            r = await c.post(
+                REPLY,
+                headers=_hdr(token_a),
+                json={"kind": "final", "content": "hi", "channel_id": foreign_channel_id},
+            )
+        assert r.status_code == 403
+        assert r.json() == {"error": "not a member of this channel"}
+        mock.assert_not_called()
+
+    async def test_reply_trace_id_in_foreign_channel_gets_403(self, chat_app_with_stores):
+        """Reply with trace_id of a message in a channel the agent is not a member of -> 403."""
+        _cid_a, token_a = await _agent(chat_app_with_stores, "@guest-a")
+        _cid_b, token_b = await _agent(chat_app_with_stores, "@guest-b")
+
+        # Create a channel that only guest-b is a member of
+        channels = chat_app_with_stores.state.chat_channels
+        messages = chat_app_with_stores.state.chat_messages
+        foreign_channel = await channels.create_channel(
+            name="private",
+            type="group",
+            created_by="user",
+            members=["user", "guest-b"],
+        )
+        foreign_channel_id = foreign_channel["id"]
+
+        # Create a message in that channel from guest-b
+        msg = await messages.send_message(
+            channel_id=foreign_channel_id,
+            author_id="guest-b",
+            author_type="agent",
+            content="hello from guest-b",
+            state="complete",
+        )
+        trace_id = msg["id"]
+
+        mock = AsyncMock()
+        chat_app_with_stores.state.bridge_sessions.record_reply = mock
+
+        async with _bare(chat_app_with_stores) as c:
+            r = await c.post(
+                REPLY,
+                headers=_hdr(token_a),
+                json={"kind": "final", "content": "hi", "trace_id": trace_id},
+            )
+        assert r.status_code == 403
+        assert r.json() == {"error": "not a member of this channel"}
+        mock.assert_not_called()
+
+    async def test_reply_into_own_dm_is_202(self, chat_app_with_stores):
+        """Reply into the agent's own DM channel -> 202 (positive control)."""
+        _cid_a, token_a = await _agent(chat_app_with_stores, "@guest-a")
+
+        # Ensure the agent has a DM channel (create one if needed)
+        channels = chat_app_with_stores.state.chat_channels
+        await channels.create_channel(
+            name="DM with guest-a",
+            type="dm",
+            created_by="user",
+            members=["user", "guest-a"],
+        )
+
+        mock = AsyncMock()
+        chat_app_with_stores.state.bridge_sessions.record_reply = mock
+
+        async with _bare(chat_app_with_stores) as c:
+            r = await c.post(
+                REPLY,
+                headers=_hdr(token_a),
+                json={"kind": "final", "content": "hi"},
+            )
+        assert r.status_code == 202
+        mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+class TestChatSessionSlugCollision:
+    """Tests for registry agent slug collision enforcement (Fix 2)."""
+
+    async def test_second_registry_agent_with_colliding_slug_gets_403(self, chat_app):
+        """Two registry agents whose canonical_ids strip to the same slug -> 403."""
+        _cid1, token1 = await _agent(chat_app, "@agent-one", display_name="Shared Name")
+        _cid2, token2 = await _agent(chat_app, "@agent-two", display_name="Shared Name")
+
+        # First agent should work
+        mock = AsyncMock()
+        chat_app.state.bridge_sessions.record_reply = mock
+        async with _bare(chat_app) as c:
+            r1 = await c.post(REPLY, headers=_hdr(token1), json={"kind": "final", "content": "hi"})
+        assert r1.status_code == 202
+
+        # Second agent with same slug should be rejected on reply
+        async with _bare(chat_app) as c:
+            r2 = await c.post(REPLY, headers=_hdr(token2), json={"kind": "final", "content": "hi"})
+        assert r2.status_code == 403
+        assert r2.json() == {"error": "handle collides with another registry agent"}
 
 
 def test_chat_session_scope_registered_in_both_sets():

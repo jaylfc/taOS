@@ -39,6 +39,29 @@ async def _resolve_slug(request: Request) -> str | JSONResponse:
             return JSONResponse(
                 {"error": "handle collides with a local agent"}, status_code=403
             )
+    # Two registry agents whose canonical_ids strip to the same slug must not
+    # share a session. Check for any OTHER active registry entry with the same
+    # derived slug. Allow the oldest (first registered) agent to proceed; reject
+    # any newer agents that collide.
+    registry = getattr(request.app.state, "agent_registry", None)
+    if registry is not None:
+        try:
+            active_agents = await registry.list_all(status="active")
+        except Exception:
+            active_agents = []
+        # list_all returns agents ordered by id (oldest first). Find the first
+        # agent with this slug; if it's not the current agent, reject.
+        for other in active_agents:
+            other_cid = other.get("canonical_id")
+            if other_cid:
+                other_slug = _CANONICAL_AGENT_ID_RE.sub("", other_cid)
+                if other_slug == slug:
+                    if other_cid != cid:
+                        return JSONResponse(
+                            {"error": "handle collides with another registry agent"}, status_code=403
+                        )
+                    # This is the first agent with this slug; allow it.
+                    break
     return slug
 
 
@@ -68,6 +91,30 @@ async def self_chat_events(request: Request):
     )
 
 
+async def _resolve_target_channel(request: Request, body: dict, slug: str) -> str | None:
+    """Determine the target channel for a reply, mirroring _handle_reply logic.
+
+    Returns the channel_id if one can be determined, else None (falls back to
+    the agent's own DM in the bridge).
+    """
+    # Explicit channel_id in body takes precedence.
+    channel_id = body.get("channel_id")
+    if channel_id:
+        return channel_id
+    # Fall back to the channel of the message named by trace_id.
+    trace_id = body.get("trace_id")
+    if trace_id:
+        chat_messages = getattr(request.app.state, "chat_messages", None)
+        if chat_messages is not None:
+            try:
+                orig = await chat_messages.get_message(trace_id)
+            except Exception:
+                orig = None
+            if orig and orig.get("channel_id"):
+                return orig["channel_id"]
+    return None
+
+
 @router.post("/api/agents/self/chat/reply")
 async def self_chat_reply(request: Request):
     """Record a reply from the calling agent under its own slug.
@@ -86,5 +133,19 @@ async def self_chat_reply(request: Request):
         return JSONResponse({"error": "invalid JSON"}, status_code=400)
     if not isinstance(body, dict):
         return JSONResponse({"error": "invalid JSON"}, status_code=400)
+
+    # Fix 1: enforce channel membership before accepting the reply.
+    target_channel_id = await _resolve_target_channel(request, body, slug)
+    if target_channel_id:
+        chat_channels = getattr(request.app.state, "chat_channels", None)
+        if chat_channels is not None:
+            channel = await chat_channels.get_channel(target_channel_id)
+            if channel:
+                members = channel.get("members") or []
+                if slug not in members:
+                    return JSONResponse(
+                        {"error": "not a member of this channel"}, status_code=403
+                    )
+
     await bridge.record_reply(slug, body)
     return JSONResponse({"accepted": True}, status_code=202)
