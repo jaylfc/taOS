@@ -23,6 +23,13 @@ import re
 import shlex
 import sys
 
+# Short option letters for wrapper programs that take a value (next word)
+_WRAPPER_SHORT_OPTS_WITH_VALUE = {
+    "exec": frozenset({"a"}),
+    "sudo": frozenset({"u", "g", "C", "h", "p", "r", "t", "T", "U", "D"}),
+    "doas": frozenset({"u", "C"}),
+}
+
 REFUSAL = ("Refused by taOS: the agent may not run `git push` or `gh` from the shell. "
            "GitHub writes go through the taOS tool, which asks the user to confirm.")
 
@@ -64,6 +71,8 @@ _WRAPPER_OPTS_WITH_VALUE = {
     "timeout": frozenset({"-s", "--signal", "-k", "--kill-after"}),
     "env": frozenset({"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}),
     "exec": frozenset({"-a"}),
+    "doas": frozenset({"-u", "-C", "--user", "--chdir"}),
+    "chroot": frozenset({"--userspec", "--groups"}),
 }
 # Options of those programs that take a separate value (``git -C dir status``).
 _OPTIONS_WITH_VALUE = frozenset({
@@ -325,6 +334,17 @@ def commands(command: str) -> list[str] | None:
                 if tok.startswith("-a") and len(tok) > 2:
                     # -aNAME (attached value)
                     continue
+            # Clustered short options that take a value (last letter in the option)
+            # For a token like -la, where 'a' takes a value, skip the next word
+            if wrapper in _WRAPPER_SHORT_OPTS_WITH_VALUE:
+                if tok.startswith("-") and not tok.startswith("--"):
+                    # Check if this is a short option (single dash) and last letter takes a value
+                    last_char = tok[-1]
+                    if last_char in _WRAPPER_SHORT_OPTS_WITH_VALUE[wrapper]:
+                        # Check that this option is not part of a longer token where earlier letters already take values
+                        # For -la: if 'l' is not in value-taking set, and 'a' is the last letter, we need to skip next word
+                        skip_next = True
+                        continue
             # timeout: skip the first non-option (duration) after options
             if wrapper == "timeout" and wrapper_skip_duration:
                 if not tok.startswith("-"):
@@ -366,6 +386,15 @@ def commands(command: str) -> list[str] | None:
                 if tok in _WRAPPER_OPTS_WITH_VALUE[wrapper]:
                     skip_next = True
                     continue
+                # Handle attached forms like --userspec=VALUE, --groups=VALUE
+                # These are already handled by the skip_next above for plain options
+                # but for attached forms we need to ensure they don't swallow the next word
+                if tok.startswith("-"):
+                    # Check for attached value form (--opt=value)
+                    for opt in _WRAPPER_OPTS_WITH_VALUE[wrapper]:
+                        if opt.startswith("-") and tok.startswith(opt):
+                            # This is an attached form, don't skip_next
+                            break
             # Other wrappers: skip options (words starting with -)
             if tok.startswith("-"):
                 continue
