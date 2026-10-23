@@ -105,12 +105,6 @@ jobs:
         shell: bash
         run: uv run --no-sync pytest tests/ --ignore=tests/e2e --collect-only -q -p no:cacheprovider | grep '::' > collected.txt
 
-      - name: Validate manifest and balance
-        # The guard exits 1 on any manifest problem or shard imbalance, which
-        # fails this job. A missing/empty manifest is a hard failure, not a
-        # silent fallback to an even split.
-        run: uv run --no-sync python scripts/check_shard_manifest.py --manifest tests/.test_durations --collected-file collected.txt --splits 4 --max-ratio 2.0
-
       - name: Upload test durations
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
         with:
@@ -118,3 +112,9 @@ jobs:
           path: tests/.test_durations
           # upload-artifact skips dotfiles unless asked, even an explicit path.
           include-hidden-files: true
+
+      - name: Validate manifest and balance
+        # The guard exits 1 on any manifest problem or shard imbalance, which
+        # fails this job. A missing/empty manifest is a hard failure, not a
+        # silent fallback to an even split.
+        run: uv run --no-sync python scripts/check_shard_manifest.py --manifest tests/.test_durations --collected-file collected.txt --splits 4 --max-ratio 2.0
