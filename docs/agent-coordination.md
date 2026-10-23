@@ -754,6 +754,12 @@ different project, and 403 when the agent lacks the `canvas_read` scope or the
   `/agent` suffix, except withdraw and the list, which are one route serving
   both callers (`_is_agent_decisions_path` in
   `tinyagentos/auth_middleware.py`).
+  A `shell_command` decision (raised by taOS, never by an agent, when the
+  taOS Agent's Claude Code shell hits a command the user has not decided) is a
+  gate kind: only the user's session answer writes the allow/deny rule, the
+  agent mirror and device bearers are refused. The rules live behind the
+  session routes `GET /api/taos-agent/shell-profile` and
+  `PUT|DELETE /api/taos-agent/shell-profile/{rule}`.
 - **observatory_control**: the Observatory fleet dials.
   `GET|POST /api/observatory/pause`, `GET|POST /api/observatory/throttle`,
   `GET|POST /api/observatory/approval-mode`, `GET /api/observatory/fleet`,
