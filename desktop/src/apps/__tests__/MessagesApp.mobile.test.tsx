@@ -242,4 +242,60 @@ describe("MessagesApp fetchAgentLists - archived fetch failure", () => {
       expect(sidebar.getAttribute("data-agent-roster-ready")).toBe("false");
     });
   });
+
+  it("populates liveAgents and archivedAgents when both endpoints return ok without content-type header", async () => {
+    (useIsMobile as ReturnType<typeof vi.fn>).mockReturnValue(true);
+    originalFetch = global.fetch;
+    global.fetch = vi.fn().mockImplementation((url: string) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/api/agents") && urlStr.includes("include_guests=1")) {
+        return Promise.resolve({
+          ok: true,
+          headers: { get: () => null },
+          json: () => Promise.resolve([{ name: "live-agent", display_name: "Live Agent", status: "running" }]),
+        } as unknown as Response);
+      }
+      if (urlStr.includes("/api/agents/archived")) {
+        return Promise.resolve({
+          ok: true,
+          headers: { get: () => null },
+          json: () => Promise.resolve([]),
+        } as unknown as Response);
+      }
+      if (urlStr.includes("/api/chat/channels") && !urlStr.includes("/messages")) {
+        return Promise.resolve({
+          ok: true,
+          headers: { get: () => "application/json" },
+          json: () => Promise.resolve({ channels: [], unread: {} }),
+        } as unknown as Response);
+      }
+      if (urlStr.includes("/api/chat/unread")) {
+        return Promise.resolve({
+          ok: true,
+          headers: { get: () => "application/json" },
+          json: () => Promise.resolve({ unread: {} }),
+        } as unknown as Response);
+      }
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        headers: { get: () => "application/json" },
+        json: () => Promise.resolve({ error: "not found" }),
+      } as unknown as Response);
+    });
+
+    render(<MessagesApp windowId="test" />);
+
+    await waitFor(() => {
+      const sidebar = screen.getByTestId("channel-sidebar");
+      const liveAgents = JSON.parse(sidebar.getAttribute("data-live-agents") || "[]");
+      expect(liveAgents).toHaveLength(1);
+      expect(liveAgents[0].name).toBe("live-agent");
+    });
+
+    await waitFor(() => {
+      const sidebar = screen.getByTestId("channel-sidebar");
+      expect(sidebar.getAttribute("data-agent-roster-ready")).toBe("true");
+    });
+  });
 });

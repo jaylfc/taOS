@@ -1050,8 +1050,6 @@ export function MessagesApp({
       try {
         const res = await fetch("/api/agents?include_guests=1");
         if (!res.ok) return null;
-        const ct = res.headers?.get("content-type") ?? "";
-        if (!ct.includes("application/json")) return null;
         const data = await res.json();
         if (Array.isArray(data)) {
           setLiveAgents(data);
@@ -1067,8 +1065,6 @@ export function MessagesApp({
       try {
         const res = await fetch("/api/agents/archived");
         if (!res.ok) return null;
-        const ct = res.headers?.get("content-type") ?? "";
-        if (!ct.includes("application/json")) return null;
         const data = await res.json();
         if (Array.isArray(data)) {
           setArchivedAgents(data);
