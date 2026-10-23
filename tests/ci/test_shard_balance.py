@@ -6,8 +6,10 @@ before the script is implemented. The failing run is recorded under the `Red`
 fence; the passing run follows the `Green` implementation.
 """
 import json
+import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch, MagicMock
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
@@ -143,3 +145,55 @@ def test_duration_based_chunks_empty_shard_fails(tmp_path):
         ]
     )
     assert rc == 1
+
+
+def test_split_uses_collection_order(tmp_path, monkeypatch):
+    """split_shards receives collected in file order, not hash order."""
+    slow_ids = [f"tests/test_s{i:02}.py::t" for i in range(20)]
+    fast_ids = [f"tests/test_f{i:02}.py::t" for i in range(60)]
+    file_order = slow_ids + fast_ids
+
+    manifest = {tid: (10.0 if i < 20 else 0.5) for i, tid in enumerate(file_order)}
+    collected_path = _write_collected(tmp_path, file_order)
+    manifest_path = _write_manifest(tmp_path, manifest)
+
+    recorded = {}
+    original_split_shards = csm.split_shards
+
+    def wrapper(manifest_arg, collected_arg, splits, algorithm_name):
+        recorded["collected"] = collected_arg
+        return original_split_shards(manifest_arg, collected_arg, splits, algorithm_name)
+
+    monkeypatch.setattr(csm, "split_shards", wrapper)
+
+    rc = csm.main(
+        [
+            "--manifest",
+            str(manifest_path),
+            "--collected-file",
+            str(collected_path),
+            "--splits",
+            "4",
+            "--max-ratio",
+            "1.25",
+        ]
+    )
+
+    assert rc == 0
+    assert recorded["collected"] == file_order
+
+
+def test_collected_ids_fails_on_collection_error(monkeypatch):
+    """collected_ids raises SystemExit(2) when pytest collection fails."""
+    mock_result = MagicMock()
+    mock_result.returncode = 2
+    mock_result.stdout = "tests/test_a.py::t\n"
+    mock_result.stderr = "ERROR collecting"
+
+    with patch("check_shard_manifest.subprocess.run", return_value=mock_result):
+        try:
+            csm.collected_ids()
+        except SystemExit as e:
+            assert e.code == 2
+        else:
+            assert False, "expected SystemExit"

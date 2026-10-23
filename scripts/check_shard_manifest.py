@@ -64,11 +64,12 @@ def load_manifest(path) -> dict[str, float]:
     return data
 
 
-def collected_ids(pytest_args=None) -> set[str]:
+def collected_ids(pytest_args=None) -> list[str]:
     """Collect test node ids by invoking pytest --collect-only.
 
     Runs: python -m pytest --collect-only -q -p no:cacheprovider <args>
-    and returns the lines containing '::'. Default args are
+    and returns the lines containing '::' in output order with duplicates
+    dropped (first occurrence kept). Default args are
     ['tests/', '--ignore=tests/e2e'].
     """
     if pytest_args is None:
@@ -84,7 +85,18 @@ def collected_ids(pytest_args=None) -> set[str]:
         *pytest_args,
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    return {line.strip() for line in result.stdout.splitlines() if "::" in line}
+    if result.returncode != 0:
+        tail = "\n".join(result.stderr.splitlines()[-10:])
+        if tail:
+            print(f"pytest collection failed (exit {result.returncode}):\n{tail}", file=sys.stderr)
+        else:
+            print(f"pytest collection failed (exit {result.returncode})", file=sys.stderr)
+        raise SystemExit(2)
+    return list(dict.fromkeys(
+        line.strip()
+        for line in result.stdout.splitlines()
+        if "::" in line
+    ))
 
 
 def check_keys(manifest, collected, min_coverage=MIN_COVERAGE) -> list[str]:
@@ -158,22 +170,23 @@ def main(argv=None) -> int:
     manifest = load_manifest(args.manifest)
 
     if args.collected_file:
-        collected = {
+        collected = list(dict.fromkeys(
             line.strip()
             for line in Path(args.collected_file).read_text().splitlines()
             if "::" in line
-        }
+        ))
     else:
         collected = collected_ids()
 
-    problems = check_keys(manifest, collected, min_coverage=MIN_COVERAGE)
+    collected_set = set(collected)
+    problems = check_keys(manifest, collected_set, min_coverage=MIN_COVERAGE)
 
     totals: list[float] = []
     ratio: float | None = None
     if manifest:
         try:
             totals = split_shards(
-                manifest, list(collected), args.splits, args.splitting_algorithm
+                manifest, collected, args.splits, args.splitting_algorithm
             )
             ratio = balance_ratio(totals)
         except ValueError:
@@ -189,7 +202,7 @@ def main(argv=None) -> int:
         return 1
 
     coverage = (
-        len(set(manifest) & collected) / len(collected) * 100 if collected else 0.0
+        len(set(manifest) & collected_set) / len(collected_set) * 100 if collected_set else 0.0
     )
     if ratio is None:
         print(

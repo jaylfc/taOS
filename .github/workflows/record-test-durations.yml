@@ -102,6 +102,7 @@ jobs:
           PY
 
       - name: Collect test ids
+        shell: bash
         run: uv run --no-sync pytest tests/ --ignore=tests/e2e --collect-only -q -p no:cacheprovider | grep '::' > collected.txt
 
       - name: Validate manifest and balance
