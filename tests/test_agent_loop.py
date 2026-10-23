@@ -571,3 +571,70 @@ async def test_message_arriving_during_cancel_window_is_not_dropped_and_no_concu
     assert any(m.content == "message during cancel" for m in delivered)
     assert loop.state == LoopState.IDLE
     assert loop.current_turn_id is None
+
+
+# ---------------------------------------------------------------------------
+# Cancellation safety: reach_safe_point must restore state on CancelledError
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_cancel_during_safe_point_subagent_wait_returns_to_idle():
+    """If reach_safe_point is cancelled while awaiting cancel_subagents,
+    the loop must return to IDLE (not stay wedged in SAFE_POINT)."""
+    loop = AgentLoop()
+    await loop.handle_message("start a long build")
+
+    # Spawn a subagent that never completes (awaits a never-set event).
+    never = asyncio.Event()
+
+    async def _stuck_worker(progress):
+        await never.wait()
+        return "done"
+
+    sub_id = await loop.spawn_subagent("stuck work", _stuck_worker)
+    # Give the subagent task a moment to start and hit the wait.
+    await asyncio.sleep(0)
+
+    # Queue a redirect so reach_safe_point will call cancel_subagents.
+    await loop.handle_message("abort", is_redirect=True)
+    assert loop.has_pending_redirect() is True
+
+    # Monkeypatch cancel_and_wait to suspend forever so we can cancel
+    # reach_safe_point while it's inside that wait.
+    import tinyagentos.agent_loop as agent_loop_module
+    original_cancel_and_wait = agent_loop_module.cancel_and_wait
+
+    suspend = asyncio.Event()
+
+    async def _suspending_cancel_and_wait(tasks, *, timeout=10.0):
+        # Cancel the tasks as the real function would, then suspend.
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        await suspend.wait()  # never resolves
+        return []  # unreachable
+
+    agent_loop_module.cancel_and_wait = _suspending_cancel_and_wait
+    try:
+        # Start reach_safe_point as a task; it will enter cancel_subagents ->
+        # cancel_and_wait and suspend there.
+        safe_point_task = asyncio.create_task(loop.reach_safe_point())
+
+        # Yield a few times so the task enters the patched cancel_and_wait.
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+        # Now cancel the safe_point_task while it's waiting in cancel_and_wait.
+        safe_point_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await safe_point_task
+
+        # RED: on the buggy base the loop stays in SAFE_POINT.
+        assert loop.state == LoopState.IDLE, f"expected IDLE, got {loop.state}"
+
+        # A subsequent message should start a new turn (IMMEDIATE), not be queued.
+        action = await loop.handle_message("fresh turn")
+        assert action == LoopAction.IMMEDIATE
+        assert loop.state == LoopState.WORKING
+    finally:
+        agent_loop_module.cancel_and_wait = original_cancel_and_wait
