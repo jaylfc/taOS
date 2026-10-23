@@ -441,12 +441,12 @@ def test_bypass_sudo_clustered_short_flag():
         assert msg is not None, f"should refuse but got None for {cmd!r}"
 
 
-def test_bypass_chroot_long_options():
+def test_bypass_chroot_attached_forms():
     from tinyagentos.claude_code_guard import refusal
-    # These long options should be REFUSED but are currently ALLOWED
+    # These attached forms should be REFUSED but are currently ALLOWED
     cases = [
-        'chroot --userspec root:root /tmp/x g""h pr merge',
-        'chroot --groups g /tmp/x g""h pr merge',
+        'chroot --userspec=root:root /tmp/x g""h pr merge',
+        'chroot --groups=g /tmp/x g""h pr merge',
     ]
     for cmd in cases:
         payload = {"tool_name": "Bash", "tool_input": {"command": cmd}}
@@ -482,12 +482,12 @@ def test_benign_sudo_clustered_short_flag():
         assert refusal(payload) is None, f"should allow but got refusal for {cmd!r}"
 
 
-def test_benign_chroot_long_options():
+def test_benign_chroot_attached_forms():
     from tinyagentos.claude_code_guard import refusal
-    # These benign cases should stay ALLOWED
+    # These benign attached forms should stay ALLOWED
     cases = [
-        'chroot --userspec root:root /tmp/x ls',
-        'chroot --groups g /tmp/x ls',
+        'chroot --userspec=root:root /tmp/x ls',
+        'chroot --groups=g /tmp/x ls',
     ]
     for cmd in cases:
         payload = {"tool_name": "Bash", "tool_input": {"command": cmd}}

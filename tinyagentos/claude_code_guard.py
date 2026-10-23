@@ -341,10 +341,13 @@ def commands(command: str) -> list[str] | None:
                     # Check if this is a short option (single dash) and last letter takes a value
                     last_char = tok[-1]
                     if last_char in _WRAPPER_SHORT_OPTS_WITH_VALUE[wrapper]:
-                        # Check that this option is not part of a longer token where earlier letters already take values
-                        # For -la: if 'l' is not in value-taking set, and 'a' is the last letter, we need to skip next word
-                        skip_next = True
-                        continue
+                        # Check that earlier letters in the token are not also value-taking
+                        # For sudo -Cu: 'u' takes a value, so -Cu should NOT skip next word
+                        # For exec -la: 'l' is not in value-taking set, 'a' is last, so -la skips next word
+                        earlier_letters = tok[1:-1]
+                        if not any(letter in _WRAPPER_SHORT_OPTS_WITH_VALUE[wrapper] for letter in earlier_letters):
+                            skip_next = True
+                            continue
             # timeout: skip the first non-option (duration) after options
             if wrapper == "timeout" and wrapper_skip_duration:
                 if not tok.startswith("-"):
@@ -387,8 +390,7 @@ def commands(command: str) -> list[str] | None:
                     skip_next = True
                     continue
                 # Handle attached forms like --userspec=VALUE, --groups=VALUE
-                # These are already handled by the skip_next above for plain options
-                # but for attached forms we need to ensure they don't swallow the next word
+                # These should not set skip_next for the next word
                 if tok.startswith("-"):
                     # Check for attached value form (--opt=value)
                     for opt in _WRAPPER_OPTS_WITH_VALUE[wrapper]:
