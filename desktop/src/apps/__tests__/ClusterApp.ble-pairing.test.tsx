@@ -188,4 +188,161 @@ describe("ClusterApp — Bluetooth pairing", () => {
       expect(screen.queryByRole("dialog", { name: "Add a device" })).not.toBeInTheDocument();
     });
   });
+
+  it("start returns pin_required true -> Confirm disabled until a 6-digit PIN is typed, then the confirm request body contains label_pin", async () => {
+    const fetchMock = vi.fn().mockImplementation((input: string, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/cluster/workers")) return jsonResponse(WORKERS_RESPONSE);
+      if (url.startsWith("/api/cluster/ble/scan")) {
+        return jsonResponse({
+          devices: [
+            { address: "AA:BB:CC:DD:EE:FF", name: "taOSusb-JLJ6", board_id: "jlj6", state: "unpaired", pairable: true, rssi: -55 },
+          ],
+        });
+      }
+      if (url === "/api/cluster/ble/pair/start" && init?.method === "POST") {
+        return jsonResponse({ session: "sess-1", code: "123456", board_id: "jlj6", name: "taOSusb-JLJ6", pin_required: true });
+      }
+      if (url === "/api/cluster/ble/pair/confirm" && init?.method === "POST") {
+        if (init?.body) {
+          const body = JSON.parse(init.body as string);
+          return jsonResponse({ node: { name: "taOSusb-JLJ6", kind: "device", board_id: "jlj6" } });
+        }
+        return jsonResponse({}, 404);
+      }
+      return jsonResponse({}, 404);
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    await openAddDeviceModal();
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+
+    const pairBtn = await screen.findByRole("button", { name: "Pair with taOSusb-JLJ6" });
+    fireEvent.click(pairBtn);
+
+    // Confirm should be disabled initially (pin_required is true, PIN is empty)
+    const confirmBtn = await screen.findByRole("button", { name: "Pair" });
+    expect(confirmBtn).toBeDisabled();
+
+    // Type a 6-digit PIN directly into the Label PIN input via the accessible role
+    const labelPinInput = await screen.getByRole("textbox", { name: /PIN/ });
+    expect(labelPinInput).toBeInTheDocument();
+
+    fireEvent.change(labelPinInput, { target: { value: "123456" } });
+
+    // Confirm should now be enabled
+    await waitFor(() => {
+      expect(confirmBtn).toBeEnabled();
+    });
+
+    // Submit the confirm
+    fireEvent.click(confirmBtn);
+
+    // Should have been called with label_pin in the body
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/cluster/ble/pair/confirm",
+        expect.objectContaining({
+          method: "POST",
+          body: expect.stringContaining("label_pin"),
+        }),
+      );
+    });
+  });
+
+  it("pin_required false -> the PIN field is still rendered, Confirm enabled, body has no label_pin when empty", async () => {
+    const fetchMock = vi.fn().mockImplementation((input: string, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/cluster/workers")) return jsonResponse(WORKERS_RESPONSE);
+      if (url.startsWith("/api/cluster/ble/scan")) {
+        return jsonResponse({
+          devices: [
+            { address: "AA:BB:CC:DD:EE:FF", name: "taOSusb-JLJ6", board_id: "jlj6", state: "unpaired", pairable: true, rssi: -55 },
+          ],
+        });
+      }
+      if (url === "/api/cluster/ble/pair/start" && init?.method === "POST") {
+        return jsonResponse({ session: "sess-1", code: "123456", board_id: "jlj6", name: "taOSusb-JLJ6", pin_required: false });
+      }
+      if (url === "/api/cluster/ble/pair/confirm" && init?.method === "POST") {
+        if (init?.body) {
+          const body = JSON.parse(init.body as string);
+          return jsonResponse({ node: { name: "taOSusb-JLJ6", kind: "device", board_id: "jlj6" } });
+        }
+        return jsonResponse({}, 404);
+      }
+      return jsonResponse({}, 404);
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    await openAddDeviceModal();
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+
+    const pairBtn = await screen.findByRole("button", { name: "Pair with taOSusb-JLJ6" });
+    fireEvent.click(pairBtn);
+
+    // Label PIN field should be visible even when pin_required is false
+    const labelPinInput = await screen.findByTestId("label-pin-input");
+    expect(labelPinInput).toBeInTheDocument();
+
+    // Confirm should be enabled (pin_required is false)
+    const confirmBtn = await screen.findByRole("button", { name: "Pair" });
+    expect(confirmBtn).toBeEnabled();
+
+    // Submit the confirm with empty PIN
+    fireEvent.click(confirmBtn);
+
+    // Should have been called without label_pin in the body
+    await waitFor(() => {
+      const calls = fetchMock.mock.calls;
+      const lastCall = calls[calls.length - 1];
+      expect(lastCall[0]).toBe("/api/cluster/ble/pair/confirm");
+      expect(lastCall[1].method).toBe("POST");
+      expect(lastCall[1].body).not.toContain("label_pin");
+    });
+  });
+
+  it("confirm returns 400 label_pin_required -> the inline alert text shows", async () => {
+    const fetchMock = vi.fn().mockImplementation((input: string, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/cluster/workers")) return jsonResponse(WORKERS_RESPONSE);
+      if (url.startsWith("/api/cluster/ble/scan")) {
+        return jsonResponse({
+          devices: [
+            { address: "AA:BB:CC:DD:EE:FF", name: "taOSusb-JLJ6", board_id: "jlj6", state: "unpaired", pairable: true, rssi: -55 },
+          ],
+        });
+      }
+      if (url === "/api/cluster/ble/pair/start" && init?.method === "POST") {
+        return jsonResponse({ session: "sess-1", code: "123456", board_id: "jlj6", name: "taOSusb-JLJ6", pin_required: true });
+      }
+      if (url === "/api/cluster/ble/pair/confirm" && init?.method === "POST") {
+        return jsonResponse({ error: "label_pin_required" }, 400);
+      }
+      return jsonResponse({}, 404);
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    await openAddDeviceModal();
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+
+    const pairBtn = await screen.findByRole("button", { name: "Pair with taOSusb-JLJ6" });
+    fireEvent.click(pairBtn);
+
+    // Type a 6-digit PIN
+    const labelPinInput = await screen.findByTestId("label-pin-input");
+    fireEvent.change(labelPinInput, { target: { value: "123456" } });
+
+    // Confirm should be enabled
+    const confirmBtn = await screen.findByRole("button", { name: "Pair" });
+    expect(confirmBtn).toBeEnabled();
+
+    // Submit the confirm
+    fireEvent.click(confirmBtn);
+
+    // The inline alert should show "This board needs the PIN from its label."
+    await waitFor(() => {
+      expect(screen.getByText("This board needs the PIN from its label.")).toBeInTheDocument();
+    });
+  });
 });

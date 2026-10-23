@@ -263,6 +263,23 @@ a PR without it that touches a protected path fails the gate. When reviewing a P
 that legitimately changes these files, apply `gate-integrity-allow` after
 confirming the change is intentional and reviewed.
 
+## BLE pairing
+
+The `POST /api/cluster/ble/pair/start` endpoint returns `pin_required: boolean` when
+the board is pin-bound. If `pin_required` is true, the BLE pairing confirm step in
+the UI must show a "Label PIN" text input that is always displayed (the board's claim
+must not hide it). The `POST /api/cluster/ble/pair/confirm` endpoint accepts a
+`label_pin` field (4-12 digits). Two error codes may be returned as 400 responses:
+
+- `label_pin_required` — "This board needs the PIN from its label." shown inline
+  with `role="alert"`
+- `invalid_label_pin` — "The label PIN is 4 to 12 digits." shown inline with
+  `role="alert"`
+
+The `label_pin` is only sent in the confirm body when the input is non-empty. When
+`pin_required` is true from the start response, the Confirm button is disabled until
+the Label PIN has 4-12 digits.
+
 ## Spend model tokens on judgement, not on waiting
 
 An agent working this repo pays for every turn it takes. Reserve those turns for

@@ -1139,6 +1139,8 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
   const [pairStarting, setPairStarting] = useState(false);
   const [pairConfirming, setPairConfirming] = useState(false);
   const [pairError, setPairError] = useState<string | null>(null);
+  const [labelPin, setLabelPin] = useState("");
+  const [pinRequired, setPinRequired] = useState(false);
   const pairCodeRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -1199,6 +1201,7 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
           board_id: json.board_id,
           name: json.name,
         });
+        setPinRequired(json.pin_required ?? false);
       } else if (res.status === 409) {
         setPairError("This device isn't pairable right now. It may already be paired, or be pausing after failed attempts. Wait a minute and try again.");
       } else if (res.status === 504) {
@@ -1220,10 +1223,14 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
     setPairConfirming(true);
     setPairError(null);
     try {
+      const body = JSON.stringify({
+        session: pairSession.session,
+        ...(labelPin.trim() ? { label_pin: labelPin.trim() } : {}),
+      });
       const res = await fetch("/api/cluster/ble/pair/confirm", {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ session: pairSession.session }),
+        body,
       });
       if (res.ok) {
         const json = await res.json();
@@ -1238,6 +1245,15 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
       } else if (res.status === 502) {
         const j = await res.json().catch(() => ({}));
         setPairError(j?.why ? String(j.why) : "The device rejected pairing.");
+      } else if (res.status === 400) {
+        const j = await res.json().catch(() => ({}));
+        if (j.error === "label_pin_required") {
+          setPairError("This board needs the PIN from its label.");
+        } else if (j.error === "invalid_label_pin") {
+          setPairError("The label PIN is 4 to 12 digits.");
+        } else {
+          setPairError(j?.error ? String(j.error) : `Confirm failed (${res.status})`);
+        }
       } else {
         const j = await res.json().catch(() => ({}));
         setPairError(j?.error ? String(j.error) : `Confirm failed (${res.status})`);
@@ -1246,7 +1262,7 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
       setPairError(e instanceof Error ? e.message : "Network error");
     }
     setPairConfirming(false);
-  }, [pairSession, showToast, fetchWorkers]);
+  }, [pairSession, labelPin, showToast, fetchWorkers]);
 
   const handleBlePairCancel = useCallback(() => {
     if (pairSession) cancelBlePairSession(pairSession.session);
@@ -1826,6 +1842,28 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
                         {pairSession.code.slice(0, 3)} {pairSession.code.slice(3)}
                       </span>
                     </div>
+                    <div className="mb-3">
+                      <label className="block text-[10px] text-shell-text-tertiary mb-1" htmlFor="label-pin">
+                        Label PIN
+                      </label>
+                      <input
+                        id="label-pin"
+                        data-testid="label-pin-input"
+                        type="text"
+                        inputMode="numeric"
+                        autoComplete="off"
+                        value={labelPin}
+                        onChange={(e) => setLabelPin(e.target.value)}
+                        aria-describedby="label-pin-help"
+                        aria-required={pinRequired}
+                        aria-label="Label PIN"
+                        role="textbox"
+                        className="w-full h-9 mb-1 rounded-md border border-white/10 bg-shell-bg px-2.5 text-sm text-shell-text focus-visible:outline-none focus-visible:border-accent/40 focus-visible:ring-2 focus-visible:ring-accent/20"
+                      />
+                      <p id="label-pin-help" className="text-[10px] text-shell-text-tertiary">
+                        The PIN printed on the board's label. Leave empty if your board has no label.
+                      </p>
+                    </div>
                     {pairError && (
                       <p className="text-[11px] text-red-300 mt-1" role="alert">
                         {pairError}
@@ -1844,7 +1882,7 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
                         variant="default"
                         size="sm"
                         onClick={handleBlePairConfirm}
-                        disabled={pairConfirming}
+                        disabled={pairConfirming || (pinRequired && (labelPin.trim().length < 4 || labelPin.trim().length > 12))}
                       >
                         {pairConfirming ? "Pairing..." : "Pair"}
                       </Button>
