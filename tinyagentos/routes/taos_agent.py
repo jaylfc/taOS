@@ -660,7 +660,6 @@ async def chat(request: Request, body: ChatRequest):
 
     shell_user = getattr(request.state, "user_id", None) or "user"
     if use_claude_code:
-        harness.shell_rules = await shell_profile.rules_for(store, shell_user)
         adapter = ClaudeCodeCliAdapter(ClaudeCodeCliConfig(harness=harness, system=system_prompt), sink)
         adapter.session_id = getattr(app_state, "taos_claude_code_session_id", None)
     elif use_picoclaw:
@@ -739,6 +738,13 @@ async def chat(request: Request, body: ChatRequest):
             _queued_stream(),
             media_type="application/x-ndjson",
         )
+
+    if use_claude_code:
+        try:
+            harness.shell_rules = await shell_profile.rules_for(store, shell_user)
+        except Exception:
+            await agent_loop.reach_safe_point()
+            raise
 
     async def _drive() -> None:
         try:

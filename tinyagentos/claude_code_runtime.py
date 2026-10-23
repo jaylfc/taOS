@@ -137,7 +137,7 @@ class ClaudeCodeHarness:
             os.chmod(rules_path, 0o600)
             command += (f" --rules {shlex.quote(str(rules_path))}"
                         f" --asks {shlex.quote(str(self.home / SHELL_ASKS_FILENAME))}")
-        settings = {"hooks": {"PreToolUse": [
+        settings = {"disableAllHooks": False, "hooks": {"PreToolUse": [
             {"matcher": "Bash", "hooks": [{"type": "command", "command": command}]},
         ]}}
         self.settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
@@ -191,7 +191,7 @@ class ClaudeCodeHarness:
         argv = [self.binary, "-p", "--output-format", "stream-json", "--verbose",
                 "--model", self.model, "--permission-mode", "default",
                 "--allowedTools", ",".join(self.allowed_tools()),
-                "--settings", str(self.settings_path)]
+                "--settings", str(self.settings_path), "--setting-sources", "user"]
         if system_prompt_file is not None:
             argv += ["--append-system-prompt-file", system_prompt_file]
         if session_id:

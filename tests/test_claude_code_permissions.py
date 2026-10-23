@@ -58,6 +58,19 @@ def test_argv_passes_the_hook_settings_file(tmp_path):
     assert any(g["matcher"] == "Bash" and g["hooks"][0]["type"] == "command" for g in groups)
 
 
+def test_argv_passes_setting_sources_flag(tmp_path):
+    h = _harness(tmp_path)
+    for argv in (h._argv(None, None), h._argv('sess-1', '/tmp/sys.md')):
+        assert _flag(argv, '--setting-sources') == 'user'
+
+
+def test_settings_disable_all_hooks_false(tmp_path):
+    h = _harness(tmp_path)
+    settings = json.loads(Path(_flag(h._argv(None, None), "--settings")).read_text())
+    assert settings['disableAllHooks'] is False
+    assert 'PreToolUse' in settings['hooks']
+
+
 def _run_hook(tmp_path, payload) -> subprocess.CompletedProcess:
     h = _harness(tmp_path)
     settings = json.loads(Path(_flag(h._argv(None, None), "--settings")).read_text())
