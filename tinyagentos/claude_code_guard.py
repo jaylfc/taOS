@@ -43,6 +43,14 @@ SUBCOMMAND_PROGRAMS = frozenset({
     "apt", "apt-get", "brew", "cargo", "dnf", "docker", "git", "go", "kubectl", "make",
     "npm", "npx", "pip", "pip3", "pnpm", "podman", "snap", "systemctl", "uv", "yarn",
 })
+# Wrapper programs that prefix another program. After a wrapper we keep
+# expecting a program: skip its option words, NAME=value words (env), and for
+# timeout the first non-option word (the duration); for sudo/doas skip the
+# value of -u/-g/-C. The wrapper's own key is still added.
+WRAPPER_PROGRAMS = frozenset({
+    "env", "nice", "nohup", "timeout", "xargs", "sudo", "doas", "exec",
+    "command", "builtin", "time", "stdbuf", "setsid", "ionice", "chroot", "busybox",
+})
 # Options of those programs that take a separate value (``git -C dir status``).
 _OPTIONS_WITH_VALUE = frozenset({
     "-C", "-c", "--config-env",
@@ -136,6 +144,9 @@ def commands(command: str) -> list[str] | None:
     prog: str | None = None  # the program of the current simple command
     uniq_pos = 0  # positional argument count for uniq (2nd is output file)
     uniq_end_opts = False  # -- seen for uniq, everything after is positional
+    # Wrapper state: when we are inside a wrapper program, what kind of skipping to do
+    wrapper: str | None = None  # current wrapper program name
+    wrapper_skip_duration = False  # for timeout: skip the first non-option (duration)
     for tok in tokens:
         if tok and set(tok) <= _OPERATOR_CHARS:
             if set(tok) & set("<>") and not set(tok) & set(";|()"):
@@ -148,6 +159,9 @@ def commands(command: str) -> list[str] | None:
             if sub_of:
                 add(sub_of)
                 sub_of = None
+            if wrapper:
+                wrapper = None
+                wrapper_skip_duration = False
             expect = True
             prog = None
             uniq_pos = 0
@@ -226,7 +240,7 @@ def commands(command: str) -> list[str] | None:
                                 skip_next = True
                             # else the rest of tok is the attached value
                             break
-                    continue
+                        continue
                 # general --output handling (git diff, etc.)
                 if tok == "--output" or tok.startswith("--output="):
                     add(OUTPUT_REDIRECT)
@@ -235,6 +249,43 @@ def commands(command: str) -> list[str] | None:
                     continue
             continue
         name = os.path.basename(tok) or tok
+        # Handle wrapper programs: they prefix another program
+        if name in WRAPPER_PROGRAMS:
+            add(name)
+            wrapper = name
+            # For timeout, the first non-option after options is the duration (skip it)
+            if name == "timeout":
+                wrapper_skip_duration = True
+            # For sudo/doas, we need to skip values of -u, -g, -C
+            # For env, NAME=value assignments are handled by _ASSIGNMENT check above
+            # For other wrappers, just skip options (words starting with -)
+            expect = True  # keep expecting the real program
+            prog = name
+            uniq_pos = 0
+            uniq_end_opts = False
+            continue
+        # If we are in a wrapper context, skip its options
+        if wrapper:
+            # sudo/doas: skip -u user, -g group, -C dir (and their long forms)
+            if wrapper in ("sudo", "doas"):
+                if tok in ("-u", "-g", "-C", "--user", "--group", "--chdir"):
+                    skip_next = True
+                    continue
+                if tok.startswith(("-u", "-g", "-C")) and len(tok) > 2:
+                    # -uuser, -ggroup, -Cdir (attached value)
+                    continue
+            # timeout: skip the first non-option (duration) after options
+            if wrapper == "timeout" and wrapper_skip_duration:
+                if not tok.startswith("-"):
+                    wrapper_skip_duration = False
+                    continue
+            # Other wrappers: skip options (words starting with -)
+            if tok.startswith("-"):
+                continue
+            # This token is the real program
+            wrapper = None
+            wrapper_skip_duration = False
+            # Fall through to process as normal program
         expect = False
         prog = name
         uniq_pos = 0
@@ -287,8 +338,15 @@ def refusal(payload: object) -> str | None:
     command = tool_input.get("command") if isinstance(tool_input, dict) else None
     if not isinstance(command, str):
         return REFUSAL
+    # Hard refusal on raw text (catches gh/git push in simple cases)
     if _GH.search(command) or _GIT_PUSH.search(command):
         return REFUSAL
+    # Hard refusal on parsed command keys (catches g""h, 'gh', etc.)
+    keys = commands(command)
+    if keys:
+        for key in keys:
+            if key == "gh" or key.startswith("gh ") or key == "git push":
+                return REFUSAL
     return None
 
 
@@ -297,35 +355,40 @@ def _arg(argv: list[str], flag: str) -> str | None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    argv = sys.argv[1:] if argv is None else argv
     try:
-        payload = json.loads(sys.stdin.read())
-    except ValueError:
-        payload = None
-    message = refusal(payload)
-    rules_path = _arg(argv, "--rules")
-    if message is None and rules_path and payload.get("tool_name") == "Bash":
-        command = payload["tool_input"]["command"]
+        argv = sys.argv[1:] if argv is None else argv
         try:
-            with open(rules_path, encoding="utf-8") as f:
-                rules = json.load(f)
-            allow, deny = set(rules.get("allow") or ()), set(rules.get("deny") or ())
-        except (OSError, ValueError, AttributeError, TypeError):
-            print("Refused by taOS: the shell profile could not be read.", file=sys.stderr)
-            return 2
-        message, unknown = profile_refusal(command, allow, deny)
-        asks_path = _arg(argv, "--asks")
-        if unknown and asks_path:
+            payload = json.loads(sys.stdin.read())
+        except ValueError:
+            payload = None
+        message = refusal(payload)
+        rules_path = _arg(argv, "--rules")
+        if message is None and rules_path and payload.get("tool_name") == "Bash":
+            command = payload["tool_input"]["command"]
             try:
-                with open(asks_path, "a", encoding="utf-8") as f:
-                    f.writelines(json.dumps({"program": key, "command": command}) + "\n"
-                                 for key in unknown)
-            except OSError:
-                pass
-    if message is None:
-        return 0
-    print(message, file=sys.stderr)
-    return 2
+                with open(rules_path, encoding="utf-8") as f:
+                    rules = json.load(f)
+                allow, deny = set(rules.get("allow") or ()), set(rules.get("deny") or ())
+            except (OSError, ValueError, AttributeError, TypeError):
+                print("Refused by taOS: the shell profile could not be read.", file=sys.stderr)
+                return 2
+            message, unknown = profile_refusal(command, allow, deny)
+            asks_path = _arg(argv, "--asks")
+            if unknown and asks_path:
+                try:
+                    with open(asks_path, "a", encoding="utf-8") as f:
+                        f.writelines(json.dumps({"program": key, "command": command}) + "\n"
+                                     for key in unknown)
+                except OSError:
+                    pass
+        if message is None:
+            return 0
+        print(message, file=sys.stderr)
+        return 2
+    except Exception:
+        # Fail closed: any unexpected error blocks the call
+        print(REFUSAL, file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

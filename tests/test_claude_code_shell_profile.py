@@ -297,6 +297,64 @@ def test_control_commands_are_allowed():
 
 
 # ---------------------------------------------------------------------------
+# Wrapper programs, gh escaping, and fail-closed main() (tsk-lzyw3v)
+# ---------------------------------------------------------------------------
+
+def test_wrapper_programs_expose_real_program():
+    from tinyagentos.claude_code_guard import commands
+    # env
+    cmds = commands("env curl x")
+    assert "env" in cmds and "curl" in cmds, cmds
+    # timeout: first non-option is duration, then program
+    cmds = commands("timeout 60 curl x")
+    assert "curl" in cmds, cmds
+    # sudo -u bob curl x
+    cmds = commands("sudo -u bob curl x")
+    assert "curl" in cmds, cmds
+    # xargs curl
+    cmds = commands("xargs curl")
+    assert "curl" in cmds, cmds
+
+
+def test_hard_gh_refusal_on_parsed_keys():
+    from tinyagentos.claude_code_guard import refusal
+    # g""h and 'gh' should be refused same as gh
+    payload_gh = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "gh pr list"}}
+    payload_g_empty = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": 'g""h pr list'}}
+    payload_g_single = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "'gh' pr list"}}
+    msg_gh = refusal(payload_gh)
+    msg_g_empty = refusal(payload_g_empty)
+    msg_g_single = refusal(payload_g_single)
+    assert msg_gh is not None
+    assert msg_g_empty == msg_gh
+    assert msg_g_single == msg_gh
+    # git push also
+    payload_git = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "git push origin main"}}
+    assert refusal(payload_git) == msg_gh
+
+
+def test_main_fails_closed_on_exception(tmp_path, monkeypatch):
+    from tinyagentos.claude_code_guard import main
+    import json
+    import sys
+    from io import StringIO
+    # Monkeypatch the rules loader path to raise
+    def raise_runtime(*args, **kwargs):
+        raise RuntimeError("boom")
+    monkeypatch.setattr("builtins.open", raise_runtime)
+    # Prepare stdin with a payload that triggers profile check
+    payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": "ls"}})
+    old_stdin = sys.stdin
+    sys.stdin = StringIO(payload)
+    try:
+        # main with --rules pointing to a file (will hit the patched open)
+        rc = main(["--rules", "/nonexistent/rules.json"])
+    finally:
+        sys.stdin = old_stdin
+    assert rc == 2
+
+
+# ---------------------------------------------------------------------------
 # Profile store, asks -> Decisions, answers -> rules, settings routes
 # ---------------------------------------------------------------------------
 
