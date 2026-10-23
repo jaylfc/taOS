@@ -316,6 +316,41 @@ def test_wrapper_programs_expose_real_program():
     assert "curl" in cmds, cmds
 
 
+def test_wrapper_option_values_do_not_hide_program():
+    from tinyagentos.claude_code_guard import commands
+    cases = [
+        ("nice -n 10 curl x", "10"),
+        ("ionice -c 3 curl x", "3"),
+        ("stdbuf -o 0 curl x", "0"),
+        ("xargs -n 1 curl", "1"),
+        ("timeout -s KILL 60 curl x", "60"),
+        ("chroot /newroot curl x", "newroot"),
+        ("chroot / curl x", "/"),
+    ]
+    for cmd, bad in cases:
+        cmds = commands(cmd)
+        assert "curl" in cmds, f"curl missing in {cmd!r}: {cmds}"
+        assert bad not in cmds, f"option value {bad!r} leaked as key in {cmd!r}: {cmds}"
+
+
+def test_hard_refusal_sees_program_behind_wrapper_values():
+    from tinyagentos.claude_code_guard import refusal
+    cases = [
+        'chroot / g""h pr merge',
+        'chroot /newroot g""h pr merge',
+        'nice -n 10 g""h pr merge',
+        'timeout -s KILL 60 g""h pr merge',
+        'ionice -c 3 g""h pr merge',
+    ]
+    for cmd in cases:
+        payload = {"tool_name": "Bash", "tool_input": {"command": cmd}}
+        msg = refusal(payload)
+        assert msg is not None, f"should refuse but got None for {cmd!r}"
+    # positive control: sudo -u already fixed
+    payload = {"tool_name": "Bash", "tool_input": {"command": 'sudo -u x g""h pr merge'}}
+    assert refusal(payload) is not None
+
+
 def test_hard_gh_refusal_on_parsed_keys():
     from tinyagentos.claude_code_guard import refusal
     # g""h and 'gh' should be refused same as gh

@@ -51,6 +51,19 @@ WRAPPER_PROGRAMS = frozenset({
     "env", "nice", "nohup", "timeout", "xargs", "sudo", "doas", "exec",
     "command", "builtin", "time", "stdbuf", "setsid", "ionice", "chroot", "busybox",
 })
+# Options of wrapper programs that take a separate value (next word).
+_WRAPPER_OPTS_WITH_VALUE = {
+    "nice": frozenset({"-n", "--adjustment"}),
+    "ionice": frozenset({"-c", "-n", "-p", "--class", "--classdata", "--pid"}),
+    "stdbuf": frozenset({"-i", "-o", "-e", "--input", "--output", "--error"}),
+    "xargs": frozenset({
+        "-n", "-P", "-I", "-L", "-s", "-d", "-a", "-E",
+        "--max-args", "--max-procs", "--max-lines", "--max-chars",
+        "--delimiter", "--arg-file",
+    }),
+    "timeout": frozenset({"-s", "--signal", "-k", "--kill-after"}),
+    "env": frozenset({"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}),
+}
 # Options of those programs that take a separate value (``git -C dir status``).
 _OPTIONS_WITH_VALUE = frozenset({
     "-C", "-c", "--config-env",
@@ -147,6 +160,7 @@ def commands(command: str) -> list[str] | None:
     # Wrapper state: when we are inside a wrapper program, what kind of skipping to do
     wrapper: str | None = None  # current wrapper program name
     wrapper_skip_duration = False  # for timeout: skip the first non-option (duration)
+    wrapper_skip_root = False  # for chroot: skip the first non-option (root dir)
     for tok in tokens:
         if tok and set(tok) <= _OPERATOR_CHARS:
             if set(tok) & set("<>") and not set(tok) & set(";|()"):
@@ -162,6 +176,7 @@ def commands(command: str) -> list[str] | None:
             if wrapper:
                 wrapper = None
                 wrapper_skip_duration = False
+                wrapper_skip_root = False
             expect = True
             prog = None
             uniq_pos = 0
@@ -256,6 +271,11 @@ def commands(command: str) -> list[str] | None:
             # For timeout, the first non-option after options is the duration (skip it)
             if name == "timeout":
                 wrapper_skip_duration = True
+            # For chroot, the first non-option after options is the root dir (skip it)
+            if name == "chroot":
+                wrapper_skip_root = True
+            else:
+                wrapper_skip_root = False
             # For sudo/doas, we need to skip values of -u, -g, -C
             # For env, NAME=value assignments are handled by _ASSIGNMENT check above
             # For other wrappers, just skip options (words starting with -)
@@ -279,12 +299,23 @@ def commands(command: str) -> list[str] | None:
                 if not tok.startswith("-"):
                     wrapper_skip_duration = False
                     continue
+            # chroot: skip the first non-option (root dir) after options
+            if wrapper == "chroot" and wrapper_skip_root:
+                if not tok.startswith("-"):
+                    wrapper_skip_root = False
+                    continue
+            # Wrapper-specific options that take a separate value
+            if wrapper in _WRAPPER_OPTS_WITH_VALUE:
+                if tok in _WRAPPER_OPTS_WITH_VALUE[wrapper]:
+                    skip_next = True
+                    continue
             # Other wrappers: skip options (words starting with -)
             if tok.startswith("-"):
                 continue
             # This token is the real program
             wrapper = None
             wrapper_skip_duration = False
+            wrapper_skip_root = False
             # Fall through to process as normal program
         expect = False
         prog = name
