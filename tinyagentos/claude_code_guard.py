@@ -63,6 +63,7 @@ _WRAPPER_OPTS_WITH_VALUE = {
     }),
     "timeout": frozenset({"-s", "--signal", "-k", "--kill-after"}),
     "env": frozenset({"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}),
+    "exec": frozenset({"-a"}),
 }
 # Options of those programs that take a separate value (``git -C dir status``).
 _OPTIONS_WITH_VALUE = frozenset({
@@ -161,6 +162,7 @@ def commands(command: str) -> list[str] | None:
     wrapper: str | None = None  # current wrapper program name
     wrapper_skip_duration = False  # for timeout: skip the first non-option (duration)
     wrapper_skip_root = False  # for chroot: skip the first non-option (root dir)
+    env_split_string_pending = False  # for env -S/--split-string: next token is the split string
     for tok in tokens:
         if tok and set(tok) <= _OPERATOR_CHARS:
             if set(tok) & set("<>") and not set(tok) & set(";|()"):
@@ -177,6 +179,7 @@ def commands(command: str) -> list[str] | None:
                 wrapper = None
                 wrapper_skip_duration = False
                 wrapper_skip_root = False
+                env_split_string_pending = False
             expect = True
             prog = None
             uniq_pos = 0
@@ -190,6 +193,19 @@ def commands(command: str) -> list[str] | None:
                 add(OUTPUT_REDIRECT)
             continue
         if skip_next:
+            if env_split_string_pending:
+                env_split_string_pending = False
+                # Parse the split string recursively
+                if "$" in tok or "\\" in tok:
+                    add("env -S")
+                else:
+                    sub_keys = commands(tok)
+                    if sub_keys is None:
+                        add("env -S")
+                    else:
+                        for k in sub_keys:
+                            add(k)
+                continue
             skip_next = False
             continue
         if sub_of:
@@ -264,6 +280,13 @@ def commands(command: str) -> list[str] | None:
                     continue
             continue
         name = os.path.basename(tok) or tok
+        # chroot: skip the first non-option (root dir) after options - must run BEFORE
+        # WRAPPER_PROGRAMS check so a root like /tmp/timeout is not mistaken for the
+        # timeout wrapper.
+        if wrapper == "chroot" and wrapper_skip_root:
+            if not tok.startswith("-"):
+                wrapper_skip_root = False
+                continue
         # Handle wrapper programs: they prefix another program
         if name in WRAPPER_PROGRAMS:
             add(name)
@@ -294,6 +317,14 @@ def commands(command: str) -> list[str] | None:
                 if tok.startswith(("-u", "-g", "-C")) and len(tok) > 2:
                     # -uuser, -ggroup, -Cdir (attached value)
                     continue
+            # exec: skip -a NAME (and -aNAME attached form)
+            if wrapper == "exec":
+                if tok == "-a":
+                    skip_next = True
+                    continue
+                if tok.startswith("-a") and len(tok) > 2:
+                    # -aNAME (attached value)
+                    continue
             # timeout: skip the first non-option (duration) after options
             if wrapper == "timeout" and wrapper_skip_duration:
                 if not tok.startswith("-"):
@@ -303,6 +334,32 @@ def commands(command: str) -> list[str] | None:
             if wrapper == "chroot" and wrapper_skip_root:
                 if not tok.startswith("-"):
                     wrapper_skip_root = False
+                    continue
+            # env: handle -S/--split-string by parsing the split string recursively
+            if wrapper == "env":
+                split_string = None
+                if tok == "-S" or tok == "--split-string":
+                    skip_next = True
+                    env_split_string_pending = True
+                    continue
+                if tok.startswith("-S") and len(tok) > 2:
+                    # -S<text> attached form
+                    split_string = tok[2:]
+                elif tok.startswith("--split-string="):
+                    # --split-string=<text> attached form
+                    split_string = tok.split("=", 1)[1]
+                if split_string is not None:
+                    # Parse the split string recursively
+                    # Fail closed if it contains $ (env var expansion), backslash, or doesn't parse
+                    if "$" in split_string or "\\" in split_string:
+                        add("env -S")
+                    else:
+                        sub_keys = commands(split_string)
+                        if sub_keys is None:
+                            add("env -S")
+                        else:
+                            for k in sub_keys:
+                                add(k)
                     continue
             # Wrapper-specific options that take a separate value
             if wrapper in _WRAPPER_OPTS_WITH_VALUE:
@@ -316,6 +373,7 @@ def commands(command: str) -> list[str] | None:
             wrapper = None
             wrapper_skip_duration = False
             wrapper_skip_root = False
+            env_split_string_pending = False
             # Fall through to process as normal program
         expect = False
         prog = name
@@ -376,7 +434,7 @@ def refusal(payload: object) -> str | None:
     keys = commands(command)
     if keys:
         for key in keys:
-            if key == "gh" or key.startswith("gh ") or key == "git push":
+            if key == "gh" or key.startswith("gh ") or key == "git push" or key == "env -S":
                 return REFUSAL
     return None
 

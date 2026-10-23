@@ -351,6 +351,49 @@ def test_hard_refusal_sees_program_behind_wrapper_values():
     assert refusal(payload) is not None
 
 
+def test_hard_refusal_chroot_root_operand_bypass():
+    from tinyagentos.claude_code_guard import refusal
+    # chroot root operand parsed as a wrapper: /tmp/timeout has basename "timeout"
+    payload = {"tool_name": "Bash", "tool_input": {"command": 'chroot /tmp/timeout g""h pr merge'}}
+    assert refusal(payload) is not None
+
+
+def test_hard_refusal_exec_a_option_bypass():
+    from tinyagentos.claude_code_guard import refusal
+    # exec -a NAME: -a takes a value but exec not in _WRAPPER_OPTS_WITH_VALUE
+    payload = {"tool_name": "Bash", "tool_input": {"command": 'exec -a masked g""h pr merge'}}
+    assert refusal(payload) is not None
+    # exec -aNAME attached form
+    payload = {"tool_name": "Bash", "tool_input": {"command": 'exec -amasked g""h pr merge'}}
+    assert refusal(payload) is not None
+
+
+def test_hard_refusal_env_split_string_bypass():
+    from tinyagentos.claude_code_guard import refusal
+    # env -S 'g""h pr merge' (separate value)
+    payload = {"tool_name": "Bash", "tool_input": {"command": 'env -S \'g""h pr merge\''}}
+    assert refusal(payload) is not None
+    # env -Sg""h pr merge (attached value)
+    payload = {"tool_name": "Bash", "tool_input": {"command": 'env -Sg""h pr merge'}}
+    assert refusal(payload) is not None
+    # env --split-string='g""h pr merge' (long form attached)
+    payload = {"tool_name": "Bash", "tool_input": {"command": 'env --split-string=\'g""h pr merge\''}}
+    assert refusal(payload) is not None
+    # env -S with env var expansion (fail closed)
+    payload = {"tool_name": "Bash", "tool_input": {"command": r"env -S '${X} pr merge'"}}
+    assert refusal(payload) is not None
+
+
+def test_hard_refusal_wrapper_bypass_positive_controls():
+    from tinyagentos.claude_code_guard import refusal
+    # chroot with normal root dir should still allow ls
+    payload = {"tool_name": "Bash", "tool_input": {"command": "chroot /srv/root ls -la"}}
+    assert refusal(payload) is None
+    # env -S with normal command should still allow ls
+    payload = {"tool_name": "Bash", "tool_input": {"command": "env -S 'ls -la'"}}
+    assert refusal(payload) is None
+
+
 def test_hard_gh_refusal_on_parsed_keys():
     from tinyagentos.claude_code_guard import refusal
     # g""h and 'gh' should be refused same as gh
