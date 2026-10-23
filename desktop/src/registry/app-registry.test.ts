@@ -115,7 +115,7 @@ describe("isDefaultSurfaceApp (shared default-surface tier rule)", () => {
   });
 
   it("excludes tier 3 apps (discoverable via Store/search)", () => {
-    for (const id of ["providers", "mcp", "channels", "notification-archive"]) {
+    for (const id of ["providers", "mcp", "channels", "notification-history"]) {
       expect(isDefaultSurfaceApp(getApp(id)!), `tier-3 app "${id}" should NOT be a default-surface app`).toBe(false);
     }
   });
@@ -328,16 +328,16 @@ describe("pinnedLaunchProps", () => {
 
 describe("notification-archive tier and launcher visibility", () => {
   it("has tier 3 in the manifest", () => {
-    expect(getApp("notification-archive")?.tier).toBe(3);
+    expect(getApp("notification-history")?.tier).toBe(3);
   });
 
   it("is absent from launcher listings", () => {
     const ids = getLaunchableApps(new Set()).map((a) => a.id);
-    expect(ids).not.toContain("notification-archive");
+    expect(ids).not.toContain("notification-history");
   });
 
-  it("is still openable programmatically via getApp", () => {
-    expect(getApp("notification-archive")?.id).toBe("notification-archive");
+  it("pinnedAppId resolves notification-archive to notification-history", () => {
+    expect(pinnedAppId("notification-archive")).toBe("notification-history");
   });
 
   it("notifications app is present and launchable", () => {
@@ -357,16 +357,21 @@ describe("Import app retirement (tsk-6gtsvj)", () => {
     expect(ids).not.toContain("import");
   });
 
-    it("import is not in all apps list", () => {
-      const ids = getAllApps().map((a) => a.id);
-      expect(ids).not.toContain("import");
-    });
+  it("import is not in all apps list", () => {
+    const ids = getAllApps().map((a) => a.id);
+    expect(ids).not.toContain("import");
   });
+});
 
-  describe("getSearchableApps", () => {
-    it("excludes notification-archive when no optional apps installed", () => {
-      const apps = getSearchableApps(new Set());
-      expect(apps.some((a) => a.id === "notification-archive")).toBe(false);
-      expect(apps.some((a) => a.id === "notification-history")).toBe(true);
-    });
+describe("getSearchableApps", () => {
+  it("excludes notification-archive when no optional apps installed", () => {
+    const apps = getSearchableApps(new Set());
+    expect(apps.some((a) => a.id === "notification-archive")).toBe(false);
+    expect(apps.some((a) => a.id === "notification-history")).toBe(true);
   });
+});
+
+it("notification-archive is resolved via pinnedAppId", () => {
+  expect(getApp("notification-archive")).toBeUndefined();
+  expect(pinnedAppId("notification-archive")).toBe("notification-history");
+});

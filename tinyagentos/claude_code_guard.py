@@ -118,6 +118,7 @@ def commands(command: str) -> list[str] | None:
     text = command.replace("`", ";").replace("\n", ";")
     lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
+    lexer.commenters = ""
     try:
         tokens = list(lexer)
     except ValueError:

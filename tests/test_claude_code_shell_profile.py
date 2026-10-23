@@ -258,6 +258,22 @@ def test_uniq_value_option_at_end_swallows_next_command():
     assert 'output-redirect' in commands('uniq a /tmp/x')
 
 
+def test_hash_in_word_is_not_a_comment():
+    from tinyagentos.claude_code_guard import commands, profile_refusal
+    from tinyagentos.taos_agent_shell_profile import DEFAULT_ALLOW
+    allow = set(DEFAULT_ALLOW)
+    # '#' inside a word must not start a comment; the rest of the line is still parsed
+    for c in ('echo a#b ; rm x', 'ls#;rm x', 'echo x#\nrm y', 'ls # ; rm x'):
+        cmds = commands(c)
+        assert 'rm' in cmds, f"rm missing in {c!r}: {cmds}"
+        refusal, _ = profile_refusal(c, allow, set())
+        assert refusal is not None, f"should refuse but got None for {c!r}: {cmds}"
+    # Controls that must stay as they are
+    assert commands('git status # note') == ['git status']
+    assert commands('ls -la') == ['ls']
+    assert 'rm' in commands('echo "#"; rm x')
+
+
 def test_uniq_control_commands_no_output_redirect():
     from tinyagentos.claude_code_guard import commands
     # These should NOT have output-redirect (only one positional or no second positional)
