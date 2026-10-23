@@ -17,6 +17,7 @@ read the code it has another ``EXPIRY_SECONDS`` to post the token.
 from __future__ import annotations
 
 import asyncio
+import logging
 import secrets
 import time
 from urllib.parse import urlsplit
@@ -24,6 +25,8 @@ from urllib.parse import urlsplit
 import aiosqlite
 
 from tinyagentos.base_store import BaseStore, PendingCapExceeded
+
+logger = logging.getLogger(__name__)
 
 EXPIRY_SECONDS = 600
 MAX_OPEN_PER_AGENT = 3
@@ -165,7 +168,10 @@ class AuthBrokerStore(BaseStore):
                 )
                 await self._db.commit()
             except BaseException:
-                await self._db.rollback()
+                try:
+                    await self._db.rollback()
+                except Exception:
+                    logger.warning("auth_broker: rollback after failed create raised", exc_info=True)
                 raise
         return await self.get(rec["id"])
 

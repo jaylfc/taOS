@@ -118,6 +118,7 @@ def commands(command: str) -> list[str] | None:
     text = command.replace("`", ";").replace("\n", ";")
     lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
+    lexer.commenters = ""
     try:
         tokens = list(lexer)
     except ValueError:
@@ -151,6 +152,8 @@ def commands(command: str) -> list[str] | None:
             prog = None
             uniq_pos = 0
             uniq_end_opts = False
+            skip_next = False
+            redirect_target = False
             continue
         if redirect_target:
             redirect_target = False
