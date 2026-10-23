@@ -271,9 +271,9 @@ the UI must show a "Label PIN" text input that is always displayed (the board's 
 must not hide it). The `POST /api/cluster/ble/pair/confirm` endpoint accepts a
 `label_pin` field (4-12 digits). Two error codes may be returned as 400 responses:
 
-- `label_pin_required` — "This board needs the PIN from its label." shown inline
+- `label_pin_required`: "This board needs the PIN from its label." shown inline
   with `role="alert"`
-- `invalid_label_pin` — "The label PIN is 4 to 12 digits." shown inline with
+- `invalid_label_pin`: "The label PIN is 4 to 12 digits." shown inline with
   `role="alert"`
 
 The `label_pin` is only sent in the confirm body when the input is non-empty. When

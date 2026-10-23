@@ -1195,6 +1195,7 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
       });
       if (res.ok) {
         const json = await res.json();
+        setLabelPin("");
         setPairSession({
           session: json.session,
           code: json.code,
@@ -1236,6 +1237,8 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
         const json = await res.json();
         showToast(`Device "${json?.node?.name ?? pairSession.name}" paired`);
         setPairSession(null);
+        setLabelPin("");
+        setPinRequired(false);
         setAddOpen(false);
         setBleDevices([]);
         setBleScanned(false);
@@ -1267,6 +1270,8 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
   const handleBlePairCancel = useCallback(() => {
     if (pairSession) cancelBlePairSession(pairSession.session);
     setPairSession(null);
+    setLabelPin("");
+    setPinRequired(false);
     setPairError(null);
   }, [pairSession, cancelBlePairSession]);
 
@@ -1276,6 +1281,8 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
     setAddOpen(false);
     setAddTab("manual");
     setPairSession(null);
+    setLabelPin("");
+    setPinRequired(false);
     setPairError(null);
   }, [addBusy, pairStarting, pairConfirming, pairSession, cancelBlePairSession]);
 
