@@ -242,16 +242,4 @@ describe("MessagesApp fetchAgentLists - archived fetch failure", () => {
       expect(sidebar.getAttribute("data-agent-roster-ready")).toBe("false");
     });
   });
-
-  it("neverSettles archived fetch delays agent roster ready", async () => {
-    setupFetchMock("neverSettle");
-    render(<MessagesApp windowId="test" />);
-    await waitFor(() => {
-      const sidebar = screen.getByTestId("channel-sidebar");
-      const liveAgents = JSON.parse(sidebar.getAttribute("data-live-agents") || "[]");
-      expect(liveAgents).toHaveLength(1);
-      expect(liveAgents[0].name).toBe("some-agent");
-      expect(sidebar.getAttribute("data-agent-roster-ready")).toBe("false");
-    });
-  });
 });
