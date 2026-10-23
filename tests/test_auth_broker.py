@@ -499,3 +499,34 @@ async def test_cap_reject_leaves_no_open_transaction(app):
 
     # No transaction should remain open on the connection
     assert store._db.in_transaction is False
+
+
+@pytest.mark.asyncio
+async def test_rollback_exception_does_not_mask_pending_capexceeded(app):
+    """A failing rollback must not mask PendingCapExceeded (must keep the 429)."""
+    from tinyagentos.auth_broker import KIND_CLAUDE_SUBSCRIPTION
+
+    store = app.state.auth_broker
+    url = "https://claude.ai/oauth/authorize?code=true&client_id=abc&state=xyz"
+
+    # Create MAX_OPEN_PER_AGENT requests for one requester
+    for _ in range(MAX_OPEN_PER_AGENT):
+        rec = await store.create(
+            requester="rollback-test-agent", kind=KIND_CLAUDE_SUBSCRIPTION, url=url
+        )
+        assert rec["status"] == "pending"
+
+    # Monkeypatch rollback to raise an exception
+    async def failing_rollback():
+        raise RuntimeError("boom")
+
+    store._db.rollback = failing_rollback
+
+    # The next create must raise PendingCapExceeded, not RuntimeError
+    with pytest.raises(PendingCapExceeded) as exc_info:
+        await store.create(
+            requester="rollback-test-agent", kind=KIND_CLAUDE_SUBSCRIPTION, url=url
+        )
+    assert exc_info.value.key == "rollback-test-agent"
+    assert exc_info.value.cap == MAX_OPEN_PER_AGENT
+    assert exc_info.value.pending == MAX_OPEN_PER_AGENT

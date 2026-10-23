@@ -20,7 +20,6 @@ function formatTime(ts: number): string {
 }
 
 // The level palette the Notifications app's former Archive tab used
-// (also in NotificationArchiveApp.tsx).
 const LEVEL_COLORS: Record<Notification["level"], string> = {
   info: "text-shell-text-secondary",
   success: "text-green-400",
