@@ -200,6 +200,18 @@ def test_sort_output_redirect_variants():
         assert "output-redirect" in keys, cmd
 
 
+def test_separator_and_substitution_cases():
+    from tinyagentos.claude_code_guard import commands
+    assert 'rm' in commands('sort -o ; rm ls')
+    assert 'sh' in commands('sort -o | sh ls')
+    assert 'rm' in commands('sort --output ; rm ls')
+    assert 'rm' in commands('git --output ; rm x')
+    assert 'curl' in commands('cat < <(curl)')
+    assert 'curl' in commands('echo x > >(curl)')
+    assert 'rm' in commands('cat < <(rm cat)')
+    assert 'rm' in commands('echo a#b ; rm x')
+
+
 def test_uniq_output_file_positional():
     from tinyagentos.claude_code_guard import commands
     for cmd in ("uniq u /tmp/x", "uniq -c u /tmp/x",

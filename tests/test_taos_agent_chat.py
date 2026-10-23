@@ -453,10 +453,71 @@ async def test_chat_queued_message_claude_code_shell_rules_overwrites_active_tur
     assert resp.status_code == 200
     assert "queued" in resp.text.lower()
 
-    # CRITICAL ASSERTION: The fake harness.shell_rules is STILL {'allow': ['active-user-rule'], 'deny': []}
-    # This means the queued user's shell profile rules were NOT applied to the active turn's harness
-    assert fake_harness.shell_rules == {'allow': ['active-user-rule'], 'deny': []}, \
-        f"BUG PROVEN: harness.shell_rules was overwritten! Got {fake_harness.shell_rules}"
+# ---------------------------------------------------------------------------
+# Claude Code shell rules: accepted turn must load the shell profile
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_chat_accepted_claude_code_turn_loads_shell_profile(client, app, monkeypatch):
+    """An ACCEPTED claude_code chat turn (turn owns the agent, nothing queued)
+    must still load the shell profile, i.e. harness.shell_rules equals what
+    shell_profile.rules_for returned for that user."""
+    import tinyagentos.routes.taos_agent as ta_module
+    from tinyagentos.taos_agent_runtime import FRAMEWORK_CLAUDE_CODE
+
+    monkeypatch.setattr(ta_module, "system_agent_framework", lambda app_state: FRAMEWORK_CLAUDE_CODE)
+
+    expected_rules = {"allow": ["ls", "cat"], "deny": ["curl"]}
+
+    fake_harness = SimpleNamespace(
+        shell_rules=None,
+        redact=lambda s: s,
+    )
+
+    async def fake_ensure_taos_claude_code_harness(app_state, model, system_prompt):
+        return fake_harness
+
+    monkeypatch.setattr(ta_module, "ensure_taos_claude_code_harness", fake_ensure_taos_claude_code_harness)
+
+    async def fake_rules_for(store, shell_user):
+        return expected_rules
+
+    mock_shell_profile = SimpleNamespace(
+        rules_for=AsyncMock(side_effect=fake_rules_for),
+        raise_shell_asks=AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(ta_module, "shell_profile", mock_shell_profile)
+
+    class _DummyAdapter:
+        def __init__(self, cfg, sink):
+            self._sink = sink
+            self.session_id = None
+
+        async def ensure_session(self):
+            self.session_id = "ses_ok"
+
+        async def prompt(self, text, trace_id=None, attachments=None):
+            self._sink({"kind": "final"})
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(ta_module, "ClaudeCodeCliAdapter", _DummyAdapter)
+
+    from tinyagentos.agent_loop import AgentLoop
+    loop = AgentLoop()
+    app.state.taos_agent_loop = loop
+    await client.patch("/api/taos-agent/settings", json={"model": "claude-3-7-sonnet-20250219"})
+    app.state.taos_opencode_password = "testpw"
+    app.state.taos_opencode_session_id = None
+
+    resp = await client.post(
+        "/api/taos-agent/chat",
+        json={"messages": [{"role": "user", "content": "Hi"}], "model": "claude-3-7-sonnet-20250219"},
+    )
+    assert resp.status_code == 200
+    assert fake_harness.shell_rules == expected_rules
 
 
 # ---------------------------------------------------------------------------
