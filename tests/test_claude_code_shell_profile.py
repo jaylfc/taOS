@@ -9,10 +9,13 @@ rule is a program, or a program plus subcommand (``npm test``, ``git status``).
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import shlex
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
@@ -439,3 +442,103 @@ async def test_profile_feeds_the_harness_rules(client, ds):
     assert rules["deny"] == ["curl"]
     # Another user's profile is separate.
     assert "npm" not in (await rules_for(ds, "u2"))["allow"]
+
+
+# ---------------------------------------------------------------------------
+# Cancel/hang inside raise_shell_asks must not skip the safe point
+# ---------------------------------------------------------------------------
+# The chat endpoint's _drive() finally drains shell asks (profile +
+# decision-store I/O) and only then reaches the agent-loop safe point. A cancel
+# that lands while raise_shell_asks is awaiting propagates CancelledError, which
+# `except Exception` does not catch, so reach_safe_point() is skipped and the
+# loop wedges in WORKING: every later chat request answers with the queued
+# message notice forever. reach_safe_point() must run BEFORE the ask drain so a
+# late cancel or hang cannot strand the loop. See card tsk-grcgcw.
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_raise_shell_asks_reaches_safe_point(client, ds, app, monkeypatch):
+    """A cancel landing while raise_shell_asks awaits must still reach the safe point.
+
+    Reproduces the sink's early-_DONE path: the adapter emits an error reply
+    (so the generator sees _DONE and cancels the drive task), and raise_shell_asks
+    is blocked on a never-set Event so the cancellation lands inside it. Before
+    the fix reach_safe_point() is skipped (spy count 0, loop stays WORKING);
+    after the fix it runs first (spy count 1, loop returns to IDLE).
+    """
+    import tinyagentos.routes.taos_agent as ta_module
+    from tinyagentos.agent_loop import AgentLoop
+    from tinyagentos.taos_agent_runtime import FRAMEWORK_CLAUDE_CODE
+
+    monkeypatch.setattr(ta_module, "system_agent_framework", lambda app_state: FRAMEWORK_CLAUDE_CODE)
+
+    # Never set: keeps raise_shell_asks suspended at an await point so a
+    # cancellation can land inside it (mirrors pending asks doing store I/O).
+    blk = asyncio.Event()
+
+    async def fake_raise_shell_asks(app_state, harness, user_id):
+        await blk.wait()
+        return []
+
+    async def fake_rules_for(store, shell_user):
+        return {"allow": ["ls"], "deny": []}
+
+    monkeypatch.setattr(ta_module, "shell_profile", SimpleNamespace(
+        rules_for=AsyncMock(side_effect=fake_rules_for),
+        raise_shell_asks=fake_raise_shell_asks,
+    ))
+
+    fake_harness = SimpleNamespace(
+        shell_rules={"allow": ["ls"], "deny": []},
+        redact=lambda s: s,
+    )
+    monkeypatch.setattr(
+        ta_module, "ensure_taos_claude_code_harness",
+        AsyncMock(return_value=fake_harness),
+    )
+
+    class _ErrorAdapter:
+        # An error reply makes the sink enqueue an early _DONE, which is what
+        # makes the generator cancel the drive task while it is suspended inside
+        # raise_shell_asks.
+        def __init__(self, cfg, sink):
+            self._sink = sink
+            self.session_id = None
+
+        async def ensure_session(self):
+            self.session_id = "ses_cancel"
+
+        async def prompt(self, text, trace_id=None, attachments=None):
+            self._sink({"kind": "error", "error": "boom"})
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(ta_module, "ClaudeCodeCliAdapter", _ErrorAdapter)
+
+    loop = AgentLoop()
+    calls = {"reach": 0}
+    real_reach = loop.reach_safe_point
+
+    async def spy_reach(*args, **kwargs):
+        calls["reach"] += 1
+        return await real_reach(*args, **kwargs)
+
+    loop.reach_safe_point = spy_reach
+    app.state.taos_agent_loop = loop
+    app.state.taos_claude_code_session_id = None
+    app.state.taos_opencode_password = "testpw"
+
+    await client.patch("/api/taos-agent/settings", json={"model": "claude-3-7-sonnet-20250219"})
+
+    resp = await client.post(
+        "/api/taos-agent/chat",
+        json={"messages": [{"role": "user", "content": "Hi"}]},
+    )
+
+    assert resp.status_code == 200
+    # (a) the safe point must be reached exactly once, to un-wedge the loop.
+    assert calls["reach"] == 1, f"reach_safe_point awaited {calls['reach']} time(s)"
+    # (b) the loop must not be left wedged in WORKING.
+    assert app.state.taos_agent_loop.state.value == "idle", \
+        f"loop stuck in {app.state.taos_agent_loop.state.value}"
