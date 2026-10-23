@@ -236,6 +236,28 @@ def test_uniq_output_file_attached_option_values_and_dash():
     assert "output-redirect" in keys
 
 
+def test_uniq_value_option_at_end_swallows_next_command():
+    from tinyagentos.claude_code_guard import commands, profile_refusal
+    from tinyagentos.taos_agent_shell_profile import DEFAULT_ALLOW
+    allow = set(DEFAULT_ALLOW)
+    # Value-taking uniq options at end of command should not swallow the next command's program
+    for c in ('uniq -f ; rm ls', 'uniq -s ; rm ls', 'uniq --skip-fields ; rm ls',
+              'uniq -w || rm ls', 'uniq -f & rm ls', 'uniq -f | sh ls',
+              '(uniq -f) ; rm ls', 'uniq -f\nrm ls'):
+        cmds = commands(c)
+        # The second program (rm or sh) must be in commands
+        assert any(cmd in ('rm', 'sh') for cmd in cmds), f"second program missing in {c!r}: {cmds}"
+        # profile_refusal must refuse (rm/sh not in DEFAULT_ALLOW)
+        refusal, _ = profile_refusal(c, allow, set())
+        assert refusal is not None, f"should refuse but got None for {c!r}: {cmds}"
+    # Controls that must stay as they are
+    assert commands('uniq -f 1 a') == ['uniq']
+    assert 'output-redirect' not in commands('uniq -f 1 a')
+    cmds = commands('ls ; cat a')
+    assert 'ls' in cmds and 'cat' in cmds, cmds
+    assert 'output-redirect' in commands('uniq a /tmp/x')
+
+
 def test_uniq_control_commands_no_output_redirect():
     from tinyagentos.claude_code_guard import commands
     # These should NOT have output-redirect (only one positional or no second positional)

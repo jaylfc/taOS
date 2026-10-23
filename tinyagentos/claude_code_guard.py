@@ -151,6 +151,8 @@ def commands(command: str) -> list[str] | None:
             prog = None
             uniq_pos = 0
             uniq_end_opts = False
+            skip_next = False
+            redirect_target = False
             continue
         if redirect_target:
             redirect_target = False
