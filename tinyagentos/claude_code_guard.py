@@ -300,12 +300,6 @@ def commands(command: str) -> list[str] | None:
                             # else the rest of tok is the attached value
                             break
                         continue
-                if prog == "tee":
-                    if tok == "--":
-                        # everything after is positional operands
-                        # but we need to track differently - simpler: just treat following as operands
-                        pass  # fall through to operand handling below
-                    # handle tee options that take values? just skip options starting with - except --
                 # general --output handling (git diff, etc.)
                 if tok == "--output" or tok.startswith("--output="):
                     add(OUTPUT_REDIRECT)
