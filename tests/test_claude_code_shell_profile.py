@@ -1120,3 +1120,35 @@ def test_time_tee_output_redirect_profile_refusal():
     assert msg is not None
     msg, _ = profile_refusal("time echo ok", allow={"time", "echo", "tee"}, deny={"output-redirect"})
     assert msg is None
+
+
+# ---------------------------------------------------------------------------
+# tsk-apy6di: time clustered short options (-ao, -po, -af, -apo) keep wrapped program
+# ---------------------------------------------------------------------------
+
+def test_time_clustered_output_option_keeps_wrapped_program():
+    from tinyagentos.claude_code_guard import commands
+    for cmd in ("time -ao /tmp/x echo ok", "time -po /tmp/x echo ok", "time -apo /tmp/x echo ok"):
+        c = commands(cmd)
+        assert c is not None, cmd
+        assert "echo" in c, cmd
+        assert "output-redirect" in c, cmd
+        assert "x" not in c, cmd
+    c = commands("time -af %e echo ok")
+    assert c is not None
+    assert "echo" in c
+    assert "%e" not in c
+    # Controls that must stay as they are
+    assert commands("time -a echo ok") == ["time", "echo"]
+    assert commands("time -ap echo ok") == ["time", "echo"]
+    assert "echo" in commands("time -ao/tmp/x echo ok")
+
+
+def test_time_clustered_output_option_profile_refusal():
+    from tinyagentos.claude_code_guard import profile_refusal
+    # Clustered option bypasses deny rule on wrapped program
+    msg, _ = profile_refusal("time -ao /tmp/echo gh pr merge", allow={"time", "echo"}, deny={"gh"})
+    assert msg is not None
+    # Control: non-clustered form works correctly
+    msg, _ = profile_refusal("time -a echo ok", allow={"time", "echo"}, deny={"gh"})
+    assert msg is None
