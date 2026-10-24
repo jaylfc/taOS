@@ -176,6 +176,7 @@ def commands(command: str) -> list[str] | None:
     wrapper_skip_duration = False  # for timeout: skip the first non-option (duration)
     wrapper_skip_root = False  # for chroot: skip the first non-option (root dir)
     env_split_string_pending = False  # for env -S/--split-string: next token is the split string
+    tee_end_opts = False
     for tok in tokens:
         if tok and set(tok) <= _OPERATOR_CHARS:
             if set(tok) & set("<>") and not set(tok) & set(";|()"):
@@ -197,6 +198,7 @@ def commands(command: str) -> list[str] | None:
             prog = None
             uniq_pos = 0
             uniq_end_opts = False
+            tee_end_opts = False
             skip_next = False
             redirect_target = False
             continue
@@ -258,6 +260,18 @@ def commands(command: str) -> list[str] | None:
                 if prog == "sort" and tok.startswith("-") and not tok.startswith("--") and "o" in tok[1:]:
                     add(OUTPUT_REDIRECT)
                     skip_next = True
+                    continue
+                # tee: any non-option argument (file operand) is a write
+                if prog == "tee":
+                    if tee_end_opts or tok == "-":
+                        add(OUTPUT_REDIRECT)
+                        continue
+                    if tok == "--":
+                        tee_end_opts = True
+                        continue
+                    if tok.startswith("-"):
+                        continue
+                    add(OUTPUT_REDIRECT)
                     continue
                 # uniq positional argument counting: 2nd positional is output file
                 if prog == "uniq":
@@ -425,6 +439,9 @@ def commands(command: str) -> list[str] | None:
             # Wrapper-specific options that take a separate value
             if wrapper in _WRAPPER_OPTS_WITH_VALUE:
                 if tok in _WRAPPER_OPTS_WITH_VALUE[wrapper]:
+                    if wrapper == "time" and tok in ("-o", "--output", "-f", "--format"):
+                        if tok in ("-o", "--output"):
+                            add(OUTPUT_REDIRECT)
                     skip_next = True
                     continue
                 # Handle attached forms like --userspec=VALUE, --groups=VALUE
@@ -433,6 +450,8 @@ def commands(command: str) -> list[str] | None:
                     # Check for attached value form (--opt=value)
                     for opt in _WRAPPER_OPTS_WITH_VALUE[wrapper]:
                         if opt.startswith("-") and tok.startswith(opt):
+                            if wrapper == "time" and opt in ("-o", "--output"):
+                                add(OUTPUT_REDIRECT)
                             # This is an attached form, don't skip_next
                             break
             # Other wrappers: skip options (words starting with -)
@@ -448,6 +467,7 @@ def commands(command: str) -> list[str] | None:
         prog = name
         uniq_pos = 0
         uniq_end_opts = False
+        tee_end_opts = False
         if name in SUBCOMMAND_PROGRAMS:
             sub_of = name
         else:
