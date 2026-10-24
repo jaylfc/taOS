@@ -454,31 +454,34 @@ def commands(command: str) -> list[str] | None:
                                 add(OUTPUT_REDIRECT)
                             # This is an attached form, don't skip_next
                             break
-                # time: clustered short options (e.g. -ao, -po, -af, -apo)
-                # GNU time short options: a p q v o f
-                # If last letter is o or f, it takes a value (next word or attached)
-                if (wrapper == "time"
-                        and tok.startswith("-")
-                        and not tok.startswith("--")
-                        and len(tok) >= 3):
-                    letters = tok[1:]
-                    valid_letters = set("apqvof")
-                    if all(ch in valid_letters for ch in letters):
-                        last = letters[-1]
-                        if last in ("o", "f"):
-                            # Check if o or f appears before the last position (attached value)
-                            if last in letters[:-1]:
-                                # Attached value form: -ao/tmp/x, -af%e
-                                if "o" in letters[:-1]:
-                                    add(OUTPUT_REDIRECT)
-                                # Don't skip_next, the value is attached
-                                continue
-                            else:
-                                # Separate value form: -ao FILE, -af %e
-                                if last == "o":
-                                    add(OUTPUT_REDIRECT)
-                                skip_next = True
-                                continue
+# time: clustered short options (e.g. -ao, -po, -af, -apo, -ao/tmp/x, -af%e)
+            # GNU time short options: a p q v o f
+            # If last letter of the cluster is o or f, it takes a value (next word or attached)
+            if (wrapper == "time"
+                    and tok.startswith("-")
+                    and not tok.startswith("--")
+                    and len(tok) >= 3):
+                # Extract the leading valid letter cluster
+                i = 1
+                while i < len(tok) and tok[i] in "apqvof":
+                    i += 1
+                letters = tok[1:i]
+                if letters:
+                    last = letters[-1]
+                    has_attached = i < len(tok)
+                    if last in ("o", "f"):
+                        if has_attached:
+                            # Attached value form: -ao/tmp/x, -af%e
+                            if last == "o":
+                                add(OUTPUT_REDIRECT)
+                            # Don't skip_next, the value is attached
+                            continue
+                        else:
+                            # Separate value form: -ao FILE, -af %e, -apo /tmp/x
+                            if last == "o":
+                                add(OUTPUT_REDIRECT)
+                            skip_next = True
+                            continue
             # Other wrappers: skip options (words starting with -)
             if tok.startswith("-"):
                 continue

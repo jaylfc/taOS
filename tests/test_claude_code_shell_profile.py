@@ -1141,7 +1141,9 @@ def test_time_clustered_output_option_keeps_wrapped_program():
     # Controls that must stay as they are
     assert commands("time -a echo ok") == ["time", "echo"]
     assert commands("time -ap echo ok") == ["time", "echo"]
-    assert "echo" in commands("time -ao/tmp/x echo ok")
+    c = commands("time -ao/tmp/x echo ok")
+    assert "echo" in c
+    assert "output-redirect" in c
 
 
 def test_time_clustered_output_option_profile_refusal():
