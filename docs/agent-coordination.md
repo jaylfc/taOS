@@ -2434,6 +2434,14 @@ never drain or answer a local agent's session. A request with no Bearer is refus
 middleware before the route runs (401); a JWT without the grant gets 403; an
 unavailable bridge registry gets 503.
 
+A reply targeting a channel (via explicit `channel_id` or via `trace_id`
+resolving to a message's channel) is accepted only when the agent's slug is
+a member of that channel; otherwise 403 `not a member of this channel` is
+returned and the reply is not recorded. Two registry agents whose canonical
+IDs strip to the same slug cannot share a session: only the first-registered
+agent may use it; subsequent agents receive 403 `handle collides with another
+registry agent`.
+
 ## In-process LLM gateway (`/api/llm/v1`, scoped gateway keys, session or host local token)
 
 `tinyagentos/llm_gateway/` is the in-controller replacement for the LiteLLM
