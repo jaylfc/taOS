@@ -1451,6 +1451,73 @@ async def list_leases(request: Request):
     }
 
 
+# ── taOS #3233: external task report / load-feedback ──────────────────────
+
+_TASK_REPORT_SLUG = "taos-cluster-tasks"
+
+
+class TaskReportRequest(BaseModel):
+    """Job outcome reported by an external scheduler.
+
+    Lets external GPU schedulers feed job outcomes into the trace store
+    so the Observatory and benchmark layers can see external GPU work.
+    """
+
+    worker: str = Field(..., min_length=1, max_length=128)
+    resource_id: str = Field(..., min_length=1, max_length=128)
+    lease_id: str | None = Field(default=None, max_length=128)
+    caller: str = Field(default="", max_length=256)
+    model: str = Field(default="", max_length=256)
+    duration_s: float = Field(..., ge=0, le=86_400 * 30)
+    status: str = Field(..., pattern="^(success|failure|cancelled)$")
+    tokens: dict | None = None
+
+
+@router.post("/api/cluster/tasks/report")
+async def report_task(request: Request, body: TaskReportRequest):
+    """Record an external scheduler's job outcome in the trace store.
+
+    Authenticated like the lease endpoints (admin session, local token,
+    or worker HMAC). Writes a ``task_report`` event under the
+    ``taos-cluster-tasks`` slug.
+    """
+    denied = await _require_lease_access(request)
+    if denied is not None:
+        return denied
+    registry = getattr(request.app.state, "trace_registry", None)
+    if registry is None:
+        return JSONResponse(
+            {"error": "trace registry not configured"}, status_code=503
+        )
+    store = await registry.get(_TASK_REPORT_SLUG)
+    payload: dict = {
+        "worker": body.worker,
+        "resource_id": body.resource_id,
+        "caller": body.caller,
+        "status": body.status,
+    }
+    if body.lease_id:
+        payload["lease_id"] = body.lease_id
+    if body.tokens is not None:
+        payload["tokens"] = body.tokens
+    try:
+        env = await store.record(
+            "task_report",
+            model=body.model or None,
+            duration_ms=int(body.duration_s * 1000),
+            error=None if body.status == "success" else body.status,
+            payload=payload,
+        )
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    return {
+        "status": "recorded",
+        "id": env["id"],
+        "worker": body.worker,
+        "resource_id": body.resource_id,
+    }
+
+
 # ── taOS #890: worker auto-update with graceful drain ────────────────────
 
 
