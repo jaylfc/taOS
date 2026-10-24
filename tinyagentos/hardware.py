@@ -486,6 +486,64 @@ def _amd_vram_for_model(model: str) -> int:
     return 0
 
 
+def _parse_rocminfo_gpu_model(info: str) -> str:
+    """Return the marketing name of the first GPU agent in ``rocminfo`` output.
+
+    ``rocminfo`` prints one block per HSA agent, the CPU agent first on most
+    systems, and ``Device Type`` comes after ``Marketing Name`` inside a
+    block. Reading the first ``Marketing Name`` therefore picks the CPU, so
+    each block is collected in full and the GPU block is selected before its
+    name is read.
+    """
+    blocks: list[dict[str, str]] = []
+    current: dict[str, str] = {}
+    for line in info.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("Agent ") and ":" not in stripped:
+            if current:
+                blocks.append(current)
+            current = {}
+            continue
+        low = stripped.lower()
+        if low.startswith("marketing name:"):
+            current["marketing"] = stripped.split(":", 1)[-1].strip()
+        elif low.startswith("device type:"):
+            current["device_type"] = stripped.split(":", 1)[-1].strip()
+        elif low.startswith("name:") and "gfx" in low:
+            current["gfx"] = stripped.split(":", 1)[-1].strip()
+    if current:
+        blocks.append(current)
+    for block in blocks:
+        if block.get("device_type", "").lower() == "gpu":
+            return block.get("marketing") or block.get("gfx", "")
+    # rocminfo builds without the Device Type field: a gfx name only ever
+    # appears on a GPU agent, so it is safe to fall back to one.
+    for block in blocks:
+        if block.get("gfx"):
+            return block.get("marketing") or block["gfx"]
+    return ""
+
+
+def _detect_amd_via_wsl() -> tuple[str, int]:
+    """Detect AMD GPU under WSL2 via /dev/dxg and rocminfo.
+
+    WSL2 exposes GPUs through the /dev/dxg paravirtualization device;
+    lspci shows nothing and /opt/rocm may not exist. rocminfo reports
+    the actual hardware. Returns (model_name, vram_mb), or ("", 0)
+    if no AMD GPU is found.
+    """
+    if not _detect_wsl():
+        return "", 0
+    if not Path("/dev/dxg").exists():
+        return "", 0
+    info = _run(["rocminfo"])
+    if not info or "amd" not in info.lower():
+        return "", 0
+    model = _parse_rocminfo_gpu_model(info)
+    vram_mb = _amd_vram_for_model(model) if model else 0
+    return model, vram_mb
+
+
 def _detect_gpu() -> GpuInfo:
     gpu = GpuInfo()
     # Apple Silicon — unified memory acts as VRAM, MLX-accelerated
@@ -546,34 +604,46 @@ def _detect_gpu() -> GpuInfo:
         gpu.vulkan = gpu.rocm
         gpu.vram_mb = _amd_vram_for_model(gpu.model)
     else:
-        # Check for integrated Mali (ARM) — multiple detection paths
-        mali_found = False
-        # Path 1: /sys/class/misc/mali0 (proprietary Mali driver)
-        if Path("/sys/class/misc/mali0").exists():
-            mali_found = True
-            # Try to get the specific Mali variant from device tree
-            compat_path = Path("/proc/device-tree/gpu@fb000000/compatible")
-            if compat_path.exists():
-                compat = compat_path.read_text(errors="replace").strip().strip("\x00")
-                # e.g. "arm,mali-bifrost" → "Mali-Bifrost"
-                if "mali" in compat.lower():
-                    variant = compat.split(",")[-1].replace("mali-", "Mali-").replace("mali", "Mali")
-                    gpu.type = "mali"
-                    gpu.model = f"{variant} (integrated)"
-            if not gpu.model:
-                gpu.type = "mali"
-                gpu.model = "Mali (integrated)"
-        # Path 2: /sys/class/drm/card*/device/driver contains mali or panfrost
-        if not mali_found:
-            drm_path = Path("/sys/class/drm")
-            if drm_path.exists():
-                for card in drm_path.glob("card*/device/driver"):
-                    driver = card.resolve().name if card.exists() else ""
-                    if "mali" in driver.lower() or "panfrost" in driver.lower() or "panthor" in driver.lower():
+        # WSL2: lspci is empty but AMD GPU is visible via /dev/dxg +
+        # rocminfo (taOS #3228).
+        wsl_model, wsl_vram = _detect_amd_via_wsl()
+        if wsl_model:
+            gpu.type = "amd"
+            gpu.model = wsl_model
+            gpu.rocm = True
+            gpu.vram_mb = wsl_vram
+            # ROCm presence does not imply a working Vulkan driver under
+            # WSL2 (Vulkan needs a separate D3D12 driver), so gpu.vulkan is
+            # left to the independent capability check below.
+        # Check for integrated Mali (ARM) -- multiple detection paths
+        if not gpu.model:
+            mali_found = False
+            # Path 1: /sys/class/misc/mali0 (proprietary Mali driver)
+            if Path("/sys/class/misc/mali0").exists():
+                mali_found = True
+                # Try to get the specific Mali variant from device tree
+                compat_path = Path("/proc/device-tree/gpu@fb000000/compatible")
+                if compat_path.exists():
+                    compat = compat_path.read_text(errors="replace").strip().strip("\x00")
+                    # e.g. "arm,mali-bifrost" -> "Mali-Bifrost"
+                    if "mali" in compat.lower():
+                        variant = compat.split(",")[-1].replace("mali-", "Mali-").replace("mali", "Mali")
                         gpu.type = "mali"
-                        gpu.model = "Mali (integrated)"
-                        mali_found = True
-                        break
+                        gpu.model = f"{variant} (integrated)"
+                if not gpu.model:
+                    gpu.type = "mali"
+                    gpu.model = "Mali (integrated)"
+            # Path 2: /sys/class/drm/card*/device/driver contains mali or panfrost
+            if not mali_found:
+                drm_path = Path("/sys/class/drm")
+                if drm_path.exists():
+                    for card in drm_path.glob("card*/device/driver"):
+                        driver = card.resolve().name if card.exists() else ""
+                        if "mali" in driver.lower() or "panfrost" in driver.lower() or "panthor" in driver.lower():
+                            gpu.type = "mali"
+                            gpu.model = "Mali (integrated)"
+                            mali_found = True
+                            break
     # Check Vulkan availability
     if not gpu.vulkan and shutil.which("vulkaninfo"):
         result = _run(["vulkaninfo", "--summary"])
