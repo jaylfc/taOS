@@ -1085,3 +1085,38 @@ def test_command_position_parameter_expansion_refused():
     assert keys == ['echo'], f"expected ['echo'], got {keys!r}"
     payload = {"tool_name": "Bash", "tool_input": {"command": 'echo ${HOME}'}}
     assert refusal(payload) is None, "echo ${HOME} should be allowed"
+
+
+# ---------------------------------------------------------------------------
+# tsk-ewkvsx: time -o/--output and tee file operands tag output-redirect
+# ---------------------------------------------------------------------------
+
+
+def test_time_output_option_tags_output_redirect():
+    from tinyagentos.claude_code_guard import commands
+    for cmd in ("time -o /tmp/x echo ok", "time -o/tmp/x echo ok",
+                "time --output=/tmp/x echo ok", "time --output /tmp/x echo ok"):
+        c = commands(cmd)
+        assert c is not None
+        assert "output-redirect" in c
+        assert "echo" in c
+    c = commands("time echo ok")
+    assert c is not None
+    assert "output-redirect" not in c
+
+
+def test_tee_file_operand_tags_output_redirect():
+    from tinyagentos.claude_code_guard import commands
+    assert commands("tee /tmp/x") == ["tee", "output-redirect"]
+    assert commands("tee -a /tmp/x") == ["tee", "output-redirect"]
+    assert commands("tee") == ["tee"]
+
+
+def test_time_tee_output_redirect_profile_refusal():
+    from tinyagentos.claude_code_guard import profile_refusal
+    msg, _ = profile_refusal("time -o /tmp/x echo ok", allow={"time", "echo", "tee"}, deny={"output-redirect"})
+    assert msg is not None
+    msg, _ = profile_refusal("tee /tmp/x", allow={"time", "echo", "tee"}, deny={"output-redirect"})
+    assert msg is not None
+    msg, _ = profile_refusal("time echo ok", allow={"time", "echo", "tee"}, deny={"output-redirect"})
+    assert msg is None
