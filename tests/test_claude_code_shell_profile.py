@@ -889,105 +889,6 @@ def test_bypass_sudo_short_options_with_value():
 
 
 # ---------------------------------------------------------------------------
-# F2: time and xargs value options (tsk-gdxqyz)
-# ---------------------------------------------------------------------------
-
-def test_bypass_time_and_xargs_value_options():
-    from tinyagentos.claude_code_guard import refusal, commands
-    # time -f %e g""h pr merge
-    payload = {"tool_name": "Bash", "tool_input": {"command": '/usr/bin/time -f %e g""h pr merge'}}
-    assert refusal(payload) is not None, "time -f should refuse"
-    keys = commands('/usr/bin/time -f %e g""h pr merge')
-    assert 'gh' in keys, f"expected gh in keys, got {keys!r}"
-
-    # time -o /tmp/x g''h pr merge
-    payload = {"tool_name": "Bash", "tool_input": {"command": "time -o /tmp/x g''h pr merge"}}
-    assert refusal(payload) is not None, "time -o should refuse"
-    keys = commands("time -o /tmp/x g''h pr merge")
-    assert 'gh' in keys, f"expected gh in keys, got {keys!r}"
-
-    # xargs --process-slot-var NAME g""h pr merge
-    payload = {"tool_name": "Bash", "tool_input": {"command": 'xargs --process-slot-var NAME g""h pr merge'}}
-    assert refusal(payload) is not None, "xargs --process-slot-var should refuse"
-    keys = commands('xargs --process-slot-var NAME g""h pr merge')
-    assert 'gh' in keys, f"expected gh in keys, got {keys!r}"
-
-
-# ---------------------------------------------------------------------------
-# F3: env clustered S only in short option clusters (tsk-gdxqyz)
-# ---------------------------------------------------------------------------
-
-def test_env_cluster_s_only_in_short_option_clusters():
-    from tinyagentos.claude_code_guard import refusal, commands
-    # env MAKES g""h pr merge -> S in MAKES should not trigger split-string handling
-    # MAKES is the program, g""h is an argument; command should be allowed
-    keys = commands('env MAKES g""h pr merge')
-    assert keys == ['env', 'MAKES'], f"expected ['env', 'MAKES'], got {keys!r}"
-    refusal_msg = refusal({"tool_name": "Bash", "tool_input": {"command": 'env MAKES g""h pr merge'}})
-    assert refusal_msg is None, "env MAKES should be allowed (g\"\"h is an arg, not a command)"
-
-    # env --default-signal=SIGPIPE ls -> should parse to ['env', 'ls']
-    keys = commands('env --default-signal=SIGPIPE ls')
-    assert keys == ['env', 'ls'], f"expected ['env', 'ls'], got {keys!r}"
-
-    # env MyScript.sh x -> should parse to ['env', 'MyScript.sh'] (x is an argument)
-    # Old buggy behavior: ['env', 'cript.sh', 'x'] (S in MyScript.sh swallowed My)
-    keys = commands('env MyScript.sh x')
-    assert keys == ['env', 'MyScript.sh'], f"expected ['env', 'MyScript.sh'], got {keys!r}"
-
-    # env -uS ls -> should parse to ['env', 'ls'] (GNU env reads -uS as -u with value S)
-    keys = commands('env -uS ls')
-    assert keys == ['env', 'ls'], f"expected ['env', 'ls'], got {keys!r}"
-
-    # env -iS "ls -l" -> should still return the split-string keys the existing test expects
-    keys = commands('env -iS "ls -l"')
-    assert 'ls' in keys, f"expected ls in keys for env -iS, got {keys!r}"
-    # This is the benign control from test_bypass_env_clustered_S
-
-
-# ---------------------------------------------------------------------------
-# F4: unparseable command refusal message (tsk-gdxqyz)
-# ---------------------------------------------------------------------------
-
-def test_unparseable_command_refusal_message():
-    from tinyagentos.claude_code_guard import refusal, UNPARSEABLE_REFUSAL
-    # echo "$(date)" has command substitution in double quotes -> unparseable
-    payload = {"tool_name": "Bash", "tool_input": {"command": 'echo "$(date)"'}}
-    msg = refusal(payload)
-    assert msg == UNPARSEABLE_REFUSAL, f"expected UNPARSEABLE_REFUSAL, got {msg!r}"
-    assert "could not be parsed" in UNPARSEABLE_REFUSAL
-
-
-# ---------------------------------------------------------------------------
-# F5: command position parameter expansion refused (tsk-gdxqyz)
-# ---------------------------------------------------------------------------
-
-def test_command_position_parameter_expansion_refused():
-    from tinyagentos.claude_code_guard import refusal, commands
-    # g${X}h pr merge -> should be refused
-    payload = {"tool_name": "Bash", "tool_input": {"command": 'g${X}h pr merge'}}
-    assert refusal(payload) is not None, "g${X}h should refuse"
-
-    # g$X""h pr merge -> should be refused
-    payload = {"tool_name": "Bash", "tool_input": {"command": 'g$X""h pr merge'}}
-    assert refusal(payload) is not None, 'g$X""h should refuse'
-
-    # ${GH} pr merge -> should be refused
-    payload = {"tool_name": "Bash", "tool_input": {"command": '${GH} pr merge'}}
-    assert refusal(payload) is not None, '${GH} should refuse'
-
-    # $HOME/.local/bin/uv sync -> path-prefix control, should be allowed (keys ['uv sync'])
-    keys = commands('$HOME/.local/bin/uv sync')
-    assert keys == ['uv sync'], f"expected ['uv sync'], got {keys!r}"
-
-    # echo ${HOME} -> argument-position control, should be allowed (keys ['echo'])
-    keys = commands('echo ${HOME}')
-    assert keys == ['echo'], f"expected ['echo'], got {keys!r}"
-    payload = {"tool_name": "Bash", "tool_input": {"command": 'echo ${HOME}'}}
-    assert refusal(payload) is None, "echo ${HOME} should be allowed"
-
-
-# ---------------------------------------------------------------------------
 # Cancel/hang inside raise_shell_asks must not skip the safe point
 # ---------------------------------------------------------------------------
 # The chat endpoint's _drive() finally drains shell asks (profile +
@@ -1085,3 +986,102 @@ async def test_cancel_during_raise_shell_asks_reaches_safe_point(client, ds, app
     # (b) the loop must not be left wedged in WORKING.
     assert app.state.taos_agent_loop.state.value == "idle", \
         f"loop stuck in {app.state.taos_agent_loop.state.value}"
+
+
+# ---------------------------------------------------------------------------
+# F2: time and xargs value options (tsk-gdxqyz)
+# ---------------------------------------------------------------------------
+
+def test_bypass_time_and_xargs_value_options():
+    from tinyagentos.claude_code_guard import refusal, commands
+    # time -f %e g""h pr merge
+    payload = {"tool_name": "Bash", "tool_input": {"command": '/usr/bin/time -f %e g""h pr merge'}}
+    assert refusal(payload) is not None, "time -f should refuse"
+    keys = commands('/usr/bin/time -f %e g""h pr merge')
+    assert 'gh' in keys, f"expected gh in keys, got {keys!r}"
+
+    # time -o /tmp/x g''h pr merge
+    payload = {"tool_name": "Bash", "tool_input": {"command": "time -o /tmp/x g''h pr merge"}}
+    assert refusal(payload) is not None, "time -o should refuse"
+    keys = commands("time -o /tmp/x g''h pr merge")
+    assert 'gh' in keys, f"expected gh in keys, got {keys!r}"
+
+    # xargs --process-slot-var NAME g""h pr merge
+    payload = {"tool_name": "Bash", "tool_input": {"command": 'xargs --process-slot-var NAME g""h pr merge'}}
+    assert refusal(payload) is not None, "xargs --process-slot-var should refuse"
+    keys = commands('xargs --process-slot-var NAME g""h pr merge')
+    assert 'gh' in keys, f"expected gh in keys, got {keys!r}"
+
+
+# ---------------------------------------------------------------------------
+# F3: env clustered S only in short option clusters (tsk-gdxqyz)
+# ---------------------------------------------------------------------------
+
+def test_env_cluster_s_only_in_short_option_clusters():
+    from tinyagentos.claude_code_guard import refusal, commands
+    # env MAKES g""h pr merge -> S in MAKES should not trigger split-string handling
+    # MAKES is the program, g""h is an argument; command should be allowed
+    keys = commands('env MAKES g""h pr merge')
+    assert keys == ['env', 'MAKES'], f"expected ['env', 'MAKES'], got {keys!r}"
+    refusal_msg = refusal({"tool_name": "Bash", "tool_input": {"command": 'env MAKES g""h pr merge'}})
+    assert refusal_msg is None, "env MAKES should be allowed (g\"\"h is an arg, not a command)"
+
+    # env --default-signal=SIGPIPE ls -> should parse to ['env', 'ls']
+    keys = commands('env --default-signal=SIGPIPE ls')
+    assert keys == ['env', 'ls'], f"expected ['env', 'ls'], got {keys!r}"
+
+    # env MyScript.sh x -> should parse to ['env', 'MyScript.sh'] (x is an argument)
+    # Old buggy behavior: ['env', 'cript.sh', 'x'] (S in MyScript.sh swallowed My)
+    keys = commands('env MyScript.sh x')
+    assert keys == ['env', 'MyScript.sh'], f"expected ['env', 'MyScript.sh'], got {keys!r}"
+
+    # env -uS ls -> should parse to ['env', 'ls'] (GNU env reads -uS as -u with value S)
+    keys = commands('env -uS ls')
+    assert keys == ['env', 'ls'], f"expected ['env', 'ls'], got {keys!r}"
+
+    # env -iS "ls -l" -> should still return the split-string keys the existing test expects
+    keys = commands('env -iS "ls -l"')
+    assert 'ls' in keys, f"expected ls in keys for env -iS, got {keys!r}"
+    # This is the benign control from test_bypass_env_clustered_S
+
+
+# ---------------------------------------------------------------------------
+# F4: unparseable command refusal message (tsk-gdxqyz)
+# ---------------------------------------------------------------------------
+
+def test_unparseable_command_refusal_message():
+    from tinyagentos.claude_code_guard import refusal, UNPARSEABLE_REFUSAL
+    # echo "$(date)" has command substitution in double quotes -> unparseable
+    payload = {"tool_name": "Bash", "tool_input": {"command": 'echo "$(date)"'}}
+    msg = refusal(payload)
+    assert msg == UNPARSEABLE_REFUSAL, f"expected UNPARSEABLE_REFUSAL, got {msg!r}"
+    assert "could not be parsed" in UNPARSEABLE_REFUSAL
+
+
+# ---------------------------------------------------------------------------
+# F5: command position parameter expansion refused (tsk-gdxqyz)
+# ---------------------------------------------------------------------------
+
+def test_command_position_parameter_expansion_refused():
+    from tinyagentos.claude_code_guard import refusal, commands
+    # g${X}h pr merge -> should be refused
+    payload = {"tool_name": "Bash", "tool_input": {"command": 'g${X}h pr merge'}}
+    assert refusal(payload) is not None, "g${X}h should refuse"
+
+    # g$X""h pr merge -> should be refused
+    payload = {"tool_name": "Bash", "tool_input": {"command": 'g$X""h pr merge'}}
+    assert refusal(payload) is not None, 'g$X""h should refuse'
+
+    # ${GH} pr merge -> should be refused
+    payload = {"tool_name": "Bash", "tool_input": {"command": '${GH} pr merge'}}
+    assert refusal(payload) is not None, '${GH} should refuse'
+
+    # $HOME/.local/bin/uv sync -> path-prefix control, should be allowed (keys ['uv sync'])
+    keys = commands('$HOME/.local/bin/uv sync')
+    assert keys == ['uv sync'], f"expected ['uv sync'], got {keys!r}"
+
+    # echo ${HOME} -> argument-position control, should be allowed (keys ['echo'])
+    keys = commands('echo ${HOME}')
+    assert keys == ['echo'], f"expected ['echo'], got {keys!r}"
+    payload = {"tool_name": "Bash", "tool_input": {"command": 'echo ${HOME}'}}
+    assert refusal(payload) is None, "echo ${HOME} should be allowed"
