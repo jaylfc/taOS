@@ -492,6 +492,38 @@ class TestChatSessionSlugRegistryError:
 
 
 @pytest.mark.asyncio
+class TestChatSessionReplyTraceLookupError:
+    async def test_trace_id_lookup_raises_returns_503_and_no_reply(self, chat_app_with_stores):
+        _cid, token = await _agent(chat_app_with_stores, "@guest-trace-err")
+        messages = chat_app_with_stores.state.chat_messages
+        messages.get_message = AsyncMock(side_effect=RuntimeError("db"))
+        chat_app_with_stores.state.bridge_sessions.record_reply = AsyncMock()
+        async with _bare(chat_app_with_stores) as c:
+            r = await c.post(
+                REPLY,
+                headers=_hdr(token),
+                json={"kind": "final", "content": "hi", "trace_id": "msg-x"},
+            )
+        assert r.status_code == 503
+        assert r.json() == {"error": "chat store unavailable"}
+        chat_app_with_stores.state.bridge_sessions.record_reply.assert_not_called()
+
+    async def test_trace_id_not_found_still_returns_202(self, chat_app_with_stores):
+        _cid, token = await _agent(chat_app_with_stores, "@guest-trace-miss")
+        messages = chat_app_with_stores.state.chat_messages
+        messages.get_message = AsyncMock(return_value=None)
+        chat_app_with_stores.state.bridge_sessions.record_reply = AsyncMock()
+        async with _bare(chat_app_with_stores) as c:
+            r = await c.post(
+                REPLY,
+                headers=_hdr(token),
+                json={"kind": "final", "content": "hi", "trace_id": "msg-missing"},
+            )
+        assert r.status_code == 202
+        chat_app_with_stores.state.bridge_sessions.record_reply.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 class TestChatSessionUnknownChannel:
     async def test_reply_unknown_channel_id_gets_403(self, chat_app_with_stores):
         _cid_a, token_a = await _agent(chat_app_with_stores, "@guest-a")

@@ -151,11 +151,11 @@ async def self_chat_events(request: Request):
     )
 
 
-async def _resolve_target_channel(request: Request, body: dict) -> str | None:
+async def _resolve_target_channel(request: Request, body: dict) -> str | None | JSONResponse:
     """Determine the target channel for a reply, mirroring _handle_reply logic.
 
     Returns the channel_id if one can be determined, else None (falls back to
-    the agent's own DM in the bridge).
+    the agent's own DM in the bridge). Returns a JSONResponse on store errors.
     """
     # Explicit channel_id in body takes precedence.
     channel_id = body.get("channel_id")
@@ -169,7 +169,8 @@ async def _resolve_target_channel(request: Request, body: dict) -> str | None:
             try:
                 orig = await chat_messages.get_message(trace_id)
             except Exception:
-                orig = None
+                logger.warning("chat message lookup failed while resolving reply target", exc_info=True)
+                return JSONResponse({"error": "chat store unavailable"}, status_code=503)
             if orig and orig.get("channel_id"):
                 return orig["channel_id"]
     return None
@@ -196,6 +197,8 @@ async def self_chat_reply(request: Request):
 
     # Fix 1: enforce channel membership before accepting the reply.
     target_channel_id = await _resolve_target_channel(request, body)
+    if isinstance(target_channel_id, JSONResponse):
+        return target_channel_id
     if target_channel_id:
         chat_channels = getattr(request.app.state, "chat_channels", None)
         if chat_channels is not None:
