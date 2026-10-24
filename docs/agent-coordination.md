@@ -1408,6 +1408,10 @@ These rules are deliberately lightweight. The goal is not process for its own
 sake; it is to let many hands move quickly on the same codebase without undoing
 each other's work.
 
+## Project creation and A2A channels
+
+Every project gets a matching A2A channel at creation time, on all three creation paths: `POST /api/projects`, the agent `create_project` skill, and `project_create` decision approval. The channel lets project members coordinate on the bus. Channel creation is idempotent (`ensure_a2a_channel`), so later membership syncs are safe.
+
 ## Agent project-creation requests (auth-request kind=project_create)
 
 An external agent that is already registered in the agent registry can request to
