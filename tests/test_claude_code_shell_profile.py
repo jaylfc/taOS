@@ -597,12 +597,10 @@ def test_bypass_env_short_opt_a():
 # ---------- Parser test: commands with ${} and g'''h ----------
 def test_parser_gh_substitution():
     from tinyagentos.claude_code_guard import commands
-    assert commands('echo "${HOME}"; g""h pr merge') == ['echo', 'gh'], (
-        f"expected ['echo', 'gh'], got {commands('echo \"${HOME}\"; g\"\"h pr merge')!r}"
-    )
-    assert commands('echo "$(id)"') is None, (
-        f"expected None for echo $(id), got {commands('echo \"$(id)\"')!r}"
-    )
+    keys = commands('echo "${HOME}"; g""h pr merge')
+    assert keys == ['echo', 'gh'], f"expected ['echo', 'gh'], got {keys!r}"
+    keys = commands('echo "$(id)"')
+    assert keys is None, f"expected None for echo $(id), got {keys!r}"
     from tinyagentos.claude_code_guard import refusal
     # sudo -a, -c, -R take values and are missing from _WRAPPER_SHORT_OPTS_WITH_VALUE["sudo"]
     cases = [
