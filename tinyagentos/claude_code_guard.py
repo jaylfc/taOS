@@ -454,6 +454,38 @@ def commands(command: str) -> list[str] | None:
                                 add(OUTPUT_REDIRECT)
                             # This is an attached form, don't skip_next
                             break
+            # time: clustered short options (e.g. -ao, -po, -af, -apo, -ao/tmp/x, -af%e)
+            # GNU time short options: a p q v o f
+            # The first o or f ends the cluster: it takes a value (next word or attached),
+            # so -afo FILE is -a, -f with value "o", then FILE is the program.
+            if (wrapper == "time"
+                    and tok.startswith("-")
+                    and not tok.startswith("--")
+                    and len(tok) >= 3):
+                # Extract the leading valid letter cluster
+                i = 1
+                while i < len(tok) and tok[i] in "apqvof":
+                    takes_value = tok[i] in "of"
+                    i += 1
+                    if takes_value:
+                        break
+                letters = tok[1:i]
+                if letters:
+                    last = letters[-1]
+                    has_attached = i < len(tok)
+                    if last in ("o", "f"):
+                        if has_attached:
+                            # Attached value form: -ao/tmp/x, -af%e
+                            if last == "o":
+                                add(OUTPUT_REDIRECT)
+                            # Don't skip_next, the value is attached
+                            continue
+                        else:
+                            # Separate value form: -ao FILE, -af %e, -apo /tmp/x
+                            if last == "o":
+                                add(OUTPUT_REDIRECT)
+                            skip_next = True
+                            continue
             # Other wrappers: skip options (words starting with -)
             if tok.startswith("-"):
                 continue

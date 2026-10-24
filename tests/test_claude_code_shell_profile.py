@@ -1120,3 +1120,44 @@ def test_time_tee_output_redirect_profile_refusal():
     assert msg is not None
     msg, _ = profile_refusal("time echo ok", allow={"time", "echo", "tee"}, deny={"output-redirect"})
     assert msg is None
+
+
+# ---------------------------------------------------------------------------
+# tsk-apy6di: time clustered short options (-ao, -po, -af, -apo) keep wrapped program
+# ---------------------------------------------------------------------------
+
+def test_time_clustered_output_option_keeps_wrapped_program():
+    from tinyagentos.claude_code_guard import commands
+    for cmd in ("time -ao /tmp/x echo ok", "time -po /tmp/x echo ok", "time -apo /tmp/x echo ok"):
+        c = commands(cmd)
+        assert c is not None, cmd
+        assert "echo" in c, cmd
+        assert "output-redirect" in c, cmd
+        assert "x" not in c, cmd
+    c = commands("time -af %e echo ok")
+    assert c is not None
+    assert "echo" in c
+    assert "%e" not in c
+    # Controls that must stay as they are
+    assert commands("time -a echo ok") == ["time", "echo"]
+    assert commands("time -ap echo ok") == ["time", "echo"]
+    c = commands("time -ao/tmp/x echo ok")
+    assert "echo" in c
+    assert "output-redirect" in c
+    # The first o/f ends the cluster (GNU getopt): the rest is its value, the next word is the program
+    assert commands("time -fo echo ok") == ["time", "echo"]
+    assert commands("time -of echo ok") == ["time", "output-redirect", "echo"]
+    assert commands("time -afo evil echo ok") == ["time", "evil"]
+    assert commands("time -aof /tmp/x echo ok") == ["time", "output-redirect", "x"]
+
+
+def test_time_clustered_output_option_profile_refusal():
+    from tinyagentos.claude_code_guard import profile_refusal
+    # Clustered option bypasses deny rule on wrapped program
+    msg, _ = profile_refusal("time -ao /tmp/echo gh pr merge", allow={"time", "echo", "output-redirect"}, deny={"gh"})
+    assert msg is not None and "denied `gh`" in msg
+    msg, _ = profile_refusal("time -afo evil echo ok", allow={"time", "echo", "output-redirect"}, deny={"evil"})
+    assert msg is not None and "denied `evil`" in msg
+    # Control: non-clustered form works correctly
+    msg, _ = profile_refusal("time -a echo ok", allow={"time", "echo"}, deny={"gh"})
+    assert msg is None
