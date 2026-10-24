@@ -524,6 +524,44 @@ class TestChatSessionReplyTraceLookupError:
 
 
 @pytest.mark.asyncio
+class TestChatSessionReplyChannelLookupError:
+    async def test_channel_lookup_raises_returns_503_and_no_reply(self, chat_app_with_stores):
+        _cid, token = await _agent(chat_app_with_stores, "@guest-chan-err")
+        channels = chat_app_with_stores.state.chat_channels
+        channels.get_channel = AsyncMock(side_effect=RuntimeError("db"))
+        chat_app_with_stores.state.bridge_sessions.record_reply = AsyncMock()
+        async with _bare(chat_app_with_stores) as c:
+            r = await c.post(
+                REPLY,
+                headers=_hdr(token),
+                json={"kind": "final", "content": "hi", "channel_id": "chan-123"},
+            )
+        assert r.status_code == 503
+        assert r.json() == {"error": "chat store unavailable"}
+        chat_app_with_stores.state.bridge_sessions.record_reply.assert_not_called()
+
+    async def test_channel_id_not_a_string_returns_400(self, chat_app_with_stores):
+        _cid, token = await _agent(chat_app_with_stores, "@guest-chan-type")
+        chat_app_with_stores.state.bridge_sessions.record_reply = AsyncMock()
+        async with _bare(chat_app_with_stores) as c:
+            r1 = await c.post(
+                REPLY,
+                headers=_hdr(token),
+                json={"kind": "final", "content": "hi", "channel_id": ["list"]},
+            )
+            r2 = await c.post(
+                REPLY,
+                headers=_hdr(token),
+                json={"kind": "final", "content": "hi", "channel_id": {"dict": "value"}},
+            )
+        assert r1.status_code == 400
+        assert r1.json() == {"error": "invalid channel_id"}
+        assert r2.status_code == 400
+        assert r2.json() == {"error": "invalid channel_id"}
+        chat_app_with_stores.state.bridge_sessions.record_reply.assert_not_called()
+
+
+@pytest.mark.asyncio
 class TestChatSessionUnknownChannel:
     async def test_reply_unknown_channel_id_gets_403(self, chat_app_with_stores):
         _cid_a, token_a = await _agent(chat_app_with_stores, "@guest-a")

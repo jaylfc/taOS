@@ -159,6 +159,8 @@ async def _resolve_target_channel(request: Request, body: dict) -> str | None | 
     """
     # Explicit channel_id in body takes precedence.
     channel_id = body.get("channel_id")
+    if channel_id is not None and not isinstance(channel_id, str):
+        return JSONResponse({"error": "invalid channel_id"}, status_code=400)
     if channel_id:
         return channel_id
     # Fall back to the channel of the message named by trace_id.
@@ -202,7 +204,11 @@ async def self_chat_reply(request: Request):
     if target_channel_id:
         chat_channels = getattr(request.app.state, "chat_channels", None)
         if chat_channels is not None:
-            channel = await chat_channels.get_channel(target_channel_id)
+            try:
+                channel = await chat_channels.get_channel(target_channel_id)
+            except Exception:
+                logger.warning("chat channel lookup failed while checking reply membership", exc_info=True)
+                return JSONResponse({"error": "chat store unavailable"}, status_code=503)
             if channel:
                 members = channel.get("members") or []
                 if slug not in members:
