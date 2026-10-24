@@ -13,6 +13,10 @@ import platform
 from pathlib import Path
 from typing import Optional
 
+from tinyagentos.hardware import (
+    METAL_RESOURCE_NAME,
+    metal_available,
+)
 from tinyagentos.scheduler.backend_catalog import BackendCatalog
 from tinyagentos.scheduler.history_store import HistoryStore
 from tinyagentos.scheduler.gpu_arbiter import _probe_nvidia_vram
@@ -229,14 +233,34 @@ def build_scheduler(
     ]
     gpu_info = getattr(hardware_profile, "gpu", None)
     gpu_type = getattr(gpu_info, "type", None) if gpu_info else None
+
+    # Apple Silicon is not a CUDA host: MLX/Metal gets its own resource class,
+    # `gpu-metal` (docs/design/resource-scheduler.md), because the name is what
+    # lease ids, worker inventories and the UI key off. `metal_available()`
+    # probes for the device rather than trusting the platform: a Mac reports
+    # `gpu.type == "apple"` from its SoC, and an arm64 macOS VM has no Metal
+    # device, so it must not register a GPU it cannot serve (taOS #329 review).
+    # It also covers a Mac whose hardware probe failed to identify the GPU.
+    # A host whose profile says `apple` but whose probe says no device keeps a
+    # GPU-class resource only when a GPU backend is actually configured (that
+    # branch is backend-driven, and an ollama in CPU mode must stay visible);
+    # what it never gets is `gpu-metal`.
+    is_metal = metal_available()
+    if gpu_type == "apple" and not is_metal:
+        logger.info(
+            "discovery: this host reports Apple Silicon but exposes no Metal "
+            "device (VM, or the graphics stack is down); no GPU resource",
+        )
+        gpu_type = None
+
     has_gpu_hardware = gpu_type not in (None, "", "none")
 
-    if gpu_backends or has_gpu_hardware:
+    if gpu_backends or has_gpu_hardware or is_metal:
         gpu_count = 1  # Default single-GPU; multi-GPU is Phase 2
         gpu_signature = ResourceSignature(
-            platform="cuda" if gpu_type in ("cuda", "nvidia") else (
-                "rocm" if gpu_type == "rocm" else (
-                    "metal" if gpu_type == "apple" else "gpu"
+            platform="metal" if is_metal else (
+                "cuda" if gpu_type in ("cuda", "nvidia") else (
+                    "rocm" if gpu_type == "rocm" else "gpu"
                 )
             ),
             runtime="cuda" if gpu_type in ("cuda", "nvidia") else (
@@ -265,7 +289,7 @@ def build_scheduler(
             return None
 
         for gpu_idx in range(gpu_count):
-            gpu_name = f"gpu-cuda-{gpu_idx}"
+            gpu_name = METAL_RESOURCE_NAME if is_metal else f"gpu-cuda-{gpu_idx}"
             scheduler.register(
                 Resource(
                     name=gpu_name,
