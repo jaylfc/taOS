@@ -28,7 +28,7 @@ _WRAPPER_SHORT_OPTS_WITH_VALUE = {
     "exec": frozenset({"a"}),
     "sudo": frozenset({"u", "g", "C", "h", "p", "r", "t", "T", "U", "D", "a", "c", "R"}),
     "doas": frozenset({"u", "C"}),
-    "env": frozenset({"u", "C"}),
+    "env": frozenset({"u", "C", "a"}),
 }
 
 REFUSAL = ("Refused by taOS: the agent may not run `git push` or `gh` from the shell. "
@@ -70,11 +70,11 @@ _WRAPPER_OPTS_WITH_VALUE = {
         "--delimiter", "--arg-file",
     }),
     "timeout": frozenset({"-s", "--signal", "-k", "--kill-after"}),
-    "env": frozenset({"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}),
+    "env": frozenset({"-a", "--argv0", "-u", "--unset", "-C", "--chdir"}),
     "exec": frozenset({"-a"}),
     "doas": frozenset({"-u", "-C", "--user", "--chdir"}),
     "chroot": frozenset({"--userspec", "--groups"}),
-    "sudo": frozenset({"-a", "-c", "-R", "--auth-type", "--login-class", "--chroot", "-p", "--prompt"}),
+    "sudo": frozenset({"-a", "-c", "-R", "--auth-type", "--login-class", "--chroot", "-p", "--prompt", "--close-from", "--host", "--role", "--type", "--command-timeout", "--other-user", "--group", "--user"}),
 }
 # Options of those programs that take a separate value (``git -C dir status``).
 _OPTIONS_WITH_VALUE = frozenset({
@@ -129,8 +129,8 @@ def _has_command_substitution_in_double_quotes(text: str) -> bool:
             i += 1
             continue
         if in_double:
-            # Check for $( or ${ or backtick
-            if ch == "$" and i + 1 < n and text[i + 1] in "({":
+            # Check for $( or backtick
+            if ch == "$" and i + 1 < n and text[i + 1] == "(":
                 return True
             if ch == "`":
                 return True
@@ -374,6 +374,17 @@ def commands(command: str) -> list[str] | None:
                 elif tok.startswith("--split-string="):
                     # --split-string=<text> attached form
                     split_string = tok.split("=", 1)[1]
+                # Handle S in clustered short options (e.g., -iS, -iSls)
+                if wrapper == "env" and "S" in tok and split_string is None:
+                    s_pos = tok.index("S")
+                    after_S = tok[s_pos + 1:]
+                    if after_S:
+                        # Text after S is the attached split string
+                        split_string = after_S
+                    else:
+                        # S is at the end of the token (e.g., -iS), next token is the split string
+                        env_split_string_pending = True
+                        skip_next = True
                 if split_string is not None:
                     # Parse the split string recursively
                     # Fail closed if it contains $ (env var expansion), backslash, or doesn't parse,
@@ -483,6 +494,8 @@ def refusal(payload: object) -> str | None:
         return REFUSAL
     # Hard refusal on parsed command keys (catches g""h, 'gh', etc.)
     keys = commands(command)
+    if keys is None:
+        return REFUSAL
     if keys:
         for key in keys:
             if key == "gh" or key.startswith("gh ") or key == "git push" or key == "env -S":
