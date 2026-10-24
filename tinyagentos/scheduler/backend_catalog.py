@@ -156,6 +156,13 @@ class BackendCatalog:
         self._subscribers: list[Callable[[], Awaitable[None]]] = []
         self._last_signature: str = ""
         self._lifecycle_states: dict[str, str] = {}
+        # Optional idle TTL sweeper (taOS #62). The poll loop is the
+        # process's existing periodic tick, so it drives the model
+        # scheduler's idle sweep from here instead of the scheduler
+        # starting a background task of its own.
+        self._idle_sweep_fn: Optional[Callable[[], Awaitable[None]]] = None
+        self._idle_sweep_interval: float = 0.0
+        self._last_idle_sweep: float = float("-inf")
 
     def subscribe(self, callback: Callable[[], Awaitable[None]]) -> None:
         """Register an async callback for backend state changes.
@@ -166,6 +173,45 @@ class BackendCatalog:
         scheduler resource re-registration).
         """
         self._subscribers.append(callback)
+
+    def attach_idle_sweeper(
+        self,
+        sweep_fn: Callable[[], Awaitable[Any]],
+        interval_seconds: float = 60.0,
+    ) -> None:
+        """Drive a model-scheduler idle sweep from the poll loop (taOS #62).
+
+        ``sweep_fn`` is normally ``CoreAwareModelScheduler.sweep_idle``.
+        It runs once per ``interval_seconds`` after a probe pass, so
+        resident models idle past their per-class TTL are evicted by the
+        loop the process already runs rather than by a timer the
+        scheduler has to own. The first probe pass sweeps immediately.
+        """
+        self._idle_sweep_fn = sweep_fn
+        self._idle_sweep_interval = max(0.0, float(interval_seconds))
+        self._last_idle_sweep = float("-inf")
+
+    def detach_idle_sweeper(self) -> None:
+        """Stop driving the idle sweep (shutdown and tests)."""
+        self._idle_sweep_fn = None
+        self._last_idle_sweep = float("-inf")
+
+    async def _sweep_idle_if_due(self) -> None:
+        """Invoke the attached idle sweeper when its interval has elapsed.
+
+        A sweep must never break backend polling: failures are logged and
+        swallowed, and the next tick retries.
+        """
+        if self._idle_sweep_fn is None:
+            return
+        now = time.monotonic()
+        if now - self._last_idle_sweep < self._idle_sweep_interval:
+            return
+        self._last_idle_sweep = now
+        try:
+            await self._idle_sweep_fn()
+        except Exception:  # noqa: BLE001 - polling must survive a bad sweep
+            logger.exception("backend catalog idle sweep failed")
 
     def _catalog_signature(self) -> str:
         """Stable signature of the current catalog state. Changes when a
@@ -348,6 +394,10 @@ class BackendCatalog:
                         await self._notify_if_changed()
                 except Exception:
                     logger.exception("backend catalog probe failed")
+                # Idle TTL eviction (taOS #62) rides this existing tick;
+                # called outside the probe lock so a slow evict cannot
+                # stall catalog readers.
+                await self._sweep_idle_if_due()
                 if not self._initial_probe_done.is_set():
                     self._initial_probe_done.set()
                 await asyncio.sleep(self._interval)
