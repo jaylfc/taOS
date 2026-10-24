@@ -114,7 +114,7 @@ def parse_agent_buddy_reply(data: bytes, address: str) -> dict | None:
     try:
         text = data.decode("utf-8")
         parsed = json.loads(text)
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
         return None
     
     if not isinstance(parsed, dict):

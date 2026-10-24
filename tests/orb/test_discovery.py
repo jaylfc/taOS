@@ -597,6 +597,32 @@ def test_parse_agent_buddy_reply_extra_key_ignored():
     assert "extra_unknown_key" not in result
 
 
+def test_parse_agent_buddy_reply_deeply_nested_returns_none():
+    """A datagram of 2000 '[' nests past the recursion limit.
+
+    On python 3.11 json.loads raises RecursionError (3.12+ raise JSONDecodeError),
+    so this test is red only on 3.11 before the fix. The monkeypatched test below
+    covers the except clause on every interpreter.
+    """
+    from tinyagentos.orb.discovery import parse_agent_buddy_reply
+
+    result = parse_agent_buddy_reply(b"[" * 2000, "192.168.1.100")
+    assert result is None
+
+
+def test_parse_agent_buddy_reply_recursion_error_returns_none(monkeypatch):
+    """A RecursionError out of json.loads is a bad datagram, not a probe abort."""
+    import json
+    from tinyagentos.orb.discovery import parse_agent_buddy_reply
+
+    def raise_recursion(_text):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(json, "loads", raise_recursion)
+    result = parse_agent_buddy_reply(b"{}", "192.168.1.100")
+    assert result is None
+
+
 # Probe tests using real loopback UDP
 
 
