@@ -852,3 +852,24 @@ async def test_profile_feeds_the_harness_rules(client, ds):
     assert rules["deny"] == ["curl"]
     # Another user's profile is separate.
     assert "npm" not in (await rules_for(ds, "u2"))["allow"]
+
+
+def test_bypass_env_clustered_short_options():
+    from tinyagentos.claude_code_guard import refusal
+    # env -iu FOO: clustered short options -i -u, -u takes value
+    payload = {"tool_name": "Bash", "tool_input": {"command": 'env -iu FOO g""h pr merge'}}
+    assert refusal(payload) is not None
+
+
+def test_bypass_sudo_short_options_with_value():
+    from tinyagentos.claude_code_guard import refusal
+    # sudo -a, -c, -R take values and are missing from _WRAPPER_SHORT_OPTS_WITH_VALUE["sudo"]
+    cases = [
+        'sudo -a pam g""h pr merge',
+        'sudo -c cls g""h pr merge',
+        'sudo -R /x g""h pr merge',
+    ]
+    for cmd in cases:
+        payload = {"tool_name": "Bash", "tool_input": {"command": cmd}}
+        msg = refusal(payload)
+        assert msg is not None, f"should refuse but got None for {cmd!r}"
