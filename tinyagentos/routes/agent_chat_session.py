@@ -49,8 +49,10 @@ async def _resolve_slug(request: Request) -> str | JSONResponse:
         try:
             active_agents = await registry.list_all(status="active")
         except Exception:
-            active_agents = []
-        # list_all returns agents ordered by id (oldest first). Find the first
+            logger.warning("agent registry list_all failed while resolving slug", exc_info=True)
+            return JSONResponse({"error": "agent registry unavailable"}, status_code=503)
+        # list_all returns agents ordered by id (oldest first) via
+        # SELECT * FROM agent_registry WHERE status = ? ORDER BY id. Find the first
         # agent with this slug; if it's not the current agent, reject.
         for other in active_agents:
             other_cid = other.get("canonical_id")
@@ -149,7 +151,7 @@ async def self_chat_events(request: Request):
     )
 
 
-async def _resolve_target_channel(request: Request, body: dict, slug: str) -> str | None:
+async def _resolve_target_channel(request: Request, body: dict) -> str | None:
     """Determine the target channel for a reply, mirroring _handle_reply logic.
 
     Returns the channel_id if one can be determined, else None (falls back to
@@ -193,7 +195,7 @@ async def self_chat_reply(request: Request):
         return JSONResponse({"error": "invalid JSON"}, status_code=400)
 
     # Fix 1: enforce channel membership before accepting the reply.
-    target_channel_id = await _resolve_target_channel(request, body, slug)
+    target_channel_id = await _resolve_target_channel(request, body)
     if target_channel_id:
         chat_channels = getattr(request.app.state, "chat_channels", None)
         if chat_channels is not None:
@@ -204,6 +206,10 @@ async def self_chat_reply(request: Request):
                     return JSONResponse(
                         {"error": "not a member of this channel"}, status_code=403
                     )
+            else:
+                return JSONResponse(
+                    {"error": "not a member of this channel"}, status_code=403
+                )
 
     await bridge.record_reply(slug, body)
     return JSONResponse({"accepted": True}, status_code=202)

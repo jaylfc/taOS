@@ -475,3 +475,34 @@ class TestGuestOutboxReplayReceipt:
             assert called_reader_id == "guest-replay"
         finally:
             await outbox.close()
+
+
+@pytest.mark.asyncio
+class TestChatSessionSlugRegistryError:
+    async def test_registry_list_all_raises_returns_503_and_no_reply(self, chat_app):
+        _cid, token = await _agent(chat_app, "@guest-reg-err")
+        registry = chat_app.state.agent_registry
+        registry.list_all = AsyncMock(side_effect=RuntimeError("db"))
+        chat_app.state.bridge_sessions.record_reply = AsyncMock()
+        async with _bare(chat_app) as c:
+            r = await c.post(REPLY, headers=_hdr(token), json={"kind": "final", "content": "hi"})
+        assert r.status_code == 503
+        assert r.json() == {"error": "agent registry unavailable"}
+        chat_app.state.bridge_sessions.record_reply.assert_not_called()
+
+
+@pytest.mark.asyncio
+class TestChatSessionUnknownChannel:
+    async def test_reply_unknown_channel_id_gets_403(self, chat_app_with_stores):
+        _cid_a, token_a = await _agent(chat_app_with_stores, "@guest-a")
+        mock = AsyncMock()
+        chat_app_with_stores.state.bridge_sessions.record_reply = mock
+        async with _bare(chat_app_with_stores) as c:
+            r = await c.post(
+                REPLY,
+                headers=_hdr(token_a),
+                json={"kind": "final", "content": "hi", "channel_id": "chan-does-not-exist"},
+            )
+        assert r.status_code == 403
+        assert r.json() == {"error": "not a member of this channel"}
+        mock.assert_not_called()
