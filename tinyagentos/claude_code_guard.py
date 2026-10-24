@@ -33,6 +33,7 @@ _WRAPPER_SHORT_OPTS_WITH_VALUE = {
 
 REFUSAL = ("Refused by taOS: the agent may not run `git push` or `gh` from the shell. "
            "GitHub writes go through the taOS tool, which asks the user to confirm.")
+UNPARSEABLE_REFUSAL = ("Refused by taOS: this shell command could not be parsed, so it cannot be checked.")
 
 # Word edges that also treat path separators as boundaries, so `/usr/bin/gh`
 # and `bash -c 'git push'` match while `ghost` or `git-pushed` do not.
@@ -67,7 +68,7 @@ _WRAPPER_OPTS_WITH_VALUE = {
     "xargs": frozenset({
         "-n", "-P", "-I", "-L", "-s", "-d", "-a", "-E",
         "--max-args", "--max-procs", "--max-lines", "--max-chars",
-        "--delimiter", "--arg-file",
+        "--delimiter", "--arg-file", "--process-slot-var",
     }),
     "timeout": frozenset({"-s", "--signal", "-k", "--kill-after"}),
     "env": frozenset({"-a", "--argv0", "-u", "--unset", "-C", "--chdir"}),
@@ -75,6 +76,7 @@ _WRAPPER_OPTS_WITH_VALUE = {
     "doas": frozenset({"-u", "-C", "--user", "--chdir"}),
     "chroot": frozenset({"--userspec", "--groups"}),
     "sudo": frozenset({"-a", "-c", "-R", "--auth-type", "--login-class", "--chroot", "-p", "--prompt", "--close-from", "--host", "--role", "--type", "--command-timeout", "--other-user", "--group", "--user"}),
+    "time": frozenset({"-f", "--format", "-o", "--output"}),
 }
 # Options of those programs that take a separate value (``git -C dir status``).
 _OPTIONS_WITH_VALUE = frozenset({
@@ -292,6 +294,16 @@ def commands(command: str) -> list[str] | None:
                     continue
             continue
         name = os.path.basename(tok) or tok
+        # F5: command-position parameter expansion
+        # If we are in command position (expect == True) and the token contains $,
+        # decide based on the basename. If the basename itself contains $ (e.g.,
+        # $EDITOR, g${X}h, ${GH}), the command is unparseable -> fail closed.
+        # If only the directory part expands (e.g., $HOME/.local/bin/uv,
+        # "$VENV"/bin/pytest), keep the literal basename as the name.
+        if expect and "$" in tok:
+            if "$" in name:
+                return None
+            # else: directory part has $, but basename is literal; keep name as-is
         # chroot: skip the first non-option (root dir) after options - must run BEFORE
         # WRAPPER_PROGRAMS check so a root like /tmp/timeout is not mistaken for the
         # timeout wrapper.
@@ -339,7 +351,7 @@ def commands(command: str) -> list[str] | None:
                     continue
             # Clustered short options that take a value (last letter in the option)
             # For a token like -la, where 'a' takes a value, skip the next word
-            if wrapper in _WRAPPER_SHORT_OPTS_WITH_VALUE and not (wrapper == "env" and "S" in tok):
+            if wrapper in _WRAPPER_SHORT_OPTS_WITH_VALUE:
                 if tok.startswith("-") and not tok.startswith("--"):
                     # Check if this is a short option (single dash) and last letter takes a value
                     last_char = tok[-1]
@@ -375,16 +387,27 @@ def commands(command: str) -> list[str] | None:
                     # --split-string=<text> attached form
                     split_string = tok.split("=", 1)[1]
                 # Handle S in clustered short options (e.g., -iS, -iSls)
-                if wrapper == "env" and "S" in tok and split_string is None:
+                # Only applies to single-dash short-option clusters, not long options or bare words.
+                # Walk the cluster letters in order; stop at the first letter that takes a value
+                # (u, C, a for env). Only treat S as the split-string option if reached first.
+                if (wrapper == "env"
+                        and tok.startswith("-")
+                        and not tok.startswith("--")
+                        and "S" in tok
+                        and split_string is None):
                     s_pos = tok.index("S")
-                    after_S = tok[s_pos + 1:]
-                    if after_S:
-                        # Text after S is the attached split string
-                        split_string = after_S
-                    else:
-                        # S is at the end of the token (e.g., -iS), next token is the split string
-                        env_split_string_pending = True
-                        skip_next = True
+                    # Check letters before S for value-taking options
+                    value_taking = _WRAPPER_SHORT_OPTS_WITH_VALUE.get("env", frozenset())
+                    earlier = tok[1:s_pos]
+                    if not any(ch in value_taking for ch in earlier):
+                        after_S = tok[s_pos + 1:]
+                        if after_S:
+                            # Text after S is the attached split string
+                            split_string = after_S
+                        else:
+                            # S is at the end of the token (e.g., -iS), next token is the split string
+                            env_split_string_pending = True
+                            skip_next = True
                 if split_string is not None:
                     # Parse the split string recursively
                     # Fail closed if it contains $ (env var expansion), backslash, or doesn't parse,
@@ -465,7 +488,7 @@ def profile_refusal(command: str, allow: set[str], deny: set[str]) -> tuple[str 
     and the undecided commands to ask the user about."""
     keys = commands(command)
     if keys is None:
-        return "Refused by taOS: this shell command could not be parsed, so it cannot be checked.", []
+        return UNPARSEABLE_REFUSAL, []
     denied = [k for k in keys if _covered(k, deny)]
     if denied:
         return (f"Refused by taOS: the user has denied `{denied[0]}` for the agent. "
@@ -495,7 +518,7 @@ def refusal(payload: object) -> str | None:
     # Hard refusal on parsed command keys (catches g""h, 'gh', etc.)
     keys = commands(command)
     if keys is None:
-        return REFUSAL
+        return UNPARSEABLE_REFUSAL
     if keys:
         for key in keys:
             if key == "gh" or key.startswith("gh ") or key == "git push" or key == "env -S":
