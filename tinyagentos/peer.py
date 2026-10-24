@@ -403,13 +403,24 @@ async def deliver_to_peer(
     envelope: dict,
     *,
     http_client=None,
+    data_dir: str | Path | None = None,
 ) -> bool:
     """POST ``envelope`` to a contact's ``path`` with our outbound bearer.
 
     Endpoints, the outbound token, and the known-endpoint SSRF allowance all
     come from the contact's stored peer link.  Endpoints are tried in
     priority order.  Returns True on the first 2xx.
+
+    Nothing is sent while the collaboration kill switch is off or the contact
+    is paused (``data_dir`` defaults to the resolved taOS data dir).
     """
+    from tinyagentos.collab_settings import outbound_refusal
+
+    if data_dir is None:
+        from tinyagentos.app import resolve_data_dir
+        data_dir = resolve_data_dir()
+    if outbound_refusal(data_dir, contact_id) is not None:
+        return False
     link = await contacts_store.get_peer_link(contact_id)
     if link is None or not link.get("endpoints"):
         return False
