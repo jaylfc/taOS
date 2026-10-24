@@ -100,6 +100,8 @@ class _AgentSession:
         self.pending_hops: dict[str, int] = {}
         # Bounded seen set of final reply ids (keeps newest 256 per agent).
         self._seen_final_ids: OrderedDict[str, None] = OrderedDict()
+        # Set of trace_ids for which mark_seen has been called (idempotent guard).
+        self._seen_trace_ids: set[str] = set()
 
     def accumulate_delta(self, trace_id: str, content: str) -> None:
         if trace_id not in self._delta_buffers:
@@ -156,6 +158,10 @@ class BridgeSessionRegistry:
         self._sessions: dict[str, _AgentSession] = {}
         self._lock = asyncio.Lock()
         self._router = None
+        # Durable outbox for guest (registry agent) sessions, wired by app.py.
+        # _is_guest(slug) is True when no config agent has that name.
+        self._guest_outbox = None
+        self._is_guest = None
 
     def _get_or_create(self, slug: str) -> _AgentSession:
         if slug not in self._sessions:
@@ -180,10 +186,15 @@ class BridgeSessionRegistry:
         trace_id = msg.get("trace_id") or msg.get("id")
         if trace_id is not None:
             session.pending_hops[trace_id] = int(msg.get("hops_since_user") or 0)
-        await session.queue.put({
-            "event": "user_message",
-            "data": msg,
-        })
+        # Store data as JSON string so subscribe can read id without re-encoding
+        event: dict = {"event": "user_message", "data": json.dumps(msg)}
+        outbox = self._guest_outbox
+        if outbox is not None and self._is_guest is not None and self._is_guest(slug):
+            try:
+                event["outbox_id"] = await outbox.append(slug, msg)
+            except Exception:
+                logger.exception("bridge_session: guest outbox append failed for %s", slug)
+        await session.queue.put(event)
 
         # Record a message_in trace event so the transcript captures both
         # sides in order. Envelope payload follows ENVELOPE_V1_SCHEMA's
@@ -255,11 +266,55 @@ class BridgeSessionRegistry:
                 if item is _DISCONNECT:
                     break
                 event_type = item.get("event", "message")
-                data = json.dumps(item.get("data", {}))
-                yield f"event: {event_type}\ndata: {data}\n\n"
+                
+                # Stamp delivered when a user_message is actually yielded to the agent
+                # (not when it was enqueued). The local `data` there is already the JSON string.
+                if event_type == "user_message":
+                    await self.mark_user_message_delivered(slug, item.get("data", "{}"))
+                
+                # user_message data is already a JSON string; tick data is a dict
+                data = item.get("data", "{}")
+                if not isinstance(data, str):
+                    data = json.dumps(data)
+                id_line = f"id: {item['outbox_id']}\n" if item.get("outbox_id") else ""
+                yield f"{id_line}event: {event_type}\ndata: {data}\n\n"
         finally:
             if tick_task is not None:
                 tick_task.cancel()
+
+    async def mark_user_message_delivered(self, slug: str, payload) -> None:
+        """Stamp the chat message as delivered and broadcast a receipt.
+
+        Called when a user_message event is yielded to the agent (both from
+        live subscribe and from outbox replay). The payload may be a dict or
+        a JSON string; both are accepted.
+        """
+        if not self._chat_messages:
+            return
+        try:
+            if isinstance(payload, str):
+                item_data = json.loads(payload)
+            else:
+                item_data = payload
+            msg_id = item_data.get("id")
+            if not msg_id:
+                return
+            receipt_row = await self._chat_messages.mark_delivered(msg_id, slug)
+            if receipt_row and self._chat_hub:
+                # Need channel_id to broadcast; get it from the message
+                msg = await self._chat_messages.get_message(msg_id)
+                if msg and msg.get("channel_id"):
+                    await self._chat_hub.broadcast(msg["channel_id"], {
+                        "type": "receipt",
+                        "seq": self._chat_hub.next_seq(),
+                        "message_id": receipt_row["message_id"],
+                        "agent_id": receipt_row["reader_id"],
+                        "reader_type": receipt_row["reader_type"],
+                        "delivered_at": receipt_row["delivered_at"],
+                        "seen_at": receipt_row["seen_at"],
+                    })
+        except Exception:
+            logger.exception("bridge_session: mark_delivered failed for %s", slug)
 
     async def record_reply(self, slug: str, body: dict) -> None:
         """Process a reply POST from openclaw.
@@ -295,6 +350,28 @@ class BridgeSessionRegistry:
             session = self._get_or_create(slug)
 
         if kind == "delta":
+            # Stamp seen on first delta for this trace_id
+            if trace_id not in session._seen_trace_ids and self._chat_messages:
+                try:
+                    msg = await self._chat_messages.get_message(trace_id)
+                    if msg:
+                        receipt_row = await self._chat_messages.mark_seen(trace_id, slug)
+                        if receipt_row and self._chat_hub:
+                            channel_id = msg.get("channel_id")
+                            if channel_id:
+                                await self._chat_hub.broadcast(channel_id, {
+                                    "type": "receipt",
+                                    "seq": self._chat_hub.next_seq(),
+                                    "message_id": receipt_row["message_id"],
+                                    "agent_id": receipt_row["reader_id"],
+                                    "reader_type": receipt_row["reader_type"],
+                                    "delivered_at": receipt_row["delivered_at"],
+                                    "seen_at": receipt_row["seen_at"],
+                                })
+                        session._seen_trace_ids.add(trace_id)
+                except Exception:
+                    logger.exception("bridge_session: mark_seen failed for %s", slug)
+            
             session.accumulate_delta(trace_id, content)
             # Ensure a streaming placeholder chat message exists.
             pending_msg_id = session._pending_msg_ids.get(trace_id)
@@ -333,6 +410,28 @@ class BridgeSessionRegistry:
                     })
 
         elif kind == "final":
+            # Stamp seen on first final for this trace_id (if no delta came before)
+            if trace_id not in session._seen_trace_ids and self._chat_messages:
+                try:
+                    msg = await self._chat_messages.get_message(trace_id)
+                    if msg:
+                        receipt_row = await self._chat_messages.mark_seen(trace_id, slug)
+                        if receipt_row and self._chat_hub:
+                            channel_id = msg.get("channel_id")
+                            if channel_id:
+                                await self._chat_hub.broadcast(channel_id, {
+                                    "type": "receipt",
+                                    "seq": self._chat_hub.next_seq(),
+                                    "message_id": receipt_row["message_id"],
+                                    "agent_id": receipt_row["reader_id"],
+                                    "reader_type": receipt_row["reader_type"],
+                                    "delivered_at": receipt_row["delivered_at"],
+                                    "seen_at": receipt_row["seen_at"],
+                                })
+                        session._seen_trace_ids.add(trace_id)
+                except Exception:
+                    logger.exception("bridge_session: mark_seen failed for %s", slug)
+
             reply_id = body.get("id")
             if not isinstance(reply_id, str) or not reply_id:
                 reply_id = None

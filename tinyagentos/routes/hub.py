@@ -6,7 +6,8 @@ chat stores: it reads and writes the node's own signed objects in the local hub
 store (``tinyagentos/hub/store.py``) and mints/uses the node's identity keypair
 (slice 1). Directory calls (identity, friend-request brokering, presence along
 edges) reach taos.my through ``tinyagentos/routes/account_proxy.py`` additions;
-peer traffic is a later slice. Nothing here talks to a peer.
+friend-accept delivers the peer handshake (``_try_handshake``); nothing else
+here talks to a peer.
 
 Slice 2 surfaces the node's own profile: render it and create/update it with a
 version bump. Slice 3 adds the social-graph surface: signed follow and
@@ -25,6 +26,7 @@ dependency (401), exactly like every other local app route.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -34,12 +36,16 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from tinyagentos import peer as peer_channel
 from tinyagentos.auth_context import CurrentUser, current_user
 from tinyagentos.contacts_store import generate_peer_token
+from tinyagentos import task_utils
 from tinyagentos.hub import identity, posts, relationships, store as hub_store
 from tinyagentos.routes.account_proxy import _forward_to
 
 logger = logging.getLogger(__name__)
+
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
 
 router = APIRouter()
 
@@ -94,6 +100,28 @@ async def _get_store(request: Request) -> hub_store.HubStore:
     await store.init()
     request.app.state.hub_store = store
     return store
+
+
+def _normalize_endpoints(endpoints) -> list:
+    """Advertised endpoints as the dict list peer links store.
+
+    Accepts a JSON string or a list; bare strings become
+    ``{"kind": "hub", "url": ..., "priority": <index>}`` (the form #2045's
+    contact grid consumes).  Anything else yields ``[]``.
+    """
+    if isinstance(endpoints, str):
+        try:
+            endpoints = json.loads(endpoints)
+        except (ValueError, TypeError):
+            endpoints = []
+    if not isinstance(endpoints, list):
+        endpoints = []
+    return [
+        {"kind": "hub", "url": e, "priority": i}
+        if isinstance(e, str)
+        else e
+        for i, e in enumerate(endpoints)
+    ]
 
 
 async def _try_handshake(
@@ -167,23 +195,7 @@ async def _try_handshake(
             return
 
         display_name = directory_resp.get("display_name") or username
-        endpoints = directory_resp.get("endpoints")
-        if isinstance(endpoints, str):
-            try:
-                endpoints = json.loads(endpoints)
-            except (ValueError, TypeError):
-                endpoints = []
-        if not isinstance(endpoints, list):
-            endpoints = []
-
-        # Normalize bare strings to the dict form consumed by peer link
-        # consumers (e.g., #2045's contact grid expects url/kind/priority).
-        endpoints = [
-            {"kind": "hub", "url": e, "priority": i}
-            if isinstance(e, str)
-            else e
-            for i, e in enumerate(endpoints)
-        ]
+        endpoints = _normalize_endpoints(directory_resp.get("endpoints"))
 
         # Create/refresh the contact row (trust-on-first-use key pinning).
         await contacts_store.add_contact(
@@ -195,18 +207,11 @@ async def _try_handshake(
             peer_fingerprint=peer_fingerprint,
         )
 
-        # Mint the inbound token WE give to the remote instance.
-        # NOTE: A2 intentionally stores the inbound token locally but does NOT
-        # deliver it to the remote peer — the token exchange channel doesn't
-        # exist yet.  A3 (the first handshake reply containing the remote's
-        # outbound token) completes the two-way exchange.  Until then, the
-        # inbound auth channel is inert (no remote request will carry this
-        # token) and find_contact_by_inbound_token() will never match.
+        # Mint the inbound token WE give to the remote instance; the
+        # handshake below delivers it.
         inbound_token = generate_peer_token()
-        # The outbound_token is the token THEY mint for us — we don't have it
-        # until the first handshake reply arrives.  Store an empty placeholder
-        # so the peer link row exists; the first handshake reply (future A3)
-        # updates this field.
+        # The outbound_token is the token THEY mint for us: empty until their
+        # signed handshake_reply arrives, and left empty if it never does.
         outbound_token = ""
 
         await contacts_store.establish_peer_link(
@@ -219,6 +224,56 @@ async def _try_handshake(
             "friend-accept handshake: contact=%s endpoints=%s",
             contact_id, endpoints,
         )
+
+        # Deliver the token to their POST /api/peer/handshake.  The SSRF
+        # allowance is built from the peer link just stored, never from the
+        # request.  This node has no self-advertised endpoint list yet, so
+        # the handshake carries none.
+        link = await contacts_store.get_peer_link(contact_id)
+        link_endpoints = (link or {}).get("endpoints") or []
+        envelope = peer_channel.send_handshake(
+            to_contact_id=contact_id,
+            inbound_token=inbound_token,
+            endpoints=[],
+            signing_pubkey="",
+            encryption_pubkey="",
+        )
+        known_endpoints = peer_channel.known_hostports(link_endpoints)
+
+        # Only the network exchange runs in the background; everything it
+        # needs is captured as locals above (never ``request``).
+        async def _exchange() -> None:
+            reply = await peer_channel.exchange_handshake(
+                envelope,
+                link_endpoints,
+                known_endpoints=known_endpoints,
+            )
+            their_token = peer_channel.verify_handshake_reply(
+                reply, handshake=envelope, sender_ed25519_pub=ed25519_pub,
+            )
+            if their_token:
+                success = await contacts_store.set_outbound_token(contact_id, their_token, expected_inbound_token=inbound_token)
+                if success:
+                    logger.info("friend-accept handshake completed: contact=%s", contact_id)
+                else:
+                    logger.warning("friend-accept handshake superseded for %s", contact_id)
+            else:
+                logger.warning(
+                    "friend-accept handshake not completed: no verified reply from %s",
+                    contact_id,
+                )
+
+        async def _exchange_guarded() -> None:
+            try:
+                await asyncio.wait_for(_exchange(), timeout=30)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "friend-accept handshake timed out for %s", contact_id
+                )
+            except Exception:
+                logger.exception("friend-accept handshake failed for %s", contact_id)
+
+        task_utils._create_supervised_task(_exchange_guarded(), _BACKGROUND_TASKS)
     except Exception:
         logger.exception("friend-accept handshake failed for %s", contact_id)
 

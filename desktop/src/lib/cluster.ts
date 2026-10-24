@@ -473,6 +473,26 @@ export interface ClusterMap {
   capabilities: ClusterMapCapability[];
 }
 
+/** One row of GET /api/cluster/resources (read-only resource inventory). */
+export interface ClusterResource {
+  id: string;
+  type: "agent" | "backend" | "app" | "controller" | string;
+  name: string;
+  worker: string;
+  project: string | null;
+  state: "running" | "stopped" | "frozen" | "unknown" | string;
+  cpu_cores: number | null;
+  memory_mb: number | null;
+  warnings: string[];
+}
+
+export interface ClusterResources {
+  resources: ClusterResource[];
+  /** Names of sources that failed to read (e.g. "containers"). */
+  errors: string[];
+  generated_at: number;
+}
+
 /** How a node relates to one capability: serving, installed, or only capable. */
 export type CapabilityNodeState = "active" | "installed" | "potential";
 

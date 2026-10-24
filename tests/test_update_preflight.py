@@ -405,3 +405,71 @@ class TestUpdatePreflight:
 
         assert count == 0
         assert paths == []
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root can write everything")
+    def test_foreign_owned_ignores_dangling_symlink(self, tmp_path):
+        """A dangling symlink in the install dir must not be counted as foreign-owned.
+
+        A symlink whose target does not exist reports False from os.access(W_OK),
+        so without the skip it would be flagged and block every Settings update.
+        Positive control: a chmod 0o444 regular file under tinyagentos/ is still counted.
+        """
+        from tinyagentos.update_preflight import _find_foreign_owned_files
+
+        taos_dir = tmp_path / "tinyagentos"
+        taos_dir.mkdir()
+
+        # Dangling symlink: target missing. Must be skipped (count 0 for it).
+        link = taos_dir / "link"
+        link.symlink_to(tmp_path / "missing_target")
+
+        # Positive control: read-only regular file, must still be counted.
+        foo = taos_dir / "foo.py"
+        foo.write_text("code")
+        foo.chmod(0o444)
+
+        try:
+            with patch("os.geteuid", return_value=os.geteuid()):
+                count, paths = _find_foreign_owned_files(tmp_path)
+        finally:
+            foo.chmod(0o644)
+
+        assert count == 1, f"Expected count 1 (only tinyagentos/foo.py), got {count}"
+        assert len(paths) == 1
+        assert "tinyagentos/foo.py" in paths[0]
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root can write everything")
+    def test_foreign_owned_ignores_backups_dir(self, tmp_path):
+        """A non-writable file under <project>/backups/ must be pruned and not counted.
+        A non-writable file under <project>/tinyagentos/ must still be counted (positive control).
+        """
+        from tinyagentos.update_preflight import _find_foreign_owned_files
+
+        # Create backups dir with a read-only file (should be pruned)
+        backups_dir = tmp_path / "backups"
+        backups_dir.mkdir()
+        backups_sub = backups_dir / "x"
+        backups_sub.mkdir()
+        readonly_backup = backups_sub / "old.db"
+        readonly_backup.write_text("backup data")
+        readonly_backup.chmod(0o444)
+
+        # Create a read-only file under tinyagentos/ (should be counted - positive control)
+        taos_dir = tmp_path / "tinyagentos"
+        taos_dir.mkdir()
+        readonly_taos = taos_dir / "foo.py"
+        readonly_taos.write_text("code")
+        readonly_taos.chmod(0o444)
+
+        try:
+            with patch("os.geteuid", return_value=os.geteuid()):
+                count, paths = _find_foreign_owned_files(tmp_path)
+        finally:
+            # Restore permissions for cleanup
+            readonly_backup.chmod(0o644)
+            readonly_taos.chmod(0o644)
+
+        # Only the tinyagentos/foo.py should be counted (count = 1)
+        assert count == 1, f"Expected count 1 (only tinyagentos/foo.py), got {count}"
+        assert len(paths) == 1
+        assert "tinyagentos/foo.py" in paths[0]

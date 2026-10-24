@@ -43,7 +43,7 @@ async def _deploy(tmp_path, *, extra=None, remote=False, create_key=None):
     proxy.create_agent_key = create_key or AsyncMock(return_value=None)
     req = DeployRequest(name="fresh", framework="smolagents", model="gpt-a", data_dir=tmp_path,
                         remote=("worker1" if remote else None), taos_host="controller.test",
-                        extra_config={"llm_proxy": proxy, "llm_gateway_port": 7838, **(extra or {})})
+                        extra_config={"llm_proxy": proxy, "llm_gateway_port": 7838, "agent_controller_port": 6972, **(extra or {})})
 
     async def mock_exec(name, cmd, **kwargs):
         return (0, "10.0.0.5") if "hostname -I" in " ".join(cmd) else (0, "ok")

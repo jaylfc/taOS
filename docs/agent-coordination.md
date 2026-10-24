@@ -263,6 +263,23 @@ a PR without it that touches a protected path fails the gate. When reviewing a P
 that legitimately changes these files, apply `gate-integrity-allow` after
 confirming the change is intentional and reviewed.
 
+## BLE pairing
+
+The `POST /api/cluster/ble/pair/start` endpoint returns `pin_required: boolean` when
+the board is pin-bound. If `pin_required` is true, the BLE pairing confirm step in
+the UI must show a "Label PIN" text input that is always displayed (the board's claim
+must not hide it). The `POST /api/cluster/ble/pair/confirm` endpoint accepts a
+`label_pin` field (4-12 digits). Two error codes may be returned as 400 responses:
+
+- `label_pin_required`: "This board needs the PIN from its label." shown inline
+  with `role="alert"`
+- `invalid_label_pin`: "The label PIN is 4 to 12 digits." shown inline with
+  `role="alert"`
+
+The `label_pin` is only sent in the confirm body when the input is non-empty. When
+`pin_required` is true from the start response, the Confirm button is disabled until
+the Label PIN has 4-12 digits.
+
 ## Spend model tokens on judgement, not on waiting
 
 An agent working this repo pays for every turn it takes. Reserve those turns for
@@ -737,6 +754,12 @@ different project, and 403 when the agent lacks the `canvas_read` scope or the
   `/agent` suffix, except withdraw and the list, which are one route serving
   both callers (`_is_agent_decisions_path` in
   `tinyagentos/auth_middleware.py`).
+  A `shell_command` decision (raised by taOS, never by an agent, when the
+  taOS Agent's Claude Code shell hits a command the user has not decided) is a
+  gate kind: only the user's session answer writes the allow/deny rule, the
+  agent mirror and device bearers are refused. The rules live behind the
+  session routes `GET /api/taos-agent/shell-profile` and
+  `PUT|DELETE /api/taos-agent/shell-profile/{rule}`.
 - **observatory_control**: the Observatory fleet dials.
   `GET|POST /api/observatory/pause`, `GET|POST /api/observatory/throttle`,
   `GET|POST /api/observatory/approval-mode`, `GET /api/observatory/fleet`,
@@ -1111,8 +1134,12 @@ that SAME canonical_id instead:
   or replace the bound. The scope request's own `duration_secs` (if present) is
   also wired through as `expires_at`. An expired existing grant is replaced by a
   fresh bounded re-approval, or kept as-is if the re-approval is unbounded.
-- `POST /api/agents/registry/{canonical_id}/scope-requests/{req_id}/deny`:
-  owner/admin only.
+- `POST /api/agents/registry/{canonical_id}/scope-requests/{req_id}/deny`
+  `{reason?}`: owner/admin only. The optional `reason` (max 2000 chars) is
+  recorded on the row as `deny_reason` so the agent can read back WHY it was
+  refused; a bare deny with no body (the bell / toast) stays valid and records
+  `deny_reason: null`. The Decisions app always sends one: its Deny is two-step
+  and Confirm stays disabled until a reason is typed.
 - `GET /api/agents/registry/{canonical_id}/scope-requests` (optional
   `?status=pending|accepted|refused`): list an agent's scope requests, oldest
   first. Authorized EXACTLY like create -- the agent's own registry bearer
@@ -1127,7 +1154,7 @@ that SAME canonical_id instead:
 
 Both reads return the same PUBLIC shape -- `{id, canonical_id,
 requested_scopes, project_id, reason, status, granted_scopes, created_ts,
-decided_ts}` -- projected explicitly from the stored row rather than returned
+decided_ts, deny_reason}` -- projected explicitly from the stored row rather than returned
 raw. `decided_by` (the owner/admin user_id that approved or denied) is
 deliberately withheld: an agent's own registry token may read these routes, and
 no other agent-reachable route discloses its owner's internal user id. The
@@ -1170,7 +1197,19 @@ should poll the list route rather than re-requesting a scope they cannot see.
 The desktop Agents app renders each active agent's pending requests inline
 (`PendingScopeRequests` in `desktop/src/apps/agents/RegistryPanel.tsx`, reusing
 the same `ConsentActions` Allow/Deny control the notification renders), so
-approval no longer depends on an ephemeral toast.
+approval no longer depends on an ephemeral toast. The Decisions app lists every
+pending scope request the caller may decide (`GET /api/agents/scope-requests?status=pending`)
+in a "Scope requests" section beside access requests (tsk-6ghcrv): each row
+shows the canonical_id, requested scopes, the requested project (labelled
+"Requested project", or "No project requested" for a null `project_id`),
+reason and age. The binding that will actually apply is shown separately: a
+grant with no project scope is sent without a `project_id` and lands OS-wide
+whatever the agent asked for, so the row says "Grants OS-wide (all projects)"
+before Allow. The list loads on its own, so a failed decisions load never hides
+it. The deny reason box is capped at the route's 2000 characters. Every requested scope has a tick box, so Approve can grant a strict
+SUBSET (the unticked scopes are simply not sent in `granted_scopes`); Allow is
+disabled with nothing ticked. Deny requires a reason. Either decision drops the
+row from the pending list on the refetch.
 
 All owner-gated registry routes are existence-hiding (#2106): an authenticated
 caller who is not the owner gets the same 404 body as a nonexistent
@@ -1245,6 +1284,64 @@ target user so the desktop consent actions can approve or deny:
   The share row is preserved with `status=denied` for audit.
 - `DELETE /api/shares/{id}` -- revoke a share. Owner or admin only
   (requires `require_owner_or_admin` against the share's `owner_user_id`).
+
+### Sharing grants (/api/sharing/grants)
+
+Route module `tinyagentos/routes/sharing.py`. `POST /api/sharing/grants` creates a
+grant only when the caller owns the artifact, checked in `_caller_owns_artifact`
+before the store is touched. For kind `project`, ownership is the project's
+`user_id`; kinds `app`, `game`, `workflow` and `studio` currently fail closed
+(403). A non-owner therefore gets 403 `{"error": "you do not own this artifact"}`,
+and the grant is never written.
+
+- `POST /api/sharing/grants` -- body `{artifact_id, artifact_kind, grantee}`.
+  Ownership is verified first; on success the grant is created via
+  `SharingGrantStore.grant` and returned, with 200.
+- `DELETE /api/sharing/grants/{grant_id}` -- revoke a grant. Owner only
+  (`_require_owner` against the grant's `owner_id`; 403 `only the owner may revoke
+  this grant` otherwise).
+- `GET /api/sharing/grants/mine` -- list grants the caller owns.
+- `GET /api/sharing/grants/shared-with-me` -- list active grants addressed to the
+  caller by username or email.
+
+## Cross-user agent delegation (D1)
+
+Cross-user collab delegation lets a user's agent delegate project work to
+another user's agent over the peer channel. It spans several route modules and
+a registry column, so the surface is documented here:
+
+- **Registry sponsorship.** The agent registry gains a `sponsor_contact_id`
+  column. A delegated (sponsored) identity is bound to its sponsor's contact id
+  per `(identity, project)` association, set through the registry's
+  `set_sponsorship(contact_id, project_id, sponsor_contact_id)` helper. The
+  auth-request create/approve paths in `tinyagentos/routes/agent_auth_requests.py`
+  carry the optional `sponsor_contact_id` and record it on the minted identity.
+- **Scope model.** Sponsored agents are validated against three tiers in
+  `tinyagentos/delegation_handler.py`: the default allowlist
+  (`SPONSORED_DEFAULT_SCOPES` = `a2a_send`, `a2a_receive`, `project_tasks`,
+  `canvas_read`, `registry_feeds_read`) may be auto-granted; the denylist
+  (`SPONSORED_DENY_SCOPES` = `files_write`, `decisions_write`) is hard-denied and
+  never granted; everything else is *elevated* and must route to manual approval.
+  An elevated scope is never auto-granted, even when the project has
+  auto-approve on.
+- **Peer envelopes.** The peer inbox (`POST /api/peer/inbox` in
+  `tinyagentos/routes/peer.py`) dispatches the new kinds `collab_invite`,
+  `collab_invite_accept`/`collab_invite_decline`, `delegation_request` (handled
+  by `process_delegation_request`) and `delegation_status`. `delegation_status`
+  persists a durable Decision record keyed on `invite_id` (idempotent on
+  re-delivery) so the requester's agent runner can poll for and redeem it.
+- **Outbound delivery.** `send_envelope()` in `tinyagentos/peer.py` builds a
+  signed envelope addressed to a canonical `hub:<fingerprint>` contact id and
+  delivers it to the contact's peer endpoints in priority order; the envelope
+  `from` is always this node's own signing identity, so the receiver verifies
+  the signature against the pinned pubkey.
+- **Approval path.** A `collab_delegation_gate` Decision (a privileged gate kind,
+  allowlisted and provenance-guarded in `tinyagentos/routes/decisions.py`)
+  carries the request metadata; approving it mints the sponsored project invite
+  via `complete_delegation_approval`. Each project has an
+  `auto_approve_delegation` knob (default **off**).
+- **Cascade revocation.** Revoking a contact or project membership revokes all
+  identities that contact sponsored and unassigns their board tasks.
 
 ## Project invite redeem route (link + PIN)
 
@@ -1712,6 +1809,122 @@ forever while `get_status()` still reported it `running` — for a
 stdio-transport server stdout is the JSON-RPC channel, so that was the primary
 data path, not an edge case.
 
+## MCP marketplace (`/api/mcp/marketplace/*`)
+
+Route module `tinyagentos/routes/mcp_marketplace.py`, backed by
+`tinyagentos/mcp/marketplace.py`. This is the *browse and install* half of the
+MCP surface: the bundled plugins under `app-catalog/plugins/` are installed
+through the app Store, while a marketplace entry is a community MCP server
+described by a manifest in the curated registry.
+
+| route | gate | what it does |
+|---|---|---|
+| `GET /api/mcp/marketplace/servers?q=&category=` | any signed-in user | browse/search the registry; each entry carries `installed` + `running` |
+| `GET /api/mcp/marketplace/categories` | any signed-in user | the union of entry categories |
+| `GET /api/mcp/marketplace/servers/{id}` | any signed-in user | one entry plus the stored config when installed |
+| `POST /api/mcp/marketplace/servers/{id}/install` | `require_admin` | resolve → run the install command → register the server |
+| `DELETE /api/mcp/marketplace/servers/{id}` | `require_admin` | uninstall (drops attachments and `mcp:<id>:` secrets) |
+| `POST /api/mcp/marketplace/reload` | `require_admin` | re-read the registry directory |
+
+Install answers `404` for an unknown entry, `409` when it is already installed,
+`409` when the id belongs to a server another installer wrote (see the namespace
+note below), and `502` when the install command fails — **a failed install leaves
+the store untouched**, so a half-installed entry never shows up as launchable.
+Uninstalling is `404` for something that was never installed, and `409` for a
+row the marketplace did not write.
+
+### Id namespace: the marketplace shares one table with the Store
+
+`mcp_servers` is a single namespace that every installer on the platform writes
+to. The app Store registers a bundled `app-catalog/plugins/mcp-*` manifest under
+its **app id** with an empty config and relies on `MCPSupervisor._resolve_cmd`'s
+app-catalog fallback; the marketplace registers a curated entry under its
+**manifest id** with an explicit `cmd`. Two installers writing the same id means
+each destroys the other's row:
+
+- a Store install of that app replaces the marketplace's config (`source:
+  marketplace`, `cmd`, `permissions`) with `{}` and drops the version — with the
+  real catalog registered, `_resolve_cmd` then returns `None` and `start()`
+  returns `False`, so the server the marketplace provisioned quietly stops being
+  launchable;
+- a marketplace `DELETE` removes the shared row while the Store's
+  `installed.json` still reports the app installed — the two surfaces disagree
+  about state.
+
+Curated ids therefore live in their own namespace, **`mcp-community-`**
+(`MARKETPLACE_ID_PREFIX`): `mcp-community-filesystem`, `mcp-community-fetch`,
+`mcp-community-git`, `mcp-community-memory`, `mcp-community-time`,
+`mcp-community-github`. `tests/test_mcp_marketplace.py` scans every
+`app-catalog/**/manifest.yaml` and fails if a curated id ever equals an
+app-catalog id again, so the disjointness is enforced rather than remembered.
+
+The runtime does not rely on the convention alone. Rows the marketplace writes
+carry `config["source"] == "marketplace"` (`MARKETPLACE_SOURCE`), which tells a
+marketplace-owned row from one another installer wrote. `install` refuses to
+overwrite a row it did not write (409 with an explicit "already in use by a
+server installed outside the marketplace" message, instead of the bare "already
+installed", which would read as *this* entry being present), and `uninstall`
+refuses to delete one (409) so it cannot desync the Store's own bookkeeping.
+Browse and detail expose both flags: `installed` is true whenever the id is
+occupied in `mcp_servers` (the Store may own it), and
+`installed_by_marketplace` is true only when the stored config is the one this
+marketplace wrote.
+
+A manifest (`app-catalog/mcp-registry/<id>.yaml`, one per entry) declares
+`id`, `name`, `description`, `version`, `author`, `categories`, `transport`,
+the install command (`install.command`), the launch command (`run.command` +
+`run.args`) and the **permissions the server states it needs**. The permission
+set is validated at load time against a closed vocabulary — an unknown
+permission, a wildcard (`*`/`all`), or a `:write` without the matching `:read`
+is rejected, and the entry is skipped and reported in `reload`'s `errors`
+rather than listed. `validate_permissions` in `tinyagentos/mcp/marketplace.py`
+is the single source of that rule. `transport` is `stdio` only
+(`SUPPORTED_TRANSPORTS`): the built-in supervisor launches a subprocess, so
+accepting an `sse`/`http` entry would register a server with no resolvable
+launch command that the start route can only `500` on.
+
+`{workspace}` (`WORKSPACE_TOKEN`) in a manifest's `run.command`/`run.args`/env
+keys or values is replaced by the installer with `<data_dir>/mcp-servers/<id>`,
+which the install flow creates once the install command has succeeded — a
+failed or timed-out install leaves no directory behind. It exists so a curated
+entry can point a server at a private empty directory instead of an existing
+one: the filesystem and git servers both need a directory that exists before
+they start, and pointing them at the taOS data directory would expose the
+secrets store and the SQLite databases. A manifest that needs a workspace and
+has no workspace root configured is refused (500) before the install command
+runs, and a manifest that puts the placeholder in `install.command` is refused
+(400) — the placeholder is expanded from the run configuration only, so an
+install command carrying it would execute the literal token. The install
+command itself runs under a bounded timeout (`INSTALL_TIMEOUT_S`, 600 s): on
+expiry the child is killed and reaped and the install reports 502 with the
+store untouched — an ASGI server has a graceful-shutdown timeout, not a request
+timeout, so an unbounded runner could hold an admin's request open forever.
+
+The curated registry is read from `app-catalog/mcp-registry/` —
+`default_registry_dir()` derives it from the checkout, the same way `create_app`
+derives the app catalog from `PROJECT_DIR`, and the supported install is a
+source checkout with an editable install (`scripts/install-server.sh` runs
+`pip install -e ".[proxy]"`). A registry directory that is not there is
+recorded in the registry's `errors` and logged, so
+`POST /api/mcp/marketplace/reload` reports *why* the marketplace is empty
+instead of showing a curated registry with zero entries; a readable but empty
+directory is not an error. `MCPRegistry` takes the directory as a constructor
+argument, so a mounted or downloaded copy of a hosted registry is a one-line
+change.
+
+**Declared permissions are requirements, not grants.** Install records them in
+the server config (`config["permissions"]`); who may call which tool is still
+decided by the attachment model (`MCPServerStore` attachments +
+`check_permission`). Installing a server therefore never widens an agent's
+access on its own.
+
+`MCPMarketplace.install` writes the config `MCPSupervisor._resolve_cmd` already
+reads (`cmd`), so an installed server is launchable by the existing loader with
+no extra wiring; a manifest's non-secret `run.env` is merged over the
+controller's environment at spawn time (never replacing it — replacing `PATH`
+would break an `npx`/`uvx` launch command). Credentials belong in the secrets
+store, not in a registry manifest.
+
 ## Config save and restore (`/api/config`, session-only)
 
 Route module `tinyagentos/routes/settings.py`. Owner routes behind the session
@@ -1883,8 +2096,49 @@ snapshot, not a lock.
   capabilities and loaded models, and those are not reachable capacity, so an
   offline node's retained capabilities land in `installed_nodes` instead.
   Capability strings are reported as the workers and catalog manifests write
-  them (`chat`, `image-generation`, `llm-chat`, ...); the endpoint does not
-  invent a normalised vocabulary.
+   them (`chat`, `image-generation`, `llm-chat`, ...); the endpoint does not
+   invent a normalised vocabulary.
+
+## Cluster resource inventory (`GET /api/cluster/resources`, admin-only)
+
+Route module `tinyagentos/routes/cluster_resources.py`. **Admin session only**:
+the auth middleware answers `401` to a cookie-less caller (this path is not in the
+exempt list) and `_require_admin` answers `403` to a signed-in non-admin, so no
+agent scope reaches it. Read-only by construction --- it owns no state, adds no
+methods to `ClusterManager`, and aggregates per request from existing getters
+(`config.agents`, `cluster_manager.get_workers()`, `installed_apps.list_installed()`
+plus `list_containers`), so it cannot drift from the routing/scheduling source of
+truth.
+
+- `resources` -- one flat row per resource taOS runs across the whole mesh:
+  - `agent`: one row per agent record in config, joined to its incus container
+    (`container_name` or the `taos-agent-<name>` fallback) via
+    `list_containers(prefix="taos-agent-")`. Worker is always `"local"` (the
+    agent record's `host` is a container IP, not a worker name). `project` is
+    the agent record's `project` field when one exists, else null. `state` is
+    mapped from the incus status (`running`/`stopped`/`frozen`, else `unknown`).
+  - `backend`: one row per backend declared by each registered worker
+    (`worker.backends`, walked exactly as `cluster_map` does). `state` is
+    `running` when the backend status is in `RUNNING_BACKEND_STATUS` (`ok`,
+    `running`, `healthy`) *and* the worker's heartbeat health is `online` or
+    `stale`; otherwise `stopped`. A backend on an offline worker reports
+    `stopped`.
+  - `app`: one row per installed app (`installed_apps.list_installed()`),
+    mirroring `GET /api/apps/installed`: `state` is `running` when the app has
+    a runtime host + port, else `unknown`. If `installed_apps` is None, no app
+    rows and no error.
+  - `controller`: exactly one row (`controller:local`, always `running`).
+- `errors` -- names of sources that failed during aggregation (e.g.
+  `containers` when `list_containers` raises). A failing source does not 500
+  the response: its rows fall back to safe defaults (`agent` rows get
+  `state` `unknown`) and the rest of the inventory still ships.
+- `generated_at` -- Unix timestamp of the snapshot.
+
+Each row has exactly: `id` (`<type>:<name>` except backend ids are
+`backend:<worker>:<name>`), `type`, `name`, `worker`, `project` (string or
+null), `state`, `cpu_cores` (int or null), `memory_mb` (int or null), and
+`warnings` (list of short strings, may be empty). Rows are sorted by
+`(type, worker, name)`.
 
 ## Controller generation echo (split-brain protection)
 
@@ -1955,6 +2209,38 @@ A `single_select` or `multi_select` decision can be answered off-menu by sending
   audit trail still distinguishes `in_app` from `mirrored_from_chat`, but the
   VALUE is no longer bounded by the option list.
 
+## Screencast cast tokens (`/cast/media/`, token-only)
+
+A TV (Chromecast, Apple TV) fetches cast media ITSELF and carries no taOS
+session, cookie or bearer. So casting never hands a TV an ordinary taOS URL:
+
+- `POST /api/cast/sessions` (session-only) `{view: "canvas:<project_id>",
+  device_id, mode: "still", device_address?}` mints a cast for ONE view the
+  caller owns (non-owner: existence-hiding 404) and returns the token once,
+  plus `media_url`, `expires_at`, `ttl_seconds` and `refresh_interval_seconds`
+  (how stale a still frame can be; show it in the UI). `mode: "live"` answers
+  501 until the HLS encoder lands.
+- `POST /api/cast/sessions/{cast_id}/refresh` extends an ACTIVE cast by one
+  TTL; an expired cast answers 409 (or 404 once pruned), an ended cast
+  answers 404, and neither can be revived.
+- `DELETE /api/cast/sessions/{cast_id}` ends the cast; the token dies at once.
+- `GET|HEAD /cast/media/{kind}/{view_id}/still.png?token=...` is what the TV
+  fetches. AuthMiddleware exempts exactly the `/cast/media/` prefix for
+  GET/HEAD; the route is gated solely by the cast token: unknown, expired or
+  revoked -> 401, a token for another view -> 403, a token bound to a
+  `device_address` fetched from another address -> 403.
+  The address check reads the TCP peer, so it holds only on a direct LAN
+  listener: behind a local reverse proxy (tailscale serve, the gateway
+  listener) the peer is the proxy and a bound cast always answers 403.
+
+The token (`tcast_...`) is a separate random secret stored only as a SHA-256
+hash, in memory (a restart revokes every cast). It is never a session token or
+a registry JWT and is accepted by nothing but the cast media route. It rides
+in `?token=` because a TV cannot send headers, so the uvicorn access log
+redacts it to `tcast_[redacted]`. The paired-device registry's unpair MUST call
+`app.state.cast_tokens.revoke_for_device(device_id)`; cast-end revocation alone
+does not cover a device unpaired mid-cast.
+
 ## Identity rules
 
 Work as jaylfc on all git and GitHub activity. Do not add AI attribution to
@@ -1982,6 +2268,7 @@ The allowlist is the union of:
 - **Credential rotation** (`POST /api/agents/registry/{id}/rotate-tokens`) -- identity-only, no scope grant: the route requires the JWT's `sub` to equal the path `canonical_id`, so an agent can rotate its own token and nobody else's. Returns the replacement token and the `storage_guidance` string; the superseded token is rejected by the identity's `token_min_iat` cutoff.
 - **Desktop control (system taOS Agent only)**: `POST /api/desktop/command`, `POST /api/desktop/screenshot`, `POST /api/desktop/layout` (native agent's registry JWT sets `user_id` to the owner, so desktop commands are delivered to the owner's desktop).
 - **Skill-exec (system taOS Agent only)**: `POST /api/skill-exec/{skill_id}/call`, `GET /api/skill-exec/tools` (native agent's registry JWT with `SYSTEM_AGENT_API_SCOPES`).
+- **Sign-in broker** (`POST /api/auth-broker/requests`, `GET /api/auth-broker/requests/{id}`, `POST /api/auth-broker/requests/{id}/{code,token}`) -- identity-only, no scope grant: each handler resolves the caller itself (see *Sign-in broker* below). `/code` is on the list only so an agent token gets the route's own `403`, never a `401`.
 
 Task checklist items (`/api/projects/{project_id}/tasks/{task_id}/checklist-items`)
 
@@ -2036,6 +2323,52 @@ Container provisioning request (P1 + P2, agent-container-provisioning spec):
 - `POST /api/containers/requests/{id}/destroy` -- deletes the request row and, if the request was already `provisioned`, destroys the underlying incus container. Quota is returned to the agent on deletion.
 - `GET /api/agents/containers/quota` -- returns the calling agent's quota, threshold, current active (non-terminal) request count, and remaining slots.
 
+## Sign-in broker (`/api/auth-broker/*`)
+
+An agent that must sign in to a Claude subscription runs `claude setup-token`
+(or `claude` login), which prints a URL and waits for a pasted code. No callback
+has to reach the agent, so the handoff works for the root taOS Agent on the
+host and for an agent inside an incus container. A container agent cannot yet
+read the stored `claude_code_oauth_token:<agent id>` secret, so Claude sign-in
+is not usable inside a container until that follow-up lands. Store:
+`tinyagentos/auth_broker.py`; routes: `tinyagentos/routes/auth_broker.py`.
+
+1. `POST /api/auth-broker/requests` (agent only: a bound per-agent local token
+   or a registry JWT; a user session is `403`) with
+   `{"kind": "claude-subscription", "url": "...", "prompt": "..."}`. The url
+   must be `https` on an exact allowlisted host (`claude.ai`,
+   `console.anthropic.com`; no subdomain, userinfo or non-443 port), else `422`:
+   a card the user taps must never open a site the agent chose. An agent may have
+   at most 3 open (non-completed, non-expired) requests at once; the 4th returns
+   `429` with detail ``too many open sign-in requests``. Returns
+   `{id, kind, status, host, expires_in_seconds}` and raises an `auth_broker`
+   notification to the agent's owner. An agent the registry cannot attribute (a
+   bound local-token agent with no registry row) gets its card sent to each
+   admin instead; the card is never a broadcast (`user_id` null). With no admin
+   to receive it, create is `409`.
+2. The desktop (bell, toast, Notifications app) renders that notification as a
+   sign-in card: the agent's name, the host, an **Open** button (system browser;
+   Firefox on taOSmobile) and a code field. The card re-checks the same host
+   allowlist before it renders Open.
+3. `POST /api/auth-broker/requests/{id}/code` `{"code": "..."}`: a USER SESSION
+   only (the agent's owner or an admin). Any agent token is `403`, so an agent
+   can never answer its own card. A second code is `409`; an expired request `410`.
+4. `GET /api/auth-broker/requests/{id}`: the requesting agent only (anyone else
+   `404`). Returns `code` exactly once, then clears it.
+5. `POST /api/auth-broker/requests/{id}/token` `{"token": "..."}`: the requesting
+   agent only, after it read the code (`409` otherwise). The token goes to
+   Secrets under a fixed name: `claude_code_oauth_token` for the native taOS Agent
+   (the name the `claude_code` harness reads), `claude_code_oauth_token:<agent id>`
+   for every other agent. The secret's `secret_access` list is preserved -- when
+   the native agent stores its token, any existing grants to other agents are kept
+   and the native agent is added. Never logged, never echoed back. The request is
+   claimed under the store lock before the secret is written, so an overlapping
+   post gets `409` and an expired request `410` without touching Secrets; a failed
+   write hands the claim back so the agent can retry.
+
+A request expires 10 minutes after it was created; once the agent has read the
+code it has another 10 minutes to post the token.
+
 ## Skill-exec agent identity (credential-bound, not body-supplied)
 
 `POST /api/skill-exec/{skill_id}/call` and `GET /api/skill-exec/tools` now
@@ -2084,6 +2417,11 @@ with its own registry JWT once it holds the `chat_session` grant:
 - `GET /api/agents/self/chat/events` is an SSE stream of the agent's own chat
   events (the same queue the host-token `/api/openclaw/sessions/{agent}/events`
   route drains).
+- Guest messages are persisted at enqueue time in `guest_outbox.db`, so a
+  controller restart does not lose them. Each streamed `user_message` carries
+  an SSE `id`; reconnect with `Last-Event-ID` (or `?since=N`) to replay only
+  newer messages, or with neither to replay the ones never delivered. A
+  non-integer value is ignored, and replay is always for the token's own slug.
 - `POST /api/agents/self/chat/reply` records a reply (`delta`, `final`,
   `tool_call`, `tool_result`, `error`, `reasoning`) for the agent.
 
@@ -2335,3 +2673,68 @@ The agent's own A2A identity token (`.taos_agent_token`) is a2a-only
 (scope `a2a_send` + `a2a_receive`) and covers none of the above endpoints.
 Leaving PicoClaw, or any controller start into opencode, revokes the old
 credential and mints a fresh one.
+
+## Peer handshake (friend-accept)
+
+The private/CGNAT endpoint allowance comes from endpoints the OTHER side supplies (directory response or handshake body), so a friend can make this node POST to a private host:port on the fixed handshake/inbox paths; loopback, link-local and metadata addresses stay blocked.
+
+## taOS Agent action gate (pending, confirm, execute)
+
+Every tier-B operation the taOS Agent wants to perform (an external write such
+as a GitHub PR or issue, or an irreversible local change) goes through a
+two-step gate in `tinyagentos/routes/taos_agent_actions.py`. The gate is a
+server-side mechanism, so it binds every harness the same way.
+
+- `POST /api/taos-agent/actions` `{kind, summary, payload}` stores the action
+  and answers `{action_id, kind, summary, state, confirmed_by}`. Under the
+  default `ask` policy the state is `pending` and a `taos_agent.action_pending`
+  event (`{action_id, kind, summary}`) goes to the owner's `user:<id>` event
+  channel for the chat confirm card. Under `auto` the state is `confirmed`,
+  `confirmed_by` is `auto`, and no card is shown.
+- `GET /api/taos-agent/actions?state=pending` lists the caller's own actions
+  (`{actions: [...]}`, oldest first, optional `state` filter), so a confirm
+  card lost to a restart or a failed event publish can be shown again.
+- `POST /api/taos-agent/actions/{id}/confirm` and `/decline` answer a pending
+  action (`confirmed_by` becomes `user` or `declined`). A second answer is a
+  409. Both are refused with 403 for anything but a signed-in browser session:
+  an agent credential can ask, never answer for the user.
+- `POST /api/taos-agent/actions/{id}/execute` runs the executor registered for
+  the action's kind (`app.state.taos_agent_action_executors[kind]`) exactly
+  once. The row reads `executing` while the executor runs and `executed` only
+  after it returns. Anything not `confirmed` is a 409 (pending, declined,
+  executing, executed or failed); a kind with no executor is a 422. A raising
+  executor marks the action `failed` (502) and it is never re-run. A row left
+  `executing` by a stopped process is never replayed either, because the
+  external write may already have happened: it stays visible in the list.
+- `PUT /api/taos-agent/actions/policy` `{kind, policy: ask|auto}` (browser
+  session only) sets `action_policy[kind]` in the signed-in user's own
+  `(<user id>, "taos_agent")` preference blob, so one account's `auto` never
+  skips the card for another account. Every kind defaults to `ask`.
+
+Another user's action answers 404. Rows live in `taos_agent_actions.db`.
+
+Every request and outcome is audited as a trace row of kind `external_write`
+on the `taos-agent` trace (`GET /api/agents/taos-agent/trace?kind=external_write`):
+`{target, action, user_id, repo, url, diff_sha256, confirmed_by, action_id,
+latency_ms, state}`. Creating an action writes the request row (`state`
+`pending` with `confirmed_by` `pending`, or `confirmed` with `auto`); execute
+writes one `executed` or `failed` row and decline one `declined` row. The
+reversible local fixes use kind `local_fix` `{tool, target, undo, user_id}`.
+The trace store refuses either kind with a field missing, and
+`POST /api/trace` refuses both (400): only taOS writes its own audit trail.
+`GET /api/agents/{name}/trace` returns a row of either kind only to the
+signed-in user whose `user_id` it carries, so one account never reads
+another's audit trail. The rows show in the Agents app trace list (kind filter) and in the taOS
+agent's Activity tab.
+
+## Cross-user agent delegation (D1, #2048)
+
+Agents can delegate project work to another user's agent:
+
+- **Sponsor link**: `sponsor_contact_id` on the agent registry links a sponsored identity to its sponsoring contact.
+- **Delegation flow**: a `delegation_request` envelope routes through the peer inbox into a scope-validated delegation handler (`tinyagentos/delegation_handler.py`).
+- **Project knob**: each project has `auto_approve_delegation` (default off). When off, a manual Decisions card gates the delegation.
+- **Default scope**: sponsored agents get a conservative scope (`a2a_send`, `a2a_receive`, `project_tasks`, `canvas_read`, `registry_feeds_read`); `files_write` and `decisions_write` are hard-denied at scope validation.
+- **Revocation cascades**: revoking a contact or membership revokes all sponsored identities and unassigns their board tasks.
+
+Routes: `POST /api/decisions` (delegation kind), peer inbox envelope handling, project-invite integration.

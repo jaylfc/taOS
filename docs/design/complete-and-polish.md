@@ -151,7 +151,7 @@ Add to `agent_messages.py`:
 - `delete(message_id: int) -> bool` — delete a single message
 - `search(query: str, agent_name: str | None, limit: int) -> list[dict]` — full-text search across message content
 
-### Import Data Embedding
+### Import Data Embedding (backend; frontend Import app folded into Library, tsk-6gtsvj)
 
 Current state: `routes/import_data.py` line 69 stubs out embedding — files are validated but never embedded.
 

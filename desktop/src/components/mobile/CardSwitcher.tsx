@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback, useEffect } from "react";
+import { useRef, useState, useCallback, useEffect, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import * as icons from "lucide-react";
 import { X, Plus } from "lucide-react";
@@ -6,11 +6,14 @@ import { useProcessStore } from "@/stores/process-store";
 import { getApp, getAllApps } from "@/registry/app-registry";
 import {
   closeShellWindow,
+  fetchShellSnapshot,
   focusShellWindow,
   isShellDevice,
   listShellWindows,
   type ShellWindow,
 } from "@/lib/mobile-shell";
+import { appRuntime, shellWindowRuntime, type AppRuntime } from "@/lib/app-runtime";
+import { AppTypeBadge } from "@/components/AppTypeBadge";
 
 const SHELL_POLL_MS = 2000;
 
@@ -40,9 +43,57 @@ function shellWindowIcon(w: ShellWindow): icons.LucideIcon {
   return w.app_id === "firefox" ? icons.Globe : icons.AppWindow;
 }
 
+/**
+ * A native window's last snapshot, as an object URL, or null while there is
+ * none. Fetched once per con_id + snapshot mtime, never on every render; every
+ * URL made here is revoked when replaced, on unmount, or (when the fetch lands
+ * after the key changed or the card went away) as soon as it arrives.
+ */
+function useShellSnapshotUrl(conId: number, snapshot: number | null | undefined): string | null {
+  const key = typeof snapshot === "number" ? `${conId}:${snapshot}` : null;
+  const [loaded, setLoaded] = useState<{ key: string; url: string } | null>(null);
+
+  useEffect(() => {
+    if (key === null) return;
+    let live = true;
+    let url: string | null = null;
+    void fetchShellSnapshot(conId).then((made) => {
+      if (made === null) return;
+      if (!live) {
+        URL.revokeObjectURL(made);
+        return;
+      }
+      url = made;
+      setLoaded({ key, url: made });
+    });
+    return () => {
+      live = false;
+      if (url !== null) URL.revokeObjectURL(url);
+    };
+  }, [conId, key]);
+
+  return loaded !== null && loaded.key === key ? loaded.url : null;
+}
+
+/** A native window card's face: its snapshot when there is one, else the icon. */
+function ShellCardPreview({ window: w, fallback }: { window: ShellWindow; fallback: ReactNode }) {
+  const url = useShellSnapshotUrl(w.con_id, w.snapshot);
+  if (url === null) return <>{fallback}</>;
+  return (
+    <img
+      src={url}
+      alt=""
+      draggable={false}
+      className="absolute inset-0 w-full h-full object-cover object-top rounded-2xl pointer-events-none"
+    />
+  );
+}
+
 export function CardSwitcher({ open, onClose, onSelectApp, onLaunchpad }: Props) {
   const windows = useProcessStore((s) => s.windows);
-  const closeWindow = useProcessStore((s) => s.closeWindow);
+  // removeWindow, not closeWindow: closeWindow only marks a window closing for
+  // the desktop Window's close animation, which the phone layout never mounts.
+  const removeWindow = useProcessStore((s) => s.removeWindow);
   const [dismissing, setDismissing] = useState<Record<string, number>>({});
   const touchStartY = useRef<Record<string, number>>({});
   const [shellWindows, setShellWindows] = useState<ShellWindow[]>([]);
@@ -112,11 +163,19 @@ export function CardSwitcher({ open, onClose, onSelectApp, onLaunchpad }: Props)
     key: string,
     name: string,
     IconComponent: icons.LucideIcon,
+    runtime: AppRuntime,
     onSelect: () => void,
     onDismiss: () => void,
+    shellWindow?: ShellWindow,
   ) => {
     const offset = dismissing[key] ?? 0;
     const isFlying = offset === -999;
+    const icon = (
+      <span className="relative mb-3 inline-flex rounded-lg">
+        <IconComponent size={40} className="text-white/60" />
+        <AppTypeBadge runtime={runtime} size="lg" />
+      </span>
+    );
 
     return (
       <div
@@ -161,14 +220,14 @@ export function CardSwitcher({ open, onClose, onSelectApp, onLaunchpad }: Props)
             e.stopPropagation();
             onDismiss();
           }}
-          className="absolute top-3 right-3 flex items-center justify-center w-7 h-7 rounded-full bg-white/10 active:bg-white/20 transition-colors"
+          className="absolute top-3 right-3 z-10 flex items-center justify-center w-7 h-7 rounded-full bg-white/10 active:bg-white/20 transition-colors"
           aria-label={`Close ${name}`}
         >
           <X size={14} className="text-white/70" />
         </button>
 
-        <IconComponent size={40} className="text-white/60 mb-3" />
-        <span className="text-white/80 text-sm font-medium">{name}</span>
+        {shellWindow ? <ShellCardPreview window={shellWindow} fallback={icon} /> : icon}
+        <span className={`relative z-10 text-white/80 text-sm font-medium${shellWindow ? " drop-shadow" : ""}`}>{name}</span>
       </div>
     );
   };
@@ -236,11 +295,12 @@ export function CardSwitcher({ open, onClose, onSelectApp, onLaunchpad }: Props)
               win.id,
               app?.name ?? win.appId,
               IconComponent,
+              app ? appRuntime(app) : "taos",
               () => {
                 onSelectApp(win.id);
                 onClose();
               },
-              () => closeWindow(win.id),
+              () => removeWindow(win.id),
             );
           })}
           {visibleShellWindows.map((w) =>
@@ -248,6 +308,7 @@ export function CardSwitcher({ open, onClose, onSelectApp, onLaunchpad }: Props)
               `shell-${w.con_id}`,
               shellWindowName(w),
               shellWindowIcon(w),
+              shellWindowRuntime(w.app_id),
               () => {
                 void focusShellWindow(w.con_id);
                 onClose();
@@ -255,6 +316,7 @@ export function CardSwitcher({ open, onClose, onSelectApp, onLaunchpad }: Props)
               () => {
                 void closeShellWindow(w.con_id).then(refreshShellWindows);
               },
+              w,
             ),
           )}
         </div>

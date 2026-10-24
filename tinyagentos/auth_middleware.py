@@ -25,6 +25,13 @@ from tinyagentos.device_store import DEVICE_TOKEN_PREFIX
 from tinyagentos.rate_limit import MovingWindowLimiter
 
 logger = logging.getLogger(__name__)
+
+
+class _RaisingRotatingFileHandler(logging.handlers.RotatingFileHandler):
+    def handleError(self, record):
+        raise
+
+
 def _get_agent_token_routes_logger(data_dir: Path) -> logging.Logger:
     """Return the module-level logger for agent token route recording.
 
@@ -50,7 +57,7 @@ def _get_agent_token_routes_logger(data_dir: Path) -> logging.Logger:
         log_logger.removeHandler(handler)
         handler.close()
 
-    handler = logging.handlers.RotatingFileHandler(
+    handler = _RaisingRotatingFileHandler(
         log_path, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
     )
     # JSON line formatter: just the message (we format as JSON in the caller)
@@ -520,6 +527,21 @@ def _is_agent_scope_request_path(method: str, path: str) -> bool:
     return any(m == method and rx.match(path) for m, rx in _AGENT_SCOPE_REQUEST_ROUTES)
 
 
+# Sign-in broker (tsk-diqs7d): an agent creates a request, polls it and hands
+# over its token with its own registry JWT. The /code route is reachable too so
+# an agent JWT gets the route's own 403 (user session only) instead of a 401.
+_AGENT_AUTH_BROKER_ROUTES = (
+    ("POST", re.compile(r"^/api/auth-broker/requests$")),
+    ("GET", re.compile(rf"^/api/auth-broker/requests/{_SEG}$")),
+    ("POST", re.compile(rf"^/api/auth-broker/requests/{_SEG}/(code|token)$")),
+)
+
+
+def _is_agent_auth_broker_path(method: str, path: str) -> bool:
+    """True only for the sign-in broker routes; each route verifies the caller."""
+    return any(m == method and rx.match(path) for m, rx in _AGENT_AUTH_BROKER_ROUTES)
+
+
 def _is_agent_rotate_path(method: str, path: str) -> bool:
     """True only for POST /api/agents/registry/{id}/rotate-tokens, which an
     agent may reach with its own registry JWT to rotate its OWN credential. The
@@ -632,6 +654,13 @@ _LLM_GATEWAY_SPEECH = "/api/llm/v1/audio/speech"  # local text-to-speech
 # the client, not as "bad credentials".
 _LLM_GATEWAY_PREFIX = "/api/llm/"
 
+# Screencast media (routes/cast.py): a TV fetches the cast media URL ITSELF and
+# carries no session, cookie or bearer. The cast token in the URL IS the
+# credential and the ROUTE enforces it (401 unknown/expired/revoked, 403 wrong
+# view or device), proven by tests/test_cast_tokens.py. Exactly one prefix,
+# GET/HEAD only; every other method and every /api/cast path stays gated.
+_CAST_MEDIA_PREFIX = "/cast/media/"
+
 
 def _unauthenticated(path: str, body: dict) -> JSONResponse:
     if path.startswith(_LLM_GATEWAY_PREFIX):
@@ -669,6 +698,21 @@ def _is_loopback_client(request: Request) -> bool:
         return ipaddress.ip_address(client.host).is_loopback
     except ValueError:
         return False
+
+
+def _is_browser_cross_site(request: Request) -> bool:
+    """True if the request is from a browser and targets a cross-site origin.
+
+    Stop hook is curl and sends neither header; a browser always sends Origin on
+    a cross-origin POST.
+    """
+    origin = request.headers.get("origin")
+    if origin:
+        return True
+    sec_fetch_site = request.headers.get("sec-fetch-site")
+    if sec_fetch_site and sec_fetch_site != "none":
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -782,6 +826,10 @@ def _is_exempt(method: str, path: str) -> bool:
         return True
     if method == "POST" and path == _LLM_GATEWAY_SPEECH:
         return True
+    # Cast media -- cast-token auth lives in the route (see the constants
+    # block above). Read methods only.
+    if method in ("GET", "HEAD") and path.startswith(_CAST_MEDIA_PREFIX):
+        return True
     return False
 
 
@@ -856,6 +904,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             request.method == "POST"
             and path == _PREPARE_SHUTDOWN
             and _is_loopback_client(request)
+            and not _is_browser_cross_site(request)
         ):
             request.state.user_id = None
             request.state.is_admin = False
@@ -941,6 +990,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     or _is_agent_files_path(request.method, path)
                     or _is_agent_scope_request_path(request.method, path)
                     or _is_agent_rotate_path(request.method, path)
+                    or _is_agent_auth_broker_path(request.method, path)
                     or _is_container_request_action_path(request.method, path)
                     or _is_agent_container_quota_path(request.method, path)
                     or _is_agent_skill_exec_path(request.method, path)

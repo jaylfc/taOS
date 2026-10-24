@@ -204,7 +204,7 @@ async def test_convert_to_lxc_queries_controller_for_gateway_port_and_redeploys(
 
     def fake_urlopen(req, *a, **k):
         captured.append(req)
-        return FakeResponse(b'{"port": 7838, "running": true}')
+        return FakeResponse(b'{"port": 7838, "running": true, "agent_controller_port": 6972}')
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
 
@@ -252,7 +252,7 @@ async def test_convert_to_lxc_queries_controller_for_gateway_port_and_redeploys(
     assert created[0] == "taos-agent-test-agent"
 
     # Port came from the local taosctl client, not args.controller_url.
-    assert len(captured) == 1
+    assert len(captured) == 2  # gateway port + agent controller port
     assert captured[0].full_url.startswith("http://127.0.0.1:6969")
 
 
@@ -295,7 +295,7 @@ async def test_convert_to_lxc_exits_nonzero_when_redeploy_fails(monkeypatch, tmp
         async def get(self, url, **kwargs):
             return types.SimpleNamespace(
                 status_code=200,
-                json=lambda: {"port": 7838, "running": True},
+                json=lambda: {"port": 7838, "running": True, "agent_controller_port": 6972},
                 raise_for_status=lambda: None,
             )
 
@@ -424,7 +424,7 @@ async def test_convert_to_lxc_uses_local_controller_and_bearer_token(monkeypatch
 
     def fake_urlopen(req, *a, **k):
         captured_requests.append(req)
-        return FakeResponse(b'{"port": 7838, "running": true}')
+        return FakeResponse(b'{"port": 7838, "running": true, "agent_controller_port": 6972}')
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
 
@@ -453,7 +453,7 @@ async def test_convert_to_lxc_uses_local_controller_and_bearer_token(monkeypatch
     rc = await _convert_to_lxc(args)
     assert rc == 0
 
-    assert len(captured_requests) == 1
+    assert len(captured_requests) == 2  # gateway port + agent controller port
     req = captured_requests[0]
     assert req.full_url.startswith("http://127.0.0.1:6969")
     assert req.full_url.endswith("/api/settings/llm-proxy")
@@ -537,6 +537,11 @@ async def test_convert_to_lxc_config_failure_exits_before_drain(monkeypatch, tmp
         "tinyagentos.cli.worker._get_verified_gateway_port",
         fake_gw,
     )
+
+    async def fake_ctl():
+        return 6972
+
+    monkeypatch.setattr("tinyagentos.cli.worker._get_agent_controller_port", fake_ctl)
 
     # load_config raises ValueError to simulate bad YAML.
     def bad_load_config(path):

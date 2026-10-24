@@ -109,7 +109,7 @@ interface Channel {
   topic?: string;
   members?: string[];
   created_at?: string;
-  last_message_at?: string;
+  last_message_at?: string | number | null;
   lastPreview?: string;
   last_preview?: string;
   last_preview_author?: string;
@@ -259,18 +259,8 @@ type WsStatus = "connecting" | "connected" | "disconnected";
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
 
-/**
-* Coerce a server timestamp (number = seconds since epoch, string = ISO
-* or numeric) to milliseconds suitable for `new Date(...)`. The 1e12
-* threshold safely distinguishes seconds (~1.7e9 today) from ms (~1.7e12).
-*/
-export function toMs(ts: number | string): number {
-  if (typeof ts === "number") return ts < 1e12 ? ts * 1000 : ts;
-  if (ts === "" || ts == null) return Date.now();
-  const n = Number(ts);
-  if (!Number.isNaN(n)) return n < 1e12 ? n * 1000 : n;
-  return new Date(ts).getTime();
-}
+import { toMs } from "../chat/time";
+export { toMs } from "../chat/time";
 
 export function relativeTime(ts: number | string, nowMs: number = Date.now()): string {
   const ms = toMs(ts);
@@ -906,6 +896,7 @@ export function MessagesApp({
   const [projectChannelExpanded, setProjectChannelExpanded] = useState<Record<string, boolean>>({});
   const [liveAgents, setLiveAgents] = useState<LiveAgent[]>([]);
   const [archivedAgents, setArchivedAgents] = useState<ArchivedAgentEntry[]>([]);
+  const [agentRosterReady, setAgentRosterReady] = useState(false);
   const [selectedChannel, setSelectedChannel] = useState<string | null>(null);
   // External taOSmd coordination bus (read-only). Selecting a bus channel is a
   // separate mode from the internal project channels: when busSelected is set,
@@ -1000,7 +991,9 @@ export function MessagesApp({
   const reconnectDelayRef = useRef(1000);
   const reconnectAttemptsRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const agentListTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevChannelRef = useRef<string | null>(null);
+  const lastFetchRef = useRef<number>(0);
 
   /* ---- fetch channels + unread ---- */
   const fetchChannels = useCallback(async () => {
@@ -1053,28 +1046,38 @@ export function MessagesApp({
 
   /* ---- fetch agent lists for author resolution ---- */
   const fetchAgentLists = useCallback(async () => {
-    try {
-      const [liveRes, archRes] = await Promise.all([
-        fetch("/api/agents"),
-        fetch("/api/agents/archived"),
-      ]);
-      if (liveRes.ok) {
-        const ct = liveRes.headers.get("content-type") ?? "";
-        if (ct.includes("application/json")) {
-          const data = await liveRes.json();
-          if (Array.isArray(data)) setLiveAgents(data as LiveAgent[]);
+    const loadLive = async (): Promise<LiveAgent[] | null> => {
+      try {
+        const res = await fetch("/api/agents?include_guests=1");
+        if (!res.ok) return null;
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setLiveAgents(data);
+          return data;
         }
+        return null;
+      } catch {
+        return null;
       }
-      if (archRes.ok) {
-        const ct = archRes.headers.get("content-type") ?? "";
-        if (ct.includes("application/json")) {
-          const data = await archRes.json();
-          if (Array.isArray(data)) setArchivedAgents(data as ArchivedAgentEntry[]);
+    };
+
+    const loadArchived = async (): Promise<ArchivedAgentEntry[] | null> => {
+      try {
+        const res = await fetch("/api/agents/archived");
+        if (!res.ok) return null;
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setArchivedAgents(data);
+          return data;
         }
+        return null;
+      } catch {
+        return null;
       }
-    } catch {
-      /* offline */
-    }
+    };
+
+    const [live, arch] = await Promise.all([loadLive(), loadArchived()]);
+    if (live !== null && arch !== null) setAgentRosterReady(true);
   }, []);
 
   /* ---- fetch messages for a channel ---- */
@@ -1305,6 +1308,26 @@ export function MessagesApp({
               ),
             );
             break;
+
+          case "receipt":
+            if (data.message_id) {
+              setReceipts((prev) => {
+                const existing = prev[data.message_id] ?? [];
+                const idx = existing.findIndex((r) => r.agent_id === data.agent_id);
+                const updated: Receipt = {
+                  message_id: data.message_id,
+                  agent_id: data.agent_id,
+                  reader_type: data.reader_type,
+                  delivered_at: data.delivered_at ?? existing[idx]?.delivered_at ?? null,
+                  seen_at: data.seen_at ?? existing[idx]?.seen_at ?? null,
+                };
+                const next = [...existing];
+                if (idx >= 0) next[idx] = updated;
+                else next.push(updated);
+                return { ...prev, [data.message_id]: next };
+              });
+            }
+            break;
         }
       } catch {
         /* bad json */
@@ -1332,42 +1355,6 @@ export function MessagesApp({
     };
 
     wsRef.current = ws;
-  }, []);
-
-  /* ---- A2A bus stream: live receipt updates ---- */
-  useEffect(() => {
-    if (typeof EventSource === "undefined") {
-      console.debug("[MessagesApp] EventSource unavailable, skipping A2A bus stream");
-      return;
-    }
-    const es = new EventSource("/api/a2a/bus/stream");
-    es.onmessage = (ev) => {
-      try {
-        const data = JSON.parse(ev.data);
-        if (data.type === "receipt" && data.message_id) {
-          setReceipts((prev) => {
-            const existing = prev[data.message_id] ?? [];
-            const idx = existing.findIndex((r) => r.agent_id === data.agent_id);
-            const updated: Receipt = {
-              message_id: data.message_id,
-              agent_id: data.agent_id,
-              delivered_at: data.delivered_at ?? existing[idx]?.delivered_at ?? null,
-              seen_at: data.seen_at ?? existing[idx]?.seen_at ?? null,
-            };
-            const next = [...existing];
-            if (idx >= 0) next[idx] = updated;
-            else next.push(updated);
-            return { ...prev, [data.message_id]: next };
-          });
-        }
-      } catch {
-        /* ignore malformed stream event */
-      }
-    };
-    es.onerror = () => {
-      /* let the browser reconnect; do not force-close */
-    };
-    return () => es.close();
   }, []);
 
   /* ---- emoji popover: escape and outside click ---- */
@@ -1410,6 +1397,44 @@ export function MessagesApp({
   }, [fetchChannels, fetchArchivedChannels, fetchAgentLists, connectWs]);
 
   useRefreshOnFocus(fetchChannels);
+
+  /* ---- refresh agent lists on focus/visibility (guest agents granted while open) ---- */
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const THROTTLE_MS = 10000;
+
+    const clearTimer = () => {
+      if (agentListTimerRef.current) {
+        clearTimeout(agentListTimerRef.current);
+        agentListTimerRef.current = null;
+      }
+    };
+
+    const scheduleFetch = () => {
+      const now = Date.now();
+      if (now - lastFetchRef.current < THROTTLE_MS) return;
+      lastFetchRef.current = now;
+      clearTimer();
+      agentListTimerRef.current = setTimeout(() => {
+        agentListTimerRef.current = null;
+        fetchAgentLists();
+      }, 0);
+    };
+
+    const onFocus = () => scheduleFetch();
+    const onVisibilityChange = () => {
+      if (!document.hidden) scheduleFetch();
+    };
+
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      clearTimer();
+    };
+  }, [fetchAgentLists]);
 
   /* ---- keep unreadRef in sync with the unread state without re-running
   * the channel-selection effect (which would re-capture the pending count). ---- */
@@ -2235,6 +2260,7 @@ export function MessagesApp({
       nowMs={nowMs}
       liveAgents={liveAgents}
       archivedAgents={archivedAgents}
+      agentRosterReady={agentRosterReady}
       archivedChannels={archivedChannels}
       archivedExpanded={archivedExpanded}
       onToggleArchived={() => setArchivedExpanded((v) => !v)}
