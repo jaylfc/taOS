@@ -1144,13 +1144,20 @@ def test_time_clustered_output_option_keeps_wrapped_program():
     c = commands("time -ao/tmp/x echo ok")
     assert "echo" in c
     assert "output-redirect" in c
+    # The first o/f ends the cluster (GNU getopt): the rest is its value, the next word is the program
+    assert commands("time -fo echo ok") == ["time", "echo"]
+    assert commands("time -of echo ok") == ["time", "output-redirect", "echo"]
+    assert commands("time -afo evil echo ok") == ["time", "evil"]
+    assert commands("time -aof /tmp/x echo ok") == ["time", "output-redirect", "x"]
 
 
 def test_time_clustered_output_option_profile_refusal():
     from tinyagentos.claude_code_guard import profile_refusal
     # Clustered option bypasses deny rule on wrapped program
-    msg, _ = profile_refusal("time -ao /tmp/echo gh pr merge", allow={"time", "echo"}, deny={"gh"})
-    assert msg is not None
+    msg, _ = profile_refusal("time -ao /tmp/echo gh pr merge", allow={"time", "echo", "output-redirect"}, deny={"gh"})
+    assert msg is not None and "denied `gh`" in msg
+    msg, _ = profile_refusal("time -afo evil echo ok", allow={"time", "echo", "output-redirect"}, deny={"evil"})
+    assert msg is not None and "denied `evil`" in msg
     # Control: non-clustered form works correctly
     msg, _ = profile_refusal("time -a echo ok", allow={"time", "echo"}, deny={"gh"})
     assert msg is None

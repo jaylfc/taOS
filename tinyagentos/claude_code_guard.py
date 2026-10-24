@@ -454,9 +454,10 @@ def commands(command: str) -> list[str] | None:
                                 add(OUTPUT_REDIRECT)
                             # This is an attached form, don't skip_next
                             break
-# time: clustered short options (e.g. -ao, -po, -af, -apo, -ao/tmp/x, -af%e)
+            # time: clustered short options (e.g. -ao, -po, -af, -apo, -ao/tmp/x, -af%e)
             # GNU time short options: a p q v o f
-            # If last letter of the cluster is o or f, it takes a value (next word or attached)
+            # The first o or f ends the cluster: it takes a value (next word or attached),
+            # so -afo FILE is -a, -f with value "o", then FILE is the program.
             if (wrapper == "time"
                     and tok.startswith("-")
                     and not tok.startswith("--")
@@ -464,7 +465,10 @@ def commands(command: str) -> list[str] | None:
                 # Extract the leading valid letter cluster
                 i = 1
                 while i < len(tok) and tok[i] in "apqvof":
+                    takes_value = tok[i] in "of"
                     i += 1
+                    if takes_value:
+                        break
                 letters = tok[1:i]
                 if letters:
                     last = letters[-1]
