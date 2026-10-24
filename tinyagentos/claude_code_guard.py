@@ -26,8 +26,9 @@ import sys
 # Short option letters for wrapper programs that take a value (next word)
 _WRAPPER_SHORT_OPTS_WITH_VALUE = {
     "exec": frozenset({"a"}),
-    "sudo": frozenset({"u", "g", "C", "h", "p", "r", "t", "T", "U", "D"}),
+    "sudo": frozenset({"u", "g", "C", "h", "p", "r", "t", "T", "U", "D", "a", "c", "R"}),
     "doas": frozenset({"u", "C"}),
+    "env": frozenset({"u", "C"}),
 }
 
 REFUSAL = ("Refused by taOS: the agent may not run `git push` or `gh` from the shell. "
@@ -73,6 +74,7 @@ _WRAPPER_OPTS_WITH_VALUE = {
     "exec": frozenset({"-a"}),
     "doas": frozenset({"-u", "-C", "--user", "--chdir"}),
     "chroot": frozenset({"--userspec", "--groups"}),
+    "sudo": frozenset({"-a", "-c", "-R", "--auth-type", "--login-class", "--chroot", "-p", "--prompt"}),
 }
 # Options of those programs that take a separate value (``git -C dir status``).
 _OPTIONS_WITH_VALUE = frozenset({
@@ -204,11 +206,12 @@ def commands(command: str) -> list[str] | None:
         if skip_next:
             if env_split_string_pending:
                 env_split_string_pending = False
+                skip_next = False
                 # Parse the split string recursively
                 if "$" in tok or "\\" in tok:
                     add("env -S")
                 else:
-                    sub_keys = commands(tok)
+                    sub_keys = _split_string_keys(tok)
                     if sub_keys is None:
                         add("env -S")
                     else:
@@ -336,7 +339,7 @@ def commands(command: str) -> list[str] | None:
                     continue
             # Clustered short options that take a value (last letter in the option)
             # For a token like -la, where 'a' takes a value, skip the next word
-            if wrapper in _WRAPPER_SHORT_OPTS_WITH_VALUE:
+            if wrapper in _WRAPPER_SHORT_OPTS_WITH_VALUE and not (wrapper == "env" and "S" in tok):
                 if tok.startswith("-") and not tok.startswith("--"):
                     # Check if this is a short option (single dash) and last letter takes a value
                     last_char = tok[-1]
@@ -373,11 +376,12 @@ def commands(command: str) -> list[str] | None:
                     split_string = tok.split("=", 1)[1]
                 if split_string is not None:
                     # Parse the split string recursively
-                    # Fail closed if it contains $ (env var expansion), backslash, or doesn't parse
+                    # Fail closed if it contains $ (env var expansion), backslash, or doesn't parse,
+                    # or if the split string ends on a wrapper needing an operand
                     if "$" in split_string or "\\" in split_string:
                         add("env -S")
                     else:
-                        sub_keys = commands(split_string)
+                        sub_keys = _split_string_keys(split_string)
                         if sub_keys is None:
                             add("env -S")
                         else:
@@ -417,6 +421,22 @@ def commands(command: str) -> list[str] | None:
     if sub_of:
         add(sub_of)
     return found
+
+
+def _split_string_keys(text: str) -> list[str] | None:
+    """Parse a split string for env -S/--split-string.
+
+    Returns the keys if parseable and the last key is not a wrapper program
+    that still needs an operand. Returns None if unparseable or if the last
+    key is a wrapper program (meaning the split string ends on a wrapper
+    that needs an operand, e.g. "timeout 60" where timeout needs a command).
+    """
+    keys = commands(text)
+    if keys is None:
+        return None
+    if keys and keys[-1] in WRAPPER_PROGRAMS:
+        return None
+    return keys
 
 
 def _covered(key: str, rules: set[str]) -> bool:

@@ -441,17 +441,73 @@ def test_bypass_sudo_clustered_short_flag():
         assert msg is not None, f"should refuse but got None for {cmd!r}"
 
 
-def test_bypass_chroot_attached_forms():
+def test_bypass_chroot_option_forms():
     from tinyagentos.claude_code_guard import refusal
-    # These attached forms should be REFUSED but are currently ALLOWED
+    # These attached and separate-value forms should be REFUSED but are currently ALLOWED
     cases = [
         'chroot --userspec=root:root /tmp/x g""h pr merge',
         'chroot --groups=g /tmp/x g""h pr merge',
+        'chroot --userspec root:root /tmp/x g""h pr merge',
+        'chroot --groups g /tmp/x g""h pr merge',
     ]
     for cmd in cases:
         payload = {"tool_name": "Bash", "tool_input": {"command": cmd}}
         msg = refusal(payload)
         assert msg is not None, f"should refuse but got None for {cmd!r}"
+
+
+def test_bypass_env_split_string_state_leak():
+    from tinyagentos.claude_code_guard import refusal
+    # env -S split-string state leak: word after split string is swallowed
+    cases = [
+        'env -S \'ls\' g""h pr merge',
+        'env -S \'timeout 60\' g""h pr merge',
+    ]
+    for cmd in cases:
+        payload = {"tool_name": "Bash", "tool_input": {"command": cmd}}
+        msg = refusal(payload)
+        assert msg is not None, f"should refuse but got None for {cmd!r}"
+
+
+def test_bypass_env_attached_split_string_wrapper_end():
+    from tinyagentos.claude_code_guard import refusal
+    # env -Stimeout 60 / --split-string=timeout 60: split string ends on wrapper needing operand
+    cases = [
+        'env -Stimeout 60 g""h pr merge',
+        'env --split-string=timeout 60 g""h pr merge',
+    ]
+    for cmd in cases:
+        payload = {"tool_name": "Bash", "tool_input": {"command": cmd}}
+        msg = refusal(payload)
+        assert msg is not None, f"should refuse but got None for {cmd!r}"
+
+
+def test_bypass_env_clustered_short_options():
+    from tinyagentos.claude_code_guard import refusal
+    # env -iu FOO: clustered short options -i -u, -u takes value
+    payload = {"tool_name": "Bash", "tool_input": {"command": 'env -iu FOO g""h pr merge'}}
+    assert refusal(payload) is not None
+
+
+def test_bypass_sudo_short_options_with_value():
+    from tinyagentos.claude_code_guard import refusal
+    # sudo -a, -c, -R take values and are missing from _WRAPPER_SHORT_OPTS_WITH_VALUE["sudo"]
+    cases = [
+        'sudo -a pam g""h pr merge',
+        'sudo -c cls g""h pr merge',
+        'sudo -R /x g""h pr merge',
+    ]
+    for cmd in cases:
+        payload = {"tool_name": "Bash", "tool_input": {"command": cmd}}
+        msg = refusal(payload)
+        assert msg is not None, f"should refuse but got None for {cmd!r}"
+
+
+def test_commands_parser_contains_gh_for_env_split_string_bypass():
+    from tinyagentos.claude_code_guard import commands
+    # The parser itself must see gh, not just the refusal
+    keys = commands('env -S \'ls\' g""h pr merge')
+    assert 'gh' in keys, f"gh missing in {keys!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -482,12 +538,14 @@ def test_benign_sudo_clustered_short_flag():
         assert refusal(payload) is None, f"should allow but got refusal for {cmd!r}"
 
 
-def test_benign_chroot_attached_forms():
+def test_benign_chroot_option_forms():
     from tinyagentos.claude_code_guard import refusal
-    # These benign attached forms should stay ALLOWED
+    # These benign attached and separate-value forms should stay ALLOWED
     cases = [
         'chroot --userspec=root:root /tmp/x ls',
         'chroot --groups=g /tmp/x ls',
+        'chroot --userspec root:root /tmp/x ls',
+        'chroot --groups g /tmp/x ls',
     ]
     for cmd in cases:
         payload = {"tool_name": "Bash", "tool_input": {"command": cmd}}
@@ -496,9 +554,33 @@ def test_benign_chroot_attached_forms():
 
 def test_benign_env_split_string():
     from tinyagentos.claude_code_guard import refusal
-    # env -S 'ls -la' should stay ALLOWED
-    payload = {"tool_name": "Bash", "tool_input": {"command": "env -S 'ls -la'"}}
+    # env -S 'ls -la' and env -S 'ls' should stay ALLOWED
+    cases = [
+        "env -S 'ls -la'",
+        "env -S 'ls' ls",
+    ]
+    for cmd in cases:
+        payload = {"tool_name": "Bash", "tool_input": {"command": cmd}}
+        assert refusal(payload) is None, f"should allow but got refusal for {cmd!r}"
+
+
+def test_benign_env_clustered_short_options():
+    from tinyagentos.claude_code_guard import refusal
+    # env -iu FOO ls should stay ALLOWED
+    payload = {"tool_name": "Bash", "tool_input": {"command": "env -iu FOO ls"}}
     assert refusal(payload) is None
+
+
+def test_benign_sudo_short_options_with_value():
+    from tinyagentos.claude_code_guard import refusal
+    # sudo -a pam ls and sudo -Eu root ls should stay ALLOWED
+    cases = [
+        'sudo -a pam ls',
+        'sudo -Eu root ls',
+    ]
+    for cmd in cases:
+        payload = {"tool_name": "Bash", "tool_input": {"command": cmd}}
+        assert refusal(payload) is None, f"should allow but got refusal for {cmd!r}"
 
 
 def test_benign_ls():
