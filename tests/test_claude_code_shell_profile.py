@@ -1161,3 +1161,24 @@ def test_time_clustered_output_option_profile_refusal():
     # Control: non-clustered form works correctly
     msg, _ = profile_refusal("time -a echo ok", allow={"time", "echo"}, deny={"gh"})
     assert msg is None
+
+
+# ---------------------------------------------------------------------------
+# tsk-sggrai: program-level output to /dev/null must not tag output-redirect
+# ---------------------------------------------------------------------------
+
+def test_program_output_to_dev_null_not_tagged():
+    from tinyagentos.claude_code_guard import commands
+    # These should NOT have output-redirect
+    assert commands("sort -o /dev/null f") == ["sort"]
+    assert commands("uniq f /dev/null") == ["uniq"]
+    assert commands("git diff --output=/dev/null") == ["git diff"]
+    assert commands("tee /dev/null") == ["tee"]
+    assert commands("time -o /dev/null echo ok") == ["time", "echo"]
+    assert commands("time --output=/dev/null echo ok") == ["time", "echo"]
+    # Controls that MUST still have output-redirect
+    assert "output-redirect" in commands("sort -o /dev/null/x f")
+    assert "output-redirect" in commands("tee ./dev/null")
+    assert "output-redirect" in commands("tee /dev/nul")
+    assert commands("tee -") == ["tee", "output-redirect"]
+    assert commands("echo ok > /tmp/x") == ["echo", "output-redirect"]
