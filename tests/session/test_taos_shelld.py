@@ -14,6 +14,7 @@ import importlib.util
 import json
 import threading
 import time
+import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -113,4 +114,45 @@ def test_a_second_tap_during_the_launch_opens_nothing_more(shelld):
     assert took < DESKTOP_DEADLINE_S
     _wait_for_exec(calls)
     time.sleep(SLOW_SWAY_S * 2)
+    assert len(_execs(calls)) == 1, calls
+
+
+def _post_launch(port, raw):
+    req = urllib.request.Request(
+        "http://127.0.0.1:%d/launch" % port, data=raw,
+        headers={"Content-Type": "application/json", "X-taOS-Shell": "1"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code
+
+
+def test_an_app_name_with_a_trailing_newline_is_refused(shelld):
+    # `$` matches before a final "\n": "files\n" passed .match(), took its own
+    # launch slot apart from "files", and reached swaymsg and a shell string.
+    mod, port, calls = shelld
+    assert _post_launch(port, json.dumps({"app": "files\n"}).encode()) == 400
+    time.sleep(0.2)
+    assert calls == [] and mod._LAUNCHING == set()
+
+
+def test_a_reply_that_fails_to_send_still_launches_and_frees_the_slot(shelld, monkeypatch):
+    # The desktop aborts after 1.5 s; a reply written to a closed socket raises.
+    # The slot claim() took is only released by launch(), so if the thread
+    # never starts, every later tap answers "already" and opens nothing.
+    mod, port, calls = shelld
+    real_json = mod.Handler._json
+
+    def broken_pipe(self, obj, status=200):
+        if obj == {"ok": True}:
+            raise BrokenPipeError("client went away")
+        return real_json(self, obj, status)
+
+    monkeypatch.setattr(mod.Handler, "_json", broken_pipe)
+    try:
+        _post_launch(port, json.dumps({"app": "files"}).encode())
+    except OSError:
+        pass
+    _wait_for_exec(calls)
     assert len(_execs(calls)) == 1, calls

@@ -40,8 +40,11 @@ class _Done:
 
 
 @pytest.fixture()
-def shelld(monkeypatch):
+def shelld(tmp_path, monkeypatch):
     mod = _load()
+    # GET /windows prunes every snapshot whose window is gone: on a box with a
+    # live taos-shelld the real SNAP_DIR would lose the session's pictures.
+    monkeypatch.setattr(mod, "SNAP_DIR", str(tmp_path))
     sway, spawned = [], []
     tree = {"now": TREE}
 
@@ -269,3 +272,13 @@ def test_cors_never_allows_another_origin_to_read_windows(shelld):
     req = urllib.request.Request("http://127.0.0.1:%d/windows" % port, headers={"Origin": DESKTOP})
     with urllib.request.urlopen(req, timeout=10) as r:
         assert r.headers.get("Access-Control-Allow-Origin") == DESKTOP
+
+
+def test_windows_prunes_only_the_fixtures_snapshot_store(shelld, tmp_path):
+    port, _, _, _ = shelld
+    stale = tmp_path / "99.jpg"
+    stale.write_bytes(b"\xff\xd8jpeg")
+    req = urllib.request.Request("http://127.0.0.1:%d/windows" % port, headers={"Origin": DESKTOP})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        assert r.status == 200
+    assert not stale.exists()

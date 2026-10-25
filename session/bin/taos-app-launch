@@ -53,8 +53,10 @@ swaymsg_as_taos() {
   # argument ("id: unknown user 999"), the switch failed silently behind the
   # `|| true`, and the app opened on the kiosk's workspace -- which is exactly
   # the vertical split Jay saw.
-  su taos -s /bin/sh -c \
-    "XDG_RUNTIME_DIR=$RUNDIR SWAYSOCK=$SWAYSOCK swaymsg $1" >/dev/null 2>&1 || true
+  # The paths and the command go in as arguments, never into the -c string,
+  # so nothing in them is parsed by the shell su starts.
+  su taos -s /bin/sh -c 'XDG_RUNTIME_DIR="$1" SWAYSOCK="$2" swaymsg "$3"' \
+    taos-app-launch "$RUNDIR" "$SWAYSOCK" "$1" >/dev/null 2>&1 || true
 }
 SWAYSOCK="$(ls "$RUNDIR"/sway-ipc.*.sock 2>/dev/null | head -1)"
 [ -n "$SWAYSOCK" ] || { echo "no sway ipc socket in $RUNDIR" >&2; exit 1; }

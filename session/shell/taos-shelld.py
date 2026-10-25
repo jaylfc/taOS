@@ -515,17 +515,19 @@ class Handler(BaseHTTPRequestHandler):
             app = json.loads(self.rfile.read(min(n, 1024)) or b"{}")["app"]
         except (ValueError, KeyError, TypeError):
             return self._json({"error": "bad request"}, 400)
-        if not isinstance(app, str) or not _APP_RE.match(app):
+        if not isinstance(app, str) or not _APP_RE.fullmatch(app):
             return self._json({"error": "bad app"}, 400)
         # ANSWER FIRST, then touch sway. The desktop waits 1.5 s for this
         # reply and then opens the app in-page; a launch is up to three
         # swaymsg calls with 5 s timeouts each, so a slow compositor answered
         # late and the app opened twice -- in-page AND as a window. "ok" means
         # "the shell has taken this launch"; the window follows.
+        # The thread starts BEFORE the reply: only launch() releases the slot
+        # claim() took, and a reply to a desktop that already gave up raises.
         if not claim(app):
             return self._json({"ok": True, "already": True})
-        self._json({"ok": True})
         threading.Thread(target=launch, args=(app,), daemon=True).start()
+        self._json({"ok": True})
 
     def _open_url(self):
         if not self._post_allowed((ORIGIN, DESKTOP_ORIGIN)):
