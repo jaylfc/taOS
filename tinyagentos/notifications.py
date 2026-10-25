@@ -272,7 +272,7 @@ class NotificationStore(BaseStore):
             conds = [
                 "(n.user_id IS NULL OR n.user_id = ?)",
                 "n.archived = 0",
-                f"n.source NOT IN ({pinned_placeholders})",
+                f"(n.source IS NULL OR n.source NOT IN ({pinned_placeholders}))",
                 "(n.user_id IS NOT NULL OR nus.archived_at IS NULL)",
             ]
             params_list = [user_id, user_id] + list(PINNED_SOURCES)

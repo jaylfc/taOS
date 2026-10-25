@@ -342,6 +342,17 @@ class TestNotificationStore:
         assert items_other[0]["source"] == "auth_requests"
         assert items_other[0]["pinned"] is True
 
+    async def test_null_source_row_still_listed(self, notif_store):
+        """A NULL-source row must survive the pinned-source exclusion (NOT IN yields NULL)."""
+        user_id = "test-user"
+        await notif_store._db.execute(
+            "INSERT INTO notifications (timestamp, level, title, message, source, read, archived, data, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (int(time.time()), "info", "Legacy", "no source", None, 0, 0, None, user_id),
+        )
+        await notif_store._db.commit()
+        items = await notif_store.list(user_id=user_id, limit=20)
+        assert [i["title"] for i in items] == ["Legacy"]
+        assert items[0]["pinned"] is False
 
 @pytest.mark.asyncio
 async def test_data_column_migration_on_legacy_db(tmp_path):
