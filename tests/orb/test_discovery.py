@@ -841,3 +841,266 @@ def test_probe_agent_buddy_socket_error_raises_transport_unavailable(monkeypatch
         assert isinstance(e.__cause__, OSError)
     else:
         assert False, "Expected TransportUnavailable"
+
+
+def test_ipv4_broadcast_addresses_two_interfaces_lo_ipv6():
+    """Test ipv4_broadcast_addresses returns per-interface broadcasts (case a)."""
+    import psutil
+    from types import SimpleNamespace
+    from tinyagentos.orb.discovery import ipv4_broadcast_addresses
+
+    # Mock net_if_addrs with 2 interfaces, lo, and AF_INET6
+    mock_net_if_addrs = {
+        "eth0": [
+            SimpleNamespace(family=2, address="192.168.1.10", netmask="255.255.255.0", broadcast="192.168.1.255"),
+            SimpleNamespace(family=10, address="fe80::1", netmask="ffff:ffff:ffff:ffff::", broadcast=""),
+        ],
+        "wlan0": [
+            SimpleNamespace(family=2, address="10.0.0.5", netmask="255.0.0.0", broadcast="10.0.0.255"),
+        ],
+        "lo": [
+            SimpleNamespace(family=2, address="127.0.0.1", netmask="255.0.0.0", broadcast=None),
+        ],
+    }
+
+    # Monkeypatch psutil.net_if_addrs
+    original_net_if_addrs = psutil.net_if_addrs
+    psutil.net_if_addrs = lambda: mock_net_if_addrs
+
+    try:
+        result = ipv4_broadcast_addresses()
+        assert result == ["10.0.0.255", "192.168.1.255"]
+    finally:
+        psutil.net_if_addrs = original_net_if_addrs
+
+
+def test_ipv4_broadcast_addresses_duplicate_broadcasts():
+    """Test ipv4_broadcast_addresses deduplicates identical broadcasts (case b)."""
+    import psutil
+    from types import SimpleNamespace
+    from tinyagentos.orb.discovery import ipv4_broadcast_addresses
+
+    mock_net_if_addrs = {
+        "eth0": [
+            SimpleNamespace(family=2, address="192.168.1.10", netmask="255.255.255.0", broadcast="192.168.1.255"),
+            SimpleNamespace(family=2, address="192.168.1.11", netmask="255.255.255.0", broadcast="192.168.1.255"),
+        ],
+    }
+
+    original_net_if_addrs = psutil.net_if_addrs
+    psutil.net_if_addrs = lambda: mock_net_if_addrs
+
+    try:
+        result = ipv4_broadcast_addresses()
+        assert result == ["192.168.1.255"]
+    finally:
+        psutil.net_if_addrs = original_net_if_addrs
+
+
+def test_ipv4_broadcast_addresses_empty_broadcast_and_none():
+    """Test ipv4_broadcast_addresses skips empty/None broadcasts (case c)."""
+    import psutil
+    from types import SimpleNamespace
+    from tinyagentos.orb.discovery import ipv4_broadcast_addresses
+
+    mock_net_if_addrs = {
+        "eth0": [
+            SimpleNamespace(family=2, address="192.168.1.10", netmask="255.255.255.0", broadcast=None),
+            SimpleNamespace(family=2, address="192.168.1.11", netmask="255.255.255.0", broadcast=""),
+        ],
+    }
+
+    original_net_if_addrs = psutil.net_if_addrs
+    psutil.net_if_addrs = lambda: mock_net_if_addrs
+
+    try:
+        result = ipv4_broadcast_addresses()
+        assert result == ["255.255.255.255"]
+    finally:
+        psutil.net_if_addrs = original_net_if_addrs
+
+
+def test_ipv4_broadcast_addresses_empty_dict():
+    """Test ipv4_broadcast_addresses with empty net_if_addrs (case d)."""
+    import psutil
+    from types import SimpleNamespace
+    from tinyagentos.orb.discovery import ipv4_broadcast_addresses
+
+    mock_net_if_addrs = {}
+
+    original_net_if_addrs = psutil.net_if_addrs
+    psutil.net_if_addrs = lambda: mock_net_if_addrs
+
+    try:
+        result = ipv4_broadcast_addresses()
+        assert result == ["255.255.255.255"]
+    finally:
+        psutil.net_if_addrs = original_net_if_addrs
+
+
+def test_ipv4_broadcast_addresses_skip_127_with_broadcast():
+    """Test ipv4_broadcast_addresses skips 127.x addresses even with broadcast (case e)."""
+    import psutil
+    from types import SimpleNamespace
+    from tinyagentos.orb.discovery import ipv4_broadcast_addresses
+
+    mock_net_if_addrs = {
+        "lo": [
+            SimpleNamespace(family=2, address="127.0.0.1", netmask="255.0.0.0", broadcast="127.0.0.255"),
+        ],
+        "eth0": [
+            SimpleNamespace(family=2, address="192.168.1.10", netmask="255.255.255.0", broadcast="192.168.1.255"),
+        ],
+    }
+
+    original_net_if_addrs = psutil.net_if_addrs
+    psutil.net_if_addrs = lambda: mock_net_if_addrs
+
+    try:
+        result = ipv4_broadcast_addresses()
+        assert result == ["192.168.1.255"]
+    finally:
+        psutil.net_if_addrs = original_net_if_addrs
+
+
+def test_probe_agent_buddy_uses_ipv4_broadcast_helper():
+    """Test probe_agent_buddy uses ipv4_broadcast_addresses helper (case f)."""
+    import socket
+    import time
+    import threading
+    from tinyagentos.orb.discovery import probe_agent_buddy
+
+    # Monkeypatch ipv4_broadcast_addresses to return a loopback address
+    import tinyagentos.orb.discovery
+    original_ipv4_broadcast = tinyagentos.orb.discovery.ipv4_broadcast_addresses
+
+    def mock_ipv4_broadcast():
+        return ["127.0.0.1"]
+
+    tinyagentos.orb.discovery.ipv4_broadcast_addresses = mock_ipv4_broadcast
+
+    # Create responder
+    reply_dict = {
+        "service": "esp32-agent-companion",
+        "protocol": 1,
+        "deviceId": "ABCDEF1234567890",
+        "hostname": "test-device",
+        "port": 8080,
+        "boot": 42,
+    }
+
+    import json
+    reply_bytes = json.dumps(reply_dict).encode("utf-8")
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    responder_port = 0
+    sock.bind(("127.0.0.1", responder_port))
+    responder_port = sock.getsockname()[1]
+
+    stop_event = threading.Event()
+    received_probes = []
+
+    def run_responder():
+        while not stop_event.is_set():
+            try:
+                sock.settimeout(0.1)
+                data, addr = sock.recvfrom(2048)
+                received_probes.append((data, addr))
+                if data == tinyagentos.orb.discovery.AGENT_BUDDY_PROBE:
+                    sock.sendto(reply_bytes, addr)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+
+    responder_thread = threading.Thread(target=run_responder, daemon=True)
+    responder_thread.start()
+
+    try:
+        # Call probe_agent_buddy WITHOUT addresses (should use helper)
+        result = probe_agent_buddy(timeout=0.5, port=responder_port)
+
+        # Should find the device
+        assert len(result) == 1
+        assert result[0]["device_id"] == "abcdef1234567890"
+        assert result[0]["hostname"] == "test-device"
+        assert result[0]["address"] == "127.0.0.1"
+        assert result[0]["port"] == 8080
+        assert result[0]["boot"] == 42
+
+        # Verify probe was sent
+        assert any(data == tinyagentos.orb.discovery.AGENT_BUDDY_PROBE for data, _ in received_probes)
+    finally:
+        stop_event.set()
+        sock.close()
+        responder_thread.join(timeout=1.0)
+        tinyagentos.orb.discovery.ipv4_broadcast_addresses = original_ipv4_broadcast
+
+
+def test_probe_agent_buddy_explicit_addresses_bypasses_helper():
+    """Test probe_agent_buddy with explicit addresses bypasses helper (case g)."""
+    import socket
+    import time
+    import threading
+    from tinyagentos.orb.discovery import probe_agent_buddy
+
+    # Monkeypatch ipv4_broadcast_addresses to raise AssertionError
+    import tinyagentos.orb.discovery
+    original_ipv4_broadcast = tinyagentos.orb.discovery.ipv4_broadcast_addresses
+
+    def mock_ipv4_broadcast():
+        raise AssertionError("Helper should not be called when addresses is provided")
+
+    tinyagentos.orb.discovery.ipv4_broadcast_addresses = mock_ipv4_broadcast
+
+    # Create responder
+    reply_dict = {
+        "service": "esp32-agent-companion",
+        "protocol": 1,
+        "deviceId": "ABCDEF1234567890",
+        "hostname": "test-device",
+        "port": 8080,
+        "boot": 42,
+    }
+
+    import json
+    reply_bytes = json.dumps(reply_dict).encode("utf-8")
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    responder_port = 0
+    sock.bind(("127.0.0.1", responder_port))
+    responder_port = sock.getsockname()[1]
+
+    stop_event = threading.Event()
+    received_probes = []
+
+    def run_responder():
+        while not stop_event.is_set():
+            try:
+                sock.settimeout(0.1)
+                data, addr = sock.recvfrom(2048)
+                received_probes.append((data, addr))
+                if data == tinyagentos.orb.discovery.AGENT_BUDDY_PROBE:
+                    sock.sendto(reply_bytes, addr)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+
+    responder_thread = threading.Thread(target=run_responder, daemon=True)
+    responder_thread.start()
+
+    try:
+        # Call probe_agent_buddy WITH explicit addresses (should bypass helper)
+        result = probe_agent_buddy(timeout=0.5, addresses=["127.0.0.1"], port=responder_port)
+
+        # Should find the device even though helper was called
+        assert len(result) == 1
+        assert result[0]["device_id"] == "abcdef1234567890"
+
+        # Verify helper was NOT called (no AssertionError raised)
+    finally:
+        stop_event.set()
+        sock.close()
+        responder_thread.join(timeout=1.0)
+        tinyagentos.orb.discovery.ipv4_broadcast_addresses = original_ipv4_broadcast
