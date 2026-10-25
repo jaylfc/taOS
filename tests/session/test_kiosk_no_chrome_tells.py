@@ -9,14 +9,14 @@ import json
 import pathlib
 import re
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
-POLICY = ROOT / "kiosk/etc/chromium-policy-taos-kiosk.json"
+ROOT = pathlib.Path(__file__).resolve().parents[2] / "session"
+POLICY = ROOT / "etc/chromium-policy-taos-kiosk.json"
 TAOS_ORIGIN = "http://127.0.0.1:6969"
 
 # Every file that starts a chromium window on the handset.
 LAUNCHERS = [
-    ROOT / "kiosk/bin/taos-kiosk-launch",
-    ROOT / "apps/taos-app-launch",
+    ROOT / "bin/taos-kiosk-launch",
+    ROOT / "bin/taos-app-launch",
     ROOT / "shell/taos-shelld.py",
 ]
 

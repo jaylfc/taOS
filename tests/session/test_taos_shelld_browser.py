@@ -4,7 +4,7 @@ Jay (2026-10-11): a real browser, links from taOS apps opening in it, and one
 task switcher. The desktop page (DESKTOP_ORIGIN) posts /open-url, /focus and
 /close; anything else on the device, Firefox's own pages included, must not.
 
-Run: python3 -m pytest -q pmos/shell/test_taos_shelld_browser.py
+Run: python3 -m pytest -q tests/session/test_taos_shelld_browser.py
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ TREE = {"nodes": [{"type": "workspace", "name": "app-browser", "nodes": [
 
 
 def _load():
-    path = Path(__file__).with_name("taos-shelld.py")
+    path = Path(__file__).resolve().parents[2] / "session" / "shell" / "taos-shelld.py"
     spec = importlib.util.spec_from_file_location("taos_shelld_browser", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

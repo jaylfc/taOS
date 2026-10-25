@@ -5,7 +5,7 @@ wordmark while the server starts, and a bar started with the session sat over
 it. The bar must stay down through boot, a loading kiosk window and the lock
 screen, and come up for the signed-in desktop or a taOS app window.
 
-Run: python3 -m pytest -q pmos/kiosk/test_taos_kiosk_shellmode.py
+Run: python3 -m pytest -q tests/session/test_taos_kiosk_shellmode.py
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ APP = "chrome-127.0.0.1__app.html-Default"
 
 
 def _load():
-    path = Path(__file__).with_name("bin") / "taos-kiosk-shellmode"
+    path = Path(__file__).resolve().parents[2] / "session" / "bin" / "taos-kiosk-shellmode"
     loader = importlib.machinery.SourceFileLoader("taos_kiosk_shellmode", str(path))
     spec = importlib.util.spec_from_loader(loader.name, loader)
     mod = importlib.util.module_from_spec(spec)
@@ -100,7 +100,7 @@ def test_a_running_bar_is_not_restarted_on_every_event(sm, monkeypatch):
 
 
 def test_the_session_config_no_longer_starts_the_bar():
-    conf = (Path(__file__).parent / "etc" / "sway-kiosk.conf").read_text()
+    conf = (Path(__file__).resolve().parents[2] / "session" / "etc" / "sway-kiosk.conf").read_text()
     live = [ln for ln in conf.splitlines() if not ln.lstrip().startswith("#")]
     assert not any("taos-kiosk-bar" in ln for ln in live)
     assert any("exec_always /usr/local/bin/taos-kiosk-shellmode" in ln for ln in live)

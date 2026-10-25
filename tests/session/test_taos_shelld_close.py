@@ -7,7 +7,7 @@ background until someone switched workspaces by hand. Measured on the handset
 2026-10-16 after a /close of app-files. An agent closing the app the user is
 looking at (taOS useMobileControl) takes exactly this path.
 
-Run: python3 -m pytest -q pmos/shell/test_taos_shelld_close.py
+Run: python3 -m pytest -q tests/session/test_taos_shelld_close.py
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ APP = "chrome-127.0.0.1__app.html-Default"
 
 
 def _load():
-    path = Path(__file__).with_name("taos-shelld.py")
+    path = Path(__file__).resolve().parents[2] / "session" / "shell" / "taos-shelld.py"
     spec = importlib.util.spec_from_file_location("taos_shelld", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

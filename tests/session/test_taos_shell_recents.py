@@ -37,7 +37,7 @@ def test_taos_shell_recents_opens_switcher():
         
         # Run taos-shell recents
         result = subprocess.run(
-            ["sh", ROOT / "pmos/kiosk/bin/taos-shell", "recents"],
+            ["sh", ROOT / "session/bin/taos-shell", "recents"],
             env=env,
             capture_output=True,
             text=True
@@ -90,7 +90,7 @@ def test_taos_shell_home_control():
         
         # Run taos-shell home
         result = subprocess.run(
-            ["sh", ROOT / "pmos/kiosk/bin/taos-shell", "home"],
+            ["sh", ROOT / "session/bin/taos-shell", "home"],
             env=env,
             capture_output=True,
             text=True

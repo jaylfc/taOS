@@ -23,7 +23,7 @@ DESKTOP = "http://127.0.0.1:6969"
 
 
 def _load():
-    path = Path(__file__).with_name("taos-shelld.py")
+    path = Path(__file__).resolve().parents[2] / "session" / "shell" / "taos-shelld.py"
     spec = importlib.util.spec_from_file_location("taos_shelld", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

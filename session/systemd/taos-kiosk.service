@@ -2,18 +2,14 @@
 Description=taOS kiosk session (Wayland, full-screen)
 Documentation=https://github.com/jaylfc/taOS
 
-# Starting this STOPS Plasma Mobile: systemd resolves the conflict for us, so
-# the switch is one `systemctl start` rather than a stop/start race.
-Conflicts=plasma-mobile.service getty@tty1.service
+# A device with a fallback session adds it in a drop-in (taOSmobile:
+# taos-kiosk.service.d/10-plasma-fallback.conf adds Conflicts= and OnFailure=
+# for plasma-mobile.service).
+Conflicts=getty@tty1.service
 After=getty@tty1.service systemd-user-sessions.service dbus.socket
 Wants=dbus.socket
 
-# THE SAFETY PROPERTY: if the kiosk fails to start or dies, fall straight back
-# to Plasma Mobile. A phone that boots to a black screen is unusable and the
-# user has no terminal to recover with.
-OnFailure=plasma-mobile.service
-
-# Prevent starting on systems without virtual consoles (same guard plasma uses)
+# Prevent starting on systems without virtual consoles (same guard Plasma Mobile uses)
 ConditionPathExists=/dev/tty0
 Before=graphical.target
 
@@ -23,7 +19,7 @@ User=taos
 Group=taos
 PAMName=login
 
-# A virtual terminal is needed — identical handling to plasma-mobile.service.
+# A virtual terminal is needed.
 TTYPath=/dev/tty1
 TTYReset=yes
 TTYVHangup=yes
@@ -44,8 +40,8 @@ Environment=MOZ_ENABLE_WAYLAND=1
 # chosen over cage because cage cannot power the output down -- see the config.
 ExecStart=/usr/local/bin/taos-kiosk-launch
 
-# Do NOT Restart=always: a crash-looping kiosk would fight OnFailure= and the
-# user could never get back to Plasma.
+# Do NOT Restart=always: on a handset a crash-looping kiosk would fight the
+# fallback drop-in's OnFailure= and the user could never get back to Plasma.
 Restart=no
 
 [Install]
