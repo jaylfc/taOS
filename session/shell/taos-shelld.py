@@ -1,0 +1,682 @@
+#!/usr/bin/env python3
+"""taos-shelld -- the task switcher behind the nav bar's recents button.
+
+Jay (2026-09-29): a nav bar and task switcher where apps run as standalone
+fullscreen windows "we can close and switch between", taOS apps and native
+Linux apps alike. Only the compositor sees every window, so this reads sway's
+tree -- the one list that includes a native app a web page never could.
+
+Serves the switcher page and three calls, on LOOPBACK only:
+  GET  /           the switcher (a card per open app)
+  GET  /windows    the open app windows: con_id, app_id, title, workspace
+  POST /focus      {"con_id": N}  switch to that window
+  POST /close      {"con_id": N}  close it
+  POST /launch     {"app": "messages"}  open a taOS app as its own window
+                   (from the taOS desktop, cross-origin: CORS for exactly
+                   DESKTOP_ORIGIN), or switch to it if it is already open;
+                   {"app": "browser"} is Firefox
+  POST /open-url   {"url": "https://..."}  open a link in Firefox and show it
+  GET  /snapshot/N the picture of window N taken when it was last left
+                   (image/jpeg), or 404; /windows gives each entry
+                   "snapshot": its mtime, or null when none exists yet
+
+Snapshots (Jay 2026-10-17, "snapshot on leave"): when focus moves off an app
+window, that window is captured with grim -T <foreign_toplevel_identifier>,
+which works on a window that is already hidden, so leaving is never delayed.
+Never the kiosk (lock screen, auth pages) or the switcher. Stored per session
+under $XDG_RUNTIME_DIR/taos-shelld/snap, served only for a listed window.
+
+Runs in the sway session as taos (exec_always), so it has SWAYSOCK and
+needs no privilege: every action is a swaymsg the session owner could type.
+POSTs must carry X-taOS-Shell: 1 and come from the switcher's own origin, so a
+web page in some other window cannot close the user's apps with a form or a
+no-cors fetch (the same reasoning as taOS's X-taOS-Console, #3204).
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import socket
+import struct
+import threading
+import subprocess
+import sys
+import time
+from urllib.parse import urlsplit
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+HOST = "127.0.0.1"
+PORT = int(os.environ.get("TAOS_SHELLD_PORT", "6973"))
+ORIGIN = os.environ.get("TAOS_SHELLD_ORIGIN", "http://shell.taos:%d" % PORT)
+#: The taOS desktop, which asks for apps to be opened. Its kiosk Chromium
+#: profile is where app windows are opened too: the same profile means the
+#: same sign-in, so an app never opens signed out (measured on the handset:
+#: an --app URL handed to the running kiosk chromium opened its own window,
+#: app_id chrome-127.0.0.1__app.html-Default, on the current workspace).
+DESKTOP_ORIGIN = os.environ.get("TAOS_SHELLD_DESKTOP_ORIGIN", "http://127.0.0.1:6969")
+KIOSK_PROFILE = os.environ.get("TAOS_SHELLD_KIOSK_PROFILE", "/var/lib/taos-kiosk/chrome")
+APP_URL = DESKTOP_ORIGIN + "/app.html?app=%s"
+_APP_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
+#: The touch browser (Jay 2026-10-09: Firefox + mobile-config-firefox, see
+#: pmos/browser/install-firefox.sh). Measured on the handset: a second
+#: `firefox <url>` opens a tab in the running window and leaves it on its
+#: own workspace, so /open-url switches there itself.
+BROWSER_APP = "browser"
+BROWSER_CMD = os.environ.get("TAOS_SHELLD_BROWSER", "firefox")
+BROWSER_APP_ID = "firefox"
+#: How long a cold Firefox gets to map its window (measured ~10 s).
+BROWSER_WAIT_S = 25.0
+MAX_URL = 4096
+
+#: Windows that are not "apps" to switch between: the kiosk (taOS home and
+#: the lock screen, reached with the home button) and this switcher. EXACT
+#: ids: a taOS app opened in the kiosk's profile is
+#: chrome-127.0.0.1__app.html-Default and IS an app.
+HIDDEN_APP_IDS = ("chrome-127.0.0.1__-Default",)
+HIDDEN_PREFIXES = ("chrome-shell.taos__",)
+#: The kiosk's workspace: taOS home, where taos-shell's home button goes.
+HOME_WORKSPACE = "1"
+
+
+def swaymsg(*args) -> subprocess.CompletedProcess:
+    return subprocess.run(["swaymsg", *args], capture_output=True, text=True, timeout=5)
+
+
+def grim(*args) -> subprocess.CompletedProcess:
+    return subprocess.run(["grim", *args], capture_output=True, timeout=5)
+
+
+SNAP_DIR = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/run/user/%d" % os.getuid(),
+                        "taos-shelld", "snap")
+
+
+def _walk(node, workspace=None):
+    if node.get("type") == "workspace":
+        workspace = node.get("name")
+    if node.get("app_id") or node.get("window_properties"):
+        yield node, workspace
+    for child in node.get("nodes", []) + node.get("floating_nodes", []):
+        yield from _walk(child, workspace)
+
+
+def label_for(app_id: str, title: str) -> str:
+    """A readable name: taOS apps carry it in their hostname alias
+    (chrome-camera.taos__-Default -> Camera); others use the window title."""
+    if app_id.startswith("chrome-127.0.0.1__app.html"):
+        # A taOS app in the kiosk's profile: the page title is the app name.
+        return title or "taOS app"
+    if app_id.startswith("chrome-") and ".taos__" in app_id:
+        return app_id[len("chrome-"):app_id.index(".taos__")].replace("-", " ").title()
+    return title or app_id or "App"
+
+
+def _app_id(con: dict) -> str:
+    return con.get("app_id") or (con.get("window_properties") or {}).get("class") or ""
+
+
+def _is_hidden(con: dict, ws) -> bool:
+    """Not an app window: the kiosk, the switcher, or a scratchpad window."""
+    app_id = _app_id(con)
+    if app_id in HIDDEN_APP_IDS or any(app_id.startswith(h) for h in HIDDEN_PREFIXES):
+        return True
+    return ws == "__i3_scratch"
+
+
+def list_windows(tree: dict) -> list[dict]:
+    out = []
+    for con, ws in _walk(tree):
+        if _is_hidden(con, ws):
+            continue
+        app_id = _app_id(con)
+        out.append({
+            "con_id": con["id"],
+            "app_id": app_id,
+            "title": con.get("name") or "",
+            "label": label_for(app_id, con.get("name") or ""),
+            "workspace": ws,
+            "focused": bool(con.get("focused")),
+        })
+    return out
+
+
+def closes_the_view(tree: dict, con_id: int) -> bool:
+    """True when *con_id* is the focused window and the only one on its
+    workspace: closing it leaves nothing on the screen."""
+    on_ws = {}
+    target = None
+    for con, ws in _walk(tree):
+        if not _is_hidden(con, ws):
+            # Count only the windows list_windows shows: a hidden one left
+            # on the workspace is not something to stay for.
+            on_ws.setdefault(ws, []).append(con)
+        if con.get("id") == con_id:
+            target = (con, ws)
+    if target is None:
+        return False
+    con, ws = target
+    return bool(con.get("focused")) and ws != HOME_WORKSPACE and on_ws.get(ws) == [con]
+
+
+def app_workspace(app: str) -> str:
+    return "app-" + app
+
+
+def app_is_open(tree: dict, app: str) -> bool:
+    ws = app_workspace(app)
+    return any(w == ws for _, w in _walk(tree))
+
+
+_LAUNCHING: set = set()
+_LAUNCH_LOCK = threading.Lock()
+
+
+def claim(app: str) -> bool:
+    """Take the one launch slot for *app*; False when a launch is already
+    under way (a double tap must not open two). Fast: no sway calls."""
+    with _LAUNCH_LOCK:
+        if app in _LAUNCHING:
+            return False
+        _LAUNCHING.add(app)
+        return True
+
+
+def launch(app: str) -> None:
+    """Open a taOS app as its own window on its own workspace, or switch to
+    it. Runs AFTER /launch has answered (see Handler._launch), holding the
+    slot claim() took, which it releases a few seconds after it is done."""
+    try:
+        if app == BROWSER_APP:
+            # Firefox, wherever it mapped: show it, or start it first. Never
+            # a second window for the same browser.
+            if not show_browser(wait=0):
+                swaymsg("workspace", app_workspace(app))
+                start_browser()
+                show_browser()
+            return
+        raw = swaymsg("-t", "get_tree", "-r").stdout
+        if raw and app_is_open(json.loads(raw), app):
+            swaymsg("workspace", app_workspace(app))
+            return
+        swaymsg("workspace", app_workspace(app))
+        swaymsg("exec", "chromium --user-data-dir=%s --ozone-platform=wayland "
+                "--no-first-run --no-default-browser-check --disable-pinch "
+                "--overscroll-history-navigation=0 "
+                "--disable-features=TranslateUI '--app=%s'" % (KIOSK_PROFILE, APP_URL % app))
+    except (subprocess.SubprocessError, OSError, ValueError) as exc:
+        print("taos-shelld: launch %s failed: %s" % (app, exc), file=sys.stderr)
+    finally:
+        threading.Timer(3.0, lambda: _LAUNCHING.discard(app)).start()
+
+
+def valid_url(url) -> bool:
+    """Only an http(s) link with a host: never javascript:, file:, data: or
+    anything that could reach Firefox as a command-line option."""
+    if not isinstance(url, str) or not url or len(url) > MAX_URL:
+        return False
+    if any(c <= " " or c == "\x7f" for c in url):
+        return False
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    return parts.scheme in ("http", "https") and bool(parts.hostname)
+
+
+def start_browser(url: str | None = None) -> None:
+    """Start Firefox, or hand a running one the URL (a new tab). An argv
+    list, not `swaymsg exec`: that is a shell string and a URL is not
+    constrained the way an app id is. sway started this daemon, so it has
+    the session's WAYLAND_DISPLAY; the window opens on the focused workspace."""
+    argv = [BROWSER_CMD] + ([url] if url else [])
+    subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def show_browser(wait: float = BROWSER_WAIT_S) -> bool:
+    """Put Firefox on its workspace and show it. sway places a new window
+    by the LAUNCHING process's workspace, and this daemon was started on
+    workspace 1: measured on the handset, a Firefox started from here opened
+    behind the taOS desktop, not on app-browser. So find it and move it."""
+    ws = app_workspace(BROWSER_APP)
+    end = time.monotonic() + wait
+    while True:
+        raw = swaymsg("-t", "get_tree", "-r").stdout
+        found = [(c, w) for c, w in _walk(json.loads(raw))
+                 if c.get("app_id") == BROWSER_APP_ID] if raw else []
+        if found:
+            for con, w in found:
+                if w != ws:
+                    swaymsg("[con_id=%d] move container to workspace %s" % (con["id"], ws))
+            swaymsg("workspace", ws)
+            return True
+        if time.monotonic() >= end:
+            return False
+        time.sleep(0.3)
+
+
+def open_url(url: str) -> None:
+    """Show the browser's workspace at once (the tap answered), give Firefox
+    the link, then make sure its window is the one on screen."""
+    try:
+        swaymsg("workspace", app_workspace(BROWSER_APP))
+        start_browser(url)
+        show_browser()
+    except (subprocess.SubprocessError, OSError) as exc:
+        print("taos-shelld: open-url failed: %s" % exc, file=sys.stderr)
+
+
+def current_windows() -> list[dict]:
+    raw = swaymsg("-t", "get_tree", "-r").stdout
+    wins = list_windows(json.loads(raw)) if raw else []
+    listed = {w["con_id"] for w in wins}
+    for w in wins:
+        try:
+            w["snapshot"] = os.path.getmtime(snapshot_path(w["con_id"]))
+        except OSError:
+            w["snapshot"] = None
+    # A window that closed while no event reached us leaves its picture.
+    try:
+        names = os.listdir(SNAP_DIR)
+    except OSError:
+        names = []
+    for name in names:
+        stem = name[:-len(".jpg")] if name.endswith(".jpg") else ""
+        if stem.isdigit() and int(stem) not in listed:
+            apply_action(("prune", int(stem)))
+    return wins
+
+
+# -- snapshots on leave --------------------------------------------------------
+
+def snapshot_path(con_id: int) -> str:
+    return os.path.join(SNAP_DIR, "%d.jpg" % int(con_id))
+
+
+def on_window_event(event: dict, last):
+    """Sway window event -> (actions, new last-focused app).
+
+    *last* is (con_id, toplevel identifier) of the app window in front, or
+    None when the kiosk or nothing listable has focus. Leaving it, for any
+    other window, captures it; closing a window prunes its picture."""
+    con = event.get("container") or {}
+    con_id = con.get("id")
+    change = event.get("change")
+    if change == "close":
+        return [("prune", con_id)], (None if last and last[0] == con_id else last)
+    if change != "focus":
+        return [], last
+    actions = []
+    if last and last[0] != con_id:
+        actions.append(("capture", last[0], last[1]))
+    ident = con.get("foreign_toplevel_identifier")
+    # No workspace in an event: the scratchpad rule cannot apply here.
+    new = (con_id, ident) if ident and not _is_hidden(con, None) else None
+    return actions, new
+
+
+def apply_action(action) -> None:
+    if action[0] == "prune":
+        try:
+            os.unlink(snapshot_path(action[1]))
+        except OSError:
+            pass
+        return
+    _, con_id, ident = action
+    final = snapshot_path(con_id)
+    tmp = final + ".part"
+    try:
+        os.makedirs(SNAP_DIR, mode=0o700, exist_ok=True)
+        if grim("-T", ident, "-t", "jpeg", "-q", "70", tmp).returncode == 0:
+            os.replace(tmp, final)
+    except (subprocess.SubprocessError, OSError) as exc:
+        print("taos-shelld: snapshot of %s failed: %s" % (con_id, exc), file=sys.stderr)
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+_IPC_MAGIC = b"i3-ipc"
+_IPC_SUBSCRIBE = 2
+
+
+def ipc_pack(msg_type: int, payload: bytes) -> bytes:
+    return _IPC_MAGIC + struct.pack("=II", len(payload), msg_type) + payload
+
+
+def _ipc_read(sock) -> tuple[int, bytes]:
+    def exactly(n):
+        buf = b""
+        while len(buf) < n:
+            chunk = sock.recv(n - len(buf))
+            if not chunk:
+                raise ConnectionError("sway closed the IPC socket")
+            buf += chunk
+        return buf
+    head = exactly(14)
+    length, msg_type = struct.unpack("=II", head[6:])
+    return msg_type, exactly(length)
+
+
+def watch_windows() -> None:
+    """Follow sway's window events over its own IPC socket (no swaymsg
+    child to outlive us) and apply the leave rule. Reconnects on a drop."""
+    last = None
+    while True:
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                sock.connect(os.environ["SWAYSOCK"])
+                sock.sendall(ipc_pack(_IPC_SUBSCRIBE, b'["window"]'))
+                _ipc_read(sock)  # {"success": true}
+                while True:
+                    _, payload = _ipc_read(sock)
+                    try:
+                        event = json.loads(payload)
+                    except ValueError:
+                        continue
+                    actions, last = on_window_event(event, last)
+                    for action in actions:
+                        apply_action(action)
+        except (OSError, KeyError, ConnectionError) as exc:
+            print("taos-shelld: window events: %s; retrying" % exc, file=sys.stderr)
+            last = None
+            time.sleep(2)
+
+
+PAGE = r"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Recents</title>
+<style>
+:root { color-scheme: dark; }
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; height: 100%; background: #050507; color: rgba(255,255,255,.92);
+  font-family: -apple-system, "Inter", "Noto Sans", system-ui, sans-serif; }
+header { display: flex; align-items: center; justify-content: space-between;
+  padding: 20px 20px 8px; }
+h1 { font-size: 22px; font-weight: 600; margin: 0; }
+#clear { background: rgba(255,255,255,.08); color: rgba(255,255,255,.82); border: 0;
+  border-radius: 999px; padding: 8px 14px; font-size: 13px; font-weight: 600; }
+#grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 12px 16px 24px; }
+.card { position: relative; background: rgba(30,30,34,.92); border-radius: 22px;
+  padding: 16px 14px 14px; aspect-ratio: 3 / 4; display: flex; flex-direction: column;
+  justify-content: space-between; overflow: hidden; border: 0; color: inherit;
+  text-align: left; touch-action: pan-x; transition: transform .22s cubic-bezier(.2,.8,.2,1), opacity .22s; }
+.card[data-current="1"] { box-shadow: 0 0 0 2px #4c9aff inset; }
+.mark { width: 52px; height: 52px; border-radius: 15px; display: grid; place-items: center;
+  font-size: 22px; font-weight: 700; color: #fff; background: var(--hue, #4c9aff); }
+.name { font-size: 15px; font-weight: 600; margin-top: auto; }
+.sub { font-size: 12px; color: rgba(255,255,255,.45); margin-top: 3px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.x { position: absolute; top: 10px; right: 10px; width: 30px; height: 30px; border-radius: 50%;
+  border: 0; background: rgba(255,255,255,.10); color: rgba(255,255,255,.82); font-size: 16px; }
+#empty { text-align: center; color: rgba(255,255,255,.45); margin-top: 38vh; font-size: 15px; }
+</style></head>
+<body>
+<header><h1>Recents</h1><button id="clear" type="button" hidden>Close all</button></header>
+<div id="grid"></div>
+<div id="empty" hidden>No open apps</div>
+<script>
+(function () {
+  "use strict";
+  var grid = document.getElementById("grid");
+  var empty = document.getElementById("empty");
+  var clear = document.getElementById("clear");
+  function hue(s) { var h = 0; for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360;
+    return "hsl(" + h + " 62% 48%)"; }
+  function post(path, body) {
+    return fetch(path, { method: "POST", headers: { "Content-Type": "application/json",
+      "X-taOS-Shell": "1" }, body: JSON.stringify(body) });
+  }
+  function closeCard(card, id) {
+    card.style.transform = "translateY(-40%)"; card.style.opacity = "0";
+    post("/close", { con_id: id }).finally(function () { setTimeout(load, 200); });
+  }
+  function render(wins) {
+    grid.textContent = "";
+    empty.hidden = wins.length > 0; clear.hidden = wins.length === 0;
+    wins.forEach(function (w) {
+      var card = document.createElement("div"); card.className = "card";
+      card.setAttribute("role", "button"); card.tabIndex = 0;
+      card.setAttribute("aria-label", "Switch to " + w.label);
+      var mark = document.createElement("div"); mark.className = "mark";
+      mark.style.setProperty("--hue", hue(w.app_id)); mark.textContent = (w.label[0] || "?").toUpperCase();
+      var name = document.createElement("div"); name.className = "name"; name.textContent = w.label;
+      var sub = document.createElement("div"); sub.className = "sub"; sub.textContent = w.title;
+      var x = document.createElement("button"); x.className = "x"; x.type = "button";
+      x.textContent = "✕"; x.setAttribute("aria-label", "Close " + w.label);
+      x.addEventListener("click", function (e) { e.stopPropagation(); closeCard(card, w.con_id); });
+      card.addEventListener("click", function () { post("/focus", { con_id: w.con_id }); });
+      // Swipe up to close, as on a phone.
+      var y0 = null;
+      card.addEventListener("touchstart", function (e) { y0 = e.touches[0].clientY; }, { passive: true });
+      card.addEventListener("touchmove", function (e) {
+        if (y0 === null) return; var dy = Math.min(0, e.touches[0].clientY - y0);
+        card.style.transition = "none"; card.style.transform = "translateY(" + dy + "px)";
+        card.style.opacity = String(1 + dy / 300);
+      }, { passive: true });
+      card.addEventListener("touchend", function (e) {
+        var dy = (e.changedTouches[0].clientY - (y0 === null ? 0 : y0)); y0 = null;
+        card.style.transition = "";
+        if (dy < -90) { closeCard(card, w.con_id); } else { card.style.transform = ""; card.style.opacity = ""; }
+      });
+      card.appendChild(mark); card.appendChild(x); card.appendChild(name); card.appendChild(sub);
+      grid.appendChild(card);
+    });
+  }
+  function load() {
+    fetch("/windows").then(function (r) { return r.json(); }).then(render).catch(function () {});
+  }
+  clear.addEventListener("click", function () {
+    fetch("/windows").then(function (r) { return r.json(); }).then(function (wins) {
+      return Promise.all(wins.map(function (w) { return post("/close", { con_id: w.con_id }); }));
+    }).finally(function () { setTimeout(load, 250); });
+  });
+  // Refresh whenever the switcher is shown again (the recents button focuses
+  // this window rather than reloading it).
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) load(); });
+  window.addEventListener("focus", load);
+  load();
+  setInterval(load, 3000);
+})();
+</script>
+</body></html>
+"""
+
+
+_SNAPSHOT_RE = re.compile(r"/snapshot/([0-9]{1,10})")
+
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, fmt, *args):
+        pass
+
+    def _send(self, body: bytes, ctype: str, status: int = 200):
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self._cors()
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _json(self, obj, status: int = 200):
+        self._send(json.dumps(obj).encode(), "application/json", status)
+
+    def _launch(self):
+        if not self._post_allowed((ORIGIN, DESKTOP_ORIGIN)):
+            return self._json({"error": "forbidden"}, 403)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            app = json.loads(self.rfile.read(min(n, 1024)) or b"{}")["app"]
+        except (ValueError, KeyError, TypeError):
+            return self._json({"error": "bad request"}, 400)
+        if not isinstance(app, str) or not _APP_RE.match(app):
+            return self._json({"error": "bad app"}, 400)
+        # ANSWER FIRST, then touch sway. The desktop waits 1.5 s for this
+        # reply and then opens the app in-page; a launch is up to three
+        # swaymsg calls with 5 s timeouts each, so a slow compositor answered
+        # late and the app opened twice -- in-page AND as a window. "ok" means
+        # "the shell has taken this launch"; the window follows.
+        if not claim(app):
+            return self._json({"ok": True, "already": True})
+        self._json({"ok": True})
+        threading.Thread(target=launch, args=(app,), daemon=True).start()
+
+    def _open_url(self):
+        if not self._post_allowed((ORIGIN, DESKTOP_ORIGIN)):
+            return self._json({"error": "forbidden"}, 403)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            url = json.loads(self.rfile.read(min(n, MAX_URL + 64)) or b"{}")["url"]
+        except (ValueError, KeyError, TypeError):
+            return self._json({"error": "bad request"}, 400)
+        if not valid_url(url):
+            return self._json({"error": "bad url"}, 400)
+        # Answer first, as /launch does: the caller falls back to opening
+        # the link itself if the shell is slow to say it has taken it.
+        self._json({"ok": True})
+        threading.Thread(target=open_url, args=(url,), daemon=True).start()
+
+    def _host_ok(self) -> bool:
+        """DNS rebinding: a page whose name resolves to 127.0.0.1 is
+        same-origin to the browser and needs no CORS to read /windows. Only
+        the Host header gives it away, so answer only to the loopback names."""
+        names = {"127.0.0.1", "localhost", urlsplit(ORIGIN).hostname}
+        want = self.server.server_address[1]
+        try:
+            parts = urlsplit("//" + (self.headers.get("Host") or ""))
+            return parts.hostname in names and parts.port == want
+        except ValueError:
+            return False
+
+    def do_GET(self):
+        if not self._host_ok():
+            return self._json({"error": "forbidden"}, 403)
+        if self.path == "/":
+            return self._send(PAGE.encode(), "text/html; charset=utf-8")
+        if self.path == "/windows":
+            return self._json(current_windows())
+        m = _SNAPSHOT_RE.fullmatch(self.path)
+        if m:
+            return self._snapshot(int(m.group(1)))
+        return self._json({"error": "not found"}, 404)
+
+    def _snapshot(self, con_id: int):
+        # Only a window the switcher lists: never the kiosk, whatever is on disk.
+        if con_id not in {w["con_id"] for w in current_windows()}:
+            return self._json({"error": "not found"}, 404)
+        try:
+            with open(snapshot_path(con_id), "rb") as f:
+                body = f.read()
+        except OSError:
+            return self._json({"error": "no snapshot"}, 404)
+        return self._send(body, "image/jpeg")
+
+    def _post_allowed(self, origins) -> bool:
+        if self.headers.get("X-taOS-Shell") != "1":
+            return False
+        origin = self.headers.get("Origin")
+        return origin is None or origin in origins
+
+    def _cors(self):
+        if self.headers.get("Origin") == DESKTOP_ORIGIN:
+            self.send_header("Access-Control-Allow-Origin", DESKTOP_ORIGIN)
+            self.send_header("Vary", "Origin")
+
+    def do_OPTIONS(self):
+        if not self._host_ok():
+            self.send_response(403)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        # Preflight for the desktop's cross-origin POSTs, and ONLY those: the
+        # desktop's own switcher focuses and closes windows through here.
+        if (self.path in ("/launch", "/open-url", "/focus", "/close")
+                and self.headers.get("Origin") == DESKTOP_ORIGIN):
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Origin", DESKTOP_ORIGIN)
+            self.send_header("Access-Control-Allow-Methods", "POST")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-taOS-Shell")
+            self.send_header("Access-Control-Max-Age", "600")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self.send_response(403)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def do_POST(self):
+        if not self._host_ok():
+            return self._json({"error": "forbidden"}, 403)
+        if self.path == "/launch":
+            return self._launch()
+        if self.path == "/open-url":
+            return self._open_url()
+        if self.path not in ("/focus", "/close"):
+            return self._json({"error": "not found"}, 404)
+        if not self._post_allowed((ORIGIN, DESKTOP_ORIGIN)):
+            return self._json({"error": "forbidden"}, 403)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(min(n, 4096)) or b"{}")
+            con_id = int(body["con_id"])
+        except (ValueError, KeyError, TypeError):
+            return self._json({"error": "bad request"}, 400)
+        raw = swaymsg("-t", "get_tree", "-r").stdout
+        tree = json.loads(raw) if raw else {}
+        # Only a window the switcher would list: never the kiosk, never an
+        # arbitrary container id.
+        if con_id not in {w["con_id"] for w in list_windows(tree)}:
+            return self._json({"error": "no such app"}, 404)
+        verb = "focus" if self.path == "/focus" else "kill"
+        res = swaymsg("[con_id=%d] %s" % (con_id, verb))
+        if res.returncode == 0 and verb == "kill" and closes_the_view(tree, con_id):
+            # Killing the app in front, alone on its workspace, left sway on
+            # that empty workspace: the kiosk stayed hidden and the glass
+            # showed only the splash background. Go home, as the home button does.
+            swaymsg("workspace", HOME_WORKSPACE)
+        return self._json({"ok": res.returncode == 0}, 200 if res.returncode == 0 else 502)
+
+
+def replace_previous():
+    run = os.environ.get("XDG_RUNTIME_DIR") or "/run/user/%d" % os.getuid()
+    pidfile = os.path.join(run, "taos-shelld.pid")
+    try:
+        old = int(open(pidfile).read().strip())
+        if old != os.getpid() and b"taos-shelld" in open("/proc/%d/cmdline" % old, "rb").read():
+            os.kill(old, 15)
+    except (OSError, ValueError):
+        pass
+    with open(pidfile, "w") as f:
+        f.write(str(os.getpid()))
+
+
+def main():
+    replace_previous()
+    import time
+    for _ in range(20):   # the replaced copy may still hold the port for a moment
+        try:
+            srv = ThreadingHTTPServer((HOST, PORT), Handler)
+            break
+        except OSError:
+            time.sleep(0.25)
+    else:
+        sys.exit("taos-shelld: port %d stayed busy" % PORT)
+    srv.daemon_threads = True
+    # Pictures from a previous session name container ids sway may reuse.
+    for name in (os.listdir(SNAP_DIR) if os.path.isdir(SNAP_DIR) else []):
+        try:
+            os.unlink(os.path.join(SNAP_DIR, name))
+        except OSError:
+            pass
+    threading.Thread(target=watch_windows, daemon=True).start()
+    srv.serve_forever()
+
+
+if __name__ == "__main__":
+    main()
