@@ -19,8 +19,13 @@ STATIC_ICON_192 = REPO_ROOT / "static" / "icon-192.png"
 
 
 def run_launcher(root: Path, args: list[str], env: dict | None = None) -> subprocess.CompletedProcess:
-    """Run the desktop-launcher.sh script with the given root and args."""
+    """Run the desktop-launcher.sh script with the given root and args.
+    
+    TAOS_PORT is popped from the base environment so a runner with TAOS_PORT
+    set does not leak into tests that expect the default port.
+    """
     test_env = os.environ.copy()
+    test_env.pop("TAOS_PORT", None)
     test_env["TAOS_LAUNCHER_ROOT"] = str(root)
     if env:
         test_env.update(env)
@@ -182,6 +187,32 @@ class TestDesktopLauncher:
         result = run_launcher(root, ["invalid-command"])
         assert result.returncode == 2
         assert "usage" in result.stderr.lower()
+
+
+def test_run_launcher_pops_tos_port_from_base_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that run_launcher does not leak TAOS_PORT from the environment."""
+    # Set TAOS_PORT in the process environment
+    monkeypatch.setenv("TAOS_PORT", "9999")
+
+    root = tmp_path / "root"
+    root.mkdir(parents=True)
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    create_stub_browser(bin_dir, "chromium-browser")
+
+    test_path = f"{bin_dir}:/usr/bin:/bin"
+
+    # Run without explicit TAOS_PORT - should use default 6969, not 9999
+    result = run_launcher(root, ["install"], env={"PATH": test_path})
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+
+    desktop_file = root / "usr" / "share" / "applications" / "taos.desktop"
+    content = desktop_file.read_text()
+    # Should use default port 6969, not the env's 9999
+    assert "Exec=chromium-browser --app=http://127.0.0.1:6969/desktop/ --start-fullscreen" in content
+    assert "7000" not in content
+    assert "9999" not in content
 
 
 if __name__ == "__main__":
