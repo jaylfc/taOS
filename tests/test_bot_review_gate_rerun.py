@@ -349,3 +349,22 @@ class TestWorkflowStructure:
             "reconcile-stale-runs must depend on bot-review-gate so it only "
             f"runs after the gate has passed; got needs: {rerun_job.get('needs')!r}"
         )
+
+    def test_stub_comment_rerun_tolerates_already_running(self) -> None:
+        spec = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+        jobs = spec["jobs"]
+        stub_job = jobs.get("re-run-on-stub-comment")
+        assert stub_job is not None, (
+            "expected a re-run-on-stub-comment job; "
+            f"found jobs: {list(jobs)}"
+        )
+        steps = stub_job.get("steps", [])
+        assert len(steps) == 1, f"expected exactly one step; got {len(steps)}"
+        run_text = steps[0].get("run", "")
+        assert "status=completed" in run_text, (
+            "runs query must include status=completed to avoid selecting "
+            f"in-progress runs; run text:\n{run_text}"
+        )
+        assert "already running" in run_text, (
+            "run must handle the 'already running' race case; run text:\n{run_text}"
+        )
