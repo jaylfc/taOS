@@ -141,6 +141,44 @@ TAOS_BUS_PORT="${TAOS_BUS_PORT:-7900}"
 SERVICE_MODE="${TAOS_SERVICE:-auto}"
 COW_POOL_MODE="${TAOS_COW_POOL:-auto}"
 
+# Resolve desktop mode: local (boot into taOS desktop) or headless (remote-only).
+# TAOS_DESKTOP=local|headless answers for unattended installs. Default: headless.
+resolve_desktop_mode() {
+    local val="${TAOS_DESKTOP:-}"
+    case "$val" in
+        local)
+            DESKTOP_MODE="local"
+            ;;
+        headless)
+            DESKTOP_MODE="headless"
+            ;;
+        "")
+            # Unset: try to prompt if /dev/tty is available.
+            if { : < /dev/tty; } 2>/dev/null; then
+                printf 'Use this machine with a screen, keyboard and mouse? It will boot into the taOS desktop. [y/N] ' >&2
+                local _ans=""
+                read -r -t 60 _ans < /dev/tty || _ans=""
+                case "${_ans,,}" in
+                    y|yes)
+                        DESKTOP_MODE="local"
+                        ;;
+                    *)
+                        DESKTOP_MODE="headless"
+                        ;;
+                esac
+            else
+                # No controlling tty -> headless, no prompt.
+                DESKTOP_MODE="headless"
+            fi
+            ;;
+        *)
+            # Invalid value: warn and default to headless.
+            warn "TAOS_DESKTOP='$val' is not valid; expected 'local' or 'headless' — defaulting to headless"
+            DESKTOP_MODE="headless"
+            ;;
+    esac
+    log "local desktop: $DESKTOP_MODE (set TAOS_DESKTOP=local|headless to skip this question)"
+}
 DOCKER_COMPOSE_STATUS="unknown"
 DOCKER_COMPOSE_DETAIL=""
 
@@ -741,6 +779,32 @@ install_rk3588_perf_if_needed() {
     $local_sudo systemctl daemon-reload
     $local_sudo systemctl enable taos-rk3588-perf.service
     log "taos-rk3588-perf.service installed — NPU governors will be set on boot"
+}
+
+# If DESKTOP_MODE is local, run kiosk-setup.sh and enable taos-kiosk.service.
+# Mirrors install_rknpu_if_pending()'s shape: never aborts the controller install.
+install_local_desktop_if_chosen() {
+    if [[ "${DESKTOP_MODE:-headless}" != "local" ]]; then
+        return 0
+    fi
+    local kiosk_script="$INSTALL_DIR/scripts/kiosk-setup.sh"
+    if [[ ! -f "$kiosk_script" || ! -r "$kiosk_script" ]]; then
+        warn "kiosk-setup.sh missing or unreadable at $kiosk_script — skipping local desktop setup"
+        warn "  to enable later: sudo taos desktop enable"
+        return 0
+    fi
+    log "running $kiosk_script for local desktop"
+    if sudo -E bash "$kiosk_script" "http://localhost:${TAOS_PORT}/desktop/"; then
+        if sudo systemctl enable taos-kiosk.service; then
+            log "local desktop enabled. Wi-Fi, Bluetooth and display settings are not in taOS Settings yet: use Ethernet and a single display for now."
+        else
+            warn "systemctl enable taos-kiosk.service failed — continuing controller install anyway"
+            warn "  to enable later: sudo taos desktop enable"
+        fi
+    else
+        warn "kiosk-setup.sh failed — continuing controller install anyway"
+        warn "  to enable later: sudo taos desktop enable"
+    fi
 }
 
 detect_and_advise_accelerators
@@ -1645,6 +1709,10 @@ fi
 
 cd "$INSTALL_DIR"
 
+# Ask about local desktop vs headless BEFORE the long install (so the
+# question appears early when run interactively, not at the end).
+resolve_desktop_mode
+
 # Now that the repo is on disk, run any accelerator-backend install
 # that was deferred up front (e.g. rkllama on a Rockchip NPU host).
 install_rknpu_if_pending
@@ -1654,6 +1722,9 @@ install_hailo_if_pending
 # mode systemd service so the NPU/devfreq governors are set on every boot.
 # Without this, rkllama throughput is ~20% of rated after a power cycle (#361).
 install_rk3588_perf_if_needed
+
+# If local desktop was chosen, run kiosk-setup.sh and enable the kiosk service.
+install_local_desktop_if_chosen
 
 # --- python venv + controller deps ---------------------------------------
 
