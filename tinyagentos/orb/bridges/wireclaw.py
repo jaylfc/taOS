@@ -5,15 +5,15 @@ WireClaw has no host-side tool; installed() returns bool based on nats CLI avail
 """
 
 from . import BridgeResult, orbs_running, orb_host, target
+import shutil
 
 BRIDGE_ID = "wireclaw"
 TITLE = "WireClaw"
 APP_ID = "wireclaw"
 
 
-def installed() -> bool | None:
+def installed() -> bool:
     """Best effort for the host running the core, spec s5.1."""
-    import shutil
     return shutil.which("nats") is not None
 
 

@@ -64,6 +64,28 @@ def test_wireclaw_evaluate_without_wireclaw_orb():
     assert result.instruction == "No Orb running WireClaw found on the LAN."
 
 
+def test_wireclaw_evaluate_with_wireclaw_orb_but_nats_unavailable():
+    """Test wireclaw.evaluate with wireclaw orb present but nats unavailable."""
+    from tinyagentos.orb.bridges import wireclaw
+
+    with patch("shutil.which", return_value=None):
+        lan_orbs = [
+            {"name": "192.168.1.70", "app": "wireclaw", "addresses": ["192.168.1.70"], "port": 80},
+        ]
+        agent_buddy = []
+
+        result = wireclaw.evaluate(lan_orbs, agent_buddy)
+
+    assert result.bridge_id == "wireclaw"
+    assert result.title == "WireClaw"
+    assert result.installed is False
+    assert len(result.targets) == 1
+    assert result.targets[0]["orb"] == "192.168.1.70"
+    assert result.targets[0]["address"] == "192.168.1.70"
+    assert result.targets[0]["instruction"] == "Open http://192.168.1.70/ to configure it"
+    assert "WIRECLAW_NATS_URL" in result.instruction
+
+
 def test_wireclaw_evaluate_no_nats_url_in_result():
     """Test wireclaw result does not contain nats:// URL."""
     from tinyagentos.orb.bridges import wireclaw
@@ -96,7 +118,7 @@ def test_wireclaw_evaluate_no_nats_url_in_result():
         assert check_dict(result_dict)
 
 
-def test_wireclaw_top_level_instruction_contains_wirelaw_nats_url():
+def test_wireclaw_top_level_instruction_contains_wireclaw_nats_url():
     """Test top-level instruction contains WIRECLAW_NATS_URL."""
     from tinyagentos.orb.bridges import wireclaw
 
