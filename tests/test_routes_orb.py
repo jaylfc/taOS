@@ -95,3 +95,100 @@ async def test_status_admin_transport_unavailable(client, app, monkeypatch):
     assert resp.status_code == 503
     body = resp.json()
     assert body == {"error": "orb_transport_unavailable"}
+
+# ---------------------------------------------------------------------------
+# GET /api/orb/lan (LAN discovery: mDNS + Agent Buddy)
+# ---------------------------------------------------------------------------
+
+import asyncio
+import threading
+
+from tinyagentos.orb.frames import TransportUnavailable
+
+
+@pytest.mark.asyncio
+async def test_lan_unauthed_requires_admin(unauthed_client):
+    resp = await unauthed_client.get("/api/orb/lan")
+    assert resp.status_code in (401, 403)
+
+
+@pytest.mark.asyncio
+async def test_lan_non_admin_session_gets_403(client, app, monkeypatch):
+    def raise_assert(*args, **kwargs):
+        raise AssertionError("lookup must not be called for non-admin")
+
+    monkeypatch.setattr(app.state.auth, "session_user", lambda token, user_agent=None: {"is_admin": False})
+    monkeypatch.setattr("tinyagentos.routes.orb.browse_lan_orbs", raise_assert)
+    monkeypatch.setattr("tinyagentos.routes.orb.probe_agent_buddy", raise_assert)
+    resp = await client.get("/api/orb/lan")
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_lan_admin_both_succeed(client, app, monkeypatch):
+    fake_lan = [{"name": "orb-1", "addresses": ["192.168.1.10"], "port": 5353}]
+    fake_buddy = [{"device_id": "abcd1234abcd1234", "hostname": "buddy1", "address": "192.168.1.20", "port": 4666, "boot": 1}]
+    monkeypatch.setattr("tinyagentos.routes.orb.browse_lan_orbs", lambda: fake_lan)
+    monkeypatch.setattr("tinyagentos.routes.orb.probe_agent_buddy", lambda: fake_buddy)
+    resp = await client.get("/api/orb/lan")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["lan_orbs"] == fake_lan
+    assert body["agent_buddy"] == fake_buddy
+    assert body["errors"] == []
+
+
+@pytest.mark.asyncio
+async def test_lan_admin_probe_agent_buddy_transport_unavailable(client, app, monkeypatch):
+    fake_lan = [{"name": "orb-1", "addresses": ["192.168.1.10"], "port": 5353}]
+    monkeypatch.setattr("tinyagentos.routes.orb.browse_lan_orbs", lambda: fake_lan)
+    monkeypatch.setattr(
+        "tinyagentos.routes.orb.probe_agent_buddy",
+        lambda: (_ for _ in ()).throw(TransportUnavailable("x")),
+    )
+    resp = await client.get("/api/orb/lan")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["lan_orbs"] == fake_lan
+    assert body["agent_buddy"] == []
+    assert body["errors"] == [{"source": "agent_buddy", "error": "unavailable"}]
+
+
+@pytest.mark.asyncio
+async def test_lan_admin_browse_lan_orbs_oserror(client, app, monkeypatch):
+    fake_buddy = [{"device_id": "abcd1234abcd1234", "hostname": "buddy1", "address": "192.168.1.20", "port": 4666, "boot": 1}]
+    monkeypatch.setattr("tinyagentos.routes.orb.browse_lan_orbs", lambda: (_ for _ in ()).throw(OSError("x")))
+    monkeypatch.setattr("tinyagentos.routes.orb.probe_agent_buddy", lambda: fake_buddy)
+    resp = await client.get("/api/orb/lan")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["lan_orbs"] == []
+    assert body["agent_buddy"] == fake_buddy
+    assert body["errors"] == [{"source": "mdns", "error": "unavailable"}]
+
+
+@pytest.mark.asyncio
+async def test_lan_admin_browse_lan_orbs_runtime_error_raised(client, app, monkeypatch):
+    fake_buddy = []
+    monkeypatch.setattr("tinyagentos.routes.orb.browse_lan_orbs", lambda: (_ for _ in ()).throw(RuntimeError("bad")))
+    monkeypatch.setattr("tinyagentos.routes.orb.probe_agent_buddy", lambda: fake_buddy)
+    with pytest.raises(RuntimeError):
+        await client.get("/api/orb/lan")
+
+
+@pytest.mark.asyncio
+async def test_lan_concurrent_execution_no_sleep(client, app, monkeypatch):
+    barrier = threading.Barrier(2, timeout=2)
+
+    def fake_browse():
+        barrier.wait()
+        return []
+
+    def fake_probe():
+        barrier.wait()
+        return []
+
+    monkeypatch.setattr("tinyagentos.routes.orb.browse_lan_orbs", fake_browse)
+    monkeypatch.setattr("tinyagentos.routes.orb.probe_agent_buddy", fake_probe)
+    resp = await client.get("/api/orb/lan")
+    assert resp.status_code == 200
