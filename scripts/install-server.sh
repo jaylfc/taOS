@@ -815,6 +815,27 @@ install_local_desktop_if_chosen() {
     fi
 }
 
+# If DESKTOP_MODE is not local and an existing desktop is detected, install the
+# taOS launcher (.desktop + icons) into the system application menu. Never
+# aborts the controller install.
+install_guest_launcher_if_desktop() {
+    if [[ "${DESKTOP_MODE:-headless}" == "local" ]]; then
+        return 0
+    fi
+    local launcher_script="$INSTALL_DIR/scripts/desktop-launcher.sh"
+    if [[ ! -f "$launcher_script" || ! -r "$launcher_script" ]]; then
+        warn "desktop-launcher.sh missing or unreadable at $launcher_script -- skipping guest launcher"
+        return 0
+    fi
+    if bash "$launcher_script" detect; then
+        if sudo TAOS_PORT="$TAOS_PORT" bash "$launcher_script" install; then
+            log "taOS launcher added to the desktop menu (remove with: sudo taos desktop launcher remove)"
+        else
+            warn "desktop-launcher.sh install failed -- continuing controller install anyway"
+        fi
+    fi
+}
+
 detect_and_advise_accelerators
 
 # --- filesystem CoW detection ----------------------------------------------
@@ -1729,6 +1750,10 @@ install_rk3588_perf_if_needed
 
 # If local desktop was chosen, run kiosk-setup.sh and enable the kiosk service.
 install_local_desktop_if_chosen
+
+# If not local desktop and an existing desktop is detected, add the taOS launcher
+# to the system application menu.
+install_guest_launcher_if_desktop
 
 # --- python venv + controller deps ---------------------------------------
 

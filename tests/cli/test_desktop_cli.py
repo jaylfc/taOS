@@ -246,3 +246,60 @@ def test_desktop_run_helper_unit_found():
             assert mock_run.call_count == 2
             mock_run.assert_any_call(["systemctl", "cat", "taos-kiosk.service"])
             mock_run.assert_any_call(["systemctl", "start", "taos-kiosk.service"])
+
+
+# --- launcher subcommand tests ---
+
+def test_desktop_cli_launcher_add_non_root():
+    """Test that launcher add returns 1 and runs nothing when not root."""
+    with patch('tinyagentos.desktop_cli.os.geteuid', return_value=1000):
+        with patch('tinyagentos.desktop_cli._run') as mock_run:
+            result = desktop_cli(["launcher", "add"])
+            assert result == 1
+            mock_run.assert_not_called()
+
+
+def test_desktop_cli_launcher_remove_non_root():
+    """Test that launcher remove returns 1 and runs nothing when not root."""
+    with patch('tinyagentos.desktop_cli.os.geteuid', return_value=1000):
+        with patch('tinyagentos.desktop_cli._run') as mock_run:
+            result = desktop_cli(["launcher", "remove"])
+            assert result == 1
+            mock_run.assert_not_called()
+
+
+def test_desktop_cli_launcher_add_root_runs_install():
+    """Test launcher add as root runs desktop-launcher.sh install."""
+    with patch('tinyagentos.desktop_cli.os.geteuid', return_value=0):
+        with patch('tinyagentos.desktop_cli._run') as mock_run:
+            mock_run.return_value = 0
+            result = desktop_cli(["launcher", "add"])
+            assert result == 0
+            mock_run.assert_called_once()
+            call_args = mock_run.call_args[0][0]
+            assert call_args[0] == "bash"
+            assert "scripts/desktop-launcher.sh" in call_args[1]
+            assert call_args[2] == "install"
+
+
+def test_desktop_cli_launcher_remove_root_runs_remove():
+    """Test launcher remove as root runs desktop-launcher.sh remove."""
+    with patch('tinyagentos.desktop_cli.os.geteuid', return_value=0):
+        with patch('tinyagentos.desktop_cli._run') as mock_run:
+            mock_run.return_value = 0
+            result = desktop_cli(["launcher", "remove"])
+            assert result == 0
+            mock_run.assert_called_once()
+            call_args = mock_run.call_args[0][0]
+            assert call_args[0] == "bash"
+            assert "scripts/desktop-launcher.sh" in call_args[1]
+            assert call_args[2] == "remove"
+
+
+def test_desktop_cli_launcher_invalid_action():
+    """Test launcher with invalid action returns error."""
+    with patch('tinyagentos.desktop_cli.os.geteuid', return_value=0):
+        with patch('tinyagentos.desktop_cli._run') as mock_run:
+            result = desktop_cli(["launcher", "invalid"])
+            assert result != 0
+            mock_run.assert_not_called()
