@@ -6,6 +6,10 @@ ESPRESSIF_VID = 0x303A
 
 ORB_SERVICE_TYPE = "_taos-orb._tcp.local."
 
+# Agent Buddy UDP discovery
+AGENT_BUDDY_PORT = 4666
+AGENT_BUDDY_PROBE = b"ESP32_AGENT_COMPANION_DISCOVER_V1"
+
 
 def _parse_service_info(info) -> dict:
     """Parse a zeroconf ServiceInfo-like object into a dict."""
@@ -96,3 +100,115 @@ def browse_lan_orbs(timeout: float = 2.0) -> list[dict]:
         return results
     finally:
         zc.close()
+
+
+def parse_agent_buddy_reply(data: bytes, address: str) -> dict | None:
+    """Parse an Agent Buddy discovery reply.
+    
+    Returns a dict with device_id, hostname, address, port, boot on success.
+    Returns None on any decode/parse error or if validation fails.
+    """
+    import json
+    import re
+    
+    try:
+        text = data.decode("utf-8")
+        parsed = json.loads(text)
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+        return None
+    
+    if not isinstance(parsed, dict):
+        return None
+    
+    # Validate required fields
+    if parsed.get("service") != "esp32-agent-companion":
+        return None
+    
+    protocol = parsed.get("protocol")
+    if not isinstance(protocol, int) or isinstance(protocol, bool) or protocol != 1:
+        return None
+    
+    device_id = parsed.get("deviceId")
+    if not isinstance(device_id, str) or not re.fullmatch(r"[0-9a-fA-F]{16}", device_id):
+        return None
+    
+    hostname = parsed.get("hostname")
+    if not isinstance(hostname, str):
+        return None
+    
+    port = parsed.get("port")
+    if not isinstance(port, int) or isinstance(port, bool) or not (1 <= port <= 65535):
+        return None
+    
+    boot = parsed.get("boot")
+    if not isinstance(boot, int) or isinstance(boot, bool) or boot < 0:
+        return None
+    
+    return {
+        "device_id": device_id.lower(),
+        "hostname": hostname,
+        "address": address,
+        "port": port,
+        "boot": boot,
+    }
+
+
+def probe_agent_buddy(timeout: float = 1.2, addresses=None, port: int = AGENT_BUDDY_PORT) -> list[dict]:
+    """Probe for Agent Buddy devices via UDP broadcast.
+    
+    Sends a discovery probe to each address and collects replies for `timeout` seconds.
+    Returns a list of device dicts sorted by (hostname, device_id).
+    
+    Async callers must use asyncio.to_thread.
+    """
+    import socket
+    import time
+    
+    if addresses is None:
+        addresses = ["255.255.255.255"]
+    
+    sock = None
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        sock.bind(("", 0))
+    except OSError as e:
+        if sock is not None:
+            sock.close()
+        raise TransportUnavailable("Failed to create or bind UDP socket") from e
+    
+    try:
+        # Send probe to each address
+        for addr in addresses:
+            try:
+                sock.sendto(AGENT_BUDDY_PROBE, (addr, port))
+            except OSError:
+                # Skip failed sends, continue with other addresses
+                pass
+        
+        # Receive replies until timeout
+        deadline = time.monotonic() + timeout
+        results = {}
+        
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            sock.settimeout(remaining)
+            try:
+                data, (remote_ip, _) = sock.recvfrom(2048)
+            except socket.timeout:
+                break
+            except OSError:
+                break
+            
+            parsed = parse_agent_buddy_reply(data, remote_ip)
+            if parsed is not None:
+                results[parsed["device_id"]] = parsed
+        
+        # Sort by (hostname, device_id)
+        sorted_results = sorted(results.values(), key=lambda x: (x["hostname"], x["device_id"]))
+        return sorted_results
+    finally:
+        if sock is not None:
+            sock.close()
