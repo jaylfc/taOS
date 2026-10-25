@@ -361,3 +361,141 @@ async def test_slow_drip_catalog_bounded_by_total_timeout(tmp_path, keys_dict):
             timeout=5,
         )
     assert not (tmp_path / "cache" / "catalog.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_fetch_sends_accept_encoding_identity(tmp_path, test_key, keys_dict):
+    """Both GETs send Accept-Encoding: identity so compressed responses
+    cannot defeat the size cap."""
+    private_key, _, _ = test_key
+    catalog = {"serial": 1, "apps": [{"id": "app1", "name": "App1", "versions": []}]}
+    catalog_bytes = json.dumps(catalog).encode("utf-8")
+    sig_bytes = sign_catalog(private_key, catalog_bytes)
+
+    cache_dir = tmp_path / "cache"
+    state_path = tmp_path / "state.json"
+
+    seen_accept_encoding = []
+
+    def handler(request: httpx.Request):
+        seen_accept_encoding.append(request.headers.get("accept-encoding"))
+        if request.url.path.endswith("/catalog.json.sig"):
+            return httpx.Response(200, content=sig_bytes)
+        if request.url.path.endswith("/catalog.json"):
+            return httpx.Response(200, content=catalog_bytes)
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+    from tinyagentos.orb import catalog_fetch
+
+    result = await catalog_fetch.fetch_catalog(
+        "https://example.com/",
+        cache_dir,
+        state_path,
+        keys=keys_dict,
+        transport=transport,
+    )
+    assert "app1" in result.apps
+    assert len(seen_accept_encoding) == 2
+    assert all(enc == "identity" for enc in seen_accept_encoding)
+
+
+@pytest.mark.asyncio
+async def test_compressed_response_rejected_before_reading_body(tmp_path, test_key, keys_dict):
+    """A server that ignores Accept-Encoding: identity and returns gzip content
+    is rejected before the body is read, so no cache file is written."""
+    private_key, _, _ = test_key
+    catalog = {"serial": 1, "apps": [{"id": "app1", "name": "App1", "versions": []}]}
+    catalog_bytes = json.dumps(catalog).encode("utf-8")
+    sig_bytes = sign_catalog(private_key, catalog_bytes)
+
+    cache_dir = tmp_path / "cache"
+    state_path = tmp_path / "state.json"
+
+    def handler(request: httpx.Request):
+        if request.url.path.endswith("/catalog.json"):
+            return httpx.Response(200, content=catalog_bytes,
+                                  headers={"Content-Encoding": "gzip"})
+        if request.url.path.endswith("/catalog.json.sig"):
+            return httpx.Response(200, content=sig_bytes)
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+    from tinyagentos.orb import catalog_fetch
+
+    with pytest.raises(CatalogFetchError):
+        await catalog_fetch.fetch_catalog(
+            "https://example.com/",
+            cache_dir,
+            state_path,
+            keys=keys_dict,
+            transport=transport,
+        )
+    assert not (cache_dir / "catalog.json").exists()
+    assert not (cache_dir / "catalog.json.sig").exists()
+
+
+@pytest.mark.asyncio
+async def test_fetch_catalog_file_io_runs_in_thread(tmp_path, test_key, keys_dict, monkeypatch):
+    """accept_catalog and the cache writes run off the event loop via
+    asyncio.to_thread."""
+    import threading
+    from tinyagentos import atomic_io
+    from tinyagentos.orb import catalog_fetch
+
+    private_key, _, _ = test_key
+    catalog = {"serial": 1, "apps": [{"id": "app1", "name": "App1", "versions": []}]}
+    catalog_bytes = json.dumps(catalog).encode("utf-8")
+    sig_bytes = sign_catalog(private_key, catalog_bytes)
+
+    cache_dir = tmp_path / "cache"
+    state_path = tmp_path / "state.json"
+
+    def handler(request: httpx.Request):
+        if request.url.path.endswith("/catalog.json.sig"):
+            return httpx.Response(200, content=sig_bytes)
+        if request.url.path.endswith("/catalog.json"):
+            return httpx.Response(200, content=catalog_bytes)
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+
+    call_thread_ids = []
+    original_write = atomic_io.atomic_write_bytes
+
+    def recording_write_bytes(path, data, **kwargs):
+        call_thread_ids.append(threading.get_ident())
+        return original_write(path, data, **kwargs)
+
+    monkeypatch.setattr("tinyagentos.atomic_io.atomic_write_bytes", recording_write_bytes)
+
+    result = await catalog_fetch.fetch_catalog(
+        "https://example.com/",
+        cache_dir,
+        state_path,
+        keys=keys_dict,
+        transport=transport,
+    )
+    assert "app1" in result.apps
+    test_thread_id = threading.get_ident()
+    assert len(call_thread_ids) == 3
+    assert all(tid != test_thread_id for tid in call_thread_ids)
+
+
+def test_load_cached_catalog_oversize_rejected(tmp_path, keys_dict, monkeypatch):
+    """A cached catalog exceeding the cap raises CatalogFetchError without
+    using Path.read_bytes (which is patched to fail)."""
+    from tinyagentos.orb import catalog_fetch
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "catalog.json").write_bytes(b"x" * (catalog_fetch.CATALOG_MAX_BYTES + 10))
+    state_path = tmp_path / "state.json"
+
+    def raise_on_read_bytes(self):
+        raise AssertionError("Path.read_bytes must not be used")
+
+    monkeypatch.setattr(Path, "read_bytes", raise_on_read_bytes)
+
+    with pytest.raises(CatalogFetchError, match="cached catalog exceeds cap"):
+        catalog_fetch.load_cached_catalog(cache_dir, state_path, keys=keys_dict)

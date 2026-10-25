@@ -21,11 +21,14 @@ SIG_MAX_BYTES = 256
 
 async def _get_capped(client, url: str, cap: int) -> bytes | None:
     try:
-        async with client.stream("GET", url) as resp:
+        async with client.stream("GET", url, headers={"Accept-Encoding": "identity"}) as resp:
             if resp.status_code == 404:
                 return None
             if resp.status_code != 200:
                 raise CatalogFetchError(f"failed to fetch {url}: status {resp.status_code}")
+            content_encoding = resp.headers.get("content-encoding", "")
+            if content_encoding and content_encoding.lower() != "identity":
+                raise CatalogFetchError(f"server returned compressed response for {url}: content-encoding {content_encoding}")
             total = bytearray()
             async for chunk in resp.aiter_bytes():
                 total.extend(chunk)
@@ -62,6 +65,15 @@ async def fetch_catalog(base_url: str, cache_dir, state_path, keys=None, timeout
     # accept_catalog records the serial before the cache is written. If the
     # write then fails, state is ahead of the cache and load_cached_catalog
     # refuses the older cache as a regression: fails closed, refetch recovers.
+    return await asyncio.to_thread(
+        _accept_and_cache, catalog_bytes, sig_bytes, state_path, keys, cache_dir
+    )
+
+
+def _accept_and_cache(catalog_bytes, sig_bytes, state_path, keys, cache_dir):
+    # accept_catalog records the serial before the cache is written. If the
+    # write then fails, state is ahead of the cache and load_cached_catalog
+    # refuses the older cache as a regression: fails closed, refetch recovers.
     accept_catalog(catalog_bytes, sig_bytes, state_path, keys)
 
     cache_dir_path = Path(cache_dir)
@@ -80,14 +92,16 @@ def load_cached_catalog(cache_dir, state_path, keys=None):
     if not catalog_path.exists():
         raise CatalogFetchError("no cached catalog")
 
-    catalog_bytes = catalog_path.read_bytes()
+    with catalog_path.open("rb") as f:
+        catalog_bytes = f.read(CATALOG_MAX_BYTES + 1)
     if len(catalog_bytes) > CATALOG_MAX_BYTES:
         raise CatalogFetchError("cached catalog exceeds cap")
 
     if not sig_path.exists():
         sig_bytes = None
     else:
-        sig_bytes = sig_path.read_bytes()
+        with sig_path.open("rb") as f:
+            sig_bytes = f.read(SIG_MAX_BYTES + 1)
         if len(sig_bytes) > SIG_MAX_BYTES:
             raise CatalogFetchError("cached catalog signature exceeds cap")
         if len(sig_bytes) == 0:
