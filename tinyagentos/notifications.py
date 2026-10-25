@@ -258,7 +258,7 @@ class NotificationStore(BaseStore):
                 "COALESCE(nus.read_at, n.read) as read, n.source, n.data, n.user_id "
                 "FROM notifications n "
                 "LEFT JOIN notification_user_state nus ON n.id = nus.notification_id AND nus.user_id = ? "
-                f"WHERE (n.user_id IS NULL OR n.user_id = ?) AND n.archived = 0 AND n.source IN ({pinned_placeholders}) "
+                f"WHERE (n.user_id IS NULL OR n.user_id = ?) AND n.archived = 0 AND (n.user_id IS NOT NULL OR nus.archived_at IS NULL) AND n.source IN ({pinned_placeholders}) "
                 "ORDER BY n.timestamp DESC"
             )
             pinned_params: tuple = (user_id, user_id) + PINNED_SOURCES

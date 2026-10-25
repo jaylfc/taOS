@@ -1,2 +1,2 @@
-### Fixed
-- Pending grant requests (auth_requests and agent_scope_requests) now stay pinned at the top of the notifications feed until acted upon, regardless of how many newer notifications arrive. They no longer fall off the newest-20 limit and are marked with `"pinned": true` in the API response.
+### Bug Fixes
+- Pending grant requests (auth_requests, agent_scope_requests) now respect per-user archive state for broadcasts. A broadcast grant request archived by one user no longer appears pinned for that user while remaining visible to others.
