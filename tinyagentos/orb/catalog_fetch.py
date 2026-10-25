@@ -1,0 +1,88 @@
+"""Orb catalog fetch + cached re-verify (spec s10)."""
+import hashlib
+from pathlib import Path
+
+import httpx
+
+from tinyagentos import atomic_io
+from tinyagentos.orb import catalog
+from tinyagentos.orb.catalog_sig import (
+    CatalogFetchError,
+    CatalogSignatureMissing,
+    CatalogSerialRegression,
+    CatalogSignatureInvalid,
+    CatalogKeyUnknown,
+    accept_catalog,
+)
+
+CATALOG_MAX_BYTES = 1 << 20
+SIG_MAX_BYTES = 256
+
+
+async def _get_capped(client, url: str, cap: int) -> bytes | None:
+    try:
+        async with client.stream("GET", url) as resp:
+            if resp.status_code == 404:
+                return None
+            if resp.status_code != 200:
+                raise CatalogFetchError(f"failed to fetch {url}: status {resp.status_code}")
+            total = bytearray()
+            async for chunk in resp.aiter_bytes():
+                total.extend(chunk)
+                if len(total) > cap:
+                    raise CatalogFetchError(f"response from {url} exceeds cap")
+            return bytes(total)
+    except CatalogFetchError:
+        raise
+    except httpx.HTTPError as e:
+        raise CatalogFetchError(f"failed to fetch {url}: {e}") from e
+
+
+async def fetch_catalog(base_url: str, cache_dir, state_path, keys=None, timeout: float = 10.0, transport=None):
+    if not base_url or not base_url.startswith("https://"):
+        raise CatalogFetchError("base_url must start with https://")
+    base = base_url.rstrip("/")
+    catalog_url = f"{base}/catalog.json"
+    sig_url = f"{base}/catalog.json.sig"
+
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, transport=transport) as client:
+        catalog_bytes = await _get_capped(client, catalog_url, CATALOG_MAX_BYTES)
+        if catalog_bytes is None:
+            raise CatalogFetchError("catalog not found")
+        sig_bytes = await _get_capped(client, sig_url, SIG_MAX_BYTES)
+        if sig_bytes is None:
+            sig_bytes = None  # so accept_catalog raises CatalogSignatureMissing
+
+    accept_catalog(catalog_bytes, sig_bytes, state_path, keys)
+
+    cache_dir_path = Path(cache_dir)
+    cache_dir_path.mkdir(parents=True, exist_ok=True)
+    atomic_io.atomic_write_bytes(cache_dir_path / "catalog.json", catalog_bytes)
+    atomic_io.atomic_write_bytes(cache_dir_path / "catalog.json.sig", sig_bytes if sig_bytes is not None else b"")
+
+    return catalog.load_catalog(str(cache_dir_path / "catalog.json"))
+
+
+def load_cached_catalog(cache_dir, state_path, keys=None):
+    cache_dir_path = Path(cache_dir)
+    catalog_path = cache_dir_path / "catalog.json"
+    sig_path = cache_dir_path / "catalog.json.sig"
+
+    if not catalog_path.exists():
+        raise CatalogFetchError("no cached catalog")
+
+    catalog_bytes = catalog_path.read_bytes()
+    if len(catalog_bytes) > CATALOG_MAX_BYTES:
+        raise CatalogFetchError("cached catalog exceeds cap")
+
+    if not sig_path.exists():
+        sig_bytes = None
+    else:
+        sig_bytes = sig_path.read_bytes()
+        if len(sig_bytes) > SIG_MAX_BYTES:
+            raise CatalogFetchError("cached catalog signature exceeds cap")
+        if len(sig_bytes) == 0:
+            sig_bytes = None
+
+    accept_catalog(catalog_bytes, sig_bytes, state_path, keys)
+    return catalog.load_catalog(str(catalog_path))
