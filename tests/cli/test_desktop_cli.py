@@ -145,35 +145,49 @@ def test_desktop_cli_run_unit_found():
 def test_desktop_cli_status_disabled():
     """Test status reports disabled when is-enabled prints disabled."""
     with patch('tinyagentos.desktop_cli.os.geteuid', return_value=0):
-        with patch('subprocess.run') as mock_run:
-            # Mock systemctl is-enabled to return 1 with "disabled" output
-            mock_run.return_value = MagicMock(returncode=1, stdout="disabled")
-            
-            # For is-active, return 1 with "inactive" output
-            def side_effect(cmd, **kwargs):
-                if cmd == ["systemctl", "is-enabled", "taos-kiosk.service"]:
-                    return MagicMock(returncode=1, stdout="disabled")
-                elif cmd == ["systemctl", "is-active", "taos-kiosk.service"]:
-                    return MagicMock(returncode=1, stdout="inactive")
-                else:
-                    return MagicMock(returncode=0, stdout="")
-            
-            mock_run.side_effect = side_effect
+        with patch('tinyagentos.desktop_cli._run') as mock_run:
+            with patch('tinyagentos.desktop_cli._capture') as mock_capture:
+                # Mock systemctl is-enabled to return 1 with "disabled" output
+                mock_run.return_value = 1
+                mock_capture.return_value = "disabled"
 
-            result = desktop_cli(["status"])
-            assert result == 0
+                # Mock systemctl is-active to return 1 with "inactive" output
+                def side_effect(cmd, **kwargs):
+                    if cmd == ["systemctl", "is-enabled", "taos-kiosk.service"]:
+                        return MagicMock(returncode=1, stdout="disabled")
+                    elif cmd == ["systemctl", "is-active", "taos-kiosk.service"]:
+                        return MagicMock(returncode=1, stdout="inactive")
+                    else:
+                        return MagicMock(returncode=0, stdout="")
+                
+                mock_run.side_effect = side_effect
+
+                result = desktop_cli(["status"])
+                assert result == 0
+
+                # Verify _run was called for both is-enabled and is-active
+                assert mock_run.call_count >= 2
+                mock_run.assert_any_call(["systemctl", "is-enabled", "taos-kiosk.service"])
+                mock_run.assert_any_call(["systemctl", "is-active", "taos-kiosk.service"])
 
 
 def test_desktop_cli_status_enabled():
     """Test status reports enabled when is-enabled prints enabled."""
     with patch('tinyagentos.desktop_cli.os.geteuid', return_value=0):
-        with patch('subprocess.run') as mock_run:
-            # Mock systemctl is-enabled to return 0 (enabled)
-            # Mock systemctl is-active to return 0 (active)
-            mock_run.return_value = MagicMock(returncode=0, stdout="")
+        with patch('tinyagentos.desktop_cli._run') as mock_run:
+            with patch('tinyagentos.desktop_cli._capture') as mock_capture:
+                # Mock systemctl is-enabled to return 0 (enabled)
+                # Mock systemctl is-active to return 0 (active)
+                mock_run.return_value = 0
+                mock_capture.return_value = ""
 
-            result = desktop_cli(["status"])
-            assert result == 0
+                result = desktop_cli(["status"])
+                assert result == 0
+
+                # Verify _run was called for both is-enabled and is-active
+                assert mock_run.call_count >= 2
+                mock_run.assert_any_call(["systemctl", "is-enabled", "taos-kiosk.service"])
+                mock_run.assert_any_call(["systemctl", "is-active", "taos-kiosk.service"])
 
 
 # Test the individual helper functions directly

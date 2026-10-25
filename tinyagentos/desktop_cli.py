@@ -131,27 +131,21 @@ def _desktop_run(args) -> int:
 def _desktop_status(args) -> int:
     """Check the local desktop session status."""
     # Check if enabled
-    enabled_result = subprocess.run(
-        ["systemctl", "is-enabled", KIOSK_UNIT],
-        capture_output=True,
-        text=True,
-    )
-    if enabled_result.returncode == 0:
+    enabled_output = _capture(["systemctl", "is-enabled", KIOSK_UNIT])
+    enabled_rc = _run(["systemctl", "is-enabled", KIOSK_UNIT])
+    if enabled_rc == 0:
         enabled_status = "enabled"
-    elif enabled_result.returncode == 1 and "disabled" in enabled_result.stdout:
+    elif enabled_rc == 1 and "disabled" in enabled_output:
         enabled_status = "disabled"
     else:
         enabled_status = "not installed"
 
     # Check if active
-    active_result = subprocess.run(
-        ["systemctl", "is-active", KIOSK_UNIT],
-        capture_output=True,
-        text=True,
-    )
-    if active_result.returncode == 0:
+    active_output = _capture(["systemctl", "is-active", KIOSK_UNIT])
+    active_rc = _run(["systemctl", "is-active", KIOSK_UNIT])
+    if active_rc == 0:
         active_status = "active"
-    elif active_result.returncode == 1 and "inactive" in active_result.stdout:
+    elif active_rc == 1 and "inactive" in active_output:
         active_status = "inactive"
     else:
         active_status = "unknown"
