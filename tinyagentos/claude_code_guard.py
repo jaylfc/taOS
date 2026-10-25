@@ -276,9 +276,9 @@ def commands(command: str) -> list[str] | None:
                         continue
                 # sort clustered short option containing o (e.g. -ro, -o, -o/dev/null, -ro/dev/null)
                 if prog == "sort" and tok.startswith("-") and not tok.startswith("--") and "o" in tok[1:]:
-                    # Find the 'o' in the cluster; only the last value-taking option matters
-                    # For sort, only 'o' takes a value
-                    o_pos = tok.rfind("o")  # rightmost 'o' in the cluster
+                    # The FIRST 'o' takes the value: everything after it is the attached
+                    # path (-o/tmp/foo), so a later 'o' inside the path is not an option.
+                    o_pos = tok.find("o", 1)
                     if o_pos > 0:
                         has_attached = o_pos < len(tok) - 1
                         if has_attached:
@@ -480,7 +480,7 @@ def commands(command: str) -> list[str] | None:
                 if tok.startswith("--"):
                     # Check for attached value form (--opt=value)
                     for opt in _WRAPPER_OPTS_WITH_VALUE[wrapper]:
-                        if opt.startswith("--") and tok.startswith(opt):
+                        if opt.startswith("--") and tok.startswith(opt + "="):
                             if wrapper == "time" and opt == "--output":
                                 if _is_write_target(tok.split("=", 1)[1]):
                                     add(OUTPUT_REDIRECT)
