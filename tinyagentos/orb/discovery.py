@@ -109,7 +109,12 @@ def ipv4_broadcast_addresses() -> list[str]:
     
     broadcast_set = set()
     
-    for interface_addrs in psutil.net_if_addrs().values():
+    try:
+        if_addrs = psutil.net_if_addrs()
+    except OSError:
+        return ["255.255.255.255"]
+
+    for interface_addrs in if_addrs.values():
         for addr_info in interface_addrs:
             # Only consider IPv4 addresses
             if addr_info.family == socket.AF_INET:

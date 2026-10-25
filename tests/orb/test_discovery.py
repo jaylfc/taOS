@@ -1104,3 +1104,14 @@ def test_probe_agent_buddy_explicit_addresses_bypasses_helper():
         sock.close()
         responder_thread.join(timeout=1.0)
         tinyagentos.orb.discovery.ipv4_broadcast_addresses = original_ipv4_broadcast
+
+def test_ipv4_broadcast_addresses_net_if_addrs_oserror_falls_back(monkeypatch):
+    """psutil.net_if_addrs() raising OSError degrades to the limited broadcast."""
+    import psutil
+    from tinyagentos.orb.discovery import ipv4_broadcast_addresses
+
+    def _boom():
+        raise OSError("interface enumeration failed")
+
+    monkeypatch.setattr(psutil, "net_if_addrs", _boom)
+    assert ipv4_broadcast_addresses() == ["255.255.255.255"]
