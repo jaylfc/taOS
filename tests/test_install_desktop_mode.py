@@ -14,8 +14,8 @@ Tests:
 4. unset, no tty -> headless with no prompt text printed
 5. assert by text that install-server.sh calls install_local_desktop_if_chosen
    AFTER the install_rk3588_perf_if_needed call line and calls resolve_desktop_mode
-   BEFORE the install_rknpu_if_pending call line (compare line indexes of the
-   bare call lines).
+   AFTER the warn() definition line and BEFORE the 'Linux)  ensure_linux_deps ;;' line.
+6. no em dashes (U+2014) in resolve_desktop_mode or install_local_desktop_if_chosen.
 """
 
 from __future__ import annotations
@@ -105,7 +105,7 @@ def _assert_desktop_mode_output(
 # --- resolve_desktop_mode behavioural tests --------------------------------
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash required")
-def test_taros_desktop_local(tmp_path: Path) -> None:
+def test_taos_desktop_local(tmp_path: Path) -> None:
     """TAOS_DESKTOP=local -> local, no prompt."""
     result = _run_resolve_desktop_mode(tmp_path, {"TAOS_DESKTOP": "local"})
     _assert_desktop_mode_output(result, "local")
@@ -115,7 +115,7 @@ def test_taros_desktop_local(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash required")
-def test_taros_desktop_headless(tmp_path: Path) -> None:
+def test_taos_desktop_headless(tmp_path: Path) -> None:
     """TAOS_DESKTOP=headless -> headless, no prompt."""
     result = _run_resolve_desktop_mode(tmp_path, {"TAOS_DESKTOP": "headless"})
     _assert_desktop_mode_output(result, "headless")
@@ -124,7 +124,7 @@ def test_taros_desktop_headless(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash required")
-def test_taros_desktop_bogus_warns_and_defaults_headless(tmp_path: Path) -> None:
+def test_taos_desktop_bogus_warns_and_defaults_headless(tmp_path: Path) -> None:
     """TAOS_DESKTOP=bogus -> headless and warn names the bad value."""
     result = _run_resolve_desktop_mode(tmp_path, {"TAOS_DESKTOP": "bogus"})
     _assert_desktop_mode_output(result, "headless")
@@ -152,23 +152,36 @@ def test_unset_no_tty_defaults_headless_no_prompt(tmp_path: Path) -> None:
 
 # --- install-server.sh call-order assertions ---------------------------------
 
-def test_call_order_resolve_desktop_mode_before_install_rknpu_if_pending() -> None:
-    """resolve_desktop_mode is called BEFORE install_rknpu_if_pending."""
+def test_call_order_resolve_desktop_mode_before_linux_deps() -> None:
+    """resolve_desktop_mode is called AFTER warn() definition and BEFORE 'Linux)  ensure_linux_deps ;;'."""
     text = SERVER_SCRIPT.read_text()
-    # Find line numbers of the bare call lines (not function definitions)
+    lines = text.splitlines()
+
+    # Find line numbers (1-indexed)
+    warn_def_line = None
     resolve_line = None
-    rknpu_line = None
-    for i, line in enumerate(text.splitlines(), 1):
+    linux_deps_line = None
+
+    for i, line in enumerate(lines, 1):
         stripped = line.strip()
-        if stripped == "resolve_desktop_mode":
+        if stripped.startswith("warn()"):
+            warn_def_line = i
+        elif stripped == "resolve_desktop_mode":
             resolve_line = i
-        elif stripped == "install_rknpu_if_pending":
-            rknpu_line = i
+        elif stripped == "Linux)  ensure_linux_deps ;;":
+            linux_deps_line = i
+
+    assert warn_def_line is not None, "warn() definition not found"
     assert resolve_line is not None, "resolve_desktop_mode call not found"
-    assert rknpu_line is not None, "install_rknpu_if_pending call not found"
-    assert resolve_line < rknpu_line, (
+    assert linux_deps_line is not None, "'Linux)  ensure_linux_deps ;;' not found"
+
+    assert resolve_line > warn_def_line, (
         f"resolve_desktop_mode (line {resolve_line}) must be called "
-        f"BEFORE install_rknpu_if_pending (line {rknpu_line})"
+        f"AFTER warn() definition (line {warn_def_line})"
+    )
+    assert resolve_line < linux_deps_line, (
+        f"resolve_desktop_mode (line {resolve_line}) must be called "
+        f"BEFORE 'Linux)  ensure_linux_deps ;;' (line {linux_deps_line})"
     )
 
 
@@ -189,3 +202,12 @@ def test_call_order_install_local_desktop_after_install_rk3588_perf() -> None:
         f"install_local_desktop_if_chosen (line {desktop_line}) must be called "
         f"AFTER install_rk3588_perf_if_needed (line {perf_line})"
     )
+
+
+def test_no_em_dash_in_desktop_functions() -> None:
+    """resolve_desktop_mode and install_local_desktop_if_chosen must not contain em dashes (U+2014)."""
+    for func_name in ("resolve_desktop_mode", "install_local_desktop_if_chosen"):
+        func_text = _extract_function(SERVER_SCRIPT, func_name)
+        assert "\u2014" not in func_text, (
+            f"em dash (U+2014) found in {func_name}(); replace with ' -- '"
+        )

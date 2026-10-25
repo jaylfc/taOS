@@ -173,7 +173,7 @@ resolve_desktop_mode() {
             ;;
         *)
             # Invalid value: warn and default to headless.
-            warn "TAOS_DESKTOP='$val' is not valid; expected 'local' or 'headless' — defaulting to headless"
+            warn "TAOS_DESKTOP='$val' is not valid; expected 'local' or 'headless' -- defaulting to headless"
             DESKTOP_MODE="headless"
             ;;
     esac
@@ -221,6 +221,10 @@ while [[ ! -d "$_df_target" && "$_df_target" != "/" ]]; do
 done
 log "disk_free=$(df -Ph "$_df_target" 2>/dev/null | awk 'NR==2 {print $4}' || echo unknown) (at $_df_target)"
 log "install_dir=$INSTALL_DIR branch=$BRANCH port=$TAOS_PORT proxy_port=$TAOS_BROWSER_PROXY_PORT qmd_port=$TAOS_QMD_PORT"
+
+# Ask about local desktop vs headless BEFORE the long install (so the
+# question appears early when run interactively, not at the end).
+resolve_desktop_mode
 
 # --- system dependencies --------------------------------------------------
 
@@ -789,7 +793,7 @@ install_local_desktop_if_chosen() {
     fi
     local kiosk_script="$INSTALL_DIR/scripts/kiosk-setup.sh"
     if [[ ! -f "$kiosk_script" || ! -r "$kiosk_script" ]]; then
-        warn "kiosk-setup.sh missing or unreadable at $kiosk_script — skipping local desktop setup"
+        warn "kiosk-setup.sh missing or unreadable at $kiosk_script -- skipping local desktop setup"
         warn "  to enable later: sudo taos desktop enable"
         return 0
     fi
@@ -798,11 +802,11 @@ install_local_desktop_if_chosen() {
         if sudo systemctl enable taos-kiosk.service; then
             log "local desktop enabled. Wi-Fi, Bluetooth and display settings are not in taOS Settings yet: use Ethernet and a single display for now."
         else
-            warn "systemctl enable taos-kiosk.service failed — continuing controller install anyway"
+            warn "systemctl enable taos-kiosk.service failed -- continuing controller install anyway"
             warn "  to enable later: sudo taos desktop enable"
         fi
     else
-        warn "kiosk-setup.sh failed — continuing controller install anyway"
+        warn "kiosk-setup.sh failed -- continuing controller install anyway"
         warn "  to enable later: sudo taos desktop enable"
     fi
 }
@@ -1708,10 +1712,6 @@ else
 fi
 
 cd "$INSTALL_DIR"
-
-# Ask about local desktop vs headless BEFORE the long install (so the
-# question appears early when run interactively, not at the end).
-resolve_desktop_mode
 
 # Now that the repo is on disk, run any accelerator-backend install
 # that was deferred up front (e.g. rkllama on a Rockchip NPU host).
