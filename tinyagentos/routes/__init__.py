@@ -20,6 +20,9 @@ def register_all_routers(app):
     from tinyagentos.routes.hardware_wifi import router as hardware_wifi_router
     app.include_router(hardware_wifi_router, dependencies=_csrf)
 
+    from tinyagentos.routes.hardware_bluetooth import router as hardware_bluetooth_router
+    app.include_router(hardware_bluetooth_router, dependencies=_csrf)
+
     from tinyagentos.routes.dashboard import router as dashboard_router
     app.include_router(dashboard_router, dependencies=_csrf)
 
