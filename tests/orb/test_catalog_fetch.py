@@ -1,9 +1,12 @@
 """Tests for tinyagentos/orb/catalog_fetch."""
+import base64
+import hashlib
 import json
 import pytest
 from pathlib import Path
 
 import httpx
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from tinyagentos.orb import catalog_sig
 from tinyagentos.orb.catalog_sig import (
@@ -12,7 +15,33 @@ from tinyagentos.orb.catalog_sig import (
     CatalogSignatureInvalid,
     CatalogSignatureMissing,
 )
-from tests.orb.test_catalog_sig import make_sig_json, sign_catalog, test_key, keys_dict
+
+
+@pytest.fixture
+def test_key():
+    """Generate a test Ed25519 keypair and return (private_key, public_key_raw, key_id)."""
+    private_key = Ed25519PrivateKey.generate()
+    public_key_raw = private_key.public_key().public_bytes_raw()
+    key_id = hashlib.sha256(public_key_raw).hexdigest()[:16]
+    return private_key, public_key_raw, key_id
+
+
+@pytest.fixture
+def keys_dict(test_key):
+    """Build keys dict mapping key_id to base64-encoded raw public key."""
+    _, public_key_raw, key_id = test_key
+    return {key_id: base64.b64encode(public_key_raw).decode("ascii")}
+
+
+def make_sig_json(key_id: str, sig: bytes) -> bytes:
+    """Helper to create sig JSON bytes."""
+    return json.dumps({"key_id": key_id, "sig": base64.b64encode(sig).decode("ascii")}).encode("utf-8")
+
+
+def sign_catalog(private_key: Ed25519PrivateKey, catalog_bytes: bytes) -> bytes:
+    """Sign catalog bytes and return sig JSON bytes."""
+    sig = private_key.sign(catalog_bytes)
+    return make_sig_json(hashlib.sha256(private_key.public_key().public_bytes_raw()).hexdigest()[:16], sig)
 
 
 @pytest.mark.asyncio
