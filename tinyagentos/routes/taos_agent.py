@@ -763,21 +763,28 @@ async def chat(request: Request, body: ChatRequest):
             logger.exception("taos-agent: drive task error")
             queue.put_nowait({"error": harness.redact(str(exc)) if use_claude_code else str(exc)})
         finally:
-            # Shell commands the user has not decided yet become approve/deny
-            # asks, in Decisions and as inline cards in this chat.
-            if use_claude_code:
-                try:
-                    for ask in await shell_profile.raise_shell_asks(app_state, harness, shell_user):
-                        queue.put_nowait({"shell_ask": ask})
-                except Exception:
-                    logger.exception("taos-agent: raising shell asks failed")
             # The safe point MUST be reached even when the turn raises or is
-            # cancelled — skipping it would wedge the loop in WORKING forever.
+            # cancelled, skipping it would wedge the loop in WORKING forever.
+            # It runs before the shell-ask drain below so a cancel or hang
+            # inside raise_shell_asks (profile + decision-store I/O) cannot
+            # strand the loop in WORKING: reaching IDLE is the invariant the
+            # rest of the finally depends on.
             try:
                 queued_msgs = await agent_loop.reach_safe_point()
             except Exception:
                 logger.exception("taos-agent: reach_safe_point failed")
                 queued_msgs = []
+            # Shell commands the user has not decided yet become approve/deny
+            # asks, in Decisions and as inline cards in this chat. It runs after
+            # the safe point so a late cancel here leaves the loop IDLE, and
+            # CancelledError is caught alongside Exception so the finally still
+            # reaches _DONE instead of aborting it.
+            if use_claude_code:
+                try:
+                    for ask in await shell_profile.raise_shell_asks(app_state, harness, shell_user):
+                        queue.put_nowait({"shell_ask": ask})
+                except (asyncio.CancelledError, Exception):
+                    logger.exception("taos-agent: raising shell asks failed")
             # Surface messages queued while the turn ran so they are never
             # silently dropped. Redriving them as their own turns is out of
             # scope here; they land in this stream's tail.
