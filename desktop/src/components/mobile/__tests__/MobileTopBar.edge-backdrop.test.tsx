@@ -58,6 +58,10 @@ function createMql(matches: boolean) {
 }
 
 beforeEach(() => {
+  // Clean up any portal backdrop from a previous test that crashed before unmount
+  const leftover = document.body.querySelector('[data-testid="ios-edge-backdrop"]');
+  if (leftover && leftover.parentElement === document.body) leftover.remove();
+
   matchMediaListeners = new Map();
   vi.stubGlobal("matchMedia", vi.fn((query: string) => createMql(false)));
   // Reset navigator.standalone
@@ -123,10 +127,11 @@ describe("MobileTopBar edge backdrop", () => {
     expect(backdrop).not.toBeNull();
 
     // On iOS the backdrop should cover the full top bar height
-    // The browser normalizes calc() differently, so check for the normalized form
+    // The browser normalizes calc() expressions (reorders terms, expands env()),
+    // so check that the computed height contains the key parts from the constant.
     const height = backdrop.style.height;
-    // Accept the normalized form that the browser produces
-    expect(height).toBe("calc(44px + env(0px * , * safe-area-inset-top))");
+    expect(height).toContain("44px");
+    expect(height).toContain("safe-area-inset-top");
   });
 
   it("does not render the backdrop when not in standalone mode", () => {
