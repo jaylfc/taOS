@@ -57,8 +57,9 @@ _ASYNC = pytest.mark.asyncio(loop_scope="module")
 # ---------------------------------------------------------------------------
 
 _FAKE_SYSTEMCTL = """#!/bin/sh
-# taos-kiosk.service exists only on a taOSmobile handset.
+# taos-kiosk.service and plasma-mobile.service both exist on a taOSmobile handset.
 if [ "$1" = "cat" ] && [ "$2" = "taos-kiosk.service" ]; then exit {kiosk_rc}; fi
+if [ "$1" = "cat" ] && [ "$2" = "plasma-mobile.service" ]; then exit {plasma_rc}; fi
 exit 1
 """
 
@@ -126,7 +127,9 @@ async def _build_app(tmp_path_factory, name: str, *, mobile: bool):
     data_dir = tmp_path_factory.mktemp(name)
     _write_test_config(data_dir)
     bindir = tmp_path_factory.mktemp(name + "-bin")
-    _write_exec(bindir / "systemctl", _FAKE_SYSTEMCTL.format(kiosk_rc=0 if mobile else 1))
+    kiosk_rc = 0 if mobile else 1
+    plasma_rc = 0 if mobile else 1
+    _write_exec(bindir / "systemctl", _FAKE_SYSTEMCTL.format(kiosk_rc=kiosk_rc, plasma_rc=plasma_rc))
     _write_exec(bindir / "picoclaw", _FAKE_PICOCLAW.format(python=sys.executable))
     with pytest.MonkeyPatch.context() as mp:
         mp.setenv("TAOS_LLM_GATEWAY", "1")

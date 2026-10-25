@@ -2602,7 +2602,7 @@ pinned 0.3.1 binary). `taos_agent_runtime.decide_framework` is the one place
 the choice is made, from two config.yaml keys:
 
 - `device.class`: `auto` (default; `hardware._detect_device_class`, which
-  reads the `taos-kiosk.service` unit), `mobile` or `desktop`;
+  reads the `taos-kiosk.service` and `plasma-mobile.service` units), `mobile` or `desktop`;
 - `taos_agent.framework`: `auto` (default; picoclaw on mobile, opencode
   elsewhere), `opencode`, `picoclaw` or `claude_code` (operator overrides;
   `auto` never picks `claude_code`).
