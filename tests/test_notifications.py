@@ -199,6 +199,106 @@ class TestNotificationStore:
         # Idempotent: archiving again matches nothing.
         assert await notif_store.archive_by_source_ref("auth_requests", "req-1") == 0
 
+    async def test_pending_grant_stays_on_top_past_the_limit(self, notif_store):
+        """Pinned grant requests appear first and do not count against limit."""
+        user_id = "test-user"
+        # Add one pinned grant request (older timestamp)
+        base_ts = int(time.time()) - 1000
+        await notif_store._db.execute(
+            "INSERT INTO notifications (timestamp, level, title, message, source, read, archived, data, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (base_ts, "info", "Grant Request", "agent wants access", "auth_requests", 0, 0, '{"request_id": "req-1"}', user_id),
+        )
+        await notif_store._db.commit()
+        # Add 25 newer non-pinned notifications
+        for i in range(25):
+            ts = base_ts + i + 1
+            await notif_store._db.execute(
+                "INSERT INTO notifications (timestamp, level, title, message, source, read, archived, data, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (ts, "info", f"Task {i}", f"task {i} closed", "task.closed", 0, 0, None, user_id),
+            )
+        await notif_store._db.commit()
+        items = await notif_store.list(user_id=user_id, limit=20)
+        # Grant request should be at index 0 with pinned=True
+        assert len(items) == 21  # 1 pinned + 20 regular (limit)
+        assert items[0]["source"] == "auth_requests"
+        assert items[0]["pinned"] is True
+        # Next 20 should be task.closed, newest first, pinned=False
+        for i in range(1, 21):
+            assert items[i]["source"] == "task.closed"
+            assert items[i]["pinned"] is False
+
+    async def test_read_grant_still_pinned(self, notif_store):
+        """Reading a grant request does not unpin it."""
+        user_id = "test-user"
+        base_ts = int(time.time()) - 1000
+        await notif_store._db.execute(
+            "INSERT INTO notifications (timestamp, level, title, message, source, read, archived, data, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (base_ts, "info", "Grant Request", "agent wants access", "auth_requests", 1, 0, '{"request_id": "req-1"}', user_id),
+        )
+        await notif_store._db.commit()
+        # Add 25 newer non-pinned notifications
+        for i in range(25):
+            ts = base_ts + i + 1
+            await notif_store._db.execute(
+                "INSERT INTO notifications (timestamp, level, title, message, source, read, archived, data, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (ts, "info", f"Task {i}", f"task {i} closed", "task.closed", 0, 0, None, user_id),
+            )
+        await notif_store._db.commit()
+        items = await notif_store.list(user_id=user_id, limit=20)
+        assert len(items) == 21
+        assert items[0]["source"] == "auth_requests"
+        assert items[0]["pinned"] is True
+        assert items[0]["read"] is True
+
+    async def test_archived_grant_not_pinned(self, notif_store):
+        """Archived grant requests are not pinned and do not appear in active list."""
+        user_id = "test-user"
+        base_ts = int(time.time()) - 1000
+        await notif_store._db.execute(
+            "INSERT INTO notifications (timestamp, level, title, message, source, read, archived, data, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (base_ts, "info", "Grant Request", "agent wants access", "auth_requests", 0, 1, '{"request_id": "req-1"}', user_id),
+        )
+        await notif_store._db.commit()
+        # Add 5 newer non-pinned notifications
+        for i in range(5):
+            ts = base_ts + i + 1
+            await notif_store._db.execute(
+                "INSERT INTO notifications (timestamp, level, title, message, source, read, archived, data, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (ts, "info", f"Task {i}", f"task {i} closed", "task.closed", 0, 0, None, user_id),
+            )
+        await notif_store._db.commit()
+        items = await notif_store.list(user_id=user_id, limit=20)
+        # Archived grant should not appear
+        assert len(items) == 5
+        for item in items:
+            assert item["source"] == "task.closed"
+            assert item["pinned"] is False
+
+    async def test_agent_scope_request_also_pinned(self, notif_store):
+        """agent_scope_requests source is also pinned like auth_requests."""
+        user_id = "test-user"
+        base_ts = int(time.time()) - 1000
+        await notif_store._db.execute(
+            "INSERT INTO notifications (timestamp, level, title, message, source, read, archived, data, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (base_ts, "info", "Scope Request", "agent wants more scopes", "agent_scope_requests", 0, 0, '{"request_id": "req-1"}', user_id),
+        )
+        await notif_store._db.commit()
+        # Add 25 newer non-pinned notifications
+        for i in range(25):
+            ts = base_ts + i + 1
+            await notif_store._db.execute(
+                "INSERT INTO notifications (timestamp, level, title, message, source, read, archived, data, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (ts, "info", f"Task {i}", f"task {i} closed", "task.closed", 0, 0, None, user_id),
+            )
+        await notif_store._db.commit()
+        items = await notif_store.list(user_id=user_id, limit=20)
+        assert len(items) == 21
+        assert items[0]["source"] == "agent_scope_requests"
+        assert items[0]["pinned"] is True
+        for i in range(1, 21):
+            assert items[i]["source"] == "task.closed"
+            assert items[i]["pinned"] is False
+
 
 @pytest.mark.asyncio
 async def test_data_column_migration_on_legacy_db(tmp_path):
