@@ -211,3 +211,46 @@ def test_no_em_dash_in_desktop_functions() -> None:
         assert "\u2014" not in func_text, (
             f"em dash (U+2014) found in {func_name}(); replace with ' -- '"
         )
+
+
+def test_local_desktop_sets_graphical_default_target() -> None:
+    """install_local_desktop_if_chosen must set graphical.target as default boot target."""
+    func_text = _extract_function(SERVER_SCRIPT, "install_local_desktop_if_chosen")
+
+    # Slice from function header to the matching closing brace
+    lines = func_text.splitlines()
+
+    # Find indices of key lines (first occurrence of each command)
+    enable_idx = None
+    set_default_idx = None
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if enable_idx is None and "systemctl enable taos-kiosk.service" in stripped and not stripped.startswith("warn"):
+            enable_idx = i
+        if set_default_idx is None and "systemctl set-default graphical.target" in stripped and not stripped.startswith("warn"):
+            set_default_idx = i
+
+    # (a) Must contain systemctl set-default graphical.target
+    assert set_default_idx is not None, (
+        "install_local_desktop_if_chosen must contain 'systemctl set-default graphical.target'"
+    )
+
+    # (b) set-default must come AFTER enable
+    assert enable_idx is not None, (
+        "install_local_desktop_if_chosen must contain 'systemctl enable taos-kiosk.service'"
+    )
+    assert set_default_idx > enable_idx, (
+        f"systemctl set-default graphical.target (line {set_default_idx}) must come "
+        f"AFTER systemctl enable taos-kiosk.service (line {enable_idx})"
+    )
+
+    # (c) No line with set-default followed by || exit or || return 1 (failure must not abort)
+    for line in lines:
+        if "systemctl set-default graphical.target" in line:
+            assert "|| exit" not in line, (
+                f"set-default must not abort on failure (found '|| exit'): {line.strip()}"
+            )
+            assert "|| return 1" not in line, (
+                f"set-default must not abort on failure (found '|| return 1'): {line.strip()}"
+            )

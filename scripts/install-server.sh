@@ -800,6 +800,10 @@ install_local_desktop_if_chosen() {
     log "running $kiosk_script for local desktop"
     if sudo -E bash "$kiosk_script" "http://localhost:${TAOS_PORT}/desktop/"; then
         if sudo systemctl enable taos-kiosk.service; then
+            if ! sudo systemctl set-default graphical.target; then
+                warn "systemctl set-default graphical.target failed -- the desktop may not start at boot"
+                warn "  to fix later: sudo systemctl set-default graphical.target"
+            fi
             log "local desktop enabled. Wi-Fi, Bluetooth and display settings are not in taOS Settings yet: use Ethernet and a single display for now."
         else
             warn "systemctl enable taos-kiosk.service failed -- continuing controller install anyway"
