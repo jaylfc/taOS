@@ -1,3 +1,0 @@
-BLOCKER 1 dispute:
-- tinyagentos/desktop_cli.py line 148 defines active_output = _capture(["systemctl", "is-active", KIOSK_UNIT]) before line 152 where it is used.
-- The code path is correct and will not raise NameError.
