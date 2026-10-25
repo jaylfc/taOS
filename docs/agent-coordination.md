@@ -263,6 +263,23 @@ a PR without it that touches a protected path fails the gate. When reviewing a P
 that legitimately changes these files, apply `gate-integrity-allow` after
 confirming the change is intentional and reviewed.
 
+## BLE pairing
+
+The `POST /api/cluster/ble/pair/start` endpoint returns `pin_required: boolean` when
+the board is pin-bound. If `pin_required` is true, the BLE pairing confirm step in
+the UI must show a "Label PIN" text input that is always displayed (the board's claim
+must not hide it). The `POST /api/cluster/ble/pair/confirm` endpoint accepts a
+`label_pin` field (4-12 digits). Two error codes may be returned as 400 responses:
+
+- `label_pin_required`: "This board needs the PIN from its label." shown inline
+  with `role="alert"`
+- `invalid_label_pin`: "The label PIN is 4 to 12 digits." shown inline with
+  `role="alert"`
+
+The `label_pin` is only sent in the confirm body when the input is non-empty. When
+`pin_required` is true from the start response, the Confirm button is disabled until
+the Label PIN has 4-12 digits.
+
 ## Spend model tokens on judgement, not on waiting
 
 An agent working this repo pays for every turn it takes. Reserve those turns for
@@ -737,6 +754,12 @@ different project, and 403 when the agent lacks the `canvas_read` scope or the
   `/agent` suffix, except withdraw and the list, which are one route serving
   both callers (`_is_agent_decisions_path` in
   `tinyagentos/auth_middleware.py`).
+  A `shell_command` decision (raised by taOS, never by an agent, when the
+  taOS Agent's Claude Code shell hits a command the user has not decided) is a
+  gate kind: only the user's session answer writes the allow/deny rule, the
+  agent mirror and device bearers are refused. The rules live behind the
+  session routes `GET /api/taos-agent/shell-profile` and
+  `PUT|DELETE /api/taos-agent/shell-profile/{rule}`.
 - **observatory_control**: the Observatory fleet dials.
   `GET|POST /api/observatory/pause`, `GET|POST /api/observatory/throttle`,
   `GET|POST /api/observatory/approval-mode`, `GET /api/observatory/fleet`,
@@ -2410,6 +2433,14 @@ is refused with 403 (`handle collides with a local agent`), so a guest can
 never drain or answer a local agent's session. A request with no Bearer is refused by the auth
 middleware before the route runs (401); a JWT without the grant gets 403; an
 unavailable bridge registry gets 503.
+
+A reply targeting a channel (via explicit `channel_id` or via `trace_id`
+resolving to a message's channel) is accepted only when the agent's slug is
+a member of that channel; otherwise 403 `not a member of this channel` is
+returned and the reply is not recorded. Two registry agents whose canonical
+IDs strip to the same slug cannot share a session: only the first-registered
+agent may use it; subsequent agents receive 403 `handle collides with another
+registry agent`.
 
 ## In-process LLM gateway (`/api/llm/v1`, scoped gateway keys, session or host local token)
 

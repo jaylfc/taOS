@@ -25,6 +25,13 @@ from tinyagentos.device_store import DEVICE_TOKEN_PREFIX
 from tinyagentos.rate_limit import MovingWindowLimiter
 
 logger = logging.getLogger(__name__)
+
+
+class _RaisingRotatingFileHandler(logging.handlers.RotatingFileHandler):
+    def handleError(self, record):
+        raise
+
+
 def _get_agent_token_routes_logger(data_dir: Path) -> logging.Logger:
     """Return the module-level logger for agent token route recording.
 
@@ -50,7 +57,7 @@ def _get_agent_token_routes_logger(data_dir: Path) -> logging.Logger:
         log_logger.removeHandler(handler)
         handler.close()
 
-    handler = logging.handlers.RotatingFileHandler(
+    handler = _RaisingRotatingFileHandler(
         log_path, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
     )
     # JSON line formatter: just the message (we format as JSON in the caller)
@@ -693,6 +700,21 @@ def _is_loopback_client(request: Request) -> bool:
         return False
 
 
+def _is_browser_cross_site(request: Request) -> bool:
+    """True if the request is from a browser and targets a cross-site origin.
+
+    Stop hook is curl and sends neither header; a browser always sends Origin on
+    a cross-origin POST.
+    """
+    origin = request.headers.get("origin")
+    if origin:
+        return True
+    sec_fetch_site = request.headers.get("sec-fetch-site")
+    if sec_fetch_site and sec_fetch_site != "none":
+        return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Per-IP moving-window rate limiter for the unauthenticated project-invite
 # redeem. The cluster pairing manual-claim runs the same 20-per-10s cap from
@@ -882,6 +904,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             request.method == "POST"
             and path == _PREPARE_SHUTDOWN
             and _is_loopback_client(request)
+            and not _is_browser_cross_site(request)
         ):
             request.state.user_id = None
             request.state.is_admin = False
