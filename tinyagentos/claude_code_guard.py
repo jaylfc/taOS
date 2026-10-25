@@ -100,6 +100,13 @@ GIT_CONFIG_OVERRIDE = "git -c"
 _DUP_TARGET = re.compile(r"[0-9]+-?|-")
 
 
+def _is_write_target(path: str) -> bool:
+    """Return True if the path is a write target that should be tagged.
+    The exact string /dev/null is exempt; everything else is a write target.
+    """
+    return path != "/dev/null"
+
+
 def _has_command_substitution_in_double_quotes(text: str) -> bool:
     """Return True if $(...), ${...} or backtick occurs inside double quotes.
 
@@ -167,6 +174,7 @@ def commands(command: str) -> list[str] | None:
     expect = True
     skip_next = False
     redirect_target = False  # the next word is the target of an output redirection
+    prog_redirect_pending = False  # next word is a program-level output file (sort -o, time -o, etc.)
     sub_of: str | None = None  # a program still waiting for its subcommand
     prog: str | None = None  # the program of the current simple command
     uniq_pos = 0  # positional argument count for uniq (2nd is output file)
@@ -201,10 +209,17 @@ def commands(command: str) -> list[str] | None:
             tee_end_opts = False
             skip_next = False
             redirect_target = False
+            prog_redirect_pending = False
             continue
         if redirect_target:
             redirect_target = False
             if tok != "/dev/null" and not _DUP_TARGET.fullmatch(tok):
+                add(OUTPUT_REDIRECT)
+            continue
+        if prog_redirect_pending:
+            prog_redirect_pending = False
+            skip_next = False
+            if _is_write_target(tok):
                 add(OUTPUT_REDIRECT)
             continue
         if skip_next:
@@ -230,10 +245,11 @@ def commands(command: str) -> list[str] | None:
                     add(GIT_CONFIG_OVERRIDE)
                 elif tok.startswith("--exec-path"):
                     add(GIT_CONFIG_OVERRIDE)
-                elif tok == "--output" or tok.startswith("--output="):
-                    add(OUTPUT_REDIRECT)
-                    if tok == "--output":
-                        skip_next = True
+                elif tok == "--output":
+                    prog_redirect_pending = True
+                elif tok.startswith("--output="):
+                    if _is_write_target(tok.split("=", 1)[1]):
+                        add(OUTPUT_REDIRECT)
                 elif tok.startswith("-") and tok not in _OPTIONS_WITH_VALUE and tok not in _GIT_NO_VALUE_OPTS:
                     # Unknown git option before subcommand: fail closed.
                     return None
@@ -252,14 +268,27 @@ def commands(command: str) -> list[str] | None:
                     if len(opt) >= 2 and "compress-program".startswith(opt):
                         return None
                     if len(opt) >= 1 and "output".startswith(opt):
-                        add(OUTPUT_REDIRECT)
-                        if "=" not in tok:
-                            skip_next = True
+                        if "=" in tok:
+                            if _is_write_target(tok.split("=", 1)[1]):
+                                add(OUTPUT_REDIRECT)
+                        else:
+                            prog_redirect_pending = True
                         continue
-                # sort clustered short option containing o (e.g. -ro, -o)
+                # sort clustered short option containing o (e.g. -ro, -o, -o/dev/null, -ro/dev/null)
                 if prog == "sort" and tok.startswith("-") and not tok.startswith("--") and "o" in tok[1:]:
-                    add(OUTPUT_REDIRECT)
-                    skip_next = True
+                    # The FIRST 'o' takes the value: everything after it is the attached
+                    # path (-o/tmp/foo), so a later 'o' inside the path is not an option.
+                    o_pos = tok.find("o", 1)
+                    if o_pos > 0:
+                        has_attached = o_pos < len(tok) - 1
+                        if has_attached:
+                            # Attached value form: -o/dev/null, -ro/dev/null
+                            attached_value = tok[o_pos + 1:]
+                            if _is_write_target(attached_value):
+                                add(OUTPUT_REDIRECT)
+                        else:
+                            # Separate value form: -o /dev/null, -ro /dev/null
+                            prog_redirect_pending = True
                     continue
                 # tee: any non-option argument (file operand) is a write
                 if prog == "tee":
@@ -271,14 +300,15 @@ def commands(command: str) -> list[str] | None:
                         continue
                     if tok.startswith("-"):
                         continue
-                    add(OUTPUT_REDIRECT)
+                    if _is_write_target(tok):
+                        add(OUTPUT_REDIRECT)
                     continue
                 # uniq positional argument counting: 2nd positional is output file
                 if prog == "uniq":
                     if uniq_end_opts or tok == "-" or not tok.startswith("-"):
                         # positional argument (after --, bare -, or non-option)
                         uniq_pos += 1
-                        if uniq_pos == 2:
+                        if uniq_pos == 2 and _is_write_target(tok):
                             add(OUTPUT_REDIRECT)
                         continue
                     if tok == "--":
@@ -301,11 +331,12 @@ def commands(command: str) -> list[str] | None:
                             break
                         continue
                 # general --output handling (git diff, etc.)
-                if tok == "--output" or tok.startswith("--output="):
-                    add(OUTPUT_REDIRECT)
-                    if tok == "--output":
-                        skip_next = True
-                    continue
+                if tok == "--output":
+                    prog_redirect_pending = True
+                elif tok.startswith("--output="):
+                    if _is_write_target(tok.split("=", 1)[1]):
+                        add(OUTPUT_REDIRECT)
+                continue
             continue
         name = os.path.basename(tok) or tok
         # F5: command-position parameter expansion
@@ -441,17 +472,18 @@ def commands(command: str) -> list[str] | None:
                 if tok in _WRAPPER_OPTS_WITH_VALUE[wrapper]:
                     if wrapper == "time" and tok in ("-o", "--output", "-f", "--format"):
                         if tok in ("-o", "--output"):
-                            add(OUTPUT_REDIRECT)
+                            prog_redirect_pending = True
                     skip_next = True
                     continue
                 # Handle attached forms like --userspec=VALUE, --groups=VALUE
                 # These should not set skip_next for the next word
-                if tok.startswith("-"):
+                if tok.startswith("--"):
                     # Check for attached value form (--opt=value)
                     for opt in _WRAPPER_OPTS_WITH_VALUE[wrapper]:
-                        if opt.startswith("-") and tok.startswith(opt):
-                            if wrapper == "time" and opt in ("-o", "--output"):
-                                add(OUTPUT_REDIRECT)
+                        if opt.startswith("--") and tok.startswith(opt + "="):
+                            if wrapper == "time" and opt == "--output":
+                                if _is_write_target(tok.split("=", 1)[1]):
+                                    add(OUTPUT_REDIRECT)
                             # This is an attached form, don't skip_next
                             break
             # time: clustered short options (e.g. -ao, -po, -af, -apo, -ao/tmp/x, -af%e)
@@ -477,13 +509,15 @@ def commands(command: str) -> list[str] | None:
                         if has_attached:
                             # Attached value form: -ao/tmp/x, -af%e
                             if last == "o":
-                                add(OUTPUT_REDIRECT)
+                                attached_value = tok[i:]
+                                if _is_write_target(attached_value):
+                                    add(OUTPUT_REDIRECT)
                             # Don't skip_next, the value is attached
                             continue
                         else:
                             # Separate value form: -ao FILE, -af %e, -apo /tmp/x
                             if last == "o":
-                                add(OUTPUT_REDIRECT)
+                                prog_redirect_pending = True
                             skip_next = True
                             continue
             # Other wrappers: skip options (words starting with -)
