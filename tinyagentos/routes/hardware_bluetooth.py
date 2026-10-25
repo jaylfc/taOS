@@ -46,6 +46,8 @@ async def get_bluetooth():
         return {"available": False, "adapters": [], "devices": []}
 
     data = _get_data(val)
+    if isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict):
+        data = data[0]
     if not isinstance(data, dict):
         return {"available": True, "adapters": [], "devices": []}
 

@@ -24,7 +24,7 @@ async def test_lists_adapter_and_sorted_devices(monkeypatch):
     async def fake(*args):
         # One call: GetManagedObjects
         if args[0] == "call" and args[1] == "org.bluez" and args[2] == "/" and args[3] == "org.freedesktop.DBus.ObjectManager" and args[4] == "GetManagedObjects":
-            return 0, {
+            return 0, [{
                 "/org/bluez/hci0": {
                     "org.bluez.Adapter1": {
                         "Address": {"type": "s", "data": "AA:BB:CC:DD:EE:FF"},
@@ -58,7 +58,7 @@ async def test_lists_adapter_and_sorted_devices(monkeypatch):
                         "Trusted": {"type": "b", "data": False},
                     }
                 },
-            }
+            }]
         raise AssertionError(f"unexpected busctl call: {args}")
 
     monkeypatch.setattr(bt_routes, "busctl", fake)
@@ -101,7 +101,7 @@ async def test_zero_adapters_is_available(monkeypatch):
     """When busctl call succeeds but returns empty map, available=true with empty lists."""
     async def fake(*args):
         if args[0] == "call" and args[1] == "org.bluez" and args[2] == "/" and args[3] == "org.freedesktop.DBus.ObjectManager" and args[4] == "GetManagedObjects":
-            return 0, {}
+            return 0, [{}]
         raise AssertionError(f"unexpected busctl call: {args}")
 
     monkeypatch.setattr(bt_routes, "busctl", fake)
