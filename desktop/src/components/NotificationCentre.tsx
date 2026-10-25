@@ -13,11 +13,9 @@ import {
 import { SetupChecklist } from "./SetupChecklist";
 import { ConsentActions, consentPayload } from "./ConsentActions";
 import { SignInActions, signInPayload } from "./SignInActions";
+import { isPinned } from "@/stores/notification-store";
 
 const FALLBACK_SIZE = { w: 900, h: 640 };
-
-// Cap the active Inbox list; older items are accessible via the Notification History app.
-const INBOX_CAP = 10;
 
 function formatTime(ts: number): string {
   const delta = Date.now() - ts;
@@ -42,6 +40,7 @@ function NotificationItem({
   // live outside the clickable row to keep the markup valid.
   const consent = (n.source === "auth_requests" || n.source === "agent_scope_requests") ? consentPayload(n.data) : null;
   const signIn = n.source === "auth_broker" ? signInPayload(n.data) : null;
+  const pinned = isPinned(n);
   return (
     <div className={`border-b border-white/5 ${!n.read ? "bg-accent/5" : ""}`}>
       <button
@@ -53,6 +52,11 @@ function NotificationItem({
             <div className="flex items-center gap-2">
               {!n.read && <div className="w-1.5 h-1.5 rounded-full bg-accent shrink-0" />}
               <span className="text-xs font-medium text-shell-text truncate">{n.title}</span>
+              {pinned && (
+                <span className="text-[10px] font-semibold text-amber-300 bg-amber-500/10 border border-amber-500/25 rounded px-1.5 py-0.5 shrink-0">
+                  Needs your approval
+                </span>
+              )}
             </div>
             {n.body && <p className="text-xs text-shell-text-secondary mt-1 line-clamp-2">{n.body}</p>}
             <div className="flex items-center gap-2 mt-1">
@@ -189,6 +193,9 @@ export function NotificationCentre() {
   const [checklistDismissed, setChecklistDismissed] = useState(false);
 
   const active = notifications.filter((n) => !n.archived);
+  // The store already keeps pinned grant requests first (newest-first among
+  // them), so rendering `active` in order is enough; the panel scrolls through
+  // every row rather than capping the list.
 
   // Optimistic local mark-read, plus a best-effort backend write for server
   // items so the read state persists across reloads. Network never blocks the UI.
@@ -284,24 +291,15 @@ export function NotificationCentre() {
               <p className="text-xs text-shell-text-tertiary">No notifications</p>
             </div>
           ) : (
-            <>
-              {active.slice(0, INBOX_CAP).map((n) => (
-                <NotificationItem
-                  key={n.id}
-                  n={n}
-                  onDismiss={dismiss}
-                  onResolveConsent={archiveRead}
-                  onItemClick={handleItemClick}
-                />
-              ))}
-              {active.length > INBOX_CAP && (
-                <div className="px-3 py-2.5 border-t border-white/5">
-                  <p className="text-[10px] text-shell-text-tertiary text-center">
-                    +{active.length - INBOX_CAP} more in history
-                  </p>
-                </div>
-              )}
-            </>
+            active.map((n) => (
+              <NotificationItem
+                key={n.id}
+                n={n}
+                onDismiss={dismiss}
+                onResolveConsent={archiveRead}
+                onItemClick={handleItemClick}
+              />
+            ))
           )}
           {/* View history footer: opens the standalone Notification History app */}
           <div className="border-t border-white/10 px-3 py-2">
