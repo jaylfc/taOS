@@ -39,6 +39,17 @@ pkill -x swayidle 2>/dev/null || true
 # on the lock screen. Jay reported exactly that. One script owns both halves so
 # the three callers -- this, the power key and the double-tap watcher -- cannot
 # drift apart again.
+#
+# taos-kiosk-screen is DEVICE layer (a handset ships it). Without it, as on a
+# desk, a missing binary would mean the screen never blanks, so fall back to
+# plain output power off. Nothing else wakes a desk (no double tap), so that
+# branch also powers the output on when input resumes.
+if [ -x /usr/local/bin/taos-kiosk-screen ]; then
+    exec swayidle -w \
+        timeout "$IDLE_SECS" '/usr/local/bin/taos-kiosk-screen off' \
+        before-sleep         '/usr/local/bin/taos-kiosk-screen off'
+fi
 exec swayidle -w \
-    timeout "$IDLE_SECS" '/usr/local/bin/taos-kiosk-screen off' \
-    before-sleep         '/usr/local/bin/taos-kiosk-screen off'
+    timeout "$IDLE_SECS" 'swaymsg "output * power off"' \
+        resume 'swaymsg "output * power on"' \
+    before-sleep         'swaymsg "output * power off"'
