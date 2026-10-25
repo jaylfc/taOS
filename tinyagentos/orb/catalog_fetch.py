@@ -1,5 +1,5 @@
 """Orb catalog fetch + cached re-verify (spec s10)."""
-import hashlib
+import asyncio
 from pathlib import Path
 
 import httpx
@@ -45,14 +45,23 @@ async def fetch_catalog(base_url: str, cache_dir, state_path, keys=None, timeout
     catalog_url = f"{base}/catalog.json"
     sig_url = f"{base}/catalog.json.sig"
 
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, transport=transport) as client:
-        catalog_bytes = await _get_capped(client, catalog_url, CATALOG_MAX_BYTES)
-        if catalog_bytes is None:
-            raise CatalogFetchError("catalog not found")
-        sig_bytes = await _get_capped(client, sig_url, SIG_MAX_BYTES)
-        if sig_bytes is None:
-            sig_bytes = None  # so accept_catalog raises CatalogSignatureMissing
+    # httpx's timeout is per read, so a server dripping a byte at a time never
+    # trips it; bound the whole fetch instead.
+    try:
+        async with asyncio.timeout(timeout):
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, transport=transport) as client:
+                catalog_bytes = await _get_capped(client, catalog_url, CATALOG_MAX_BYTES)
+                if catalog_bytes is None:
+                    raise CatalogFetchError("catalog not found")
+                sig_bytes = await _get_capped(client, sig_url, SIG_MAX_BYTES)
+                if sig_bytes is None:
+                    sig_bytes = None  # so accept_catalog raises CatalogSignatureMissing
+    except TimeoutError as e:
+        raise CatalogFetchError(f"catalog fetch exceeded {timeout}s") from e
 
+    # accept_catalog records the serial before the cache is written. If the
+    # write then fails, state is ahead of the cache and load_cached_catalog
+    # refuses the older cache as a regression: fails closed, refetch recovers.
     accept_catalog(catalog_bytes, sig_bytes, state_path, keys)
 
     cache_dir_path = Path(cache_dir)

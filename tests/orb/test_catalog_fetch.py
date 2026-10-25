@@ -332,3 +332,32 @@ def test_load_cached_catalog_serial_regression(tmp_path, test_key, keys_dict):
     from tinyagentos.orb import catalog_fetch
     with pytest.raises(CatalogSerialRegression):
         catalog_fetch.load_cached_catalog(cache_dir, state_path, keys=keys_dict)
+
+
+@pytest.mark.asyncio
+async def test_slow_drip_catalog_bounded_by_total_timeout(tmp_path, keys_dict):
+    """A server that drips one byte per read never trips httpx's per-read timeout
+    or the size cap; the whole fetch must still end within `timeout`."""
+    import asyncio
+
+    from tinyagentos.orb import catalog_fetch
+
+    class _Drip(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            while True:
+                await asyncio.sleep(0.01)
+                yield b" "
+
+    def handler(request: httpx.Request):
+        return httpx.Response(200, stream=_Drip())
+
+    transport = httpx.MockTransport(handler)
+    with pytest.raises(CatalogFetchError):
+        await asyncio.wait_for(
+            catalog_fetch.fetch_catalog(
+                "https://example.com/", tmp_path / "cache", tmp_path / "state.json",
+                keys=keys_dict, timeout=0.3, transport=transport,
+            ),
+            timeout=5,
+        )
+    assert not (tmp_path / "cache" / "catalog.json").exists()
