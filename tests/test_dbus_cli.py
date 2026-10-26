@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 
 import pytest
 
@@ -13,22 +14,28 @@ from tinyagentos import dbus_cli
 async def test_timeout_kills_process(monkeypatch):
     """On timeout, busctl should kill the child process and return rc=124."""
     kill_called = []
-    waited = []
+    communicated = []
 
     class FakeProcess:
         def __init__(self):
             self.returncode = None
+            self._killed = False
 
         async def communicate(self):
-            # Never completes
+            communicated.append(True)
+            if self._killed:
+                return b"", b""
+            # Never completes if not killed
             await asyncio.sleep(3600)
             return b"", b""
 
         def kill(self):
             kill_called.append(True)
+            self._killed = True
 
         async def wait(self):
-            waited.append(True)
+            # Should not be called anymore
+            await asyncio.sleep(3600)
 
     async def fake_create_subprocess_exec(*args, **kwargs):
         return FakeProcess()
@@ -42,4 +49,132 @@ async def test_timeout_kills_process(monkeypatch):
     assert rc == 124
     assert data is None
     assert kill_called, "proc.kill() should have been called"
-    assert waited, "proc.wait() should have been called"
+    assert communicated, "proc.communicate() should have been called"
+
+
+@pytest.mark.asyncio
+async def test_cancel_kills_and_reaps_process(monkeypatch):
+    """On cancellation, busctl should kill the child process and re-raise."""
+    kill_called = []
+    communicated = []
+
+    class FakeProcess:
+        def __init__(self):
+            self.returncode = None
+            self._killed = False
+
+        async def communicate(self):
+            communicated.append(True)
+            if self._killed:
+                return b"", b""
+            # Never completes if not killed
+            await asyncio.sleep(3600)
+            return b"", b""
+
+        def kill(self):
+            kill_called.append(True)
+            self._killed = True
+
+        async def wait(self):
+            # Should not be called anymore
+            await asyncio.sleep(3600)
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return FakeProcess()
+
+    # Patch the timeout to a very small value for fast test
+    monkeypatch.setattr(dbus_cli, "BUSCTL_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    task = asyncio.create_task(dbus_cli.busctl("call", "org.bluez", "/", "org.freedesktop.DBus.ObjectManager", "GetManagedObjects"))
+    # Give it a moment to start waiting
+    await asyncio.sleep(0)
+    # Cancel the task
+    task.cancel()
+    
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    
+    assert kill_called, "proc.kill() should have been called on cancellation"
+    assert communicated, "proc.communicate() should have been called on cancellation"
+
+
+@pytest.mark.asyncio
+async def test_cancel_before_spawn_propagates_cancelled(monkeypatch):
+    """If cancellation lands before create_subprocess_exec returns, CancelledError must propagate (no UnboundLocalError)."""
+    started = asyncio.Event()
+
+    class FakeProcess:
+        def __init__(self):
+            self.returncode = None
+
+        async def communicate(self):
+            # Should not be called since proc is None
+            await asyncio.sleep(3600)
+            return b"", b""
+
+        def kill(self):
+            pass
+
+        async def wait(self):
+            pass
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        # Signal that we've been called, then never return
+        started.set()
+        await asyncio.Event().wait()
+        return FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    task = asyncio.create_task(dbus_cli.busctl("call", "org.bluez", "/", "org.freedesktop.DBus.ObjectManager", "GetManagedObjects"))
+    # Wait for the fake to be entered
+    await started.wait()
+    # Yield control so the task is at the await point
+    await asyncio.sleep(0)
+    # Cancel before create_subprocess_exec returns
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_cancel_with_flooding_child_propagates(tmp_path, monkeypatch):
+    """Cancelling busctl with a child that floods stdout must propagate CancelledError, not hang."""
+    busctl_script = tmp_path / "busctl"
+    busctl_script.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "while True:\n"
+        "    sys.stdout.write('x' * 65536)\n"
+        "    sys.stdout.flush()\n"
+    )
+    busctl_script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+
+    task = asyncio.create_task(dbus_cli.busctl("x"))
+    await asyncio.sleep(0.5)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(asyncio.shield(task), timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_timeout_with_flooding_child_returns_124(tmp_path, monkeypatch):
+    """busctl timeout with a child that floods stdout must return (124, None), not hang."""
+    busctl_script = tmp_path / "busctl"
+    busctl_script.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "while True:\n"
+        "    sys.stdout.write('x' * 65536)\n"
+        "    sys.stdout.flush()\n"
+    )
+    busctl_script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+
+    monkeypatch.setattr(dbus_cli, "BUSCTL_TIMEOUT_S", 0.5)
+
+    assert await asyncio.wait_for(dbus_cli.busctl("x"), timeout=6) == (124, None)
