@@ -34,8 +34,7 @@ async def test_timeout_kills_process(monkeypatch):
             self._killed = True
 
         async def wait(self):
-            # Should not be called anymore
-            await asyncio.sleep(3600)
+            raise AssertionError("busctl() must drain with communicate() after kill, not wait()")
 
     async def fake_create_subprocess_exec(*args, **kwargs):
         return FakeProcess()
@@ -76,8 +75,7 @@ async def test_cancel_kills_and_reaps_process(monkeypatch):
             self._killed = True
 
         async def wait(self):
-            # Should not be called anymore
-            await asyncio.sleep(3600)
+            raise AssertionError("busctl() must drain with communicate() after kill, not wait()")
 
     async def fake_create_subprocess_exec(*args, **kwargs):
         return FakeProcess()
@@ -236,3 +234,54 @@ async def test_busctl_invalid_json_on_success_returns_one(monkeypatch):
     rc, data = await dbus_cli.busctl("call", "org.example", "/path", "iface", "Method")
     assert rc == 1
     assert data is None
+
+
+@pytest.mark.asyncio
+async def test_second_cancel_during_drain_still_drains(monkeypatch):
+    """A second cancellation during post-kill drain must not interrupt the drain; pipes must still be reaped."""
+    drain_gate = asyncio.Event()
+    drained = []
+
+    class FakeProcess:
+        def __init__(self):
+            self.returncode = None
+            self._killed = False
+
+        async def communicate(self):
+            if self._killed:
+                # Post-kill drain waits for the gate, then marks drained
+                await drain_gate.wait()
+                drained.append(True)
+                return b"", b""
+            # First communicate() call never returns unless killed
+            await asyncio.sleep(3600)
+            return b"", b""
+
+        def kill(self):
+            self._killed = True
+
+        async def wait(self):
+            raise AssertionError("busctl() must drain with communicate() after kill, not wait()")
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return FakeProcess()
+
+    monkeypatch.setattr(dbus_cli, "BUSCTL_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    task = asyncio.create_task(dbus_cli.busctl("call", "org.bluez", "/", "org.freedesktop.DBus.ObjectManager", "GetManagedObjects"))
+    # Let the task start and hit communicate()
+    await asyncio.sleep(0)
+    # First cancellation: triggers kill + drain
+    task.cancel()
+    # Let the cancellation propagate to the kill/drain point
+    await asyncio.sleep(0)
+    # Second cancellation: must not interrupt the drain
+    task.cancel()
+    # Now allow the drain to complete
+    drain_gate.set()
+    # The task must still raise CancelledError
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    # But the drain must have completed
+    assert drained, "proc.communicate() drain must complete even after second cancellation"
