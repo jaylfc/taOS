@@ -24,8 +24,11 @@ async def busctl(*args: str) -> tuple[int, object | None]:
         rc = proc.returncode if proc.returncode is not None else 1
         if rc != 0:
             return rc, None
+        stripped = (out or b"").strip()
+        if not stripped:
+            return 0, None
         try:
-            data = json.loads((out or b"").decode(errors="replace"))
+            data = json.loads(stripped.decode(errors="replace"))
             return rc, data
         except Exception:
             return 1, None
