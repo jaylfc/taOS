@@ -21,6 +21,7 @@ import {
   Lock,
   Presentation,
   Wifi,
+  Bluetooth,
 } from "lucide-react";
 import {
   Button,
@@ -44,13 +45,14 @@ import { NotificationsPanel } from "@/apps/SettingsApp/NotificationsPanel";
 import { LockScreenPanel } from "@/apps/SettingsApp/LockScreenPanel";
 import { DemoModePanel } from "@/apps/SettingsApp/DemoModePanel";
 import { WifiPanel } from "@/apps/SettingsApp/WifiPanel";
+import { BluetoothPanel } from "@/apps/SettingsApp/BluetoothPanel";
 import { copyText } from "@/lib/clipboard";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
-type Section = "account" | "system" | "storage" | "memory" | "backup" | "updates" | "advanced" | "shortcuts" | "accessibility" | "desktop" | "users" | "themes" | "logs" | "notifications" | "lock" | "demo" | "wifi";
+type Section = "account" | "system" | "storage" | "memory" | "backup" | "updates" | "advanced" | "shortcuts" | "accessibility" | "desktop" | "users" | "themes" | "logs" | "notifications" | "lock" | "demo" | "wifi" | "bluetooth";
 
 interface SectionDef {
   id: Section;
@@ -82,6 +84,7 @@ const SECTIONS: SectionDef[] = [
   { id: "account", label: "Account", icon: UserCircle },
   { id: "system", label: "System Info", icon: Info },
   { id: "wifi", label: "Wi-Fi", icon: Wifi },
+  { id: "bluetooth", label: "Bluetooth", icon: Bluetooth },
   { id: "storage", label: "Storage", icon: HardDrive },
   { id: "memory", label: "Memory", icon: Brain },
   { id: "backup", label: "Backup & Restore", icon: Download },
@@ -100,7 +103,7 @@ const SECTIONS: SectionDef[] = [
 
 // Sections that require admin privileges to view (GHSA-47g9: backend already
 // 403s these for non-admins, this hides them from the sidebar/content too).
-const ADMIN_ONLY = new Set(["system", "storage", "memory", "backup", "updates", "advanced", "users", "logs", "demo", "wifi"]);
+const ADMIN_ONLY = new Set(["system", "storage", "memory", "backup", "updates", "advanced", "users", "logs", "demo", "wifi", "bluetooth"]);
 
 const PLACEHOLDER_SYSTEM: SystemInfo = {
   cpu: "Detecting...",
@@ -996,6 +999,7 @@ export function SettingsApp({ windowId: _windowId, section: initialSection }: { 
     lock: <LockScreenPanel />,
     demo: <DemoModePanel />,
     wifi: <WifiPanel />,
+    bluetooth: <BluetoothPanel />,
   };
 
   const handleSelectSection = (id: Section) => {
