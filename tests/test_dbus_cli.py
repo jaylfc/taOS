@@ -178,6 +178,64 @@ async def test_timeout_with_flooding_child_returns_124(tmp_path, monkeypatch):
     assert await asyncio.wait_for(dbus_cli.busctl("x"), timeout=6) == (124, None)
 
 
+class _FakeProcess:
+    """Helper to create a fake subprocess with configurable returncode and output."""
+
+    def __init__(self, returncode: int, stdout: bytes, stderr: bytes = b""):
+        self.returncode = returncode
+        self._stdout = stdout
+        self._stderr = stderr
+        self.kill_called = False
+
+    async def communicate(self):
+        return self._stdout, self._stderr
+
+    def kill(self):
+        self.kill_called = True
+
+    async def wait(self):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_busctl_empty_stdout_on_success_returns_zero(monkeypatch):
+    """rc=0 with empty stdout should return (0, None), not (1, None)."""
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return _FakeProcess(returncode=0, stdout=b"")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    rc, data = await dbus_cli.busctl("set-property", "a", "/b", "c", "D", "b", "true")
+    assert rc == 0
+    assert data is None
+
+
+@pytest.mark.asyncio
+async def test_busctl_whitespace_stdout_on_success_returns_zero(monkeypatch):
+    """rc=0 with whitespace-only stdout should return (0, None)."""
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return _FakeProcess(returncode=0, stdout=b"   \n")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    rc, data = await dbus_cli.busctl("call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.DBus.Peer", "Ping")
+    assert rc == 0
+    assert data is None
+
+
+@pytest.mark.asyncio
+async def test_busctl_invalid_json_on_success_returns_one(monkeypatch):
+    """rc=0 with non-JSON stdout should still return (1, None) (guards against over-widening)."""
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return _FakeProcess(returncode=0, stdout=b"not json")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    rc, data = await dbus_cli.busctl("call", "org.example", "/path", "iface", "Method")
+    assert rc == 1
+    assert data is None
+
+
 @pytest.mark.asyncio
 async def test_second_cancel_during_drain_still_drains(monkeypatch):
     """A second cancellation during post-kill drain must not interrupt the drain; pipes must still be reaped."""
