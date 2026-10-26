@@ -37,7 +37,7 @@ async def busctl(*args: str) -> tuple[int, object | None]:
         except ProcessLookupError:
             pass
         try:
-            await proc.wait()
+            await proc.communicate()
         except ProcessLookupError:
             pass
         return 124, None
@@ -48,7 +48,7 @@ async def busctl(*args: str) -> tuple[int, object | None]:
             except ProcessLookupError:
                 pass
             try:
-                await proc.wait()
+                await proc.communicate()
             except ProcessLookupError:
                 pass
         raise
