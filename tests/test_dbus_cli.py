@@ -34,8 +34,7 @@ async def test_timeout_kills_process(monkeypatch):
             self._killed = True
 
         async def wait(self):
-            # Should not be called anymore
-            await asyncio.sleep(3600)
+            raise AssertionError("busctl() must drain with communicate() after kill, not wait()")
 
     async def fake_create_subprocess_exec(*args, **kwargs):
         return FakeProcess()
@@ -76,8 +75,7 @@ async def test_cancel_kills_and_reaps_process(monkeypatch):
             self._killed = True
 
         async def wait(self):
-            # Should not be called anymore
-            await asyncio.sleep(3600)
+            raise AssertionError("busctl() must drain with communicate() after kill, not wait()")
 
     async def fake_create_subprocess_exec(*args, **kwargs):
         return FakeProcess()
