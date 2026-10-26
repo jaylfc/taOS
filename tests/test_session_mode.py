@@ -92,3 +92,51 @@ async def test_unknown_mode_rejected_before_any_unit_is_touched(monkeypatch):
     resp = await system_routes.set_session_mode(_Req())
     assert resp.status_code == 400
     assert started == []
+
+
+@pytest.mark.asyncio
+async def test_state_unavailable_on_desk_without_fallback(monkeypatch):
+    async def fake(*args):
+        if args[0] == "cat":
+            unit = args[-1]
+            if unit == "taos-kiosk.service":
+                return 0, "# unit"
+            if unit == "plasma-mobile.service":
+                return 1, "No files found"
+            return 0, "# unit"
+        return 3, "inactive"
+
+    monkeypatch.setattr(system_routes, "_systemctl", fake)
+    state = await system_routes._session_mode_state()
+    assert state["available"] is False
+
+
+@pytest.mark.asyncio
+async def test_switch_refused_on_desk_without_fallback(monkeypatch):
+    started: list[str] = []
+
+    async def fake(*args):
+        if args[0] == "start":
+            started.append(args[-1])
+            return 0, ""
+        if args[0] == "cat":
+            unit = args[-1]
+            if unit == "taos-kiosk.service":
+                return 0, "# unit"
+            if unit == "plasma-mobile.service":
+                return 1, "No files found"
+            return 1, "No files found"
+        return 3, "inactive"
+
+    monkeypatch.setattr(system_routes, "_systemctl", fake)
+
+    class _Req:
+        async def body(self):
+            return b'{"mode":"kiosk"}'
+
+        async def json(self):
+            return {"mode": "kiosk"}
+
+    resp = await system_routes.set_session_mode(_Req())
+    assert resp.status_code == 404
+    assert started == []

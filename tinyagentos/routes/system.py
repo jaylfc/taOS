@@ -358,7 +358,9 @@ async def _session_mode_state() -> dict:
     # and rc is not. An unknown unit reports "inactive" too, so availability is
     # probed separately with `cat`, which fails only when the unit is absent.
     cat_rc, _ = await _systemctl("cat", _SESSION_UNITS["kiosk"])
-    available = cat_rc == 0
+    # availability needs both units because a desk has the kiosk unit and no fallback
+    plasma_cat_rc, _ = await _systemctl("cat", _SESSION_UNITS["plasma"])
+    available = cat_rc == 0 and plasma_cat_rc == 0
     _, plasma_state = await _systemctl("is-active", _SESSION_UNITS["plasma"])
     if kiosk_state == "active":
         current = "kiosk"
@@ -397,7 +399,7 @@ async def set_session_mode(request: Request):
     state = await _session_mode_state()
     if not state["available"]:
         return JSONResponse(
-            {"error": "this device has no taOS kiosk session installed"}, status_code=404,
+            {"error": "this device has no second session to switch to"}, status_code=404,
         )
     # Starting the target stops the other: the units Conflict. Doing it as two
     # jobs (stop-then-start) would leave a window with NO session on screen.
