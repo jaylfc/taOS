@@ -126,6 +126,28 @@ class AuthBrokerStore(BaseStore):
                 count += 1
         return count
 
+    async def open_request(self, requester: str, kind: str) -> dict | None:
+        """Return the newest open request for *requester* and *kind*.
+
+        An open request has status 'pending' or 'code_ready' and is not expired.
+        Returns None if no such request exists.
+        """
+        self._require_db()
+        now = _now()
+        async with self._db.execute(
+            "SELECT * FROM auth_broker_requests"
+            " WHERE requester = ? AND kind = ? AND status IN ('pending', 'code_ready')"
+            " ORDER BY created_at DESC LIMIT 1",
+            (requester, kind),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        rec = _row(row)
+        if self.expired(rec, now):
+            return None
+        return rec
+
     async def create(self, *, requester: str, kind: str, url: str, prompt: str = "") -> dict:
         self._require_db()
         if kind not in KINDS:

@@ -105,6 +105,14 @@ async def create_request(request: Request, body: CreateBody):
             status_code=422,
             detail="url must be https on an allowed sign-in host: claude.ai, console.anthropic.com",
         )
+    # Check for an existing open request for this agent and kind.
+    store = _store(request)
+    existing = await store.open_request(requester, body.kind)
+    if existing is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="a sign-in request is already open for this agent",
+        )
     # The card goes to the agent's owner. An agent the registry cannot attribute
     # (a bound local-token agent with no registry row) goes to the admins, who
     # are the only users allowed to answer it. Never user_id=None: that is a
@@ -117,7 +125,7 @@ async def create_request(request: Request, body: CreateBody):
         if not recipients:
             raise HTTPException(status_code=409, detail="no user to receive the sign-in card")
     try:
-        rec = await _store(request).create(
+        rec = await store.create(
             requester=requester, kind=body.kind, url=body.url, prompt=body.prompt.strip()
         )
     except ValueError as exc:

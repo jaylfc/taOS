@@ -2339,8 +2339,9 @@ is not usable inside a container until that follow-up lands. Store:
    must be `https` on an exact allowlisted host (`claude.ai`,
    `console.anthropic.com`; no subdomain, userinfo or non-443 port), else `422`:
    a card the user taps must never open a site the agent chose. An agent may have
-   at most 3 open (non-completed, non-expired) requests at once; the 4th returns
-   `429` with detail ``too many open sign-in requests``. Returns
+   at most one open (non-completed, non-expired) request per kind at once; a
+   second request for the same kind returns `409` with detail
+   ``a sign-in request is already open for this agent``. Returns
    `{id, kind, status, host, expires_in_seconds}` and raises an `auth_broker`
    notification to the agent's owner. An agent the registry cannot attribute (a
    bound local-token agent with no registry row) gets its card sent to each
