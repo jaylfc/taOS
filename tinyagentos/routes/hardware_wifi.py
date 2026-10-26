@@ -426,8 +426,9 @@ async def _nm_add_and_activate(settings: dict, device_path: str) -> str | None:
     except Exception:
         return "dbus_fast_missing"
 
-    bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+    bus = None
     try:
+        bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
         body_settings = {}
         for section, props in settings.items():
             section_dict = {}
@@ -451,4 +452,5 @@ async def _nm_add_and_activate(settings: dict, device_path: str) -> str | None:
     except Exception:
         return "dbus_call_failed"
     finally:
-        bus.disconnect()
+        if bus is not None:
+            bus.disconnect()

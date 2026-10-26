@@ -328,3 +328,44 @@ async def test_nm_add_and_activate_dbus_fast_missing(monkeypatch):
 
     result = await hw_routes._nm_add_and_activate({}, "/fake/path")
     assert result == "dbus_fast_missing"
+
+
+@pytest.mark.asyncio
+async def test_nm_add_and_activate_bus_connect_failure_returns_dbus_call_failed(monkeypatch):
+    """(i) _nm_add_and_activate returns 'dbus_call_failed' when system bus connect fails."""
+    class FakeBusType:
+        SYSTEM = "system"
+
+    class FakeMessage:
+        pass
+
+    class FakeMessageType:
+        ERROR = "error"
+
+    class FakeVariant:
+        def __init__(self, sig, val):
+            self.sig = sig
+            self.val = val
+
+    class FakeMessageBus:
+        def __init__(self, bus_type=None):
+            self.bus_type = bus_type
+
+        async def connect(self):
+            raise OSError("no system bus")
+
+    fake_dbus_fast = type("module", (), {
+        "BusType": FakeBusType,
+        "Message": FakeMessage,
+        "MessageType": FakeMessageType,
+        "Variant": FakeVariant,
+    })
+    fake_dbus_fast_aio = type("module", (), {
+        "MessageBus": FakeMessageBus,
+    })
+
+    monkeypatch.setitem(sys.modules, "dbus_fast", fake_dbus_fast)
+    monkeypatch.setitem(sys.modules, "dbus_fast.aio", fake_dbus_fast_aio)
+
+    result = await hw_routes._nm_add_and_activate({"connection": {"id": ("s", "x")}}, "/d")
+    assert result == "dbus_call_failed"
