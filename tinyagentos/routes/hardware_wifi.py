@@ -436,6 +436,38 @@ async def _nm_add_and_activate(settings: dict, device_path: str) -> str | None:
                 section_dict[key] = Variant(sig, val)
             body_settings[section] = section_dict
 
+        # Reuse an existing profile for this SSID instead of creating a new one
+        # on every connect. GetSettings is read-only; the follow-up Update is
+        # what carries the PSK.
+        existing = await _nm_find_existing_connection(bus, body_settings, Message, MessageType)
+        if existing is not None:
+            if body_settings.get("802-11-wireless-security") is not None:
+                update_reply = await bus.call(
+                    Message(
+                        destination="org.freedesktop.NetworkManager",
+                        path=existing,
+                        interface="org.freedesktop.NetworkManager.Settings.Connection",
+                        member="Update",
+                        signature="a{sa{sv}}",
+                        body=[body_settings],
+                    )
+                )
+                if update_reply.message_type == MessageType.ERROR:
+                    return update_reply.error_name
+            activate_reply = await bus.call(
+                Message(
+                    destination="org.freedesktop.NetworkManager",
+                    path="/org/freedesktop/NetworkManager",
+                    interface="org.freedesktop.NetworkManager",
+                    member="ActivateConnection",
+                    signature="soo",
+                    body=[existing, device_path, "/"],
+                )
+            )
+            if activate_reply.message_type == MessageType.ERROR:
+                return activate_reply.error_name
+            return None
+
         reply = await bus.call(
             Message(
                 destination="org.freedesktop.NetworkManager",
@@ -454,3 +486,72 @@ async def _nm_add_and_activate(settings: dict, device_path: str) -> str | None:
     finally:
         if bus is not None:
             bus.disconnect()
+
+
+async def _nm_find_existing_connection(bus, settings: dict, Message, MessageType) -> str | None:
+    """Return the path of an existing 802-11-wireless connection whose SSID
+    bytes match the requested settings, or None."""
+    reply = await bus.call(
+        Message(
+            destination="org.freedesktop.NetworkManager",
+            path="/org/freedesktop/NetworkManager/Settings",
+            interface="org.freedesktop.NetworkManager.Settings",
+            member="ListConnections",
+            signature="",
+            body=[],
+        )
+    )
+    if reply.message_type == MessageType.ERROR:
+        return None
+    paths = reply.body[0] if reply.body else []
+    if isinstance(paths, list) and len(paths) > 0 and isinstance(paths[0], list):
+        paths = paths[0]
+    if not isinstance(paths, list):
+        return None
+
+    wanted_ssid = None
+    wireless = settings.get("802-11-wireless")
+    if isinstance(wireless, dict):
+        ssid_variant = wireless.get("ssid")
+        if ssid_variant is not None:
+            wanted_ssid = ssid_variant.value
+    if not isinstance(wanted_ssid, (bytes, bytearray)):
+        return None
+    wanted_ssid = bytes(wanted_ssid)
+
+    for path in paths:
+        if not isinstance(path, str):
+            continue
+        settings_reply = await bus.call(
+            Message(
+                destination="org.freedesktop.NetworkManager",
+                path=path,
+                interface="org.freedesktop.NetworkManager.Settings.Connection",
+                member="GetSettings",
+                signature="",
+                body=[],
+            )
+        )
+        if settings_reply.message_type == MessageType.ERROR:
+            continue
+        sections = settings_reply.body[0] if settings_reply.body else {}
+        if isinstance(sections, list) and len(sections) > 0 and isinstance(sections[0], dict):
+            sections = sections[0]
+        if not isinstance(sections, dict):
+            continue
+        conn = sections.get("connection")
+        conn_type = _nm_variant_value(conn, "type") if isinstance(conn, dict) else None
+        if conn_type != "802-11-wireless":
+            continue
+        wireless_section = sections.get("802-11-wireless")
+        ssid = _nm_variant_value(wireless_section, "ssid") if isinstance(wireless_section, dict) else None
+        if isinstance(ssid, (bytes, bytearray)) and bytes(ssid) == wanted_ssid:
+            return path
+    return None
+
+
+def _nm_variant_value(section: dict, key: str) -> object:
+    variant = section.get(key)
+    if variant is None:
+        return None
+    return getattr(variant, "value", variant)
