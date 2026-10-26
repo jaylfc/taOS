@@ -21,7 +21,7 @@
 
 ### POST /api/hardware/wifi/connect
 
-- Body: `{ssid, psk?, iface?}`; PSK via dbus-fast in-process
+- Body: `{ssid, psk?, iface?}`; PSK via dbus-fast in-process, never on a busctl argv
 - 503 `networkmanager_unavailable` / `dbus_fast_missing`
 - 422 `invalid_ssid` / `invalid_psk`; 404 `no_wifi_device` / `unknown_iface`
 - 403 `not_permitted` (polkit); 502 `connect_failed`
