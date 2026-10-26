@@ -84,3 +84,42 @@ async def test_cancel_kills_and_reaps_process(monkeypatch):
     
     assert kill_called, "proc.kill() should have been called on cancellation"
     assert waited, "proc.wait() should have been called on cancellation"
+
+
+@pytest.mark.asyncio
+async def test_cancel_before_spawn_propagates_cancelled(monkeypatch):
+    """If cancellation lands before create_subprocess_exec returns, CancelledError must propagate (no UnboundLocalError)."""
+    started = asyncio.Event()
+
+    class FakeProcess:
+        def __init__(self):
+            self.returncode = None
+
+        async def communicate(self):
+            await asyncio.sleep(3600)
+            return b"", b""
+
+        def kill(self):
+            pass
+
+        async def wait(self):
+            pass
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        # Signal that we've been called, then never return
+        started.set()
+        await asyncio.Event().wait()
+        return FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    task = asyncio.create_task(dbus_cli.busctl("call", "org.bluez", "/", "org.freedesktop.DBus.ObjectManager", "GetManagedObjects"))
+    # Wait for the fake to be entered
+    await started.wait()
+    # Yield control so the task is at the await point
+    await asyncio.sleep(0)
+    # Cancel before create_subprocess_exec returns
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
