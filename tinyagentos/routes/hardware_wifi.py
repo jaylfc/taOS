@@ -1,43 +1,15 @@
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 
 from fastapi import APIRouter, Depends
 
 from tinyagentos.auth_context import require_admin
+from tinyagentos.dbus_cli import busctl
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-
-async def _busctl(*args: str) -> tuple[int, object | None]:
-    """Run busctl --json=short and return (rc, parsed JSON or None). Never raises."""
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "busctl",
-            "--json=short",
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
-        rc = proc.returncode if proc.returncode is not None else 1
-        if rc != 0:
-            return rc, None
-        try:
-            data = json.loads((out or b"").decode(errors="replace"))
-            return rc, data
-        except Exception:
-            return 1, None
-    except FileNotFoundError:
-        return 127, None
-    except asyncio.TimeoutError:
-        return 124, None
-    except Exception:
-        return 1, None
 
 
 def _get_data(val: object | None) -> object | None:
@@ -49,7 +21,7 @@ def _get_data(val: object | None) -> object | None:
 @router.get("/api/hardware/wifi", dependencies=[Depends(require_admin)])
 async def get_wifi():
     """Read Wi-Fi state and access points via NetworkManager D-Bus."""
-    rc, val = await _busctl(
+    rc, val = await busctl(
         "get-property",
         "org.freedesktop.NetworkManager",
         "/org/freedesktop/NetworkManager",
@@ -60,7 +32,7 @@ async def get_wifi():
         return {"available": False, "wifi_enabled": None, "devices": [], "access_points": []}
 
     wifi_enabled = _get_data(val)
-    rc, devices_data = await _busctl(
+    rc, devices_data = await busctl(
         "call",
         "org.freedesktop.NetworkManager",
         "/org/freedesktop/NetworkManager",
@@ -82,7 +54,7 @@ async def get_wifi():
     aps_out = []
 
     for path in device_paths:
-        rc_dt, dt_val = await _busctl(
+        rc_dt, dt_val = await busctl(
             "get-property",
             "org.freedesktop.NetworkManager",
             path,
@@ -94,14 +66,14 @@ async def get_wifi():
         dt = _get_data(dt_val)
         if dt != 2:
             continue
-        rc_if, if_val = await _busctl(
+        rc_if, if_val = await busctl(
             "get-property",
             "org.freedesktop.NetworkManager",
             path,
             "org.freedesktop.NetworkManager.Device",
             "Interface",
         )
-        rc_st, st_val = await _busctl(
+        rc_st, st_val = await busctl(
             "get-property",
             "org.freedesktop.NetworkManager",
             path,
@@ -120,7 +92,7 @@ async def get_wifi():
                 state = None
         devices_out.append({"path": path, "iface": iface, "state": state})
 
-        rc_ap, ap_val = await _busctl(
+        rc_ap, ap_val = await busctl(
             "get-property",
             "org.freedesktop.NetworkManager",
             path,
@@ -131,7 +103,7 @@ async def get_wifi():
         if not isinstance(active_ap, str):
             active_ap = None
 
-        rc_aps, aps_val = await _busctl(
+        rc_aps, aps_val = await busctl(
             "call",
             "org.freedesktop.NetworkManager",
             path,
@@ -150,7 +122,7 @@ async def get_wifi():
 
         for ap_path in ap_paths:
             try:
-                rc_ssid, ssid_val = await _busctl(
+                rc_ssid, ssid_val = await busctl(
                     "get-property",
                     "org.freedesktop.NetworkManager",
                     ap_path,
@@ -169,7 +141,7 @@ async def get_wifi():
                     continue
                 if not ssid:
                     continue
-                rc_str, str_val = await _busctl(
+                rc_str, str_val = await busctl(
                     "get-property",
                     "org.freedesktop.NetworkManager",
                     ap_path,
@@ -179,7 +151,7 @@ async def get_wifi():
                 if rc_str != 0:
                     continue
                 strength = _get_data(str_val)
-                rc_freq, freq_val = await _busctl(
+                rc_freq, freq_val = await busctl(
                     "get-property",
                     "org.freedesktop.NetworkManager",
                     ap_path,
@@ -189,14 +161,14 @@ async def get_wifi():
                 if rc_freq != 0:
                     continue
                 frequency = _get_data(freq_val)
-                rc_wpa, wpa_val = await _busctl(
+                rc_wpa, wpa_val = await busctl(
                     "get-property",
                     "org.freedesktop.NetworkManager",
                     ap_path,
                     "org.freedesktop.NetworkManager.AccessPoint",
                     "WpaFlags",
                 )
-                rc_rsn, rsn_val = await _busctl(
+                rc_rsn, rsn_val = await busctl(
                     "get-property",
                     "org.freedesktop.NetworkManager",
                     ap_path,

@@ -17,7 +17,7 @@ async def test_unavailable_when_networkmanager_absent(monkeypatch):
             return 1, None
         raise AssertionError(f"unexpected busctl call: {args}")
 
-    monkeypatch.setattr(hw_routes, "_busctl", fake)
+    monkeypatch.setattr(hw_routes, "busctl", fake)
     resp = await hw_routes.get_wifi()
     assert resp == {"available": False, "wifi_enabled": None, "devices": [], "access_points": []}
     assert calls == [("get-property", "org.freedesktop.NetworkManager", "/org/freedesktop/NetworkManager", "org.freedesktop.NetworkManager", "WirelessEnabled")]
@@ -76,7 +76,7 @@ async def test_lists_wifi_aps_sorted_and_marks_active(monkeypatch):
                 return 0, 0x188
         raise AssertionError(f"unexpected busctl call: {args}")
 
-    monkeypatch.setattr(hw_routes, "_busctl", fake)
+    monkeypatch.setattr(hw_routes, "busctl", fake)
     resp = await hw_routes.get_wifi()
     assert resp["available"] is True
     assert resp["wifi_enabled"] is True
@@ -122,6 +122,6 @@ async def test_failed_ap_read_is_skipped(monkeypatch):
                 return 0, 0
         raise AssertionError(f"unexpected busctl call: {args}")
 
-    monkeypatch.setattr(hw_routes, "_busctl", fake)
+    monkeypatch.setattr(hw_routes, "busctl", fake)
     resp = await hw_routes.get_wifi()
     assert resp["access_points"] == [{"ssid": "home", "strength": 40, "frequency": 5180, "secured": False, "active": True}]
