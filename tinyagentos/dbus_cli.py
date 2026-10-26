@@ -9,6 +9,26 @@ logger = logging.getLogger(__name__)
 BUSCTL_TIMEOUT_S = 10
 
 
+async def _drain_after_kill(proc) -> None:
+    """Drain process pipes after kill, shielding from cancellation.
+    If cancelled during drain, the drain continues to completion and
+    CancelledError is re-raised afterwards.
+    """
+    task = asyncio.ensure_future(proc.communicate())
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    try:
+        task.result()
+    except ProcessLookupError:
+        pass
+    if cancelled:
+        raise asyncio.CancelledError()
+
+
 async def busctl(*args: str) -> tuple[int, object | None]:
     """Run busctl --json=short and return (rc, parsed JSON or None). Never raises, except to propagate cancellation."""
     proc = None
@@ -37,7 +57,7 @@ async def busctl(*args: str) -> tuple[int, object | None]:
         except ProcessLookupError:
             pass
         try:
-            await proc.communicate()
+            await _drain_after_kill(proc)
         except ProcessLookupError:
             pass
         return 124, None
@@ -48,7 +68,7 @@ async def busctl(*args: str) -> tuple[int, object | None]:
             except ProcessLookupError:
                 pass
             try:
-                await proc.communicate()
+                await _drain_after_kill(proc)
             except ProcessLookupError:
                 pass
         raise
