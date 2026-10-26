@@ -73,6 +73,8 @@ dependencies = [
     # (tinyagentos/routes/apps.py). Previously only reachable through the
     # proxy extra and the dev group, so a bare `uv sync` did not install it.
     "packaging>=24",
+    # needed by the hardware Wi-Fi connect route (PSK over the system bus in-process, never on a busctl argv).
+    "dbus-fast>=5.0.22; sys_platform == 'linux'",
     # YouTube/X knowledge ingestion shells out to the yt-dlp CLI
     # (tinyagentos/knowledge_fetchers/{youtube,x}.py). install-server.sh used to
     # `pip install yt-dlp` after the editable install, which put a package on
