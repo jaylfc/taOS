@@ -142,33 +142,41 @@ def test_desktop_cli_run_unit_found():
             mock_run.assert_any_call(["systemctl", "start", "taos-kiosk.service"])
 
 
-def test_desktop_cli_status_disabled():
-    """Test status reports disabled when is-enabled prints disabled."""
+def test_desktop_cli_enable_non_root_uses_resolved_path(capsys):
+    """Test that enable as non-root prints resolved path from sys.argv[0]."""
+    with patch('tinyagentos.desktop_cli.os.geteuid', return_value=1000):
+        with patch('tinyagentos.desktop_cli._run') as mock_run:
+            with patch('tinyagentos.desktop_cli.sys.argv', ['/opt/x/.venv/bin/taos', 'desktop', 'enable']):
+                result = desktop_cli(["enable"])
+                assert result == 1
+                mock_run.assert_not_called()
+                captured = capsys.readouterr()
+                assert '/opt/x/.venv/bin/taos desktop enable' in captured.err
+
+
+def test_desktop_cli_launcher_add_uses_resolved_path(capsys):
+    """Test that launcher add as non-root prints resolved path from sys.argv[0]."""
+    with patch('tinyagentos.desktop_cli.os.geteuid', return_value=1000):
+        with patch('tinyagentos.desktop_cli._run') as mock_run:
+            with patch('tinyagentos.desktop_cli.sys.argv', ['/opt/x/.venv/bin/taos', 'desktop', 'launcher', 'add']):
+                result = desktop_cli(["launcher", "add"])
+                assert result == 1
+                mock_run.assert_not_called()
+                captured = capsys.readouterr()
+                assert '/opt/x/.venv/bin/taos desktop launcher add' in captured.err
+
+
+def test_desktop_cli_run_unit_not_found_uses_resolved_path(capsys):
+    """Test run with unit absent prints resolved path from sys.argv[0]."""
     with patch('tinyagentos.desktop_cli.os.geteuid', return_value=0):
         with patch('tinyagentos.desktop_cli._run') as mock_run:
-            with patch('tinyagentos.desktop_cli._capture') as mock_capture:
-                # Mock systemctl is-enabled to return 1 with "disabled" output
+            with patch('tinyagentos.desktop_cli.sys.argv', ['/opt/x/.venv/bin/taos', 'desktop', 'run']):
                 mock_run.return_value = 1
-                mock_capture.return_value = "disabled"
-
-                # Mock systemctl is-active to return 1 with "inactive" output
-                def side_effect(cmd, **kwargs):
-                    if cmd == ["systemctl", "is-enabled", "taos-kiosk.service"]:
-                        return MagicMock(returncode=1, stdout="disabled")
-                    elif cmd == ["systemctl", "is-active", "taos-kiosk.service"]:
-                        return MagicMock(returncode=1, stdout="inactive")
-                    else:
-                        return MagicMock(returncode=0, stdout="")
-                
-                mock_run.side_effect = side_effect
-
-                result = desktop_cli(["status"])
-                assert result == 0
-
-                # Verify _run was called for both is-enabled and is-active
-                assert mock_run.call_count >= 2
-                mock_run.assert_any_call(["systemctl", "is-enabled", "taos-kiosk.service"])
-                mock_run.assert_any_call(["systemctl", "is-active", "taos-kiosk.service"])
+                result = desktop_cli(["run"])
+                assert result == 1
+                mock_run.assert_called_once_with(["systemctl", "cat", "taos-kiosk.service"])
+                captured = capsys.readouterr()
+                assert '/opt/x/.venv/bin/taos desktop enable' in captured.err
 
 
 def test_desktop_cli_status_enabled():
@@ -190,7 +198,34 @@ def test_desktop_cli_status_enabled():
                 mock_run.assert_any_call(["systemctl", "is-active", "taos-kiosk.service"])
 
 
-# Test the individual helper functions directly
+def test_desktop_cli_status_disabled(capsys):
+    """Test status reports disabled when is-enabled prints disabled."""
+    with patch('tinyagentos.desktop_cli.os.geteuid', return_value=0):
+        with patch('tinyagentos.desktop_cli._run') as mock_run:
+            with patch('tinyagentos.desktop_cli._capture') as mock_capture:
+                def run_side_effect(cmd):
+                    if cmd == ["systemctl", "is-enabled", "taos-kiosk.service"]:
+                        return 1
+                    elif cmd == ["systemctl", "is-active", "taos-kiosk.service"]:
+                        return 3
+                    return 0
+
+                def capture_side_effect(cmd):
+                    if cmd == ["systemctl", "is-enabled", "taos-kiosk.service"]:
+                        return "disabled"
+                    elif cmd == ["systemctl", "is-active", "taos-kiosk.service"]:
+                        return "inactive"
+                    return ""
+
+                mock_run.side_effect = run_side_effect
+                mock_capture.side_effect = capture_side_effect
+
+                result = desktop_cli(["status"])
+                assert result == 0
+
+                captured = capsys.readouterr()
+                assert "local desktop: disabled" in captured.out
+                assert "session: inactive" in captured.out
 def test_desktop_enable_helper_non_root():
     """Test _desktop_enable directly when not root."""
     from tinyagentos.desktop_cli import _desktop_enable

@@ -16,6 +16,10 @@ from tinyagentos.app import PROJECT_DIR
 
 KIOSK_UNIT = "taos-kiosk.service"
 LAUNCHER_SCRIPT = PROJECT_DIR / "scripts" / "desktop-launcher.sh"
+
+
+def _sudo_hint(sub: str) -> str:
+    return f"sudo {os.path.abspath(sys.argv[0])} desktop {sub}"
 def _run(cmd: list[str]) -> int:
     """Run a command and return its exit code.
 
@@ -86,7 +90,7 @@ def desktop_cli(argv: list[str]) -> int:
 def _desktop_enable(args) -> int:
     """Enable the local desktop session."""
     if os.geteuid() != 0:
-        print("taos desktop enable needs root: run it with sudo", file=sys.stderr)
+        print(f"taos desktop enable needs root: run {_sudo_hint('enable')}", file=sys.stderr)
         return 1
 
     # Check if unit exists; if not, run kiosk-setup.sh first
@@ -115,7 +119,7 @@ def _desktop_enable(args) -> int:
 def _desktop_disable(args) -> int:
     """Disable the local desktop session."""
     if os.geteuid() != 0:
-        print("taos desktop disable needs root: run it with sudo", file=sys.stderr)
+        print(f"taos desktop disable needs root: run {_sudo_hint('disable')}", file=sys.stderr)
         return 1
 
     # Check if unit exists; if not, just return success
@@ -128,13 +132,13 @@ def _desktop_disable(args) -> int:
 def _desktop_run(args) -> int:
     """Start the local desktop session without enabling it."""
     if os.geteuid() != 0:
-        print("taos desktop run needs root: run it with sudo", file=sys.stderr)
+        print(f"taos desktop run needs root: run {_sudo_hint('run')}", file=sys.stderr)
         return 1
 
     # Check if unit exists; if not, error
     if _run(["systemctl", "cat", KIOSK_UNIT]) != 0:
         print(
-            "local desktop is not installed: run sudo taos desktop enable",
+            f"local desktop is not installed: run {_sudo_hint('enable')}",
             file=sys.stderr,
         )
         return 1
@@ -158,6 +162,8 @@ def _desktop_status(args) -> int:
     active_rc = _run(["systemctl", "is-active", KIOSK_UNIT])
     if active_rc == 0:
         active_status = "active"
+    elif active_output.strip() == "inactive":
+        active_status = "inactive"
     elif active_rc == 1 and "inactive" in active_output:
         active_status = "inactive"
     else:
@@ -169,7 +175,7 @@ def _desktop_status(args) -> int:
 def _desktop_launcher(args) -> int:
     """Manage the guest-mode desktop launcher (system-wide .desktop entry)."""
     if os.geteuid() != 0:
-        print("taos desktop launcher needs root: run it with sudo", file=sys.stderr)
+        print(f"taos desktop launcher needs root: run {_sudo_hint(f'launcher {args.action}')}", file=sys.stderr)
         return 1
 
     action = args.action
