@@ -16,6 +16,8 @@ Tests:
    AFTER the install_rk3588_perf_if_needed call line and calls resolve_desktop_mode
    AFTER the warn() definition line and BEFORE the 'Linux)  ensure_linux_deps ;;' line.
 6. no em dashes (U+2014) in resolve_desktop_mode or install_local_desktop_if_chosen.
+7. install_guest_launcher_if_desktop is called AFTER install_local_desktop_if_chosen.
+8. install_guest_launcher_if_desktop returns 0 when DESKTOP_MODE=local without invoking the script.
 """
 
 from __future__ import annotations
@@ -211,6 +213,71 @@ def test_no_em_dash_in_desktop_functions() -> None:
         assert "\u2014" not in func_text, (
             f"em dash (U+2014) found in {func_name}(); replace with ' -- '"
         )
+
+
+def test_call_order_install_guest_launcher_after_local_desktop() -> None:
+    """install_guest_launcher_if_desktop is called AFTER install_local_desktop_if_chosen."""
+    text = SERVER_SCRIPT.read_text()
+    local_desktop_line = None
+    guest_launcher_line = None
+    for i, line in enumerate(text.splitlines(), 1):
+        stripped = line.strip()
+        if stripped == "install_local_desktop_if_chosen":
+            local_desktop_line = i
+        elif stripped == "install_guest_launcher_if_desktop":
+            guest_launcher_line = i
+    assert local_desktop_line is not None, "install_local_desktop_if_chosen call not found"
+    assert guest_launcher_line is not None, "install_guest_launcher_if_desktop call not found"
+    assert guest_launcher_line > local_desktop_line, (
+        f"install_guest_launcher_if_desktop (line {guest_launcher_line}) must be called "
+        f"AFTER install_local_desktop_if_chosen (line {local_desktop_line})"
+    )
+
+
+def test_install_guest_launcher_local_mode_returns_0_without_script(tmp_path: Path) -> None:
+    """install_guest_launcher_if_desktop returns 0 when DESKTOP_MODE=local without invoking the script."""
+    function_body = _extract_function(SERVER_SCRIPT, "install_guest_launcher_if_desktop")
+    # Create a stub script that fails if called (to verify it's not invoked)
+    stub_script = tmp_path / "desktop-launcher.sh"
+    stub_script.write_text("#!/usr/bin/env bash\necho 'STUB CALLED - SHOULD NOT HAPPEN' >&2\nexit 1\n")
+    stub_script.chmod(0o755)
+
+    wrapper = tmp_path / "wrapper.sh"
+    wrapper.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "log() { printf '[server-install] %s\\n' \"$*\"; }\n"
+        "warn() { printf '[server-install] %s\\n' \"$*\" >&2; }\n"
+        "INSTALL_DIR=\"" + str(tmp_path) + "\"\n"
+        "DESKTOP_MODE=local\n"
+        "TAOS_PORT=6969\n"
+        + function_body
+        + "\ninstall_guest_launcher_if_desktop\n"
+        + 'echo "RESULT=$?"\n'
+    )
+    wrapper.chmod(0o755)
+
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "LANG": "C.UTF-8",
+        "HOME": str(tmp_path),
+    }
+
+    result = subprocess.run(
+        ["/usr/bin/env", "bash", str(wrapper)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert "RESULT=0" in result.stdout, (
+        f"expected RESULT=0 when DESKTOP_MODE=local; "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    assert "STUB CALLED" not in result.stdout + result.stderr, (
+        "stub script should not be invoked when DESKTOP_MODE=local"
+    )
 
 
 def test_local_desktop_sets_graphical_default_target() -> None:

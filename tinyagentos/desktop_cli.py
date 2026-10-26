@@ -1,7 +1,8 @@
-"""``taos desktop enable|disable|run|status`` -- manage local desktop session
+"""``taos desktop enable|disable|run|status|launcher`` -- manage local desktop session
 
 Manages the taOS local desktop session by enabling, disabling, starting, or checking
-the status of the taos-kiosk.service systemd unit.
+the status of the taos-kiosk.service systemd unit, and managing the guest-mode
+desktop launcher (system-wide .desktop entry).
 """
 from __future__ import annotations
 
@@ -14,19 +15,20 @@ from pathlib import Path
 from tinyagentos.app import PROJECT_DIR
 
 KIOSK_UNIT = "taos-kiosk.service"
+LAUNCHER_SCRIPT = PROJECT_DIR / "scripts" / "desktop-launcher.sh"
 
 
 def _sudo_hint(sub: str) -> str:
     return f"sudo {os.path.abspath(sys.argv[0])} desktop {sub}"
 def _run(cmd: list[str]) -> int:
     """Run a command and return its exit code.
-    
+
     Use this for all systemctl/bash calls so tests can patch it.
     """
     return subprocess.call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 def _capture(cmd: list[str]) -> str:
     """Run a command and return its stdout as string.
-    
+
     Use this for reading systemctl output; route all subprocess use through
     patchable helpers.
     """
@@ -34,9 +36,9 @@ def _capture(cmd: list[str]) -> str:
     return result.stdout.strip()
 def desktop_cli(argv: list[str]) -> int:
     """The taos desktop CLI entry point.
-    
+
     Mirrors tinyagentos.reset_cli.reset_cli in shape: argparse with
-    subcommands enable, disable, run, status.
+    subcommands enable, disable, run, status, launcher.
     """
     parser = ArgumentParser(
         prog="taos desktop",
@@ -71,6 +73,17 @@ def desktop_cli(argv: list[str]) -> int:
         help="Check the local desktop session status",
     )
     p_status.set_defaults(func=lambda args: _desktop_status(args))
+
+    # --- launcher ---
+    p_launcher = subparsers.add_parser(
+        "launcher",
+        help="Manage the guest-mode desktop launcher (system-wide .desktop entry)",
+    )
+    p_launcher.add_argument(
+        "action",
+        help="Add or remove the launcher (add|remove)",
+    )
+    p_launcher.set_defaults(func=lambda args: _desktop_launcher(args))
 
     ns = parser.parse_args(argv)
     return ns.func(ns)
@@ -159,5 +172,21 @@ def _desktop_status(args) -> int:
     print(f"local desktop: {enabled_status}")
     print(f"session: {active_status}")
     return 0
+def _desktop_launcher(args) -> int:
+    """Manage the guest-mode desktop launcher (system-wide .desktop entry)."""
+    if os.geteuid() != 0:
+        print("taos desktop launcher needs root: run it with sudo", file=sys.stderr)
+        return 1
+
+    action = args.action
+    if action == "add":
+        script_action = "install"
+    elif action == "remove":
+        script_action = "remove"
+    else:
+        print(f"taos desktop launcher: invalid action '{action}' (choose from 'add', 'remove')", file=sys.stderr)
+        return 1
+
+    return _run(["bash", str(LAUNCHER_SCRIPT), script_action])
 if __name__ == "__main__":
     sys.exit(desktop_cli(sys.argv[1:]))
