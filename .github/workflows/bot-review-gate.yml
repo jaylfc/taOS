@@ -197,7 +197,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
-        run: python scripts/rerun_failed_bot_review_runs.py --head-sha "${PR_HEAD}"
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: python scripts/rerun_failed_bot_review_runs.py --head-sha "${PR_HEAD}" --pr "${PR_NUMBER}"
 
   re-run-on-stub-comment:
     # Closes the timing hole (DEFECT 2): issue_comment events run against the
