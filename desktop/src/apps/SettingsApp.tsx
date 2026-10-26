@@ -20,6 +20,7 @@ import {
   Bell,
   Lock,
   Presentation,
+  Wifi,
 } from "lucide-react";
 import {
   Button,
@@ -42,13 +43,14 @@ import { LogsSection } from "@/apps/SettingsApp/LogsPanel";
 import { NotificationsPanel } from "@/apps/SettingsApp/NotificationsPanel";
 import { LockScreenPanel } from "@/apps/SettingsApp/LockScreenPanel";
 import { DemoModePanel } from "@/apps/SettingsApp/DemoModePanel";
+import { WifiPanel } from "@/apps/SettingsApp/WifiPanel";
 import { copyText } from "@/lib/clipboard";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
-type Section = "account" | "system" | "storage" | "memory" | "backup" | "updates" | "advanced" | "shortcuts" | "accessibility" | "desktop" | "users" | "themes" | "logs" | "notifications" | "lock" | "demo";
+type Section = "account" | "system" | "storage" | "memory" | "backup" | "updates" | "advanced" | "shortcuts" | "accessibility" | "desktop" | "users" | "themes" | "logs" | "notifications" | "lock" | "demo" | "wifi";
 
 interface SectionDef {
   id: Section;
@@ -79,6 +81,7 @@ interface StorageItem {
 const SECTIONS: SectionDef[] = [
   { id: "account", label: "Account", icon: UserCircle },
   { id: "system", label: "System Info", icon: Info },
+  { id: "wifi", label: "Wi-Fi", icon: Wifi },
   { id: "storage", label: "Storage", icon: HardDrive },
   { id: "memory", label: "Memory", icon: Brain },
   { id: "backup", label: "Backup & Restore", icon: Download },
@@ -97,7 +100,7 @@ const SECTIONS: SectionDef[] = [
 
 // Sections that require admin privileges to view (GHSA-47g9: backend already
 // 403s these for non-admins, this hides them from the sidebar/content too).
-const ADMIN_ONLY = new Set(["system", "storage", "memory", "backup", "updates", "advanced", "users", "logs", "demo"]);
+const ADMIN_ONLY = new Set(["system", "storage", "memory", "backup", "updates", "advanced", "users", "logs", "demo", "wifi"]);
 
 const PLACEHOLDER_SYSTEM: SystemInfo = {
   cpu: "Detecting...",
@@ -992,6 +995,7 @@ export function SettingsApp({ windowId: _windowId, section: initialSection }: { 
     notifications: <NotificationsPanel />,
     lock: <LockScreenPanel />,
     demo: <DemoModePanel />,
+    wifi: <WifiPanel />,
   };
 
   const handleSelectSection = (id: Section) => {
