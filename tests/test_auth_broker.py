@@ -76,10 +76,10 @@ async def test_create_accepts_allowlisted_hosts(client, app):
     assert resp1.status_code == 200, resp1.text
     assert resp1.json()["id"]
 
-    # Second request with different allowlisted host but same kind is rejected (one per agent per kind)
-    resp2 = await _create(client, app, url="https://console.anthropic.com/oauth/authorize?x=1")
-    assert resp2.status_code == 409, resp2.text
-    assert "a sign-in request is already open for this agent" in resp2.text
+    # Second request with different allowlisted host but same kind, different agent is accepted
+    resp2 = await _create(client, app, "other-agent", url="https://console.anthropic.com/oauth/authorize?x=1")
+    assert resp2.status_code == 200, resp2.text
+    assert resp2.json()["id"]
 
 
 @pytest.mark.asyncio
