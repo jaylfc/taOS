@@ -312,7 +312,7 @@ async def test_connect_psk_7_chars_returns_422_invalid_psk(monkeypatch):
         raise AssertionError(f"busctl should not be called for invalid psk: {args}")
 
     monkeypatch.setattr(hw_routes, "busctl", fake_busctl)
-    body = hw_routes.WifiConnectBody(ssid="MyNetwork", psk="short")  # 5 chars
+    body = hw_routes.WifiConnectBody(ssid="MyNetwork", psk="short7")  # 7 chars
     resp = await hw_routes.wifi_connect(body)
     assert resp.status_code == 422
     assert _json_body(resp) == {"error": "invalid_psk"}

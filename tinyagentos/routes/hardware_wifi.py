@@ -278,11 +278,11 @@ async def get_wifi():
     }
 
 
-async def _nm_unavailable_response() -> JSONResponse:
+def _nm_unavailable_response() -> JSONResponse:
     return JSONResponse({"error": "networkmanager_unavailable"}, status_code=503)
 
 
-async def _write_failed_response() -> JSONResponse:
+def _write_failed_response() -> JSONResponse:
     return JSONResponse(
         {
             "error": "write_failed",
@@ -302,7 +302,7 @@ async def set_wifi_enabled(body: WifiEnabledBody):
         "WirelessEnabled",
     )
     if rc != 0:
-        return await _nm_unavailable_response()
+        return _nm_unavailable_response()
 
     enabled_str = "true" if body.enabled else "false"
     rc, _ = await busctl(
@@ -315,7 +315,7 @@ async def set_wifi_enabled(body: WifiEnabledBody):
         enabled_str,
     )
     if rc != 0:
-        return await _write_failed_response()
+        return _write_failed_response()
     return {"ok": True, "wifi_enabled": body.enabled}
 
 
@@ -329,7 +329,7 @@ async def wifi_disconnect(body: WifiDisconnectBody):
         "WirelessEnabled",
     )
     if rc != 0:
-        return await _nm_unavailable_response()
+        return _nm_unavailable_response()
 
     devices = await _wifi_devices()
     device_path = None
@@ -348,7 +348,7 @@ async def wifi_disconnect(body: WifiDisconnectBody):
         "Disconnect",
     )
     if rc != 0:
-        return await _write_failed_response()
+        return _write_failed_response()
     return {"ok": True}
 
 
@@ -371,7 +371,7 @@ async def wifi_connect(body: WifiConnectBody):
         "WirelessEnabled",
     )
     if rc != 0:
-        return await _nm_unavailable_response()
+        return _nm_unavailable_response()
 
     devices = await _wifi_devices()
     device_path = None
@@ -423,17 +423,17 @@ async def _nm_add_and_activate(settings: dict, device_path: str) -> str | None:
     try:
         from dbus_fast import BusType, Message, MessageType, Variant
         from dbus_fast.aio import MessageBus
-    except ImportError:
+    except Exception:
         return "dbus_fast_missing"
 
     bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
     try:
-        body_settings = []
+        body_settings = {}
         for section, props in settings.items():
             section_dict = {}
             for key, (sig, val) in props.items():
                 section_dict[key] = Variant(sig, val)
-            body_settings.append((section, section_dict))
+            body_settings[section] = section_dict
 
         reply = await bus.call(
             Message(
