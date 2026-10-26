@@ -10,7 +10,7 @@ BUSCTL_TIMEOUT_S = 10
 
 
 async def busctl(*args: str) -> tuple[int, object | None]:
-    """Run busctl --json=short and return (rc, parsed JSON or None). Never raises."""
+    """Run busctl --json=short and return (rc, parsed JSON or None). Never raises, except to propagate cancellation."""
     try:
         proc = await asyncio.create_subprocess_exec(
             "busctl",
@@ -40,5 +40,15 @@ async def busctl(*args: str) -> tuple[int, object | None]:
         except ProcessLookupError:
             pass
         return 124, None
+    except asyncio.CancelledError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        try:
+            await proc.wait()
+        except ProcessLookupError:
+            pass
+        raise
     except Exception:
         return 1, None
