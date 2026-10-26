@@ -154,6 +154,18 @@ def test_desktop_cli_enable_non_root_uses_resolved_path(capsys):
                 assert '/opt/x/.venv/bin/taos desktop enable' in captured.err
 
 
+def test_desktop_cli_launcher_add_uses_resolved_path(capsys):
+    """Test that launcher add as non-root prints resolved path from sys.argv[0]."""
+    with patch('tinyagentos.desktop_cli.os.geteuid', return_value=1000):
+        with patch('tinyagentos.desktop_cli._run') as mock_run:
+            with patch('tinyagentos.desktop_cli.sys.argv', ['/opt/x/.venv/bin/taos', 'desktop', 'launcher', 'add']):
+                result = desktop_cli(["launcher", "add"])
+                assert result == 1
+                mock_run.assert_not_called()
+                captured = capsys.readouterr()
+                assert '/opt/x/.venv/bin/taos desktop launcher add' in captured.err
+
+
 def test_desktop_cli_run_unit_not_found_uses_resolved_path(capsys):
     """Test run with unit absent prints resolved path from sys.argv[0]."""
     with patch('tinyagentos.desktop_cli.os.geteuid', return_value=0):

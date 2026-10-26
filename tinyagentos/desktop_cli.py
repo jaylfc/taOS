@@ -175,7 +175,7 @@ def _desktop_status(args) -> int:
 def _desktop_launcher(args) -> int:
     """Manage the guest-mode desktop launcher (system-wide .desktop entry)."""
     if os.geteuid() != 0:
-        print("taos desktop launcher needs root: run it with sudo", file=sys.stderr)
+        print(f"taos desktop launcher needs root: run {_sudo_hint(f'launcher {args.action}')}", file=sys.stderr)
         return 1
 
     action = args.action
