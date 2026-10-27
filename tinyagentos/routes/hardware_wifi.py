@@ -375,14 +375,17 @@ async def wifi_connect(body: WifiConnectBody):
 
     devices = await _wifi_devices()
     device_path = None
+    chosen_iface = None
     if body.iface:
         for path, iface in devices:
             if iface == body.iface:
                 device_path = path
+                chosen_iface = iface
                 break
     else:
         if devices:
             device_path = devices[0][0]
+            chosen_iface = devices[0][1]
 
     if device_path is None:
         return JSONResponse({"error": "no_wifi_device"}, status_code=404)
@@ -403,7 +406,7 @@ async def wifi_connect(body: WifiConnectBody):
             "psk": ("s", body.psk),
         }
 
-    result = await _nm_add_and_activate(settings, device_path, body.iface)
+    result = await _nm_add_and_activate(settings, device_path, chosen_iface)
     if result is None:
         return {"ok": True}
     if result.endswith(".PermissionDenied") or result == "org.freedesktop.DBus.Error.AccessDenied":
