@@ -441,15 +441,18 @@ async def _nm_add_and_activate(settings: dict, device_path: str) -> str | None:
         # what carries the PSK.
         existing = await _nm_find_existing_connection(bus, body_settings, Message, MessageType)
         if existing is not None:
+            existing_path, existing_settings = existing
             if body_settings.get("802-11-wireless-security") is not None:
+                merged_settings = dict(existing_settings)
+                merged_settings["802-11-wireless-security"] = body_settings["802-11-wireless-security"]
                 update_reply = await bus.call(
                     Message(
                         destination="org.freedesktop.NetworkManager",
-                        path=existing,
+                        path=existing_path,
                         interface="org.freedesktop.NetworkManager.Settings.Connection",
                         member="Update",
                         signature="a{sa{sv}}",
-                        body=[body_settings],
+                        body=[merged_settings],
                     )
                 )
                 if update_reply.message_type == MessageType.ERROR:
@@ -460,8 +463,8 @@ async def _nm_add_and_activate(settings: dict, device_path: str) -> str | None:
                     path="/org/freedesktop/NetworkManager",
                     interface="org.freedesktop.NetworkManager",
                     member="ActivateConnection",
-                    signature="soo",
-                    body=[existing, device_path, "/"],
+                    signature="ooo",
+                    body=[existing_path, device_path, "/"],
                 )
             )
             if activate_reply.message_type == MessageType.ERROR:
@@ -488,9 +491,9 @@ async def _nm_add_and_activate(settings: dict, device_path: str) -> str | None:
             bus.disconnect()
 
 
-async def _nm_find_existing_connection(bus, settings: dict, Message, MessageType) -> str | None:
-    """Return the path of an existing 802-11-wireless connection whose SSID
-    bytes match the requested settings, or None."""
+async def _nm_find_existing_connection(bus, settings: dict, Message, MessageType) -> tuple[str, dict] | None:
+    """Return a tuple (path, settings) of an existing 802-11-wireless connection
+    whose SSID bytes match the requested settings, or None."""
     reply = await bus.call(
         Message(
             destination="org.freedesktop.NetworkManager",
@@ -546,7 +549,7 @@ async def _nm_find_existing_connection(bus, settings: dict, Message, MessageType
         wireless_section = sections.get("802-11-wireless")
         ssid = _nm_variant_value(wireless_section, "ssid") if isinstance(wireless_section, dict) else None
         if isinstance(ssid, (bytes, bytearray)) and bytes(ssid) == wanted_ssid:
-            return path
+            return (path, sections)
     return None
 
 

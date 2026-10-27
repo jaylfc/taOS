@@ -421,10 +421,14 @@ async def test_reuses_existing_ssid_profile_instead_of_adding(monkeypatch):
                             "connection": {
                                 "type": FakeVariant("s", "802-11-wireless"),
                                 "id": FakeVariant("s", "MyNetwork"),
+                                "uuid": FakeVariant("s", "12345678-1234-1234-1234-123456789abc"),
                             },
                             "802-11-wireless": {
                                 "ssid": FakeVariant("ay", ssid_bytes),
                                 "mode": FakeVariant("s", "infrastructure"),
+                            },
+                            "ipv4": {
+                                "method": FakeVariant("s", "manual"),
                             },
                         }
                     ]
@@ -471,6 +475,20 @@ async def test_reuses_existing_ssid_profile_instead_of_adding(monkeypatch):
     assert activate_call["body"][0] == "/org/freedesktop/NetworkManager/Settings/5"
     assert activate_call["body"][1] == "/org/freedesktop/NetworkManager/Devices/2"
     assert activate_call["body"][2] == "/"
+    # (a) ActivateConnection signature must be "ooo" (three object paths)
+    assert activate_call["signature"] == "ooo", f"ActivateConnection signature={activate_call['signature']!r}, expected 'ooo'"
+    # (b) Update body preserves other sections (ipv4, connection.uuid)
+    update_call = next(c for c in calls if c["member"] == "Update")
+    update_body = update_call["body"][0]
+    assert "ipv4" in update_body, f"Update body missing 'ipv4' section: {update_body}"
+    assert "connection" in update_body, f"Update body missing 'connection' section: {update_body}"
+    conn_section = update_body["connection"]
+    assert "uuid" in conn_section, f"Update body connection missing 'uuid': {conn_section}"
+    assert conn_section["uuid"].value == "12345678-1234-1234-1234-123456789abc", f"uuid not preserved: {conn_section['uuid'].value}"
+    # (c) Update body's 802-11-wireless-security psk equals requested psk
+    sec_section = update_body["802-11-wireless-security"]
+    assert "psk" in sec_section, f"Update body security missing 'psk': {sec_section}"
+    assert sec_section["psk"].value == "secret123", f"psk not updated correctly: {sec_section['psk'].value}"
 
 
 @pytest.mark.asyncio
