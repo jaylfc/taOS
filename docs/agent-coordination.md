@@ -1466,6 +1466,23 @@ Route module `tinyagentos/routes/device_pair_requests.py`:
 Approval or denial of a pair request is surfaced to the user through the Decisions app;
 agents must not grant pairing directly.
 
+## Hardware controls (Wi-Fi, Bluetooth)
+
+Route module `tinyagentos/routes/hardware_wifi.py`:
+
+- `GET /api/hardware/wifi` reads Wi-Fi state and access points via NetworkManager D-Bus.
+- `POST /api/hardware/wifi/enabled` enables or disables the Wi-Fi radio.
+- `POST /api/hardware/wifi/disconnect` disconnects a Wi-Fi interface.
+- `POST /api/hardware/wifi/connect` connects to a Wi-Fi network; the PSK travels to NetworkManager over dbus-fast in-process and never on a busctl argv.
+
+Route module `tinyagentos/routes/hardware_bluetooth.py`:
+
+- `GET /api/hardware/bluetooth` reads Bluetooth adapters and devices via BlueZ D-Bus.
+- `POST /api/hardware/bluetooth/power` powers a Bluetooth adapter on or off.
+- `POST /api/hardware/bluetooth/device` performs connect, disconnect, pair, trust, untrust, or remove on a device.
+
+All routes are admin-only via `Depends(require_admin)`. See [docs/hardware-routes.md](hardware-routes.md) for detail.
+
 ## Device voice routes (S6 / S6b)
 
 Route module `tinyagentos/routes/device_voice.py`. Device bearer only (a session
@@ -2338,14 +2355,16 @@ is not usable inside a container until that follow-up lands. Store:
    `{"kind": "claude-subscription", "url": "...", "prompt": "..."}`. The url
    must be `https` on an exact allowlisted host (`claude.ai`,
    `console.anthropic.com`; no subdomain, userinfo or non-443 port), else `422`:
-   a card the user taps must never open a site the agent chose. An agent may have
-   at most 3 open (non-completed, non-expired) requests at once; the 4th returns
-   `429` with detail ``too many open sign-in requests``. Returns
-   `{id, kind, status, host, expires_in_seconds}` and raises an `auth_broker`
-   notification to the agent's owner. An agent the registry cannot attribute (a
-   bound local-token agent with no registry row) gets its card sent to each
-   admin instead; the card is never a broadcast (`user_id` null). With no admin
-   to receive it, create is `409`.
+a card the user taps must never open a site the agent chose. An agent may have
+  at most one pending or code-ready (non-expired) request per kind at once; a
+  second request for the same kind returns `409` with detail
+  ``a sign-in request is already open for this agent``. Returns
+  `{id, kind, status, host, expires_in_seconds}` and raises an `auth_broker`
+  notification to the agent's owner. An agent the registry cannot attribute (a
+  bound local-token agent with no registry row) gets its card sent to each
+  admin instead; the card is never a broadcast (`user_id` null). With no admin
+to receive it, create is `409`. In addition, an agent may hold at most 3 pending or code-ready (non-expired) requests across all statuses including code_read;
+   the next one returns `429` with detail ``too many open sign-in requests``.
 2. The desktop (bell, toast, Notifications app) renders that notification as a
    sign-in card: the agent's name, the host, an **Open** button (system browser;
    Firefox on taOSmobile) and a code field. The card re-checks the same host
@@ -2602,7 +2621,7 @@ pinned 0.3.1 binary). `taos_agent_runtime.decide_framework` is the one place
 the choice is made, from two config.yaml keys:
 
 - `device.class`: `auto` (default; `hardware._detect_device_class`, which
-  reads the `taos-kiosk.service` unit), `mobile` or `desktop`;
+  reads the `taos-kiosk.service` and `plasma-mobile.service` units), `mobile` or `desktop`;
 - `taos_agent.framework`: `auto` (default; picoclaw on mobile, opencode
   elsewhere), `opencode`, `picoclaw` or `claude_code` (operator overrides;
   `auto` never picks `claude_code`).

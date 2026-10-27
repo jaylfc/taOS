@@ -2171,6 +2171,11 @@ def main():
         from tinyagentos.reset_cli import reset_cli
         raise SystemExit(reset_cli(sys.argv[2:]))
 
+    # `taos desktop enable|disable|run|status` -- manage local desktop session.
+    if len(sys.argv) > 1 and sys.argv[1] == "desktop":
+        from tinyagentos.desktop_cli import desktop_cli
+        raise SystemExit(desktop_cli(sys.argv[2:]))
+
     import uvicorn
     config = load_config(PROJECT_DIR / "data" / "config.yaml")
     app = create_app()
