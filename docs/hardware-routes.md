@@ -7,7 +7,7 @@
 ### GET /api/hardware/wifi
 
 - Response: `available`, `wifi_enabled`, `devices[]`, `access_points[]`
-- `available=false` = NetworkManager unreachable (503)
+- `available=false` = NetworkManager unreachable (HTTP 200; only the write routes return 503)
 
 ### POST /api/hardware/wifi/enabled
 
@@ -29,7 +29,7 @@
 ### GET /api/hardware/bluetooth
 
 - Response: `available`, `adapters[]`, `devices[]`
-- `available=false` = BlueZ unreachable (503)
+- `available=false` = BlueZ unreachable (HTTP 200; only the write routes return 503)
 
 ### POST /api/hardware/bluetooth/power
 
