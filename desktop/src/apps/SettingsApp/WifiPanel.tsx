@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { AlertCircle, Wifi as WifiIcon } from "lucide-react";
 import { Card } from "@/components/ui";
 
@@ -7,14 +7,14 @@ export function WifiPanel() {
   const [wifiEnabled, setWifiEnabled] = useState<boolean | null>(null);
   const [accessPoints, setAccessPoints] = useState<{ ssid: string; strength: number; frequency: number; secured: boolean; active: boolean }[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const mounted = useRef(true);
 
   useEffect(() => {
-    let mounted = true;
     const load = async () => {
       try {
         const res = await fetch("/api/hardware/wifi", { credentials: "include" });
         const body = await res.json().catch(() => null);
-        if (!mounted) return;
+        if (!mounted.current) return;
         if (!res.ok || body === null || typeof body.available !== "boolean") {
           setError("Could not load Wi-Fi state.");
           return;
@@ -26,13 +26,13 @@ export function WifiPanel() {
         }
         setError(null);
       } catch {
-        if (mounted) setError("Could not reach taOS.");
+        if (mounted.current) setError("Could not reach taOS.");
       }
     };
     load();
     const id = setInterval(load, 10_000);
     return () => {
-      mounted = false;
+      mounted.current = false;
       clearInterval(id);
     };
   }, []);
