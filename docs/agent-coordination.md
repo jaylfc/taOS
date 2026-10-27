@@ -777,8 +777,11 @@ different project, and 403 when the agent lacks the `canvas_read` scope or the
   covering four routes.
 - **memory_read**: read an agent's own memory index via qmd serve.
   `GET /api/memory/browse`, `POST /api/memory/search`, `GET /api/memory/collections/{agent_name}`.
-  These routes restrict results to the calling agent's OWN memory namespace (its own
-  agent name / canonical_id) — an agent must never read another agent's memory.
+  These routes accept either a registry JWT with `memory_read` grant or a
+  bound per-agent local token (`AuthManager.mint_agent_local_token`). Both
+  credential types restrict results to the calling agent's OWN memory
+  namespace -- an agent must never read another agent's memory. The host
+  local token (unbound) retains admin access to all agent namespaces.
   The DELETE `/api/memory/chunk/{content_hash}` route stays human-only and is not
   reachable by agent tokens, even with memory_read.
 
