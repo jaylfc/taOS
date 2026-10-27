@@ -102,6 +102,37 @@ def browse_lan_orbs(timeout: float = 2.0) -> list[dict]:
         zc.close()
 
 
+def ipv4_broadcast_addresses() -> list[str]:
+    """Get per-interface IPv4 broadcast addresses (default for probe_agent_buddy)."""
+    import psutil
+    import socket
+    
+    broadcast_set = set()
+    
+    try:
+        if_addrs = psutil.net_if_addrs()
+    except OSError:
+        return ["255.255.255.255"]
+
+    for interface_addrs in if_addrs.values():
+        for addr_info in interface_addrs:
+            # Only consider IPv4 addresses
+            if addr_info.family == socket.AF_INET:
+                # Skip localhost addresses
+                if addr_info.address.startswith("127."):
+                    continue
+                # Skip if broadcast is None or empty
+                if not addr_info.broadcast:
+                    continue
+                broadcast_set.add(addr_info.broadcast)
+    
+    if not broadcast_set:
+        return ["255.255.255.255"]
+    
+    # Return sorted list
+    return sorted(broadcast_set)
+
+
 def parse_agent_buddy_reply(data: bytes, address: str) -> dict | None:
     """Parse an Agent Buddy discovery reply.
     
@@ -165,7 +196,7 @@ def probe_agent_buddy(timeout: float = 1.2, addresses=None, port: int = AGENT_BU
     import time
     
     if addresses is None:
-        addresses = ["255.255.255.255"]
+        addresses = ipv4_broadcast_addresses()
     
     sock = None
     try:
