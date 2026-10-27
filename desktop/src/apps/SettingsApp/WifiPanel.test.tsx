@@ -93,6 +93,38 @@ it("refreshes access points every 10s and clears interval on unmount", async () 
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     vi.useRealTimers();
   }, 15000);
+
+  it("ignores stale response when a newer load starts before the first resolves", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    let resolveFirst: (value: Response) => void;
+    let resolveSecond: (value: Response) => void;
+    const firstPromise = new Promise<Response>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const secondPromise = new Promise<Response>((resolve) => {
+      resolveSecond = resolve;
+    });
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockReturnValueOnce(firstPromise);
+    fetchSpy.mockReturnValueOnce(secondPromise);
+    render(<WifiPanel />);
+    // Advance timers to trigger the interval (second fetch)
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+    });
+    // Now resolve the second fetch first (newer load)
+    await act(async () => {
+      resolveSecond!(json({ available: true, wifi_enabled: true, access_points: [{ ssid: "SecondAP", strength: 90, frequency: 2437, secured: true, active: true }] }));
+    });
+    await waitFor(() => expect(screen.getByText("SecondAP")).toBeInTheDocument());
+    // Then resolve the first fetch (older load)
+    await act(async () => {
+      resolveFirst!(json({ available: true, wifi_enabled: true, access_points: [{ ssid: "FirstAP", strength: 50, frequency: 2412, secured: true, active: false }] }));
+    });
+    expect(screen.getByText("SecondAP")).toBeInTheDocument();
+    expect(screen.queryByText("FirstAP")).not.toBeInTheDocument();
+    vi.useRealTimers();
+  });
 });
 
 describe("WifiPanel StrictMode", () => {
