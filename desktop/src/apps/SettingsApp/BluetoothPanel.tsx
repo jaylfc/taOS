@@ -7,10 +7,9 @@ export function BluetoothPanel() {
   const [devices, setDevices] = useState<{ path: string; address: string; name: string | null; paired: boolean; connected: boolean; trusted: boolean }[]>([]);
   const [error, setError] = useState<string | null>(null);
   const mounted = useRef(true);
-  useEffect(() => () => { mounted.current = false; }, []);
 
   useEffect(() => {
-    (async () => {
+    const load = async () => {
       try {
         const res = await fetch("/api/hardware/bluetooth", { credentials: "include" });
         const body = await res.json().catch(() => null);
@@ -26,10 +25,17 @@ export function BluetoothPanel() {
         if (Array.isArray(body.devices)) {
           setDevices(body.devices);
         }
+        setError(null);
       } catch {
         if (mounted.current) setError("Could not reach taOS.");
       }
-    })();
+    };
+    load();
+    const id = setInterval(load, 10_000);
+    return () => {
+      mounted.current = false;
+      clearInterval(id);
+    };
   }, []);
 
   return (
