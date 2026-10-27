@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, waitFor, act } from "@testing-library/react";
 import { BluetoothPanel } from "./BluetoothPanel";
+import { StrictMode } from "react";
 
 function json(obj: unknown, status = 200) {
   return new Response(JSON.stringify(obj), {
@@ -95,4 +96,20 @@ describe("BluetoothPanel", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     vi.useRealTimers();
   }, 15000);
+});
+
+describe("BluetoothPanel StrictMode", () => {
+  it("loads devices even when mounted remounts under StrictMode", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      json({
+        available: true,
+        adapters: [{ path: "/org/bluez/hci0", address: "AA:BB:CC:DD:EE:FF", powered: true }],
+        devices: [{ path: "/org/bluez/hci0/dev_11_22_33_44_55_66", address: "11:22:33:44:55:66", name: "TestDevice", paired: true, connected: true, trusted: true }],
+      })
+    );
+    render(<StrictMode><BluetoothPanel /></StrictMode>);
+    await waitFor(() => {
+      expect(screen.getByText("TestDevice")).toBeInTheDocument();
+    });
+  });
 });
