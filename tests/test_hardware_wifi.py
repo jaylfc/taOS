@@ -247,7 +247,7 @@ async def test_connect_with_psk_records_settings_and_no_psk_in_busctl(monkeypatc
             return 0, "wlan0"
         raise AssertionError(f"unexpected busctl call: {args}")
 
-    async def fake_nm_add_and_activate(settings, device_path):
+    async def fake_nm_add_and_activate(settings, device_path, iface=None):
         nm_add_calls.append((settings, device_path))
         return None
 
@@ -289,7 +289,7 @@ async def test_connect_permission_denied_returns_403(monkeypatch):
             return 0, "wlan0"
         raise AssertionError(f"unexpected busctl call: {args}")
 
-    async def fake_nm_add_and_activate(settings, device_path):
+    async def fake_nm_add_and_activate(settings, device_path, iface=None):
         return "org.freedesktop.NetworkManager.PermissionDenied"
 
     monkeypatch.setattr(hw_routes, "busctl", fake_busctl)
@@ -649,3 +649,386 @@ async def test_add_and_activate_when_no_existing_profile_for_ssid(monkeypatch):
     members = [c["member"] for c in calls]
     assert "AddAndActivateConnection" in members
     assert "ActivateConnection" not in members
+
+
+@pytest.mark.asyncio
+async def test_ap_mode_profile_not_reused(monkeypatch):
+    """(a) profile with mode 'ap' and same SSID: AddAndActivateConnection is called, no Update."""
+    calls = []
+    ssid_bytes = b"MyNetwork"
+
+    class FakeVariant:
+        def __init__(self, sig, val):
+            self.sig = sig
+            self.val = val
+            self.value = val
+
+    class FakeReply:
+        def __init__(self, body=None, error_name=None, message_type=None):
+            self.body = body if body is not None else []
+            self.error_name = error_name
+            self.message_type = message_type
+
+    class FakeMessageBus:
+        def __init__(self, bus_type=None):
+            self.bus_type = bus_type
+
+        async def connect(self):
+            return self
+
+        async def call(self, message):
+            calls.append(
+                {
+                    "destination": message.destination,
+                    "path": message.path,
+                    "interface": message.interface,
+                    "member": message.member,
+                    "signature": message.signature,
+                    "body": message.body,
+                }
+            )
+            if message.member == "ListConnections":
+                return FakeReply(body=[["/org/freedesktop/NetworkManager/Settings/1"]])
+            if message.member == "GetSettings":
+                return FakeReply(
+                    body=[
+                        {
+                            "connection": {
+                                "type": FakeVariant("s", "802-11-wireless"),
+                                "id": FakeVariant("s", "MyNetwork"),
+                            },
+                            "802-11-wireless": {
+                                "ssid": FakeVariant("ay", ssid_bytes),
+                                "mode": FakeVariant("s", "ap"),
+                            },
+                        }
+                    ]
+                )
+            if message.member == "AddAndActivateConnection":
+                return FakeReply(body=["/x"])
+            return FakeReply(body=[])
+
+        def disconnect(self):
+            pass
+
+    fake_dbus_fast = type("module", (), {
+        "BusType": type("BusType", (), {"SYSTEM": "system"}),
+        "Message": type("Message", (), {
+            "__init__": lambda self, **kw: self.__dict__.update(kw),
+        }),
+        "MessageType": type("MessageType", (), {"ERROR": "error"}),
+        "Variant": FakeVariant,
+    })
+    fake_dbus_fast_aio = type("module", (), {"MessageBus": FakeMessageBus})
+
+    monkeypatch.setitem(sys.modules, "dbus_fast", fake_dbus_fast)
+    monkeypatch.setitem(sys.modules, "dbus_fast.aio", fake_dbus_fast_aio)
+
+    settings = {
+        "connection": {"type": ("s", "802-11-wireless"), "id": ("s", "MyNetwork")},
+        "802-11-wireless": {"ssid": ("ay", ssid_bytes), "mode": ("s", "infrastructure")},
+        "802-11-wireless-security": {"key-mgmt": ("s", "wpa-psk"), "psk": ("s", "secret123")},
+    }
+    result = await hw_routes._nm_add_and_activate(settings, "/org/freedesktop/NetworkManager/Devices/2", iface="wlan0")
+    assert result is None
+
+    members = [c["member"] for c in calls]
+    assert "AddAndActivateConnection" in members
+    assert "Update" not in members
+    assert "ActivateConnection" not in members
+
+
+@pytest.mark.asyncio
+async def test_interface_name_mismatch_profile_not_reused(monkeypatch):
+    """(b) profile with interface-name 'wlan1' while request is on 'wlan0': AddAndActivateConnection, no Update."""
+    calls = []
+    ssid_bytes = b"MyNetwork"
+
+    class FakeVariant:
+        def __init__(self, sig, val):
+            self.sig = sig
+            self.val = val
+            self.value = val
+
+    class FakeReply:
+        def __init__(self, body=None, error_name=None, message_type=None):
+            self.body = body if body is not None else []
+            self.error_name = error_name
+            self.message_type = message_type
+
+    class FakeMessageBus:
+        def __init__(self, bus_type=None):
+            self.bus_type = bus_type
+
+        async def connect(self):
+            return self
+
+        async def call(self, message):
+            calls.append(
+                {
+                    "destination": message.destination,
+                    "path": message.path,
+                    "interface": message.interface,
+                    "member": message.member,
+                    "signature": message.signature,
+                    "body": message.body,
+                }
+            )
+            if message.member == "ListConnections":
+                return FakeReply(body=[["/org/freedesktop/NetworkManager/Settings/1"]])
+            if message.member == "GetSettings":
+                return FakeReply(
+                    body=[
+                        {
+                            "connection": {
+                                "type": FakeVariant("s", "802-11-wireless"),
+                                "id": FakeVariant("s", "MyNetwork"),
+                                "interface-name": FakeVariant("s", "wlan1"),
+                            },
+                            "802-11-wireless": {
+                                "ssid": FakeVariant("ay", ssid_bytes),
+                                "mode": FakeVariant("s", "infrastructure"),
+                            },
+                        }
+                    ]
+                )
+            if message.member == "AddAndActivateConnection":
+                return FakeReply(body=["/x"])
+            return FakeReply(body=[])
+
+        def disconnect(self):
+            pass
+
+    fake_dbus_fast = type("module", (), {
+        "BusType": type("BusType", (), {"SYSTEM": "system"}),
+        "Message": type("Message", (), {
+            "__init__": lambda self, **kw: self.__dict__.update(kw),
+        }),
+        "MessageType": type("MessageType", (), {"ERROR": "error"}),
+        "Variant": FakeVariant,
+    })
+    fake_dbus_fast_aio = type("module", (), {"MessageBus": FakeMessageBus})
+
+    monkeypatch.setitem(sys.modules, "dbus_fast", fake_dbus_fast)
+    monkeypatch.setitem(sys.modules, "dbus_fast.aio", fake_dbus_fast_aio)
+
+    settings = {
+        "connection": {"type": ("s", "802-11-wireless"), "id": ("s", "MyNetwork")},
+        "802-11-wireless": {"ssid": ("ay", ssid_bytes), "mode": ("s", "infrastructure")},
+        "802-11-wireless-security": {"key-mgmt": ("s", "wpa-psk"), "psk": ("s", "secret123")},
+    }
+    result = await hw_routes._nm_add_and_activate(settings, "/org/freedesktop/NetworkManager/Devices/2", iface="wlan0")
+    assert result is None
+
+    members = [c["member"] for c in calls]
+    assert "AddAndActivateConnection" in members
+    assert "Update" not in members
+    assert "ActivateConnection" not in members
+
+
+@pytest.mark.asyncio
+async def test_ap_then_infrastructure_picks_second(monkeypatch):
+    """(c) an 'ap' profile then an infrastructure profile, same SSID: Update + ActivateConnection target the SECOND path."""
+    calls = []
+    ssid_bytes = b"MyNetwork"
+
+    class FakeVariant:
+        def __init__(self, sig, val):
+            self.sig = sig
+            self.val = val
+            self.value = val
+
+    class FakeReply:
+        def __init__(self, body=None, error_name=None, message_type=None):
+            self.body = body if body is not None else []
+            self.error_name = error_name
+            self.message_type = message_type
+
+    class FakeMessageBus:
+        def __init__(self, bus_type=None):
+            self.bus_type = bus_type
+
+        async def connect(self):
+            return self
+
+        async def call(self, message):
+            calls.append(
+                {
+                    "destination": message.destination,
+                    "path": message.path,
+                    "interface": message.interface,
+                    "member": message.member,
+                    "signature": message.signature,
+                    "body": message.body,
+                }
+            )
+            if message.member == "ListConnections":
+                return FakeReply(body=[["/org/freedesktop/NetworkManager/Settings/1", "/org/freedesktop/NetworkManager/Settings/2"]])
+            if message.member == "GetSettings":
+                if message.path == "/org/freedesktop/NetworkManager/Settings/1":
+                    return FakeReply(
+                        body=[
+                            {
+                                "connection": {
+                                    "type": FakeVariant("s", "802-11-wireless"),
+                                    "id": FakeVariant("s", "MyNetwork"),
+                                },
+                                "802-11-wireless": {
+                                    "ssid": FakeVariant("ay", ssid_bytes),
+                                    "mode": FakeVariant("s", "ap"),
+                                },
+                            }
+                        ]
+                    )
+                if message.path == "/org/freedesktop/NetworkManager/Settings/2":
+                    return FakeReply(
+                        body=[
+                            {
+                                "connection": {
+                                    "type": FakeVariant("s", "802-11-wireless"),
+                                    "id": FakeVariant("s", "MyNetwork"),
+                                    "uuid": FakeVariant("s", "12345678-1234-1234-1234-123456789abc"),
+                                },
+                                "802-11-wireless": {
+                                    "ssid": FakeVariant("ay", ssid_bytes),
+                                    "mode": FakeVariant("s", "infrastructure"),
+                                },
+                                "ipv4": {
+                                    "method": FakeVariant("s", "manual"),
+                                },
+                            }
+                        ]
+                    )
+            if message.member == "Update":
+                return FakeReply(body=[{}])
+            if message.member == "ActivateConnection":
+                return FakeReply(body=["/org/freedesktop/NetworkManager/Settings/2"])
+            return FakeReply(body=[])
+
+        def disconnect(self):
+            pass
+
+    fake_dbus_fast = type("module", (), {
+        "BusType": type("BusType", (), {"SYSTEM": "system"}),
+        "Message": type("Message", (), {
+            "__init__": lambda self, **kw: self.__dict__.update(kw),
+        }),
+        "MessageType": type("MessageType", (), {"ERROR": "error"}),
+        "Variant": FakeVariant,
+    })
+    fake_dbus_fast_aio = type("module", (), {"MessageBus": FakeMessageBus})
+
+    monkeypatch.setitem(sys.modules, "dbus_fast", fake_dbus_fast)
+    monkeypatch.setitem(sys.modules, "dbus_fast.aio", fake_dbus_fast_aio)
+
+    settings = {
+        "connection": {"type": ("s", "802-11-wireless"), "id": ("s", "MyNetwork")},
+        "802-11-wireless": {"ssid": ("ay", ssid_bytes), "mode": ("s", "infrastructure")},
+        "802-11-wireless-security": {"key-mgmt": ("s", "wpa-psk"), "psk": ("s", "secret123")},
+    }
+    result = await hw_routes._nm_add_and_activate(settings, "/org/freedesktop/NetworkManager/Devices/2", iface="wlan0")
+    assert result is None
+
+    members = [c["member"] for c in calls]
+    assert "AddAndActivateConnection" not in members
+    assert "Update" in members
+    assert "ActivateConnection" in members
+    assert members.index("Update") < members.index("ActivateConnection")
+
+    activate_call = next(c for c in calls if c["member"] == "ActivateConnection")
+    assert activate_call["body"][0] == "/org/freedesktop/NetworkManager/Settings/2"
+
+
+@pytest.mark.asyncio
+async def test_interface_name_match_profile_reused(monkeypatch):
+    """(d) profile with interface-name 'wlan0' and request on 'wlan0': reused."""
+    calls = []
+    ssid_bytes = b"MyNetwork"
+
+    class FakeVariant:
+        def __init__(self, sig, val):
+            self.sig = sig
+            self.val = val
+            self.value = val
+
+    class FakeReply:
+        def __init__(self, body=None, error_name=None, message_type=None):
+            self.body = body if body is not None else []
+            self.error_name = error_name
+            self.message_type = message_type
+
+    class FakeMessageBus:
+        def __init__(self, bus_type=None):
+            self.bus_type = bus_type
+
+        async def connect(self):
+            return self
+
+        async def call(self, message):
+            calls.append(
+                {
+                    "destination": message.destination,
+                    "path": message.path,
+                    "interface": message.interface,
+                    "member": message.member,
+                    "signature": message.signature,
+                    "body": message.body,
+                }
+            )
+            if message.member == "ListConnections":
+                return FakeReply(body=[["/org/freedesktop/NetworkManager/Settings/1"]])
+            if message.member == "GetSettings":
+                return FakeReply(
+                    body=[
+                        {
+                            "connection": {
+                                "type": FakeVariant("s", "802-11-wireless"),
+                                "id": FakeVariant("s", "MyNetwork"),
+                                "interface-name": FakeVariant("s", "wlan0"),
+                                "uuid": FakeVariant("s", "12345678-1234-1234-1234-123456789abc"),
+                            },
+                            "802-11-wireless": {
+                                "ssid": FakeVariant("ay", ssid_bytes),
+                                "mode": FakeVariant("s", "infrastructure"),
+                            },
+                        }
+                    ]
+                )
+            if message.member == "Update":
+                return FakeReply(body=[{}])
+            if message.member == "ActivateConnection":
+                return FakeReply(body=["/org/freedesktop/NetworkManager/Settings/1"])
+            return FakeReply(body=[])
+
+        def disconnect(self):
+            pass
+
+    fake_dbus_fast = type("module", (), {
+        "BusType": type("BusType", (), {"SYSTEM": "system"}),
+        "Message": type("Message", (), {
+            "__init__": lambda self, **kw: self.__dict__.update(kw),
+        }),
+        "MessageType": type("MessageType", (), {"ERROR": "error"}),
+        "Variant": FakeVariant,
+    })
+    fake_dbus_fast_aio = type("module", (), {"MessageBus": FakeMessageBus})
+
+    monkeypatch.setitem(sys.modules, "dbus_fast", fake_dbus_fast)
+    monkeypatch.setitem(sys.modules, "dbus_fast.aio", fake_dbus_fast_aio)
+
+    settings = {
+        "connection": {"type": ("s", "802-11-wireless"), "id": ("s", "MyNetwork")},
+        "802-11-wireless": {"ssid": ("ay", ssid_bytes), "mode": ("s", "infrastructure")},
+        "802-11-wireless-security": {"key-mgmt": ("s", "wpa-psk"), "psk": ("s", "secret123")},
+    }
+    result = await hw_routes._nm_add_and_activate(settings, "/org/freedesktop/NetworkManager/Devices/2", iface="wlan0")
+    assert result is None
+
+    members = [c["member"] for c in calls]
+    assert "AddAndActivateConnection" not in members
+    assert "Update" in members
+    assert "ActivateConnection" in members
+    assert members.index("Update") < members.index("ActivateConnection")
+
+    activate_call = next(c for c in calls if c["member"] == "ActivateConnection")
+    assert activate_call["body"][0] == "/org/freedesktop/NetworkManager/Settings/1"
