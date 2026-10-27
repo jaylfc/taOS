@@ -10,6 +10,7 @@ export function WifiPanel() {
   const mounted = useRef(true);
 
   useEffect(() => {
+    mounted.current = true;
     const load = async () => {
       try {
         const res = await fetch("/api/hardware/wifi", { credentials: "include" });

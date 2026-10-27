@@ -9,6 +9,7 @@ export function BluetoothPanel() {
   const mounted = useRef(true);
 
   useEffect(() => {
+    mounted.current = true;
     const load = async () => {
       try {
         const res = await fetch("/api/hardware/bluetooth", { credentials: "include" });
