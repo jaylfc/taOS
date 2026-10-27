@@ -2355,14 +2355,16 @@ is not usable inside a container until that follow-up lands. Store:
    `{"kind": "claude-subscription", "url": "...", "prompt": "..."}`. The url
    must be `https` on an exact allowlisted host (`claude.ai`,
    `console.anthropic.com`; no subdomain, userinfo or non-443 port), else `422`:
-   a card the user taps must never open a site the agent chose. An agent may have
-   at most 3 open (non-completed, non-expired) requests at once; the 4th returns
-   `429` with detail ``too many open sign-in requests``. Returns
-   `{id, kind, status, host, expires_in_seconds}` and raises an `auth_broker`
-   notification to the agent's owner. An agent the registry cannot attribute (a
-   bound local-token agent with no registry row) gets its card sent to each
-   admin instead; the card is never a broadcast (`user_id` null). With no admin
-   to receive it, create is `409`.
+a card the user taps must never open a site the agent chose. An agent may have
+  at most one pending or code-ready (non-expired) request per kind at once; a
+  second request for the same kind returns `409` with detail
+  ``a sign-in request is already open for this agent``. Returns
+  `{id, kind, status, host, expires_in_seconds}` and raises an `auth_broker`
+  notification to the agent's owner. An agent the registry cannot attribute (a
+  bound local-token agent with no registry row) gets its card sent to each
+  admin instead; the card is never a broadcast (`user_id` null). With no admin
+to receive it, create is `409`. In addition, an agent may hold at most 3 pending or code-ready (non-expired) requests across all statuses including code_read;
+   the next one returns `429` with detail ``too many open sign-in requests``.
 2. The desktop (bell, toast, Notifications app) renders that notification as a
    sign-in card: the agent's name, the host, an **Open** button (system browser;
    Firefox on taOSmobile) and a code field. The card re-checks the same host
