@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, act } from "@testing-library/react";
 import { WifiPanel } from "./WifiPanel";
+import { StrictMode } from "react";
 
 function json(obj: unknown, status = 200) {
   return new Response(JSON.stringify(obj), {
@@ -55,5 +56,59 @@ describe("WifiPanel", () => {
     render(<WifiPanel />);
     expect(await screen.findByRole("alert")).toHaveTextContent("Could not load Wi-Fi state.");
     expect(screen.queryByRole("list", { name: "Wi-Fi networks" })).not.toBeInTheDocument();
+  });
+
+it("refreshes access points every 10s and clears interval on unmount", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy
+      .mockResolvedValueOnce(
+        json({
+          available: true,
+          wifi_enabled: true,
+          devices: [],
+          access_points: [{ ssid: "FirstAP", strength: 50, frequency: 2412, secured: true, active: false }],
+        })
+      )
+      .mockResolvedValueOnce(
+        json({
+          available: true,
+          wifi_enabled: true,
+          devices: [],
+          access_points: [{ ssid: "SecondAP", strength: 75, frequency: 2437, secured: true, active: true }],
+        })
+      );
+    const { unmount } = render(<WifiPanel />);
+    await waitFor(() => expect(screen.getByText("FirstAP")).toBeInTheDocument(), { timeout: 3000 });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+    });
+    await waitFor(() => expect(screen.getByText("SecondAP")).toBeInTheDocument(), { timeout: 3000 });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    unmount();
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  }, 15000);
+});
+
+describe("WifiPanel StrictMode", () => {
+  it("loads access points even when mounted remounts under StrictMode", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      json({
+        available: true,
+        wifi_enabled: true,
+        access_points: [
+          { ssid: "TestNetwork", strength: 75, frequency: 2437, secured: true, active: true },
+        ],
+      })
+    );
+    render(<StrictMode><WifiPanel /></StrictMode>);
+    await waitFor(() => {
+      expect(screen.getByText("TestNetwork")).toBeInTheDocument();
+    });
   });
 });

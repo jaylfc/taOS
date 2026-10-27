@@ -1,15 +1,28 @@
-"""HTTP-layer tests for the taOS Orb status route (routes/orb.py): GET /api/orb/status.
+"""HTTP-layer tests for the taOS Orb routes (routes/orb.py): GET /api/orb/status,
+/api/orb/lan, /api/orb/catalog.
 
 Hostile cases first: non-admin 403, unauthed 401/403, transport failure.
 Happy path: admin returns list of orb dicts.
 """
 from __future__ import annotations
 
+import asyncio
+import json
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from pathlib import Path
 
+from tinyagentos.orb.catalog_sig import (
+    CatalogFetchError,
+    CatalogSignatureMissing,
+    CatalogKeyUnknown,
+    CatalogSignatureInvalid,
+    CatalogSerialRegression,
+    CatalogStateCorrupt,
+)
 from tinyagentos.orb.frames import TransportUnavailable
+from tinyagentos.orb.catalog import Catalog
 
 
 @pytest_asyncio.fixture
@@ -192,3 +205,258 @@ async def test_lan_concurrent_execution_no_sleep(client, app, monkeypatch):
     monkeypatch.setattr("tinyagentos.routes.orb.probe_agent_buddy", fake_probe)
     resp = await client.get("/api/orb/lan")
     assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# GET /api/orb/catalog (signed catalog, admin-gated)
+# ---------------------------------------------------------------------------
+
+
+def _make_fake_catalog(serial: int = 42) -> Catalog:
+    """Create a fake Catalog with one app, two versions (one yanked)."""
+    apps = {
+        "test-app": {
+            "id": "test-app",
+            "name": "Test App",
+            "versions": [
+                {"version": "1.0.0", "yanked": False},
+                {"version": "0.9.0", "yanked": True},
+            ],
+        }
+    }
+    return Catalog(apps=apps)
+
+
+def _write_fake_catalog_json(data_dir: Path, serial: int = 42) -> None:
+    """Write a fake catalog.json to the cache directory with the given serial."""
+    cache_dir = data_dir / "orb" / "catalog"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    catalog_data = {
+        "serial": serial,
+        "apps": [
+            {
+                "id": "test-app",
+                "name": "Test App",
+                "versions": [
+                    {"version": "1.0.0", "yanked": False},
+                    {"version": "0.9.0", "yanked": True},
+                ],
+            }
+        ],
+    }
+    (cache_dir / "catalog.json").write_text(json.dumps(catalog_data))
+
+
+@pytest.mark.asyncio
+async def test_catalog_unauthed_requires_admin(unauthed_client):
+    resp = await unauthed_client.get("/api/orb/catalog")
+    assert resp.status_code in (401, 403)
+
+
+@pytest.mark.asyncio
+async def test_catalog_non_admin_session_gets_403(client, app, monkeypatch):
+    def raise_assert(*args, **kwargs):
+        raise AssertionError("fetch must not be called for non-admin")
+
+    monkeypatch.setattr(app.state.auth, "session_user", lambda token, user_agent=None: {"is_admin": False})
+    monkeypatch.setattr("tinyagentos.routes.orb.fetch_catalog", raise_assert)
+    monkeypatch.setattr("tinyagentos.routes.orb.load_cached_catalog", raise_assert)
+    resp = await client.get("/api/orb/catalog")
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_catalog_admin_remote_fetch_success(client, app, monkeypatch, tmp_data_dir):
+    fake_cat = _make_fake_catalog(serial=42)
+
+    async def fake_fetch_catalog(base, cache_dir, state_path):
+        _write_fake_catalog_json(tmp_data_dir, 42)
+        return fake_cat
+
+    monkeypatch.setattr("tinyagentos.routes.orb.fetch_catalog", fake_fetch_catalog)
+    monkeypatch.setattr("tinyagentos.routes.orb.load_cached_catalog", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("cache must not be called")))
+    app.state.config.orb = {"catalog_url": "https://example.com/catalog"}
+
+    resp = await client.get("/api/orb/catalog")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["source"] == "remote"
+    assert body["serial"] == 42
+    assert len(body["apps"]) == 1
+    app_data = body["apps"][0]
+    assert app_data["id"] == "test-app"
+    assert app_data["name"] == "Test App"
+    assert len(app_data["versions"]) == 2
+    versions = {v["version"]: v["yanked"] for v in app_data["versions"]}
+    assert versions == {"1.0.0": False, "0.9.0": True}
+    # Ensure no file paths or extents are leaked
+    resp_text = resp.text
+    assert "/" not in resp_text or "http" not in resp_text
+
+
+@pytest.mark.asyncio
+async def test_catalog_admin_remote_fetch_fails_cache_succeeds(client, app, monkeypatch, tmp_data_dir):
+    fake_cat = _make_fake_catalog(serial=99)
+
+    async def fake_fetch_catalog(base, cache_dir, state_path):
+        raise CatalogFetchError("network down")
+
+    def fake_load_cached_catalog(cache_dir, state_path):
+        _write_fake_catalog_json(tmp_data_dir, 99)
+        return fake_cat
+
+    monkeypatch.setattr("tinyagentos.routes.orb.fetch_catalog", fake_fetch_catalog)
+    monkeypatch.setattr("tinyagentos.routes.orb.load_cached_catalog", fake_load_cached_catalog)
+    app.state.config.orb = {"catalog_url": "https://example.com/catalog"}
+
+    resp = await client.get("/api/orb/catalog")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["source"] == "cache"
+    assert body["serial"] == 99
+
+
+@pytest.mark.asyncio
+async def test_catalog_admin_remote_fetch_fails_cache_serial_regression(client, app, monkeypatch, tmp_data_dir):
+    async def fake_fetch_catalog(base, cache_dir, state_path):
+        raise CatalogFetchError("network down")
+
+    def fake_load_cached_catalog(cache_dir, state_path):
+        raise CatalogSerialRegression("serial regression")
+
+    monkeypatch.setattr("tinyagentos.routes.orb.fetch_catalog", fake_fetch_catalog)
+    monkeypatch.setattr("tinyagentos.routes.orb.load_cached_catalog", fake_load_cached_catalog)
+    app.state.config.orb = {"catalog_url": "https://example.com/catalog"}
+
+    resp = await client.get("/api/orb/catalog")
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["error"] == "orb_catalog_serial_regression"
+
+
+@pytest.mark.asyncio
+async def test_catalog_admin_remote_fetch_fails_cache_fetch_error(client, app, monkeypatch):
+    async def fake_fetch_catalog(base, cache_dir, state_path):
+        raise CatalogFetchError("network down")
+
+    def fake_load_cached_catalog(cache_dir, state_path):
+        raise CatalogFetchError("no cache")
+
+    monkeypatch.setattr("tinyagentos.routes.orb.fetch_catalog", fake_fetch_catalog)
+    monkeypatch.setattr("tinyagentos.routes.orb.load_cached_catalog", fake_load_cached_catalog)
+    app.state.config.orb = {"catalog_url": "https://example.com/catalog"}
+
+    resp = await client.get("/api/orb/catalog")
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["error"] == "orb_catalog_fetch_failed"
+
+
+@pytest.mark.asyncio
+async def test_catalog_admin_no_base_cache_fetch_error(client, app, monkeypatch):
+    async def fake_fetch_catalog(base, cache_dir, state_path):
+        raise AssertionError("fetch_catalog must not be called when base is empty")
+
+    def fake_load_cached_catalog(cache_dir, state_path):
+        raise CatalogFetchError("no cache")
+
+    monkeypatch.setattr("tinyagentos.routes.orb.fetch_catalog", fake_fetch_catalog)
+    monkeypatch.setattr("tinyagentos.routes.orb.load_cached_catalog", fake_load_cached_catalog)
+    app.state.config.orb = {"catalog_url": ""}
+
+    resp = await client.get("/api/orb/catalog")
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["error"] == "orb_catalog_unconfigured"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "exc_class,expected_error",
+    [
+        (CatalogSignatureMissing, "orb_catalog_signature_missing"),
+        (CatalogKeyUnknown, "orb_catalog_key_unknown"),
+        (CatalogSignatureInvalid, "orb_catalog_signature_invalid"),
+        (CatalogSerialRegression, "orb_catalog_serial_regression"),
+        (CatalogStateCorrupt, "orb_catalog_state_corrupt"),
+    ],
+)
+async def test_catalog_admin_remote_fetch_signature_errors_no_fallback(
+    client, app, monkeypatch, exc_class, expected_error
+):
+    async def fake_fetch_catalog(base, cache_dir, state_path):
+        raise exc_class("error detail")
+
+    def fake_load_cached_catalog(cache_dir, state_path):
+        raise AssertionError("load_cached_catalog must not be called on signature/key/serial/state errors")
+
+    monkeypatch.setattr("tinyagentos.routes.orb.fetch_catalog", fake_fetch_catalog)
+    monkeypatch.setattr("tinyagentos.routes.orb.load_cached_catalog", fake_load_cached_catalog)
+    app.state.config.orb = {"catalog_url": "https://example.com/catalog"}
+
+    resp = await client.get("/api/orb/catalog")
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["error"] == expected_error
+
+
+@pytest.mark.asyncio
+async def test_catalog_admin_base_http_not_https(client, app, monkeypatch):
+    async def fake_fetch_catalog(base, cache_dir, state_path):
+        raise AssertionError("fetch_catalog must not be called for http://")
+
+    def fake_load_cached_catalog(cache_dir, state_path):
+        raise AssertionError("load_cached_catalog must not be called for http://")
+
+    monkeypatch.setattr("tinyagentos.routes.orb.fetch_catalog", fake_fetch_catalog)
+    monkeypatch.setattr("tinyagentos.routes.orb.load_cached_catalog", fake_load_cached_catalog)
+    app.state.config.orb = {"catalog_url": "http://example.com/catalog"}
+
+    resp = await client.get("/api/orb/catalog")
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["error"] == "orb_catalog_misconfigured"
+
+
+@pytest.mark.asyncio
+async def test_catalog_config_round_trip(client, app, monkeypatch, tmp_data_dir):
+    """Test that orb.catalog_url survives config to-dict and reload."""
+    from tinyagentos.config import AppConfig, load_config, save_config
+    import yaml
+
+    # Test with catalog_url set
+    config_data_with_orb = {
+        "server": {"host": "0.0.0.0", "port": 6969},
+        "backends": [],
+        "qmd": {"url": "http://localhost:7832"},
+        "agents": [],
+        "metrics": {"poll_interval": 30, "retention_days": 30},
+        "orb": {"catalog_url": "https://example.com/catalog"},
+    }
+    config_path = tmp_data_dir / "config_with_orb.yaml"
+    config_path.write_text(yaml.dump(config_data_with_orb))
+
+    cfg = load_config(config_path)
+    assert cfg.orb == {"catalog_url": "https://example.com/catalog"}
+
+    # to_dict should include orb since it differs from default
+    d = cfg.to_dict()
+    assert d["orb"] == {"catalog_url": "https://example.com/catalog"}
+
+    # Test without orb key (should get default)
+    config_data_without_orb = {
+        "server": {"host": "0.0.0.0", "port": 6969},
+        "backends": [],
+        "qmd": {"url": "http://localhost:7832"},
+        "agents": [],
+        "metrics": {"poll_interval": 30, "retention_days": 30},
+    }
+    config_path2 = tmp_data_dir / "config_without_orb.yaml"
+    config_path2.write_text(yaml.dump(config_data_without_orb))
+
+    cfg2 = load_config(config_path2)
+    assert cfg2.orb == {"catalog_url": ""}
+
+    # to_dict should NOT include orb when it's the default
+    d2 = cfg2.to_dict()
+    assert "orb" not in d2

@@ -8,10 +8,10 @@ export function WifiPanel() {
   const [accessPoints, setAccessPoints] = useState<{ ssid: string; strength: number; frequency: number; secured: boolean; active: boolean }[]>([]);
   const [error, setError] = useState<string | null>(null);
   const mounted = useRef(true);
-  useEffect(() => () => { mounted.current = false; }, []);
 
   useEffect(() => {
-    (async () => {
+    mounted.current = true;
+    const load = async () => {
       try {
         const res = await fetch("/api/hardware/wifi", { credentials: "include" });
         const body = await res.json().catch(() => null);
@@ -25,10 +25,17 @@ export function WifiPanel() {
         if (body.available && body.wifi_enabled && Array.isArray(body.access_points)) {
           setAccessPoints(body.access_points);
         }
+        setError(null);
       } catch {
         if (mounted.current) setError("Could not reach taOS.");
       }
-    })();
+    };
+    load();
+    const id = setInterval(load, 10_000);
+    return () => {
+      mounted.current = false;
+      clearInterval(id);
+    };
   }, []);
 
   return (
