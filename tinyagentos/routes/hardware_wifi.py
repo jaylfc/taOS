@@ -375,14 +375,17 @@ async def wifi_connect(body: WifiConnectBody):
 
     devices = await _wifi_devices()
     device_path = None
+    chosen_iface = None
     if body.iface:
         for path, iface in devices:
             if iface == body.iface:
                 device_path = path
+                chosen_iface = iface
                 break
     else:
         if devices:
             device_path = devices[0][0]
+            chosen_iface = devices[0][1]
 
     if device_path is None:
         return JSONResponse({"error": "no_wifi_device"}, status_code=404)
@@ -403,7 +406,7 @@ async def wifi_connect(body: WifiConnectBody):
             "psk": ("s", body.psk),
         }
 
-    result = await _nm_add_and_activate(settings, device_path)
+    result = await _nm_add_and_activate(settings, device_path, chosen_iface)
     if result is None:
         return {"ok": True}
     if result.endswith(".PermissionDenied") or result == "org.freedesktop.DBus.Error.AccessDenied":
@@ -419,7 +422,7 @@ async def wifi_connect(body: WifiConnectBody):
     return JSONResponse({"error": "connect_failed", "dbus_error": result}, status_code=502)
 
 
-async def _nm_add_and_activate(settings: dict, device_path: str) -> str | None:
+async def _nm_add_and_activate(settings: dict, device_path: str, iface: str | None = None) -> str | None:
     try:
         from dbus_fast import BusType, Message, MessageType, Variant
         from dbus_fast.aio import MessageBus
@@ -439,7 +442,7 @@ async def _nm_add_and_activate(settings: dict, device_path: str) -> str | None:
         # Reuse an existing profile for this SSID instead of creating a new one
         # on every connect. GetSettings is read-only; the follow-up Update is
         # what carries the PSK.
-        existing = await _nm_find_existing_connection(bus, body_settings, Message, MessageType)
+        existing = await _nm_find_existing_connection(bus, body_settings, Message, MessageType, iface)
         if existing is not None:
             existing_path, existing_settings = existing
             if body_settings.get("802-11-wireless-security") is not None:
@@ -491,7 +494,7 @@ async def _nm_add_and_activate(settings: dict, device_path: str) -> str | None:
             bus.disconnect()
 
 
-async def _nm_find_existing_connection(bus, settings: dict, Message, MessageType) -> tuple[str, dict] | None:
+async def _nm_find_existing_connection(bus, settings: dict, Message, MessageType, iface: str | None = None) -> tuple[str, dict] | None:
     """Return a tuple (path, settings) of an existing 802-11-wireless connection
     whose SSID bytes match the requested settings, or None."""
     reply = await bus.call(
@@ -549,6 +552,12 @@ async def _nm_find_existing_connection(bus, settings: dict, Message, MessageType
         wireless_section = sections.get("802-11-wireless")
         ssid = _nm_variant_value(wireless_section, "ssid") if isinstance(wireless_section, dict) else None
         if isinstance(ssid, (bytes, bytearray)) and bytes(ssid) == wanted_ssid:
+            mode = _nm_variant_value(wireless_section, "mode") if isinstance(wireless_section, dict) else None
+            if mode is not None and mode != "infrastructure":
+                continue
+            iface_name = _nm_variant_value(conn, "interface-name") if isinstance(conn, dict) else None
+            if isinstance(iface_name, str) and iface_name and iface is not None and iface_name != iface:
+                continue
             return (path, sections)
     return None
 

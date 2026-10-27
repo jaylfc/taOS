@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, waitFor, act } from "@testing-library/react";
 import { WifiPanel } from "./WifiPanel";
+import { StrictMode } from "react";
 
 function json(obj: unknown, status = 200) {
   return new Response(JSON.stringify(obj), {
@@ -92,4 +93,22 @@ it("refreshes access points every 10s and clears interval on unmount", async () 
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     vi.useRealTimers();
   }, 15000);
+});
+
+describe("WifiPanel StrictMode", () => {
+  it("loads access points even when mounted remounts under StrictMode", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      json({
+        available: true,
+        wifi_enabled: true,
+        access_points: [
+          { ssid: "TestNetwork", strength: 75, frequency: 2437, secured: true, active: true },
+        ],
+      })
+    );
+    render(<StrictMode><WifiPanel /></StrictMode>);
+    await waitFor(() => {
+      expect(screen.getByText("TestNetwork")).toBeInTheDocument();
+    });
+  });
 });
