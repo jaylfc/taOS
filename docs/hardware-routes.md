@@ -7,7 +7,7 @@
 ### GET /api/hardware/wifi
 
 - Response: `available`, `wifi_enabled`, `devices[]`, `access_points[]`
-- `available=false` = NetworkManager unreachable (HTTP 200; only the write routes return 503)
+- `available=false` = NetworkManager could not be queried (HTTP 200; only the write routes return 503)
 
 ### POST /api/hardware/wifi/enabled
 
@@ -23,13 +23,13 @@
 
 - Body: `{ssid, psk?, iface?}`; PSK via dbus-fast in-process, never on a busctl argv
 - 503 `networkmanager_unavailable` / `dbus_fast_missing`
-- 422 `invalid_ssid` / `invalid_psk`; 404 `no_wifi_device` / `unknown_iface`
+- 422 `invalid_ssid` / `invalid_psk`; 404 `no_wifi_device`
 - 403 `not_permitted` (polkit); 502 `connect_failed`
 
 ### GET /api/hardware/bluetooth
 
 - Response: `available`, `adapters[]`, `devices[]`
-- `available=false` = BlueZ unreachable (HTTP 200; only the write routes return 503)
+- `available=false` = BlueZ could not be queried (HTTP 200; only the write routes return 503)
 
 ### POST /api/hardware/bluetooth/power
 
