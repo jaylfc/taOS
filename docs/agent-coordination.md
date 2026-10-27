@@ -1481,7 +1481,7 @@ Route module `tinyagentos/routes/hardware_bluetooth.py`:
 - `POST /api/hardware/bluetooth/power` powers a Bluetooth adapter on or off.
 - `POST /api/hardware/bluetooth/device` performs connect, disconnect, pair, trust, untrust, or remove on a device.
 
-All routes are admin-only via `Depends(require_admin)`. See `docs/hardware-routes.md` for detail.
+All routes are admin-only via `Depends(require_admin)`. See [docs/hardware-routes.md](hardware-routes.md) for detail.
 
 ## Device voice routes (S6 / S6b)
 
