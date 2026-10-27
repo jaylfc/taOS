@@ -1037,26 +1037,22 @@ async def test_interface_name_match_profile_reused(monkeypatch):
 @pytest.mark.asyncio
 async def test_connect_no_iface_uses_first_device_iface(monkeypatch):
     """When body has no iface, wifi_connect should pass the chosen device's iface to _nm_add_and_activate."""
-    busctl_calls = []
     nm_add_calls = []
 
     async def fake_busctl(*args):
-        busctl_calls.append(args)
         if args[0] == "get-property" and args[-1] == "WirelessEnabled":
             return 0, True
-        if args[0] == "call" and args[-1] == "GetDevices":
-            return 0, ["/org/freedesktop/NetworkManager/Devices/2"]
-        if args[0] == "get-property" and args[2] == "/org/freedesktop/NetworkManager/Devices/2" and args[4] == "DeviceType":
-            return 0, 2
-        if args[0] == "get-property" and args[2] == "/org/freedesktop/NetworkManager/Devices/2" and args[4] == "Interface":
-            return 0, "wlan0"
         raise AssertionError(f"unexpected busctl call: {args}")
+
+    async def fake_wifi_devices():
+        return [("/org/freedesktop/NetworkManager/Devices/2", "wlan0")]
 
     async def fake_nm_add_and_activate(settings, device_path, iface=None):
         nm_add_calls.append((settings, device_path, iface))
         return None
 
     monkeypatch.setattr(hw_routes, "busctl", fake_busctl)
+    monkeypatch.setattr(hw_routes, "_wifi_devices", fake_wifi_devices)
     monkeypatch.setattr(hw_routes, "_nm_add_and_activate", fake_nm_add_and_activate)
 
     body = hw_routes.WifiConnectBody(ssid="MyNetwork", psk="secret123")
@@ -1071,26 +1067,22 @@ async def test_connect_no_iface_uses_first_device_iface(monkeypatch):
 @pytest.mark.asyncio
 async def test_connect_with_iface_passes_same_iface(monkeypatch):
     """When body has iface, wifi_connect should pass that iface to _nm_add_and_activate."""
-    busctl_calls = []
     nm_add_calls = []
 
     async def fake_busctl(*args):
-        busctl_calls.append(args)
         if args[0] == "get-property" and args[-1] == "WirelessEnabled":
             return 0, True
-        if args[0] == "call" and args[-1] == "GetDevices":
-            return 0, ["/org/freedesktop/NetworkManager/Devices/2"]
-        if args[0] == "get-property" and args[2] == "/org/freedesktop/NetworkManager/Devices/2" and args[4] == "DeviceType":
-            return 0, 2
-        if args[0] == "get-property" and args[2] == "/org/freedesktop/NetworkManager/Devices/2" and args[4] == "Interface":
-            return 0, "wlan0"
         raise AssertionError(f"unexpected busctl call: {args}")
+
+    async def fake_wifi_devices():
+        return [("/org/freedesktop/NetworkManager/Devices/2", "wlan0")]
 
     async def fake_nm_add_and_activate(settings, device_path, iface=None):
         nm_add_calls.append((settings, device_path, iface))
         return None
 
     monkeypatch.setattr(hw_routes, "busctl", fake_busctl)
+    monkeypatch.setattr(hw_routes, "_wifi_devices", fake_wifi_devices)
     monkeypatch.setattr(hw_routes, "_nm_add_and_activate", fake_nm_add_and_activate)
 
     body = hw_routes.WifiConnectBody(ssid="MyNetwork", psk="secret123", iface="wlan0")
