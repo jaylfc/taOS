@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { Card } from "@/components/ui";
 
 export function BluetoothPanel() {
@@ -6,15 +6,14 @@ export function BluetoothPanel() {
   const [adapters, setAdapters] = useState<{ path: string; address: string; powered: boolean }[]>([]);
   const [devices, setDevices] = useState<{ path: string; address: string; name: string | null; paired: boolean; connected: boolean; trusted: boolean }[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const mounted = useRef(true);
-  useEffect(() => () => { mounted.current = false; }, []);
 
   useEffect(() => {
-    (async () => {
+    let mounted = true;
+    const load = async () => {
       try {
         const res = await fetch("/api/hardware/bluetooth", { credentials: "include" });
         const body = await res.json().catch(() => null);
-        if (!mounted.current) return;
+        if (!mounted) return;
         if (!res.ok || body === null || typeof body.available !== "boolean") {
           setError("Could not load Bluetooth state.");
           return;
@@ -26,10 +25,17 @@ export function BluetoothPanel() {
         if (Array.isArray(body.devices)) {
           setDevices(body.devices);
         }
+        setError(null);
       } catch {
-        if (mounted.current) setError("Could not reach taOS.");
+        if (mounted) setError("Could not reach taOS.");
       }
-    })();
+    };
+    load();
+    const id = setInterval(load, 10_000);
+    return () => {
+      mounted = false;
+      clearInterval(id);
+    };
   }, []);
 
   return (

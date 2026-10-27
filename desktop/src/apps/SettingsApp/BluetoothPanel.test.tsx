@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+import { render, screen, waitFor, act } from "@testing-library/react";
 import { BluetoothPanel } from "./BluetoothPanel";
 
 function json(obj: unknown, status = 200) {
@@ -61,4 +61,38 @@ describe("BluetoothPanel", () => {
     render(<BluetoothPanel />);
     expect(await screen.findByRole("alert")).toBeInTheDocument();
   });
+
+  it("refreshes devices every 10s and clears interval on unmount", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy
+      .mockResolvedValueOnce(
+        json({
+          available: true,
+          adapters: [{ path: "/org/bluez/hci0", address: "AA:BB:CC:DD:EE:FF", powered: true }],
+          devices: [{ path: "/org/bluez/hci0/dev_11_22_33_44_55_66", address: "11:22:33:44:55:66", name: "FirstDevice", paired: true, connected: true, trusted: true }],
+        })
+      )
+      .mockResolvedValueOnce(
+        json({
+          available: true,
+          adapters: [{ path: "/org/bluez/hci0", address: "AA:BB:CC:DD:EE:FF", powered: true }],
+          devices: [{ path: "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF", address: "AA:BB:CC:DD:EE:FF", name: "SecondDevice", paired: true, connected: true, trusted: true }],
+        })
+      );
+    const { unmount } = render(<BluetoothPanel />);
+    await waitFor(() => expect(screen.getByText("FirstDevice")).toBeInTheDocument(), { timeout: 3000 });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+    });
+    await waitFor(() => expect(screen.getByText("SecondDevice")).toBeInTheDocument(), { timeout: 3000 });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    unmount();
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  }, 15000);
 });
