@@ -1466,6 +1466,23 @@ Route module `tinyagentos/routes/device_pair_requests.py`:
 Approval or denial of a pair request is surfaced to the user through the Decisions app;
 agents must not grant pairing directly.
 
+## Hardware controls (Wi-Fi, Bluetooth)
+
+Route module `tinyagentos/routes/hardware_wifi.py`:
+
+- `GET /api/hardware/wifi` reads Wi-Fi state and access points via NetworkManager D-Bus.
+- `POST /api/hardware/wifi/enabled` enables or disables the Wi-Fi radio.
+- `POST /api/hardware/wifi/disconnect` disconnects a Wi-Fi interface.
+- `POST /api/hardware/wifi/connect` connects to a Wi-Fi network; the PSK travels to NetworkManager over dbus-fast in-process and never on a busctl argv.
+
+Route module `tinyagentos/routes/hardware_bluetooth.py`:
+
+- `GET /api/hardware/bluetooth` reads Bluetooth adapters and devices via BlueZ D-Bus.
+- `POST /api/hardware/bluetooth/power` powers a Bluetooth adapter on or off.
+- `POST /api/hardware/bluetooth/device` performs connect, disconnect, pair, trust, untrust, or remove on a device.
+
+All routes are admin-only via `Depends(require_admin)`. See `docs/hardware-routes.md` for detail.
+
 ## Device voice routes (S6 / S6b)
 
 Route module `tinyagentos/routes/device_voice.py`. Device bearer only (a session
