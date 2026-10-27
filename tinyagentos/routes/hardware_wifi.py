@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from tinyagentos.auth_context import require_admin
 from tinyagentos.dbus_cli import busctl
@@ -12,10 +14,70 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+class WifiEnabledBody(BaseModel):
+    enabled: bool
+
+
+class WifiConnectBody(BaseModel):
+    ssid: str
+    psk: str | None = None
+    iface: str | None = None
+
+
+class WifiDisconnectBody(BaseModel):
+    iface: str
+
+
 def _get_data(val: object | None) -> object | None:
     if isinstance(val, dict) and "data" in val:
         return val.get("data")
     return val
+
+
+async def _wifi_devices() -> list[tuple[str, str]]:
+    """Return (device_path, iface) for every Wi-Fi device (DeviceType == 2)."""
+    rc, devices_data = await busctl(
+        "call",
+        "org.freedesktop.NetworkManager",
+        "/org/freedesktop/NetworkManager",
+        "org.freedesktop.NetworkManager",
+        "GetDevices",
+    )
+    if rc != 0 or devices_data is None:
+        return []
+    d = _get_data(devices_data)
+    if isinstance(d, list) and len(d) > 0 and isinstance(d[0], list):
+        device_paths = [p for p in d[0] if isinstance(p, str)]
+    elif isinstance(d, list):
+        device_paths = [p for p in d if isinstance(p, str)]
+    else:
+        device_paths = []
+
+    out: list[tuple[str, str]] = []
+    for path in device_paths:
+        rc_dt, dt_val = await busctl(
+            "get-property",
+            "org.freedesktop.NetworkManager",
+            path,
+            "org.freedesktop.NetworkManager.Device",
+            "DeviceType",
+        )
+        if rc_dt != 0:
+            continue
+        dt = _get_data(dt_val)
+        if dt != 2:
+            continue
+        rc_if, if_val = await busctl(
+            "get-property",
+            "org.freedesktop.NetworkManager",
+            path,
+            "org.freedesktop.NetworkManager.Device",
+            "Interface",
+        )
+        iface = _get_data(if_val) if rc_if == 0 else None
+        if isinstance(iface, str):
+            out.append((path, iface))
+    return out
 
 
 @router.get("/api/hardware/wifi", dependencies=[Depends(require_admin)])
@@ -214,3 +276,294 @@ async def get_wifi():
         "devices": devices_out,
         "access_points": aps_out,
     }
+
+
+def _nm_unavailable_response() -> JSONResponse:
+    return JSONResponse({"error": "networkmanager_unavailable"}, status_code=503)
+
+
+def _write_failed_response() -> JSONResponse:
+    return JSONResponse(
+        {
+            "error": "write_failed",
+            "hint": "Wi-Fi changes need local mode enabled (polkit rule 50-taos-hardware.rules)",
+        },
+        status_code=502,
+    )
+
+
+@router.post("/api/hardware/wifi/enabled", dependencies=[Depends(require_admin)])
+async def set_wifi_enabled(body: WifiEnabledBody):
+    rc, _ = await busctl(
+        "get-property",
+        "org.freedesktop.NetworkManager",
+        "/org/freedesktop/NetworkManager",
+        "org.freedesktop.NetworkManager",
+        "WirelessEnabled",
+    )
+    if rc != 0:
+        return _nm_unavailable_response()
+
+    enabled_str = "true" if body.enabled else "false"
+    rc, _ = await busctl(
+        "set-property",
+        "org.freedesktop.NetworkManager",
+        "/org/freedesktop/NetworkManager",
+        "org.freedesktop.NetworkManager",
+        "WirelessEnabled",
+        "b",
+        enabled_str,
+    )
+    if rc != 0:
+        return _write_failed_response()
+    return {"ok": True, "wifi_enabled": body.enabled}
+
+
+@router.post("/api/hardware/wifi/disconnect", dependencies=[Depends(require_admin)])
+async def wifi_disconnect(body: WifiDisconnectBody):
+    rc, _ = await busctl(
+        "get-property",
+        "org.freedesktop.NetworkManager",
+        "/org/freedesktop/NetworkManager",
+        "org.freedesktop.NetworkManager",
+        "WirelessEnabled",
+    )
+    if rc != 0:
+        return _nm_unavailable_response()
+
+    devices = await _wifi_devices()
+    device_path = None
+    for path, iface in devices:
+        if iface == body.iface:
+            device_path = path
+            break
+    if device_path is None:
+        return JSONResponse({"error": "unknown_iface"}, status_code=404)
+
+    rc, _ = await busctl(
+        "call",
+        "org.freedesktop.NetworkManager",
+        device_path,
+        "org.freedesktop.NetworkManager.Device",
+        "Disconnect",
+    )
+    if rc != 0:
+        return _write_failed_response()
+    return {"ok": True}
+
+
+@router.post("/api/hardware/wifi/connect", dependencies=[Depends(require_admin)])
+async def wifi_connect(body: WifiConnectBody):
+    ssid_bytes = body.ssid.encode("utf-8")
+    if not (1 <= len(ssid_bytes) <= 32):
+        return JSONResponse({"error": "invalid_ssid"}, status_code=422)
+
+    if body.psk is not None:
+        psk = body.psk
+        if not ((8 <= len(psk) <= 63) or (len(psk) == 64 and all(c in "0123456789abcdefABCDEF" for c in psk))):
+            return JSONResponse({"error": "invalid_psk"}, status_code=422)
+
+    rc, _ = await busctl(
+        "get-property",
+        "org.freedesktop.NetworkManager",
+        "/org/freedesktop/NetworkManager",
+        "org.freedesktop.NetworkManager",
+        "WirelessEnabled",
+    )
+    if rc != 0:
+        return _nm_unavailable_response()
+
+    devices = await _wifi_devices()
+    device_path = None
+    chosen_iface = None
+    if body.iface:
+        for path, iface in devices:
+            if iface == body.iface:
+                device_path = path
+                chosen_iface = iface
+                break
+    else:
+        if devices:
+            device_path = devices[0][0]
+            chosen_iface = devices[0][1]
+
+    if device_path is None:
+        return JSONResponse({"error": "no_wifi_device"}, status_code=404)
+
+    settings: dict = {
+        "connection": {
+            "type": ("s", "802-11-wireless"),
+            "id": ("s", body.ssid),
+        },
+        "802-11-wireless": {
+            "ssid": ("ay", ssid_bytes),
+            "mode": ("s", "infrastructure"),
+        },
+    }
+    if body.psk is not None:
+        settings["802-11-wireless-security"] = {
+            "key-mgmt": ("s", "wpa-psk"),
+            "psk": ("s", body.psk),
+        }
+
+    result = await _nm_add_and_activate(settings, device_path, chosen_iface)
+    if result is None:
+        return {"ok": True}
+    if result.endswith(".PermissionDenied") or result == "org.freedesktop.DBus.Error.AccessDenied":
+        return JSONResponse(
+            {
+                "error": "not_permitted",
+                "hint": "Wi-Fi changes need local mode enabled (polkit rule 50-taos-hardware.rules)",
+            },
+            status_code=403,
+        )
+    if result == "dbus_fast_missing":
+        return JSONResponse({"error": "dbus_fast_missing"}, status_code=503)
+    return JSONResponse({"error": "connect_failed", "dbus_error": result}, status_code=502)
+
+
+async def _nm_add_and_activate(settings: dict, device_path: str, iface: str | None = None) -> str | None:
+    try:
+        from dbus_fast import BusType, Message, MessageType, Variant
+        from dbus_fast.aio import MessageBus
+    except Exception:
+        return "dbus_fast_missing"
+
+    bus = None
+    try:
+        bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+        body_settings = {}
+        for section, props in settings.items():
+            section_dict = {}
+            for key, (sig, val) in props.items():
+                section_dict[key] = Variant(sig, val)
+            body_settings[section] = section_dict
+
+        # Reuse an existing profile for this SSID instead of creating a new one
+        # on every connect. GetSettings is read-only; the follow-up Update is
+        # what carries the PSK.
+        existing = await _nm_find_existing_connection(bus, body_settings, Message, MessageType, iface)
+        if existing is not None:
+            existing_path, existing_settings = existing
+            if body_settings.get("802-11-wireless-security") is not None:
+                merged_settings = dict(existing_settings)
+                merged_settings["802-11-wireless-security"] = body_settings["802-11-wireless-security"]
+                update_reply = await bus.call(
+                    Message(
+                        destination="org.freedesktop.NetworkManager",
+                        path=existing_path,
+                        interface="org.freedesktop.NetworkManager.Settings.Connection",
+                        member="Update",
+                        signature="a{sa{sv}}",
+                        body=[merged_settings],
+                    )
+                )
+                if update_reply.message_type == MessageType.ERROR:
+                    return update_reply.error_name
+            activate_reply = await bus.call(
+                Message(
+                    destination="org.freedesktop.NetworkManager",
+                    path="/org/freedesktop/NetworkManager",
+                    interface="org.freedesktop.NetworkManager",
+                    member="ActivateConnection",
+                    signature="ooo",
+                    body=[existing_path, device_path, "/"],
+                )
+            )
+            if activate_reply.message_type == MessageType.ERROR:
+                return activate_reply.error_name
+            return None
+
+        reply = await bus.call(
+            Message(
+                destination="org.freedesktop.NetworkManager",
+                path="/org/freedesktop/NetworkManager",
+                interface="org.freedesktop.NetworkManager",
+                member="AddAndActivateConnection",
+                signature="a{sa{sv}}oo",
+                body=[body_settings, device_path, "/"],
+            )
+        )
+        if reply.message_type == MessageType.ERROR:
+            return reply.error_name
+        return None
+    except Exception:
+        return "dbus_call_failed"
+    finally:
+        if bus is not None:
+            bus.disconnect()
+
+
+async def _nm_find_existing_connection(bus, settings: dict, Message, MessageType, iface: str | None = None) -> tuple[str, dict] | None:
+    """Return a tuple (path, settings) of an existing 802-11-wireless connection
+    whose SSID bytes match the requested settings, or None."""
+    reply = await bus.call(
+        Message(
+            destination="org.freedesktop.NetworkManager",
+            path="/org/freedesktop/NetworkManager/Settings",
+            interface="org.freedesktop.NetworkManager.Settings",
+            member="ListConnections",
+            signature="",
+            body=[],
+        )
+    )
+    if reply.message_type == MessageType.ERROR:
+        return None
+    paths = reply.body[0] if reply.body else []
+    if isinstance(paths, list) and len(paths) > 0 and isinstance(paths[0], list):
+        paths = paths[0]
+    if not isinstance(paths, list):
+        return None
+
+    wanted_ssid = None
+    wireless = settings.get("802-11-wireless")
+    if isinstance(wireless, dict):
+        ssid_variant = wireless.get("ssid")
+        if ssid_variant is not None:
+            wanted_ssid = ssid_variant.value
+    if not isinstance(wanted_ssid, (bytes, bytearray)):
+        return None
+    wanted_ssid = bytes(wanted_ssid)
+
+    for path in paths:
+        if not isinstance(path, str):
+            continue
+        settings_reply = await bus.call(
+            Message(
+                destination="org.freedesktop.NetworkManager",
+                path=path,
+                interface="org.freedesktop.NetworkManager.Settings.Connection",
+                member="GetSettings",
+                signature="",
+                body=[],
+            )
+        )
+        if settings_reply.message_type == MessageType.ERROR:
+            continue
+        sections = settings_reply.body[0] if settings_reply.body else {}
+        if isinstance(sections, list) and len(sections) > 0 and isinstance(sections[0], dict):
+            sections = sections[0]
+        if not isinstance(sections, dict):
+            continue
+        conn = sections.get("connection")
+        conn_type = _nm_variant_value(conn, "type") if isinstance(conn, dict) else None
+        if conn_type != "802-11-wireless":
+            continue
+        wireless_section = sections.get("802-11-wireless")
+        ssid = _nm_variant_value(wireless_section, "ssid") if isinstance(wireless_section, dict) else None
+        if isinstance(ssid, (bytes, bytearray)) and bytes(ssid) == wanted_ssid:
+            mode = _nm_variant_value(wireless_section, "mode") if isinstance(wireless_section, dict) else None
+            if mode is not None and mode != "infrastructure":
+                continue
+            iface_name = _nm_variant_value(conn, "interface-name") if isinstance(conn, dict) else None
+            if isinstance(iface_name, str) and iface_name and iface is not None and iface_name != iface:
+                continue
+            return (path, sections)
+    return None
+
+
+def _nm_variant_value(section: dict, key: str) -> object:
+    variant = section.get(key)
+    if variant is None:
+        return None
+    return getattr(variant, "value", variant)
