@@ -444,6 +444,35 @@ async def test_expired_code_ready_cleared_on_create(client, app, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_store_create_refuses_second_open_same_kind(tmp_data_dir):
+    """AuthBrokerStore.create refuses a second open request for the same requester and kind.
+
+    This test demonstrates the race condition that was fixed by making the one-open-request-per-kind
+    check atomic inside AuthBrokerStore.create().
+    """
+    from tinyagentos.auth_broker import KIND_CLAUDE_SUBSCRIPTION, AuthBrokerStore, OpenRequestExists
+
+    store = AuthBrokerStore(tmp_data_dir / "auth_broker_test.db")
+    await store.init()
+    try:
+        url = "https://claude.ai/oauth/authorize?code=true&client_id=abc&state=xyz"
+
+        # First create succeeds
+        rec1 = await store.create(
+            requester="agent-y", kind=KIND_CLAUDE_SUBSCRIPTION, url=url
+        )
+        assert rec1["status"] == "pending"
+
+        # Second create for same requester and kind should raise OpenRequestExists
+        with pytest.raises(OpenRequestExists):
+            await store.create(
+                requester="agent-y", kind=KIND_CLAUDE_SUBSCRIPTION, url=url
+            )
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
 async def test_store_create_enforces_cap_under_lock(tmp_data_dir):
     """AuthBrokerStore.create enforces MAX_OPEN_PER_AGENT inside its lock.
 
@@ -459,11 +488,14 @@ async def test_store_create_enforces_cap_under_lock(tmp_data_dir):
         url = "https://claude.ai/oauth/authorize?code=true&client_id=abc&state=xyz"
 
         # Create MAX_OPEN_PER_AGENT requests for "agent-x"
-        for _ in range(MAX_OPEN_PER_AGENT):
+        for i in range(MAX_OPEN_PER_AGENT):
             rec = await store.create(
                 requester="agent-x", kind=KIND_CLAUDE_SUBSCRIPTION, url=url
             )
             assert rec["status"] == "pending"
+            # Move this request to code_read so the next create can succeed
+            await store.set_code(rec["id"], "c")
+            await store.take_code(rec["id"])
 
         # The (MAX_OPEN_PER_AGENT + 1)th create for "agent-x" must raise
         with pytest.raises(PendingCapExceeded) as exc_info:
@@ -497,6 +529,9 @@ async def test_cap_reject_leaves_no_open_transaction(app):
             requester="cap-test-agent", kind=KIND_CLAUDE_SUBSCRIPTION, url=url
         )
         assert rec["status"] == "pending"
+        # Move this request to code_read so the next create can succeed
+        await store.set_code(rec["id"], "c")
+        await store.take_code(rec["id"])
 
     # The next create must raise PendingCapExceeded
     with pytest.raises(PendingCapExceeded):
@@ -522,6 +557,9 @@ async def test_rollback_exception_does_not_mask_pending_capexceeded(app):
             requester="rollback-test-agent", kind=KIND_CLAUDE_SUBSCRIPTION, url=url
         )
         assert rec["status"] == "pending"
+        # Move this request to code_read so the next create can succeed
+        await store.set_code(rec["id"], "c")
+        await store.take_code(rec["id"])
 
     # Monkeypatch rollback to raise an exception
     async def failing_rollback():
@@ -537,6 +575,7 @@ async def test_rollback_exception_does_not_mask_pending_capexceeded(app):
     assert exc_info.value.key == "rollback-test-agent"
     assert exc_info.value.cap == MAX_OPEN_PER_AGENT
     assert exc_info.value.pending == MAX_OPEN_PER_AGENT
+
 
 
 @pytest.mark.asyncio

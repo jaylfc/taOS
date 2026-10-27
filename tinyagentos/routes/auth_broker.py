@@ -22,7 +22,9 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from tinyagentos.agent_token_auth import check_agent_identity
-from tinyagentos.auth_broker import EXPIRY_SECONDS, AuthBrokerStore, signin_host
+from tinyagentos.auth_broker import (
+    EXPIRY_SECONDS, AuthBrokerStore, OpenRequestExists, signin_host
+)
 from tinyagentos.auth_context import (
     current_user,
     require_agent_owner_or_admin,
@@ -107,12 +109,6 @@ async def create_request(request: Request, body: CreateBody):
         )
     # Check for an existing open request for this agent and kind.
     store = _store(request)
-    existing = await store.open_request(requester, body.kind)
-    if existing is not None:
-        raise HTTPException(
-            status_code=409,
-            detail="a sign-in request is already open for this agent",
-        )
     # The card goes to the agent's owner. An agent the registry cannot attribute
     # (a bound local-token agent with no registry row) goes to the admins, who
     # are the only users allowed to answer it. Never user_id=None: that is a
@@ -134,6 +130,11 @@ async def create_request(request: Request, body: CreateBody):
         raise HTTPException(
             status_code=429,
             detail="too many open sign-in requests",
+        )
+    except OpenRequestExists:
+        raise HTTPException(
+            status_code=409,
+            detail="a sign-in request is already open for this agent",
         )
 
     notifs = getattr(request.app.state, "notifications", None)
