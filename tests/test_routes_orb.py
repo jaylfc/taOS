@@ -460,3 +460,81 @@ async def test_catalog_config_round_trip(client, app, monkeypatch, tmp_data_dir)
     # to_dict should NOT include orb when it's the default
     d2 = cfg2.to_dict()
     assert "orb" not in d2
+
+
+# ---------------------------------------------------------------------------
+# GET /api/orb/bridges (admin-gated, shared _gather_lan(), evaluate_all())
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_bridges_unauthed_requires_admin(unauthed_client):
+    resp = await unauthed_client.get("/api/orb/bridges")
+    assert resp.status_code in (401, 403)
+
+
+@pytest.mark.asyncio
+async def test_bridges_non_admin_session_gets_403(client, app, monkeypatch):
+    def raise_assert(*args, **kwargs):
+        raise AssertionError("lookup must not be called for non-admin")
+
+    monkeypatch.setattr(app.state.auth, "session_user", lambda token, user_agent=None: {"is_admin": False})
+    monkeypatch.setattr("tinyagentos.routes.orb.browse_lan_orbs", raise_assert)
+    monkeypatch.setattr("tinyagentos.routes.orb.probe_agent_buddy", raise_assert)
+    monkeypatch.setattr("tinyagentos.routes.orb.evaluate_all", raise_assert)
+    resp = await client.get("/api/orb/bridges")
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_bridges_admin_one_orb_mimiclaw_target(client, app, monkeypatch):
+    fake_lan = [
+        {
+            "name": "orb-1",
+            "addresses": ["192.168.1.20"],
+            "port": 80,
+            "board": "x",
+            "app": "mimiclaw",
+            "version": "1",
+        }
+    ]
+    monkeypatch.setattr("tinyagentos.routes.orb.browse_lan_orbs", lambda: fake_lan)
+    monkeypatch.setattr("tinyagentos.routes.orb.probe_agent_buddy", lambda: [])
+    resp = await client.get("/api/orb/bridges")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["errors"] == []
+    bridges = body["bridges"]
+    assert any(b.get("bridge_id") == "mimiclaw" for b in bridges)
+    mimiclaw = next(b for b in bridges if b.get("bridge_id") == "mimiclaw")
+    targets = mimiclaw["targets"]
+    assert any(t.get("address") == "192.168.1.20" for t in targets)
+
+
+@pytest.mark.asyncio
+async def test_bridges_admin_probe_transport_unavailable(client, app, monkeypatch):
+    fake_lan = [{"name": "orb-1", "addresses": ["192.168.1.10"], "port": 5353}]
+    monkeypatch.setattr("tinyagentos.routes.orb.browse_lan_orbs", lambda: fake_lan)
+    monkeypatch.setattr(
+        "tinyagentos.routes.orb.probe_agent_buddy",
+        lambda: (_ for _ in ()).throw(TransportUnavailable("x")),
+    )
+    resp = await client.get("/api/orb/bridges")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["errors"] == [{"source": "agent_buddy", "error": "unavailable"}]
+    assert "bridges" in body
+
+
+@pytest.mark.asyncio
+async def test_bridges_admin_evaluate_all_passthrough(client, app, monkeypatch):
+    monkeypatch.setattr("tinyagentos.routes.orb.browse_lan_orbs", lambda: [])
+    monkeypatch.setattr("tinyagentos.routes.orb.probe_agent_buddy", lambda: [])
+    monkeypatch.setattr(
+        "tinyagentos.routes.orb.evaluate_all",
+        lambda lan_orbs, agent_buddy: [{"bridge_id": "x"}],
+    )
+    resp = await client.get("/api/orb/bridges")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["bridges"] == [{"bridge_id": "x"}]
