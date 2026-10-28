@@ -457,6 +457,45 @@ class Catalog(unittest.TestCase):
         self.assertIn("2 blocks", text)
         self.assertIn("slot 0", text)
 
+    def test_load_catalog_desktop_kind_rejected(self):
+        """load_catalog must reject a catalog with kind orb-desktop-apps."""
+        import tempfile
+        import json
+        tmp = tempfile.TemporaryDirectory()
+        cat = {"apps": [], "kind": "orb-desktop-apps"}
+        path = os.path.join(tmp.name, "catalog.json")
+        with open(path, "w") as f:
+            json.dump(cat, f)
+        with self.assertRaisesRegex(ob.OrbError, "kind.*orb-desktop-apps"):
+            ob.load_catalog(path)
+        tmp.cleanup()
+
+    def test_load_catalog_no_kind_accepted(self):
+        """load_catalog must accept a catalog with no kind field (backward compatible)."""
+        import tempfile
+        import json
+        tmp = tempfile.TemporaryDirectory()
+        cat = {"apps": [{"id": "app1", "name": "App1", "versions": []}]}
+        path = os.path.join(tmp.name, "catalog.json")
+        with open(path, "w") as f:
+            json.dump(cat, f)
+        result = ob.load_catalog(path)
+        assert "app1" in result.apps
+        tmp.cleanup()
+
+    def test_load_catalog_firmware_kind_accepted(self):
+        """load_catalog must accept a catalog with kind orb-firmware."""
+        import tempfile
+        import json
+        tmp = tempfile.TemporaryDirectory()
+        cat = {"apps": [{"id": "app1", "name": "App1", "versions": []}], "kind": "orb-firmware"}
+        path = os.path.join(tmp.name, "catalog.json")
+        with open(path, "w") as f:
+            json.dump(cat, f)
+        result = ob.load_catalog(path)
+        assert "app1" in result.apps
+        tmp.cleanup()
+
 
 class LocalChecks(unittest.TestCase):
     def test_image_checks(self):
