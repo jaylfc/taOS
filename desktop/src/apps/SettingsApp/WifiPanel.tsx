@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { AlertCircle, Wifi as WifiIcon } from "lucide-react";
 import { Card } from "@/components/ui";
 
@@ -7,33 +7,41 @@ export function WifiPanel() {
   const [wifiEnabled, setWifiEnabled] = useState<boolean | null>(null);
   const [accessPoints, setAccessPoints] = useState<{ ssid: string; strength: number; frequency: number; secured: boolean; active: boolean }[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const mounted = useRef(true);
 
   useEffect(() => {
-    mounted.current = true;
+    let active = true;
+    let seq = 0;
     const load = async () => {
+      const mine = ++seq;
       try {
         const res = await fetch("/api/hardware/wifi", { credentials: "include" });
+        if (!active || mine !== seq) return;
         const body = await res.json().catch(() => null);
-        if (!mounted.current) return;
+        if (!active || mine !== seq) return;
         if (!res.ok || body === null || typeof body.available !== "boolean") {
+          if (!active || mine !== seq) return;
           setError("Could not load Wi-Fi state.");
           return;
         }
+        if (!active || mine !== seq) return;
         setAvailable(body.available);
+        if (!active || mine !== seq) return;
         setWifiEnabled(body.wifi_enabled ?? null);
         if (body.available && body.wifi_enabled && Array.isArray(body.access_points)) {
+          if (!active || mine !== seq) return;
           setAccessPoints(body.access_points);
         }
+        if (!active || mine !== seq) return;
         setError(null);
       } catch {
-        if (mounted.current) setError("Could not reach taOS.");
+        if (!active || mine !== seq) return;
+        setError("Could not reach taOS.");
       }
     };
     load();
     const id = setInterval(load, 10_000);
     return () => {
-      mounted.current = false;
+      active = false;
       clearInterval(id);
     };
   }, []);

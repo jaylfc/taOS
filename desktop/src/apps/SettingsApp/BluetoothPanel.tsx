@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { Card } from "@/components/ui";
 
 export function BluetoothPanel() {
@@ -6,35 +6,43 @@ export function BluetoothPanel() {
   const [adapters, setAdapters] = useState<{ path: string; address: string; powered: boolean }[]>([]);
   const [devices, setDevices] = useState<{ path: string; address: string; name: string | null; paired: boolean; connected: boolean; trusted: boolean }[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const mounted = useRef(true);
 
   useEffect(() => {
-    mounted.current = true;
+    let active = true;
+    let seq = 0;
     const load = async () => {
+      const mine = ++seq;
       try {
         const res = await fetch("/api/hardware/bluetooth", { credentials: "include" });
+        if (!active || mine !== seq) return;
         const body = await res.json().catch(() => null);
-        if (!mounted.current) return;
+        if (!active || mine !== seq) return;
         if (!res.ok || body === null || typeof body.available !== "boolean") {
+          if (!active || mine !== seq) return;
           setError("Could not load Bluetooth state.");
           return;
         }
+        if (!active || mine !== seq) return;
         setAvailable(body.available);
         if (Array.isArray(body.adapters)) {
+          if (!active || mine !== seq) return;
           setAdapters(body.adapters);
         }
         if (Array.isArray(body.devices)) {
+          if (!active || mine !== seq) return;
           setDevices(body.devices);
         }
+        if (!active || mine !== seq) return;
         setError(null);
       } catch {
-        if (mounted.current) setError("Could not reach taOS.");
+        if (!active || mine !== seq) return;
+        setError("Could not reach taOS.");
       }
     };
     load();
     const id = setInterval(load, 10_000);
     return () => {
-      mounted.current = false;
+      active = false;
       clearInterval(id);
     };
   }, []);
