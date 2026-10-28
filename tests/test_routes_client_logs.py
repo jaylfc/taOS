@@ -74,10 +74,9 @@ async def test_rate_limited_post_carries_retry_after(client, monkeypatch):
     instead of retrying as fast as it can fail."""
     from tinyagentos.rate_limit import RateLimiter
 
-    monkeypatch.setattr("tinyagentos.rate_limit.time.monotonic", lambda: 1000.0)
     monkeypatch.setattr(
         "tinyagentos.routes.client_logs._post_limiter",
-        RateLimiter(capacity=1, refill_per_second=0.5),
+        RateLimiter(capacity=1, refill_per_second=0.5, clock=lambda: 1000.0),
     )
     await client.post("/api/client-logs", json={"level": "error", "message": "flood"})
     blocked = await client.post("/api/client-logs", json={"level": "error", "message": "flood"})

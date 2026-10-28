@@ -63,12 +63,15 @@ class TokenBucket:
 
     capacity: float
     refill_per_second: float
+    clock: Callable[[], float] | None = field(default=None, repr=False)
     tokens: float = field(init=False)
     last_refill: float = field(init=False)
 
     def __post_init__(self) -> None:
+        if self.clock is None:
+            self.clock = time.monotonic
         self.tokens = float(self.capacity)
-        self.last_refill = time.monotonic()
+        self.last_refill = self.clock()
 
     def tokens_at(self, now: float) -> float:
         """Fill level at ``now``, without consuming or mutating anything."""
@@ -76,7 +79,7 @@ class TokenBucket:
         return min(self.capacity, self.tokens + elapsed * self.refill_per_second)
 
     def try_consume(self, cost: float = 1.0) -> bool:
-        now = time.monotonic()
+        now = self.clock()
         self.tokens = self.tokens_at(now)
         self.last_refill = now
         if self.tokens >= cost:
@@ -87,10 +90,10 @@ class TokenBucket:
     def seconds_until(self, cost: float = 1.0) -> float:
         """Seconds until ``cost`` tokens are available; 0 when they are now.
 
-        ``inf`` for a bucket that never refills — there is no honest answer
+        ``inf`` for a bucket that never refills -- there is no honest answer
         to "when should I retry?" for one of those.
         """
-        tokens = self.tokens_at(time.monotonic())
+        tokens = self.tokens_at(self.clock())
         if tokens >= cost:
             return 0.0
         if self.refill_per_second <= 0:
@@ -107,7 +110,8 @@ class RateLimiter:
     """
 
     def __init__(self, capacity: float = 30, refill_per_second: float = 10.0,
-                 *, max_keys: int = MAX_TRACKED_KEYS):
+                 *, max_keys: int = MAX_TRACKED_KEYS,
+                 clock: Callable[[], float] = time.monotonic):
         if capacity < 1:
             raise ValueError("capacity must be at least 1")
         if refill_per_second <= 0:
@@ -117,6 +121,7 @@ class RateLimiter:
         self.capacity = capacity
         self.refill_per_second = refill_per_second
         self.max_keys = max_keys
+        self.clock = clock
         # Ordered by least-recently-used so eviction is O(1).
         self._buckets: OrderedDict[str, TokenBucket] = OrderedDict()
         self._lock = threading.Lock()
@@ -127,7 +132,7 @@ class RateLimiter:
             if bucket is None:
                 self._evict_if_full()
                 bucket = self._buckets[key] = TokenBucket(
-                    self.capacity, self.refill_per_second
+                    self.capacity, self.refill_per_second, clock=self.clock
                 )
             else:
                 self._buckets.move_to_end(key)
