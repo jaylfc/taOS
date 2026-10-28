@@ -1,2 +1,2 @@
 ### Fixed
-- Memory routes now accept deployed agents' local tokens (bound and unbound) and fence bound agents to their own namespace on browse, search, collections, and delete-chunk. Previously, local tokens were rejected with 401 because `check_agent_scope` treated them as registry JWTs.
+- Memory routes now accept deployed agents' local tokens (bound and unbound) and fence bound agents to their own namespace on browse, search, and collections; delete-chunk refuses a bound agent token with 403 (memory deletion stays human-only). Previously, local tokens were rejected with 401 because `check_agent_scope` treated them as registry JWTs.
