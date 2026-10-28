@@ -63,13 +63,11 @@ class TokenBucket:
 
     capacity: float
     refill_per_second: float
-    clock: Callable[[], float] | None = field(default=None, repr=False)
+    clock: Callable[[], float] = field(default_factory=lambda: time.monotonic, repr=False)
     tokens: float = field(init=False)
     last_refill: float = field(init=False)
 
     def __post_init__(self) -> None:
-        if self.clock is None:
-            self.clock = time.monotonic
         self.tokens = float(self.capacity)
         self.last_refill = self.clock()
 
@@ -90,7 +88,7 @@ class TokenBucket:
     def seconds_until(self, cost: float = 1.0) -> float:
         """Seconds until ``cost`` tokens are available; 0 when they are now.
 
-        ``inf`` for a bucket that never refills -- there is no honest answer
+        ``inf`` for a bucket that never refills - there is no honest answer
         to "when should I retry?" for one of those.
         """
         tokens = self.tokens_at(self.clock())
