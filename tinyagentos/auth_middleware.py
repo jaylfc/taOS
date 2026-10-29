@@ -571,6 +571,22 @@ _AGENT_SKILL_EXEC_ROUTES = (
 def _is_agent_skill_exec_path(method: str, path: str) -> bool:
     """True only for the skill-exec routes a system_agent_exec token may reach."""
     return any(m == method and rx.match(path) for m, rx in _AGENT_SKILL_EXEC_ROUTES)
+
+
+# Deployed-agent runtime routes reachable with a taos-deployed registry JWT.
+_AGENT_DEPLOYED_RUNTIME_ROUTES = (
+    ("GET", re.compile(r"^/api/openclaw/bootstrap$")),
+    ("GET", re.compile(rf"^/api/openclaw/sessions/{_SEG}/events$")),
+    ("POST", re.compile(rf"^/api/openclaw/sessions/{_SEG}/reply$")),
+    ("POST", re.compile(rf"^/api/chat/channels/{_SEG}/thinking$")),
+    ("POST", re.compile(r"^/api/trace$")),
+)
+
+
+def _is_agent_deployed_runtime_path(method: str, path: str) -> bool:
+    """True only for routes a deployed agent runtime may reach with its own
+    taos-deployed registry JWT."""
+    return any(m == method and rx.match(path) for m, rx in _AGENT_DEPLOYED_RUNTIME_ROUTES)
 # Bundle assets and the SPA shell HTML must be reachable without auth so:
 #   1. The browser can install and cache the shell for offline / PWA use.
 #   2. After a backend restart the cached shell loads immediately without
@@ -994,6 +1010,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     or _is_container_request_action_path(request.method, path)
                     or _is_agent_container_quota_path(request.method, path)
                     or _is_agent_skill_exec_path(request.method, path)
+                    or _is_agent_deployed_runtime_path(request.method, path)
                     or _is_memory_path(request.method, path)
                 )
 
@@ -1002,7 +1019,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     # agent's token, set user_id to the native agent's user_id
                     # (the owner) so desktop control works. For other agents,
                     # user_id remains None (they cannot drive the desktop).
-                    if path in ("/api/desktop/command", "/api/desktop/screenshot", "/api/desktop/layout", "/api/desktop/panel-shot") or _is_agent_skill_exec_path(request.method, path):
+                    if path in ("/api/desktop/command", "/api/desktop/screenshot", "/api/desktop/layout", "/api/desktop/panel-shot") or _is_agent_skill_exec_path(request.method, path) or _is_agent_deployed_runtime_path(request.method, path):
                         # Verify the token and check if it's the native agent.
                         # We do a lightweight verification here; the route will
                         # do the full scope check.
@@ -1019,14 +1036,28 @@ class AuthMiddleware(BaseHTTPMiddleware):
                             if canonical_id:
                                 registry = _get_store(request)
                                 record = await registry.get(canonical_id)
-                                if record and record.get("origin") == NATIVE_AGENT_ORIGIN and record.get("status") == "active":
-                                    # A token superseded by rotation raises here and
-                                    # falls through to registry_jwt_candidate below.
+                                if record and record.get("status") == "active":
                                     _enforce_rotation_cutoff(record, payload)
-                                    request.state.user_id = record.get("user_id")
-                                    request.state.is_admin = False
-                                    request.state.via = "registry_jwt_native_agent"
-                                    return await call_next(request)
+                                    if record.get("origin") == NATIVE_AGENT_ORIGIN:
+                                        request.state.user_id = record.get("user_id")
+                                        request.state.is_admin = False
+                                        request.state.via = "registry_jwt_native_agent"
+                                        return await call_next(request)
+                                    if record.get("origin") == "taos-deployed":
+                                        config = getattr(request.app.state, "config", None)
+                                        agent_name = None
+                                        if config is not None:
+                                            agents = getattr(config, "agents", []) or []
+                                            for agent in agents:
+                                                if isinstance(agent, dict) and agent.get("registry_canonical_id") == canonical_id:
+                                                    agent_name = agent.get("name")
+                                                    break
+                                        if agent_name:
+                                            request.state.user_id = record.get("user_id") or None
+                                            request.state.is_admin = False
+                                            request.state.via = "registry_jwt_deployed_agent"
+                                            request.state.agent_name = agent_name
+                                            return await call_next(request)
                         except Exception:
                             # Not the native agent or verification failed; fall through
                             pass
