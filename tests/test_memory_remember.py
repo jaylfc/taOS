@@ -155,6 +155,7 @@ class TestMemoryRemember:
         registry = app.state.agent_registry
         grants = app.state.agent_grants
         priv, _pub = app.state.agent_registry_keypair
+        config = app.state.config
 
         rec = await registry.register(
             framework="test",
@@ -165,6 +166,20 @@ class TestMemoryRemember:
         cid = rec["canonical_id"]
         await registry.set_status(cid, "active")
         await grants.add_grant(cid, "memory_write", project_id="prj-1")
+
+        # Add agent to config with matching registry_canonical_id (required for registry JWT path)
+        # Config agent name must match handle (without @) for _resolve_agent_name to find it
+        from tinyagentos.agent_db import find_agent
+        if find_agent(config, "test-agent-remember3") is None:
+            config.agents.append({
+                "name": "test-agent-remember3",
+                "display_name": "Test Agent",
+                "host": "",
+                "qmd_index": "test-agent-remember3",
+                "color": "#888",
+                "registry_canonical_id": cid,
+            })
+
         token = mint_registry_token(cid, priv, user_id="u", framework="test", project_id="prj-1")
 
         async with _make_client_with_token(app, token) as client:
@@ -366,5 +381,89 @@ class TestMemoryRemember:
         legit_token = mint_registry_token(cid_config, priv, user_id="user-123", framework="test", project_id="prj-1")
         async with _make_client_with_token(app, legit_token) as client:
             resp = await client.post("/api/memory/remember", json={"text": "test memory", "agent": "config-agent"})
+            assert resp.status_code == 200
+            assert resp.json()["stored"] is True
+
+    @pytest.mark.csrf_bypass
+    async def test_registry_jwt_config_agent_without_canonical_id_gets_403(self, client_with_qmd):
+        """Registry JWT where config agent has NO registry_canonical_id -> 403 (fail closed); matching identity with canonical_id gets 200."""
+        _stub_http(client_with_qmd, {"/ingest": {"status": "ok"}})
+
+        app = client_with_qmd._transport.app
+        await self._init_stores(app)
+
+        registry = app.state.agent_registry
+        grants = app.state.agent_grants
+        priv, _pub = app.state.agent_registry_keypair
+        config = app.state.config
+
+        # Register a deployed config agent WITH registry_canonical_id
+        rec_config = await registry.register(
+            framework="test",
+            display_name="Config Agent With CID",
+            origin="taos-deployed",
+            handle="@config-agent-cid",
+            user_id="user-123",
+        )
+        cid_config = rec_config["canonical_id"]
+        await grants.add_grant(cid_config, "memory_write", project_id="prj-1")
+
+        # Add the agent to config WITH registry_canonical_id
+        from tinyagentos.agent_db import find_agent
+        if find_agent(config, "config-agent-cid") is None:
+            config.agents.append({
+                "name": "config-agent-cid",
+                "display_name": "Config Agent With CID",
+                "host": "",
+                "qmd_index": "config-agent-cid",
+                "color": "#888",
+                "registry_canonical_id": cid_config,
+            })
+
+        # Register ANOTHER config agent WITHOUT registry_canonical_id (same display_name)
+        rec_no_cid = await registry.register(
+            framework="test",
+            display_name="Config Agent No CID",
+            origin="taos-deployed",
+            handle="@config-agent-no-cid",
+            user_id="user-456",
+        )
+        cid_no_cid = rec_no_cid["canonical_id"]
+        await grants.add_grant(cid_no_cid, "memory_write", project_id="prj-1")
+
+        # Add another config agent with same display_name but NO registry_canonical_id
+        if find_agent(config, "config-agent-no-cid") is None:
+            config.agents.append({
+                "name": "config-agent-no-cid",
+                "display_name": "Config Agent No CID",
+                "host": "",
+                "qmd_index": "config-agent-no-cid",
+                "color": "#999",
+                # NO registry_canonical_id key
+            })
+
+        # Attacker: registry identity with display_name matching the NO-CID config agent's NAME
+        rec_attacker = await registry.register(
+            framework="test",
+            display_name="config-agent-no-cid",  # Matches config agent's NAME (the one without CID)
+            origin="external-selfjoin",
+            handle="@attacker-agent",
+            user_id="attacker-user",
+        )
+        cid_attacker = rec_attacker["canonical_id"]
+        await registry.set_status(cid_attacker, "active")
+        await grants.add_grant(cid_attacker, "memory_write", project_id="prj-1")
+
+        # Attacker tries to write using the no-CID config agent's name -> 403 (fail closed)
+        attacker_token = mint_registry_token(cid_attacker, priv, user_id="attacker-user", framework="test", project_id="prj-1")
+        async with _make_client_with_token(app, attacker_token) as client:
+            resp = await client.post("/api/memory/remember", json={"text": "test memory", "agent": "config-agent-no-cid"})
+            assert resp.status_code == 403
+            assert resp.json()["detail"] == "Agent can only write its own memory"
+
+        # Legitimate config agent WITH canonical_id can still write -> 200
+        legit_token = mint_registry_token(cid_config, priv, user_id="user-123", framework="test", project_id="prj-1")
+        async with _make_client_with_token(app, legit_token) as client:
+            resp = await client.post("/api/memory/remember", json={"text": "test memory", "agent": "config-agent-cid"})
             assert resp.status_code == 200
             assert resp.json()["stored"] is True

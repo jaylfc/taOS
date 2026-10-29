@@ -384,12 +384,10 @@ async def memory_remember(request: Request, body: RememberRequest):
             if body.agent is not None and body.agent != agent_config_name:
                 raise HTTPException(status_code=403, detail="Agent can only write its own memory")
             # Verify the config agent's registry_canonical_id matches the caller's canonical_id
-            # Only applies to deployed config agents that have registry_canonical_id set
+            # Fails closed: config agent must exist and its registry_canonical_id must equal the caller's canonical_id
             config_agent = find_agent(request.app.state.config, agent_config_name)
-            if config_agent is not None:
-                agent_registry_cid = config_agent.get("registry_canonical_id")
-                if agent_registry_cid is not None and agent_registry_cid != agent_canonical_id:
-                    raise HTTPException(status_code=403, detail="Agent can only write its own memory")
+            if config_agent is None or config_agent.get("registry_canonical_id") != agent_canonical_id:
+                raise HTTPException(status_code=403, detail="Agent can only write its own memory")
             agent = agent_config_name
         else:
             # c) Human/admin session or unbound host token (no valid scope)
