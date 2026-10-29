@@ -4,12 +4,15 @@ Stubs qmd serve the same way test_routes_memory.py does.
 """
 from __future__ import annotations
 
+import secrets
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from tinyagentos.agent_registry_store import mint_registry_token
+from tinyagentos.auth import hash_password
 
 
 def _stub_http(client_with_qmd, responses: dict[str, dict]):
@@ -51,6 +54,24 @@ def _make_client_with_token(app, token: str) -> AsyncClient:
         base_url="http://test",
         headers={"Authorization": f"Bearer {token}"},
     )
+
+
+def _add_non_admin_user(auth_mgr, username, password):
+    """Add a non-admin user directly to the auth user store."""
+    data = auth_mgr._read_users()
+    uid = secrets.token_urlsafe(8)
+    record = {
+        "id": uid,
+        "username": username,
+        "full_name": "Regular User",
+        "email": "",
+        "password_hash": hash_password(password),
+        "created_at": int(time.time()),
+        "is_admin": False,
+    }
+    data.setdefault("users", []).append(record)
+    auth_mgr._write_users(data)
+    return uid
 
 
 @pytest.mark.asyncio
@@ -230,3 +251,120 @@ class TestMemoryRemember:
         async with _make_client_with_token(app, token) as client:
             resp = await client.post("/api/memory/remember", json={"text": "   "})
             assert resp.status_code == 422
+
+    # --- Security fix tests (tsk-quaat4) ---
+
+    @pytest.mark.csrf_bypass
+    async def test_non_admin_user_cannot_write_other_users_agent_memory(self, client_with_qmd):
+        """Non-admin user session writing to another user's agent -> 403; owner and admin still get 200."""
+        _stub_http(client_with_qmd, {"/ingest": {"status": "ok"}})
+
+        app = client_with_qmd._transport.app
+        await self._init_stores(app)
+
+        auth = app.state.auth
+        alice_record = auth.find_user("admin")
+        alice_uid = alice_record["id"] if alice_record else ""
+
+        # Create bob as a non-admin user
+        bob_uid = _add_non_admin_user(auth, "bob", "bobpass")
+
+        registry = app.state.agent_registry
+        grants = app.state.agent_grants
+        priv, _pub = app.state.agent_registry_keypair
+
+        # Create an agent owned by alice (admin)
+        rec_alice = await registry.register(
+            framework="test",
+            display_name="Alice's Agent",
+            origin="external-selfjoin",
+            handle="@alice-agent",
+            user_id=alice_uid,
+        )
+        cid_alice = rec_alice["canonical_id"]
+        await registry.set_status(cid_alice, "active")
+        await grants.add_grant(cid_alice, "memory_write", project_id="prj-1")
+
+        # Bob (non-admin) tries to write to Alice's agent -> 403
+        bob_token = auth.create_session(user_id=bob_uid, long_lived=True)
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"taos_session": bob_token},
+        ) as client:
+            resp = await client.post("/api/memory/remember", json={"text": "test memory", "agent": cid_alice})
+            assert resp.status_code == 403
+            assert resp.json()["detail"] == "forbidden"
+
+        # Alice (admin) can write to her own agent -> 200
+        alice_token = auth.create_session(user_id=alice_uid, long_lived=True)
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"taos_session": alice_token},
+        ) as client:
+            resp = await client.post("/api/memory/remember", json={"text": "test memory", "agent": cid_alice})
+            assert resp.status_code == 200
+            assert resp.json()["stored"] is True
+
+    @pytest.mark.csrf_bypass
+    async def test_registry_jwt_canonical_id_mismatch_gets_403(self, client_with_qmd):
+        """Registry JWT with display_name matching config agent's name but different canonical_id -> 403; matching identity gets 200."""
+        _stub_http(client_with_qmd, {"/ingest": {"status": "ok"}})
+
+        app = client_with_qmd._transport.app
+        await self._init_stores(app)
+
+        registry = app.state.agent_registry
+        grants = app.state.agent_grants
+        priv, _pub = app.state.agent_registry_keypair
+        config = app.state.config
+
+        # Register a deployed config agent with registry_canonical_id
+        rec_config = await registry.register(
+            framework="test",
+            display_name="Config Agent Display",
+            origin="taos-deployed",
+            handle="@config-agent",
+            user_id="user-123",
+        )
+        cid_config = rec_config["canonical_id"]
+        await grants.add_grant(cid_config, "memory_write", project_id="prj-1")
+
+        # Add the agent to config with registry_canonical_id
+        from tinyagentos.agent_db import find_agent
+        if find_agent(config, "config-agent") is None:
+            config.agents.append({
+                "name": "config-agent",
+                "display_name": "Config Agent Display",
+                "host": "",
+                "qmd_index": "config-agent",
+                "color": "#888",
+                "registry_canonical_id": cid_config,
+            })
+
+        # Create a DIFFERENT registry identity with display_name matching the config agent's NAME
+        rec_attacker = await registry.register(
+            framework="test",
+            display_name="config-agent",  # Matches config agent's NAME!
+            origin="external-selfjoin",
+            handle="@attacker-agent",
+            user_id="attacker-user",
+        )
+        cid_attacker = rec_attacker["canonical_id"]
+        await registry.set_status(cid_attacker, "active")
+        await grants.add_grant(cid_attacker, "memory_write", project_id="prj-1")
+
+        # Attacker tries to write using the config agent's name -> 403
+        attacker_token = mint_registry_token(cid_attacker, priv, user_id="attacker-user", framework="test", project_id="prj-1")
+        async with _make_client_with_token(app, attacker_token) as client:
+            resp = await client.post("/api/memory/remember", json={"text": "test memory", "agent": "config-agent"})
+            assert resp.status_code == 403
+            assert resp.json()["detail"] == "Agent can only write its own memory"
+
+        # Legitimate config agent (matching canonical_id) can write -> 200
+        legit_token = mint_registry_token(cid_config, priv, user_id="user-123", framework="test", project_id="prj-1")
+        async with _make_client_with_token(app, legit_token) as client:
+            resp = await client.post("/api/memory/remember", json={"text": "test memory", "agent": "config-agent"})
+            assert resp.status_code == 200
+            assert resp.json()["stored"] is True

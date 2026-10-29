@@ -31,7 +31,9 @@ from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 
+from tinyagentos.agent_db import find_agent
 from tinyagentos.agent_token_auth import check_agent_scope
+from tinyagentos.auth_context import current_user, require_agent_owner_or_admin
 from tinyagentos.otel.trace_context import build_trace_context_headers
 from tinyagentos.routes.delegation import _resolve_agent_name
 
@@ -381,6 +383,13 @@ async def memory_remember(request: Request, body: RememberRequest):
             agent_config_name = await _resolve_agent_name(request, agent_canonical_id) or agent_canonical_id
             if body.agent is not None and body.agent != agent_config_name:
                 raise HTTPException(status_code=403, detail="Agent can only write its own memory")
+            # Verify the config agent's registry_canonical_id matches the caller's canonical_id
+            # Only applies to deployed config agents that have registry_canonical_id set
+            config_agent = find_agent(request.app.state.config, agent_config_name)
+            if config_agent is not None:
+                agent_registry_cid = config_agent.get("registry_canonical_id")
+                if agent_registry_cid is not None and agent_registry_cid != agent_canonical_id:
+                    raise HTTPException(status_code=403, detail="Agent can only write its own memory")
             agent = agent_config_name
         else:
             # c) Human/admin session or unbound host token (no valid scope)
@@ -391,6 +400,10 @@ async def memory_remember(request: Request, body: RememberRequest):
         if not (body.agent or "").strip():
             raise HTTPException(status_code=400, detail="agent is required")
         agent = body.agent.strip()
+        # For human/admin sessions (not unbound host token), verify agent ownership
+        if getattr(request.state, "via", None) != "local_token":
+            user = current_user(request)
+            await require_agent_owner_or_admin(request, user, agent)
 
     # Write through shared qmd serve /ingest (same pattern as import_data.py)
     http_client = request.app.state.http_client
