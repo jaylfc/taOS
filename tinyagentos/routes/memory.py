@@ -388,9 +388,9 @@ async def memory_remember(request: Request, body: RememberRequest):
 
     # c) Human/admin session or unbound host token: body.agent REQUIRED
     if agent is None:
-        if body.agent is None:
+        if not (body.agent or "").strip():
             raise HTTPException(status_code=400, detail="agent is required")
-        agent = body.agent
+        agent = body.agent.strip()
 
     # Write through shared qmd serve /ingest (same pattern as import_data.py)
     http_client = request.app.state.http_client

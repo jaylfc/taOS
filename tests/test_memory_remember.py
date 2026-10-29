@@ -203,6 +203,22 @@ class TestMemoryRemember:
         assert data["stored"] is True
         assert data["agent"] == "agent-a"
 
+    async def test_admin_session_empty_agent_gets_400(self, client_with_qmd):
+        """Admin session (conftest client fixture), empty or whitespace agent -> 400."""
+        _stub_http(client_with_qmd, {
+            "/ingest": {"status": "ok"},
+        })
+
+        # Empty string agent
+        resp = await client_with_qmd.post("/api/memory/remember", json={"text": "x", "agent": ""})
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "agent is required"
+
+        # Whitespace agent
+        resp = await client_with_qmd.post("/api/memory/remember", json={"text": "x", "agent": "   "})
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "agent is required"
+
     async def test_text_whitespace_only_gets_422(self, client_with_qmd):
         """Text with only whitespace -> 422."""
         _stub_http(client_with_qmd, {
