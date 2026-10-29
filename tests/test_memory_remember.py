@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from taos_test_csrf import csrf_event_hooks
 
 from tinyagentos.agent_registry_store import mint_registry_token
 from tinyagentos.auth import hash_password
@@ -269,7 +270,6 @@ class TestMemoryRemember:
 
     # --- Security fix tests (tsk-quaat4) ---
 
-    @pytest.mark.csrf_bypass
     async def test_non_admin_user_cannot_write_other_users_agent_memory(self, client_with_qmd):
         """Non-admin user session writing to another user's agent -> 403; owner and admin still get 200."""
         _stub_http(client_with_qmd, {"/ingest": {"status": "ok"}})
@@ -306,6 +306,7 @@ class TestMemoryRemember:
             transport=ASGITransport(app=app),
             base_url="http://test",
             cookies={"taos_session": bob_token},
+            event_hooks=csrf_event_hooks(),
         ) as client:
             resp = await client.post("/api/memory/remember", json={"text": "test memory", "agent": cid_alice})
             assert resp.status_code == 403
@@ -317,12 +318,12 @@ class TestMemoryRemember:
             transport=ASGITransport(app=app),
             base_url="http://test",
             cookies={"taos_session": alice_token},
+            event_hooks=csrf_event_hooks(),
         ) as client:
             resp = await client.post("/api/memory/remember", json={"text": "test memory", "agent": cid_alice})
             assert resp.status_code == 200
             assert resp.json()["stored"] is True
 
-    @pytest.mark.csrf_bypass
     async def test_registry_jwt_canonical_id_mismatch_gets_403(self, client_with_qmd):
         """Registry JWT with display_name matching config agent's name but different canonical_id -> 403; matching identity gets 200."""
         _stub_http(client_with_qmd, {"/ingest": {"status": "ok"}})
@@ -384,7 +385,6 @@ class TestMemoryRemember:
             assert resp.status_code == 200
             assert resp.json()["stored"] is True
 
-    @pytest.mark.csrf_bypass
     async def test_registry_jwt_config_agent_without_canonical_id_gets_403(self, client_with_qmd):
         """Registry JWT where config agent has NO registry_canonical_id -> 403 (fail closed); matching identity with canonical_id gets 200."""
         _stub_http(client_with_qmd, {"/ingest": {"status": "ok"}})
