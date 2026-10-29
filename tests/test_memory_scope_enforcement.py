@@ -84,9 +84,9 @@ class TestMemoryScopeEnforcement:
         """memory_read must now be in the grantable vocabulary."""
         assert "memory_read" in VALID_SCOPES
 
-    def test_memory_write_removed_from_valid_scopes(self):
-        """memory_write must still not be in the grantable vocabulary (stays human-only)."""
-        assert "memory_write" not in VALID_SCOPES
+    def test_memory_write_present_in_valid_scopes(self):
+        """memory_write is now enforced at POST /api/memory/remember."""
+        assert "memory_write" in VALID_SCOPES
 
     def test_tools_execute_removed_from_valid_scopes(self):
         """tools_execute must not be in the grantable vocabulary."""
@@ -98,9 +98,9 @@ class TestMemoryScopeEnforcement:
         # memory_read should be allowed through this filter since it's in VALID_SCOPES
         assert "memory_read" in _ALLOWED_SCOPES
 
-    def test_memory_write_removed_from_allowed_scopes(self):
-        """memory_write must not be in the internal agent allowed scopes."""
-        assert "memory_write" not in _ALLOWED_SCOPES
+    def test_memory_write_present_in_allowed_scopes(self):
+        """memory_write is now enforced at POST /api/memory/remember."""
+        assert "memory_write" in _ALLOWED_SCOPES
 
     def test_tools_execute_removed_from_allowed_scopes(self):
         """tools_execute must not be in the internal agent allowed scopes."""
