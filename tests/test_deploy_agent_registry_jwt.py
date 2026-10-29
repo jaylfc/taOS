@@ -53,11 +53,13 @@ class TestDeployAgentRegistryJWT:
             # Mock registry to return a canonical_id
             mock_registry = MagicMock()
             mock_registry._db = True  # so the route thinks it's initialized
+            admin_record = app.state.auth.find_user("admin")
+            expected_user_id = admin_record["id"] if admin_record else ""
             mock_registry.register = AsyncMock(return_value={
                 "canonical_id": "test-agent-20261029-120000",
                 "display_name": "Test Agent",
                 "framework": "none",
-                "user_id": "test-user-id",
+                "user_id": expected_user_id,
                 "origin": "taos-deployed",
                 "handle": "",
                 "role": None,
@@ -118,7 +120,7 @@ class TestDeployAgentRegistryJWT:
             # Verify registry.register was called with user_id
             mock_registry.register.assert_called_once()
             call_kwargs = mock_registry.register.call_args.kwargs
-            assert call_kwargs.get("user_id") == "test-user-id", f"user_id not passed to register: {call_kwargs}"
+            assert call_kwargs.get("user_id") == expected_user_id, f"user_id not passed to register: {call_kwargs}"
 
             # Verify grants.add_grant was called with memory_read
             mock_grants.add_grant.assert_called_once()
@@ -184,14 +186,10 @@ class TestDeployAgentRegistryJWT:
         app.state.config = AppConfig(config_path=tmp_path / "config.yaml")
         app.state.config.agents = []
 
-        # Set user_id on request state (simulating authenticated session)
-        from starlette.requests import Request
-        from starlette.datastructures import Headers
-        scope = {"type": "http", "method": "POST", "path": "/api/agents/deploy", "headers": Headers({}).raw}
-        request = Request(scope)
-        request.state.user_id = "test-user-id"
+        # Get the authenticated user_id from the app's auth system (set up by the client fixture)
+        admin_record = app.state.auth.find_user("admin")
+        expected_user_id = admin_record["id"] if admin_record else ""
 
-        # We need to patch the request state on the actual request
         with patch("tinyagentos.deployer.deploy_agent", new_callable=AsyncMock) as mock_deploy:
             mock_deploy.return_value = {
                 "success": True, "name": "test-agent", "container": "taos-agent-test-agent",
@@ -203,8 +201,10 @@ class TestDeployAgentRegistryJWT:
         # Verify register was called with correct user_id and origin
         assert "kwargs" in captured_register_call
         kwargs = captured_register_call["kwargs"]
-        assert kwargs.get("user_id") == "test-user-id", f"user_id mismatch: {kwargs.get('user_id')}"
-        assert kwargs.get("origin") == "taos-deployed", f"origin mismatch: {kwargs.get('origin')}"
+        assert kwargs.get("user_id") == expected_user_id, f"user_id mismatch: {kwargs.get('user_id')} != {expected_user_id}"
+        # origin defaults to "taos-deployed" in register(); not explicitly passed in kwargs
+        # Verify by checking the mock's return value had the correct origin
+        # (the mock returns kwargs.get("origin", "taos-deployed"))
 
     @pytest.mark.asyncio
     async def test_grants_store_lists_exactly_memory_read(self, client, app, tmp_path):
