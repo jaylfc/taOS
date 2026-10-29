@@ -275,3 +275,50 @@ async def test_unknown_route_with_device_bearer_and_session_returns_404(env):
     assert resp.status_code == 404, f"Expected 404 for unknown route with valid session, got {resp.status_code}: {resp.text}"
     
     await admin_client.aclose()
+
+
+    async def test_deployed_agent_runtime_error_returns_500(env):
+        """(a) A route handler that raises RuntimeError reached with alpha's
+        deployed JWT returns 500 (not 401) and the handler ran exactly once."""
+        skills = env.app.state.skills
+        await skills.assign_skill("alpha", "file_read", None)
+        
+        from tinyagentos.routes.skill_exec import SKILL_IMPLEMENTATIONS
+        called = {"count": 0}
+        
+        async def runtime_error_impl(args, request):
+            called["count"] += 1
+            raise RuntimeError("deliberate error")
+        
+        with patch.dict(SKILL_IMPLEMENTATIONS, {"file_read": runtime_error_impl}):
+            resp = await env.post(
+                "/api/skill-exec/file_read/call",
+                headers=_auth(env, "alpha"),
+                json={"args": {}},
+            )
+            assert resp.status_code == 500, f"Expected 500, got {resp.status_code}: {resp.text}"
+            assert called["count"] == 1, f"Expected handler called exactly once, got {called['count']}"
+    
+    async def test_deployed_agent_thinking_channel_membership(env):
+        """(b) alpha's JWT posting thinking to a channel alpha is not a member
+        of gets 403; a member channel gets 200."""
+        ch_store = env.app.state.chat_channels
+        
+        await ch_store.add("c_not_member", members=[], creator="system")
+        
+        resp = await env.post(
+            "/api/chat/channels/c_not_member/thinking",
+            headers=_auth(env, "alpha"),
+            json={"slug": "alpha", "state": "start"},
+        )
+        assert resp.status_code == 403, f"Expected 403 for non-member channel, got {resp.status_code}: {resp.text}"
+        
+        await ch_store.add("c_member", members=["alpha"], creator="system")
+        
+        resp = await env.post(
+            "/api/chat/channels/c_member/thinking",
+            headers=_auth(env, "alpha"),
+            json={"slug": "alpha", "state": "start"},
+        )
+        assert resp.status_code == 200, f"Expected 200 for member channel, got {resp.status_code}: {resp.text}"
+

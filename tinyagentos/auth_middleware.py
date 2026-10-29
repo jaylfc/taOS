@@ -1003,6 +1003,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 # origin/dev (local token, session cookie, final 401).
                 # Never set registry_jwt_candidate for these paths.
                 if _is_agent_deployed_runtime_path(request.method, path):
+                    deployed_agent_auth = False
                     try:
                         from tinyagentos.agent_token_auth import (
                             verify_registry_token,
@@ -1030,10 +1031,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
                                         request.state.is_admin = False
                                         request.state.via = "registry_jwt_deployed_agent"
                                         request.state.agent_name = agent_name
-                                        return await call_next(request)
+                                        deployed_agent_auth = True
                     except Exception:
                         # Verification failed; fall through to session/device/401
                         pass
+                    if deployed_agent_auth:
+                        return await call_next(request)
                 else:
                     is_allowlisted = (
                         path in _AGENT_TOKEN_PATHS
@@ -1060,6 +1063,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
                         # Verify the token and check if it's the native agent (all allowlisted paths)
                         # or a deployed agent on skill-exec paths.
+                        native_agent_auth = False
+                        deployed_agent_auth = False
                         try:
                             from tinyagentos.agent_token_auth import (
                                 verify_registry_token,
@@ -1086,7 +1091,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                                             request.state.user_id = record.get("user_id")
                                             request.state.is_admin = False
                                             request.state.via = "registry_jwt_native_agent"
-                                            return await call_next(request)
+                                            native_agent_auth = True
                                     if record.get("origin") == "taos-deployed" and is_skill_exec_path:
                                         # Deployed agent on skill-exec: enforce rotation cutoff.
                                         _enforce_rotation_cutoff(record, payload)
@@ -1103,10 +1108,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
                                             request.state.is_admin = False
                                             request.state.via = "registry_jwt_deployed_agent"
                                             request.state.agent_name = agent_name
-                                            return await call_next(request)
+                                            deployed_agent_auth = True
                         except Exception:
                             # Not the native agent or verification failed; fall through
                             pass
+                        if native_agent_auth or deployed_agent_auth:
+                            return await call_next(request)
 
                         # For desktop paths, only the native agent is authenticated.
                         # Non-native agents (including deployed agents and superseded native

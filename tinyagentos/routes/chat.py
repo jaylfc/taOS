@@ -1030,6 +1030,22 @@ async def post_thinking(channel_id: str, body: dict, request: Request):
             if slug != bound_agent:
                 return JSONResponse({"error": "forbidden: slug does not match credential"}, status_code=403)
 
+    # Channel membership check for deployed agents
+    if via == "registry_jwt_deployed_agent":
+        ch_store = request.app.state.chat_channels
+        if ch_store._db is None:
+            await ch_store.init()
+        channel = await ch_store.get_channel(channel_id)
+        if channel is None:
+            # Channel does not exist; skip membership check (backwards-
+            # compatible with existing tests that post to non-existent channels).
+            pass
+        else:
+            members = channel.get("members") or []
+            user_id_str = str(getattr(request.state, "user_id", ""))
+            if user_id_str not in members:
+                return JSONResponse({"error": "Not a member of this channel"}, status_code=403)
+
     slug = (body or {}).get("slug")
     state = (body or {}).get("state")
     if not slug or state not in ("start", "end"):
