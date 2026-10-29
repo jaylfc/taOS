@@ -16,6 +16,7 @@ from tinyagentos.agent_registry_store import (
     mint_registry_token,
 )
 from tinyagentos.app import create_app
+from tinyagentos.trace_store import TraceStoreRegistry
 from taos_test_csrf import csrf_event_hooks
 
 
@@ -51,6 +52,7 @@ async def env(tmp_path):
     app.state.agent_registry = registry
     app.state.agent_grants = grants
     app.state.agent_registry_keypair = (priv, pub)
+    app.state.trace_registry = TraceStoreRegistry(tmp_path / "tr")
 
     rec = await app.state.agent_registry.register(framework="hermes", display_name="alpha", user_id=owner)
     rec_beta = await app.state.agent_registry.register(framework="hermes", display_name="beta", user_id=owner)
@@ -104,6 +106,12 @@ async def test_openclaw_events_fenced(env):
 @pytest.mark.asyncio
 async def test_skill_exec_fenced_by_state_agent_name(env):
     resp = await env.get("/api/skill-exec/tools?agent_name=beta", headers=_auth(env, "alpha"))
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_skill_exec_matching_agent_name_allowed(env):
+    resp = await env.get("/api/skill-exec/tools?agent_name=alpha", headers=_auth(env, "alpha"))
     assert resp.status_code == 200
 
 
@@ -118,4 +126,56 @@ async def test_off_allowlist_admin_routes_no_access(env):
 @pytest.mark.asyncio
 async def test_external_selfjoin_no_deployed_via(env):
     resp = await env.post("/api/chat/channels/c1/thinking", headers=_auth(env, "ext"), json={"slug": "alpha", "state": "start"})
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_trace_forged_bearer_refused(env):
+    resp = await env.post(
+        "/api/trace",
+        headers={"Authorization": "Bearer not-a-jwt-at-all"},
+        json={"agent_name": "beta", "kind": "message_out"},
+    )
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_trace_external_selfjoin_refused(env):
+    resp = await env.post(
+        "/api/trace",
+        headers=_auth(env, "ext"),
+        json={"agent_name": "beta", "kind": "message_out"},
+    )
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_trace_deployed_agent_binds_own_name(env):
+    resp = await env.post(
+        "/api/trace",
+        headers=_auth(env, "alpha"),
+        json={"agent_name": "beta", "kind": "message_out"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["agent_name"] == "alpha"
+
+
+@pytest.mark.asyncio
+async def test_deployed_jwt_on_desktop_not_deployed_principal(env):
+    resp = await env.post(
+        "/api/desktop/command",
+        headers=_auth(env, "alpha"),
+        json={"kind": "open-app", "payload": {}},
+    )
+    assert resp.status_code in (401, 403)
+    assert resp.status_code != 200
+
+
+@pytest.mark.asyncio
+async def test_openclaw_events_forged_bearer_refused(env):
+    resp = await env.get(
+        "/api/openclaw/sessions/alpha/events",
+        headers={"Authorization": "Bearer not-a-jwt-at-all"},
+    )
     assert resp.status_code == 401

@@ -524,7 +524,7 @@ SKILL_IMPLEMENTATIONS = {
 
 
 @router.get("/api/skill-exec/tools")
-async def list_tools(request: Request, agent_name: str | None = None):
+async def list_tools(request: Request, agent_name: str):
     """Return tool schemas for an agent's assigned skills.
 
     Agents call this on startup to discover their available tools. The response
@@ -532,10 +532,6 @@ async def list_tools(request: Request, agent_name: str | None = None):
     straight through to framework tool registries.
     """
     credential_agent = getattr(request.state, "agent_name", None)
-    if credential_agent:
-        agent_name = credential_agent
-    elif agent_name is None:
-        return JSONResponse({"error": "agent_name required"}, status_code=400)
     if credential_agent and agent_name != credential_agent:
         return JSONResponse(
             {"error": "forbidden: agent_name does not match credential"},
