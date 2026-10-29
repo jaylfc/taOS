@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
@@ -80,6 +81,7 @@ async def env(tmp_path):
         client.tokens = {"alpha": token, "ext": token_ext}
         client.owner = owner
         client.registry = registry
+        client.app = app
         yield client
     await registry.close()
     await grants.close()
@@ -179,3 +181,97 @@ async def test_openclaw_events_forged_bearer_refused(env):
         headers={"Authorization": "Bearer not-a-jwt-at-all"},
     )
     assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_deployed_agent_skill_assignment_required(env):
+    """Deployed agent must be assigned a skill to execute it (major security fix)."""
+    # Find a skill that exists in SKILL_IMPLEMENTATIONS but is not assigned to alpha
+    skills = env.app.state.skills
+    all_skills = await skills.list_skills()
+    # Pick a skill that has an implementation (e.g., file_read)
+    skill_id = "file_read"
+    skill = await skills.get_skill(skill_id)
+    assert skill is not None
+    assert any(s["id"] == skill_id for s in all_skills)
+    
+    # Verify alpha does NOT have this skill assigned
+    assigned = await skills.get_agent_skills("alpha")
+    assigned_ids = {s["id"] for s in assigned}
+    assert skill_id not in assigned_ids, f"Test setup failed: {skill_id} should not be assigned to alpha"
+    
+    # Track if the skill implementation is called
+    called = {"count": 0}
+    
+    # Patch the specific skill implementation narrowly
+    from tinyagentos.routes.skill_exec import SKILL_IMPLEMENTATIONS
+    original_impl = SKILL_IMPLEMENTATIONS[skill_id]
+    
+    async def tracking_impl(args, request):
+        called["count"] += 1
+        return await original_impl(args, request)
+    
+    with patch.dict(SKILL_IMPLEMENTATIONS, {skill_id: tracking_impl}):
+        # Deployed agent alpha tries to call a skill NOT assigned to it
+        resp = await env.post(
+            f"/api/skill-exec/{skill_id}/call",
+            headers=_auth(env, "alpha"),
+            json={"args": {}},
+        )
+        # Should be 403 forbidden
+        assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
+        assert "forbidden: skill not assigned to agent" in resp.text
+        # Skill implementation should NOT have been called
+        assert called["count"] == 0, "Skill implementation was called despite missing assignment"
+    
+    # Now assign the skill to alpha
+    await skills.assign_skill("alpha", skill_id, None)
+    
+    # Same call should now work (not 403 for assignment reason)
+    # Note: it might still fail for other reasons (e.g., governance), but not 403 for assignment
+    called["count"] = 0
+    with patch.dict(SKILL_IMPLEMENTATIONS, {skill_id: tracking_impl}):
+        resp = await env.post(
+            f"/api/skill-exec/{skill_id}/call",
+            headers=_auth(env, "alpha"),
+            json={"args": {}},
+        )
+        assert resp.status_code != 403 or "forbidden: skill not assigned to agent" not in resp.text, \
+            f"Expected not 403 for assignment, got {resp.status_code}: {resp.text}"
+        # Skill implementation should now be called (or at least reach the governance check)
+        # The exact behavior depends on governance, but it should pass the assignment check
+
+
+@pytest.mark.asyncio
+async def test_unknown_route_with_device_bearer_and_session_returns_404(env):
+    """Valid taos_session + device Bearer on unknown route returns 404, not 401 (minor fix)."""
+    from tinyagentos.device_store import DEVICE_TOKEN_PREFIX
+    
+    # First, login as admin to get a valid taos_session cookie
+    admin_client = AsyncClient(
+        transport=ASGITransport(app=env.app),
+        base_url="http://test",
+        event_hooks=csrf_event_hooks(),
+    )
+    login_resp = await admin_client.post("/auth/login", json={"username": "admin", "password": "adminpass"})
+    assert login_resp.status_code == 200
+    session_cookie = admin_client.cookies.get("taos_session")
+    assert session_cookie, "Failed to get taos_session cookie"
+    
+    # Now make a request to an unknown route with:
+    # - Valid taos_session cookie
+    # - Device Bearer token (invalid, but with correct prefix)
+    headers = {"Authorization": f"Bearer {DEVICE_TOKEN_PREFIX}junk"}
+    cookies = {"taos_session": session_cookie}
+    
+    resp = await admin_client.get(
+        "/api/no-such-route-xyz",
+        headers=headers,
+        cookies=cookies,
+    )
+    
+    # Should return 404 (route not found), NOT 401 (unauthorized)
+    # The session cookie is valid, so the auth should pass, then route matching fails -> 404
+    assert resp.status_code == 404, f"Expected 404 for unknown route with valid session, got {resp.status_code}: {resp.text}"
+    
+    await admin_client.aclose()
