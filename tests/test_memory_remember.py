@@ -54,6 +54,7 @@ def _make_client_with_token(app, token: str) -> AsyncClient:
         transport=ASGITransport(app=app),
         base_url="http://test",
         headers={"Authorization": f"Bearer {token}"},
+        event_hooks=csrf_event_hooks(),
     )
 
 
