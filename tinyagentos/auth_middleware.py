@@ -1112,6 +1112,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                         except Exception:
                             # Not the native agent or verification failed; fall through
                             pass
+
                         if native_agent_auth or deployed_agent_auth:
                             return await call_next(request)
 

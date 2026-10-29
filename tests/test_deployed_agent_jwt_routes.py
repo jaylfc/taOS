@@ -236,10 +236,8 @@ async def test_deployed_agent_skill_assignment_required(env):
             headers=_auth(env, "alpha"),
             json={"args": {}},
         )
-        assert resp.status_code != 403 or "forbidden: skill not assigned to agent" not in resp.text, \
-            f"Expected not 403 for assignment, got {resp.status_code}: {resp.text}"
-        # Skill implementation should now be called (or at least reach the governance check)
-        # The exact behavior depends on governance, but it should pass the assignment check
+        assert resp.status_code == 200, f"Expected 200 (governance default allow for file_read), got {resp.status_code}: {resp.text}"
+        assert called["count"] == 1, f"Expected skill implementation called once, got {called['count']}"
 
 
 @pytest.mark.asyncio

@@ -1042,8 +1042,8 @@ async def post_thinking(channel_id: str, body: dict, request: Request):
             pass
         else:
             members = channel.get("members") or []
-            user_id_str = str(getattr(request.state, "user_id", ""))
-            if user_id_str not in members:
+            agent_name = getattr(request.state, "agent_name", "")
+            if agent_name not in members:
                 return JSONResponse({"error": "Not a member of this channel"}, status_code=403)
 
     slug = (body or {}).get("slug")

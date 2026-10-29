@@ -1,2 +1,4 @@
 ### Fixed
-- moved call_next out of try/except blocks in auth_middleware.py deployed-agent and native-agent branches; call_next now only runs after try/except when principal verification succeeds
+
+- auth_middleware.py: moved `return await call_next(request)` outside the try/except blocks in both the deployed-agent runtime branch and the native-agent/skill-exec branch. The principal (user_id, agent_name, via) is now computed inside the try block, and `call_next` is only called after the try/except when the authentication flag is set. This prevents Starlette's BaseHTTPMiddleware from re-raising handler exceptions being swallowed by the except clause, which caused auth failures to be reported as 401 instead of 500, and allowed handlers to run a second time with a valid session cookie.
+- routes/chat.py: changed channel membership check in the deployed-agent branch to use `request.state.agent_name` instead of `str(request.state.user_id)`, matching the fact that channel `members` stores agent names (e.g., "alpha") rather than user IDs.
