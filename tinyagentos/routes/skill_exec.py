@@ -53,7 +53,7 @@ def _is_admin_or_local_token(request: Request) -> bool:
     if getattr(request.state, "is_admin", False):
         return True
     via = getattr(request.state, "via", None)
-    return via == "local_token" or via == "registry_jwt_native_agent"
+    return via == "local_token" or via == "registry_jwt_native_agent" or via == "registry_jwt_deployed_agent"
 
 
 # ---------------------------------------------------------------------------
@@ -765,6 +765,20 @@ async def execute_skill(skill_id: str, request: Request):
         return JSONResponse(
             {"error": f"Skill {skill_id} not found"}, status_code=404
         )
+
+    # Deployed-agent assignment guard: a deployed agent (via ==
+    # "registry_jwt_deployed_agent") may only execute skills assigned to it.
+    # Other callers (admin, local_token, registry_jwt_native_agent) are not
+    # restricted by assignment.
+    if getattr(request.state, "via", None) == "registry_jwt_deployed_agent":
+        credential_agent = getattr(request.state, "agent_name", None)
+        if credential_agent:
+            assigned = await skill_store.get_agent_skills(credential_agent)
+            assigned_ids = {s["id"] for s in assigned}
+            if skill_id not in assigned_ids:
+                return JSONResponse(
+                    {"error": "forbidden: skill not assigned to agent"}, status_code=403
+                )
 
     impl = SKILL_IMPLEMENTATIONS.get(skill_id)
     if not impl:
