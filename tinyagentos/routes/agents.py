@@ -18,6 +18,8 @@ import taosmd.agents as tm_agents
 from tinyagentos.agent_db import find_agent, get_agent_summaries
 from tinyagentos.agent_controller_listener import agent_controller_live_port
 from tinyagentos.llm_gateway.cutover import llm_gateway_live_port, llm_gateway_models_check
+from tinyagentos.agent_registry_store import mint_registry_token
+from tinyagentos.agent_token_auth import _get_grants_store, _get_keypair
 from tinyagentos.config import (
     save_config_locked,
     slugify_agent_name,
@@ -772,13 +774,34 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
         # subjects and memory namespaces.
         ar = getattr(request.app.state, "agent_registry", None)
         canonical_id = None
+        agent_jwt = ""
         if ar is not None and getattr(ar, "_db", None) is not None:
             try:
+                user_id = getattr(request.state, "user_id", None) or ""
                 rec = await ar.register(
                     framework=body.framework,
                     display_name=display_name,
+                    user_id=user_id,
                 )
                 canonical_id = rec.get("canonical_id")
+                # Add memory_read grant for the deployed agent.
+                try:
+                    grants = _get_grants_store(request)
+                    await grants.add_grant(canonical_id, "memory_read")
+                except Exception as e:
+                    logger.warning("Failed to add memory_read grant for %s: %s", canonical_id, e)
+                # Mint registry JWT for the deployed agent.
+                try:
+                    private_pem, _public_pem = _get_keypair(request)
+                    agent_jwt = mint_registry_token(
+                        canonical_id,
+                        private_pem,
+                        user_id=user_id,
+                        framework=body.framework,
+                    )
+                except Exception as e:
+                    logger.warning("Failed to mint registry token for %s: %s", canonical_id, e)
+                    agent_jwt = ""
             except ValueError as e:
                 # Reserved-prefix names are a user error, not a server fault.
                 err_body = {"error": str(e)}
@@ -940,6 +963,7 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
                     remote=deploy_remote,
                     taos_host=deploy_taos_host,
                     memory_mode=body.memory_mode,
+                    agent_token=agent_jwt,
                 ))
                 agent = find_agent(config, body.name)
                 if result.get("success"):
