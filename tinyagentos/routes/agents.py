@@ -775,6 +775,7 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
         ar = getattr(request.app.state, "agent_registry", None)
         canonical_id = None
         agent_jwt = ""
+        grants_store_for_deploy = None
         if ar is not None and getattr(ar, "_db", None) is not None:
             try:
                 user_id = getattr(request.state, "user_id", None) or ""
@@ -786,21 +787,26 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
                 canonical_id = rec.get("canonical_id")
                 # Add memory_read grant for the deployed agent.
                 try:
-                    grants = _get_grants_store(request)
-                    await grants.add_grant(canonical_id, "memory_read")
+                    grants_store_for_deploy = _get_grants_store(request)
+                    await grants_store_for_deploy.add_grant(canonical_id, "memory_read")
+                    grant_succeeded = True
                 except Exception as e:
                     logger.warning("Failed to add memory_read grant for %s: %s", canonical_id, e)
-                # Mint registry JWT for the deployed agent.
-                try:
-                    private_pem, _public_pem = _get_keypair(request)
-                    agent_jwt = mint_registry_token(
-                        canonical_id,
-                        private_pem,
-                        user_id=user_id,
-                        framework=body.framework,
-                    )
-                except Exception as e:
-                    logger.warning("Failed to mint registry token for %s: %s", canonical_id, e)
+                    grant_succeeded = False
+                if grant_succeeded and canonical_id is not None:
+                    # Mint registry JWT for the deployed agent.
+                    try:
+                        private_pem, _public_pem = _get_keypair(request)
+                        agent_jwt = mint_registry_token(
+                            canonical_id,
+                            private_pem,
+                            user_id=user_id,
+                            framework=body.framework,
+                        )
+                    except Exception as e:
+                        logger.warning("Failed to mint registry token for %s: %s", canonical_id, e)
+                        agent_jwt = ""
+                else:
                     agent_jwt = ""
             except ValueError as e:
                 # Reserved-prefix names are a user error, not a server fault.
@@ -870,6 +876,12 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
         from tinyagentos.deployer import deploy_agent, DeployRequest
         llm_proxy = getattr(request.app.state, "llm_proxy", None)
         secrets_store = getattr(request.app.state, "secrets", None)
+        grants_store_for_revoke = grants_store_for_deploy
+        if grants_store_for_revoke is None:
+            try:
+                grants_store_for_revoke = _get_grants_store(request)
+            except Exception:
+                grants_store_for_revoke = None
 
         async def _background_deploy():
             try:
@@ -918,6 +930,11 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
                                 "name": body.name,
                                 "error": err_msg,
                             }
+                            if canonical_id is not None and grants_store_for_revoke is not None:
+                                try:
+                                    await grants_store_for_revoke.revoke_grant(canonical_id, "memory_read")
+                                except Exception as revoke_exc:
+                                    logger.warning("Failed to revoke memory_read grant for %s: %s", canonical_id, revoke_exc)
                             notif = getattr(request.app.state, "notifications", None)
                             if notif:
                                 await notif.add(
@@ -1034,6 +1051,11 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
                         "name": body.name,
                         "error": err_msg,
                     }
+                    if canonical_id is not None and grants_store_for_revoke is not None:
+                        try:
+                            await grants_store_for_revoke.revoke_grant(canonical_id, "memory_read")
+                        except Exception as revoke_exc:
+                            logger.warning("Failed to revoke memory_read grant for %s: %s", canonical_id, revoke_exc)
                     notif = getattr(request.app.state, "notifications", None)
                     if notif:
                         await notif.add(
@@ -1052,6 +1074,11 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
                     "name": body.name,
                     "error": err_msg,
                 }
+                if canonical_id is not None and grants_store_for_revoke is not None:
+                    try:
+                        await grants_store_for_revoke.revoke_grant(canonical_id, "memory_read")
+                    except Exception as revoke_exc:
+                        logger.warning("Failed to revoke memory_read grant for %s: %s", canonical_id, revoke_exc)
                 notif = getattr(request.app.state, "notifications", None)
                 if notif:
                     await notif.add(
