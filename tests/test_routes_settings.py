@@ -76,6 +76,10 @@ class TestSettingsRoutes:
         assert resp.status_code == 200
         data = resp.json()
         assert "storage" in data
+        # Each folder reports the size of the disk it lives on, for the usage bar.
+        for item in data["storage"]:
+            assert item["total_bytes"] > 0
+            assert item["bytes"] <= item["total_bytes"]
 
     @pytest.mark.asyncio
     async def test_save_platform_settings(self, client):

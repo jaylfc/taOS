@@ -76,6 +76,13 @@ interface StorageItem {
   maxBytes: number;
 }
 
+interface StorageApiItem {
+  label: string;
+  size: string;
+  bytes: number;
+  total_bytes?: number;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Constants                                                          */
 /* ------------------------------------------------------------------ */
@@ -302,33 +309,53 @@ function SystemInfoSection() {
 
 function StorageSection() {
   const [items, setItems] = useState<StorageItem[]>(PLACEHOLDER_STORAGE);
+  const [unavailable, setUnavailable] = useState(false);
 
   useEffect(() => {
-    safeFetch<StorageItem[] | null>("/api/settings/storage", null).then((data) => {
-      if (data && Array.isArray(data)) setItems(data);
-      else
-        setItems([
-          { label: "Models", size: "4.2 GB", bytes: 4200, maxBytes: 32000 },
-          { label: "Data", size: "1.8 GB", bytes: 1800, maxBytes: 32000 },
-          { label: "App Catalog", size: "320 MB", bytes: 320, maxBytes: 32000 },
-        ]);
+    let active = true;
+    safeFetch<{ storage?: StorageApiItem[] } | null>("/api/settings/storage", null).then((data) => {
+      if (!active) return;
+      const storage = data?.storage;
+      if (Array.isArray(storage)) {
+        setItems(
+          storage.map((s) => ({
+            label: s.label,
+            size: s.size,
+            bytes: s.bytes,
+            // The bar shows the share of the disk holding that folder.
+            maxBytes: s.total_bytes ?? 0,
+          })),
+        );
+        setUnavailable(false);
+      } else {
+        setUnavailable(true);
+      }
     });
+    return () => {
+      active = false;
+    };
   }, []);
 
   return (
     <section aria-label="Storage usage">
       <h2 className="text-lg font-semibold mb-5">Storage Usage</h2>
-      <div className="space-y-3">
-        {items.map((item) => (
-          <Card key={item.label} className="p-4">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-sm font-medium">{item.label}</span>
-              <span className="text-sm text-shell-text-secondary tabular-nums">{item.size}</span>
-            </div>
-            <ProgressBar value={item.bytes} max={item.maxBytes} />
-          </Card>
-        ))}
-      </div>
+      {unavailable ? (
+        <p role="status" className="text-sm text-shell-text-tertiary">
+          Storage usage is unavailable right now.
+        </p>
+      ) : (
+        <div className="space-y-3">
+          {items.map((item) => (
+            <Card key={item.label} className="p-4">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm font-medium">{item.label}</span>
+                <span className="text-sm text-shell-text-secondary tabular-nums">{item.size}</span>
+              </div>
+              <ProgressBar value={item.bytes} max={item.maxBytes} />
+            </Card>
+          ))}
+        </div>
+      )}
     </section>
   );
 }
