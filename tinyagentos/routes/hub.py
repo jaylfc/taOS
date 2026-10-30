@@ -29,11 +29,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from tinyagentos import peer as peer_channel
@@ -839,3 +840,74 @@ async def delete_post_route(
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=404)
     return {"state": "ok", "tombstone": tomb}
+
+
+_CHAIN_PAGE_MAX = 500
+_SQLITE_INT_MAX = 2**63 - 1
+_BLOB_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+@router.get("/api/hub/chain")
+async def own_chain(
+    request: Request,
+    after_seq: int = 0,
+    limit: int = 100,
+    user: CurrentUser = Depends(current_user),
+):
+    """This node's own chain from ``after_seq``, with every newer tombstone.
+
+    Phase 0 of docs/design/hub-social-p2p-architecture.md: the exact payload a
+    peer will later pull, served locally only. ``entries`` is a page of chain
+    entries (``object`` is ``None`` once a tombstone dropped the body);
+    ``tombstones`` lists every tombstone after ``after_seq`` even when
+    ``entries`` is truncated, so deletes travel ahead of content. ``head`` is
+    the latest chain entry, so a reader knows how far the chain goes.
+    """
+    # SQLite integers are signed 64-bit; a larger cursor would raise
+    # OverflowError (a 500) when bound into the query.
+    if not 0 <= after_seq <= _SQLITE_INT_MAX or not 1 <= limit <= _CHAIN_PAGE_MAX:
+        return JSONResponse(
+            {"error": f"after_seq must be 0..{_SQLITE_INT_MAX} and limit 1..{_CHAIN_PAGE_MAX}"},
+            status_code=400,
+        )
+    if not identity.exists():
+        return {"state": "no-identity"}
+    store = await _get_store(request)
+    author = identity.signing_fingerprint()
+    head = await store.get_chain_head(author)
+    return {
+        "state": "ok",
+        "author": author,
+        "head": {"seq": head["seq"], "hash": head["hash"]} if head else None,
+        "entries": await store.list_chain_range(author, after_seq=after_seq, limit=limit),
+        "tombstones": await store.list_tombstones(author, after_seq=after_seq),
+    }
+
+
+@router.get("/api/hub/blobs/{blob_hash}")
+async def get_blob(
+    blob_hash: str,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    """Raw bytes of a stored blob (an ingested post image), by content address.
+
+    Blobs are re-encoded images (``posts.ingest_image``), so anything not
+    stored as ``image/*`` is served as an opaque download. The response is
+    sandboxed and never sniffed, so a blob cannot run as a page on this origin.
+    """
+    if not _BLOB_HASH_RE.match(blob_hash):
+        return JSONResponse({"error": "invalid blob hash"}, status_code=400)
+    store = await _get_store(request)
+    blob = await store.get_blob(blob_hash)
+    if blob is None:
+        return JSONResponse({"error": "blob not found"}, status_code=404)
+    mime = blob.get("mime") or ""
+    headers = {
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "default-src 'none'; sandbox",
+    }
+    if not mime.startswith("image/") or mime == "image/svg+xml":
+        mime = "application/octet-stream"
+        headers["Content-Disposition"] = "attachment"
+    return Response(content=blob["data"], media_type=mime, headers=headers)
