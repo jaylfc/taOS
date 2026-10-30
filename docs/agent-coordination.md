@@ -204,6 +204,16 @@ claim a revocation it did not perform; a reconciliation that does not land is a
 (Before #2148 this route was additive: `scopes: []` answered
 `{"granted_scopes": []}` while the grant stayed live.)
 
+**Agent messages and usage are owner-only, and an agent sends only as
+itself.** `GET /api/agents/{name}/messages`, `.../workspace/messages/contacts`,
+`.../workspace/usage` and the legacy `.../files` listing
+(`tinyagentos/routes/workspace.py`) require the agent's owner or an admin, and
+a per-agent local token may only read its own agent. `POST
+/api/agents/{name}/messages` accepts a person who owns the recipient (or an
+admin), or a per-agent token whose `from_agent` is its own name; any other
+sender name is a 403. Before this any signed-in member could read or post into
+any agent's inbox, and an agent token could send under any name.
+
 **The SSE stream proxy requires a channel.** `GET /api/a2a/bus/stream` returns
 400 without `?channel=<thread>`; there is no all-threads mode yet, so watching
 several threads means one connection each.
