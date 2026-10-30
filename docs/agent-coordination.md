@@ -200,6 +200,12 @@ the config agent whose `registry_canonical_id` equals it. A display name or
 handle match no longer counts, so an identity named like another user's agent
 cannot delegate as it or read its memory index.
 
+**Agent workspaces are owner-only.** Every `/api/agents/{agent_name}/workspace/*`
+route (`tinyagentos/routes/agent_workspace.py`) runs `require_agent_owner_or_admin`
+router-wide, and a per-agent local token may only reach its own agent's
+workspace. Before this any signed-in member could list, read, upload into or
+delete from any agent's workspace.
+
 **`assign-agent`'s scope list is authoritative, not a delta.** It returns 200
 with `granted_scopes` echoing the request and, since taOS #2148, reconciles the
 registry grants bound to that project to exactly the list you pass: a grant on
@@ -1492,6 +1498,22 @@ Route module `tinyagentos/routes/hardware_bluetooth.py`:
 - `POST /api/hardware/bluetooth/device` performs connect, disconnect, pair, trust, untrust, or remove on a device.
 
 All routes are admin-only via `Depends(require_admin)`. See [docs/hardware-routes.md](hardware-routes.md) for detail.
+
+## Hub chain export and blobs (social phase 0, local only)
+
+Route module `tinyagentos/routes/hub.py`, signed-in users of the box only:
+
+- `GET /api/hub/chain?after_seq=&limit=` returns this node's own chain page
+  (`entries`, `object` is `null` once a tombstone dropped the body), the `head`,
+  and every `tombstones` entry after `after_seq` even when the page is truncated,
+  so deletes travel ahead of content. `limit` is 1..500 and `after_seq` is
+  0..2^63-1 (anything else is a 400).
+- `GET /api/hub/blobs/{sha256}` returns a stored post image. Non-image blobs
+  are served as an `application/octet-stream` attachment; every response is
+  `nosniff` and sandboxed.
+
+No peer can reach these; peer-facing hubsync routes are phase 1 of the hub
+social peer-to-peer design (pending owner review).
 
 ## Device voice routes (S6 / S6b)
 
