@@ -235,15 +235,23 @@ jobs:
           HEAD_SHA="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.head.sha')"
           echo "PR #${PR_NUMBER} head SHA: ${HEAD_SHA}"
 
-          # Find the most recent bot-review-gate workflow run for this head SHA.
-          RUN_ID="$(gh api "repos/${REPO}/actions/runs?head_sha=${HEAD_SHA}" \
+          # Find the most recent COMPLETED bot-review-gate workflow run for this head SHA.
+          RUN_ID="$(gh api "repos/${REPO}/actions/runs?head_sha=${HEAD_SHA}&status=completed" \
             --jq '.workflow_runs[] | select(.name=="Bot review gate") | .id' \
             2>/dev/null | head -n1 || true)"
 
           if [ -z "${RUN_ID}" ]; then
-            echo "No bot-review-gate workflow run found for head SHA ${HEAD_SHA}; nothing to re-run."
+            echo "No completed bot-review-gate workflow run found for head SHA ${HEAD_SHA}; nothing to re-run."
             exit 0
           fi
 
           echo "Re-running bot-review-gate workflow run ${RUN_ID} for PR #${PR_NUMBER}"
-          gh api -X POST "repos/${REPO}/actions/runs/${RUN_ID}/rerun"
+          if OUT="$(gh api -X POST "repos/${REPO}/actions/runs/${RUN_ID}/rerun" 2>&1)"; then
+            echo "re-run requested"
+          elif printf '%s' "$OUT" | grep -q "already running"; then
+            echo "Run ${RUN_ID} is already running; nothing to re-run."
+            exit 0
+          else
+            printf '%s\n' "$OUT"
+            exit 1
+          fi
