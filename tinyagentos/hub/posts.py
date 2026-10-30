@@ -160,7 +160,7 @@ async def append_post(
         # stored it; refuse rather than chain a post pointing at nothing.
         for att in attachments or []:
             blob = att.get("blob") if isinstance(att, dict) else None
-            if blob and await store.get_blob(blob) is None:
+            if blob and not await store.has_blob(blob):
                 raise ValueError("attachment blob is missing; upload it again")
         seq, prev = await next_chain_position(store, author)
         post = build_post(

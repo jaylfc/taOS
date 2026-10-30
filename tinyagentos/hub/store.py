@@ -282,6 +282,11 @@ class HubStore(BaseStore):
             return None
         return {"hash": row[0], "size": row[1], "mime": row[2], "data": row[3]}
 
+    async def has_blob(self, blob_hash: str) -> bool:
+        """True when a blob with *blob_hash* is stored, without reading its bytes."""
+        cur = await self._db.execute("SELECT 1 FROM hub_blobs WHERE hash = ?", (blob_hash,))
+        return await cur.fetchone() is not None
+
     # ---------------------------------------------------------------- authors
     async def upsert_author(
         self,
