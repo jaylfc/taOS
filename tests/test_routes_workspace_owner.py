@@ -111,6 +111,7 @@ class TestWorkspaceMessagesOwnership:
             assert (await beta.get("/api/agents/alpha/messages")).status_code == 403
             assert (await beta.get("/api/agents/alpha/workspace/messages/contacts")).status_code == 403
             assert (await beta.get("/api/agents/alpha/workspace/usage")).status_code == 403
+            assert (await beta.get("/api/agents/alpha/files")).status_code == 403
 
     @pytest.mark.asyncio
     async def test_agent_token_cannot_spoof_sender(self, owner_clients, app):
