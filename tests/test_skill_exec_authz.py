@@ -111,6 +111,9 @@ class TestSkillExecAuthz:
         # this test focused on the auth gate. Governance itself is covered in
         # test_skill_exec_governance.py.
         await app.state.execution_policies.set_policy("code-exec", "allow")
+        # A bound local token is fenced by skill assignment (tsk-tfbt6d), so the
+        # agent must be assigned the skill it calls.
+        await app.state.skills.assign_skill("alice", "code_exec", None)
         # Use the deployer's real token-minting flow, not the shared host token.
         alice_token = app.state.auth.mint_agent_local_token("alice")
         bare_client = AsyncClient(
@@ -261,6 +264,7 @@ class TestSkillExecCredentialAgentName:
         bound agent_name must be accepted."""
         await _ensure_skills_seeded(app)
         await app.state.execution_policies.set_policy("code-exec", "allow")
+        await app.state.skills.assign_skill("alice", "code_exec", None)
         alice_token = app.state.auth.mint_agent_local_token("alice")
 
         bare_client = AsyncClient(
@@ -285,6 +289,7 @@ class TestSkillExecCredentialAgentName:
         """When no agent_name is in the body, the credential-bound name is used."""
         await _ensure_skills_seeded(app)
         await app.state.execution_policies.set_policy("code-exec", "allow")
+        await app.state.skills.assign_skill("alice", "code_exec", None)
         alice_token = app.state.auth.mint_agent_local_token("alice")
 
         bare_client = AsyncClient(
@@ -343,6 +348,8 @@ class TestSkillExecCredentialAgentName:
         agent's honest call 403s."""
         await _ensure_skills_seeded(app)
         await app.state.execution_policies.set_policy("code-exec", "allow")
+        await app.state.skills.assign_skill("alice", "code_exec", None)
+        await app.state.skills.assign_skill("bob", "code_exec", None)
 
         alice_token = app.state.auth.mint_agent_local_token("alice")
         bob_token = app.state.auth.mint_agent_local_token("bob")

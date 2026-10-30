@@ -40,6 +40,16 @@ interface NotificationStore {
 
 let counter = 0;
 
+// Notification sources that must stay pinned at the top of the active inbox
+// until they are archived (i.e. the server has decided the request). Reading a
+// pinned row marks it read but never unpins it; only archive removes it.
+export const PINNED_SOURCES = new Set(["auth_requests", "agent_scope_requests"]);
+
+/** A notification is pinned when it is still active and carries a grant-request source. */
+export function isPinned(n: Notification): boolean {
+  return !n.archived && PINNED_SOURCES.has(n.source);
+}
+
 // Server items archived this session. Archiving POSTs to the backend
 // (archiveServerNotification), which is the durable source of truth: once the
 // write lands, GET /api/notifications no longer returns the row. This Set is an
@@ -81,8 +91,14 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
         (n) => !n.id.startsWith("srv-") || n.archived,
       );
       const combined = [...merged, ...kept];
-      combined.sort((a, b) => b.timestamp - a.timestamp);
-      return { notifications: combined.slice(0, 100) };
+      // Pinned grant requests always lead the active inbox (newest-first among
+      // them), then everything else newest-first. The 100-item cap applies
+      // only to the non-pinned remainder so a pinned row is never trimmed.
+      const pinned = combined.filter((n) => isPinned(n));
+      const rest = combined.filter((n) => !isPinned(n));
+      pinned.sort((a, b) => b.timestamp - a.timestamp);
+      rest.sort((a, b) => b.timestamp - a.timestamp);
+      return { notifications: [...pinned, ...rest.slice(0, 100)] };
     });
   },
 

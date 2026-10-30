@@ -1014,14 +1014,21 @@ async def post_thinking(channel_id: str, body: dict, request: Request):
     bearer = request.headers.get("authorization", "")
     if not bearer.lower().startswith("bearer "):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
-    if auth is None or not auth.validate_local_token(bearer[7:].strip()):
-        return JSONResponse({"error": "Unauthorized"}, status_code=401)
-
-    bound_agent = auth.get_local_token_agent(bearer[7:].strip())
-    if bound_agent:
+    token = bearer[7:].strip()
+    via = getattr(request.state, "via", None)
+    if via == "registry_jwt_deployed_agent":
         slug = (body or {}).get("slug")
-        if slug != bound_agent:
-            return JSONResponse({"error": "forbidden: slug does not match credential"}, status_code=403)
+        expected = getattr(request.state, "agent_name", None)
+        if slug != expected:
+            return JSONResponse({"error": "slug does not match credential"}, status_code=403)
+    elif auth is None or not auth.validate_local_token(token):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    else:
+        bound_agent = auth.get_local_token_agent(token)
+        if bound_agent:
+            slug = (body or {}).get("slug")
+            if slug != bound_agent:
+                return JSONResponse({"error": "forbidden: slug does not match credential"}, status_code=403)
 
     slug = (body or {}).get("slug")
     state = (body or {}).get("state")
