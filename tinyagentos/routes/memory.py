@@ -409,15 +409,22 @@ async def memory_remember(request: Request, body: RememberRequest):
                     target = a
                     break
         # For human/admin sessions (not unbound host token), verify agent
-        # ownership against the resolved target. A config agent with no
-        # registry_canonical_id falls back to raw, which the registry cannot
-        # attribute, so non-admins get 403 (fail closed) while admins pass.
+        # ownership against the resolved target.
+        # - If target has a registry_canonical_id: authorize against that id.
+        # - If target has NO registry_canonical_id: admin only (config-only
+        #   agent cannot be attributed by the registry; non-admins are
+        #   forbidden).
+        # - If nothing resolved: authorize against raw.
         if getattr(request.state, "via", None) != "local_token":
             user = current_user(request)
             if target is not None:
-                await require_agent_owner_or_admin(
-                    request, user, target.get("registry_canonical_id") or raw
-                )
+                if target.get("registry_canonical_id"):
+                    await require_agent_owner_or_admin(
+                        request, user, target["registry_canonical_id"]
+                    )
+                else:
+                    if not user.is_admin:
+                        raise HTTPException(status_code=403, detail="forbidden")
             else:
                 await require_agent_owner_or_admin(request, user, raw)
         # Write with the resolved config agent name when resolved, else raw.

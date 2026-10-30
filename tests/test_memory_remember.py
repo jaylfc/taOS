@@ -641,3 +641,158 @@ class TestMemoryRemember:
             resp = await client.post("/api/memory/remember", json={"text": "test memory", "agent": "config-agent-cid"})
             assert resp.status_code == 200
             assert resp.json()["stored"] is True
+
+    async def test_non_admin_slug_collision_cannot_write_unattributed_config_agent(self, client_with_qmd):
+        """Slug collision: bob owns a registry agent whose slug is `helper`, but a
+        config agent NAMED `helper` has NO registry_canonical_id. bob posts
+        agent=helper -> 403 and the /ingest stub is NOT called.
+        """
+        _stub_http(client_with_qmd, {"/ingest": {"status": "ok"}})
+
+        app = client_with_qmd._transport.app
+        await self._init_stores(app)
+        registry = app.state.agent_registry
+        grants = app.state.agent_grants
+        priv, _pub = app.state.agent_registry_keypair
+        config = app.state.config
+        auth = app.state.auth
+
+        # Create bob as non-admin user
+        bob_uid = _add_non_admin_user(auth, "bob", "bobpass")
+
+        # Config agent NAMED `helper` with NO registry_canonical_id
+        from tinyagentos.agent_db import find_agent
+        if find_agent(config, "helper") is None:
+            config.agents.append({
+                "name": "helper",
+                "display_name": "Helper Config Agent",
+                "host": "",
+                "qmd_index": "helper",
+                "color": "#888",
+                # NO registry_canonical_id key
+            })
+
+        # Bob's registry agent, slug `helper`
+        rec_bob = await registry.register(
+            framework="test",
+            display_name="helper",
+            origin="external-selfjoin",
+            handle="@bob-helper",
+            user_id=bob_uid,
+        )
+        cid_bob = rec_bob["canonical_id"]
+        await registry.set_status(cid_bob, "active")
+        await grants.add_grant(cid_bob, "memory_write", project_id="prj-1")
+
+        # Sanity: get_by_slug('helper') resolves to bob's row
+        bob_row = await registry.get_by_slug("helper")
+        assert bob_row is not None
+        assert bob_row.get("user_id") == bob_uid
+
+        # bob (non-admin) posts agent=helper -> 403, ingest NOT called
+        bob_token = auth.create_session(user_id=bob_uid, long_lived=True)
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"taos_session": bob_token},
+            event_hooks=csrf_event_hooks(),
+        ) as client:
+            resp = await client.post("/api/memory/remember", json={"text": "x", "agent": "helper"})
+            assert resp.status_code == 403, f"expected 403, got {resp.status_code}: {resp.text}"
+            assert app.state.http_client.post.call_args is None, (
+                "ingest was called despite the 403 -- cross-user write would have succeeded"
+            )
+
+    async def test_admin_can_write_unattributed_config_agent(self, client_with_qmd):
+        """Admin session writing to a config agent with NO registry_canonical_id -> 200,
+        dbPath ends with /<config name>/index.sqlite.
+        """
+        _stub_http(client_with_qmd, {"/ingest": {"status": "ok"}})
+
+        app = client_with_qmd._transport.app
+        config = app.state.config
+
+        # Config agent NAMED `unattributed-agent` with NO registry_canonical_id
+        from tinyagentos.agent_db import find_agent
+        cfg_name = "unattributed-agent"
+        if find_agent(config, cfg_name) is None:
+            config.agents.append({
+                "name": cfg_name,
+                "display_name": "Unattributed Config Agent",
+                "host": "",
+                "qmd_index": cfg_name,
+                "color": "#888",
+                # NO registry_canonical_id key
+            })
+
+        # Admin session (conftest client fixture) posts agent=unattributed-agent -> 200
+        resp = await client_with_qmd.post("/api/memory/remember", json={"text": "x", "agent": cfg_name})
+        assert resp.status_code == 200, f"expected 200, got {resp.status_code}: {resp.text}"
+        data = resp.json()
+        assert data["stored"] is True
+        assert data["agent"] == cfg_name
+        call_kwargs = app.state.http_client.post.call_args.kwargs
+        db_path = call_kwargs["json"]["dbPath"]
+        assert db_path.endswith(f"/{cfg_name}/index.sqlite"), f"dbPath was {db_path}"
+
+    async def test_non_admin_owner_can_write_own_config_agent_by_name(self, client_with_qmd):
+        """Non-admin owner (bob) can write using their config agent's NAME even when it
+        differs from their registry slug -> 200 and dbPath ends with
+        /<config name>/index.sqlite.
+        """
+        _stub_http(client_with_qmd, {"/ingest": {"status": "ok"}})
+
+        app = client_with_qmd._transport.app
+        await self._init_stores(app)
+
+        auth = app.state.auth
+        registry = app.state.agent_registry
+        grants = app.state.agent_grants
+        priv, _pub = app.state.agent_registry_keypair
+        config = app.state.config
+
+        # Create bob as non-admin user
+        bob_uid = _add_non_admin_user(auth, "bob", "bobpass")
+
+        # Bob's registry agent, slug `bob-agent` (differs from config name)
+        rec_bob = await registry.register(
+            framework="test",
+            display_name="Bob Agent",
+            origin="external-selfjoin",
+            handle="@bob-agent",
+            user_id=bob_uid,
+        )
+        cid_bob = rec_bob["canonical_id"]
+        await registry.set_status(cid_bob, "active")
+        await grants.add_grant(cid_bob, "memory_write", project_id="prj-1")
+
+        # Config agent named `bob-research` (differs from registry slug `bob-agent`)
+        # pointing at bob's identity via registry_canonical_id
+        from tinyagentos.agent_db import find_agent
+        cfg_name = "bob-research"
+        if find_agent(config, cfg_name) is None:
+            config.agents.append({
+                "name": cfg_name,
+                "display_name": "Bob Research Agent",
+                "host": "",
+                "qmd_index": cfg_name,
+                "color": "#888",
+                "registry_canonical_id": cid_bob,
+            })
+
+        # bob (non-admin session) posts agent=bob-research -> 200
+        bob_token = auth.create_session(user_id=bob_uid, long_lived=True)
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"taos_session": bob_token},
+            event_hooks=csrf_event_hooks(),
+        ) as client:
+            resp = await client.post("/api/memory/remember", json={"text": "x", "agent": cfg_name})
+            assert resp.status_code == 200, f"expected 200, got {resp.status_code}: {resp.text}"
+            data = resp.json()
+            assert data["stored"] is True
+            assert data["agent"] == cfg_name
+            call_kwargs = app.state.http_client.post.call_args.kwargs
+            db_path = call_kwargs["json"]["dbPath"]
+            assert db_path.endswith(f"/{cfg_name}/index.sqlite"), f"dbPath was {db_path}"
