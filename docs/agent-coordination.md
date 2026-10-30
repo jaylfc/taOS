@@ -777,8 +777,11 @@ different project, and 403 when the agent lacks the `canvas_read` scope or the
   covering four routes.
 - **memory_read**: read an agent's own memory index via qmd serve.
   `GET /api/memory/browse`, `POST /api/memory/search`, `GET /api/memory/collections/{agent_name}`.
-  These routes restrict results to the calling agent's OWN memory namespace (its own
-  agent name / canonical_id) — an agent must never read another agent's memory.
+  These routes accept either a registry JWT with `memory_read` grant or a
+  bound per-agent local token (`AuthManager.mint_agent_local_token`). Both
+  credential types restrict results to the calling agent's OWN memory
+  namespace -- an agent must never read another agent's memory. The host
+  local token (unbound) retains admin access to all agent namespaces.
   The DELETE `/api/memory/chunk/{content_hash}` route stays human-only and is not
   reachable by agent tokens, even with memory_read.
 
@@ -1465,6 +1468,23 @@ Route module `tinyagentos/routes/device_pair_requests.py`:
 
 Approval or denial of a pair request is surfaced to the user through the Decisions app;
 agents must not grant pairing directly.
+
+## Hardware controls (Wi-Fi, Bluetooth)
+
+Route module `tinyagentos/routes/hardware_wifi.py`:
+
+- `GET /api/hardware/wifi` reads Wi-Fi state and access points via NetworkManager D-Bus.
+- `POST /api/hardware/wifi/enabled` enables or disables the Wi-Fi radio.
+- `POST /api/hardware/wifi/disconnect` disconnects a Wi-Fi interface.
+- `POST /api/hardware/wifi/connect` connects to a Wi-Fi network; the PSK travels to NetworkManager over dbus-fast in-process and never on a busctl argv.
+
+Route module `tinyagentos/routes/hardware_bluetooth.py`:
+
+- `GET /api/hardware/bluetooth` reads Bluetooth adapters and devices via BlueZ D-Bus.
+- `POST /api/hardware/bluetooth/power` powers a Bluetooth adapter on or off.
+- `POST /api/hardware/bluetooth/device` performs connect, disconnect, pair, trust, untrust, or remove on a device.
+
+All routes are admin-only via `Depends(require_admin)`. See [docs/hardware-routes.md](hardware-routes.md) for detail.
 
 ## Device voice routes (S6 / S6b)
 
@@ -2338,14 +2358,16 @@ is not usable inside a container until that follow-up lands. Store:
    `{"kind": "claude-subscription", "url": "...", "prompt": "..."}`. The url
    must be `https` on an exact allowlisted host (`claude.ai`,
    `console.anthropic.com`; no subdomain, userinfo or non-443 port), else `422`:
-   a card the user taps must never open a site the agent chose. An agent may have
-   at most 3 open (non-completed, non-expired) requests at once; the 4th returns
-   `429` with detail ``too many open sign-in requests``. Returns
-   `{id, kind, status, host, expires_in_seconds}` and raises an `auth_broker`
-   notification to the agent's owner. An agent the registry cannot attribute (a
-   bound local-token agent with no registry row) gets its card sent to each
-   admin instead; the card is never a broadcast (`user_id` null). With no admin
-   to receive it, create is `409`.
+a card the user taps must never open a site the agent chose. An agent may have
+  at most one pending or code-ready (non-expired) request per kind at once; a
+  second request for the same kind returns `409` with detail
+  ``a sign-in request is already open for this agent``. Returns
+  `{id, kind, status, host, expires_in_seconds}` and raises an `auth_broker`
+  notification to the agent's owner. An agent the registry cannot attribute (a
+  bound local-token agent with no registry row) gets its card sent to each
+  admin instead; the card is never a broadcast (`user_id` null). With no admin
+to receive it, create is `409`. In addition, an agent may hold at most 3 pending or code-ready (non-expired) requests across all statuses including code_read;
+   the next one returns `429` with detail ``too many open sign-in requests``.
 2. The desktop (bell, toast, Notifications app) renders that notification as a
    sign-in card: the agent's name, the host, an **Open** button (system browser;
    Firefox on taOSmobile) and a code field. The card re-checks the same host
@@ -2383,6 +2405,15 @@ The shared host local token stays unbound: admin/system callers presenting it
 (and admin sessions) may still supply `agent_name` in the body, and agents
 deployed before this change keep the host token until their next redeploy,
 which rotates them onto a bound per-agent token.
+
+A bound token is also fenced by **skill assignment**: `execute_skill` only runs
+a skill that is assigned to the calling agent. This guard applies equally to the
+registry-JWT deployed-agent path (`via == "registry_jwt_deployed_agent"`) and to
+a bound per-agent local token (`via == "local_token"` with
+`request.state.agent_name` set), returning `403 forbidden: skill not assigned to
+agent` before the implementation runs. The UNBOUND host local token (no
+`agent_name`), admin sessions, and `registry_jwt_native_agent` are not
+restricted by assignment -- they can run any implemented skill, as before.
 
 Blast radius: `_resolve_agent_workspace`, `_capture_tool_receipt`,
 `_check_execution_policy`, `execute_notes_list_shared_docs`, and the todo tools
@@ -2602,7 +2633,7 @@ pinned 0.3.1 binary). `taos_agent_runtime.decide_framework` is the one place
 the choice is made, from two config.yaml keys:
 
 - `device.class`: `auto` (default; `hardware._detect_device_class`, which
-  reads the `taos-kiosk.service` unit), `mobile` or `desktop`;
+  reads the `taos-kiosk.service` and `plasma-mobile.service` units), `mobile` or `desktop`;
 - `taos_agent.framework`: `auto` (default; picoclaw on mobile, opencode
   elsewhere), `opencode`, `picoclaw` or `claude_code` (operator overrides;
   `auto` never picks `claude_code`).
