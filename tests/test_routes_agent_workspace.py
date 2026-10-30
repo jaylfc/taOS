@@ -296,3 +296,11 @@ class TestAgentWorkspaceOwnership:
         ) as beta:
             assert (await beta.get("/api/agents/beta/workspace/files")).status_code == 200
             assert (await beta.get("/api/agents/alpha/workspace/files")).status_code == 403
+
+            ws = app.state.agent_workspaces_dir / "alpha"
+            resp = await beta.post("/api/agents/alpha/workspace/mkdir", json={"path": "evil"})
+            assert resp.status_code == 403
+            assert not (ws / "evil").exists()
+            resp = await beta.delete("/api/agents/alpha/workspace/files/secret.txt")
+            assert resp.status_code == 403
+            assert (ws / "secret.txt").exists()
