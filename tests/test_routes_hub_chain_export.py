@@ -126,5 +126,7 @@ class TestBlobRead:
 
         app.state._startup_complete = True
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as anon:
-            resp = await anon.get(f"/api/hub/blobs/{'0' * 64}")
-        assert resp.status_code == 401
+            blob_resp = await anon.get(f"/api/hub/blobs/{'0' * 64}")
+            chain_resp = await anon.get("/api/hub/chain")
+        assert blob_resp.status_code == 401
+        assert chain_resp.status_code == 401
