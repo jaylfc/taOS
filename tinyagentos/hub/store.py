@@ -483,6 +483,44 @@ class HubStore(BaseStore):
         rows = await cur.fetchall()
         return [_row(cur.description, r) for r in rows]
 
+    async def list_chain_range(
+        self, author: str, *, after_seq: int = 0, limit: int = 100
+    ) -> list[dict]:
+        """Chain entries for ``author`` with ``seq > after_seq``, oldest first.
+
+        Each entry carries its index fields plus ``object``: the full signed
+        object while its body is stored, or ``None`` once a tombstone dropped it.
+        This is the shape a peer pulls (design hub-social-p2p-architecture).
+        """
+        cur = await self._db.execute(
+            "SELECT c.author, c.seq, c.hash, c.prev_hash, c.type, c.target, o.body "
+            "FROM hub_chain c LEFT JOIN hub_objects o ON o.hash = c.hash "
+            "WHERE c.author = ? AND c.seq > ? ORDER BY c.seq ASC LIMIT ?",
+            (author, after_seq, limit),
+        )
+        out = []
+        for author_, seq, h, prev, typ, target, body in await cur.fetchall():
+            out.append({
+                "author": author_, "seq": seq, "hash": h, "prev_hash": prev,
+                "type": typ, "target": target,
+                "object": json.loads(body) if body is not None else None,
+            })
+        return out
+
+    async def list_tombstones(self, author: str, *, after_seq: int = 0) -> list[dict]:
+        """Every signed tombstone for ``author`` with ``seq > after_seq``.
+
+        Returned in full regardless of any range limit so deletes travel ahead
+        of content: a reader that pulls a truncated range still learns every
+        newer delete (design "Delete propagation").
+        """
+        cur = await self._db.execute(
+            "SELECT o.body FROM hub_chain c JOIN hub_objects o ON o.hash = c.hash "
+            "WHERE c.author = ? AND c.seq > ? AND c.type = 'tombstone' ORDER BY c.seq ASC",
+            (author, after_seq),
+        )
+        return [json.loads(row[0]) for row in await cur.fetchall()]
+
     async def list_posts(self, author: str) -> list[dict]:
         """The author's own posts that still have a body, in chain (seq) order.
 

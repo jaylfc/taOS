@@ -1486,6 +1486,21 @@ Route module `tinyagentos/routes/hardware_bluetooth.py`:
 
 All routes are admin-only via `Depends(require_admin)`. See [docs/hardware-routes.md](hardware-routes.md) for detail.
 
+## Hub chain export and blobs (social phase 0, local only)
+
+Route module `tinyagentos/routes/hub.py`, signed-in users of the box only:
+
+- `GET /api/hub/chain?after_seq=&limit=` returns this node's own chain page
+  (`entries`, `object` is `null` once a tombstone dropped the body), the `head`,
+  and every `tombstones` entry after `after_seq` even when the page is truncated,
+  so deletes travel ahead of content. `limit` is 1..500.
+- `GET /api/hub/blobs/{sha256}` returns a stored post image. Non-image blobs
+  are served as an `application/octet-stream` attachment; every response is
+  `nosniff` and sandboxed.
+
+No peer can reach these; peer-facing hubsync routes are phase 1 of the hub
+social peer-to-peer design (pending owner review).
+
 ## Device voice routes (S6 / S6b)
 
 Route module `tinyagentos/routes/device_voice.py`. Device bearer only (a session
