@@ -328,6 +328,20 @@ class TestFromPathOwnership:
         assert not any((app.state.data_dir / "chat-files").glob("*private.md"))
 
     @pytest.mark.asyncio
+    async def test_non_owner_cannot_probe_for_file_existence(self, member_client):
+        # A present and a missing file in someone else's agent workspace must
+        # answer the same, or the status code leaks which filenames exist.
+        statuses = set()
+        for name in ("private.md", "no-such-file.md"):
+            r = await member_client.post("/api/chat/attachments/from-path", json={
+                "path": f"/workspaces/alpha/{name}",
+                "source": "agent-workspace",
+                "slug": "alpha",
+            })
+            statuses.add(r.status_code)
+        assert statuses == {403}
+
+    @pytest.mark.asyncio
     async def test_refused_project_slug_copies_nothing(self, member_client, app, monkeypatch):
         from fastapi.responses import JSONResponse
 

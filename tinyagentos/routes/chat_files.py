@@ -71,7 +71,7 @@ def _unique_project_dest(proj_files_root: Path, original_name: str) -> Path:
         counter += 1
 
 
-_WORKSPACE_OWNER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_WORKSPACE_OWNER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
 def _resolve_workspace_path(data_dir: Path, source: str, slug: str | None, vfs_path: str) -> Path:
@@ -88,7 +88,7 @@ def _resolve_workspace_path(data_dir: Path, source: str, slug: str | None, vfs_p
     # The owner segment names a directory directly under agent-workspaces/,
     # so it must be a plain name: "." or ".." would make the root the
     # workspaces dir or the data dir itself, and every file in it readable.
-    if not _WORKSPACE_OWNER_RE.match(owner) or owner in (".", ".."):
+    if not _WORKSPACE_OWNER_RE.fullmatch(owner) or owner in (".", ".."):
         raise ValueError("invalid workspace owner")
     if source == "agent-workspace":
         if not slug or slug != owner:
@@ -135,17 +135,23 @@ async def attachment_from_path(body: dict, request: Request):
             status_code=400,
         )
     data_dir = request.app.state.data_dir
-    try:
-        src = _resolve_workspace_path(data_dir, source, slug, vfs_path)
-    except ValueError as e:
-        return JSONResponse({"error": str(e)}, status_code=400)
     if source == "agent-workspace":
         # Same rule as the agent workspace routes: the agent's owner, an
         # admin, or the agent itself (a bound token reaches only its own).
+        # Checked before the path is resolved, so a non-owner gets the same
+        # 403 whether or not the file exists.
+        if not slug:
+            return JSONResponse(
+                {"error": "slug must match path owner for agent-workspace"}, status_code=400
+            )
         bound = getattr(request.state, "agent_name", None)
         if bound and bound != slug:
             raise HTTPException(status_code=403, detail="forbidden")
         await require_agent_owner_or_admin(request, current_user(request), slug)
+    try:
+        src = _resolve_workspace_path(data_dir, source, slug, vfs_path)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
     if slug:
         # Authorize the project write BEFORE copying anything, so a refused
         # request leaves no copy behind in chat-files/.
