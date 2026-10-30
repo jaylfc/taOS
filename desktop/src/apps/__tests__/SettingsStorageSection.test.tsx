@@ -44,6 +44,8 @@ describe("Settings Storage section", () => {
     expect(screen.queryByText("4.2 GB")).not.toBeInTheDocument();
     const bars = screen.getAllByRole("progressbar");
     expect(bars[0]).toHaveAttribute("aria-valuenow", String((12_000 / 64_000) * 100));
+    expect(bars).toHaveLength(2);
+    expect(bars[1]).toHaveAttribute("aria-valuenow", String((250 / 64_000) * 100));
   });
 
   it("gives each usage bar an accessible name", async () => {
@@ -63,6 +65,19 @@ describe("Settings Storage section", () => {
       "12.0 GB",
     );
     expect(screen.getByRole("progressbar", { name: "Data disk usage" })).toBeInTheDocument();
+  });
+
+  it("says the capacity is unavailable instead of drawing an empty bar", async () => {
+    mockFetch(
+      await json({
+        storage: [{ label: "Models", path: "/m", size: "12.0 GB", bytes: 12_000, total_bytes: 0 }],
+      }),
+    );
+    render(<SettingsApp windowId="w1" section="storage" />);
+
+    await waitFor(() => expect(screen.getByText("12.0 GB")).toBeInTheDocument());
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+    expect(screen.getByText(/capacity unavailable/i)).toBeInTheDocument();
   });
 
   it("says the numbers are unavailable instead of inventing them", async () => {

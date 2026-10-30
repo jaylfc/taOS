@@ -176,8 +176,10 @@ def _get_storage_stats(app) -> list[dict]:
     data_dir = app.state.config_path.parent
     items = []
 
-    # Models dir
-    models_dir = data_dir / "models"
+    # Models dir: where the installers put models (TAOS_MODELS_ROOT aware)
+    from tinyagentos.installers.model_paths import models_root
+
+    models_dir = models_root()
     models_bytes = _dir_size(models_dir)
     items.append({
         "label": "Models",

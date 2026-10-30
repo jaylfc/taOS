@@ -82,7 +82,40 @@ class TestSettingsRoutes:
             assert item["bytes"] <= item["total_bytes"]
 
     @pytest.mark.asyncio
-    async def test_data_row_does_not_count_the_models_folder_twice(self, client):
+    async def test_models_row_sizes_the_installers_models_root(self, client, tmp_path, monkeypatch):
+        root = tmp_path / "elsewhere-models"
+        root.mkdir()
+        (root / "weights.bin").write_bytes(b"x" * 50_000)
+        monkeypatch.setenv("TAOS_MODELS_ROOT", str(root))
+
+        items = {i["label"]: i for i in (await client.get("/api/settings/storage")).json()["storage"]}
+        assert items["Models"]["path"] == str(root)
+        assert items["Models"]["bytes"] >= 50_000
+
+    @pytest.mark.asyncio
+    async def test_each_row_reports_its_own_filesystem(self, client, monkeypatch):
+        import collections
+        import tinyagentos.routes.settings as settings_mod
+
+        totals = {}
+
+        def fake_disk_usage(path):
+            totals.setdefault(str(path), 10_000_000_000 + 1_000 * len(totals))
+            return collections.namedtuple("usage", "total used free")(totals[str(path)], 0, 0)
+
+        monkeypatch.setattr(settings_mod.shutil, "disk_usage", fake_disk_usage)
+        for item in (await client.get("/api/settings/storage")).json()["storage"]:
+            probe = settings_mod.Path(item["path"])
+            while not probe.exists() and probe != probe.parent:
+                probe = probe.parent
+            assert item["total_bytes"] == totals[str(probe)]
+
+    @pytest.mark.asyncio
+    async def test_data_row_does_not_count_the_models_folder_twice(self, client, monkeypatch):
+        monkeypatch.setenv(
+            "TAOS_MODELS_ROOT", str(client._transport.app.state.config_path.parent / "models")
+        )
+
         async def rows():
             body = (await client.get("/api/settings/storage")).json()
             return {i["label"]: i["bytes"] for i in body["storage"]}

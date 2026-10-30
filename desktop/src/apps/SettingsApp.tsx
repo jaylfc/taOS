@@ -351,12 +351,16 @@ function StorageSection() {
                 <span className="text-sm font-medium">{item.label}</span>
                 <span className="text-sm text-shell-text-secondary tabular-nums">{item.size}</span>
               </div>
-              <ProgressBar
-                value={item.bytes}
-                max={item.maxBytes}
-                label={`${item.label} disk usage`}
-                valueText={item.size}
-              />
+              {item.maxBytes > 0 ? (
+                <ProgressBar
+                  value={item.bytes}
+                  max={item.maxBytes}
+                  label={`${item.label} disk usage`}
+                  valueText={item.size}
+                />
+              ) : (
+                <p className="text-xs text-shell-text-tertiary">Disk capacity unavailable</p>
+              )}
             </Card>
           ))}
         </div>
