@@ -174,6 +174,12 @@ placeholder ("3 posts from @alice are on nodes that are currently offline").
   directory lookup and pinned on first use. Public posts only.
 - **Multi-user boxes:** today one box has one hub identity and any signed-in
   user can post as it. See open question 1.
+- **Must fix before phase 1:** every local hub read route (`/api/hub/timeline`,
+  `/api/hub/chain`, `/api/hub/blobs/{hash}`) is gated only on "signed in", so
+  any user of the box can read the owner's whole chain, including
+  friends-only bodies and every blob. Before any peer route ships, these
+  routes must be limited to the hub identity's owner (or an admin), with a
+  test that a second signed-in user gets 403.
 
 ## 8. API surface
 
@@ -215,7 +221,9 @@ new posts. Pointers only.
    evicted), tested with two in-process stores. No sockets, no new peer
    routes. Split in two PRs: (a) routes and delete fixes, (b) ingest.
 1. **Peer read routes and head announcements** between friends, LAN first.
-   Gated on owner review of this doc. Live test on two boxes.
+   Gated on owner review of this doc and on the "must fix before phase 1"
+   item in section 7 (local hub reads limited to the identity's owner).
+   Live test on two boxes.
 2. **Cache grants enforced:** `cache-set`, quotas, recency eviction, serving
    to roster members while the origin is offline.
 3. **Public followers:** signed requests, directory hints and public heads
