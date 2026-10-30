@@ -402,6 +402,16 @@ async def memory_remember(request: Request, body: RememberRequest):
         if getattr(request.state, "via", None) != "local_token":
             user = current_user(request)
             await require_agent_owner_or_admin(request, user, agent)
+        # Resolve canonical id to config agent name so dbPath uses the config name
+        # instead of a raw canonical id (which the agent would never match for reads)
+        found = find_agent(request.app.state.config, agent)
+        if found is None:
+            # Look for config agent whose registry_canonical_id equals the agent value
+            for a in request.app.state.config.agents:
+                if a.get("registry_canonical_id") == agent:
+                    agent = a["name"]
+                    found = a
+                    break
 
     # Write through shared qmd serve /ingest (same pattern as import_data.py)
     http_client = request.app.state.http_client

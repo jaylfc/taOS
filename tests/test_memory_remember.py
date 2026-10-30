@@ -386,6 +386,37 @@ class TestMemoryRemember:
             assert resp.status_code == 200
             assert resp.json()["stored"] is True
 
+    async def test_admin_session_canonical_id_writes_config_agent_index(self, client_with_qmd):
+        """Admin session with canonical ID writes to config agent's index (dbPath ends with config name)."""
+        _stub_http(client_with_qmd, {
+            "/ingest": {"status": "ok"},
+        })
+
+        app = client_with_qmd._transport.app
+        await self._init_stores(app)
+
+        config = app.state.config
+
+        # Add agent to config with a registry_canonical_id
+        cfg_agent_name = "cfg-agent"
+        config.agents.append({
+            "name": cfg_agent_name,
+            "display_name": "Cfg Agent",
+            "host": "",
+            "qmd_index": "cfg-agent",
+            "color": "#888",
+            "registry_canonical_id": "canonical-id-123",
+        })
+
+        resp = await client_with_qmd.post("/api/memory/remember", json={"text": "x", "agent": "canonical-id-123"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["stored"] is True
+        # The dbPath should end with /cfg-agent/index.sqlite (config name, not canonical id)
+        call_kwargs = app.state.http_client.post.call_args.kwargs
+        db_path = call_kwargs["json"]["dbPath"]
+        assert db_path.endswith("/cfg-agent/index.sqlite"), f"dbPath was {db_path}"
+
     async def test_registry_jwt_config_agent_without_canonical_id_gets_403(self, client_with_qmd):
         """Registry JWT where config agent has NO registry_canonical_id -> 403 (fail closed); matching identity with canonical_id gets 200."""
         _stub_http(client_with_qmd, {"/ingest": {"status": "ok"}})
