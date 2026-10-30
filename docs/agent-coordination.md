@@ -193,6 +193,13 @@ member row goes with it. `expires_at` is still never populated - a grant is
 revoked, not time-boxed - though an expired value is already refused at check
 time.
 
+**A registry identity maps to a config agent by canonical id only.**
+`_resolve_agent_name` (`tinyagentos/routes/delegation.py`), used by delegation
+and by the memory read routes for registry-JWT callers, maps a canonical id to
+the config agent whose `registry_canonical_id` equals it. A display name or
+handle match no longer counts, so an identity named like another user's agent
+cannot delegate as it or read its memory index.
+
 **`assign-agent`'s scope list is authoritative, not a delta.** It returns 200
 with `granted_scopes` echoing the request and, since taOS #2148, reconciles the
 registry grants bound to that project to exactly the list you pass: a grant on
