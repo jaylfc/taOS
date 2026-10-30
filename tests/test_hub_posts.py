@@ -289,3 +289,42 @@ async def test_concurrent_appends_do_not_orphan(store, monkeypatch):
     assert seqs == [1, 2, 3]
     head = await store.get_chain_head("racer")
     assert head["seq"] == 3
+
+
+@pytest.mark.asyncio
+async def test_delete_racing_a_post_of_the_same_blob_leaves_no_dangling_reference(store, data_dir):
+    """A post never ends up referencing a blob that a racing delete dropped.
+
+    The shared-blob check and the drop ran outside the append lock, so a post
+    of the same image appended between them was stored pointing at a blob the
+    delete then removed.
+    """
+    import asyncio as _asyncio
+
+    blob = b"\x89PNG\r\n\x1a\n raced png bytes"
+    h = await store.put_blob(blob, mime="image/png")
+    att = [{"blob": h, "size": len(blob), "mime": "image/png"}]
+    first = await posts.append_post(store, visibility="public", text="a", attachments=att)
+
+    real_drop_blob = store.drop_blob
+    checked = _asyncio.Event()
+
+    async def slow_drop_blob(blob_hash):
+        checked.set()
+        await _asyncio.sleep(0.05)
+        await real_drop_blob(blob_hash)
+
+    store.drop_blob = slow_drop_blob
+
+    async def racing_post():
+        await checked.wait()
+        try:
+            return await posts.append_post(store, visibility="public", text="b", attachments=att)
+        except ValueError:
+            return None
+
+    _tomb, second = await _asyncio.gather(
+        posts.delete_post(store, hub_store.object_hash(first)), racing_post()
+    )
+    if second is not None:
+        assert await store.get_blob(h) is not None, "stored post references a dropped blob"
