@@ -187,8 +187,10 @@ def _get_storage_stats(app) -> list[dict]:
         "total_bytes": _fs_total_bytes(Path(models_dir)),
     })
 
-    # Data dir
+    # Data dir, without the models folder already counted above
     data_bytes = _dir_size(data_dir)
+    if models_dir.is_relative_to(data_dir):
+        data_bytes = max(0, data_bytes - models_bytes)
     items.append({
         "label": "Data",
         "path": str(data_dir),

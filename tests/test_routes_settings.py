@@ -82,6 +82,23 @@ class TestSettingsRoutes:
             assert item["bytes"] <= item["total_bytes"]
 
     @pytest.mark.asyncio
+    async def test_data_row_does_not_count_the_models_folder_twice(self, client):
+        async def rows():
+            body = (await client.get("/api/settings/storage")).json()
+            return {i["label"]: i["bytes"] for i in body["storage"]}
+
+        data_dir = client._transport.app.state.config_path.parent
+        models = data_dir / "models"
+        models.mkdir(parents=True, exist_ok=True)
+        before = await rows()
+        (models / "weights.bin").write_bytes(b"x" * 1_000_000)
+        after = await rows()
+
+        assert after["Models"] - before["Models"] >= 1_000_000
+        # Models lives inside the data dir; growing it must not grow the Data row.
+        assert after["Data"] - before["Data"] < 100_000
+
+    @pytest.mark.asyncio
     async def test_save_platform_settings(self, client):
         resp = await client.put("/api/settings/platform", json={
             "poll_interval": 60,

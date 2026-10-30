@@ -46,6 +46,25 @@ describe("Settings Storage section", () => {
     expect(bars[0]).toHaveAttribute("aria-valuenow", String((12_000 / 64_000) * 100));
   });
 
+  it("gives each usage bar an accessible name", async () => {
+    mockFetch(
+      await json({
+        storage: [
+          { label: "Models", path: "/m", size: "12.0 GB", bytes: 12_000, total_bytes: 64_000 },
+          { label: "Data", path: "/d", size: "250.0 MB", bytes: 250, total_bytes: 64_000 },
+        ],
+      }),
+    );
+    render(<SettingsApp windowId="w1" section="storage" />);
+
+    await waitFor(() => expect(screen.getByText("12.0 GB")).toBeInTheDocument());
+    expect(screen.getByRole("progressbar", { name: "Models disk usage" })).toHaveAttribute(
+      "aria-valuetext",
+      "12.0 GB",
+    );
+    expect(screen.getByRole("progressbar", { name: "Data disk usage" })).toBeInTheDocument();
+  });
+
   it("says the numbers are unavailable instead of inventing them", async () => {
     mockFetch(new Response(null, { status: 500 }));
     render(<SettingsApp windowId="w1" section="storage" />);
