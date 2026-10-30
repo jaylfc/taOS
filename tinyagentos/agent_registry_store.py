@@ -849,6 +849,32 @@ class AgentRegistryStore(BaseStore):
         row = await cursor.fetchone()
         return _row_to_dict(row) if row else None
 
+    async def count_by_slug(self, slug: str, *, status: str = "active") -> int:
+        """How many entries with *status* decode to *slug* (same match as get_by_slug).
+
+        A slug is not unique: two users can each register ``alpha`` and get
+        distinct canonical ids. Owner checks that accept a bare slug use this
+        to refuse the ambiguous case instead of silently taking the oldest row.
+        """
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", slug or ""):
+            return 0
+        pattern = (
+            f"{slug}-"
+            "[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]"
+            "-"
+            "[0-9][0-9][0-9][0-9][0-9][0-9]"
+            "*"
+        )
+        row = await (
+            await self._db.execute(
+                "SELECT COUNT(*) FROM agent_registry WHERE canonical_id GLOB ? AND status = ?",
+                (pattern, status),
+            )
+        ).fetchone()
+        return int(row[0]) if row else 0
+
     async def get_by_handle(self, handle: str, *, status: str = "active") -> Optional[dict]:
         """Return the oldest entry with *handle* and *status*, or ``None``.
 

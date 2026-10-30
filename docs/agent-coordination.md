@@ -193,6 +193,16 @@ member row goes with it. `expires_at` is still never populated - a grant is
 revoked, not time-boxed - though an expired value is already refused at check
 time.
 
+**Agent owner checks compare unique ids, not names.** `resolve_agent_owner`
+(`tinyagentos/auth_context.py`) attributes a config agent through its
+`registry_canonical_id` only; a config agent without one is nobody's, so only an
+admin may act on it. A config agent's name is a slug any user can also mint as a
+registry display name or handle, so a name match never grants ownership. A
+registry-only agent resolves by canonical id, then handle, then a slug only when
+exactly one active row carries it. The agent desktop, agent versions and
+`GET /api/secrets/agent/{name}/github` routes use this helper instead of their
+own handle lookups.
+
 **`assign-agent`'s scope list is authoritative, not a delta.** It returns 200
 with `granted_scopes` echoing the request and, since taOS #2148, reconciles the
 registry grants bound to that project to exactly the list you pass: a grant on
