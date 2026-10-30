@@ -193,6 +193,12 @@ member row goes with it. `expires_at` is still never populated - a grant is
 revoked, not time-boxed - though an expired value is already refused at check
 time.
 
+**Agent workspaces are owner-only.** Every `/api/agents/{agent_name}/workspace/*`
+route (`tinyagentos/routes/agent_workspace.py`) runs `require_agent_owner_or_admin`
+router-wide, and a per-agent local token may only reach its own agent's
+workspace. Before this any signed-in member could list, read, upload into or
+delete from any agent's workspace.
+
 **`assign-agent`'s scope list is authoritative, not a delta.** It returns 200
 with `granted_scopes` echoing the request and, since taOS #2148, reconciles the
 registry grants bound to that project to exactly the list you pass: a grant on
