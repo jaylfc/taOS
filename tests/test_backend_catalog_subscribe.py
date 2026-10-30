@@ -84,13 +84,11 @@ async def test_subscriber_fires_on_model_list_change():
     await catalog.start()
     try:
         # Initial
-        await asyncio.sleep(0.02)
-        assert fired_models == [1]
+        await _until(lambda: fired_models == [1])
 
         # Load a second model — next poll should fire a change event
         model_state["models"] = [{"name": "m1"}, {"name": "m2"}]
-        await asyncio.sleep(0.1)
-        assert 2 in fired_models
+        await _until(lambda: 2 in fired_models)
     finally:
         await catalog.stop()
 
@@ -154,8 +152,7 @@ async def test_failing_subscriber_does_not_crash_poll_loop():
     await catalog.start()
     try:
         # Let the initial probe run — good subscriber should still fire
-        await asyncio.sleep(0.05)
-        assert good_fires["n"] >= 1
+        await _until(lambda: good_fires["n"] >= 1)
     finally:
         await catalog.stop()
 
@@ -179,8 +176,6 @@ async def test_multiple_subscribers_all_fire():
     catalog.subscribe(sub_b)
     await catalog.start()
     try:
-        await asyncio.sleep(0.05)
-        assert fires["a"] >= 1
-        assert fires["b"] >= 1
+        await _until(lambda: fires["a"] >= 1 and fires["b"] >= 1)
     finally:
         await catalog.stop()
