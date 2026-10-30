@@ -183,6 +183,52 @@ class TestTombstone:
         with pytest.raises(ValueError):
             await posts.delete_post(store, "nonexistent-hash")
 
+    @pytest.mark.asyncio
+    async def test_delete_keeps_blob_still_referenced_by_another_post(self, store, data_dir):
+        # Blobs are content addressed, so the same image posted twice is ONE blob.
+        # Deleting one of the posts must not break the other.
+        blob = b"\x89PNG\r\n\x1a\n shared png bytes"
+        h = await store.put_blob(blob, mime="image/png")
+        att = [{"blob": h, "size": len(blob), "mime": "image/png"}]
+        first = await posts.append_post(store, visibility="public", text="a", attachments=att)
+        second = await posts.append_post(store, visibility="public", text="b", attachments=att)
+
+        await posts.delete_post(store, hub_store.object_hash(first))
+        assert await store.get_blob(h) is not None
+        assert await store.get_object(hub_store.object_hash(second)) is not None
+
+        # Once the last referencing post is gone, the blob goes too.
+        await posts.delete_post(store, hub_store.object_hash(second))
+        assert await store.get_blob(h) is None
+
+    @pytest.mark.asyncio
+    async def test_delete_refuses_a_post_this_node_did_not_author(self, store, data_dir):
+        # Only the origin may delete. A foreign post held locally (a friend's post
+        # once caching lands) must not be tombstoned onto this node's chain.
+        own = await posts.append_post(store, visibility="public", text="mine")
+        foreign = {
+            **posts.build_post(visibility="public", text="theirs", author="f" * 64),
+            "seq": 1,
+            "sig": "00" * 64,
+        }
+        foreign_hash = await store.put_object(foreign)
+        own_head = await store.get_chain_head(identity.signing_fingerprint())
+
+        with pytest.raises(ValueError):
+            await posts.delete_post(store, foreign_hash)
+
+        assert await store.get_object(foreign_hash) is not None
+        head = await store.get_chain_head(identity.signing_fingerprint())
+        assert head == own_head
+        assert head["hash"] == hub_store.object_hash(own)
+
+    @pytest.mark.asyncio
+    async def test_delete_refuses_a_non_post_object(self, store, data_dir):
+        p = await posts.append_post(store, visibility="public", text="x")
+        tomb = await posts.delete_post(store, hub_store.object_hash(p))
+        with pytest.raises(ValueError):
+            await posts.delete_post(store, hub_store.object_hash(tomb))
+
 
 class TestImageIngest:
     def _make_exif_jpeg(self) -> bytes:

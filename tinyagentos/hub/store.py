@@ -514,6 +514,26 @@ class HubStore(BaseStore):
         await self._db.execute("DELETE FROM hub_blobs WHERE hash = ?", (blob_hash,))
         await self._db.commit()
 
+    async def blob_referenced(self, blob_hash: str, *, exclude: str | None = None) -> bool:
+        """True if any stored post other than ``exclude`` attaches ``blob_hash``.
+
+        Blobs are content addressed, so two posts carrying the same image share
+        one blob row; a tombstone may only drop the blob once no live post still
+        references it. ``instr`` narrows candidates cheaply; the attachment list
+        is then checked exactly, so a hash that merely appears in post text does
+        not keep a blob alive.
+        """
+        cur = await self._db.execute(
+            "SELECT hash, body FROM hub_objects "
+            "WHERE type = 'post' AND hash != ? AND instr(body, ?) > 0",
+            (exclude or "", blob_hash),
+        )
+        for _h, body in await cur.fetchall():
+            for att in json.loads(body).get("attachments") or []:
+                if isinstance(att, dict) and att.get("blob") == blob_hash:
+                    return True
+        return False
+
     # ---------------------------------------------------------------- profiles
     async def get_profile(self, author: str) -> dict | None:
         """The current (highest-version) profile object for an author."""
