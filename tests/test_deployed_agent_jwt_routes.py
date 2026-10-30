@@ -275,3 +275,127 @@ async def test_unknown_route_with_device_bearer_and_session_returns_404(env):
     assert resp.status_code == 404, f"Expected 404 for unknown route with valid session, got {resp.status_code}: {resp.text}"
     
     await admin_client.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Bound local-token skill assignment guard (tsk-tfbt6d)
+# ---------------------------------------------------------------------------
+
+
+def _tracking_impl(skill_id, original_impl, called):
+    """Return a wrapper that counts calls and delegates to the real impl."""
+
+    async def wrapper(args, request):
+        called["count"] += 1
+        return await original_impl(args, request)
+
+    return wrapper
+
+
+async def _assert_bound_token_403(env, skill_id, auth_headers, called):
+    """Assert a bound-token call to an unassigned skill is 403 and impl not called."""
+    from tinyagentos.routes.skill_exec import SKILL_IMPLEMENTATIONS
+
+    original_impl = SKILL_IMPLEMENTATIONS[skill_id]
+    wrapper = _tracking_impl(skill_id, original_impl, called)
+    with patch.dict(SKILL_IMPLEMENTATIONS, {skill_id: wrapper}):
+        resp = await env.post(
+            f"/api/skill-exec/{skill_id}/call",
+            headers=auth_headers,
+            json={"args": {}},
+        )
+        assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
+        assert "forbidden: skill not assigned to agent" in resp.text
+        assert called["count"] == 0, "Skill implementation was called despite missing assignment"
+
+
+@pytest.mark.asyncio
+async def test_bound_local_token_skill_assignment_required(env):
+    """A bound local token must be fenced by skill assignment, same as the
+    registry-JWT deployed-agent path (tsk-tfbt6d)."""
+    skills = env.app.state.skills
+    skill_id = "file_read"
+    skill = await skills.get_skill(skill_id)
+    assert skill is not None
+
+    assigned = await skills.get_agent_skills("alpha")
+    assigned_ids = {s["id"] for s in assigned}
+    assert skill_id not in assigned_ids, f"Test setup failed: {skill_id} should not be assigned to alpha"
+
+    bound_token = env.app.state.auth.mint_agent_local_token("alpha")
+    auth_headers = {"Authorization": f"Bearer {bound_token}"}
+
+    called = {"count": 0}
+    await _assert_bound_token_403(env, skill_id, auth_headers, called)
+
+    # Assign the skill; the same token must now pass the assignment gate.
+    await skills.assign_skill("alpha", skill_id, None)
+    called["count"] = 0
+    from tinyagentos.routes.skill_exec import SKILL_IMPLEMENTATIONS
+
+    original_impl = SKILL_IMPLEMENTATIONS[skill_id]
+    wrapper = _tracking_impl(skill_id, original_impl, called)
+    with patch.dict(SKILL_IMPLEMENTATIONS, {skill_id: wrapper}):
+        resp = await env.post(
+            f"/api/skill-exec/{skill_id}/call",
+            headers=auth_headers,
+            json={"args": {}},
+        )
+        assert resp.status_code != 403 or "forbidden: skill not assigned to agent" not in resp.text, \
+            f"Expected not 403 for assignment, got {resp.status_code}: {resp.text}"
+
+
+@pytest.mark.asyncio
+async def test_bound_local_token_assigned_skill_allowed(env):
+    """With the skill assigned to alpha, the bound local token reaches impl."""
+    skills = env.app.state.skills
+    skill_id = "file_read"
+    await skills.assign_skill("alpha", skill_id, None)
+
+    bound_token = env.app.state.auth.mint_agent_local_token("alpha")
+    auth_headers = {"Authorization": f"Bearer {bound_token}"}
+
+    called = {"count": 0}
+    from tinyagentos.routes.skill_exec import SKILL_IMPLEMENTATIONS
+
+    original_impl = SKILL_IMPLEMENTATIONS[skill_id]
+    wrapper = _tracking_impl(skill_id, original_impl, called)
+    with patch.dict(SKILL_IMPLEMENTATIONS, {skill_id: wrapper}):
+        resp = await env.post(
+            f"/api/skill-exec/{skill_id}/call",
+            headers=auth_headers,
+            json={"args": {}},
+        )
+        assert resp.status_code != 403 or "forbidden: skill not assigned to agent" not in resp.text, \
+            f"Expected not 403 for assignment, got {resp.status_code}: {resp.text}"
+        assert called["count"] == 1, f"Expected impl to be called once, got {called['count']}"
+
+
+@pytest.mark.asyncio
+async def test_unbound_local_token_not_restricted_by_assignment(env):
+    """The unbound host local token is NOT restricted by skill assignment."""
+    skills = env.app.state.skills
+    skill_id = "file_read"
+    skill = await skills.get_skill(skill_id)
+    assert skill is not None
+    assigned = await skills.get_agent_skills("alpha")
+    assigned_ids = {s["id"] for s in assigned}
+    assert skill_id not in assigned_ids, f"Test setup failed: {skill_id} should not be assigned to alpha"
+
+    host_token = env.app.state.auth.get_local_token()
+    auth_headers = {"Authorization": f"Bearer {host_token}"}
+
+    called = {"count": 0}
+    from tinyagentos.routes.skill_exec import SKILL_IMPLEMENTATIONS
+
+    original_impl = SKILL_IMPLEMENTATIONS[skill_id]
+    wrapper = _tracking_impl(skill_id, original_impl, called)
+    with patch.dict(SKILL_IMPLEMENTATIONS, {skill_id: wrapper}):
+        resp = await env.post(
+            f"/api/skill-exec/{skill_id}/call",
+            headers=auth_headers,
+            json={"args": {}},
+        )
+        assert resp.status_code != 403 or "forbidden: skill not assigned to agent" not in resp.text, \
+            f"Expected not 403 for assignment, got {resp.status_code}: {resp.text}"
+        assert called["count"] == 1, f"Expected impl to be called once, got {called['count']}"

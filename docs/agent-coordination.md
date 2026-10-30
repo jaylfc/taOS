@@ -2406,6 +2406,15 @@ The shared host local token stays unbound: admin/system callers presenting it
 deployed before this change keep the host token until their next redeploy,
 which rotates them onto a bound per-agent token.
 
+A bound token is also fenced by **skill assignment**: `execute_skill` only runs
+a skill that is assigned to the calling agent. This guard applies equally to the
+registry-JWT deployed-agent path (`via == "registry_jwt_deployed_agent"`) and to
+a bound per-agent local token (`via == "local_token"` with
+`request.state.agent_name` set), returning `403 forbidden: skill not assigned to
+agent` before the implementation runs. The UNBOUND host local token (no
+`agent_name`), admin sessions, and `registry_jwt_native_agent` are not
+restricted by assignment -- they can run any implemented skill, as before.
+
 Blast radius: `_resolve_agent_workspace`, `_capture_tool_receipt`,
 `_check_execution_policy`, `execute_notes_list_shared_docs`, and the todo tools
 all key off the same `agent_name` string, so binding it at the credential layer
