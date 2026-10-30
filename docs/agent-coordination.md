@@ -1493,7 +1493,8 @@ Route module `tinyagentos/routes/hub.py`, signed-in users of the box only:
 - `GET /api/hub/chain?after_seq=&limit=` returns this node's own chain page
   (`entries`, `object` is `null` once a tombstone dropped the body), the `head`,
   and every `tombstones` entry after `after_seq` even when the page is truncated,
-  so deletes travel ahead of content. `limit` is 1..500.
+  so deletes travel ahead of content. `limit` is 1..500 and `after_seq` is
+  0..2^63-1 (anything else is a 400).
 - `GET /api/hub/blobs/{sha256}` returns a stored post image. Non-image blobs
   are served as an `application/octet-stream` attachment; every response is
   `nosniff` and sandboxed.
