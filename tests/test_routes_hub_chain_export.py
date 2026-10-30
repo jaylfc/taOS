@@ -83,6 +83,21 @@ class TestChainExport:
         assert (await client.get("/api/hub/chain", params={"limit": 501})).status_code == 400
         assert (await client.get("/api/hub/chain", params={"after_seq": -1})).status_code == 400
 
+    @pytest.mark.asyncio
+    async def test_after_seq_beyond_sqlite_integer_range_is_a_400(self, client):
+        await _post(client, "p")
+        resp = await client.get("/api/hub/chain", params={"after_seq": 2**63})
+        assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_tombstones_respect_after_seq(self, client):
+        gone = await _post(client, "gone")
+        await _post(client, "kept")
+        await client.post(f"/api/hub/posts/{gone['hash']}/delete")
+
+        body = (await client.get("/api/hub/chain", params={"after_seq": 3})).json()
+        assert body["tombstones"] == []
+
 
 class TestBlobRead:
     @pytest.mark.asyncio

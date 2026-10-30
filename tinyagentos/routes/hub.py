@@ -843,6 +843,7 @@ async def delete_post_route(
 
 
 _CHAIN_PAGE_MAX = 500
+_SQLITE_INT_MAX = 2**63 - 1
 _BLOB_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -862,9 +863,11 @@ async def own_chain(
     ``entries`` is truncated, so deletes travel ahead of content. ``head`` is
     the latest chain entry, so a reader knows how far the chain goes.
     """
-    if after_seq < 0 or not 1 <= limit <= _CHAIN_PAGE_MAX:
+    # SQLite integers are signed 64-bit; a larger cursor would raise
+    # OverflowError (a 500) when bound into the query.
+    if not 0 <= after_seq <= _SQLITE_INT_MAX or not 1 <= limit <= _CHAIN_PAGE_MAX:
         return JSONResponse(
-            {"error": f"after_seq must be >= 0 and limit 1..{_CHAIN_PAGE_MAX}"},
+            {"error": f"after_seq must be 0..{_SQLITE_INT_MAX} and limit 1..{_CHAIN_PAGE_MAX}"},
             status_code=400,
         )
     if not identity.exists():
