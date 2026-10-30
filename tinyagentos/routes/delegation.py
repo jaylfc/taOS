@@ -53,18 +53,19 @@ async def _resolve_agent_name(request: Request, ref: str) -> str | None:
     maps ONLY to the config agent whose ``registry_canonical_id`` is that id:
     a registry display name or handle is not unique, and matching it against
     config agent names let any identity whose name collides with another
-    user's agent act as that agent (and read its memory index). Returns None
-    if *ref* does not resolve.
+    user's agent act as that agent (and read its memory index). The canonical
+    id match runs first, so a config agent named like another identity's
+    canonical id cannot claim it. Returns None if *ref* does not resolve.
     """
     if not ref:
         return None
     config = request.app.state.config
-    agent = find_agent(config, ref)
-    if agent is not None:
-        return agent["name"]
     for agent in config.agents:
         if agent.get("registry_canonical_id") == ref:
             return agent["name"]
+    agent = find_agent(config, ref)
+    if agent is not None:
+        return agent["name"]
     return None
 
 

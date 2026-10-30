@@ -57,6 +57,16 @@ class TestResolveAgentName:
         req = _request(registry, [{"name": "alpha"}])
         assert await _resolve_agent_name(req, "alpha") == "alpha"
 
+    async def test_canonical_id_wins_over_a_config_name_spelled_like_it(self, registry):
+        # Bob deploys a config agent whose name is alice's canonical id; the
+        # id must still map to alice's own config agent.
+        alice = await registry.register(framework="hermes", display_name="Alpha Bot", user_id="alice")
+        req = _request(registry, [
+            {"name": alice["canonical_id"]},
+            {"name": "alpha", "registry_canonical_id": alice["canonical_id"]},
+        ])
+        assert await _resolve_agent_name(req, alice["canonical_id"]) == "alpha"
+
 
 class _CapturingHttp:
     def __init__(self):
