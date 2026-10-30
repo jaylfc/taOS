@@ -80,6 +80,31 @@ class TestResolveAgentOwner:
         assert await resolve_agent_owner(req, "delta-bot") == "alice"
         assert await resolve_agent_owner(req, "delta") == "alice"
 
+    async def test_suspended_or_revoked_config_agent_is_nobodys(self, registry):
+        suspended = await registry.register(framework="claude-code", display_name="Eps", user_id="alice")
+        revoked = await registry.register(framework="claude-code", display_name="Zeta", user_id="alice")
+        await registry.set_status(suspended["canonical_id"], "suspended")
+        await registry.revoke(revoked["canonical_id"])
+        req = _request(registry, [
+            {"name": "eps", "registry_canonical_id": suspended["canonical_id"]},
+            {"name": "zeta", "registry_canonical_id": revoked["canonical_id"]},
+        ])
+
+        assert await resolve_agent_owner(req, "eps") is None
+        assert await resolve_agent_owner(req, "zeta") is None
+
+    async def test_slug_does_not_match_a_longer_slug_shaped_like_a_canonical_tail(self, registry):
+        # Bob's display name slugifies to "theta-20260101-120000-x", so his
+        # canonical id starts "theta-20260101-120000-": it must not count as
+        # a row for the bare slug "theta".
+        alice = await registry.register(framework="claude-code", display_name="Theta", user_id="alice")
+        await registry.register(framework="claude-code", display_name="theta 20260101 120000 x", user_id="bob")
+        req = _request(registry, [])
+
+        assert await registry.count_by_slug("theta") == 1
+        assert (await registry.get_by_slug("theta"))["canonical_id"] == alice["canonical_id"]
+        assert await resolve_agent_owner(req, "theta") == "alice"
+
 
 def _add_member_user(app, username: str, password: str) -> str:
     invite = app.state.auth.add_user_invite(username, "admin")
@@ -132,6 +157,11 @@ class TestRoutesUseCanonicalOwner:
     async def test_versions_refuses_the_handle_collider(self, colliding_clients):
         _alice, bob = colliding_clients
         assert (await bob.get("/api/agents/test-agent/versions")).status_code == 403
+
+    async def test_version_diff_and_revert_refuse_the_handle_collider(self, colliding_clients):
+        _alice, bob = colliding_clients
+        assert (await bob.get("/api/agents/test-agent/versions/abc12345/diff")).status_code == 403
+        assert (await bob.post("/api/agents/test-agent/versions/abc12345/revert")).status_code == 403
 
     async def test_github_grants_refuse_the_handle_collider(self, colliding_clients):
         alice, bob = colliding_clients

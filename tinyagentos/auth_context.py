@@ -74,7 +74,8 @@ async def resolve_agent_owner(request: Request, agent_id: str) -> str | None:
     through its ``registry_canonical_id`` and nothing else: its name is a slug
     any user can also mint as a registry display name or handle, so resolving
     the name by slug or handle would authorise that user against somebody
-    else's agent. A config agent with no ``registry_canonical_id`` is nobody's.
+    else's agent. A config agent with no ``registry_canonical_id``, or whose
+    identity is not active, is nobody's.
     A name that is not a config agent resolves by canonical id, then by handle
     (unique among active rows), then by slug only when exactly one active row
     carries it; an ambiguous slug attributes nobody.
@@ -90,6 +91,10 @@ async def resolve_agent_owner(request: Request, agent_id: str) -> str | None:
         if config_agent is not None:
             canonical_id = config_agent.get("registry_canonical_id")
             record = await registry.get(canonical_id) if canonical_id else None
+            # A suspended or revoked identity keeps its config entry and its
+            # secrets; its owner must not keep access through them.
+            if record is not None and record.get("status") != "active":
+                record = None
         else:
             record = await registry.get(agent_id)
             if record is None:
