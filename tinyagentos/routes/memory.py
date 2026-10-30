@@ -397,21 +397,31 @@ async def memory_remember(request: Request, body: RememberRequest):
     if agent is None:
         if not (body.agent or "").strip():
             raise HTTPException(status_code=400, detail="agent is required")
-        agent = body.agent.strip()
-        # For human/admin sessions (not unbound host token), verify agent ownership
+        raw = body.agent.strip()
+        # Resolve the target config agent FIRST, before authorizing, so the
+        # owner check runs against the agent that will actually receive the
+        # write. find_agent matches by config name; fall back to the config
+        # agent whose registry_canonical_id equals the raw value.
+        target = find_agent(request.app.state.config, raw)
+        if target is None:
+            for a in request.app.state.config.agents:
+                if a.get("registry_canonical_id") == raw:
+                    target = a
+                    break
+        # For human/admin sessions (not unbound host token), verify agent
+        # ownership against the resolved target. A config agent with no
+        # registry_canonical_id falls back to raw, which the registry cannot
+        # attribute, so non-admins get 403 (fail closed) while admins pass.
         if getattr(request.state, "via", None) != "local_token":
             user = current_user(request)
-            await require_agent_owner_or_admin(request, user, agent)
-        # Resolve canonical id to config agent name so dbPath uses the config name
-        # instead of a raw canonical id (which the agent would never match for reads)
-        found = find_agent(request.app.state.config, agent)
-        if found is None:
-            # Look for config agent whose registry_canonical_id equals the agent value
-            for a in request.app.state.config.agents:
-                if a.get("registry_canonical_id") == agent:
-                    agent = a["name"]
-                    found = a
-                    break
+            if target is not None:
+                await require_agent_owner_or_admin(
+                    request, user, target.get("registry_canonical_id") or raw
+                )
+            else:
+                await require_agent_owner_or_admin(request, user, raw)
+        # Write with the resolved config agent name when resolved, else raw.
+        agent = target["name"] if target is not None else raw
 
     # Write through shared qmd serve /ingest (same pattern as import_data.py)
     http_client = request.app.state.http_client

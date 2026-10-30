@@ -325,6 +325,148 @@ class TestMemoryRemember:
             assert resp.status_code == 200
             assert resp.json()["stored"] is True
 
+    async def test_non_admin_slug_collision_cannot_write_other_users_config_agent(self, client_with_qmd):
+        """Slug collision: bob owns a registry agent whose slug is `helper`, but a
+        config agent NAMED `helper` points at alice's identity. bob posts
+        agent=helper -> 403 and the /ingest stub is NOT called.
+
+        Before the authorize-target-first fix this returned 200 and wrote into
+        alice's index: the owner check ran on the raw body.agent (bob's registry
+        slug, which bob owns) and only afterwards did find_agent pick alice's
+        config agent named `helper`.
+        """
+        _stub_http(client_with_qmd, {"/ingest": {"status": "ok"}})
+
+        app = client_with_qmd._transport.app
+        await self._init_stores(app)
+
+        auth = app.state.auth
+        alice_record = auth.find_user("admin")
+        alice_uid = alice_record["id"] if alice_record else ""
+
+        # bob is a non-admin user
+        bob_uid = _add_non_admin_user(auth, "bob", "bobpass")
+
+        registry = app.state.agent_registry
+        grants = app.state.agent_grants
+        priv, _pub = app.state.agent_registry_keypair
+        config = app.state.config
+
+        # Alice's registry agent (any slug; its canonical_id is what the config
+        # agent named `helper` will point at). Display name differs from `helper`
+        # so get_by_slug('helper') resolves to bob's row, not alice's.
+        rec_alice = await registry.register(
+            framework="test",
+            display_name="Alice Agent",
+            origin="external-selfjoin",
+            handle="@alice-agent",
+            user_id=alice_uid,
+        )
+        cid_alice = rec_alice["canonical_id"]
+        await registry.set_status(cid_alice, "active")
+        await grants.add_grant(cid_alice, "memory_write", project_id="prj-1")
+
+        # Config agent NAMED `helper` whose registry_canonical_id is alice's id.
+        from tinyagentos.agent_db import find_agent
+        if find_agent(config, "helper") is None:
+            config.agents.append({
+                "name": "helper",
+                "display_name": "Helper Config Agent",
+                "host": "",
+                "qmd_index": "helper",
+                "color": "#888",
+                "registry_canonical_id": cid_alice,
+            })
+
+        # Bob's registry agent, slug `helper` (registered AFTER alice's, so it is
+        # the only row with slug `helper` and get_by_slug('helper') returns bob's).
+        rec_bob = await registry.register(
+            framework="test",
+            display_name="helper",
+            origin="external-selfjoin",
+            handle="@bob-helper",
+            user_id=bob_uid,
+        )
+        cid_bob = rec_bob["canonical_id"]
+        await registry.set_status(cid_bob, "active")
+        await grants.add_grant(cid_bob, "memory_write", project_id="prj-1")
+
+        # Sanity: get_by_slug('helper') resolves to bob's row, not alice's.
+        bob_row = await registry.get_by_slug("helper")
+        assert bob_row is not None, "registry setup could not make get_by_slug('helper') return bob's row"
+        assert bob_row.get("user_id") == bob_uid, (
+            f"get_by_slug('helper') returned {bob_row.get('canonical_id')} "
+            f"(user_id={bob_row.get('user_id')}), expected bob's row"
+        )
+
+        # bob (non-admin) posts agent=helper -> 403, ingest NOT called
+        bob_token = auth.create_session(user_id=bob_uid, long_lived=True)
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"taos_session": bob_token},
+            event_hooks=csrf_event_hooks(),
+        ) as client:
+            resp = await client.post("/api/memory/remember", json={"text": "x", "agent": "helper"})
+            assert resp.status_code == 403, f"expected 403, got {resp.status_code}: {resp.text}"
+            assert app.state.http_client.post.call_args is None, (
+                "ingest was called despite the 403 -- cross-user write would have succeeded"
+            )
+
+    async def test_owner_can_write_own_config_agent_by_name(self, client_with_qmd):
+        """An owner (admin) can write using their config agent's NAME even when it
+        differs from their registry slug -> 200 and dbPath ends with
+        /<config name>/index.sqlite."""
+        _stub_http(client_with_qmd, {"/ingest": {"status": "ok"}})
+
+        app = client_with_qmd._transport.app
+        await self._init_stores(app)
+
+        auth = app.state.auth
+        alice_record = auth.find_user("admin")
+        alice_uid = alice_record["id"] if alice_record else ""
+
+        registry = app.state.agent_registry
+        grants = app.state.agent_grants
+        priv, _pub = app.state.agent_registry_keypair
+        config = app.state.config
+
+        # Alice's registry agent, slug `alice-agent` (differs from the config name).
+        rec_alice = await registry.register(
+            framework="test",
+            display_name="Alice Agent",
+            origin="external-selfjoin",
+            handle="@alice-agent",
+            user_id=alice_uid,
+        )
+        cid_alice = rec_alice["canonical_id"]
+        await registry.set_status(cid_alice, "active")
+        await grants.add_grant(cid_alice, "memory_write", project_id="prj-1")
+
+        # Config agent named `research-2` (differs from registry slug `alice-agent`)
+        # pointing at alice's identity.
+        from tinyagentos.agent_db import find_agent
+        cfg_name = "research-2"
+        if find_agent(config, cfg_name) is None:
+            config.agents.append({
+                "name": cfg_name,
+                "display_name": "Research Agent 2",
+                "host": "",
+                "qmd_index": cfg_name,
+                "color": "#888",
+                "registry_canonical_id": cid_alice,
+            })
+
+        # alice (admin session via the conftest client) posts agent=research-2
+        resp = await client_with_qmd.post("/api/memory/remember", json={"text": "x", "agent": cfg_name})
+        assert resp.status_code == 200, f"expected 200, got {resp.status_code}: {resp.text}"
+        data = resp.json()
+        assert data["stored"] is True
+        assert data["agent"] == cfg_name
+        call_kwargs = app.state.http_client.post.call_args.kwargs
+        db_path = call_kwargs["json"]["dbPath"]
+        assert db_path.endswith(f"/{cfg_name}/index.sqlite"), f"dbPath was {db_path}"
+
     async def test_registry_jwt_canonical_id_mismatch_gets_403(self, client_with_qmd):
         """Registry JWT with display_name matching config agent's name but different canonical_id -> 403; matching identity gets 200."""
         _stub_http(client_with_qmd, {"/ingest": {"status": "ok"}})
