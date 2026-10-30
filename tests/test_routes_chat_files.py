@@ -252,3 +252,98 @@ class TestServeFile:
         r = await client.get("/api/chat/files/image.png")
         assert r.status_code == 200
         assert r.content == binary_data
+
+
+# ---------------------------------------------------------------------------
+# Containment and ownership for attachments/from-path (security sweep)
+# ---------------------------------------------------------------------------
+
+import pytest_asyncio  # noqa: E402
+from httpx import ASGITransport, AsyncClient  # noqa: E402
+from taos_test_csrf import csrf_event_hooks  # noqa: E402
+
+
+class TestFromPathContainment:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("owner", ["..", ".", "..%2f"])
+    async def test_dot_owner_cannot_escape_the_workspaces_root(self, client, owner):
+        data_dir = client._transport.app.state.data_dir
+        (data_dir / "config.yaml").write_text("secret: data-dir file\n")
+        r = await client.post("/api/chat/attachments/from-path", json={
+            "path": f"/workspaces/{owner}/config.yaml",
+            "source": "agent-workspace",
+            "slug": owner,
+        })
+        assert r.status_code == 400
+        assert not any((data_dir / "chat-files").glob("*config.yaml"))
+
+    @pytest.mark.asyncio
+    async def test_dot_owner_cannot_reach_a_nested_data_dir_file(self, client):
+        data_dir = client._transport.app.state.data_dir
+        (data_dir / "secrets.db").write_bytes(b"keys")
+        r = await client.post("/api/chat/attachments/from-path", json={
+            "path": "/workspaces/../secrets.db",
+            "source": "agent-workspace",
+            "slug": "..",
+        })
+        assert r.status_code == 400
+
+
+def _add_member(app, username: str, password: str) -> str:
+    invite = app.state.auth.add_user_invite(username, "admin")
+    app.state.auth.complete_invite(username, invite, username.title(), f"{username}@test.com", password)
+    return app.state.auth.find_user(username)["id"]
+
+
+@pytest_asyncio.fixture
+async def member_client(app, client):
+    """A non-admin member session; agent ``alpha`` belongs to someone else."""
+    bob_uid = _add_member(app, "bob", "bobspass11")
+    registry = app.state.agent_registry
+    if registry._db is None:
+        await registry.init()
+    row = await registry.register(framework="claude-code", display_name="alpha", user_id="someone-else")
+    app.state.config.agents.append({"name": "alpha", "registry_canonical_id": row["canonical_id"]})
+    ws = app.state.data_dir / "agent-workspaces" / "alpha"
+    ws.mkdir(parents=True, exist_ok=True)
+    (ws / "private.md").write_text("not bob's")
+    token = app.state.auth.create_session(user_id=bob_uid, long_lived=True)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test",
+        cookies={"taos_session": token}, event_hooks=csrf_event_hooks(),
+    ) as c:
+        yield c
+    await registry.close()
+
+
+class TestFromPathOwnership:
+    @pytest.mark.asyncio
+    async def test_member_cannot_attach_another_users_agent_file(self, member_client, app):
+        r = await member_client.post("/api/chat/attachments/from-path", json={
+            "path": "/workspaces/alpha/private.md",
+            "source": "agent-workspace",
+            "slug": "alpha",
+        })
+        assert r.status_code == 403
+        assert not any((app.state.data_dir / "chat-files").glob("*private.md"))
+
+    @pytest.mark.asyncio
+    async def test_refused_project_slug_copies_nothing(self, member_client, app, monkeypatch):
+        from fastapi.responses import JSONResponse
+
+        import tinyagentos.routes.chat_files as chat_files_mod
+
+        async def refuse(_request, _slug, _mode):
+            return JSONResponse({"error": "forbidden"}, status_code=403)
+
+        monkeypatch.setattr(chat_files_mod, "_authorize_files_actor", refuse)
+        ws = app.state.data_dir / "agent-workspaces" / "user"
+        ws.mkdir(parents=True, exist_ok=True)
+        (ws / "note.md").write_text("hello")
+        r = await member_client.post("/api/chat/attachments/from-path", json={
+            "path": "/workspaces/user/note.md",
+            "source": "workspace",
+            "slug": "someone-elses-project",
+        })
+        assert r.status_code == 403
+        assert not any((app.state.data_dir / "chat-files").glob("*note.md"))

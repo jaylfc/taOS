@@ -3,17 +3,18 @@ from __future__ import annotations
 import hashlib
 import json
 import mimetypes
-import os
+import re
 import secrets
 import shutil
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, File, Request, UploadFile
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from filelock import FileLock
 
 from tinyagentos.atomic_io import atomic_write_text
+from tinyagentos.auth_context import current_user, require_agent_owner_or_admin
 from tinyagentos.routes.project_files import _authorize_files_actor
 
 router = APIRouter()
@@ -70,6 +71,9 @@ def _unique_project_dest(proj_files_root: Path, original_name: str) -> Path:
         counter += 1
 
 
+_WORKSPACE_OWNER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
 def _resolve_workspace_path(data_dir: Path, source: str, slug: str | None, vfs_path: str) -> Path:
     """Resolve a VFS path like '/workspaces/user/foo.md' to an on-disk
     absolute path under data_dir/agent-workspaces/{slug-or-user}.
@@ -81,6 +85,11 @@ def _resolve_workspace_path(data_dir: Path, source: str, slug: str | None, vfs_p
     if len(parts) < 3 or not parts[2]:
         raise ValueError("path missing slug")
     owner = parts[2]
+    # The owner segment names a directory directly under agent-workspaces/,
+    # so it must be a plain name: "." or ".." would make the root the
+    # workspaces dir or the data dir itself, and every file in it readable.
+    if not _WORKSPACE_OWNER_RE.match(owner) or owner in (".", ".."):
+        raise ValueError("invalid workspace owner")
     if source == "agent-workspace":
         if not slug or slug != owner:
             raise ValueError("slug must match path owner for agent-workspace")
@@ -88,10 +97,11 @@ def _resolve_workspace_path(data_dir: Path, source: str, slug: str | None, vfs_p
         if owner != "user":
             raise ValueError("workspace source requires /workspaces/user/...")
     rel = parts[3] if len(parts) > 3 else ""
-    root = (data_dir / "agent-workspaces" / owner).resolve()
+    base = (data_dir / "agent-workspaces").resolve()
+    root = (base / owner).resolve()
     target = (root / rel).resolve()
-    # Traversal check: target must be inside root.
-    if not str(target).startswith(str(root) + os.sep) and target != root:
+    # Traversal check: root must be a workspace under base, and target inside it.
+    if root == base or not root.is_relative_to(base) or not target.is_relative_to(root):
         raise ValueError("path traversal rejected")
     if not target.exists() or target.is_dir():
         raise ValueError("file not found")
@@ -129,6 +139,19 @@ async def attachment_from_path(body: dict, request: Request):
         src = _resolve_workspace_path(data_dir, source, slug, vfs_path)
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
+    if source == "agent-workspace":
+        # Same rule as the agent workspace routes: the agent's owner, an
+        # admin, or the agent itself (a bound token reaches only its own).
+        bound = getattr(request.state, "agent_name", None)
+        if bound and bound != slug:
+            raise HTTPException(status_code=403, detail="forbidden")
+        await require_agent_owner_or_admin(request, current_user(request), slug)
+    if slug:
+        # Authorize the project write BEFORE copying anything, so a refused
+        # request leaves no copy behind in chat-files/.
+        auth = await _authorize_files_actor(request, slug, "write")
+        if isinstance(auth, JSONResponse):
+            return auth
     if src.stat().st_size > _MAX_ATTACHMENT_BYTES:
         return JSONResponse({"error": "file too large (100 MB max)"}, status_code=413)
     chat_files = data_dir / "chat-files"
@@ -145,9 +168,6 @@ async def attachment_from_path(body: dict, request: Request):
         "source": source,
     }
     if slug:
-        auth = await _authorize_files_actor(request, slug, "write")
-        if isinstance(auth, JSONResponse):
-            return auth
         identity = _file_identity(src)
         registry_path = _registry_path(data_dir)
         lock_path = _registry_lock_path(data_dir)

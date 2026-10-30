@@ -193,6 +193,12 @@ member row goes with it. `expires_at` is still never populated - a grant is
 revoked, not time-boxed - though an expired value is already refused at check
 time.
 
+**`POST /api/chat/attachments/from-path` is contained and owner-checked.** The
+`/workspaces/<owner>/...` owner segment must be a plain name under
+`agent-workspaces/` (no `.` or `..`), an `agent-workspace` source needs the
+agent's owner, an admin, or that agent's own bound token, and a project `slug`
+is authorized before any file is copied.
+
 **`assign-agent`'s scope list is authoritative, not a delta.** It returns 200
 with `granted_scopes` echoing the request and, since taOS #2148, reconciles the
 registry grants bound to that project to exactly the list you pass: a grant on
