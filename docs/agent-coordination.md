@@ -195,7 +195,8 @@ time.
 
 **Path segments from requests are contained.** `POST /api/memory/catalog/index`
 accepts only real `YYYY-MM-DD` values for `date`, `start_date` and `end_date`
-(the pipeline joins the date's parts into archive and session paths), and the
+(the pipeline joins the date's parts into archive and session paths); an empty
+or omitted `date` still indexes yesterday. The
 legacy `GET /api/agents/{name}/files` refuses a `name` that resolves outside
 `workspaces/`.
 

@@ -256,6 +256,19 @@ class TestCatalogIndexDateValidation:
         assert resp.status_code == 400
 
     @pytest.mark.asyncio
+    async def test_malformed_end_date_is_refused(self, client):
+        resp = await client.post(
+            "/api/memory/catalog/index",
+            json={"start_date": "2026-01-01", "end_date": "../../x-y-z"},
+        )
+        assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_date_with_trailing_newline_is_refused(self, client):
+        resp = await client.post("/api/memory/catalog/index", json={"date": "2026-01-01\n"})
+        assert resp.status_code == 400
+
+    @pytest.mark.asyncio
     async def test_real_date_still_indexes(self, client):
         resp = await client.post("/api/memory/catalog/index", json={"date": "2026-01-01"})
         assert resp.status_code == 200

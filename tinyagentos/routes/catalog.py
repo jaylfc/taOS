@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["catalog"])
 
-_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
 
 def _is_calendar_date(value) -> bool:
@@ -25,7 +25,7 @@ def _is_calendar_date(value) -> bool:
     session paths (taosmd ``SessionCatalog.split_day``), so a value such as
     ``../../x/y-z-w`` would read and write outside the data dir.
     """
-    if not isinstance(value, str) or not _DATE_RE.match(value):
+    if not isinstance(value, str) or not _DATE_RE.fullmatch(value):
         return False
     try:
         datetime.strptime(value, "%Y-%m-%d")

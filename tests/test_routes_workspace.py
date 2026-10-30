@@ -20,12 +20,27 @@ class TestLegacyAgentFilesContainment:
     """GET /api/agents/{name}/files must not list anything outside workspaces/."""
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("name", ["..", "%2e%2e", "..%2F.."])
-    async def test_dot_names_do_not_list_the_data_dir(self, client, name):
+    async def test_dot_name_does_not_list_the_data_dir(self, client):
+        # httpx normalises a bare ".." and the router refuses "..%2F..", so
+        # the encoded form is the one that reaches the containment check.
         data_dir = client._transport.app.state.config_path.parent
         (data_dir / "workspaces").mkdir(exist_ok=True)
-        resp = await client.get(f"/api/agents/{name}/files")
-        assert resp.status_code in (400, 404)
+        resp = await client.get("/api/agents/%2e%2e/files")
+        assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_escaping_symlink_is_refused(self, client, tmp_path):
+        data_dir = client._transport.app.state.config_path.parent
+        (data_dir / "workspaces").mkdir(exist_ok=True)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "secret.txt").write_text("secret")
+        try:
+            (data_dir / "workspaces" / "escape").symlink_to(outside, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks not supported in this environment")
+        resp = await client.get("/api/agents/escape/files")
+        assert resp.status_code == 400
 
     @pytest.mark.asyncio
     async def test_real_agent_workspace_still_lists(self, client):
