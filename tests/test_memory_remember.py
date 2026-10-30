@@ -796,3 +796,164 @@ class TestMemoryRemember:
             call_kwargs = app.state.http_client.post.call_args.kwargs
             db_path = call_kwargs["json"]["dbPath"]
             assert db_path.endswith(f"/{cfg_name}/index.sqlite"), f"dbPath was {db_path}"
+
+    async def test_registry_jwt_resolves_by_canonical_id_not_display_name(self, client_with_qmd):
+        """Registry JWT caller with display_name 'Research 2' but config agent name
+        'research-agent' with matching registry_canonical_id -> 200 and dbPath ends
+        with 'research-agent/index.sqlite'. Mirrors test_agent_token_with_memory_write_omitted_agent_works
+        but with mismatched display_name vs config name.
+        """
+        _stub_http(client_with_qmd, {
+            "/ingest": {"status": "ok"},
+        })
+
+        app = client_with_qmd._transport.app
+        await self._init_stores(app)
+
+        registry = app.state.agent_registry
+        grants = app.state.agent_grants
+        priv, _pub = app.state.agent_registry_keypair
+        config = app.state.config
+
+        # Register registry agent with display_name 'Research 2' and handle '@research-2'
+        rec = await registry.register(
+            framework="test",
+            display_name="Research 2",
+            origin="external-selfjoin",
+            handle="@research-2",
+        )
+        cid = rec["canonical_id"]
+        await registry.set_status(cid, "active")
+        await grants.add_grant(cid, "memory_write", project_id="prj-1")
+
+        # Add config agent with DIFFERENT name 'research-agent' but SAME registry_canonical_id
+        from tinyagentos.agent_db import find_agent
+        if find_agent(config, "research-agent") is None:
+            config.agents.append({
+                "name": "research-agent",
+                "display_name": "Research Agent",
+                "host": "",
+                "qmd_index": "research-agent",
+                "color": "#888",
+                "registry_canonical_id": cid,
+            })
+
+        token = mint_registry_token(cid, priv, user_id="u", framework="test", project_id="prj-1")
+
+        async with _make_client_with_token(app, token) as client:
+            resp = await client.post("/api/memory/remember", json={"text": "test memory"})
+            assert resp.status_code == 200, f"expected 200, got {resp.status_code}: {resp.text}"
+            data = resp.json()
+            assert data["stored"] is True
+            assert data["agent"] == "research-agent"
+            call_kwargs = app.state.http_client.post.call_args.kwargs
+            db_path = call_kwargs["json"]["dbPath"]
+            assert db_path.endswith("/research-agent/index.sqlite"), f"dbPath was {db_path}"
+
+    async def test_registry_jwt_explicit_agent_config_name_works(self, client_with_qmd):
+        """Registry JWT caller with body.agent='research-agent' (config name) and
+        matching registry_canonical_id -> 200.
+        """
+        _stub_http(client_with_qmd, {
+            "/ingest": {"status": "ok"},
+        })
+
+        app = client_with_qmd._transport.app
+        await self._init_stores(app)
+
+        registry = app.state.agent_registry
+        grants = app.state.agent_grants
+        priv, _pub = app.state.agent_registry_keypair
+        config = app.state.config
+
+        # Register registry agent with display_name 'Research 2'
+        rec = await registry.register(
+            framework="test",
+            display_name="Research 2",
+            origin="external-selfjoin",
+            handle="@research-2",
+        )
+        cid = rec["canonical_id"]
+        await registry.set_status(cid, "active")
+        await grants.add_grant(cid, "memory_write", project_id="prj-1")
+
+        # Add config agent with name 'research-agent' and same registry_canonical_id
+        from tinyagentos.agent_db import find_agent
+        if find_agent(config, "research-agent") is None:
+            config.agents.append({
+                "name": "research-agent",
+                "display_name": "Research Agent",
+                "host": "",
+                "qmd_index": "research-agent",
+                "color": "#888",
+                "registry_canonical_id": cid,
+            })
+
+        token = mint_registry_token(cid, priv, user_id="u", framework="test", project_id="prj-1")
+
+        async with _make_client_with_token(app, token) as client:
+            resp = await client.post("/api/memory/remember", json={"text": "test memory", "agent": "research-agent"})
+            assert resp.status_code == 200, f"expected 200, got {resp.status_code}: {resp.text}"
+            data = resp.json()
+            assert data["stored"] is True
+            assert data["agent"] == "research-agent"
+            call_kwargs = app.state.http_client.post.call_args.kwargs
+            db_path = call_kwargs["json"]["dbPath"]
+            assert db_path.endswith("/research-agent/index.sqlite"), f"dbPath was {db_path}"
+
+    async def test_agent_db_path_oserror_returns_502(self, client_with_qmd, monkeypatch):
+        """_agent_db_path raising OSError -> 502 with stored:false."""
+        _stub_http(client_with_qmd, {
+            "/ingest": {"status": "ok"},
+        })
+
+        app = client_with_qmd._transport.app
+        await self._init_stores(app)
+
+        registry = app.state.agent_registry
+        grants = app.state.agent_grants
+        priv, _pub = app.state.agent_registry_keypair
+
+        rec = await registry.register(
+            framework="test",
+            display_name="Test Agent",
+            origin="external-selfjoin",
+            handle="@test-agent-oserror",
+        )
+        cid = rec["canonical_id"]
+        await registry.set_status(cid, "active")
+        await grants.add_grant(cid, "memory_write", project_id="prj-1")
+
+        # Add config agent
+        config = app.state.config
+        from tinyagentos.agent_db import find_agent
+        if find_agent(config, "test-agent-oserror") is None:
+            config.agents.append({
+                "name": "test-agent-oserror",
+                "display_name": "Test Agent",
+                "host": "",
+                "qmd_index": "test-agent-oserror",
+                "color": "#888",
+                "registry_canonical_id": cid,
+            })
+
+        token = mint_registry_token(cid, priv, user_id="u", framework="test", project_id="prj-1")
+
+        # Monkeypatch _agent_db_path to raise OSError
+        from tinyagentos.routes import memory as memory_module
+        original_agent_db_path = memory_module._agent_db_path
+
+        def failing_agent_db_path(request, agent):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(memory_module, "_agent_db_path", failing_agent_db_path)
+
+        async with _make_client_with_token(app, token) as client:
+            resp = await client.post("/api/memory/remember", json={"text": "test memory"})
+            assert resp.status_code == 502, f"expected 502, got {resp.status_code}: {resp.text}"
+            data = resp.json()
+            assert data["stored"] is False
+            assert "disk full" in data["error"]
+
+        # Restore
+        monkeypatch.setattr(memory_module, "_agent_db_path", original_agent_db_path)

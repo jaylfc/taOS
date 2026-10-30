@@ -379,8 +379,18 @@ async def memory_remember(request: Request, body: RememberRequest):
         # b) Registry JWT path
         agent_canonical_id = await check_agent_scope(request, "memory_write")
         if agent_canonical_id is not None:
-            # Resolve canonical_id to config agent name (same as memory_search)
-            agent_config_name = await _resolve_agent_name(request, agent_canonical_id) or agent_canonical_id
+            # FIRST: look for config agent whose registry_canonical_id matches the caller's
+            # canonical_id (same idiom as branch c already uses). This handles the case where
+            # the config agent's name differs from the registry display_name/handle slug.
+            agent_config_name = None
+            for a in request.app.state.config.agents:
+                if a.get("registry_canonical_id") == agent_canonical_id:
+                    agent_config_name = a["name"]
+                    break
+            # FALLBACK: if no config agent with matching registry_canonical_id, use the
+            # existing _resolve_agent_name logic (maps by display_name/handle slug).
+            if agent_config_name is None:
+                agent_config_name = await _resolve_agent_name(request, agent_canonical_id) or agent_canonical_id
             if body.agent is not None and body.agent != agent_config_name:
                 raise HTTPException(status_code=403, detail="Agent can only write its own memory")
             # Verify the config agent's registry_canonical_id matches the caller's canonical_id
@@ -433,12 +443,20 @@ async def memory_remember(request: Request, body: RememberRequest):
     # Write through shared qmd serve /ingest (same pattern as import_data.py)
     http_client = request.app.state.http_client
     timestamp = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    # Compute dbPath inside a try that catches OSError (e.g. disk full, permission
+    # denied). _agent_db_path raises HTTPException for invalid agent names (400)
+    # which must still propagate; only OSError is caught here and mapped to 502.
+    try:
+        db_path = _agent_db_path(request, agent)
+    except OSError as exc:
+        logger.warning("agent db path error: %s", exc)
+        return JSONResponse({"stored": False, "error": str(exc)}, status_code=502)
     payload = {
         "body": body.text,
         "path": f"remember/{timestamp}.md",
         "title": body.title or "remembered",
         "collection": "remember",
-        "dbPath": _agent_db_path(request, agent),
+        "dbPath": db_path,
     }
     try:
         resp = await http_client.post(
