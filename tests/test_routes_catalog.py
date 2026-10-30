@@ -215,3 +215,47 @@ class TestCatalogValidationAndErrors:
 # POST /api/memory/catalog/index and POST /api/memory/catalog/rebuild are
 # skipped: they create a CatalogPipeline that depends on archive files and
 # potentially an LLM service, which are not available in the test fixture.
+
+
+class TestCatalogIndexDateValidation:
+    """POST /api/memory/catalog/index joins the date's parts into archive and
+    session paths (taosmd SessionCatalog.split_day), so anything but a real
+    YYYY-MM-DD must be refused before the pipeline runs."""
+
+    @pytest.mark.asyncio
+    async def test_traversal_date_is_refused_and_touches_nothing_outside(self, client):
+        data_dir = client._transport.app.state.data_dir
+        (data_dir / "archive").mkdir(parents=True, exist_ok=True)
+        outside = data_dir.parent / f"{data_dir.name}-outside"
+        target = outside / "sec" / "logs"
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "t.jsonl").write_text('{"role": "user", "content": "top secret line"}\n')
+
+        rel = f"../../{outside.name}/sec-logs-t"
+        resp = await client.post("/api/memory/catalog/index", json={"date": rel, "force": True})
+
+        assert resp.status_code == 400
+        assert not (target / "t").exists(), "session files were written outside sessions/"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad", ["2026-13-01", "2026-1-1", "/etc/x-y-z", "2026-01-01/..", ""])
+    async def test_malformed_dates_are_refused(self, client, bad):
+        resp = await client.post("/api/memory/catalog/index", json={"date": bad, "force": True})
+        # An empty date means "yesterday"; everything else must be a real date.
+        if bad == "":
+            assert resp.status_code == 200
+        else:
+            assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_malformed_range_is_refused(self, client):
+        resp = await client.post(
+            "/api/memory/catalog/index",
+            json={"start_date": "../../x-y-z", "end_date": "2026-01-02"},
+        )
+        assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_real_date_still_indexes(self, client):
+        resp = await client.post("/api/memory/catalog/index", json={"date": "2026-01-01"})
+        assert resp.status_code == 200

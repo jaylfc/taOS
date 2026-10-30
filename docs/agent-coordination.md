@@ -193,6 +193,12 @@ member row goes with it. `expires_at` is still never populated - a grant is
 revoked, not time-boxed - though an expired value is already refused at check
 time.
 
+**Path segments from requests are contained.** `POST /api/memory/catalog/index`
+accepts only real `YYYY-MM-DD` values for `date`, `start_date` and `end_date`
+(the pipeline joins the date's parts into archive and session paths), and the
+legacy `GET /api/agents/{name}/files` refuses a `name` that resolves outside
+`workspaces/`.
+
 **`assign-agent`'s scope list is authoritative, not a delta.** It returns 200
 with `granted_scopes` echoing the request and, since taOS #2148, reconciles the
 registry grants bound to that project to exactly the list you pass: a grant on

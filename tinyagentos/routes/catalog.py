@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import logging
+import re
+from datetime import datetime
+
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
@@ -11,6 +14,24 @@ from taosmd import SessionCatalog, CatalogPipeline
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["catalog"])
+
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _is_calendar_date(value) -> bool:
+    """True only for a real ``YYYY-MM-DD`` date.
+
+    The pipeline splits the date on ``-`` and joins the parts into archive and
+    session paths (taosmd ``SessionCatalog.split_day``), so a value such as
+    ``../../x/y-z-w`` would read and write outside the data dir.
+    """
+    if not isinstance(value, str) or not _DATE_RE.match(value):
+        return False
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        return False
+    return True
 
 
 async def _get_catalog(request: Request) -> SessionCatalog:
@@ -90,6 +111,9 @@ async def catalog_index(request: Request):
     start_date = body.get("start_date")
     end_date = body.get("end_date")
     force = body.get("force", False)
+    for value in (date, start_date, end_date):
+        if value and not _is_calendar_date(value):
+            return JSONResponse({"error": "dates must be YYYY-MM-DD"}, status_code=400)
 
     from pathlib import Path
     data_dir = getattr(request.app.state, "data_dir", Path("data"))
