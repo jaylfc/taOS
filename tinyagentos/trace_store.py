@@ -315,6 +315,10 @@ def _fts_phrase_query(query: str) -> str:
     return " ".join(escaped)
 
 
+class TraceWriteError(RuntimeError):
+    """Raised when strict=True and both SQLite and JSONL writes fail."""
+
+
 class AgentTraceStore:
     """One agent's trace store -- manages hourly bucket DBs + JSONL fallback."""
 
@@ -409,12 +413,16 @@ class AgentTraceStore:
                     pass
             self._connections.clear()
 
-    async def record(self, kind: str, **fields) -> dict:
+    async def record(self, kind: str, *, strict: bool = False, **fields) -> dict:
         """Record an event. Returns the written envelope (with id/created_at
         filled). On SQLite failure, falls back to JSONL in the same bucket.
 
         Caller can supply ``id`` for idempotency; if omitted, a fresh uuid
-        is minted. Unknown kinds raise ValueError -- catch in the route."""
+        is minted. Unknown kinds raise ValueError -- catch in the route.
+
+        If ``strict`` is True and both the SQLite and JSONL writes fail,
+        ``TraceWriteError`` is raised.
+        """
         envelope = _build_envelope(self._slug, kind, fields)
         bucket = _bucket_key(envelope["created_at"])
         async with self._lock:
@@ -434,7 +442,9 @@ class AgentTraceStore:
                     "trace_store: DB write failed for %s/%s -- appending to JSONL (%s)",
                     self._slug, bucket, exc,
                 )
-                self._append_fallback(bucket, envelope)
+                fallback_ok = self._append_fallback(bucket, envelope)
+                if strict and not fallback_ok:
+                    raise TraceWriteError("both SQLite and JSONL writes failed")
             # Opportunistic eviction -- cheap, runs under our lock.
             now_bucket = _bucket_key(time.time())
             await self._evict_old_buckets(now_bucket)
@@ -724,17 +734,19 @@ class AgentTraceStore:
                 self._slug, bucket, exc,
             )
 
-    def _append_fallback(self, bucket: str, envelope: dict) -> None:
+    def _append_fallback(self, bucket: str, envelope: dict) -> bool:
         try:
             path = _bucket_jsonl_path(self._data_dir, self._slug, bucket)
             path.parent.mkdir(parents=True, exist_ok=True)
             with open(path, "a") as f:
                 f.write(json.dumps(envelope, default=str) + "\n")
+            return True
         except Exception as exc:  # noqa: BLE001
             logger.error(
                 "trace_store: FALLBACK WRITE FAILED for %s/%s: %s -- EVENT LOST",
                 self._slug, bucket, exc,
             )
+            return False
 
     async def list(
         self,
