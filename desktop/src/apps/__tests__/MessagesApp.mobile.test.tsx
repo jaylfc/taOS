@@ -55,24 +55,20 @@ vi.mock("../chat/MessageList", () => ({
   MessageList: () => <div data-testid="message-list" />,
 }));
 
-vi.mock("../chat/MessageInput", async () => {
-  const actual = await vi.importActual<typeof import("../chat/MessageInput")>("../chat/MessageInput");
-  return {
-    ...actual,
-    MessageInput: ({ onToggleSearch }: { onToggleSearch?: () => void }) => (
-      <div data-testid="message-input">
-        <button type="button" onClick={onToggleSearch}>mock-search</button>
-      </div>
-    ),
-  };
-});
+vi.mock("../chat/MessageInput", () => ({
+  MessageInput: ({ onToggleSearch }: { onToggleSearch?: () => void }) => (
+    <div data-testid="message-input">
+      <button type="button" onClick={onToggleSearch}>mock-search</button>
+    </div>
+  ),
+}));
 
 // Surface the listTitle so the test can verify the production code actually
 // routed through this component (vs a desktop-branch element wearing the
 // same testid).
 vi.mock("@/components/mobile/MobileSplitView", () => ({
-  MobileSplitView: ({ listTitle, list, detail }: { listTitle?: string; list?: React.ReactNode; detail?: React.ReactNode }) => (
-    <div data-testid="mobile-split-view" data-list-title={listTitle}>
+  MobileSplitView: ({ listTitle, list, detail, hideDetailNav }: { listTitle?: string; list?: React.ReactNode; detail?: React.ReactNode; hideDetailNav?: boolean }) => (
+    <div data-testid="mobile-split-view" data-list-title={listTitle} data-hide-detail-nav={String(!!hideDetailNav)}>
       <div data-testid="msv-list">{list}</div>
       <div data-testid="msv-detail">{detail}</div>
     </div>
@@ -188,6 +184,7 @@ describe("MessagesApp mobile thread header", () => {
   async function openGroup() {
     render(<MessagesApp windowId="test" />);
     await waitFor(() => expect(screen.getByRole("button", { name: "open-group" })).toBeInTheDocument());
+    expect(screen.getByTestId("mobile-split-view")).toHaveAttribute("data-hide-detail-nav", "false");
     fireEvent.click(screen.getByRole("button", { name: "open-group" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Back to chats" })).toBeInTheDocument());
   }
@@ -200,6 +197,8 @@ describe("MessagesApp mobile thread header", () => {
     // The old text-link back row ("< Messages") is not rendered.
     expect(screen.queryByRole("button", { name: /^Back to Messages$/ })).not.toBeInTheDocument();
     expect(screen.getAllByRole("banner")).toHaveLength(1);
+    // The split view's own detail nav bar (the "< Messages" row) is suppressed.
+    expect(screen.getByTestId("mobile-split-view")).toHaveAttribute("data-hide-detail-nav", "true");
   });
 
   it("wires the composer search action to the search panel", async () => {

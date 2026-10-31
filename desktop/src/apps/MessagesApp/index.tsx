@@ -49,7 +49,8 @@ import { type PinnedMessage } from "../chat/PinnedMessagesPopover";
 import { AllThreadsList } from "../chat/AllThreadsList";
 import { ChannelSwitcher } from "../chat/ChannelSwitcher";
 import { useChatNotifications } from "../chat/useChatNotifications";
-import { MessageInput, describeChannelParty } from "../chat/MessageInput";
+import { MessageInput } from "../chat/MessageInput";
+import { describeChannelParty } from "../chat/channel-party";
 import { MessageList, type MessageListHandle } from "../chat/MessageList";
 import {
   pinMessage, unpinMessage, listPins,
