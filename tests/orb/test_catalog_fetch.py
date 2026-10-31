@@ -15,6 +15,7 @@ from tinyagentos.orb.catalog_sig import (
     CatalogSignatureInvalid,
     CatalogSignatureMissing,
 )
+from tinyagentos.orb.frames import OrbError
 
 
 @pytest.fixture
@@ -499,3 +500,120 @@ def test_load_cached_catalog_oversize_rejected(tmp_path, keys_dict, monkeypatch)
 
     with pytest.raises(CatalogFetchError, match="cached catalog exceeds cap"):
         catalog_fetch.load_cached_catalog(cache_dir, state_path, keys=keys_dict)
+
+
+@pytest.mark.asyncio
+async def test_fetch_catalog_desktop_kind_rejected(tmp_path, test_key, keys_dict):
+    """A signed desktop-apps catalog must be rejected before serial is recorded."""
+    private_key, _, key_id = test_key
+    catalog = {"serial": 5, "kind": "orb-desktop-apps", "apps": []}
+    catalog_bytes = json.dumps(catalog).encode("utf-8")
+    sig_bytes = sign_catalog(private_key, catalog_bytes)
+
+    cache_dir = tmp_path / "cache"
+    state_path = tmp_path / "state.json"
+
+    def handler(request: httpx.Request):
+        if request.url.path.endswith("/catalog.json.sig"):
+            return httpx.Response(200, content=sig_bytes)
+        if request.url.path.endswith("/catalog.json"):
+            return httpx.Response(200, content=catalog_bytes)
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+    from tinyagentos.orb import catalog_fetch
+
+    with pytest.raises(OrbError) as exc:
+        await catalog_fetch.fetch_catalog(
+            "https://example.com/", cache_dir, state_path, keys=keys_dict, transport=transport
+        )
+    assert "kind" in str(exc.value).lower()
+    assert "orb-desktop-apps" in str(exc.value)
+    # state file must not be created
+    assert not state_path.exists()
+    # cache must not be written
+    assert not (cache_dir / "catalog.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_fetch_catalog_firmware_kind_accepted(tmp_path, test_key, keys_dict):
+    """A catalog with kind orb-firmware is accepted like one with no kind."""
+    private_key, _, key_id = test_key
+    catalog = {"serial": 5, "kind": "orb-firmware", "apps": [{"id": "app1", "name": "App1", "versions": []}]}
+    catalog_bytes = json.dumps(catalog).encode("utf-8")
+    sig_bytes = sign_catalog(private_key, catalog_bytes)
+
+    cache_dir = tmp_path / "cache"
+    state_path = tmp_path / "state.json"
+
+    def handler(request: httpx.Request):
+        if request.url.path.endswith("/catalog.json.sig"):
+            return httpx.Response(200, content=sig_bytes)
+        if request.url.path.endswith("/catalog.json"):
+            return httpx.Response(200, content=catalog_bytes)
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+    from tinyagentos.orb import catalog_fetch
+
+    result = await catalog_fetch.fetch_catalog(
+        "https://example.com/", cache_dir, state_path, keys=keys_dict, transport=transport
+    )
+    assert "app1" in result.apps
+    assert state_path.exists()
+    assert (cache_dir / "catalog.json").read_bytes() == catalog_bytes
+
+
+@pytest.mark.asyncio
+async def test_fetch_catalog_no_kind_accepted(tmp_path, test_key, keys_dict):
+    """A catalog with no kind field is accepted (backward compatible)."""
+    private_key, _, key_id = test_key
+    catalog = {"serial": 5, "apps": [{"id": "app1", "name": "App1", "versions": []}]}
+    catalog_bytes = json.dumps(catalog).encode("utf-8")
+    sig_bytes = sign_catalog(private_key, catalog_bytes)
+
+    cache_dir = tmp_path / "cache"
+    state_path = tmp_path / "state.json"
+
+    def handler(request: httpx.Request):
+        if request.url.path.endswith("/catalog.json.sig"):
+            return httpx.Response(200, content=sig_bytes)
+        if request.url.path.endswith("/catalog.json"):
+            return httpx.Response(200, content=catalog_bytes)
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+    from tinyagentos.orb import catalog_fetch
+
+    result = await catalog_fetch.fetch_catalog(
+        "https://example.com/", cache_dir, state_path, keys=keys_dict, transport=transport
+    )
+    assert "app1" in result.apps
+    assert state_path.exists()
+    assert (cache_dir / "catalog.json").read_bytes() == catalog_bytes
+
+
+def test_load_cached_catalog_desktop_kind_rejected(tmp_path, test_key, keys_dict):
+    """A cached desktop-kind catalog must be rejected, state unchanged."""
+    private_key, _, _ = test_key
+    catalog = {"serial": 8, "kind": "orb-desktop-apps", "apps": [{"id": "app1"}]}
+    catalog_bytes = json.dumps(catalog).encode("utf-8")
+    sig_bytes = sign_catalog(private_key, catalog_bytes)
+
+    cache_dir = tmp_path / "cache"
+    state_path = tmp_path / "state.json"
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "catalog.json").write_bytes(catalog_bytes)
+    (cache_dir / "catalog.json.sig").write_bytes(sig_bytes)
+    from tinyagentos.orb import catalog_sig
+    import hashlib
+    catalog_sig.record_serial(state_path, 8, hashlib.sha256(catalog_bytes).hexdigest())
+
+    from tinyagentos.orb import catalog_fetch
+    with pytest.raises(OrbError) as exc:
+        catalog_fetch.load_cached_catalog(cache_dir, state_path, keys=keys_dict)
+    assert "kind" in str(exc.value).lower()
+    assert "orb-desktop-apps" in str(exc.value)
+    # state must be unchanged (serial still 8)
+    state_text = state_path.read_text()
+    assert '"serial": 8' in state_text

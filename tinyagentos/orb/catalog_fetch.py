@@ -13,6 +13,7 @@ from tinyagentos.orb.catalog_sig import (
     CatalogSignatureInvalid,
     CatalogKeyUnknown,
     accept_catalog,
+    verify_catalog,
 )
 
 CATALOG_MAX_BYTES = 1 << 20
@@ -65,6 +66,9 @@ async def fetch_catalog(base_url: str, cache_dir, state_path, keys=None, timeout
     # accept_catalog records the serial before the cache is written. If the
     # write then fails, state is ahead of the cache and load_cached_catalog
     # refuses the older cache as a regression: fails closed, refetch recovers.
+    # Refuse a replayed non-firmware document before it can move the serial.
+    doc = verify_catalog(catalog_bytes, sig_bytes, keys)
+    catalog.check_firmware_kind(doc)
     return await asyncio.to_thread(
         _accept_and_cache, catalog_bytes, sig_bytes, state_path, keys, cache_dir
     )
@@ -107,5 +111,8 @@ def load_cached_catalog(cache_dir, state_path, keys=None):
         if len(sig_bytes) == 0:
             sig_bytes = None
 
+    # Refuse a replayed non-firmware document before it can move the serial.
+    doc = verify_catalog(catalog_bytes, sig_bytes, keys)
+    catalog.check_firmware_kind(doc)
     accept_catalog(catalog_bytes, sig_bytes, state_path, keys)
     return catalog.load_catalog(str(catalog_path))

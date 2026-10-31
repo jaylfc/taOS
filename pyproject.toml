@@ -80,6 +80,8 @@ dependencies = [
     # relicence or CVE reached users without tripping any gate. Declared here so
     # it goes through the lockfile like everything else.
     "yt-dlp>=2025.1.15",
+    # needed by the hardware Wi-Fi connect route (PSK over the system bus in-process, never on a busctl argv).
+    "dbus-fast>=5.0.22; sys_platform == 'linux'",
     "pypdf>=6.17",
 ]
 

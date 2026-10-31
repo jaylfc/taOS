@@ -14,6 +14,8 @@
 # Environment overrides:
 #   TAOS_RKLLAMACPP_DIR     install dir (default: ~<user>/rk-llama.cpp)
 #   TAOS_RKLLAMACPP_PORT    server port (default: 8090)
+#   TAOS_RKLLAMACPP_HOST    server bind host (default: 127.0.0.1)
+#   TAOS_RKLLAMACPP_CTX     llama-server context size (default: 12288)
 #   TAOS_MIRROR_BASE        binary mirror base URL
 #   TAOS_RKLLAMACPP_SHA256  override the expected tarball checksum (advanced)
 # ---------------------------------------------------------------------------
@@ -35,9 +37,13 @@ TARGET_GROUP="$(id -gn "$TARGET_USER")"
 
 INSTALL_DIR="${TAOS_RKLLAMACPP_DIR:-$TARGET_HOME/rk-llama.cpp}"
 PORT="${TAOS_RKLLAMACPP_PORT:-8090}"
+# 12288 is the measured NPU context ceiling on RK3588 kernels without
+# CONFIG_COMPACTION (16384 fragments the buddy allocator); override with
+# TAOS_RKLLAMACPP_CTX.
+CTX="${TAOS_RKLLAMACPP_CTX:-12288}"
 # llama-server's --host bind. Default to loopback so the API isn't
 # exposed to the LAN without explicit opt-in (CodeRabbit on PR #339).
-# Override via TAOS_RKLLAMACPP_HOST=0.0.0.0 to allow LAN access — only
+# Override via TAOS_RKLLAMACPP_HOST=0.0.0.0 to allow LAN access -- only
 # do this if a reverse proxy with auth sits in front, or you trust the
 # entire LAN.
 HOST="${TAOS_RKLLAMACPP_HOST:-127.0.0.1}"
@@ -105,7 +111,11 @@ ALIAS
 
 # -------- systemd unit ---------------------------------------------------
 UNIT_PATH="/etc/systemd/system/rkllamacpp.service"
-log "writing $UNIT_PATH (port $PORT)"
+# Validate CTX is numeric before writing the unit.
+if [[ ! "$CTX" =~ ^[0-9]+$ ]]; then
+    die "TAOS_RKLLAMACPP_CTX must be a positive integer (got: $CTX)"
+fi
+log "writing $UNIT_PATH (port $PORT, ctx $CTX)"
 sudo tee "$UNIT_PATH" > /dev/null << UNIT
 [Unit]
 Description=rk-llama.cpp (llama-server on RK3588 NPU)
@@ -119,7 +129,7 @@ WorkingDirectory=$INSTALL_DIR
 Environment=LD_LIBRARY_PATH=$INSTALL_DIR/lib
 EnvironmentFile=$INSTALL_DIR/active.alias
 LimitNOFILE=65536
-ExecStart=$INSTALL_DIR/bin/llama-server -m $INSTALL_DIR/active.gguf --alias \${TAOS_ACTIVE_ALIAS} --host $HOST --port $PORT
+ExecStart=$INSTALL_DIR/bin/llama-server -m $INSTALL_DIR/active.gguf --alias \${TAOS_ACTIVE_ALIAS} --host $HOST --port $PORT -c $CTX
 Restart=on-failure
 RestartSec=5
 KillMode=mixed
