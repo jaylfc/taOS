@@ -60,21 +60,24 @@ def test_parse_pw_dump_complete():
     json_text = json.dumps([
         {
             "type": "PipeWire:Interface:Node",
+            "id": "sink-1",
             "name": "sink-1",
             "description": "Default Sink",
-            "props": {"media.class": "Audio/Sink"},
+            "info": {"props": {"media.class": "Audio/Sink"}},
         },
         {
             "type": "PipeWire:Interface:Node",
+            "id": "source-1",
             "name": "source-1",
             "description": "Default Source",
-            "props": {"media.class": "Audio/Source"},
+            "info": {"props": {"media.class": "Audio/Source"}},
         },
         {
             "type": "PipeWire:Interface:Node",
+            "id": "video-1",
             "name": "video-1",
             "description": "Video Node",
-            "props": {"media.class": "Audio/Video"},
+            "info": {"props": {"media.class": "Audio/Video"}},
         },
         {
             "type": "PipeWire:Interface:Metadata",
@@ -103,15 +106,17 @@ def test_parse_pw_dump_no_metadata():
     json_text = json.dumps([
         {
             "type": "PipeWire:Interface:Node",
+            "id": "sink-1",
             "name": "sink-1",
             "description": "Default Sink",
-            "props": {"media.class": "Audio/Sink"},
+            "info": {"props": {"media.class": "Audio/Sink"}},
         },
         {
             "type": "PipeWire:Interface:Node",
+            "id": "source-1",
             "name": "source-1",
             "description": "Default Source",
-            "props": {"media.class": "Audio/Source"},
+            "info": {"props": {"media.class": "Audio/Source"}},
         },
     ])
     result = parse_pw_dump(json_text)

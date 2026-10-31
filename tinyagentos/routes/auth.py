@@ -12428,10 +12428,7 @@ async def set_lock_volume(request: Request):
     from tinyagentos.audio_cli import set_volume_argv, run_sync_with_process
 
     env = dict(os.environ, XDG_RUNTIME_DIR="/run/user/%d" % os.getuid())
-    try:
-        run_sync_with_process(set_volume_argv("@DEFAULT_AUDIO_SINK@", percent / 100.0), env["XDG_RUNTIME_DIR"])
-    except Exception:
-        pass
+    run_sync_with_process(set_volume_argv("@DEFAULT_AUDIO_SINK@", percent / 100.0), env["XDG_RUNTIME_DIR"])
     after = _read_volume()
     if after is None:
         return JSONResponse({"error": "no audio"}, status_code=404)

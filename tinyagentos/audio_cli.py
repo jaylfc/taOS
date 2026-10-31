@@ -91,15 +91,16 @@ def parse_pw_dump(json_text: str) -> dict[str, Any]:
         obj_type = obj.get("type")
         if obj_type != "PipeWire:Interface:Node":
             continue
-        props = obj.get("props", {})
+        props = obj.get("info", {}).get("props", {})
         media_class = props.get("media.class", "")
         node_name = obj.get("name", "")
         node_description = obj.get("description", "")
+        node_id = obj.get("id")
 
         if media_class == "Audio/Sink":
-            sinks.append({"id": node_name, "name": node_name, "description": node_description})
+            sinks.append({"id": node_id, "name": node_name, "description": node_description})
         elif media_class == "Audio/Source":
-            sources.append({"id": node_name, "name": node_name, "description": node_description})
+            sources.append({"id": node_id, "name": node_name, "description": node_description})
 
     return {"sinks": sinks, "sources": sources, "default_sink": default_sink, "default_source": default_source}
 
@@ -111,10 +112,7 @@ def set_volume_argv(node: str, volume: float) -> list[str]:
     """
     if not NODE_ID_RE.fullmatch(node) and node != "@DEFAULT_AUDIO_SINK@":
         raise ValueError(f"Invalid node: {node}")
-    if node == "@DEFAULT_AUDIO_SINK@":
-        volume = max(0.0, min(1.5, volume))
-    else:
-        volume = max(0.0, min(1.5, volume))
+    volume = max(0.0, min(1.5, volume))
     return ["wpctl", "set-volume", node, f"{volume:.2f}"]
 
 
@@ -194,6 +192,6 @@ async def run(argv: list[str], runtime_dir: str) -> tuple[int, str | None]:
                 await asyncio.wait_for(proc.communicate(), timeout=1)
             except (ProcessLookupError, asyncio.TimeoutError):
                 pass
-        raise
+        return 130, None  # Process was cancelled
     except Exception:
         return 1, None
