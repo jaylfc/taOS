@@ -333,7 +333,9 @@ async def check_human_identity(request: Request) -> Optional[str]:
     return user_id
 
 
-async def check_agent_identity_claims(request: Request) -> Optional[tuple[str, int]]:
+async def check_agent_identity_claims(
+    request: Request, *, require_active: bool = True
+) -> Optional[tuple[str, int]]:
     """Return (canonical_id, iat) from a valid Bearer registry JWT for an ACTIVE
     agent, without requiring any scope grant.
 
@@ -342,6 +344,14 @@ async def check_agent_identity_claims(request: Request) -> Optional[tuple[str, i
     create flow to store the token's iat so a later token rotation can be detected
     at approve time.
 
+    ``require_active=False`` still verifies the signature, the registry row and
+    the rotation cutoff, but accepts a token for a non-active identity. The
+    consent flow needs that: an identity that is pending or suspended may hold a
+    token minted while it was active, and the approve route compares its
+    canonical_id against the holder's to decide whether the requester owns the
+    identity. Proof of *identity* is not proof of *authority*, so the active
+    gate belongs to the caller's authorization decision, not to this verifier.
+
     Returns None when no Authorization header is present (the caller falls
     through to its own admin/session handling).
 
@@ -349,7 +359,8 @@ async def check_agent_identity_claims(request: Request) -> Optional[tuple[str, i
       401 -- Authorization header present but the token is malformed, has a bad
              signature, is missing the sub claim, or was superseded by a token
              rotation on the identity.
-      403 -- Token is valid but the agent is not active in the registry.
+      403 -- Token is valid but the agent is not active in the registry (only
+             when ``require_active`` is true), or the identity is unknown.
     """
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.lower().startswith("bearer "):
@@ -369,7 +380,9 @@ async def check_agent_identity_claims(request: Request) -> Optional[tuple[str, i
 
     registry = _get_store(request)
     record = await registry.get(canonical_id)
-    if record is None or record.get("status") != "active":
+    if record is None or (
+        require_active and record.get("status") != "active"
+    ):
         raise HTTPException(status_code=403, detail="agent is not active in the registry")
 
     # Reject tokens issued before the identity's token_min_iat cutoff (rotation),
