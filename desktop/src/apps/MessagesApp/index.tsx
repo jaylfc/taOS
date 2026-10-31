@@ -2341,7 +2341,7 @@ export function MessagesApp({
             onCancelEdit={() => { setEditingMessageId(null); setEditError(null); }}
             onSaveEdit={handleSaveEdit}
             editError={editError}
-            onEditAgentReply={(id) => { setEditingMessageId(id); setEditError(null); }}
+            onEditAgentReply={(id) => { setEditingMessageId(id); setEditError(null); setShowEmoji(null); }}
             onToggleReaction={toggleReaction}
             showEmoji={showEmoji}
             onShowEmoji={setShowEmoji}

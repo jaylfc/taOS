@@ -1107,6 +1107,49 @@ describe("MessageList", () => {
       expect(cls).toContain("left-2");
       expect(cls).toContain("right-2");
     });
+
+    it("long-press timer fires after edit starts", () => {
+      const { container, rerender } = renderM(
+        [msg({ id: "a", author_id: "bob", created_at: ts })],
+        {},
+      );
+      // Start a long press
+      fireEvent.pointerDown(row(container, "a"), { clientX: 1, clientY: 1 });
+      act(() => {
+        vi.advanceTimersByTime(200); // Not yet at threshold
+      });
+      // Now editing starts while long press is pending
+      rerender(
+        <MessageList
+          {...defaults({
+            selectedChannel: "ch1",
+            channel: channel(),
+            messages: [msg({ id: "a", author_id: "bob", created_at: ts })],
+            isMobile: true,
+            currentUserId: "u-123",
+            currentUserDisplayName: null,
+            editingMessageId: "a",
+          })}
+        />,
+      );
+      // Advance past the long press threshold
+      act(() => {
+        vi.advanceTimersByTime(600);
+      });
+      // No toolbar should appear because the timer was cleared when editing started
+      expect(screen.queryAllByRole("toolbar")).toHaveLength(0);
+    });
+
+    it("selected row hint says close", () => {
+      const { container } = renderM([msg({ id: "a", author_id: "bob", created_at: ts })]);
+      const r = row(container, "a");
+      fireEvent.pointerDown(r, { clientX: 1, clientY: 1 });
+      act(() => {
+        vi.advanceTimersByTime(460);
+      });
+      const hint = container.querySelector(`#${r.getAttribute("aria-describedby")}`);
+      expect(hint?.textContent).toMatch(/close message actions/i);
+    });
   });
 
   /* ---- pinned messages ---- */
