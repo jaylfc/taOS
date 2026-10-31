@@ -216,6 +216,7 @@ class TestMemoryModeRuntime:
             framework="openclaw",
             model=None,
             data_dir=tmp_path,
+            extra_config={"agent_controller_port": 6972},
         )
 
         async def mock_exec(name, cmd, **kwargs):
@@ -241,6 +242,7 @@ class TestMemoryModeRuntime:
             framework="openclaw",
             model=None,
             data_dir=tmp_path,
+            extra_config={"agent_controller_port": 6972},
             memory_mode="framework",
         )
 
@@ -267,6 +269,7 @@ class TestMemoryModeRuntime:
             framework="openclaw",
             model=None,
             data_dir=tmp_path,
+            extra_config={"agent_controller_port": 6972},
             memory_mode="taosmd",
         )
 
@@ -382,6 +385,7 @@ class TestMemoryModeFrameworkIsolation:
                     framework="openclaw",
                     model=None,
                     data_dir=tmp_path,
+                    extra_config={"agent_controller_port": 6972},
                     memory_mode="framework",
                 )
                 result = await deploy_agent(req)

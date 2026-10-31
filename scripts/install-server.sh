@@ -141,6 +141,44 @@ TAOS_BUS_PORT="${TAOS_BUS_PORT:-7900}"
 SERVICE_MODE="${TAOS_SERVICE:-auto}"
 COW_POOL_MODE="${TAOS_COW_POOL:-auto}"
 
+# Resolve desktop mode: local (boot into taOS desktop) or headless (remote-only).
+# TAOS_DESKTOP=local|headless answers for unattended installs. Default: headless.
+resolve_desktop_mode() {
+    local val="${TAOS_DESKTOP:-}"
+    case "$val" in
+        local)
+            DESKTOP_MODE="local"
+            ;;
+        headless)
+            DESKTOP_MODE="headless"
+            ;;
+        "")
+            # Unset: try to prompt if /dev/tty is available.
+            if { : < /dev/tty; } 2>/dev/null; then
+                printf 'Use this machine with a screen, keyboard and mouse? It will boot into the taOS desktop. [y/N] ' >&2
+                local _ans=""
+                read -r -t 60 _ans < /dev/tty || _ans=""
+                case "${_ans,,}" in
+                    y|yes)
+                        DESKTOP_MODE="local"
+                        ;;
+                    *)
+                        DESKTOP_MODE="headless"
+                        ;;
+                esac
+            else
+                # No controlling tty -> headless, no prompt.
+                DESKTOP_MODE="headless"
+            fi
+            ;;
+        *)
+            # Invalid value: warn and default to headless.
+            warn "TAOS_DESKTOP='$val' is not valid; expected 'local' or 'headless' -- defaulting to headless"
+            DESKTOP_MODE="headless"
+            ;;
+    esac
+    log "local desktop: $DESKTOP_MODE (set TAOS_DESKTOP=local|headless to skip this question)"
+}
 DOCKER_COMPOSE_STATUS="unknown"
 DOCKER_COMPOSE_DETAIL=""
 
@@ -150,6 +188,12 @@ arch="$(uname -m)"
 log()  { printf '\033[1;34m[server-install]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[server-install]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[server-install]\033[0m %s\n' "$*" >&2; exit 1; }
+
+# Curl retry flags: use --retry-all-errors only if supported (curl >= 7.71)
+CURL_RETRY=(--retry 5 --retry-delay 3 --connect-timeout 15 --max-time 60)
+if curl --help all 2>/dev/null | grep -- '--retry-all-errors' >/dev/null; then
+    CURL_RETRY+=(--retry-all-errors)
+fi
 
 log "os=$os_name arch=$arch"
 # Environment banner: every user-posted install log should self-describe the
@@ -177,6 +221,10 @@ while [[ ! -d "$_df_target" && "$_df_target" != "/" ]]; do
 done
 log "disk_free=$(df -Ph "$_df_target" 2>/dev/null | awk 'NR==2 {print $4}' || echo unknown) (at $_df_target)"
 log "install_dir=$INSTALL_DIR branch=$BRANCH port=$TAOS_PORT proxy_port=$TAOS_BROWSER_PROXY_PORT qmd_port=$TAOS_QMD_PORT"
+
+# Ask about local desktop vs headless BEFORE the long install (so the
+# question appears early when run interactively, not at the end).
+resolve_desktop_mode
 
 # --- system dependencies --------------------------------------------------
 
@@ -287,7 +335,7 @@ ensure_node22() {
         _ns_key_tmp="${_ns_key_tmp}.asc"
         # shellcheck disable=SC2064
         trap "rm -f '$_ns_key_tmp'" RETURN
-        curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+        curl -fsSL "${CURL_RETRY[@]}" https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
             -o "$_ns_key_tmp" \
             || die "failed to download NodeSource repo GPG key"
         local _ns_actual_fp
@@ -321,7 +369,7 @@ ensure_node22() {
         _ns_rpm_key_tmp="${_ns_rpm_key_tmp}.asc"
         # shellcheck disable=SC2064
         trap "rm -f '$_ns_rpm_key_tmp'" RETURN
-        curl -fsSL https://rpm.nodesource.com/gpgkey/ns-operations-public.key \
+        curl -fsSL "${CURL_RETRY[@]}" https://rpm.nodesource.com/gpgkey/ns-operations-public.key \
             -o "$_ns_rpm_key_tmp" \
             || die "failed to download NodeSource RPM repo GPG key"
         local _ns_rpm_actual_fp
@@ -737,6 +785,57 @@ install_rk3588_perf_if_needed() {
     log "taos-rk3588-perf.service installed — NPU governors will be set on boot"
 }
 
+# If DESKTOP_MODE is local, run kiosk-setup.sh and enable taos-kiosk.service.
+# Mirrors install_rknpu_if_pending()'s shape: never aborts the controller install.
+install_local_desktop_if_chosen() {
+    if [[ "${DESKTOP_MODE:-headless}" != "local" ]]; then
+        return 0
+    fi
+    local kiosk_script="$INSTALL_DIR/scripts/kiosk-setup.sh"
+    if [[ ! -f "$kiosk_script" || ! -r "$kiosk_script" ]]; then
+        warn "kiosk-setup.sh missing or unreadable at $kiosk_script -- skipping local desktop setup"
+        warn "  to enable later: sudo taos desktop enable"
+        return 0
+    fi
+    log "running $kiosk_script for local desktop"
+    if sudo -E bash "$kiosk_script" "http://localhost:${TAOS_PORT}/desktop/"; then
+        if sudo systemctl enable taos-kiosk.service; then
+            if ! sudo systemctl set-default graphical.target; then
+                warn "systemctl set-default graphical.target failed -- the desktop may not start at boot"
+                warn "  to fix later: sudo systemctl set-default graphical.target"
+            fi
+            log "local desktop enabled. Wi-Fi, Bluetooth and display settings are not in taOS Settings yet: use Ethernet and a single display for now."
+        else
+            warn "systemctl enable taos-kiosk.service failed -- continuing controller install anyway"
+            warn "  to enable later: sudo taos desktop enable"
+        fi
+    else
+        warn "kiosk-setup.sh failed -- continuing controller install anyway"
+        warn "  to enable later: sudo taos desktop enable"
+    fi
+}
+
+# If DESKTOP_MODE is not local and an existing desktop is detected, install the
+# taOS launcher (.desktop + icons) into the system application menu. Never
+# aborts the controller install.
+install_guest_launcher_if_desktop() {
+    if [[ "${DESKTOP_MODE:-headless}" == "local" ]]; then
+        return 0
+    fi
+    local launcher_script="$INSTALL_DIR/scripts/desktop-launcher.sh"
+    if [[ ! -f "$launcher_script" || ! -r "$launcher_script" ]]; then
+        warn "desktop-launcher.sh missing or unreadable at $launcher_script -- skipping guest launcher"
+        return 0
+    fi
+    if bash "$launcher_script" detect; then
+        if sudo TAOS_PORT="$TAOS_PORT" bash "$launcher_script" install; then
+            log "taOS launcher added to the desktop menu (remove with: sudo taos desktop launcher remove)"
+        else
+            warn "desktop-launcher.sh install failed -- continuing controller install anyway"
+        fi
+    fi
+}
+
 detect_and_advise_accelerators
 
 # --- filesystem CoW detection ----------------------------------------------
@@ -1016,7 +1115,7 @@ ensure_container_runtime() {
                 _zabbly_key_tmp="${_zabbly_key_tmp}.asc"
                 # shellcheck disable=SC2064
                 trap "rm -f '$_zabbly_key_tmp'" RETURN
-                if ! curl -fsSL https://pkgs.zabbly.com/key.asc -o "$_zabbly_key_tmp"; then
+                if ! curl -fsSL "${CURL_RETRY[@]}" https://pkgs.zabbly.com/key.asc -o "$_zabbly_key_tmp"; then
                     warn "failed to fetch Zabbly key — skipping Incus install"
                     return 0
                 fi
@@ -1362,7 +1461,7 @@ _apt_install_docker_official_repo() {
     trap "rm -f '$_docker_key_tmp'; rm -rf '$_docker_bak_dir'" RETURN
     # Bounded timeouts so a blackholed route / stalled peer does not pin
     # the installer indefinitely and miss its graceful-failure path.
-    if ! curl -fsSL --connect-timeout 15 --max-time 60 \
+    if ! curl -fsSL "${CURL_RETRY[@]}" \
             "https://download.docker.com/linux/$docker_os/gpg" \
             -o "$_docker_key_tmp"; then
         warn "failed to fetch Docker apt key — skipping Docker official-repo fallback"
@@ -1649,6 +1748,13 @@ install_hailo_if_pending
 # Without this, rkllama throughput is ~20% of rated after a power cycle (#361).
 install_rk3588_perf_if_needed
 
+# If local desktop was chosen, run kiosk-setup.sh and enable the kiosk service.
+install_local_desktop_if_chosen
+
+# If not local desktop and an existing desktop is detected, add the taOS launcher
+# to the system application menu.
+install_guest_launcher_if_desktop
+
 # --- python venv + controller deps ---------------------------------------
 
 # Resolve a Python the controller deps support: litellm (the proxy extra) needs
@@ -1713,8 +1819,8 @@ fi
 # so the brackets are added only when there is an extra.
 _taos_extras="$(taos_controller_extras)"
 log "installing controller python deps into .venv (pip install -e '.${_taos_extras:+[$_taos_extras]}')"
-./.venv/bin/pip install --quiet --upgrade pip -c scripts/install-constraints.txt
-./.venv/bin/pip install --quiet -c scripts/install-constraints.txt -e ".${_taos_extras:+[$_taos_extras]}"
+./.venv/bin/pip install --quiet --retries 10 --timeout 60 --upgrade pip -c scripts/install-constraints.txt
+./.venv/bin/pip install --quiet --retries 10 --timeout 60 -c scripts/install-constraints.txt -e ".${_taos_extras:+[$_taos_extras]}"
 
 # litellm (and with it the proprietary litellm-enterprise wheel an older
 # litellm[proxy] pulled in) is no longer part of the install set. A FRESH

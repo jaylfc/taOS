@@ -407,14 +407,23 @@ class BlePairingManager:
                 await conn.close()
                 raise PairError(429, "too many concurrent pairing sessions")
             self._sessions[session_id] = sess
-        return {"session": session_id, "code": code, "board_id": board_id, "name": sess.board_name}
+        return {"session": session_id, "code": code, "board_id": board_id, "name": sess.board_name, "pin_required": "pin-bound" in caps}
 
-    async def confirm(self, session_id: str) -> dict:
+    async def confirm(self, session_id: str, label_pin: str = "") -> dict:
         """Mint the node credential, register kind=device, and send the
         sealed provision. Rolls back the credential + registration on any
-        board error or transport failure."""
+        board error or transport failure.
+
+        ``label_pin`` is the admin-typed PIN, optional. A board that
+        advertised the ``pin-bound`` capability makes a PIN mandatory here;
+        a board that omitted it does NOT switch binding off when the admin
+        typed one -- whether the PIN binds is decided by the admin's input,
+        never by the board's claim."""
         async with self._lock:
             self._sweep_expired_locked()
+            sess = self._sessions.get(session_id)
+            if sess is not None and "pin-bound" in sess.caps and not label_pin:
+                raise PairError(400, "label_pin_required")
             sess = self._sessions.pop(session_id, None)
         if sess is None:
             raise PairError(404, "unknown or expired pairing session")
@@ -501,8 +510,10 @@ class BlePairingManager:
             "mesh_preauth": None,
             "llm": llm,
         }
-        secrets_sent = [key.hex()] + ([llm["key"]] if llm else [])
+        secrets_sent = [key.hex()] + ([llm["key"]] if llm else []) + ([label_pin] if label_pin else [])
         try:
+            if label_pin:
+                sess.initiator.bind_label_pin(label_pin)
             sealed = sess.initiator.seal_provision(provision)
             await self._write_pair_message(sess.connection, sealed, _MID_PROVISION)
             reply_raw = await self._read_pair_message(sess.connection, sess.reassembler, _PROVISION_TIMEOUT_S)

@@ -4,6 +4,8 @@ import { getApp, pinnedAppId, pinnedLaunchProps, prefetchApp } from "@/registry/
 import { useProcessStore } from "@/stores/process-store";
 import { useDockStore } from "@/stores/dock-store";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
+import { AppTypeBadge } from "./AppTypeBadge";
+import { appRuntime } from "@/lib/app-runtime";
 
 type DockIconSize = "small" | "medium" | "large";
 
@@ -19,6 +21,12 @@ const SIZE_CLASSES: Record<DockIconSize, string> = {
   small: "w-8 h-8",
   medium: "w-10 h-10",
   large: "w-14 h-14",
+};
+
+const BADGE_SIZE: Record<DockIconSize, "sm" | "md" | "lg"> = {
+  small: "sm",
+  medium: "md",
+  large: "lg",
 };
 
 const ICON_PX: Record<DockIconSize, number> = {
@@ -119,6 +127,7 @@ export function DockIcon({ appId, isRunning, onClick, size = "medium" }: Props) 
         title={app.name}
       >
         <IconComponent size={ICON_PX[size]} className="text-shell-text" />
+        <AppTypeBadge runtime={appRuntime(app)} size={BADGE_SIZE[size]} />
         {isRunning && (
           <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-accent" />
         )}

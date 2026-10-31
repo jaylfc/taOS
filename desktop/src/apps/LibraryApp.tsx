@@ -12,6 +12,8 @@ import {
   Activity,
   Clock,
   AlertCircle,
+  Upload,
+  Brain,
 } from "lucide-react";
 import { MobileSplitView } from "@/components/mobile/MobileSplitView";
 import { useIsMobile } from "@/hooks/use-is-mobile";
@@ -49,6 +51,7 @@ import type {
 } from "@/lib/knowledge";
 import { listLibraryJobs, retryLibraryJob } from "@/lib/library";
 import type { LibraryJob } from "@/lib/library";
+import { withCsrf } from "@/lib/csrf";
 import { useFocusTrap } from "@/hooks/use-focus-trap";
 import { useDragSource } from "@/shell/dnd/use-drag-source";
 
@@ -97,6 +100,16 @@ const SOURCE_LABELS: Record<string, string> = {
   file: "Files",
   manual: "Manual",
 };
+
+const ACCEPTED_TYPES = [".txt", ".md", ".pdf", ".html", ".json", ".csv"];
+const ACCEPTED_MIME = [
+  "text/plain",
+  "text/markdown",
+  "application/pdf",
+  "text/html",
+  "application/json",
+  "text/csv",
+];
 
 interface SourceStorage {
   source_type: string;
@@ -344,7 +357,7 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
 
   /* ---------------------------------------------------------------- */
-  /*  Data fetching                                                    */
+  /*  Data fetching (forward-declared for file upload handlers)       */
   /* ---------------------------------------------------------------- */
 
   const fetchItems = useCallback(async () => {
@@ -366,6 +379,100 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
     }
     setLoading(false);
   }, [filters, search, searchMode, offset]);
+
+  /* ---------- file upload ---------- */
+  const [dragOver, setDragOver] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [embedding, setEmbedding] = useState(false);
+  const [embedAgentPickerOpen, setEmbedAgentPickerOpen] = useState(false);
+  const [embedFiles, setEmbedFiles] = useState<globalThis.File[]>([]);
+  const [embedMessage, setEmbedMessage] = useState<{ kind: "success" | "error"; text: string } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const embedFileInputRef = useRef<HTMLInputElement>(null);
+
+  const isValidFile = useCallback((file: globalThis.File) => {
+    const ext = "." + file.name.split(".").pop()?.toLowerCase();
+    return ACCEPTED_TYPES.includes(ext) || ACCEPTED_MIME.includes(file.type);
+  }, []);
+
+  const closeEmbedPicker = useCallback(() => {
+    setEmbedAgentPickerOpen(false);
+    setEmbedFiles([]);
+  }, []);
+
+  const handleEmbedConfirm = useCallback(async (agentName: string) => {
+    if (embedFiles.length === 0) return;
+    setEmbedding(true);
+    setEmbedMessage(null);
+    try {
+      // Step 1: stage each file on the server; the response filename is the
+      // server-side name, which can differ from file.name.
+      const serverNames: string[] = [];
+      for (const file of embedFiles) {
+        const formData = new FormData();
+        formData.append("file", file);
+        const upRes = await fetch("/api/import/upload", withCsrf({ method: "POST", body: formData }));
+        if (!upRes.ok) {
+          const errText = await upRes.text().catch(() => "");
+          setEmbedMessage({
+            kind: "error",
+            text: `Upload failed for ${file.name}: ${upRes.status} ${errText || upRes.statusText}`,
+          });
+          return;
+        }
+        const upData = await upRes.json().catch(() => null);
+        if (!upData || typeof upData.filename !== "string") {
+          setEmbedMessage({ kind: "error", text: `Upload failed for ${file.name}: no filename returned` });
+          return;
+        }
+        serverNames.push(upData.filename);
+      }
+      // Step 2: embed the staged files into the chosen agent.
+      const res = await fetch("/api/import/embed", withCsrf({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agent_name: agentName, files: serverNames }),
+      }));
+      if (res.ok) {
+        const data = await res.json().catch(() => null);
+        if (data && typeof data === "object" && (data as Record<string, unknown>).embedded === true) {
+          setEmbedMessage({
+            kind: "success",
+            text: `Embedded ${serverNames.length} file${serverNames.length === 1 ? "" : "s"} into ${agentName}`,
+          });
+          setEmbedAgentPickerOpen(false);
+          setEmbedFiles([]);
+        } else {
+          const body = data as Record<string, unknown> | null;
+          const files = Array.isArray(body?.files) ? body.files : [];
+          const failedFiles = files
+            .filter((f: unknown) => f && typeof f === "object" && (f as Record<string, unknown>).embedded === false)
+            .map((f: unknown) => String((f as Record<string, unknown>).filename ?? "unknown"));
+          setEmbedMessage({
+            kind: "error",
+            text: failedFiles.length > 0
+              ? `Embed failed for: ${failedFiles.join(", ")}`
+              : "Embed failed",
+          });
+        }
+      } else {
+        const errText = await res.text().catch(() => "");
+        setEmbedMessage({ kind: "error", text: `Embed failed: ${res.status} ${errText || res.statusText}` });
+      }
+    } catch (err) {
+      setEmbedMessage({
+        kind: "error",
+        text: `Embed error: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    } finally {
+      setEmbedding(false);
+    }
+  }, [embedFiles]);
+
+  /* ---------------------------------------------------------------- */
+  /*  Data fetching (remaining)                                        */
+  /* ---------------------------------------------------------------- */
 
   useEffect(() => {
     fetchItems();
@@ -481,6 +588,59 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
     },
     [fetchJobs],
   );
+
+  /* ---------- file upload (ingest pipeline) ---------- */
+
+  const uploadOneToLibrary = useCallback(async (file: globalThis.File): Promise<boolean> => {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("title", file.name);
+    try {
+      const res = await fetch("/api/library/ingest", withCsrf({ method: "POST", body: formData }));
+      if (res.ok) return true;
+      const errText = await res.text().catch(() => "");
+      console.error("Upload failed:", res.status, errText);
+      alert(`Upload failed: ${res.status} ${errText || res.statusText}`);
+    } catch (err) {
+      console.error("Upload error:", err);
+      alert(`Upload error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return false;
+  }, []);
+
+  const handleFiles = useCallback(async (fileList: globalThis.File[]) => {
+    const valid = Array.from(fileList).filter(isValidFile);
+    if (valid.length === 0) return;
+    setUploading(true);
+    setUploadProgress(0);
+    try {
+      let done = 0;
+      for (const file of valid) {
+        await uploadOneToLibrary(file);
+        done += 1;
+        setUploadProgress(Math.round((done / valid.length) * 100));
+      }
+      // Show the new items in the processing queue.
+      await fetchJobs();
+    } finally {
+      setUploading(false);
+      setUploadProgress(0);
+    }
+  }, [isValidFile, uploadOneToLibrary, fetchJobs]);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    const dropped = Array.from(e.dataTransfer.files);
+    void handleFiles(dropped);
+  }, [handleFiles]);
+
+  const handleFileInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      void handleFiles(Array.from(e.target.files));
+    }
+    e.target.value = "";
+  }, [handleFiles]);
 
   const openDetail = useCallback(
     async (item: KnowledgeItem) => {
@@ -1024,6 +1184,96 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
             ))}
           </div>
         </div>
+      </div>
+
+      {/* File drop zone */}
+      <div className="px-4 pb-3 shrink-0">
+        <Card
+          onDragOver={(e) => {
+            e.preventDefault();
+            setDragOver(true);
+          }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={handleDrop}
+          className={`border-2 border-dashed transition-colors ${
+            dragOver
+              ? "border-accent bg-accent/5"
+              : "border-white/10 hover:border-white/20"
+          }`}
+          role="region"
+          aria-label="Drop files here or click to browse"
+        >
+          <CardContent className="flex flex-col items-center justify-center gap-3 p-6">
+            <Upload size={32} className="text-shell-text-tertiary" />
+            <div className="text-center">
+              <p className="text-sm text-shell-text-secondary">
+                Drag and drop files here
+              </p>
+              <p className="text-xs text-shell-text-tertiary mt-1">
+                {ACCEPTED_TYPES.join(", ")}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => fileInputRef.current?.click()}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    fileInputRef.current?.click();
+                  }
+                }}
+              >
+                Browse
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1.5"
+                onClick={() => {
+                  setEmbedMessage(null);
+                  setEmbedFiles([]);
+                  setEmbedAgentPickerOpen(true);
+                }}
+              >
+                <Brain size={12} />
+                Embed files into an agent
+              </Button>
+            </div>
+            {embedMessage && !embedAgentPickerOpen && (
+              <p
+                role={embedMessage.kind === "error" ? "alert" : "status"}
+                className={`text-xs ${embedMessage.kind === "error" ? "text-red-400" : "text-emerald-400"}`}
+              >
+                {embedMessage.text}
+              </p>
+            )}
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept={ACCEPTED_TYPES.join(",")}
+              onChange={handleFileInput}
+              className="hidden"
+              aria-label="Select files to import"
+            />
+            {uploading && (
+              <div className="w-full space-y-1.5">
+                <div className="flex items-center justify-between text-xs text-shell-text-secondary">
+                  <span>Uploading...</span>
+                  <span className="tabular-nums">{uploadProgress}%</span>
+                </div>
+                <div className="h-2 w-full rounded-full bg-white/5" role="progressbar" aria-valuenow={uploadProgress} aria-valuemin={0} aria-valuemax={100}>
+                  <div
+                    className="h-full rounded-full bg-accent transition-all"
+                    style={{ width: `${uploadProgress}%` }}
+                  />
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
       </div>
 
       {/* Items */}
@@ -1803,7 +2053,7 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
       </div>
 
       {/* Action bar */}
-      <div className="border-t border-white/5 px-5 py-2.5 flex items-center gap-2 shrink-0">
+      <div data-testid="detail-action-bar" className="border-t border-white/5 px-5 py-2.5 flex items-center gap-2 shrink-0">
         {selectedItem.source_url && (
           <Button
             variant="outline"
@@ -2100,6 +2350,128 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
   ) : null;
 
   /* ---------------------------------------------------------------- */
+  /*  Embed Agent Picker Modal                                         */
+  /* ---------------------------------------------------------------- */
+
+  const embedAgentPickerUI = embedAgentPickerOpen ? (
+    <div
+      className={
+        isMobile
+          ? "fixed inset-0 z-50 flex items-end bg-black/50 backdrop-blur-sm"
+          : "fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      }
+      role="dialog"
+      aria-modal="true"
+      aria-label="Embed file into agent"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) {
+          closeEmbedPicker();
+        }
+      }}
+    >
+      <div
+        className="bg-shell-surface border border-white/10 shadow-2xl flex flex-col"
+        style={
+          isMobile
+            ? { borderRadius: "20px 20px 0 0", width: "100%", maxHeight: "92%", overflowY: "auto" }
+            : { borderRadius: 12, width: 420, maxWidth: "90vw", maxHeight: "80vh" }
+        }
+      >
+        {/* Dialog header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
+          <div className="flex items-center gap-2">
+            <Brain size={15} className="text-cyan-400" />
+            <h2 className="text-sm font-semibold">Embed into Agent</h2>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={closeEmbedPicker}
+            aria-label="Close embed picker"
+            className="text-xs"
+          >
+            Close
+          </Button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          <div className="space-y-2">
+            <p className="text-xs text-shell-text-secondary">1. Choose the files to embed:</p>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => embedFileInputRef.current?.click()}
+              disabled={embedding}
+            >
+              Choose files
+            </Button>
+            <input
+              ref={embedFileInputRef}
+              type="file"
+              multiple
+              accept={ACCEPTED_TYPES.join(",")}
+              onChange={(e) => {
+                if (e.target.files) {
+                  setEmbedFiles(Array.from(e.target.files));
+                  setEmbedMessage(null);
+                }
+                e.target.value = "";
+              }}
+              className="hidden"
+              aria-label="Select files to embed"
+            />
+            {embedFiles.length > 0 ? (
+              <ul className="text-xs text-shell-text-secondary space-y-0.5">
+                {embedFiles.map((f, i) => (
+                  <li key={`${f.name}-${i}`}>{f.name}</li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-xs text-shell-text-tertiary italic">No files chosen</p>
+            )}
+          </div>
+          <p className="text-xs text-shell-text-secondary">2. Select an agent to embed them into:</p>
+          {agents.length === 0 ? (
+            <p className="text-xs text-shell-text-tertiary italic">No agents available</p>
+          ) : (
+            <div className="space-y-1">
+              {agents.map((ag) => (
+                <button
+                  key={ag.name}
+                  className="w-full flex items-center gap-2 px-3 py-2 rounded-lg bg-white/[0.03] border border-white/5 hover:bg-white/5 hover:border-cyan-500/40 transition-colors text-left"
+                  onClick={() => handleEmbedConfirm(ag.name)}
+                  disabled={embedding || embedFiles.length === 0}
+                >
+                  <span
+                    className="w-2.5 h-2.5 rounded-full shrink-0"
+                    style={{ backgroundColor: ag.color }}
+                    aria-hidden="true"
+                  />
+                  <span className="text-xs font-medium">{ag.name}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          {embedMessage && (
+            <p
+              role={embedMessage.kind === "error" ? "alert" : "status"}
+              className={`text-xs ${embedMessage.kind === "error" ? "text-red-400" : "text-emerald-400"}`}
+            >
+              {embedMessage.text}
+            </p>
+          )}
+          {embedding && (
+            <div className="flex items-center gap-2 text-xs text-cyan-400">
+              <div className="w-4 h-4 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" />
+              Embedding into agent...
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  ) : null;
+
+  /* ---------------------------------------------------------------- */
   /*  Root render                                                      */
   /* ---------------------------------------------------------------- */
 
@@ -2141,6 +2513,7 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
         }
       />
       {categoryManagerUI}
+      {embedAgentPickerUI}
     </div>
   );
 }

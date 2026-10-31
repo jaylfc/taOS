@@ -2,7 +2,8 @@ import { describe, it, expect } from "vitest";
 import { getLaunchableApps, getSearchableApps } from "@/registry/app-registry";
 
 describe("tier-3 search discoverability", () => {
-  const TIER3_IDS = ["providers", "mcp", "channels", "notification-archive"];
+  const TIER3_IDS = ["providers", "mcp", "channels"];
+  const REDIRECTED_IDS = ["notification-history"];
 
   it("includes tier-3 apps in search results", () => {
     const ids = getSearchableApps(new Set()).map((a) => a.id);
@@ -13,9 +14,14 @@ describe("tier-3 search discoverability", () => {
 
   it("does not reintroduce tier-3 apps into the launcher", () => {
     const ids = getLaunchableApps(new Set()).map((a) => a.id);
-    for (const id of TIER3_IDS) {
+    for (const id of [...TIER3_IDS, ...REDIRECTED_IDS]) {
       expect(ids, `tier-3 app "${id}" should NOT be in the launcher`).not.toContain(id);
     }
+  });
+
+  it("notification-history is searchable as a tier-3 app", () => {
+    const ids = getSearchableApps(new Set()).map((a) => a.id);
+    expect(ids).toContain("notification-history");
   });
 
   // Regression for the #2680 fix-forward: installed optional apps must stay

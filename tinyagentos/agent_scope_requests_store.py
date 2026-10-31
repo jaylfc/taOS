@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS agent_scope_requests (
     granted_scopes    TEXT,
     created_ts        TEXT NOT NULL,
     decided_ts        TEXT,
-    decided_by        TEXT
+    decided_by        TEXT,
+    deny_reason       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_scope_requests_status ON agent_scope_requests(status);
 CREATE INDEX IF NOT EXISTS idx_scope_requests_canonical ON agent_scope_requests(canonical_id, status);
@@ -109,6 +110,11 @@ class AgentScopeRequestsStore(BaseStore):
         if "duration_secs" not in cols:
             await self._db.execute(
                 "ALTER TABLE agent_scope_requests ADD COLUMN duration_secs INTEGER"
+            )
+            await self._db.commit()
+        if "deny_reason" not in cols:
+            await self._db.execute(
+                "ALTER TABLE agent_scope_requests ADD COLUMN deny_reason TEXT"
             )
             await self._db.commit()
 
@@ -187,8 +193,12 @@ class AgentScopeRequestsStore(BaseStore):
         *,
         granted_scopes: Optional[list[str]] = None,
         decided_by: str,
+        deny_reason: Optional[str] = None,
     ) -> Optional[dict]:
         """Atomically transition a pending request to accepted or refused.
+
+        ``deny_reason`` is the approver's free-text reason for a refusal; it is
+        stored as given (None when no reason was supplied).
 
         Returns the updated record on success, or ``None`` if the row was
         already decided (rowcount == 0 from the conditional UPDATE).
@@ -208,10 +218,11 @@ class AgentScopeRequestsStore(BaseStore):
                SET status         = ?,
                    granted_scopes = ?,
                    decided_ts     = ?,
-                   decided_by     = ?
+                   decided_by     = ?,
+                   deny_reason    = ?
              WHERE id = ? AND status = 'pending'
             """,
-            (status, granted_json, now, decided_by, request_id),
+            (status, granted_json, now, decided_by, deny_reason, request_id),
         )
         await self._db.commit()
 

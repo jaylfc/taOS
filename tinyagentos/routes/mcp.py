@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, model_validator
 
 from tinyagentos.auth_context import require_admin
+from tinyagentos.mcp.marketplace import redact_config_env
 from tinyagentos.mcp.proxy import call_tool
 from tinyagentos.themes.schema import ThemeError, theme_vocabulary, validate_theme_config
 
@@ -185,7 +186,12 @@ async def delete_permission(server_id: str, attachment_id: int, request: Request
 async def get_config(server_id: str, request: Request):
     store = request.app.state.mcp_store
     config = await store.get_config(server_id)
-    return JSONResponse({"server_id": server_id, "config": config})
+    # Any signed-in member can read this; ``config["env"]`` is writable via
+    # PUT /config and merged at launch, so its values are redacted here —
+    # only the keys are exposed.  (The PUT route stays admin-only.)
+    return JSONResponse(
+        {"server_id": server_id, "config": redact_config_env(config)}
+    )
 
 
 @router.put("/api/mcp/servers/{server_id}/config", dependencies=_ADMIN)
