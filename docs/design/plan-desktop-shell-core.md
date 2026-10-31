@@ -976,8 +976,7 @@ const apps: AppManifest[] = [
   { id: "channels", name: "Channels", icon: "radio", category: "platform", component: placeholder, defaultSize: { w: 800, h: 500 }, minSize: { w: 450, h: 350 }, singleton: true, pinned: false, launchpadOrder: 9 },
   { id: "secrets", name: "Secrets", icon: "key-round", category: "platform", component: placeholder, defaultSize: { w: 750, h: 500 }, minSize: { w: 400, h: 300 }, singleton: true, pinned: false, launchpadOrder: 10 },
   { id: "tasks", name: "Routines", icon: "calendar-clock", category: "platform", component: placeholder, defaultSize: { w: 800, h: 500 }, minSize: { w: 450, h: 350 }, singleton: true, pinned: false, launchpadOrder: 11 },
-  { id: "import", name: "Import", icon: "upload", category: "platform", component: placeholder, defaultSize: { w: 700, h: 450 }, minSize: { w: 400, h: 300 }, singleton: true, pinned: false, launchpadOrder: 12 },
-  { id: "images", name: "Images", icon: "image", category: "platform", component: placeholder, defaultSize: { w: 900, h: 600 }, minSize: { w: 500, h: 400 }, singleton: true, pinned: false, launchpadOrder: 13 },
+  { id: "images", name: "Images", icon: "image", category: "platform", component: placeholder, defaultSize: { w: 900, h: 600 }, minSize: { w: 500, h: 400 }, singleton: true, pinned: false, launchpadOrder: 12 },
 
   // OS apps
   { id: "calculator", name: "Calculator", icon: "calculator", category: "os", component: placeholder, defaultSize: { w: 320, h: 480 }, minSize: { w: 280, h: 400 }, singleton: true, pinned: false, launchpadOrder: 20 },

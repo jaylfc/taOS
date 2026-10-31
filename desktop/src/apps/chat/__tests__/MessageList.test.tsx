@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, fireEvent, act, within } from "@testing-library/react";
 import { MessageList } from "../MessageList";
 import type { MessageRow, MessageListProps } from "../MessageList";
 import type { Channel, LiveAgent, ArchivedAgentEntry } from "../types";
@@ -520,6 +520,25 @@ describe("MessageList", () => {
   /* ---- channel header ---- */
 
   describe("channel header", () => {
+    it("renders the header by default and omits it with hideHeader", () => {
+      const { unmount } = renderWithMsg({ channel: channel({ type: "group" }) });
+      expect(screen.getByRole("button", { name: /search messages/i })).toBeInTheDocument();
+      unmount();
+      renderWithMsg({ channel: channel({ type: "group" }), hideHeader: true });
+      expect(screen.queryByRole("button", { name: /search messages/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: /chat guide/i })).not.toBeInTheDocument();
+    });
+
+    it("keeps the pinned popover reachable when the header is hidden", () => {
+      renderWithMsg({
+        channel: channel({ type: "group" }),
+        hideHeader: true,
+        pinnedPopoverOpen: true,
+        pinnedMessages: [],
+      });
+      expect(screen.getByText(/No pinned messages yet/)).toBeInTheDocument();
+    });
+
     it("shows Hash icon for topic channels", () => {
       renderWithMsg({
         channel: channel({ type: "topic" }),
@@ -718,6 +737,394 @@ describe("MessageList", () => {
       expect(scrollArea).toBeTruthy();
       const style = scrollArea?.getAttribute("style") ?? "";
       expect(style).toContain("padding-bottom");
+    });
+  });
+
+  /* ---- mobile long-press selection ---- */
+
+  describe("mobile message actions (long-press)", () => {
+    const three = [
+      msg({ id: "m1", content: "one" }),
+      msg({ id: "m2", content: "two" }),
+      msg({ id: "m3", content: "three" }),
+    ];
+    function renderMobile(isMobile = true, extra: Partial<MessageListProps> = {}) {
+      return render(
+        <MessageList
+          {...defaults({
+            selectedChannel: "ch1",
+            channel: channel(),
+            messages: three,
+            isMobile,
+            ...extra,
+          })}
+        />,
+      );
+    }
+    const row = (c: HTMLElement, id: string) =>
+      c.querySelector(`[data-message-id="${id}"]`) as HTMLElement;
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("shows no toolbar on any message initially", () => {
+      renderMobile();
+      expect(screen.queryAllByRole("toolbar")).toHaveLength(0);
+    });
+
+    it("long-press selects exactly that message", () => {
+      const { container } = renderMobile();
+      fireEvent.pointerDown(row(container, "m2"), { clientX: 10, clientY: 10 });
+      act(() => {
+        vi.advanceTimersByTime(460);
+      });
+      const bars = screen.getAllByRole("toolbar");
+      expect(bars).toHaveLength(1);
+      expect(within(row(container, "m2")).getByRole("toolbar")).toBe(bars[0]);
+      expect(screen.queryByLabelText("Drag message")).toBeNull();
+    });
+
+    it("pointerdown outside any message clears the selection", () => {
+      const { container } = renderMobile();
+      fireEvent.pointerDown(row(container, "m2"), { clientX: 10, clientY: 10 });
+      act(() => {
+        vi.advanceTimersByTime(460);
+      });
+      expect(screen.getAllByRole("toolbar")).toHaveLength(1);
+      fireEvent.pointerDown(document.body);
+      expect(screen.queryAllByRole("toolbar")).toHaveLength(0);
+    });
+
+    it("pointerdown on a different message clears the selection", () => {
+      const { container } = renderMobile();
+      fireEvent.pointerDown(row(container, "m2"), { clientX: 10, clientY: 10 });
+      act(() => {
+        vi.advanceTimersByTime(460);
+      });
+      fireEvent.pointerDown(row(container, "m3"), { clientX: 10, clientY: 10 });
+      fireEvent.pointerUp(row(container, "m3"));
+      expect(screen.queryAllByRole("toolbar")).toHaveLength(0);
+    });
+
+    it("long-pressing the selected message again clears it", () => {
+      const { container } = renderMobile();
+      for (let n = 0; n < 2; n++) {
+        fireEvent.pointerDown(row(container, "m2"), { clientX: 10, clientY: 10 });
+        act(() => {
+          vi.advanceTimersByTime(460);
+        });
+        fireEvent.pointerUp(row(container, "m2"));
+      }
+      expect(screen.queryAllByRole("toolbar")).toHaveLength(0);
+    });
+
+    it("a short tap does not select", () => {
+      const { container } = renderMobile();
+      fireEvent.pointerDown(row(container, "m2"), { clientX: 10, clientY: 10 });
+      act(() => {
+        vi.advanceTimersByTime(200);
+      });
+      fireEvent.pointerUp(row(container, "m2"));
+      act(() => {
+        vi.advanceTimersByTime(600);
+      });
+      expect(screen.queryAllByRole("toolbar")).toHaveLength(0);
+    });
+
+    it("moving past the slop cancels the long-press", () => {
+      const { container } = renderMobile();
+      fireEvent.pointerDown(row(container, "m2"), { clientX: 10, clientY: 10 });
+      fireEvent.pointerMove(row(container, "m2"), { clientX: 10, clientY: 40 });
+      act(() => {
+        vi.advanceTimersByTime(600);
+      });
+      expect(screen.queryAllByRole("toolbar")).toHaveLength(0);
+    });
+
+    it("contextmenu selects, and Enter selects via keyboard", () => {
+      const { container } = renderMobile();
+      fireEvent.contextMenu(row(container, "m1"));
+      expect(within(row(container, "m1")).getByRole("toolbar")).toBeInTheDocument();
+      fireEvent.pointerDown(document.body);
+      expect(screen.queryAllByRole("toolbar")).toHaveLength(0);
+      expect(row(container, "m3").getAttribute("tabindex")).toBe("0");
+      fireEvent.keyDown(row(container, "m3"), { key: "Enter" });
+      expect(within(row(container, "m3")).getByRole("toolbar")).toBeInTheDocument();
+    });
+
+    it("does not select when the press starts on a button", () => {
+      const { container } = renderMobile(true, {
+        messages: [msg({ id: "m1", reactions: { "👍": ["bob"] } })],
+      });
+      const btn = within(row(container, "m1")).getByRole("button", { name: /👍/ });
+      fireEvent.pointerDown(btn, { clientX: 1, clientY: 1 });
+      act(() => {
+        vi.advanceTimersByTime(600);
+      });
+      expect(screen.queryAllByRole("toolbar")).toHaveLength(0);
+    });
+
+    it("desktop hover still shows the toolbar", () => {
+      renderMobile(false, { hoveredMessageId: "m2" });
+      expect(screen.getAllByRole("toolbar")).toHaveLength(1);
+    });
+  });
+
+  /* ---- mobile bubble layout ---- */
+
+  describe("mobile bubbles", () => {
+    const rowOf = (c: HTMLElement, id: string) =>
+      c.querySelector(`[data-message-id="${id}"]`) as HTMLElement;
+    const ts = 1700000000;
+    function renderBubbles(
+      messages: MessageRow[],
+      extra: Partial<MessageListProps> = {},
+      ch: Partial<Channel> = {},
+    ) {
+      return render(
+        <MessageList
+          {...defaults({
+            selectedChannel: "ch1",
+            channel: channel(ch),
+            messages,
+            isMobile: true,
+            currentUserId: "u-123",
+            currentUserDisplayName: null,
+            ...extra,
+          })}
+        />,
+      );
+    }
+
+    it("marks the web client's own messages (author_id 'user') as own and right-aligned", () => {
+      const { container } = renderBubbles([
+        msg({ id: "a", author_id: "user", content: "mine", created_at: ts }),
+        msg({ id: "b", author_id: "bob", content: "theirs", created_at: ts + 10 }),
+      ]);
+      const own = rowOf(container, "a");
+      expect(own.getAttribute("data-own")).toBe("true");
+      expect(own.className).toContain("justify-end");
+      expect(rowOf(container, "b").getAttribute("data-own")).toBe("false");
+      expect(rowOf(container, "b").className).toContain("justify-start");
+      expect(screen.queryByText("You")).toBeNull();
+    });
+
+    it("shows the sender name once per run in a group channel", () => {
+      renderBubbles(
+        [
+          msg({ id: "a", author_id: "bob", content: "one", created_at: ts }),
+          msg({ id: "b", author_id: "bob", content: "two", created_at: ts + 10 }),
+          msg({ id: "c", author_id: "bob", content: "three", created_at: ts + 20 }),
+        ],
+        {},
+        { type: "group" },
+      );
+      expect(screen.getAllByText("bob")).toHaveLength(1);
+    });
+
+    it("omits the sender name in a DM", () => {
+      renderBubbles(
+        [msg({ id: "a", author_id: "bob", content: "hi", created_at: ts })],
+        {},
+        { type: "dm", members: ["user", "bob"] },
+      );
+      expect(screen.queryByText("bob")).toBeNull();
+    });
+
+    it("renders the read receipt once, under the last own message only", () => {
+      const members = ["user", "tom"];
+      const { container } = renderBubbles(
+        [
+          msg({ id: "a", author_id: "user", content: "first", created_at: ts }),
+          msg({ id: "b", author_id: "user", content: "second", created_at: ts + 10 }),
+          msg({ id: "c", author_id: "tom", author_type: "agent", content: "reply", created_at: ts + 20 }),
+        ],
+        {
+          receipts: {
+            a: [{ message_id: "a", agent_id: "tom", delivered_at: ts, seen_at: ts + 5 }],
+            b: [{ message_id: "b", agent_id: "tom", delivered_at: ts + 10, seen_at: ts + 15 }],
+          },
+        },
+        { type: "dm", members },
+      );
+      const lines = container.querySelectorAll('[data-receipt-line="true"]');
+      expect(lines).toHaveLength(1);
+      expect(rowOf(container, "b").contains(lines[0] as Element)).toBe(true);
+      expect(lines[0]?.textContent).toMatch(/^Read /);
+    });
+
+    it("shows Delivered when delivered but not seen, and nothing when only sent", () => {
+      const members = ["user", "tom"];
+      const base = [msg({ id: "a", author_id: "user", content: "x", created_at: ts })];
+      const { container, unmount } = renderBubbles(
+        base,
+        { receipts: { a: [{ message_id: "a", agent_id: "tom", delivered_at: ts, seen_at: null }] } },
+        { type: "dm", members },
+      );
+      expect(container.querySelector('[data-receipt-line="true"]')?.textContent).toBe("Delivered");
+      unmount();
+      const second = renderBubbles(base, { receipts: {} }, { type: "dm", members });
+      expect(second.container.querySelector('[data-receipt-line="true"]')).toBeNull();
+    });
+
+    it("puts the avatar only on the last bubble of a run", () => {
+      const { container } = renderBubbles(
+        [
+          msg({ id: "a", author_id: "bob", content: "one", created_at: ts }),
+          msg({ id: "b", author_id: "bob", content: "two", created_at: ts + 10 }),
+        ],
+        {},
+        { type: "group" },
+      );
+      expect(rowOf(container, "a").querySelector('[style*="width: 28px"]')).toBeNull();
+      expect(rowOf(container, "b").querySelector('[style*="width: 28px"]')).not.toBeNull();
+    });
+
+    it("gives agent bubbles an always-visible Copy button and a muted agent suffix in groups", () => {
+      renderBubbles(
+        [msg({ id: "a", author_id: "tom", author_type: "agent", content: "hello", created_at: ts })],
+        { liveAgents: [{ name: "tom" }] },
+        { type: "group" },
+      );
+      expect(screen.getByRole("button", { name: "Copy message" })).toBeInTheDocument();
+      expect(screen.getByText("agent")).toBeInTheDocument();
+    });
+
+    it("renders reactions as a compact chip inside the bubble", () => {
+      const { container } = renderBubbles([
+        msg({ id: "a", author_id: "bob", content: "hey", created_at: ts, reactions: { "😍": ["x", "y", "z"] } }),
+      ]);
+      const chip = within(rowOf(container, "a")).getByRole("button", { name: /😍/ });
+      expect(chip.textContent).toContain("3");
+      expect(chip.parentElement?.className).toContain("absolute");
+    });
+
+    it("keeps thread indicator and pending state visible", () => {
+      renderBubbles([
+        msg({ id: "a", author_id: "bob", content: "hey", created_at: ts, reply_count: 2, state: "pending" }),
+      ]);
+      expect(screen.getByText(/2 replies/i)).toBeInTheDocument();
+    });
+  });
+
+  /* ---- review follow-ups (mobile) ---- */
+
+  describe("mobile review follow-ups", () => {
+    const ts = 1700000000;
+    const row = (c: HTMLElement, id: string) =>
+      c.querySelector(`[data-message-id="${id}"]`) as HTMLElement;
+    function renderM(messages: MessageRow[], extra: Partial<MessageListProps> = {}, ch: Partial<Channel> = {}) {
+      return render(
+        <MessageList
+          {...defaults({
+            selectedChannel: "ch1",
+            channel: channel(ch),
+            messages,
+            isMobile: true,
+            currentUserId: "u-123",
+            currentUserDisplayName: null,
+            ...extra,
+          })}
+        />,
+      );
+    }
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("an editing row gets no selection handlers", () => {
+      const { container } = renderM(
+        [msg({ id: "a", author_id: "user", content: "mine", created_at: ts })],
+        { editingMessageId: "a" },
+      );
+      expect(row(container, "a").getAttribute("tabindex")).toBeNull();
+      const ta = within(row(container, "a")).getByRole("textbox");
+      fireEvent.pointerDown(ta, { clientX: 1, clientY: 1 });
+      act(() => {
+        vi.advanceTimersByTime(600);
+      });
+      expect(screen.queryAllByRole("toolbar")).toHaveLength(0);
+    });
+
+    it("the focusable row has a role and an action hint", () => {
+      const { container } = renderM([msg({ id: "a", author_id: "bob", created_at: ts })]);
+      const r = row(container, "a");
+      expect(r.getAttribute("role")).toBe("group");
+      const hint = container.querySelector(`#${r.getAttribute("aria-describedby")}`);
+      expect(hint?.textContent).toMatch(/Enter/);
+    });
+
+    it("pointer leaving the row cancels the pending press", () => {
+      const { container } = renderM([msg({ id: "a", author_id: "bob", created_at: ts })]);
+      fireEvent.pointerDown(row(container, "a"), { clientX: 1, clientY: 1 });
+      fireEvent.pointerLeave(row(container, "a"));
+      act(() => {
+        vi.advanceTimersByTime(600);
+      });
+      expect(screen.queryAllByRole("toolbar")).toHaveLength(0);
+    });
+
+    it("a contextmenu on another row right after a long-press still selects it", () => {
+      const { container } = renderM([
+        msg({ id: "a", author_id: "bob", created_at: ts }),
+        msg({ id: "b", author_id: "bob", created_at: ts + 5 }),
+      ]);
+      fireEvent.pointerDown(row(container, "a"), { clientX: 1, clientY: 1 });
+      act(() => {
+        vi.advanceTimersByTime(460);
+      });
+      fireEvent.contextMenu(row(container, "b"));
+      expect(within(row(container, "b")).getByRole("toolbar")).toBeInTheDocument();
+    });
+
+    it("the receipt anchors to the last settled own message, skipping a pending one", () => {
+      const members = ["user", "tom"];
+      const { container } = renderM(
+        [
+          msg({ id: "a", author_id: "user", created_at: ts }),
+          msg({ id: "b", author_id: "user", created_at: ts + 5, state: "pending" }),
+        ],
+        { receipts: { a: [{ message_id: "a", agent_id: "tom", delivered_at: ts, seen_at: ts + 2 }] } },
+        { type: "dm", members },
+      );
+      const lines = container.querySelectorAll('[data-receipt-line="true"]');
+      expect(lines).toHaveLength(1);
+      expect(row(container, "a").contains(lines[0] as Element)).toBe(true);
+    });
+
+    it("shows a visible time on the first bubble of another sender's run, in groups and DMs", () => {
+      const { container, unmount } = renderM(
+        [msg({ id: "a", author_id: "bob", created_at: Math.floor(Date.now() / 1000) - 120 })],
+        { nowMs: Date.now() },
+        { type: "group" },
+      );
+      expect(row(container, "a").textContent).toMatch(/2m/);
+      unmount();
+      const dm = renderM(
+        [msg({ id: "a", author_id: "bob", created_at: Math.floor(Date.now() / 1000) - 120 })],
+        { nowMs: Date.now() },
+        { type: "dm", members: ["user", "bob"] },
+      );
+      expect(row(dm.container, "a").textContent).toMatch(/2m/);
+      expect(screen.queryByText("bob")).toBeNull();
+    });
+
+    it("compact reactions wrap inside the bubble width", () => {
+      const { container } = renderM([
+        msg({ id: "a", author_id: "bob", created_at: ts, reactions: { "😍": ["x"], "👍": ["y"] } }),
+      ]);
+      const chip = within(row(container, "a")).getByRole("button", { name: /😍/ });
+      const cls = chip.parentElement?.className ?? "";
+      expect(cls).toContain("flex-wrap");
+      expect(cls).toContain("left-2");
+      expect(cls).toContain("right-2");
     });
   });
 

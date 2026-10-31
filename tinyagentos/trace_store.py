@@ -88,7 +88,27 @@ VALID_KINDS = frozenset({
     # GPU work queue per-op audit record (taOS #1864). One per op on
     # completion, plus one on eviction/cancel.
     "gpu_op",
+    # taOS Agent audit (full-authority spec section 4): one row per gated
+    # action request and one per outcome, written by the action gate only.
+    "external_write",
+    # taOS Agent reversible local fix with its registered undo.
+    "local_fix",
 })
+
+# Kinds whose payload is an audit record: every listed field is required and
+# ``confirmed_by`` must be one of the allowed values. A row that does not
+# match is refused (ValueError) rather than stored half-filled.
+REQUIRED_PAYLOAD_FIELDS: dict[str, tuple[str, ...]] = {
+    "external_write": (
+        "target", "action", "user_id", "repo", "url", "diff_sha256",
+        "confirmed_by", "action_id", "latency_ms", "state",
+    ),
+    "local_fix": ("tool", "target", "undo", "user_id"),
+}
+EXTERNAL_WRITE_CONFIRMED_BY = frozenset({"user", "auto", "declined", "pending"})
+# Written only by taOS itself (the action gate, the local-fix tools), never
+# accepted from POST /api/trace, so a caller cannot forge its own audit trail.
+SERVER_ONLY_KINDS = frozenset({"external_write", "local_fix"})
 
 # Documented envelope schema -- the librarian parses against this.
 # Keep this dict in sync with the columns + docstring. If you change
@@ -133,8 +153,34 @@ ENVELOPE_V1_SCHEMA = {
             "evictions_triggered": "list[str]", "priority": "int",
             "submitter": "str",
         },
+        # taOS Agent audit (full-authority spec section 4). A request row has
+        # state "pending" (confirmed_by "pending") or "confirmed" under the
+        # auto policy (confirmed_by "auto"); the outcome row has state
+        # "executed", "declined" or "failed".
+        "external_write": {
+            "target": "str", "action": "str", "user_id": "str", "repo": "str",
+            "url": "str", "diff_sha256": "str",
+            "confirmed_by": "user|auto|declined|pending", "action_id": "str",
+            "latency_ms": "int", "state": "pending|confirmed|executed|declined|failed",
+        },
+        "local_fix": {"tool": "str", "target": "str", "undo": "str", "user_id": "str"},
     },
 }
+
+
+def _validate_payload(kind: str, payload: object) -> None:
+    required = REQUIRED_PAYLOAD_FIELDS.get(kind)
+    if required is None:
+        return
+    if not isinstance(payload, dict):
+        raise ValueError(f"{kind} payload must be a dict")
+    missing = [f for f in required if f not in payload]
+    if missing:
+        raise ValueError(f"{kind} payload missing required field(s): {', '.join(missing)}")
+    if kind == "external_write" and payload["confirmed_by"] not in EXTERNAL_WRITE_CONFIRMED_BY:
+        raise ValueError(
+            f"external_write confirmed_by must be one of {sorted(EXTERNAL_WRITE_CONFIRMED_BY)}"
+        )
 
 
 def _bucket_key(ts: float) -> str:
@@ -181,6 +227,7 @@ def _build_envelope(agent_name: str, kind: str, fields: dict) -> dict:
     """
     if kind not in VALID_KINDS:
         raise ValueError(f"unknown kind: {kind!r}; valid: {sorted(VALID_KINDS)}")
+    _validate_payload(kind, fields.get("payload") or {})
     duration_ms = fields.get("duration_ms")
     if duration_ms is None and fields.get("ts_start") is not None:
         duration_ms = max(0, int((time.time() - fields["ts_start"]) * 1000))

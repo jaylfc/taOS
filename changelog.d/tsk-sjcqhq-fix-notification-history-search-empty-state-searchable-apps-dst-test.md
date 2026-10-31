@@ -1,0 +1,2 @@
+### Fixed
+- Fix notification history search to ignore trailing spaces in local archived notifications, fix empty state rendering when local archived notifications exist, exclude notification-archive from desktop search, and pin timezone in DST test for custom range bounds.

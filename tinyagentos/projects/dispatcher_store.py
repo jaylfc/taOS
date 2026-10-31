@@ -323,3 +323,132 @@ class DispatcherStore(ProjectsDBStore):
                 """,
                 (canonical_id, ts),
             )
+
+    async def list_pending(self, user_id: str | None) -> list[dict]:
+        """Return state='pending' rows.
+
+        If user_id is None, return pending rows for all users.
+        Returns list of dicts with the same shape as pending_for_agent.
+        """
+        if user_id is None:
+            async with self._read(
+                """
+                SELECT id, user_id, task_id, project_id, canonical_id, assignee_written, state, reason, assigned_at, lease_expires_at, resolved_at
+                FROM dispatch_ledger
+                WHERE state = 'pending'
+                """,
+            ) as cur:
+                rows = await cur.fetchall()
+        else:
+            async with self._read(
+                """
+                SELECT id, user_id, task_id, project_id, canonical_id, assignee_written, state, reason, assigned_at, lease_expires_at, resolved_at
+                FROM dispatch_ledger
+                WHERE user_id = ? AND state = 'pending'
+                """,
+                (user_id,),
+            ) as cur:
+                rows = await cur.fetchall()
+        result = []
+        for row in rows:
+            result.append(
+                {
+                    "id": row[0],
+                    "user_id": row[1],
+                    "task_id": row[2],
+                    "project_id": row[3],
+                    "canonical_id": row[4],
+                    "assignee_written": row[5],
+                    "state": row[6],
+                    "reason": row[7],
+                    "assigned_at": row[8],
+                    "lease_expires_at": row[9],
+                    "resolved_at": row[10],
+                }
+            )
+        return result
+
+    async def resolve(self, lease_id: str, state: str, now: float) -> None:
+        """UPDATE state and resolved_at for a ledger row."""
+        async with self._tx():
+            await self._db.execute(
+                """
+                UPDATE dispatch_ledger
+                SET state = ?, resolved_at = ?
+                WHERE id = ?
+                """,
+                (state, now, lease_id),
+            )
+
+    async def bump_backoff(self, canonical_id: str, lease_seconds: int, now: float) -> int:
+        """Increment consecutive_expiries and set next_eligible_at.
+
+        next_eligible_at = now + min(lease_seconds * 2**(n-1), 21600)
+        where n is the new consecutive_expiries count after increment.
+        Returns the new n.
+        """
+        async with self._tx():
+            # First, get current consecutive_expiries
+            backoff = await self._db.execute(
+                "SELECT consecutive_expiries FROM dispatch_agent_backoff WHERE canonical_id = ?",
+                (canonical_id,),
+            )
+            row = await backoff.fetchone()
+            if row is None:
+                current_expiries = 0
+            else:
+                current_expiries = row[0]
+
+            n = current_expiries + 1
+            backoff_time = now + min(lease_seconds * 2 ** (n - 1), 21600)
+
+            await self._db.execute(
+                """
+                INSERT INTO dispatch_agent_backoff (canonical_id, consecutive_expiries, next_eligible_at, last_assigned_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(canonical_id) DO UPDATE SET
+                    consecutive_expiries = excluded.consecutive_expiries,
+                    next_eligible_at = excluded.next_eligible_at,
+                    last_assigned_at = excluded.last_assigned_at
+                """,
+                (canonical_id, n, backoff_time, now),
+            )
+        return n
+
+    async def reset_backoff(self, canonical_id: str) -> None:
+        """Reset consecutive_expiries to 0 and next_eligible_at to 0."""
+        async with self._tx():
+            await self._db.execute(
+                """
+                INSERT INTO dispatch_agent_backoff (canonical_id, consecutive_expiries, next_eligible_at, last_assigned_at)
+                VALUES (?, 0, 0, 0)
+                ON CONFLICT(canonical_id) DO UPDATE SET
+                    consecutive_expiries = 0,
+                    next_eligible_at = 0
+                """,
+                (canonical_id,),
+            )
+
+    async def backed_off(self, canonical_ids: list[str], now: float) -> set[str]:
+        """Return set of canonical_ids whose next_eligible_at > now (i.e. they are backed off)."""
+        if not canonical_ids:
+            return set()
+        placeholders = ", ".join("?" for _ in canonical_ids)
+        async with self._read(
+            f"""
+            SELECT canonical_id, next_eligible_at
+            FROM dispatch_agent_backoff
+            WHERE canonical_id IN ({placeholders})
+            """,
+            canonical_ids,
+        ) as cur:
+            rows = await cur.fetchall()
+        backed_off = set()
+        for row in rows:
+            cid = row[0]
+            next_eligible = row[1]
+            if next_eligible > now:
+                backed_off.add(cid)
+        # Also include ids that have no backoff record - they are not backed off
+        # (only return ids that are actually in the db with next_eligible_at > now)
+        return backed_off

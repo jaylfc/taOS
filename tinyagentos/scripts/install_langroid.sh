@@ -18,6 +18,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [langroid-bridge] %(
 log = logging.getLogger("langroid-bridge")
 BRIDGE_URL = os.environ["TAOS_BRIDGE_URL"]; AGENT_NAME = os.environ["TAOS_AGENT_NAME"]
 LOCAL_TOKEN = os.environ["TAOS_LOCAL_TOKEN"]; MODEL = os.environ.get("TAOS_MODEL", "kilo-auto/free")
+MAX_RETRIES = 3
+RETRY_BACKOFF_BASE = 2.0  # seconds, grows to 2, 4, 8 for retries 1-3
 _pool = ThreadPoolExecutor(max_workers=2)
 _SYSTEM_PROMPT = (
     f"You are {AGENT_NAME}, an agent running inside the Langroid framework "
@@ -84,12 +86,67 @@ def _run(text, force):
         a = _build(force); r = a.llm_response(text)
         return r.content if r else "(no response)"
     except Exception as e: return f"[langroid error: {e}]"
-async def fetch_boot(c): r = await c.get(f"{BRIDGE_URL}/api/openclaw/bootstrap?agent={AGENT_NAME}", headers={"Authorization": f"Bearer {LOCAL_TOKEN}"}, timeout=30); r.raise_for_status(); return r.json()
+async def fetch_boot(c):
+    """Fetch the bootstrap channel. Retries with exponential backoff on
+    transient failures (HTTP 5xx or exceptions); raises after MAX_RETRIES
+    attempts so a controller restart at boot does not silently kill the bridge."""
+    url = f"{BRIDGE_URL}/api/openclaw/bootstrap?agent={AGENT_NAME}"
+    headers = {"Authorization": f"Bearer {LOCAL_TOKEN}"}
+    last_error = ""
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            r = await c.get(url, headers=headers, timeout=30)
+            if r.status_code == 200:
+                return r.json()
+            if 500 <= r.status_code < 600 and attempt < MAX_RETRIES:
+                delay = RETRY_BACKOFF_BASE ** attempt
+                log.warning("bootstrap %d (attempt %d/%d), retry in %.1fs",
+                            r.status_code, attempt, MAX_RETRIES, delay)
+                last_error = f"[bootstrap returned {r.status_code}: {r.text[:200]}]"
+                await asyncio.sleep(delay)
+                continue
+            last_error = f"[bootstrap returned {r.status_code}: {r.text[:200]}]"
+        except Exception as e:
+            detail = str(e) or type(e).__name__
+            if attempt < MAX_RETRIES:
+                delay = RETRY_BACKOFF_BASE ** attempt
+                log.warning("bootstrap error %s (attempt %d/%d), retry in %.1fs",
+                            detail, attempt, MAX_RETRIES, delay)
+                last_error = f"[bootstrap error: {detail}]"
+                await asyncio.sleep(delay)
+                continue
+            last_error = f"[bootstrap error: {detail}]"
+    raise RuntimeError(last_error or "[bootstrap error: unknown]")
 async def post_reply(c, u, t, mid, tid, txt, cid=None):
+    """POST the final reply. Retries with exponential backoff on transient
+    failures (HTTP 5xx or exceptions); gives up after MAX_RETRIES attempts
+    and returns False so the answer is logged, not silently dropped."""
     body = {"kind":"final","id":mid,"trace_id":tid,"content":txt}
     if cid: body["channel_id"] = cid
-    try: await c.post(u, json=body, headers={"Authorization":f"Bearer {t}"}, timeout=30)
-    except Exception as e: log.warning("reply: %s", e)
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {t}"}
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            resp = await c.post(u, json=body, headers=headers, timeout=30)
+            if resp.status_code < 400:
+                return True
+            if 500 <= resp.status_code < 600 and attempt < MAX_RETRIES:
+                delay = RETRY_BACKOFF_BASE ** attempt
+                log.warning("reply POST %s (attempt %d/%d), retry in %.1fs",
+                            resp.status_code, attempt, MAX_RETRIES, delay)
+                await asyncio.sleep(delay)
+                continue
+            log.warning("reply POST %s: %s", resp.status_code, resp.text[:300])
+            return False
+        except Exception as e:
+            if attempt < MAX_RETRIES:
+                delay = RETRY_BACKOFF_BASE ** attempt
+                log.warning("reply POST error %s (attempt %d/%d), retry in %.1fs",
+                            e, attempt, MAX_RETRIES, delay)
+                await asyncio.sleep(delay)
+                continue
+            log.warning("reply POST failed: %s", e)
+            return False
+    return False
 async def handle(c, evt, ch):
     mid = evt.get("id",""); tid = evt.get("trace_id", mid); text = evt.get("text","")
     force = bool(evt.get("force_respond"))

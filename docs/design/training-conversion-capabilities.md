@@ -156,7 +156,7 @@ For time-sharing on NPU, the pool manager batches requests per-agent to minimise
 ### Training Data Sources
 
 - Agent conversation memory (via qmd serve)
-- Uploaded files (drag-and-drop, same as Import page)
+- Uploaded files (drag-and-drop in Library)
 - Web URLs (auto-scraped)
 - Documentation repos (git clone + embed)
 - Agent's own recommendations (self-audit)

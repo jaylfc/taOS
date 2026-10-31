@@ -381,6 +381,146 @@ async def test_chat_queued_message_survives_turn_error(client, app, monkeypatch)
 
 
 # ---------------------------------------------------------------------------
+# Claude Code shell rules: queued request should NOT overwrite active turn's rules
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_chat_queued_message_claude_code_shell_rules_overwrites_active_turn(client, app, monkeypatch):
+    """RED test: A queued taOS agent chat request overwrites the active turn's shell rules.
+
+    The bug: In chat() (POST /api/taos-agent/chat) the claude_code harness is ONE shared object
+    (ensure_taos_claude_code_harness keeps it on app.state), and the line
+    `harness.shell_rules = await shell_profile.rules_for(store, shell_user)` runs BEFORE
+    `action = await agent_loop.handle_message(text, msg_id=trace_id)`. A second request that
+    comes back LoopAction.QUEUED (it never runs a turn) has already replaced the active turn's
+    rules with ITS user's allow/deny list, and the active turn's ClaudeCodeHarness.run_turn()
+    calls write_settings() from harness.shell_rules, so the active turn can run under the
+    other user's shell profile.
+
+    Expected failure before fix: The fake harness.shell_rules is {'allow': ['queued-user-rule'],
+    'deny': []} after the queued request, showing it overwrote the active turn's rules.
+    """
+    # Monkeypatch the imports as specified in the task
+    import tinyagentos.routes.taos_agent as ta_module
+    from tinyagentos.taos_agent_runtime import FRAMEWORK_CLAUDE_CODE
+
+    monkeypatch.setattr(ta_module, "system_agent_framework", lambda app_state: FRAMEWORK_CLAUDE_CODE)
+
+    # Create a fake harness with active-user rules
+    fake_harness = SimpleNamespace(
+        shell_rules={'allow': ['active-user-rule'], 'deny': []},
+        redact=lambda s: s
+    )
+
+    async def fake_ensure_taos_claude_code_harness(app_state, model, system_prompt):
+        return fake_harness
+
+    monkeypatch.setattr(ta_module, "ensure_taos_claude_code_harness", fake_ensure_taos_claude_code_harness)
+
+    # Mock shell_profile.rules_for to return queued-user rules
+    async def fake_rules_for(store, shell_user):
+        return {'allow': ['queued-user-rule'], 'deny': []}
+
+    mock_shell_profile = SimpleNamespace(rules_for=AsyncMock(side_effect=fake_rules_for))
+    monkeypatch.setattr(ta_module, "shell_profile", mock_shell_profile)
+
+    # Mock ClaudeCodeCliAdapter with a dummy class (never called on the queued path)
+    mock_adapter = MagicMock()
+    monkeypatch.setattr(ta_module, "ClaudeCodeCliAdapter", lambda cfg, sink: mock_adapter)
+
+    # Set up the agent loop mid-turn
+    from tinyagentos.agent_loop import AgentLoop, LoopAction
+    loop = AgentLoop()
+    app.state.taos_agent_loop = loop
+    # Put the loop mid-turn
+    await loop.handle_message('busy', msg_id='t0')
+
+    # Configure the model and password for Claude Code
+    await client.patch("/api/taos-agent/settings", json={"model": "claude-3-7-sonnet-20250219"})
+    app.state.taos_opencode_password = "testpw"
+    app.state.taos_opencode_session_id = None
+
+    # POST /api/taos-agent/chat
+    resp = await client.post(
+        "/api/taos-agent/chat",
+        json={
+            "messages": [{"role": "user", "content": "Hello"}],
+            "model": "claude-3-7-sonnet-20250219"
+        },
+    )
+
+    # Assert the response text contains 'queued'
+    assert resp.status_code == 200
+    assert "queued" in resp.text.lower()
+
+# ---------------------------------------------------------------------------
+# Claude Code shell rules: accepted turn must load the shell profile
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_chat_accepted_claude_code_turn_loads_shell_profile(client, app, monkeypatch):
+    """An ACCEPTED claude_code chat turn (turn owns the agent, nothing queued)
+    must still load the shell profile, i.e. harness.shell_rules equals what
+    shell_profile.rules_for returned for that user."""
+    import tinyagentos.routes.taos_agent as ta_module
+    from tinyagentos.taos_agent_runtime import FRAMEWORK_CLAUDE_CODE
+
+    monkeypatch.setattr(ta_module, "system_agent_framework", lambda app_state: FRAMEWORK_CLAUDE_CODE)
+
+    expected_rules = {"allow": ["ls", "cat"], "deny": ["curl"]}
+
+    fake_harness = SimpleNamespace(
+        shell_rules=None,
+        redact=lambda s: s,
+    )
+
+    async def fake_ensure_taos_claude_code_harness(app_state, model, system_prompt):
+        return fake_harness
+
+    monkeypatch.setattr(ta_module, "ensure_taos_claude_code_harness", fake_ensure_taos_claude_code_harness)
+
+    async def fake_rules_for(store, shell_user):
+        return expected_rules
+
+    mock_shell_profile = SimpleNamespace(
+        rules_for=AsyncMock(side_effect=fake_rules_for),
+        raise_shell_asks=AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(ta_module, "shell_profile", mock_shell_profile)
+
+    class _DummyAdapter:
+        def __init__(self, cfg, sink):
+            self._sink = sink
+            self.session_id = None
+
+        async def ensure_session(self):
+            self.session_id = "ses_ok"
+
+        async def prompt(self, text, trace_id=None, attachments=None):
+            self._sink({"kind": "final"})
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(ta_module, "ClaudeCodeCliAdapter", _DummyAdapter)
+
+    from tinyagentos.agent_loop import AgentLoop
+    loop = AgentLoop()
+    app.state.taos_agent_loop = loop
+    await client.patch("/api/taos-agent/settings", json={"model": "claude-3-7-sonnet-20250219"})
+    app.state.taos_opencode_password = "testpw"
+    app.state.taos_opencode_session_id = None
+
+    resp = await client.post(
+        "/api/taos-agent/chat",
+        json={"messages": [{"role": "user", "content": "Hi"}], "model": "claude-3-7-sonnet-20250219"},
+    )
+    assert resp.status_code == 200
+    assert fake_harness.shell_rules == expected_rules
+
+
+# ---------------------------------------------------------------------------
 # ensure_taos_opencode_server: key minting and master-key fallback
 # ---------------------------------------------------------------------------
 
