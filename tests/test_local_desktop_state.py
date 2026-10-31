@@ -14,11 +14,11 @@ from tinyagentos.routes import system as system_routes
 async def test_local_desktop_unit_absent(monkeypatch, tmp_path):
     """When taos-kiosk.service is absent, all flags are false and is-enabled/is-active are not called."""
     async def fake(*args):
-        if args[0] == "cat":
+        if args[0] == "cat" and args[1] == "taos-kiosk.service":
             return 1, "No files found for taos-kiosk.service."
-        if args[0] == "is-enabled":
+        if args[0] == "is-enabled" and args[1] == "taos-kiosk.service":
             raise AssertionError("is-enabled should not be called when unit is absent")
-        if args[0] == "is-active":
+        if args[0] == "is-active" and args[1] == "taos-kiosk.service":
             raise AssertionError("is-active should not be called when unit is absent")
         return 1, "unknown"
 
@@ -55,11 +55,11 @@ async def test_local_desktop_unit_absent(monkeypatch, tmp_path):
 async def test_local_desktop_installed_disabled_inactive(monkeypatch, tmp_path):
     """When unit is installed but disabled and inactive."""
     async def fake(*args):
-        if args[0] == "cat":
+        if args[0] == "cat" and args[1] == "taos-kiosk.service":
             return 0, "# taos-kiosk.service"
-        if args[0] == "is-enabled":
+        if args[0] == "is-enabled" and args[1] == "taos-kiosk.service":
             return 1, "disabled"
-        if args[0] == "is-active":
+        if args[0] == "is-active" and args[1] == "taos-kiosk.service":
             return 3, "inactive"
         return 1, "unknown"
 
@@ -95,11 +95,11 @@ async def test_local_desktop_installed_disabled_inactive(monkeypatch, tmp_path):
 async def test_local_desktop_enabled_active(monkeypatch, tmp_path):
     """When unit is installed, enabled, and active."""
     async def fake(*args):
-        if args[0] == "cat":
+        if args[0] == "cat" and args[1] == "taos-kiosk.service":
             return 0, "# taos-kiosk.service"
-        if args[0] == "is-enabled":
+        if args[0] == "is-enabled" and args[1] == "taos-kiosk.service":
             return 0, "enabled"
-        if args[0] == "is-active":
+        if args[0] == "is-active" and args[1] == "taos-kiosk.service":
             return 0, "active"
         return 1, "unknown"
 
@@ -135,11 +135,11 @@ async def test_local_desktop_enabled_active(monkeypatch, tmp_path):
 async def test_local_desktop_is_enabled_static(monkeypatch, tmp_path):
     """When is-enabled prints 'static', enabled should be False."""
     async def fake(*args):
-        if args[0] == "cat":
+        if args[0] == "cat" and args[1] == "taos-kiosk.service":
             return 0, "# taos-kiosk.service"
-        if args[0] == "is-enabled":
+        if args[0] == "is-enabled" and args[1] == "taos-kiosk.service":
             return 0, "static"
-        if args[0] == "is-active":
+        if args[0] == "is-active" and args[1] == "taos-kiosk.service":
             return 0, "active"
         return 1, "unknown"
 
