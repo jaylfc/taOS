@@ -203,6 +203,13 @@ exactly one active row carries it. The agent desktop, agent versions and
 `GET /api/secrets/agent/{name}/github` routes use this helper instead of their
 own handle lookups.
 
+**A registry identity maps to a config agent by canonical id only.**
+`_resolve_agent_name` (`tinyagentos/routes/delegation.py`), used by delegation
+and by the memory read routes for registry-JWT callers, maps a canonical id to
+the config agent whose `registry_canonical_id` equals it. A display name or
+handle match no longer counts, so an identity named like another user's agent
+cannot delegate as it or read its memory index.
+
 **Agent workspaces are owner-only.** Every `/api/agents/{agent_name}/workspace/*`
 route (`tinyagentos/routes/agent_workspace.py`) runs `require_agent_owner_or_admin`
 router-wide, and a per-agent local token may only reach its own agent's
