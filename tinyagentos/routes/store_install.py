@@ -204,6 +204,27 @@ async def _resolve_host(target_remote: str | None) -> str:
     return target_remote
 
 
+async def _record_install_location(request: Request, app_id: str, manifest, version: str,
+                                   location_kind: str, location_ref: str) -> None:
+    """Write a row to install_registry (the container-first source of truth).
+
+    Best-effort: a missing or failing store never breaks the install path.
+    """
+    store = getattr(request.app.state, "install_registry", None)
+    if store is None:
+        return
+    try:
+        await store.record(
+            item_id=app_id,
+            item_kind=str(getattr(manifest, "type", "") or "app"),
+            version=str(version or ""),
+            location_kind=location_kind,
+            location_ref=location_ref,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("install_registry write failed for %s", app_id, exc_info=True)
+
+
 def _get_current_user(request: Request) -> dict | None:
     """Return the currently authenticated user or None."""
     auth = getattr(request.app.state, "auth", None)
@@ -518,6 +539,13 @@ async def _legacy_install(request: Request, body: dict, app_id: str | None, targ
             version = body.get("version") or (getattr(manifest, "version", "") if manifest else "")
             registry.mark_installed(app_id, version)
         resp_target = _target_remote or "local"
+        await _record_install_location(
+            request, app_id, manifest,
+            body.get("version") or (getattr(manifest, "version", "") if manifest else ""),
+            "legacy_lxc",
+            f"{_target_remote}:{result.get('container') or 'taos-svc-' + app_id}"
+            if _target_remote else result.get("container") or f"taos-svc-{app_id}",
+        )
         return JSONResponse({"ok": True, "app_id": app_id, "status": "installed", "target_remote": resp_target, **result})
 
     # script — host-side backend/plugin manifests (e.g. ollama, rkllama,
@@ -713,6 +741,12 @@ async def _legacy_install(request: Request, body: dict, app_id: str | None, targ
     if registry is not None:
         version = body.get("version") or (getattr(manifest, "version", "") if manifest else "")
         registry.mark_installed(app_id, version)
+    await _record_install_location(
+        request, app_id, manifest,
+        body.get("version") or (getattr(manifest, "version", "") if manifest else ""),
+        "host",
+        _target_remote or "local",
+    )
     return JSONResponse({"ok": True, "app_id": app_id, "status": "installed"})
 
 
