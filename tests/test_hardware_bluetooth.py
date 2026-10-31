@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import pytest
 from fastapi.responses import JSONResponse
+from fastapi.testclient import TestClient
 from pydantic import BaseModel, Field
 
 from tinyagentos.routes import hardware_bluetooth as bt_routes
@@ -726,3 +728,118 @@ async def test_close_system_bus_idempotent():
     await bluez_bus.close_system_bus()
     await bluez_bus.close_system_bus()
     # If we get here without exception, the test passes
+
+
+# Tests for non-admin access and 60s auto-stop timer
+@pytest.fixture
+def bt_test_app(tmp_path):
+    """Create a minimal app for Bluetooth route testing."""
+    import yaml
+    from tinyagentos.app import create_app
+
+    config = {
+        "server": {"host": "0.0.0.0", "port": 6969},
+        "backends": [],
+        "qmd": {"url": "http://localhost:7832"},
+        "agents": [],
+        "metrics": {"poll_interval": 30, "retention_days": 30},
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump(config))
+    (tmp_path / ".setup_complete").touch()
+    app = create_app(data_dir=tmp_path)
+    # Lifespan-owned objects initialised eagerly
+    from tinyagentos.routes.desktop_browser.vapid import load_or_create_vapid_keypair
+    app.state.vapid_keypair = load_or_create_vapid_keypair(tmp_path)
+    return app
+
+
+@pytest.fixture
+def bt_admin_headers(bt_test_app):
+    """Admin auth headers."""
+    auth_mgr = bt_test_app.state.auth
+    if not auth_mgr.is_configured():
+        auth_mgr.setup_user("admin", "Admin", "", "adminpass")
+    record = auth_mgr.find_user("admin")
+    token = auth_mgr.create_session(user_id=record["id"], long_lived=True)
+    return {"Cookie": f"taos_session={token}"}
+
+
+@pytest.fixture
+def bt_nonadmin_headers(bt_test_app):
+    """Non-admin auth headers (chat capability only)."""
+    auth_mgr = bt_test_app.state.auth
+    invite_code = auth_mgr.add_user_invite("nonadmin", "admin")
+    auth_mgr.complete_invite("nonadmin", invite_code, "nonadmin", "", "testpass1")
+    data = auth_mgr._read_users()
+    for u in data["users"]:
+        if u.get("username") == "nonadmin":
+            u["capabilities"] = ["chat"]
+            break
+    auth_mgr._write_users(data)
+    record = auth_mgr.find_user("nonadmin")
+    token = auth_mgr.create_session(user_id=record["id"], long_lived=True)
+    return {"Cookie": f"taos_session={token}"}
+
+
+def test_discovery_non_admin_returns_403(bt_test_app, bt_nonadmin_headers, monkeypatch):
+    """Non-admin user gets 403 on discovery endpoint."""
+    from fastapi.testclient import TestClient
+
+    # Mock get_system_bus to avoid real D-Bus
+    async def fake_get_bus():
+        raise ImportError("No module named 'dbus_fast'")
+
+    import tinyagentos.bluez_bus as bluez_bus
+    import tinyagentos.routes.hardware_bluetooth as bt_routes
+
+    monkeypatch.setattr(bluez_bus, "get_system_bus", fake_get_bus)
+    monkeypatch.setattr(bt_routes, "get_system_bus", fake_get_bus)
+
+    with TestClient(bt_test_app, raise_server_exceptions=False) as client:
+        resp = client.post(
+            "/api/hardware/bluetooth/discovery",
+            json={"adapter": "/org/bluez/hci0", "on": True},
+            headers=bt_nonadmin_headers,
+        )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_discovery_auto_stop_timer_fires(monkeypatch):
+    """60s auto-stop timer fires and sends StopDiscovery once."""
+    from tinyagentos import bluez_bus
+    from tinyagentos.routes import hardware_bluetooth as bt_routes
+
+    mock_bus = await fake_get_system_bus_success()
+
+    async def fake_get_bus():
+        return mock_bus
+
+    monkeypatch.setattr(bluez_bus, "get_system_bus", fake_get_bus)
+    monkeypatch.setattr(bt_routes, "get_system_bus", fake_get_bus)
+
+    # Patch the delay to 0 for fast test
+    original_stop = bt_routes._stop_discovery_after_delay
+
+    async def fast_stop(adapter, timer, delay=60.0):
+        await original_stop(adapter, timer, delay=0.0)
+
+    monkeypatch.setattr(bt_routes, "_stop_discovery_after_delay", fast_stop)
+
+    body = make_discovery_body("/org/bluez/hci0", True)
+    resp = await bt_routes.discovery_bluetooth(body)
+
+    if isinstance(resp, JSONResponse):
+        assert resp.status_code == 200
+    assert resp == {"ok": True, "discovering": True}
+
+    # Give the timer task a moment to run
+    await asyncio.sleep(0.01)
+
+    stop_calls = [c for c in mock_bus.calls if c.member == "StopDiscovery"]
+    assert len(stop_calls) == 1
+    assert stop_calls[0].path == "/org/bluez/hci0"
+
+    # Timer should be cleaned up
+    assert "/org/bluez/hci0" not in bt_routes._discovery_timers

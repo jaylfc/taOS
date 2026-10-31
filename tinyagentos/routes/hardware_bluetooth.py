@@ -217,7 +217,7 @@ async def device_bluetooth_action(body: BtDeviceBody):
     return JSONResponse({"error": "write_failed"}, status_code=502)
 
 
-async def _stop_discovery_after_delay(adapter: str, delay: float = 60.0) -> None:
+async def _stop_discovery_after_delay(adapter: str, timer: asyncio.Task, delay: float = 60.0) -> None:
     """Stop discovery on an adapter after a delay."""
     try:
         await asyncio.sleep(delay)
@@ -239,7 +239,10 @@ async def _stop_discovery_after_delay(adapter: str, delay: float = 60.0) -> None
     except Exception:
         logger.exception("Failed to stop discovery on %s after delay", adapter)
     finally:
-        _discovery_timers.pop(adapter, None)
+        # Only remove the timer if it's still the current one (avoid race with new timer)
+        current = _discovery_timers.get(adapter)
+        if current is timer:
+            _discovery_timers.pop(adapter, None)
 
 
 @router.post("/api/hardware/bluetooth/discovery", dependencies=[Depends(require_admin)])
@@ -264,7 +267,7 @@ async def discovery_bluetooth(body: BtDiscoveryBody):
         try:
             bus = await get_system_bus()
         except BusUnavailable as e:
-            error_code = str(e)
+            error_code = e.code
             if error_code == "dbus_fast_missing":
                 return JSONResponse({"error": "dbus_fast_missing"}, status_code=503)
             return JSONResponse({"error": "bluez_unavailable"}, status_code=503)
@@ -293,7 +296,10 @@ async def discovery_bluetooth(body: BtDiscoveryBody):
             return JSONResponse({"error": "write_failed"}, status_code=502)
 
         # Schedule stop after 60 seconds
-        timer = asyncio.create_task(_stop_discovery_after_delay(adapter, 60.0))
+        async def _stop_wrapper():
+            await _stop_discovery_after_delay(adapter, timer, 60.0)
+
+        timer = asyncio.create_task(_stop_wrapper())
         _discovery_timers[adapter] = timer
 
         # Read back Discovering property
@@ -327,7 +333,7 @@ async def discovery_bluetooth(body: BtDiscoveryBody):
         try:
             bus = await get_system_bus()
         except BusUnavailable as e:
-            error_code = str(e)
+            error_code = e.code
             if error_code == "dbus_fast_missing":
                 return JSONResponse({"error": "dbus_fast_missing"}, status_code=503)
             return JSONResponse({"error": "bluez_unavailable"}, status_code=503)

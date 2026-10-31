@@ -12,7 +12,9 @@ _bus_lock = asyncio.Lock()
 
 class BusUnavailable(Exception):
     """Raised when the system bus is unavailable or dbus-fast cannot be imported."""
-    pass
+    def __init__(self, code: str, message: str | None = None):
+        super().__init__(message or code)
+        self.code = code
 
 
 async def get_system_bus() -> "MessageBus":
