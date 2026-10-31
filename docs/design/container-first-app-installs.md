@@ -391,8 +391,9 @@ The container is what moves, with every app inside it.
 3. **Docker:** stop the compose project, tar each app's `state_paths` volumes
    (the `service_migrator.py` pattern), recreate the project on the target
    from the same pinned images, restore volumes, start, health-check. On
-   failure, restart the source and report; the source is only destroyed
-   after the target is healthy.
+   failure, stop and remove the target project first, so two copies never
+   run against the same state, then restart the source and report; the
+   source is only destroyed after the target is healthy.
 4. Rewrite `app_runtime` (host, port) and `app_containers.node`; the proxy
    path `/apps/<id>/` does not change, so open windows just reconnect.
 5. Moves take a lease on the container so installs into it are refused
