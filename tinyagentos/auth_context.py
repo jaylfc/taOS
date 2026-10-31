@@ -123,3 +123,20 @@ async def require_agent_owner_or_admin(
     if owner is None:
         raise HTTPException(status_code=403, detail="forbidden")
     require_owner_or_admin(user, owner)
+
+
+async def require_agent_access(
+    request: Request, user: CurrentUser, agent_id: str
+) -> None:
+    """403 unless the caller may act on *agent_id*'s own data.
+
+    A per-agent local token maps to the admin user, so the owner check alone
+    would let agent A reach agent B's data; a bound token is fenced to its own
+    agent first. Everyone else needs :func:`require_agent_owner_or_admin`.
+    Run it before any lookup, so an unknown agent and someone else's agent
+    both answer 403.
+    """
+    bound = getattr(request.state, "agent_name", None)
+    if bound and bound != agent_id:
+        raise HTTPException(status_code=403, detail="forbidden")
+    await require_agent_owner_or_admin(request, user, agent_id)
