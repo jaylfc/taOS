@@ -357,6 +357,26 @@ class ContactsStore(BaseStore):
         )
         await self._db.commit()
 
+    async def set_outbound_token(self, contact_id: str, token: str, expected_inbound_token: str | None = None) -> bool:
+        """Store the token THEY minted for us, from a verified handshake reply.
+
+        Returns True when a live (unrevoked) peer link was updated.
+        """
+        if expected_inbound_token is None:
+            cursor = await self._db.execute(
+                "UPDATE peer_links SET outbound_token = ? "
+                "WHERE contact_id = ? AND revoked_at IS NULL",
+                (token, contact_id),
+            )
+        else:
+            cursor = await self._db.execute(
+                "UPDATE peer_links SET outbound_token = ? "
+                "WHERE contact_id = ? AND revoked_at IS NULL AND inbound_token_hash = ?",
+                (token, contact_id, _hash_token(expected_inbound_token)),
+            )
+        await self._db.commit()
+        return (cursor.rowcount or 0) > 0
+
     async def get_peer_link(self, contact_id: str) -> Optional[dict]:
         async with self._db.execute(
             "SELECT * FROM peer_links WHERE contact_id = ?", (contact_id,)

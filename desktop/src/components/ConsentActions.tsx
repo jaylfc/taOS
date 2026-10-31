@@ -50,6 +50,9 @@ import { slugifyWithFallback } from "@/lib/slug";
  *  tinyagentos/routes/agent_auth_requests.py. */
 const SCOPE_VOCABULARY_URL = "/api/agents/scope-vocabulary";
 
+/** Mirrors DenyScopeBody.reason's max_length on the scope-request deny route. */
+const DENY_REASON_MAX = 2000;
+
 /** How long to wait for the vocabulary before treating silence as a failure.
  *  A hung request must become a visible error, not an Allow button that is
  *  disabled forever for no stated reason. */
@@ -128,6 +131,8 @@ export function ConsentActions({
   canonicalId,
   humanDuration,
   harness,
+  denyReasonRequired = false,
+  showEffectiveBinding = false,
 }: {
   requestId: string;
   scopes: string[];
@@ -141,6 +146,13 @@ export function ConsentActions({
   canonicalId?: string;
   humanDuration?: string;
   harness?: string;
+  /** Deny becomes two-step: the approver must type a reason, which is sent as
+   *  `{reason}` to the deny route (scope requests record it as deny_reason). */
+  denyReasonRequired?: boolean;
+  /** Say where the grant will actually apply. A grant with no project scope is
+   *  sent without a project_id and lands OS-wide, whatever project the request
+   *  named, so the approver must see that before Allow (tsk-6ghcrv). */
+  showEffectiveBinding?: boolean;
 }) {
   // `granted` is what the approve call will actually send. It defaults to the
   // full requested set, so the out-of-the-box behaviour (grant exactly what was
@@ -184,6 +196,8 @@ export function ConsentActions({
   // Allow/Deny never come back, because a second approve would 409.
   const [leadUnconfirmed, setLeadUnconfirmed] = useState(false);
   const [newName, setNewName] = useState("");
+  const [denying, setDenying] = useState(false);
+  const [denyReason, setDenyReason] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -378,6 +392,14 @@ export function ConsentActions({
       if (needsProject && projectId) payload.project_id = projectId;
       if (canLead && makeLead && projectId) payload.is_lead = true;
       body = JSON.stringify(payload);
+    } else if (denyReasonRequired) {
+      const reason = denyReason.trim();
+      if (!reason) {
+        setError("Give a reason for denying this request.");
+        setBusy(false);
+        return;
+      }
+      body = JSON.stringify({ reason });
     }
     try {
       const res = await fetch(
@@ -415,9 +437,26 @@ export function ConsentActions({
     }
   }
 
+  // Screen-reader names for the two decisions: what is granted (or refused)
+  // and on which project, so "Allow" is never ambiguous out of context. Allow
+  // follows the picker, because that is the project the grant binds to.
+  const pickedProjectName = creating
+    ? newName.trim()
+    : projects.find((p) => p.id === selectedProjectId)?.name ?? "";
+  const requestedProjectName =
+    resolvedRequestedProject?.name ?? pickedProjectName;
+  const allowLabel = `Allow ${granted.join(", ")}${
+    needsProject && pickedProjectName ? ` on ${pickedProjectName}` : ""
+  }`;
+  const denyLabel = `Deny ${scopes.join(", ")}${
+    needsProject && requestedProjectName ? ` on ${requestedProjectName}` : ""
+  }`;
+
   const allowDisabled =
     busy ||
     projectScopes === null ||
+    // Every requested scope unticked: nothing left to grant.
+    (scopes.length > 0 && granted.length === 0) ||
     (needsProject &&
       (creating ? !newName.trim() : !selectedProjectId));
 
@@ -489,6 +528,14 @@ export function ConsentActions({
           This token will be readable by all bots on this Grok account.
         </p>
       )}
+      {showEffectiveBinding &&
+        projectScopes !== null &&
+        !needsProject &&
+        granted.length > 0 && (
+          <p className="mb-2 text-[11px] font-medium text-red-300">
+            Grants OS-wide (all projects)
+          </p>
+        )}
       {needsProject && (
           <div className="mb-2">
             {requestedProjectId && requestedProjectNotFound && (
@@ -621,6 +668,7 @@ export function ConsentActions({
                 decide(true);
               }}
               disabled={allowDisabled}
+              aria-label={allowLabel}
               className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 border border-emerald-500/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <CheckCircle size={11} />
@@ -628,16 +676,63 @@ export function ConsentActions({
             </button>
             <button
               type="button"
+              aria-label={denyLabel}
               onClick={(e) => {
                 e.stopPropagation();
+                if (denyReasonRequired) {
+                  setDenying(true);
+                  return;
+                }
                 decide(false);
               }}
-              disabled={busy}
+              disabled={busy || denying}
               className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium bg-white/5 hover:bg-red-500/15 hover:text-red-300 text-shell-text-secondary border border-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <XCircle size={11} />
               Deny
             </button>
+          </div>
+        )}
+        {denying && !leadUnconfirmed && (
+          <div className="mt-1.5 flex flex-col gap-1.5">
+            <textarea
+              aria-label="Reason for denying"
+              value={denyReason}
+              onChange={(e) => {
+                e.stopPropagation();
+                setDenyReason(e.target.value);
+              }}
+              onClick={(e) => e.stopPropagation()}
+              placeholder="Why is this request denied?"
+              maxLength={DENY_REASON_MAX}
+              rows={2}
+              className="w-full px-2 py-1 rounded-md text-[11px] bg-white/5 border border-white/10 text-shell-text"
+            />
+            <div className="flex flex-wrap gap-1.5">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  decide(false);
+                }}
+                disabled={busy || !denyReason.trim()}
+                className="px-2 py-1 rounded-md text-[11px] font-medium bg-red-500/15 hover:bg-red-500/25 text-red-300 border border-red-500/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Confirm deny
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setDenying(false);
+                  setDenyReason("");
+                }}
+                disabled={busy}
+                className="px-2 py-1 rounded-md text-[11px] bg-white/5 hover:bg-white/10 border border-white/10 text-shell-text-secondary disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            </div>
           </div>
         )}
         {error && (

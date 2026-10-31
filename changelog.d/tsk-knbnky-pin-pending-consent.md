@@ -1,0 +1,3 @@
+### Fixed
+
+- Pending grant requests (`auth_requests`, `agent_scope_requests`) stay pinned at the top of the notification centre until they are archived, so a grant older than the 10 newest rows is no longer buried client-side. The panel now scrolls through every active row instead of capping the inbox at 10 and showing a "+N more in history" line, and pinned rows carry a visible "Needs your approval" label. Reading a pinned row no longer unpins it; only archive removes it.

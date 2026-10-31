@@ -186,7 +186,7 @@ async def test_run_turn_first_and_resumed(tmp_path, monkeypatch):
     assert len(system_prompt_path) > 0
     # Check the other flags
     for flag, val in (("--output-format", "stream-json"), ("--model", "claude-sonnet-5-5"),
-                      ("--permission-mode", "bypassPermissions")):
+                      ("--permission-mode", "default")):
         assert argv[argv.index(flag) + 1] == val
     assert "--verbose" in argv
     assert "--resume" not in argv

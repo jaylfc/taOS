@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { projectsApi, type Project, type ProjectMember } from "@/lib/projects";
 import { AddAgentDialog } from "./AddAgentDialog";
 import { InviteAgentDialog } from "./InviteAgentDialog";
@@ -311,6 +311,7 @@ export function ProjectMembers({ project, onChanged }: { project: Project; onCha
   // mirror of project.lead_member_id so the selector reflects changes instantly
   // (the backend enforces the one-lead invariant structurally on write).
   const [leadMemberId, setLeadMemberId] = useState<string | null>(project.lead_member_id ?? null);
+  const registryReqSeq = useRef(0);
 
   useEffect(() => {
     setLeadMemberId(project.lead_member_id ?? null);
@@ -334,33 +335,42 @@ export function ProjectMembers({ project, onChanged }: { project: Project; onCha
     return m.member_id;
   };
 
-  const refresh = () =>
+  const refresh = () => {
     projectsApi.members.list(project.id).then(setMembers).catch(() => setMembers([]));
+    reloadExternalRegistry();
+  };
 
   // Reload the external registry roster so a rename (which updates a registry
   // display_name, not a project_members row) is reflected in the label. Members
   // list alone does not carry the display_name, so onRefresh is not enough.
-  const reloadExternalRegistry = () =>
-    fetch("/api/agents/registry", { credentials: "include" })
+  const reloadExternalRegistry = () => {
+    const seq = ++registryReqSeq.current;
+    return fetch("/api/agents/registry", { credentials: "include" })
       .then((r) => (r.ok ? r.json() : []))
       .then((rows) => {
-        if (!Array.isArray(rows)) return;
-        const active = rows.filter(
-          (e: { origin?: string; status?: string }) =>
-            e.origin === "external-selfjoin" && e.status === "active",
-        );
-        setExternalAgents(
-          active.map(
-            (e: { handle?: string; canonical_id?: string; display_name?: string; framework?: string }) => ({
-              handle: e.handle || "",
-              canonical_id: e.canonical_id,
-              display_name: e.display_name,
-              framework: e.framework,
-            }),
-          ),
-        );
+        if (seq !== registryReqSeq.current) return;
+        if (Array.isArray(rows)) {
+          const active = rows.filter(
+            (e: { origin?: string; status?: string }) =>
+              e.origin === "external-selfjoin" && e.status === "active",
+          );
+          setExternalAgents(
+            active.map(
+              (e: { handle?: string; canonical_id?: string; display_name?: string; framework?: string }) => ({
+                handle: e.handle || "",
+                canonical_id: e.canonical_id,
+                display_name: e.display_name,
+                framework: e.framework,
+              }),
+            ),
+          );
+        }
+        setExternalRegistryLoaded(true);
       })
-      .catch(() => {});
+      .catch(() => {
+        if (seq === registryReqSeq.current) setExternalRegistryLoaded(true);
+      });
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -394,10 +404,12 @@ export function ProjectMembers({ project, onChanged }: { project: Project; onCha
 
   useEffect(() => {
     let cancelled = false;
+    const seq = ++registryReqSeq.current;
     fetch("/api/agents/registry", { credentials: "include" })
       .then((r) => (r.ok ? r.json() : []))
       .then((rows) => {
         if (cancelled) return;
+        if (seq !== registryReqSeq.current) return;
         if (Array.isArray(rows)) {
           const active = rows.filter(
             (entry: { origin?: string; status?: string }) =>
@@ -447,6 +459,24 @@ export function ProjectMembers({ project, onChanged }: { project: Project; onCha
     }
     return m;
   }, [externalAgents]);
+
+  // Track the last set of unresolved member IDs we reloaded for, to avoid loops.
+  const lastReloadedUnresolvedRef = useRef<string>("");
+
+  // When the registry has loaded and there are members not in byId or byHandle,
+  // reload the registry once per distinct unresolved set.
+  useEffect(() => {
+    if (!externalRegistryLoaded) return;
+    const unresolved = members
+      .filter((m) => !byId.has(m.member_id) && !byHandle.has(m.member_id))
+      .map((m) => m.member_id)
+      .sort()
+      .join(",");
+    if (unresolved && unresolved !== lastReloadedUnresolvedRef.current) {
+      lastReloadedUnresolvedRef.current = unresolved;
+      reloadExternalRegistry();
+    }
+  }, [externalRegistryLoaded, members, byId, byHandle, reloadExternalRegistry]);
 
   const { mainMembers, externalMembers } = useMemo(() => {
     const main: ProjectMember[] = [];

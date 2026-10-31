@@ -62,6 +62,71 @@ def test_installer_installs_nothing_pyproject_does_not_declare():
     )
 
 
+def test_option_values_are_not_package_names(tmp_path):
+    """--retries 10 --timeout 60 and other option values must not be read as packages.
+
+    The undeclared_pip_installs function should skip option values like the "10" in
+    "--retries 10" and "60" in "--timeout 60" instead of treating them as packages.
+    """
+    # Test file with option values that should be skipped
+    fake_installer1 = tmp_path / "install.sh"
+    fake_installer1.write_text("""#!/bin/bash
+./.venv/bin/pip install --quiet --retries 10 --timeout 60 -c scripts/install-constraints.txt -e .
+""")
+
+    result = check_install_licences.undeclared_pip_installs(fake_installer1)
+    assert result == [], (
+        f"option values were read as package names: {result}"
+    )
+
+    # Positive control: a package name after --retries should be detected
+    fake_installer2 = tmp_path / "install2.sh"
+    fake_installer2.write_text("""#!/bin/bash
+./.venv/bin/pip install --quiet --retries 10 notarealpkg
+""")
+
+    result = check_install_licences.undeclared_pip_installs(fake_installer2)
+    assert result == ["notarealpkg"], (
+        f"expected [\"notarealpkg\"], got {result}"
+    )
+
+
+
+def test_value_option_without_value_does_not_swallow_next_flag(tmp_path):
+    fake_installer = tmp_path / "install.sh"
+    fake_installer.write_text("""#!/bin/bash
+./.venv/bin/pip install --quiet --retries --timeout 60 notarealpkg
+""")
+    result = check_install_licences.undeclared_pip_installs(fake_installer)
+    assert result == ["notarealpkg"], (
+        f"expected [\"notarealpkg\"], got {result}"
+    )
+
+
+def test_no_binary_value_is_not_a_package(tmp_path):
+    """--no-binary :all: must not be read as a package name."""
+    fake_installer = tmp_path / "install.sh"
+    fake_installer.write_text("""#!/bin/bash
+./.venv/bin/pip install --no-binary :all: notarealpkg
+""")
+    result = check_install_licences.undeclared_pip_installs(fake_installer)
+    assert result == ["notarealpkg"], (
+        f"expected [\"notarealpkg\"], got {result}"
+    )
+
+
+def test_only_binary_value_is_not_a_package(tmp_path):
+    """--only-binary :all: must not be read as a package name."""
+    fake_installer = tmp_path / "install.sh"
+    fake_installer.write_text("""#!/bin/bash
+./.venv/bin/pip install --only-binary :all: notarealpkg
+""")
+    result = check_install_licences.undeclared_pip_installs(fake_installer)
+    assert result == ["notarealpkg"], (
+        f"expected [\"notarealpkg\"], got {result}"
+    )
+
+
 def test_unreadable_licence_is_its_own_failing_finding():
     """A PyPI release with no expression/license/classifiers must fail the gate.
 

@@ -97,6 +97,13 @@ class AppConfig:
     # (services/mdns_reflector.py). Opt-in: off unless ``enabled`` is true.
     # Optional ``interfaces`` (names to bridge) and ``silence_window_s``.
     mdns_reflector: dict = field(default_factory=lambda: {"enabled": False})
+    # mDNS publisher for advertising the controller as taos.local on the LAN.
+    # Enabled by default; set ``enabled: false`` to disable. Can also be
+    # overridden by the TAOS_MDNS=0 environment variable.
+    mdns: dict = field(default_factory=lambda: {"enabled": True})
+    # Orb catalog settings. ``catalog_url`` is the base URL of the signed Orb
+    # catalog (https only; empty = cache only, no remote fetch).
+    orb: dict = field(default_factory=lambda: {"catalog_url": ""})
     config_path: Path | None = None
 
     def to_dict(self) -> dict:
@@ -131,6 +138,10 @@ class AppConfig:
             d["taos_agent"] = self.taos_agent
         if (self.mdns_reflector or {}) != {"enabled": False}:
             d["mdns_reflector"] = self.mdns_reflector
+        if self.mdns != {"enabled": True}:
+            d["mdns"] = self.mdns
+        if self.orb != {"catalog_url": ""}:
+            d["orb"] = self.orb
         return d
 
 # rkllama's taOS default port moved from the upstream 8080 to 7833. Installs
@@ -256,6 +267,14 @@ def load_config(path: Path) -> AppConfig:
         mdns_reflector=(
             dict(data["mdns_reflector"]) if isinstance(data.get("mdns_reflector"), dict)
             else {"enabled": False}
+        ),
+        mdns=(
+            dict(data["mdns"]) if isinstance(data.get("mdns"), dict)
+            else {"enabled": True}
+        ),
+        orb=(
+            dict(data["orb"]) if isinstance(data.get("orb"), dict)
+            else {"catalog_url": ""}
         ),
         config_path=path,
         wallhaven_api_key=wallhaven_api_key,

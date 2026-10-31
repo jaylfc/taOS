@@ -4,7 +4,7 @@ aiofiles==24.1.0
     # via matrix-nio
 aiohappyeyeballs==2.7.1
     # via aiohttp
-aiohttp==3.14.1
+aiohttp==3.14.5
     # via
     #   aiohttp-socks
     #   matrix-nio
@@ -21,7 +21,7 @@ annotated-doc==0.0.4
     #   typer
 annotated-types==0.7.0
     # via pydantic
-anyio==4.13.0
+anyio==4.14.2
     # via
     #   httpx
     #   starlette
@@ -35,7 +35,7 @@ attrs==26.1.0
     #   aiohttp
     #   jsonschema
     #   referencing
-certifi==2026.4.22
+certifi==2026.10.19
     # via
     #   httpcore
     #   httpx
@@ -78,7 +78,7 @@ frozenlist==1.8.0
     # via
     #   aiohttp
     #   aiosignal
-fsspec==2026.3.0
+fsspec==2026.9.0
     # via huggingface-hub
 h11==0.16.0
     # via
@@ -153,10 +153,11 @@ onnxruntime==1.23.2
     # via taosmd
 packaging==26.2
     # via
+    #   tinyagentos (pyproject.toml)
     #   huggingface-hub
     #   onnxruntime
     #   transformers
-pillow==12.3.0
+pillow==13.0.0
     # via tinyagentos (pyproject.toml)
 propcache==0.5.2
     # via
@@ -178,12 +179,18 @@ pydantic-core==2.46.3
     # via pydantic
 pygments==2.20.0
     # via rich
+pypdf==6.19.0
+    # via
+    #   tinyagentos (pyproject.toml)
 python-dateutil==2.9.0.post0
     # via croniter
 python-dotenv==1.2.2
     # via uvicorn
 python-multipart==0.0.27
     # via tinyagentos (pyproject.toml)
+python-slugify==8.0.4
+    # via
+    #   tinyagentos (pyproject.toml)
 python-socks==2.8.2
     # via aiohttp-socks
 pywebpush==2.3.0
@@ -224,6 +231,11 @@ sympy==1.14.0
     # via onnxruntime
 taosmd==0.4.0
     # via tinyagentos (pyproject.toml)
+tenacity==9.1.4
+    # via
+    #   tinyagentos (pyproject.toml)
+text-unidecode==1.3
+    # via python-slugify
 tokenizers==0.22.2
     # via transformers
 tqdm==4.67.3
@@ -254,7 +266,7 @@ typing-inspection==0.4.2
     #   pydantic
 unpaddedbase64==2.1.0
     # via matrix-nio
-urllib3==2.7.0
+urllib3==2.8.0
     # via requests
 uvicorn==0.52.4
     # via tinyagentos (pyproject.toml)
@@ -266,7 +278,10 @@ websockets==16.0
     # via
     #   tinyagentos (pyproject.toml)
     #   uvicorn
-yarl==1.24.2
+yarl==1.25.1
     # via aiohttp
+yt-dlp==2026.8.19
+    # via
+    #   tinyagentos (pyproject.toml)
 zeroconf==0.150.0
     # via tinyagentos (pyproject.toml)

@@ -1,0 +1,6 @@
+### Fixed
+- Wrapper programs (`env`, `nice`, `nohup`, `timeout`, `xargs`, `sudo`, `doas`, `exec`, `command`, `builtin`, `time`, `stdbuf`, `setsid`, `ionice`, `chroot`, `busybox`) no longer hide the real program in the shell profile: the wrapper's key is recorded and the wrapped program is also checked.
+- Hard refusal for `gh` and `git push` now also applies to parsed command keys, catching escapes like `g""h pr list` and `'gh' pr list`.
+- The hook's `main()` now fails closed on any exception: it prints the refusal to stderr and exits with code 2.
+- Wrapper options that take a separate value (`nice -n/--adjustment`, `ionice -c/-n/-p/--class/--classdata/--pid`, `stdbuf -i/-o/-e/--input/--output/--error`, `xargs -n/-P/-I/-L/-s/-d/-a/-E/--max-args/--max-procs/--max-lines/--max-chars/--delimiter/--arg-file`, `timeout -s/--signal/-k/--kill-after`, `env -u/--unset/-C/--chdir/-S/--split-string`) no longer hide the real program; `chroot` skips its root directory operand before finding the program.
+- Fixed three hard-refusal bypasses: `chroot` root operand mistaken for a wrapper (e.g. `/tmp/timeout`), `exec -a NAME` and `exec -aNAME` not skipping the alias value, and `env -S/--split-string` not parsing the split string for nested commands (fail closed on `$`, backslash, or unparseable).
