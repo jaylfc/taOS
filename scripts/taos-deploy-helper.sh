@@ -14,6 +14,11 @@
 #   taos-deploy-helper.sh install-rknpu
 #   taos-deploy-helper.sh update-worker
 #   taos-deploy-helper.sh status
+#   taos-deploy-helper.sh checkpoint
+#   taos-deploy-helper.sh rollback [<tag>]
+#   taos-deploy-helper.sh restart-self
+#   taos-deploy-helper.sh restart-and-verify [<tag>]
+#   taos-deploy-helper.sh health-check
 #
 # Security: this script is allowlisted in sudoers with a fixed path and
 # only the commands below are reachable. The worker cannot execute
@@ -23,6 +28,11 @@ set -euo pipefail
 INSTALL_DIR="${TAOS_INSTALL_DIR:-$HOME/.local/share/tinyagentos-worker}"
 REPO="${TAOS_REPO:-https://github.com/jaylfc/tinyagentos}"
 BRANCH="${TAOS_BRANCH:-master}"
+
+# Absolute path to this script.  A detached job (see _schedule_detached) runs
+# in its own process, so it has to re-invoke the helper by path rather than by
+# calling one of the shell functions below.
+SELF_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
 log() { printf '[taos-deploy] %s\n' "$*"; }
 die() { printf '[taos-deploy] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -237,6 +247,348 @@ cmd_status() {
     echo '}'
 }
 
+# ── Worker self-update subcommands (taOS #890 C3) ─────────────────────────
+
+cmd_checkpoint() {
+    local manifest_file="${TAOS_CHECKPOINT_MANIFEST:-$INSTALL_DIR/rollback-manifest.json}"
+    local repo_dir="$INSTALL_DIR/tinyagentos"
+    local venv="${TAOS_VENV:-$INSTALL_DIR/.venv}"
+
+    log "creating pre-update checkpoint at $manifest_file"
+
+    if [[ ! -d "$repo_dir/.git" ]]; then
+        die "worker repo not found at $repo_dir"
+    fi
+
+    local git_sha
+    git_sha="$(git -C "$repo_dir" rev-parse HEAD)" || die "failed to get current git SHA"
+
+    local git_branch
+    git_branch="$(git -C "$repo_dir" rev-parse --abbrev-ref HEAD)" || git_branch="detached"
+
+    local deps_snapshot=""
+    local pkg_manager="unknown"
+    if [[ -x "$venv/bin/pip" ]]; then
+        deps_snapshot="$("$venv/bin/pip" freeze 2>/dev/null || true)"
+        pkg_manager="pip"
+    fi
+
+    # Detect if uv is in use (uv.lock present in repo root)
+    if [[ -f "$repo_dir/uv.lock" ]]; then
+        pkg_manager="uv"
+        deps_snapshot="uv-lock:$(sha256sum "$repo_dir/uv.lock" 2>/dev/null | awk '{print $1}' || echo "unknown")"
+    fi
+
+    # Tag the current HEAD so it survives a checkout (detached or branch)
+    local tag="taos-worker-pre-update-$(date -u +%Y%m%d-%H%M%S)"
+    git -C "$repo_dir" tag "$tag" HEAD 2>/dev/null || {
+        # Tag already exists — add a counter suffix
+        local suffix=1
+        while ! git -C "$repo_dir" tag "${tag}-${suffix}" HEAD 2>/dev/null; do
+            ((suffix++))
+        done
+        tag="${tag}-${suffix}"
+    }
+    log "tagged current HEAD as $tag"
+
+    # Build the manifest
+    cat > "$manifest_file" <<MANIFEST
+{
+  "checkpoint_tag": "$tag",
+  "git_sha": "$git_sha",
+  "git_branch": "$git_branch",
+  "package_manager": "$pkg_manager",
+  "deps_snapshot": $(echo "$deps_snapshot" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))' 2>/dev/null || echo '""'),
+  "created_at": "$(date -u -Iseconds)",
+  "hostname": "$(hostname)"
+}
+MANIFEST
+
+    log "checkpoint saved: tag=$tag sha=${git_sha:0:8} pkg=$pkg_manager"
+    echo "$tag"  # stdout = checkpoint tag for the caller to record
+}
+
+# ── Detached restart helper (taOS #890 C3) ─────────────────────────────────
+# The worker service runs with systemd KillMode=control-group, so the default
+# ``systemctl stop`` (and the stop phase of ``systemctl restart``) sends
+# SIGTERM to every process in the cgroup — including this deploy-helper
+# script when it is invoked as a child of the worker.  A detached restart
+# (via at(1) or systemd-run) survives the teardown because it runs outside
+# the service cgroup.
+
+# Try restarting a worker service by name, first as a system service then
+# as a user service (systemctl --user).  The deploy helper runs via sudo
+# (as root), so plain systemctl cannot reach the invoking user's --user
+# session; we try both scopes to cover both system-level and user-level
+# worker installations.
+_restart_service_by_name() {
+    local svc_name="$1"
+    # System service (systemctl as root).
+    systemctl restart "$svc_name" 2>/dev/null && return 0
+    # User service — use the original user if sudo preserved SUDO_USER,
+    # otherwise try a raw ``systemctl --user`` (works when the helper is
+    # called without sudo).
+    if [[ -n "${SUDO_USER:-}" ]]; then
+        su -l "$SUDO_USER" -c "systemctl --user restart '$svc_name'" 2>/dev/null && return 0
+    fi
+    systemctl --user restart "$svc_name" 2>/dev/null && return 0
+    return 1
+}
+
+# Schedule a shell command to run detached from the worker's systemd cgroup.
+# Rungs, in order: at(1) -> systemd-run --scope -> inline.  The inline rung
+# races with cgroup teardown, but it is only reached when neither detach
+# mechanism is usable.
+_schedule_detached() {
+    local body="$1"
+
+    # 1 -- at(1): schedules the command after the helper exits (cleanest).
+    if command -v at >/dev/null 2>&1; then
+        # Only trust at(1) if the atd daemon is actually running --
+        # ``at now`` exits 0 even when atd is stopped (CodeRabbit, Jul 31).
+        if systemctl is-active --quiet atd 2>/dev/null || systemctl is-active --quiet atd.service 2>/dev/null; then
+            if echo "$body" | at now 2>/dev/null; then
+                log "detached job scheduled via at(1)"
+                return 0
+            fi
+        fi
+    fi
+
+    # 2 -- systemd-run --scope: runs outside the service cgroup.
+    if command -v systemd-run >/dev/null 2>&1; then
+        if systemd-run --scope --no-block bash -c "$body" 2>/dev/null; then
+            log "detached job dispatched via systemd-run"
+            return 0
+        fi
+    fi
+
+    # 3 -- Last resort: run the job inline.  It may race with cgroup teardown,
+    #     but the helper returns immediately so it often wins.
+    log "WARN: could not detach job -- running inline"
+    bash -c "$body"
+}
+
+# Shell command that restarts the worker service in either scope (system and
+# --user).  Self-contained so it can be the payload of a detached job, which
+# runs in its own process with no access to the functions in this script.
+_worker_restart_cmd() {
+    local cmd="systemctl restart tinyagentos-worker.service 2>/dev/null"
+    cmd+=" || systemctl restart taos-worker.service 2>/dev/null"
+    if [[ -n "${SUDO_USER:-}" ]]; then
+        cmd+=" || su -l '$SUDO_USER' -c 'systemctl --user restart tinyagentos-worker.service' 2>/dev/null"
+        cmd+=" || su -l '$SUDO_USER' -c 'systemctl --user restart taos-worker.service' 2>/dev/null"
+    fi
+    cmd+=" || systemctl --user restart tinyagentos-worker.service 2>/dev/null"
+    cmd+=" || systemctl --user restart taos-worker.service 2>/dev/null"
+    cmd+=" || true"
+    printf '%s' "$cmd"
+}
+
+_detached_restart_worker() {
+    _schedule_detached "$(_worker_restart_cmd)"
+}
+
+# Environment assignments for a detached job.  The job runs in its own process
+# with a different HOME and a minimal environment, so anything the helper
+# resolved from its own environment has to be carried across explicitly --
+# otherwise a worker on a non-default port or install dir would be probed (and
+# rolled back) against the wrong target.
+_worker_env_prefix() {
+    local prefix="TAOS_INSTALL_DIR=$(printf '%q' "$INSTALL_DIR")"
+    local var
+    for var in TAOS_WORKER_PORT TAOS_CHECKPOINT_MANIFEST TAOS_VENV; do
+        if [[ -n "${!var:-}" ]]; then
+            prefix+=" $var=$(printf '%q' "${!var}")"
+        fi
+    done
+    printf '%s' "$prefix"
+}
+
+cmd_rollback() {
+    local checkpoint_tag="${1:-}"
+    local manifest_file="${TAOS_CHECKPOINT_MANIFEST:-$INSTALL_DIR/rollback-manifest.json}"
+    local repo_dir="$INSTALL_DIR/tinyagentos"
+    local venv="${TAOS_VENV:-$INSTALL_DIR/.venv}"
+
+    if [[ -z "$checkpoint_tag" ]]; then
+        # Read the tag from the manifest if not provided
+        if [[ -f "$manifest_file" ]]; then
+            checkpoint_tag="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("checkpoint_tag",""))' "$manifest_file" 2>/dev/null || true)"
+        fi
+        if [[ -z "$checkpoint_tag" ]]; then
+            die "no checkpoint tag provided and no manifest found at $manifest_file"
+        fi
+    fi
+
+    log "rolling back to checkpoint tag $checkpoint_tag"
+
+    if [[ ! -d "$repo_dir/.git" ]]; then
+        die "worker repo not found at $repo_dir"
+    fi
+
+    # Verify the tag exists
+    if ! git -C "$repo_dir" rev-parse --verify "$checkpoint_tag^{commit}" >/dev/null 2>&1; then
+        die "checkpoint tag $checkpoint_tag not found"
+    fi
+
+    # Restore the code.  We do NOT stop the worker service first because
+    # this helper runs inside the worker's systemd cgroup and systemctl
+    # stop would kill us before the rollback completes.  The worker was
+    # drained before this phase; a restart at the end picks up the
+    # restored code.
+    #
+    # Checking out the tag alone detaches HEAD, and update-worker's
+    # `git pull --ff-only origin <branch>` then fails on every later deploy, so
+    # put the checkpointed branch back on the tag. A worker that was already
+    # detached recorded "HEAD" and stays detached.
+    local git_branch=""
+    if [[ -f "$manifest_file" ]]; then
+        git_branch="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("git_branch",""))' "$manifest_file" 2>/dev/null || true)"
+    fi
+    if [[ -n "$git_branch" && "$git_branch" != "HEAD" && "$git_branch" != "detached" ]]; then
+        git -C "$repo_dir" checkout --quiet -B "$git_branch" "$checkpoint_tag" || {
+            die "git checkout -B $git_branch $checkpoint_tag failed"
+        }
+    else
+        git -C "$repo_dir" checkout --quiet "$checkpoint_tag" || {
+            die "git checkout $checkpoint_tag failed"
+        }
+    fi
+    log "restored code to $checkpoint_tag ($(git -C "$repo_dir" rev-parse --short HEAD))"
+
+    # Reinstall dependencies
+    if [[ -f "$manifest_file" ]]; then
+        local pkg_manager
+        pkg_manager="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("package_manager","pip"))' "$manifest_file" 2>/dev/null || echo "pip")"
+        if [[ "$pkg_manager" == "uv" ]] && command -v uv >/dev/null 2>&1; then
+            log "reinstalling deps with uv sync"
+            cd "$repo_dir" && uv sync --frozen 2>/dev/null || uv sync || log "WARN: uv sync had errors — continuing"
+        else
+            if [[ -x "$venv/bin/pip" ]]; then
+                log "reinstalling deps with pip"
+                "$venv/bin/pip" install -q -e "$repo_dir[worker]" 2>/dev/null || \
+                    "$venv/bin/pip" install -q -e "$repo_dir" || \
+                    log "WARN: pip install had errors — continuing"
+            fi
+        fi
+    fi
+
+    # Detached restart so the cgroup teardown doesn't kill us mid-rollback.
+    _detached_restart_worker
+    log "rollback complete — worker restart initiated from $checkpoint_tag"
+}
+
+cmd_restart_self() {
+    # Restart, then verify the worker actually comes back, and roll back to the
+    # pre-update checkpoint if it does not.  The verification has to run
+    # detached from the worker's cgroup: if the new code fails to start at all
+    # (an import error, say), there is no worker process left to run the
+    # in-process stale-marker rollback in self_update.post_update_startup.
+    log "restarting worker service (with post-restart health verification)"
+    _schedule_detached "$(_worker_env_prefix) '$SELF_PATH' restart-and-verify"
+}
+
+# Runs inside the detached job scheduled by cmd_restart_self: restart the
+# worker, wait for it to become healthy, and roll back to the checkpoint if it
+# never does.  This is the rollback path that survives the new code failing to
+# boot, because it does not depend on the new code running.
+cmd_restart_and_verify() {
+    local checkpoint_tag="${1:-}"
+    local timeout="${TAOS_RESTART_VERIFY_TIMEOUT:-90}"
+    local interval="${TAOS_RESTART_VERIFY_INTERVAL:-3}"
+
+    log "restart-verify: restarting worker service"
+    # A synchronous restart is safe here: this job is already outside the
+    # worker's cgroup, and the service has to be back before we can probe it.
+    _restart_service_by_name "tinyagentos-worker.service" \
+        || _restart_service_by_name "taos-worker.service" \
+        || log "WARN: could not restart worker service via systemctl"
+
+    log "restart-verify: waiting up to ${timeout}s for the worker to become healthy"
+    local elapsed=0
+    while (( elapsed < timeout )); do
+        if "$SELF_PATH" health-check >/dev/null 2>&1; then
+            log "restart-verify: worker healthy after ${elapsed}s -- update OK"
+            return 0
+        fi
+        sleep "$interval"
+        elapsed=$(( elapsed + interval ))
+    done
+
+    log "restart-verify: worker did not become healthy within ${timeout}s -- rolling back"
+    cmd_rollback "$checkpoint_tag"
+}
+
+cmd_health_check() {
+    local manifest_file="${TAOS_CHECKPOINT_MANIFEST:-$INSTALL_DIR/rollback-manifest.json}"
+
+    local ok=true
+    local failures=()
+
+    # 1. Check service is active
+    if systemctl is-active --quiet tinyagentos-worker.service 2>/dev/null; then
+        log "health-check: tinyagentos-worker.service is active"
+    elif systemctl is-active --quiet taos-worker.service 2>/dev/null; then
+        log "health-check: taos-worker.service is active"
+    else
+        ok=false
+        failures+=("worker service not active")
+        # Try launchd (macOS)
+        if command -v launchctl >/dev/null 2>&1; then
+            if launchctl list | grep -q tinyagentos-worker 2>/dev/null; then
+                log "health-check: tinyagentos-worker found in launchd"
+                ok=true
+                failures=()
+            else
+                failures+=("worker not found in systemd or launchd")
+            fi
+        fi
+    fi
+
+    # 2. Check worker port is listening (default 9898)
+    local port="${TAOS_WORKER_PORT:-9898}"
+    if command -v ss >/dev/null 2>&1; then
+        if ss -tlnp 2>/dev/null | grep -q ":$port "; then
+            log "health-check: port $port is listening"
+        else
+            ok=false
+            failures+=("port $port not listening")
+        fi
+    elif command -v lsof >/dev/null 2>&1; then
+        # macOS has no ss, and BSD netstat rejects -tlnp, which would fail a
+        # healthy worker's check and roll it back.
+        if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+            log "health-check: port $port is listening"
+        else
+            ok=false
+            failures+=("port $port not listening")
+        fi
+    elif command -v netstat >/dev/null 2>&1; then
+        if netstat -tlnp 2>/dev/null | grep -q ":$port "; then
+            log "health-check: port $port is listening"
+        else
+            ok=false
+            failures+=("port $port not listening")
+        fi
+    fi
+
+    # 3. Check the checkpoint manifest exists
+    if [[ -f "$manifest_file" ]]; then
+        log "health-check: checkpoint manifest present"
+    else
+        log "health-check: no checkpoint manifest (not an error during normal operation)"
+    fi
+
+    if $ok; then
+        log "health-check: PASS"
+        echo '{"healthy": true}'
+    else
+        log "health-check: FAIL — ${failures[*]}"
+        echo "{\"healthy\": false, \"failures\": $(python3 -c "import sys,json; print(json.dumps(sys.argv[1:]))" "${failures[@]}" 2>/dev/null || echo '[]')}"
+        exit 1
+    fi
+}
+
 # --- dispatch ---------------------------------------------------------------
 case "${1:-help}" in
     install-ollama)   cmd_install_ollama ;;
@@ -246,10 +598,17 @@ case "${1:-help}" in
     install-rknpu)    cmd_install_rknpu ;;
     update-worker)    cmd_update_worker ;;
     status)           cmd_status ;;
+    checkpoint)       cmd_checkpoint ;;
+    rollback)         shift; cmd_rollback "$@" ;;
+    restart-self)     cmd_restart_self ;;
+    restart-and-verify) shift; cmd_restart_and_verify "$@" ;;
+    health-check)     shift; cmd_health_check "$@" ;;
     help|*)
         echo "usage: taos-deploy-helper.sh <command>"
         echo "commands: install-ollama, install-exo, install-llama-cpp [--cuda],"
         echo "          install-vllm, install-rknpu, update-worker, status"
+        echo "          checkpoint, rollback [<tag>], restart-self,"
+        echo "          restart-and-verify [<tag>], health-check"
         exit 1
         ;;
 esac
