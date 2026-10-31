@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -99,7 +100,13 @@ def _install_tree(tmp_path: Path) -> Path:
     return install
 
 
-def _run_helper(tmp_path: Path, bin_dir: Path, install: Path, argv: list[str]) -> subprocess.CompletedProcess:
+def _run_helper(
+    tmp_path: Path,
+    bin_dir: Path,
+    install: Path,
+    argv: list[str],
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
     env["TAOS_INSTALL_DIR"] = str(install)
@@ -113,8 +120,9 @@ def _run_helper(tmp_path: Path, bin_dir: Path, install: Path, argv: list[str]) -
     # systemctl.
     env.pop("BASH_ENV", None)
     env.pop("ENV", None)
+    env.update(extra_env or {})
     return subprocess.run(
-        ["bash", str(HELPER), *argv],
+        [shutil.which("bash") or "bash", str(HELPER), *argv],
         env=env,
         capture_output=True,
         text=True,
@@ -139,7 +147,7 @@ def test_rolls_back_when_the_worker_never_becomes_healthy(tmp_path: Path):
     assert "worker did not become healthy" in proc.stdout
     assert "rolling back" in proc.stdout
     # The rollback really restored the checkpointed code.
-    assert f"git -C {install / 'tinyagentos'} checkout --quiet {CHECKPOINT_TAG}" in calls.read_text()
+    assert f"git -C {install / 'tinyagentos'} checkout --quiet -B dev {CHECKPOINT_TAG}" in calls.read_text()
 
 
 def test_does_not_roll_back_when_the_worker_comes_up(tmp_path: Path):
@@ -176,3 +184,88 @@ def test_restart_self_schedules_the_health_verified_restart(tmp_path: Path):
     # target.
     assert f"TAOS_INSTALL_DIR={install}" in scheduled
     assert "TAOS_WORKER_PORT=9898" in scheduled
+
+
+def test_rollback_stays_on_the_recorded_branch(tmp_path: Path):
+    """A bare checkout of the tag detaches HEAD, and update-worker's
+    `git pull --ff-only origin <branch>` then fails on every later deploy."""
+    bin_dir, calls, _ = _fake_bin(tmp_path, healthy_after=0)
+    install = _install_tree(tmp_path)
+
+    proc = _run_helper(tmp_path, bin_dir, install, ["rollback", CHECKPOINT_TAG])
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert f"checkout --quiet -B dev {CHECKPOINT_TAG}" in calls.read_text()
+
+
+def test_rollback_of_a_detached_checkpoint_stays_detached(tmp_path: Path):
+    """`rev-parse --abbrev-ref HEAD` records "HEAD" for a detached worker; that
+    is not a branch name to create."""
+    bin_dir, calls, _ = _fake_bin(tmp_path, healthy_after=0)
+    install = _install_tree(tmp_path)
+    manifest = install / "rollback-manifest.json"
+    manifest.write_text(json.dumps({**json.loads(manifest.read_text()), "git_branch": "HEAD"}))
+
+    proc = _run_helper(tmp_path, bin_dir, install, ["rollback", CHECKPOINT_TAG])
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert f"checkout --quiet {CHECKPOINT_TAG}" in calls.read_text()
+    assert "-B" not in calls.read_text()
+
+
+def test_manifest_path_is_data_not_python_source(tmp_path: Path):
+    """A quote in TAOS_CHECKPOINT_MANIFEST must not break out of the Python
+    string literal the path used to be pasted into."""
+    bin_dir, calls, _ = _fake_bin(tmp_path, healthy_after=0)
+    install = _install_tree(tmp_path)
+    odd = tmp_path / "it's"
+    odd.mkdir()
+    manifest = odd / "manifest.json"
+    manifest.write_text((install / "rollback-manifest.json").read_text())
+
+    proc = _run_helper(
+        tmp_path, bin_dir, install, ["rollback"],
+        extra_env={"TAOS_CHECKPOINT_MANIFEST": str(manifest)},
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert f"checkout --quiet -B dev {CHECKPOINT_TAG}" in calls.read_text()
+
+
+def _macos_like_path(bin_dir: Path, *, port_listening: bool) -> None:
+    """A PATH with no `ss`, BSD `netstat` (which rejects -tlnp) and `lsof`."""
+    (bin_dir / "ss").unlink()
+    _write_fake(bin_dir, "netstat", 'echo "netstat: illegal option" >&2\nexit 64\n')
+    _write_fake(bin_dir, "lsof", "exit 0\n" if port_listening else "exit 1\n")
+    for tool in ("bash", "grep", "python3", "dirname", "basename", "id", "uname", "cat", "date", "sed"):
+        found = shutil.which(tool)
+        if found:
+            (bin_dir / tool).symlink_to(found)
+
+
+def test_health_check_finds_the_port_without_ss(tmp_path: Path):
+    """On macOS a healthy worker failed the port check, because BSD netstat
+    exits 64 on -tlnp, and post_update_startup then rolled it back."""
+    bin_dir, _, _ = _fake_bin(tmp_path, healthy_after=0)
+    _macos_like_path(bin_dir, port_listening=True)
+    install = _install_tree(tmp_path)
+
+    proc = _run_helper(
+        tmp_path, bin_dir, install, ["health-check"], extra_env={"PATH": str(bin_dir)}
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "port 9898 is listening" in proc.stdout
+
+
+def test_health_check_still_fails_a_closed_port_without_ss(tmp_path: Path):
+    bin_dir, _, _ = _fake_bin(tmp_path, healthy_after=0)
+    _macos_like_path(bin_dir, port_listening=False)
+    install = _install_tree(tmp_path)
+
+    proc = _run_helper(
+        tmp_path, bin_dir, install, ["health-check"], extra_env={"PATH": str(bin_dir)}
+    )
+
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert "port 9898 not listening" in proc.stdout + proc.stderr

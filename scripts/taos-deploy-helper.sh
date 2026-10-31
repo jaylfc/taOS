@@ -413,7 +413,7 @@ cmd_rollback() {
     if [[ -z "$checkpoint_tag" ]]; then
         # Read the tag from the manifest if not provided
         if [[ -f "$manifest_file" ]]; then
-            checkpoint_tag="$(python3 -c "import json; print(json.load(open('$manifest_file')).get('checkpoint_tag',''))" 2>/dev/null || true)"
+            checkpoint_tag="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("checkpoint_tag",""))' "$manifest_file" 2>/dev/null || true)"
         fi
         if [[ -z "$checkpoint_tag" ]]; then
             die "no checkpoint tag provided and no manifest found at $manifest_file"
@@ -436,15 +436,30 @@ cmd_rollback() {
     # stop would kill us before the rollback completes.  The worker was
     # drained before this phase; a restart at the end picks up the
     # restored code.
-    git -C "$repo_dir" checkout --quiet "$checkpoint_tag" || {
-        die "git checkout $checkpoint_tag failed"
-    }
+    #
+    # Checking out the tag alone detaches HEAD, and update-worker's
+    # `git pull --ff-only origin <branch>` then fails on every later deploy, so
+    # put the checkpointed branch back on the tag. A worker that was already
+    # detached recorded "HEAD" and stays detached.
+    local git_branch=""
+    if [[ -f "$manifest_file" ]]; then
+        git_branch="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("git_branch",""))' "$manifest_file" 2>/dev/null || true)"
+    fi
+    if [[ -n "$git_branch" && "$git_branch" != "HEAD" && "$git_branch" != "detached" ]]; then
+        git -C "$repo_dir" checkout --quiet -B "$git_branch" "$checkpoint_tag" || {
+            die "git checkout -B $git_branch $checkpoint_tag failed"
+        }
+    else
+        git -C "$repo_dir" checkout --quiet "$checkpoint_tag" || {
+            die "git checkout $checkpoint_tag failed"
+        }
+    fi
     log "restored code to $checkpoint_tag ($(git -C "$repo_dir" rev-parse --short HEAD))"
 
     # Reinstall dependencies
     if [[ -f "$manifest_file" ]]; then
         local pkg_manager
-        pkg_manager="$(python3 -c "import json; print(json.load(open('$manifest_file')).get('package_manager','pip'))" 2>/dev/null || echo "pip")"
+        pkg_manager="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("package_manager","pip"))' "$manifest_file" 2>/dev/null || echo "pip")"
         if [[ "$pkg_manager" == "uv" ]] && command -v uv >/dev/null 2>&1; then
             log "reinstalling deps with uv sync"
             cd "$repo_dir" && uv sync --frozen 2>/dev/null || uv sync || log "WARN: uv sync had errors — continuing"
@@ -534,6 +549,15 @@ cmd_health_check() {
     local port="${TAOS_WORKER_PORT:-9898}"
     if command -v ss >/dev/null 2>&1; then
         if ss -tlnp 2>/dev/null | grep -q ":$port "; then
+            log "health-check: port $port is listening"
+        else
+            ok=false
+            failures+=("port $port not listening")
+        fi
+    elif command -v lsof >/dev/null 2>&1; then
+        # macOS has no ss, and BSD netstat rejects -tlnp, which would fail a
+        # healthy worker's check and roll it back.
+        if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
             log "health-check: port $port is listening"
         else
             ok=false
