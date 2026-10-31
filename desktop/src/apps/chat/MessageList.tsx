@@ -299,6 +299,11 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
     setSelectedMessageId(null);
   }, [selectedChannel]);
 
+  // Editing replaces the message actions; drop any selection when editing starts.
+  useEffect(() => {
+    if (editingMessageId) setSelectedMessageId(null);
+  }, [editingMessageId]);
+
   // Tapping anywhere outside the selected row (and outside the emoji popover)
   // clears the selection. Registered only while something is selected.
   useEffect(() => {
@@ -403,7 +408,8 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
         isOwnMessage(m, currentUserId) &&
         !m.deleted_at &&
         m.state !== "pending" &&
-        m.state !== "streaming"
+        m.state !== "streaming" &&
+        m.state !== "error"
       ) {
         lastOwnIndex = k;
         break;
@@ -867,12 +873,14 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                   } ${firstOfRun ? "mt-2.5" : ""} ${hasReactions ? "mb-3" : ""}`}
                   title={new Date(toMs(msg.created_at)).toLocaleString()}
                   role="group"
-                  aria-describedby={`msg-actions-hint-${msg.id}`}
+                  aria-describedby={editingMessageId === msg.id ? undefined : `msg-actions-hint-${msg.id}`}
                   {...(editingMessageId === msg.id ? {} : mobileRowHandlers(msg.id))}
                 >
-                  <span id={`msg-actions-hint-${msg.id}`} className="sr-only">
-                    Press Enter to open message actions
-                  </span>
+                  {editingMessageId !== msg.id && (
+                    <span id={`msg-actions-hint-${msg.id}`} className="sr-only">
+                      Press Enter to open message actions
+                    </span>
+                  )}
                   {!own && (
                     <div className="w-7 shrink-0">
                       {lastOfRun && (
