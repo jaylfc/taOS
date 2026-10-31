@@ -21,8 +21,9 @@ weights whose licence allows public redistribution. Three gaps matter:
    only through the central tracker (plus LAN discovery when it happens to
    work), and a box with no taOS account cannot join at all.
 3. **Gated and non-redistributable weights** (Llama base, Flux Dev) are
-   HTTP-only by design, so they get no help at all, even between a user's own
-   machines, where no redistribution happens.
+   HTTP-from-Hugging-Face only by design, so they get no help at all, even
+   between a user's own machines. Changing that is an open owner decision
+   (open question 5), not part of this design.
 
 "Closed" in this doc means: only authenticated taOS identities take part, and
 transfers happen only inside a trust boundary the user chose. It is never an
@@ -55,14 +56,23 @@ open public swarm.
 
 | Ring | Who | What may flow | Discovery |
 |---|---|---|---|
-| **1. Own cluster** | the controller and its workers | any weights the user holds, including gated ones | the cluster's worker list |
-| **2. Own boxes** | other taOS boxes on the same taOS account | any weights the user holds | the account's Headscale tailnet |
+| **1. Own cluster** | the controller and its workers | redistributable weights the user holds (gated: open question 5) | the cluster's worker list |
+| **2. Own boxes** | other taOS boxes on the same taOS account | redistributable weights the user holds (gated: open question 5) | the account's Headscale tailnet (needs the mesh up) |
 | **3. taOSnet** | any authenticated taOS account | redistributable weights only | private tracker |
 
 Rings 1 and 2 are the user copying their own files between their own
-machines, which licences that forbid redistribution permit (the user already
-accepted the licence and downloaded once). Ring 3 is today's taOSnet. A
-transfer always uses the innermost ring that has the file.
+machines. Ring 3 is today's taOSnet. A transfer always uses the innermost
+ring that has the file.
+
+Gated and non-commercial weights keep the current rule in every ring: HTTP
+from Hugging Face only, never peer-to-peer, including between a user's own
+boxes. Letting them move box to box in rings 1 and 2 is a proposed extension
+that needs an owner decision and a licence review (open question 5); until
+then the ring 1 and 2 routes neither list nor serve them.
+
+Ring 2 rides the mesh: it exists only when both boxes have joined the
+account's Headscale tailnet (`mesh_up`). With no mesh, ring 2 is unavailable
+and the download falls through to ring 3 or HTTP.
 
 ### Ring 1 and 2: owner-local sharing
 
@@ -79,9 +89,10 @@ transfer always uses the innermost ring that has the file.
 - **Fetch:** before HTTP or torrent, the download manager asks ring 1 then
   ring 2 peers for the file by SHA-256 and pulls ranges from the fastest one,
   verifying the hash. Missing or failing peers fall through to the next ring.
-- **Never leaves the rings:** gated weights are never added to a torrent and
-  never served to a ring 3 peer. The local index route refuses any caller
-  that is not ring 1 or 2.
+- **Gated weights stay HTTP-only:** gated and non-commercial weights are
+  never added to a torrent, never listed in the local index and never served
+  by the blob route, in any ring, unless open question 5 is decided the other
+  way. The local index route refuses any caller that is not ring 1 or 2.
 
 ### Ring 3: turn taOSnet on
 
@@ -90,9 +101,20 @@ transfer always uses the innermost ring that has the file.
   `routes/models.py` passes all three through.
 - Content identity is the file SHA-256 already in manifests; the torrent is
   a transport, not the identity.
-- **Bind to the mesh when available:** with a mesh up, listen on the
-  tailnet interface only for peer traffic, so a box never opens a public
-  port for seeding unless the user asks.
+- **Split listeners when a mesh is up:** ring 3 peers are other accounts,
+  so they are never on this account's tailnet. A box therefore listens on
+  both: the ring 1 and 2 routes are accepted only on the tailnet interface
+  (and the cluster link for ring 1), and ring 3 BitTorrent traffic is
+  accepted only on the existing libtorrent listener, governed by today's
+  seeding settings. Per-ring auth is unchanged: worker token for ring 1,
+  tailnet source address plus account-bound token for ring 2, tracker
+  passkey for ring 3. The mesh adds no public port and does not stop ring 3
+  seeding.
+- **Not chosen: one shared tailnet with ACLs.** Putting every account on
+  one tailnet would let ring 3 ride the mesh too, but it breaks the
+  per-account tailnet from `taosgo-mesh-join-foundation.md`, makes a tailnet
+  source address worthless as a ring 2 signal, and turns any ACL mistake
+  into strangers reaching a box's ring 1 and 2 routes.
 - Per-model seeding opt-out and a stats view (uploaded, peers, ratio) in the
   Models app.
 
@@ -108,8 +130,8 @@ of scope for v1).
 
 | Route | Ring | Notes |
 |---|---|---|
-| `GET /api/taosnet/local/index` | 1, 2 | held files by SHA-256; refuses ring 3 |
-| `GET /api/taosnet/local/blob/{sha256}` | 1, 2 | HTTP range; refuses ring 3 and unknown hashes |
+| `GET /api/taosnet/local/index` | 1, 2 | held redistributable files by SHA-256; tailnet or cluster link only; refuses ring 3 |
+| `GET /api/taosnet/local/blob/{sha256}` | 1, 2 | HTTP range; tailnet or cluster link only; refuses ring 3, unknown hashes and gated files |
 | `GET /api/taosnet/status` | local UI | rings reachable, seeding stats |
 | existing `routes/torrent.py` settings | local UI | gains per-model opt-out |
 
@@ -124,7 +146,7 @@ of scope for v1).
    account-bound check. Hardware test: two boxes on one account.
 4. **Ring 3 publish:** the catalog-publish CLI and the first manifests with
    `info_hash` (needs the seedbox; taos.my side).
-5. **Mesh-only binding, opt-out, stats UI.**
+5. **Split listeners, opt-out, stats UI.**
 
 ## Open questions
 
@@ -137,3 +159,13 @@ of scope for v1).
    download? Proposal: ask once, remember.
 4. Should local-only models (no catalog entry) be shareable in rings 1 and 2
    by hash alone? Proposal: yes in phase 5, with the user confirming.
+5. **Owner decision: gated and non-commercial weights in rings 1 and 2.**
+   Today these are HTTP from Hugging Face only. The proposed extension lets
+   them move box to box between a user's own machines (cluster workers and
+   same-account boxes), never to ring 3 and never into a torrent. Before it
+   ships, someone needs to clear, per licence family (Llama, Flux Dev and
+   other gated or non-commercial terms), whether copying between one user's
+   own machines is permitted, whether each machine needs its own licence
+   acceptance or Hugging Face download, and what a shared household account
+   means for "the user's own machines". Until then rings 1 and 2 carry
+   redistributable weights only.
