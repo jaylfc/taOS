@@ -13,6 +13,76 @@ revoked feed, and an agent-JWT kanban read.
 import pytest
 
 
+@pytest.mark.asyncio
+async def test_concurrent_revoke_race(client, app, monkeypatch, tmp_path):
+    """Concurrent revoke during cloud_agent member removal should succeed (tsk-diqvyc)."""
+    await _setup_agent_ecosystem(app, monkeypatch, tmp_path)
+    monkeypatch.setenv("TAOS_CONTROLLER_RELAY_URL", "https://relay.example.test")
+    pid = await _create_project(client, slug="concur")
+    cid, _token = await _invite_and_redeem(client, pid, kind="cloud_agent")
+    
+    # Step 1: Set up race condition by monkeypatching registry.revoke
+    registry = app.state.agent_registry
+    
+    original_revoke = registry.revoke
+    
+    async def racing_revoke(canonical_id):
+        await original_revoke(canonical_id)
+        return await original_revoke(canonical_id)
+    
+    monkeypatch.setattr(registry, "revoke", racing_revoke)
+    
+    # Step 2: Now call DELETE /api/projects/{pid}/members/{member_id}
+    # The fix in _revoke_cloud_agent_identity should handle this race condition
+    resp = await client.delete(f"/api/projects/{pid}/members/{cid}")
+    assert resp.status_code == 200, resp.text
+    
+    # Step 3: Assert the member is gone (remove_member succeeded)
+    members = await app.state.project_store.list_members(pid)
+    assert cid not in {m["member_id"] for m in members}
+    assert cid in await _revoked_ids(client)
+
+
+@pytest.mark.asyncio
+async def test_revoke_value_error_without_state_change_is_raised(client, app, monkeypatch, tmp_path):
+    """When registry.revoke raises ValueError without state change, it propagates (tsk-diqvyc)."""
+    await _setup_agent_ecosystem(app, monkeypatch, tmp_path)
+    monkeypatch.setenv("TAOS_CONTROLLER_RELAY_URL", "https://relay.example.test")
+    pid = await _create_project(client, slug="valerror")
+    cid, _token = await _invite_and_redeem(client, pid, kind="cloud_agent")
+    
+    # Verify the member exists
+    members = await app.state.project_store.list_members(pid)
+    assert cid in {m["member_id"] for m in members}
+    assert cid not in await _revoked_ids(client)
+    
+    # Step 1: Monkeypatch registry.revoke to raise ValueError
+    registry = app.state.agent_registry
+    original_revoke = registry.revoke
+    
+    async def raising_revoke(canonical_id):
+        raise ValueError("boom")
+    
+    monkeypatch.setattr(registry, "revoke", raising_revoke)
+    
+    # Step 2: Try to DELETE the cloud_agent member, expecting error to propagate
+    # Check if client raises ValueError directly (from FastAPI exception handling)
+    # or if we get a 500 error instead
+    try:
+        resp = await client.delete(f"/api/projects/{pid}/members/{cid}")
+        # If we reach here, the error was not propagated - check if it's a 500
+        # This would happen if the client fixture does not raise app exceptions
+        assert resp.status_code == 500, f"Expected 500 for ValueError, got {resp.status_code}: {resp.text}"
+    except ValueError as e:
+        # Client raised ValueError directly - this is what we want
+        assert str(e) == "boom"
+    
+    # Step 3: Verify the member still exists (revoke failed without state change)
+    members = await app.state.project_store.list_members(pid)
+    assert cid in {m["member_id"] for m in members}
+    assert cid not in await _revoked_ids(client)
+
+
 async def _create_project(client, slug) -> str:
     resp = await client.post("/api/projects", json={"name": "Remove Proj", "slug": slug})
     assert resp.status_code == 200, resp.text

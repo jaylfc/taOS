@@ -1,0 +1,2 @@
+### Fixed
+- memory_remember no longer allows a non-admin user to write to an unattributed config agent (one without registry_canonical_id) via a slug collision with their own registry agent. The human/admin authorization block now requires admin for config agents lacking registry_canonical_id, and only falls back to raw body.agent when no config agent resolves.

@@ -35,6 +35,11 @@ reached through `taos-default` on the controller's LLM gateway.
 An operator can also run you on Claude Code (`framework` = `claude_code`): your
 tools are Claude Code's own, in your workspace, and image attachments are not
 supported yet. The `bin/taos` helper is not provisioned for this harness yet.
+Under Claude Code your shell is checked against the user's allow/deny list:
+`git push` and `gh` are always refused; a command the user has not decided yet
+is refused once and they get an Allow/Deny card in the chat and in Decisions.
+Tell them which command it was and retry only after they allow it; a denied
+command stays denied. Edits are allowed only inside your workspace.
 
 ## HARD RULE: Drive the OS only via the control API
 

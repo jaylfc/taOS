@@ -6,7 +6,7 @@ import logging
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, Response
 
 from tinyagentos.auth_context import (
@@ -44,7 +44,7 @@ def _validate_slash_target(content: str, channel: dict | None) -> str | None:
     the channel, producing N different /help outputs and (in some
     frameworks) triggering destructive side effects like /clear on
     unaddressed agents. Applies to HTTP /api/chat/messages and the
-    WS "message" branch — the safety must not be transport-dependent (#268).
+    WS "message" branch -- the safety must not be transport-dependent (#268).
     """
     if not content.lstrip().startswith("/"):
         return None
@@ -247,7 +247,7 @@ async def chat_ws(websocket: WebSocket):
                     continue
                 if msg["author_id"] != user_id:
                     continue
-                # Only truncate subsequent messages in DM channels —
+                # Only truncate subsequent messages in DM channels --
                 # editing in a multi-human group must not delete other
                 # people's messages.  The agent is only re-triggered in
                 # DM channels for the same reason.
@@ -717,7 +717,7 @@ async def edit_message_endpoint(message_id: str, request: Request):
     caller_id = session_user["id"] if session_user else None
     if msg["author_id"] != caller_id:
         return JSONResponse({"error": "not the author"}, status_code=403)
-    # Only truncate subsequent messages in DM channels — editing in a
+    # Only truncate subsequent messages in DM channels -- editing in a
     # multi-human group must not delete other people's messages.  The
     # agent is only re-triggered in DM channels for the same reason.
     ch_store = request.app.state.chat_channels
@@ -839,15 +839,35 @@ async def search_messages(
     if not q or len(q) < 2:
         return {"results": [], "query": q}
     msg_store = request.app.state.chat_messages
-    results = await msg_store.search(q, channel_id=channel_id, limit=limit)
     ch_store = request.app.state.chat_channels
-    readable: dict[str, bool] = {}
-    for r in results:
-        cid = r.get("channel_id")
-        if cid not in readable:
-            ch = await ch_store.get_channel(cid) if cid else None
-            readable[cid] = caller_can_read_channel(request, ch or {})
-    results = [r for r in results if readable[r.get("channel_id")]]
+
+    # Compute readable channel IDs first
+    is_admin = getattr(request.state, "is_admin", False)
+    is_local_token = getattr(request.state, "via", None) == "local_token"
+    if is_admin or is_local_token:
+        readable_channel_ids = None  # None means all channels
+    else:
+        uid = getattr(request.state, "user_id", None)
+        if uid is None:
+            readable_channel_ids = []
+        else:
+            member_channels = await ch_store.list_channels(member_id=str(uid))
+            readable_channel_ids = [c["id"] for c in member_channels if caller_can_read_channel(request, c)]
+
+    # If a specific channel_id was requested, intersect with readable
+    if channel_id is not None:
+        if readable_channel_ids is None:
+            readable_channel_ids = [channel_id]
+        elif channel_id in readable_channel_ids:
+            readable_channel_ids = [channel_id]
+        else:
+            readable_channel_ids = []
+
+    # Early return if no readable channels
+    if readable_channel_ids == []:
+        return {"results": [], "query": q}
+
+    results = await msg_store.search(q, channel_ids=readable_channel_ids, limit=limit)
     return {"results": results, "query": q}
 
 
@@ -994,14 +1014,21 @@ async def post_thinking(channel_id: str, body: dict, request: Request):
     bearer = request.headers.get("authorization", "")
     if not bearer.lower().startswith("bearer "):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
-    if auth is None or not auth.validate_local_token(bearer[7:].strip()):
-        return JSONResponse({"error": "Unauthorized"}, status_code=401)
-
-    bound_agent = auth.get_local_token_agent(bearer[7:].strip())
-    if bound_agent:
+    token = bearer[7:].strip()
+    via = getattr(request.state, "via", None)
+    if via == "registry_jwt_deployed_agent":
         slug = (body or {}).get("slug")
-        if slug != bound_agent:
-            return JSONResponse({"error": "forbidden: slug does not match credential"}, status_code=403)
+        expected = getattr(request.state, "agent_name", None)
+        if slug != expected:
+            return JSONResponse({"error": "slug does not match credential"}, status_code=403)
+    elif auth is None or not auth.validate_local_token(token):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    else:
+        bound_agent = auth.get_local_token_agent(token)
+        if bound_agent:
+            slug = (body or {}).get("slug")
+            if slug != bound_agent:
+                return JSONResponse({"error": "forbidden: slug does not match credential"}, status_code=403)
 
     slug = (body or {}).get("slug")
     state = (body or {}).get("state")
@@ -1045,4 +1072,86 @@ async def get_typing(channel_id: str, request: Request):
     if reg is None:
         return JSONResponse({"human": [], "agent": []})
     return JSONResponse(reg.list(channel_id))
+
+
+# ── Receipts ────────────────────────────────────────────────────────────────
+
+@router.get("/api/chat/messages/{message_id}/receipts")
+async def get_message_receipts(message_id: str, request: Request, user: CurrentUser = Depends(current_user_or_device)):
+    """Get delivery/seen receipts for a message."""
+    msg_store = request.app.state.chat_messages
+    msg = await msg_store.get_message(message_id)
+    if msg is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    # Load the channel
+    ch_store = request.app.state.chat_channels
+    channel = await ch_store.get_channel(msg["channel_id"])
+    if channel is None:
+        return JSONResponse({"error": "Channel not found"}, status_code=404)
+    # Check membership
+    members = channel.get("members") or []
+    user_id_str = str(user.user_id)
+    if not user.is_admin and user_id_str not in members:
+        return JSONResponse({"error": "Not a member of this channel"}, status_code=403)
+    receipts = await msg_store.get_receipts(message_id)
+    # SPA's Receipt type uses agent_id = reader_id
+    formatted = [
+        {
+            "message_id": r["message_id"],
+            "agent_id": r["reader_id"],
+            "reader_type": r["reader_type"],
+            "delivered_at": r["delivered_at"],
+            "seen_at": r["seen_at"],
+        }
+        for r in receipts
+    ]
+    return {"receipts": formatted}
+
+
+@router.patch("/api/chat/receipts")
+async def mark_receipt_seen(request: Request, user: CurrentUser = Depends(current_user_or_device)):
+    """Mark a message as seen by the human viewer.
+    
+    Body: {"message_id": str}
+    Takes user_id from the session (taos_session cookie) or device bearer.
+    """
+    # Parse body and ensure it's a dict
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "Expected JSON object"}, status_code=400)
+    message_id = body.get("message_id")
+    if not isinstance(message_id, str) or not message_id:
+        return JSONResponse({"error": "message_id required"}, status_code=400)
+    
+    msg_store = request.app.state.chat_messages
+    msg = await msg_store.get_message(message_id)
+    if msg is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    # Load the channel
+    ch_store = request.app.state.chat_channels
+    channel = await ch_store.get_channel(msg["channel_id"])
+    if channel is None:
+        return JSONResponse({"error": "Channel not found"}, status_code=404)
+    # Check membership
+    members = channel.get("members") or []
+    user_id_str = str(user.user_id)
+    if not user.is_admin and user_id_str not in members:
+        return JSONResponse({"error": "Not a member of this channel"}, status_code=403)
+    
+    hub = request.app.state.chat_hub
+    receipt_row = await msg_store.mark_seen(message_id, user.user_id, "user")
+    if receipt_row:
+        await hub.broadcast(msg["channel_id"], {
+            "type": "receipt",
+            "seq": hub.next_seq(),
+            "message_id": receipt_row["message_id"],
+            "agent_id": receipt_row["reader_id"],
+            "reader_type": receipt_row["reader_type"],
+            "delivered_at": receipt_row["delivered_at"],
+            "seen_at": receipt_row["seen_at"],
+        })
+    return {"status": "marked"}
 

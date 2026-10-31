@@ -147,6 +147,20 @@ async def app_with_contacts(tmp_data_dir, monkeypatch):
         await store.close()
 
 
+@pytest_asyncio.fixture(autouse=True)
+async def _drain_handshake_tasks():
+    """Cancel any background handshake exchange left by a test."""
+    import asyncio
+
+    yield
+    from tinyagentos.routes import hub as hub_routes
+
+    tasks = list(hub_routes._BACKGROUND_TASKS)
+    for t in tasks:
+        t.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
 @pytest_asyncio.fixture
 async def client_with_contacts(app_with_contacts):
     """Async client with contacts_store, auth, and proxied directory."""

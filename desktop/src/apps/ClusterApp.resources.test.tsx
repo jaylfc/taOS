@@ -106,6 +106,76 @@ describe("ClusterResourcesPanel", () => {
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
   });
 
+  it("resets a selected type filter whose value vanished after a refresh", () => {
+    const first = makeData();
+    const { rerender } = render(<ClusterResourcesPanel data={first} loading={false} />);
+
+    fireEvent.change(screen.getByLabelText("Type"), { target: { value: "backend" } });
+    expect(rowNames()).toEqual(["llama-cpp"]);
+
+    // Refresh: the "backend" type no longer appears in the data.
+    const second: ClusterResources = {
+      ...first,
+      resources: first.resources.filter((r) => r.type !== "backend"),
+    };
+    rerender(<ClusterResourcesPanel data={second} loading={false} />);
+
+    // Filter must reset to All and the remaining rows must render.
+    expect((screen.getByLabelText("Type") as HTMLSelectElement).value).toBe("__all__");
+    expect(rowNames()).toEqual(["alice", "bob", "local"]);
+  });
+
+  it("resets a selected worker filter whose value vanished after a refresh", () => {
+    const first = makeData();
+    const { rerender } = render(<ClusterResourcesPanel data={first} loading={false} />);
+
+    fireEvent.change(screen.getByLabelText("Worker"), { target: { value: "gpu-box" } });
+    expect(rowNames()).toEqual(["llama-cpp"]);
+
+    const second: ClusterResources = {
+      ...first,
+      resources: first.resources.filter((r) => r.worker !== "gpu-box"),
+    };
+    rerender(<ClusterResourcesPanel data={second} loading={false} />);
+
+    expect((screen.getByLabelText("Worker") as HTMLSelectElement).value).toBe("__all__");
+    expect(rowNames()).toEqual(["alice", "bob", "local"]);
+  });
+
+  it("resets a selected state filter whose value vanished after a refresh", () => {
+    const first = makeData();
+    const { rerender } = render(<ClusterResourcesPanel data={first} loading={false} />);
+
+    fireEvent.change(screen.getByLabelText("State"), { target: { value: "stopped" } });
+    expect(rowNames()).toEqual(["llama-cpp"]);
+
+    const second: ClusterResources = {
+      ...first,
+      resources: first.resources.filter((r) => r.state !== "stopped"),
+    };
+    rerender(<ClusterResourcesPanel data={second} loading={false} />);
+
+    expect((screen.getByLabelText("State") as HTMLSelectElement).value).toBe("__all__");
+    expect(rowNames()).toEqual(["alice", "bob", "local"]);
+  });
+
+  it("keeps a filter selection whose value still exists after a refresh", () => {
+    const first = makeData();
+    const { rerender } = render(<ClusterResourcesPanel data={first} loading={false} />);
+
+    fireEvent.change(screen.getByLabelText("Type"), { target: { value: "agent" } });
+    expect(rowNames()).toEqual(["alice", "bob"]);
+
+    const second: ClusterResources = {
+      ...first,
+      resources: [row({ type: "agent", name: "carol", worker: "gpu-box", state: "running" })],
+    };
+    rerender(<ClusterResourcesPanel data={second} loading={false} />);
+
+    expect((screen.getByLabelText("Type") as HTMLSelectElement).value).toBe("agent");
+    expect(rowNames()).toEqual(["carol"]);
+  });
+
   it("shows the loading state before the first response", () => {
     render(<ClusterResourcesPanel data={null} loading={true} />);
     expect(screen.getByText("Loading resources...")).toBeInTheDocument();

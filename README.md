@@ -156,7 +156,7 @@ taOS ships with a full browser-based desktop environment. Open it at `http://you
 
 ### 43 Bundled Desktop Apps
 
-**Platform apps (29):** Messages (WebSocket chat), Mail (IMAP/SMTP accounts, read and send), Projects (Kanban + A2A), Agents (deploy wizard + logs + skills), Store (109+ apps), Settings (multi-section with Memory capture toggles, the lock screen unlock method, and an admin demo-mode switch), Models, Providers (cloud LLM provider management, add/test/remove OpenAI, Anthropic, DeepSeek, and compatible APIs), Memory (User + Agent sections), MCP (plugin manager), Channels, Secrets, Tasks, Import, Images (Image Studio: Create / Library / Edit with tier-aware inpaint + upscale backends), Dashboard (Activity), Cluster (worker management + health), Library (knowledge pipeline, document library with collections and search), Agent Browsers (manage agent browser sessions), Files (real VFS with workspace + shared folders), taOS Agent (Agent-as-a-Model endpoint), Guides, Feedback, Decisions, Notifications, Observatory, Notes, Todo, Hub (taOS hub account and sharing).
+**Platform apps (29):** Messages (WebSocket chat), Mail (IMAP/SMTP accounts, read and send), Projects (Kanban + A2A), Agents (deploy wizard + logs + skills), Store (109+ apps), Settings (multi-section with Memory capture toggles, the lock screen unlock method, and an admin demo-mode switch), Models, Providers (cloud LLM provider management, add/test/remove OpenAI, Anthropic, DeepSeek, and compatible APIs), Memory (User + Agent sections), MCP (plugin manager), Channels, Secrets, Tasks, Images (Image Studio: Create / Library / Edit with tier-aware inpaint + upscale backends), Dashboard (Activity), Cluster (worker management + health), Library (knowledge pipeline, document library with collections, search, and local-file ingestion), Agent Browsers (manage agent browser sessions), Files (real VFS with workspace + shared folders), taOS Agent (Agent-as-a-Model endpoint), Guides, Feedback, Decisions, Notifications (live inbox + preferences), Notification History (search and filter past notifications by text, source, level, date and state), Observatory, Notes, Todo, Hub (taOS hub account and sharing).
 
 **Optional taOS apps (4):** Reddit (subreddit browser with saved threads and memory ingest), YouTube (video library with transcript extraction), GitHub (repository browser with code search), and X (feed monitor with bookmarks and memory capture) ship in the build but are not installed by default; install or remove them from the Store's "taOS Apps" section.
 
@@ -350,7 +350,7 @@ Create shared file spaces for agents, groups, and departments. The design team s
 - **Secrets Manager.** Encrypted storage with per-agent access control
 - **Inter-Agent Relationships.** Groups, departments, lead agents, permissions matrix
 - **Scheduled Tasks.** Cron jobs with presets, per-agent or group assignment
-- **Data Import.** Drag-and-drop file upload to agent memory
+- **Data Import.** Drag-and-drop file upload to Library (ingests .txt, .md, .pdf, .html, .json, .csv; auto-embeds via subscriptions or manual "Embed files into an agent")
 - **Memory Browser.** Keyword + semantic vector search across all agents
 - **Agent Export/Import.** Portable JSON export of agent config, channels, and group memberships
 
@@ -516,6 +516,8 @@ Run `curl -fsSL https://raw.githubusercontent.com/jaylfc/taOS/master/scripts/ins
 | `/home/<user>/.cache/qmd/index.sqlite` | User memory index (taOSmd knowledge base for personal notes). Per-agent indexes live separately under `data/agent-memory/{name}/index.sqlite`. |
 | Ports listened on | **6969** (controller HTTP API + web UI), **6970** (browser-proxy second-origin, `TAOS_BROWSER_PROXY_PORT`), **6974** (device TLS listener, `TAOS_DEVICE_TLS_PORT`), **7832** (qmd embedding service), **7838** (LLM gateway agent listener, loopback only) |
 | Env vars set | `TAOS_SPA_DIR=$INSTALL_DIR/static/desktop` (points the controller at the staged desktop bundle for non-editable `pip install .` users) |
+| Local desktop (optional) | Asked during install, or `TAOS_DESKTOP=local` / `TAOS_DESKTOP=headless` for unattended installs. `local` runs `scripts/kiosk-setup.sh` and enables `taos-kiosk.service`, so the machine boots into the taOS desktop. Default: headless. |
+| Desktop launcher | On a machine that already has a desktop (and local desktop not chosen), adds a taOS entry to the app menu. Remove with `sudo taos desktop launcher remove`. |
 | OS packages added | python3 + venv + pip, git, curl, ca-certificates, libtorrent-rasterbar (model torrent mesh), Node.js 22 (qmd + SPA build), sqlite3, libsqlcipher (encrypted secrets), vulkan-tools (hardware detection) |
 | User accounts created | None for the LLM layer any more. Everything runs as the user who ran the installer. Older installs may still have a `litellm` Postgres role and database from before LiteLLM was removed; nothing uses them now. |
 

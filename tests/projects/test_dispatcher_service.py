@@ -245,10 +245,9 @@ class TestDispatcherServiceTickUser:
         assert result2["assignments_made"] == 1
 
         leases2 = await real_stores.dispatcher_store.pending_for_agent(agent_cid)
-        # Should have 2 leases total (one from first tick, one from second)
-        assert len(leases2) == 2
-        task_ids = {l["task_id"] for l in leases2}
-        assert task_ids == {blocker_id, blocked_id}
+        # the blocker's lease was resolved 'closed' by reconcile
+        assert len(leases2) == 1
+        assert leases2[0]["task_id"] == blocked_id
 
     @pytest.mark.asyncio
     async def test_disabled_by_default_assigns_nothing(self, real_stores, tmp_path):
@@ -647,6 +646,275 @@ class TestDispatcherServiceTick:
         # We can't easily cause a per-user failure without more mocking,
         # so this test mainly verifies the try/except structure exists
 
+    @pytest.mark.asyncio
+    async def test_tick_disabled_user_expired_lease_counts_expired(self, real_stores, tmp_path):
+        """tick() with a disabled user holding an expired pending lease returns
+        totals with expired_count >= 1."""
+        board_row, tasks = await seed_board_with_cards(real_stores, "u1", "Test Board", 1)
+        board_id = board_row["id"]
+        task_id = tasks[0]["id"]
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+        await real_stores.task_store._db.execute(
+            "UPDATE project_tasks SET labels = json_array('claimable') WHERE id = ?",
+            (task_id,),
+        )
+        await real_stores.task_store._db.commit()
+
+        agent_cid = await register_agent_with_grant(real_stores, "agent-disabled-expired", board_id, "project_tasks")
+
+        now = 1000.0
+
+        # Task must be assigned to the agent for unassign_if to succeed
+        await real_stores.task_store._db.execute(
+            "UPDATE project_tasks SET assignee_id = ?, claimed_by = NULL, status = 'open' WHERE id = ?",
+            (agent_cid, task_id),
+        )
+        await real_stores.task_store._db.commit()
+
+        # Create a pending expired lease
+        lease_id = await real_stores.dispatcher_store.insert_lease(
+            user_id="u1",
+            task_id=task_id,
+            project_id=board_id,
+            canonical_id=agent_cid,
+            assignee_written=agent_cid,
+            reason="test",
+            assigned_at=now - 100,
+            lease_expires_at=now - 50,  # expired
+        )
+
+        # Configure dispatcher as DISABLED
+        await real_stores.dispatcher_store.set_config(
+            "u1",
+            DispatcherConfig(
+                user_id="u1",
+                enabled=False,  # Disabled
+                eligible_agents=[agent_cid],
+                max_concurrent_per_agent=1,
+                lease_seconds=900,
+            ),
+            updated_by="test",
+        )
+
+        config = SimpleNamespace(agents=[], wake_budget={"global_default": 100})
+        app_state = SimpleNamespace(
+            config=config,
+            data_dir=tmp_path,
+            project_store=real_stores.project_store,
+            project_task_store=real_stores.task_store,
+            dispatcher_store=real_stores.dispatcher_store,
+            agent_registry=real_stores.registry,
+            agent_grants=real_stores.grants,
+            chat_channels=None,
+            chat_messages=None,
+        )
+        service = DispatcherService(app_state)
+
+        # tick() should reconcile the expired lease and return expired_count >= 1
+        result = await service.tick(now=now + 100)
+
+        assert result["expired_count"] >= 1, f"Expected expired_count >= 1, got {result['expired_count']}"
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_loop_cancel_raises_cancelled_error():
+    """start the loop as a task, cancel it, assert CancelledError, not NameError"""
+    import asyncio
+    from tinyagentos.projects.dispatcher import dispatcher_tick_loop
+
+    # Minimal app_state
+    from types import SimpleNamespace
+
+    class DummyStore:
+        async def list_configs(self):
+            return []
+
+    app_state = SimpleNamespace(
+        dispatcher_service=SimpleNamespace(
+            _last_tick_times={},
+            _locks={},
+        ),
+        dispatcher_store=DummyStore(),
+    )
+
+    async def dummy_tick_user(*a, **k):
+        return None
+
+    app_state.dispatcher_service.tick_user = dummy_tick_user
+    # But the loop calls tick_user on the service; and also accesses locks/last_tick_times
+
+    task = asyncio.create_task(dispatcher_tick_loop(app_state, interval=10))
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_loop_survives_a_failing_tick():
+    """The loop catches Exception and continues (does not crash)."""
+    import asyncio
+    from tinyagentos.projects.dispatcher import dispatcher_tick_loop
+    from types import SimpleNamespace
+
+    class DummyStore:
+        def __init__(self):
+            self.calls = 0
+
+        async def list_configs(self):
+            self.calls += 1
+            if self.calls == 1:
+                # return one config that will cause failure
+                from tinyagentos.projects.dispatcher_store import DispatcherConfig
+                return [DispatcherConfig(user_id="u1", enabled=True, poll_seconds=0)]
+            return []
+
+    class FailingService:
+        def __init__(self):
+            self._last_tick_times = {}
+            self._locks = {}
+            self.fails = True
+
+        async def tick_user(self, *a, **k):
+            if self.fails:
+                self.fails = False
+                raise ValueError("boom")
+            return {}
+
+    app_state = SimpleNamespace(
+        dispatcher_service=FailingService(),
+        dispatcher_store=DummyStore(),
+    )
+
+    task = asyncio.create_task(dispatcher_tick_loop(app_state, interval=0.001))
+    await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_loop_gives_each_user_a_fresh_now_and_records_completion():
+    """The loop gives each user a fresh now and records completion time."""
+    import asyncio
+    from tinyagentos.projects.dispatcher import dispatcher_tick_loop
+    from types import SimpleNamespace
+    from tinyagentos.projects.dispatcher_store import DispatcherConfig
+    from tinyagentos.projects import dispatcher
+
+    class DummyStore:
+        def __init__(self):
+            self.calls = 0
+
+        async def list_configs(self):
+            self.calls += 1
+            if self.calls == 1:
+                return [
+                    DispatcherConfig(user_id="u1", enabled=True, poll_seconds=0),
+                    DispatcherConfig(user_id="u2", enabled=True, poll_seconds=0),
+                ]
+            return []
+
+    class FakeTime:
+        def __init__(self):
+            self.t = 1000.0
+
+        def time(self):
+            return self.t
+
+        def advance(self, delta):
+            self.t += delta
+
+    class DummyService:
+        def __init__(self):
+            self._last_tick_times = {}
+            self._locks = {}
+            self.tick_calls = []
+
+        async def tick_user(self, user_id, cfg, now):
+            self.tick_calls.append((user_id, now))
+            if user_id == "u1":
+                dispatcher.time.advance(100)
+            return {}
+
+    fake_time = FakeTime()
+    original_time = dispatcher.time
+    dispatcher.time = fake_time
+
+    try:
+        app_state = SimpleNamespace(
+            dispatcher_service=DummyService(),
+            dispatcher_store=DummyStore(),
+        )
+        task = asyncio.create_task(dispatcher_tick_loop(app_state, interval=0.001))
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        dispatcher.time = original_time
+
+    calls = app_state.dispatcher_service.tick_calls
+    assert len(calls) == 2
+    call_dict = {user: now for user, now in calls}
+    assert call_dict["u1"] == 1000.0
+    assert call_dict["u2"] == 1100.0
+    assert app_state.dispatcher_service._last_tick_times["u1"] == 1100.0
+
+
+@pytest.mark.asyncio
+async def test_loop_disabled_user_reconcile_called_with_now():
+    """Disabled user (enabled=False) with pending lease: reconcile_user is called with a valid now float."""
+    import asyncio
+    from tinyagentos.projects.dispatcher import dispatcher_tick_loop
+    from types import SimpleNamespace
+    from tinyagentos.projects.dispatcher_store import DispatcherConfig
+
+    class DummyStore:
+        def __init__(self):
+            self.configs = [
+                DispatcherConfig(user_id="u1", enabled=False, poll_seconds=0)
+            ]
+            self.pending_called = False
+
+        async def list_configs(self):
+            return self.configs
+
+        async def list_pending(self, user_id):
+            if not self.pending_called:
+                self.pending_called = True
+                return [{"id": "lease-1", "task_id": "task-1", "canonical_id": "agent-1"}]
+            return []
+
+    reconcile_calls = []
+
+    class DummyService:
+        def __init__(self):
+            self._last_tick_times = {}
+            self._locks = {}
+
+        async def reconcile_user(self, user_id, cfg, now):
+            reconcile_calls.append((user_id, now))
+            return {"claimed": 0, "overridden": 0, "closed": 0, "expired": 0}
+
+        async def tick_user(self, user_id, cfg, now):
+            return {}
+
+    app_state = SimpleNamespace(
+        dispatcher_service=DummyService(),
+        dispatcher_store=DummyStore(),
+    )
+
+    task = asyncio.create_task(dispatcher_tick_loop(app_state, interval=0.001))
+    await asyncio.sleep(0.02)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # reconcile_user should have been called at least once for the disabled user
+    assert len(reconcile_calls) >= 1
+    # The `now` argument should be a float (not UnboundLocalError)
+    for user_id, now_arg in reconcile_calls:
+        assert user_id == "u1"
+        assert isinstance(now_arg, float)
+        assert now_arg > 0

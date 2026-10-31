@@ -327,10 +327,11 @@ async def restart_status(request: Request):
 # runs as the unprivileged `taos` user and must not be able to manage arbitrary
 # system services just to offer a UI toggle.
 #
-# AVAILABILITY IS THE DEVICE GATE. `taos-kiosk.service` only exists on a device
-# provisioned as a taOS handset, so `available: false` everywhere else and the
-# frontend hides the app rather than shipping a button that cannot work. This
-# is deliberately a capability probe, not a hardcoded device list.
+# AVAILABILITY IS THE DEVICE GATE. A taOS handset has BOTH taos-kiosk.service
+# (the taOS shell) AND plasma-mobile.service (the Plasma Mobile fallback). A
+# desk runs the kiosk unit only, so `available: false` there and the frontend
+# hides the app rather than shipping a button that cannot work. This is
+# deliberately a capability probe, not a hardcoded device list.
 
 _SESSION_UNITS = {"kiosk": "taos-kiosk.service", "plasma": "plasma-mobile.service"}
 
@@ -357,8 +358,9 @@ async def _session_mode_state() -> dict:
     # `is-active` exits non-zero for inactive units, so the OUTPUT is the signal
     # and rc is not. An unknown unit reports "inactive" too, so availability is
     # probed separately with `cat`, which fails only when the unit is absent.
-    cat_rc, _ = await _systemctl("cat", _SESSION_UNITS["kiosk"])
-    available = cat_rc == 0
+    kiosk_cat_rc, _ = await _systemctl("cat", _SESSION_UNITS["kiosk"])
+    plasma_cat_rc, _ = await _systemctl("cat", _SESSION_UNITS["plasma"])
+    available = kiosk_cat_rc == 0 and plasma_cat_rc == 0
     _, plasma_state = await _systemctl("is-active", _SESSION_UNITS["plasma"])
     if kiosk_state == "active":
         current = "kiosk"

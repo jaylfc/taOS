@@ -7,6 +7,7 @@ tick_user/tick functions.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any
@@ -28,12 +29,91 @@ from tinyagentos.projects.a2a import ensure_a2a_channel
 
 logger = logging.getLogger(__name__)
 
+CARD_EXPIRY_CAP = 5
+
 
 class DispatcherService:
     """Per-user dispatcher service operating on real stores."""
 
     def __init__(self, app_state: Any) -> None:
         self.app_state = app_state
+
+    async def reconcile_user(self, user_id: str, cfg: DispatcherConfig, now: float) -> dict:
+        """Reconcile all pending leases for a user.
+
+        For each pending lease row, determine its fate and resolve it.
+        Returns counts {claimed, overridden, closed, expired}.
+        """
+        dispatcher_store: DispatcherStore = self.app_state.dispatcher_store
+        task_store: ProjectTaskStore = self.app_state.project_task_store
+        agent_registry = self.app_state.agent_registry
+
+        counts = {"claimed": 0, "overridden": 0, "closed": 0, "expired": 0}
+
+        pending = await dispatcher_store.list_pending(user_id)
+
+        for row in pending:
+            lease_id = row["id"]
+            canonical_id = row["canonical_id"]
+            task_id = row["task_id"]
+            assignee_written = row["assignee_written"]
+
+            # Load the task
+            task = await task_store.get_task(task_id)
+
+            # Case 1: task missing, or status not in ('open','claimed') -> resolve 'closed'
+            if task is None or task.get("status") not in ("open", "claimed"):
+                await dispatcher_store.resolve(lease_id, "closed", now)
+                counts["closed"] += 1
+                continue
+
+            # Case 2: task claimed_by is set and equals one of the agent's aliases
+            task_claimed_by = task.get("claimed_by")
+            aliases_result = await resolve_agent_refs(
+                [canonical_id], self.app_state.config, agent_registry
+            )
+            # Fall back to {canonical_id} if unresolved
+            agent_aliases = set()
+            if aliases_result:
+                agent_aliases = set(aliases_result[0].aliases())
+            else:
+                agent_aliases = {canonical_id}
+
+            if task_claimed_by is not None and task_claimed_by in agent_aliases:
+                await dispatcher_store.resolve(lease_id, "claimed", now)
+                await dispatcher_store.reset_backoff(canonical_id)
+                counts["claimed"] += 1
+                continue
+
+            # Case 3: claimed_by set to someone else, or assignee_id != row assignee_written -> resolve 'overridden'
+            if task_claimed_by is not None and task_claimed_by not in agent_aliases:
+                # claimed_by is set to someone else (not this agent)
+                await dispatcher_store.resolve(lease_id, "overridden", now)
+                counts["overridden"] += 1
+                continue
+            task_assignee_id = task.get("assignee_id")
+            if task_assignee_id != assignee_written:
+                # assignee changed by human
+                await dispatcher_store.resolve(lease_id, "overridden", now)
+                counts["overridden"] += 1
+                continue
+
+            # Case 4: now > lease_expires_at and still open + unclaimed -> unassign + bump_backoff
+            if now > row["lease_expires_at"]:
+                ok = await task_store.unassign_if(task_id, assignee_written, actor="dispatcher")
+                if ok:
+                    await dispatcher_store.resolve(lease_id, "expired", now)
+                    await dispatcher_store.bump_backoff(canonical_id, cfg.lease_seconds, now)
+                    counts["expired"] += 1
+                else:
+                    # unassign_if failed: task not assigned to this agent -> resolve 'overridden'
+                    await dispatcher_store.resolve(lease_id, "overridden", now)
+                    counts["overridden"] += 1
+                continue
+
+            # Otherwise leave pending (no state change)
+
+        return counts
 
     async def tick_user(self, user_id: str, cfg: DispatcherConfig, now: float) -> dict:
         """Run one dispatcher tick for a single user.
@@ -58,6 +138,9 @@ class DispatcherService:
         chat_channels = getattr(self.app_state, "chat_channels", None)
         chat_messages = getattr(self.app_state, "chat_messages", None)
 
+        # Step 1: Reconcile pending leases FIRST
+        reconcile_counts = await self.reconcile_user(user_id, cfg, now)
+
         # Determine boards to process
         if cfg.boards:
             board_ids = cfg.boards
@@ -70,12 +153,28 @@ class DispatcherService:
         assignments_made = 0
         races_skipped = 0
         wakes = 0
+        agents_backed_off = 0
+        cards_paused = 0
+
+        # Get recent expiries and card expiry counts (moved before board loop)
+        recent_expiries = await dispatcher_store.recent_expiries(now - 48 * 3600)
+        card_expiry_counts = await dispatcher_store.expired_counts_48h(now)
 
         # Resolve eligible agents once per user
         eligible_canonical_ids = cfg.eligible_agents or []
         agent_refs = await resolve_agent_refs(
             eligible_canonical_ids, config, agent_registry
         )
+
+        # Filter out backed-off agents
+        all_canonical_ids = [ref.canonical_id for ref in agent_refs]
+        backed_off = await dispatcher_store.backed_off(all_canonical_ids, now)
+        eligible_refs = []
+        for ref in agent_refs:
+            if ref.canonical_id in backed_off:
+                agents_backed_off += 1
+                continue
+            eligible_refs.append(ref)
 
         for board_id in board_ids:
             # Re-check board is active and owned by this user every tick
@@ -102,12 +201,22 @@ class DispatcherService:
                     filtered_candidates.append(task)
 
             candidates_considered += len(filtered_candidates)
+            # Drop candidates with card_expiry_counts >= CARD_EXPIRY_CAP before select_assignments
+            cards_paused_local = 0
+            final_candidates = []
+            for task in filtered_candidates:
+                if card_expiry_counts.get(task["id"], 0) >= CARD_EXPIRY_CAP:
+                    cards_paused_local += 1
+                else:
+                    final_candidates.append(task)
+            filtered_candidates = final_candidates
+            cards_paused += cards_paused_local
             if not filtered_candidates:
                 continue
 
             # Build eligible agents for this board (must have grant + wake budget)
             board_agent_refs = []
-            for ref in agent_refs:
+            for ref in eligible_refs:
                 grants = await active_project_grants(
                     agent_registry, agent_grants, ref.canonical_id, "project_tasks"
                 )
@@ -143,10 +252,6 @@ class DispatcherService:
             for ref in board_agent_refs:
                 all_aliases.extend(ref.aliases())
             board_inflight = await task_store.count_open_load_by_project(all_aliases)
-
-            # Get recent expiries and card expiry counts
-            recent_expiries = await dispatcher_store.recent_expiries(now - 48 * 3600)
-            card_expiry_counts = await dispatcher_store.expired_counts_48h(now)
 
             # Get last_assigned_at map
             canonical_ids = [ref.canonical_id for ref in board_agent_refs]
@@ -262,6 +367,12 @@ class DispatcherService:
             "assignments_made": assignments_made,
             "races_skipped": races_skipped,
             "wakes": wakes,
+            "agents_backed_off": agents_backed_off,
+            "cards_paused": cards_paused,
+            "claimed_count": reconcile_counts["claimed"],
+            "overridden_count": reconcile_counts["overridden"],
+            "closed_count": reconcile_counts["closed"],
+            "expired_count": reconcile_counts["expired"],
         }
 
     async def tick(self, now: float | None = None) -> dict:
@@ -283,18 +394,99 @@ class DispatcherService:
             "wakes": 0,
             "users_processed": 0,
             "users_failed": 0,
+            "agents_backed_off": 0,
+            "cards_paused": 0,
+            "claimed_count": 0,
+            "overridden_count": 0,
+            "closed_count": 0,
+            "expired_count": 0,
         }
 
         for cfg in configs:
             if not cfg.enabled:
+                # Disabled users: still reconcile pending leases to avoid stranding them
+                pending = await dispatcher_store.list_pending(cfg.user_id)
+                if pending:
+                    try:
+                        reconcile_counts = await self.reconcile_user(cfg.user_id, cfg, now)
+                        total["claimed_count"] += reconcile_counts["claimed"]
+                        total["overridden_count"] += reconcile_counts["overridden"]
+                        total["closed_count"] += reconcile_counts["closed"]
+                        total["expired_count"] += reconcile_counts["expired"]
+                    except Exception:
+                        logger.exception("dispatcher: reconcile failed for disabled user %s", cfg.user_id)
                 continue
             try:
                 result = await self.tick_user(cfg.user_id, cfg, now)
                 for k in ("boards_held", "candidates_considered", "assignments_made", "races_skipped", "wakes"):
                     total[k] += result[k]
                 total["users_processed"] += 1
+                total["agents_backed_off"] += result.get("agents_backed_off", 0)
+                total["cards_paused"] += result.get("cards_paused", 0)
+                total["claimed_count"] += result.get("claimed_count", 0)
+                total["overridden_count"] += result.get("overridden_count", 0)
+                total["closed_count"] += result.get("closed_count", 0)
+                total["expired_count"] += result.get("expired_count", 0)
             except Exception:
                 logger.exception("dispatcher: tick failed for user %s", cfg.user_id)
                 total["users_failed"] += 1
 
         return total
+
+
+async def dispatcher_tick_loop(app_state, interval: float = 10.0) -> None:
+    """Module-level loop that runs the dispatcher tick continuously.
+
+    Loop: await app_state.dispatcher_service.tick(); honour each user's poll_seconds
+    (skip a user whose last tick was < poll_seconds ago, keep a dict of last tick
+    times on the service); a per-user asyncio.Lock so ticks never overlap; catch
+    Exception -> logger.exception and continue; RE-RAISE asyncio.CancelledError.
+    """
+    dispatcher_service = app_state.dispatcher_service
+
+    # Initialize state on the service if not present
+    if not hasattr(dispatcher_service, "_last_tick_times"):
+        dispatcher_service._last_tick_times = {}
+    if not hasattr(dispatcher_service, "_locks"):
+        dispatcher_service._locks = {}
+
+    while True:
+        try:
+            dispatcher_store: DispatcherStore = app_state.dispatcher_store
+            configs = await dispatcher_store.list_configs()
+
+            for cfg in configs:
+                if not cfg.enabled:
+                    # Disabled users: still reconcile pending leases to avoid stranding them
+                    now = time.time()
+                    pending = await dispatcher_store.list_pending(cfg.user_id)
+                    if pending:
+                        try:
+                            await dispatcher_service.reconcile_user(cfg.user_id, cfg, now)
+                        except Exception:
+                            logger.exception("dispatcher: reconcile failed for disabled user %s", cfg.user_id)
+                    continue
+
+                # Ensure lock exists for this user
+                if cfg.user_id not in dispatcher_service._locks:
+                    dispatcher_service._locks[cfg.user_id] = asyncio.Lock()
+
+                lock = dispatcher_service._locks[cfg.user_id]
+                async with lock:
+                    now = time.time()
+                    last_tick = dispatcher_service._last_tick_times.get(cfg.user_id, 0.0)
+                    if now - last_tick < cfg.poll_seconds:
+                        continue
+                    try:
+                        await dispatcher_service.tick_user(cfg.user_id, cfg, now)
+                    except Exception:
+                        logger.exception("dispatcher: tick failed for user %s", cfg.user_id)
+                        continue
+                    dispatcher_service._last_tick_times[cfg.user_id] = time.time()
+
+            await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("dispatcher: loop iteration crashed")
+            await asyncio.sleep(interval)

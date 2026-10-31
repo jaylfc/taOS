@@ -322,6 +322,58 @@ describe("ConsentActions", () => {
     });
   });
 
+  it("labels Allow and Deny with the project and scopes for screen readers", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        const vocab = vocabHit(url);
+        if (vocab) return vocab;
+        if (String(url).startsWith("/api/projects")) {
+          return okJson({
+            items: [
+              { id: "prj-other", name: "Other" },
+              { id: "prj-5y722y", name: "taOS" },
+            ],
+          });
+        }
+        return okJson({ status: "ok" });
+      }),
+    );
+    render(
+      <ConsentActions
+        requestId="req-aria"
+        scopes={["project_tasks", "files_read"]}
+        requestedProjectId="prj-5y722y"
+      />,
+    );
+
+    await screen.findByLabelText(/Grant project access for/i);
+    await projectListLoaded();
+    // The requested project is preselected, and both decisions name it and the
+    // scopes so the choice is unambiguous without the surrounding text.
+    const select = screen.getByLabelText(/Grant project access for/i) as HTMLSelectElement;
+    expect(select.value).toBe("prj-5y722y");
+    expect(
+      screen.getByRole("button", { name: "Allow project_tasks, files_read on taOS" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Deny project_tasks, files_read on taOS" }),
+    ).toBeInTheDocument();
+
+    // Re-pointing the picker re-labels Allow, so the label never names a
+    // project other than the one the grant will bind to.
+    fireEvent.change(select, { target: { value: "prj-other" } });
+    expect(
+      screen.getByRole("button", { name: "Allow project_tasks, files_read on Other" }),
+    ).toBeInTheDocument();
+  });
+
+  it("labels Allow and Deny with just the scopes when no project is involved", () => {
+    render(<ConsentActions requestId="req-g" scopes={["memory_read"]} />);
+    expect(screen.getByRole("button", { name: "Allow memory_read" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Deny memory_read" })).toBeInTheDocument();
+  });
+
   it("preselects and labels the requested project when it resolves", async () => {
     const fetchMock = vi.fn((url: string) => {
       const vocab = vocabHit(url);
