@@ -401,8 +401,13 @@ class MLXInstaller(AppInstaller):
         validated at the boundary rather than trusted. ``backend_root`` itself
         is rejected: a target that resolves *to* ``<root>/mlx`` would delete the
         whole backend tree, so the delete must land at family/id depth below it.
+        A symlinked family or model segment is rejected too: it resolves to
+        another model's directory, which is inside the root and would be deleted
+        in this model's place. The models root itself may be a symlink.
         """
         backend_root = (self._root() / BACKEND_ID).resolve()
+        if target.is_symlink() or target.parent.is_symlink():
+            return None
         resolved = target.resolve()
         if resolved == backend_root or not resolved.is_relative_to(backend_root):
             return None
@@ -710,11 +715,11 @@ class MLXInstaller(AppInstaller):
         if not ok:
             return {"success": False, "error": err}
 
-        # The dispatcher injects "backend" into install_config; default it so a
-        # direct call still writes into the shared mlx tree rather than the
-        # huggingface default one.
+        # Force the backend rather than defaulting it: a direct call must write
+        # into the shared mlx tree instead of the huggingface default one, and
+        # any other value would land outside the root checked above.
         install_config = dict(install_config or {})
-        install_config.setdefault("backend", BACKEND_ID)
+        install_config["backend"] = BACKEND_ID
 
         if repo:
             # MLX repos are ordinary HF directories (config.json, tokenizer,

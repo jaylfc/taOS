@@ -19,3 +19,7 @@
   model's agent running. Installing a model retires the legacy single agent when
   it pins that same model, freeing `7837`; an agent serving a different model is
   never touched.
+  Uninstall waits up to 10 s for launchd to finish tearing an agent down instead
+  of reporting a failure and leaving the plist behind, refuses a symlinked family
+  or model directory rather than deleting the model it points at, and an install
+  always downloads into the mlx root whatever `backend` the caller passed.

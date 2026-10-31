@@ -280,12 +280,18 @@ uninstall_mlx_agent() {
         # bootout failing is normal when the agent was never loaded, so confirm
         # the real state instead of trusting its exit code: a label that is
         # still registered keeps restarting the server (KeepAlive) even after
-        # the plist and the model directory are gone.
-        local probe
-        if probe="$(launchctl print "$(agent_target)/$(basename "$plist" .plist)" 2>&1)"; then
-            warn "$(basename "$plist" .plist) is still loaded after bootout: not reporting it as unloaded"
-            return 1
-        fi
+        # the plist and the model directory are gone. bootout also returns before
+        # the service is torn down, so `print` can still find it for a moment:
+        # give launchd up to 10 s before deciding it is still loaded.
+        local probe waited=0
+        while probe="$(launchctl print "$(agent_target)/$(basename "$plist" .plist)" 2>&1)"; do
+            if [[ "$waited" -ge 20 ]]; then
+                warn "$(basename "$plist" .plist) is still loaded after bootout: not reporting it as unloaded"
+                return 1
+            fi
+            waited=$((waited + 1))
+            sleep 0.5
+        done
         # A failing `print` only means the agent is gone when launchctl says the
         # service is unknown (macOS: `Could not find service "..." in domain
         # ...`). Any other failure (a permission or session error) leaves the

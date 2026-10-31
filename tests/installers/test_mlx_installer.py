@@ -361,6 +361,22 @@ class TestMLXInstallerInstall:
         call = fake_cls.return_value.install.await_args
         assert call.kwargs["install_config"]["backend"] == "mlx"
 
+    async def test_a_foreign_backend_in_install_config_cannot_redirect_the_download(
+        self, monkeypatch, tmp_path
+    ):
+        """The containment check validates the mlx root, so the downloader must
+        write there: a caller's other backend would land outside what was checked."""
+        _fake_apple(monkeypatch)
+        patcher, fake_cls = _patch_hf_downloader()
+        with patcher, patch.object(
+            MLXInstaller, "_ensure_mlx_lm", AsyncMock(return_value=(True, ""))
+        ):
+            await MLXInstaller(models_dir=tmp_path).install(
+                "qwen2.5-3b", install_config={"backend": "huggingface"}, variant=MLX_VARIANT
+            )
+        call = fake_cls.return_value.install.await_args
+        assert call.kwargs["install_config"]["backend"] == "mlx"
+
     async def test_mlx_repo_overrides_hf_repo(self, monkeypatch, tmp_path):
         """A manifest can aim the MLX variant at a pre-quantised repo while
         keeping its GGUF hf_repo for the other backends."""
@@ -897,6 +913,48 @@ class TestMLXInstallerUninstall:
         result = await MLXInstaller(models_dir=tmp_path).uninstall("qwen2.5-3b")
         assert result["success"] is True
         assert result["deleted"] == 0
+
+    @pytest.mark.parametrize("link", ["model", "family"])
+    async def test_uninstall_refuses_a_symlinked_model_path(self, tmp_path, link):
+        """A symlink inside the backend root resolves to another model's
+        directory, which passes containment: uninstalling it must not delete
+        that model."""
+        other = tmp_path / "mlx" / "otherfamily" / "other-model"
+        other.mkdir(parents=True)
+        (other / "weights.safetensors").write_text("x")
+        installer = MLXInstaller(models_dir=tmp_path)
+        target = installer._target_dir("qwen2.5-3b")
+        if link == "model":
+            target.parent.mkdir(parents=True)
+            target.symlink_to(other)
+        else:
+            other_family = other.parent / "qwen2.5-3b"
+            other_family.mkdir()
+            (other_family / "weights.safetensors").write_text("x")
+            target.parent.parent.mkdir(parents=True, exist_ok=True)
+            target.parent.symlink_to(other.parent)
+
+        result = await installer.uninstall("qwen2.5-3b")
+
+        assert result["success"] is False
+        assert (other / "weights.safetensors").exists()
+        if link == "family":
+            assert (other.parent / "qwen2.5-3b" / "weights.safetensors").exists()
+
+    async def test_a_symlinked_models_root_still_works(self, tmp_path):
+        real = tmp_path / "real-models"
+        (real / "mlx").mkdir(parents=True)
+        root = tmp_path / "models"
+        root.symlink_to(real)
+        installer = MLXInstaller(models_dir=root)
+        target = installer._target_dir("qwen2.5-3b")
+        target.mkdir(parents=True)
+
+        result = await installer.uninstall("qwen2.5-3b")
+
+        assert result["success"] is True
+        assert result["deleted"] == 1
+        assert not target.exists()
 
     async def test_refuses_an_app_id_that_escapes_the_mlx_root(self, monkeypatch, tmp_path):
         """Both the download and the recursive delete must fail closed on a

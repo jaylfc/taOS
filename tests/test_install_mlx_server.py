@@ -125,9 +125,19 @@ def _launchctl_stub(*, print_result: str = "absent") -> str:
     (what a successful bootout leaves behind). Pass ``"loaded"`` for an agent
     launchd still has registered, or ``"error"`` for an inspection that fails
     for some other reason (permissions, session) - the two cases the script must
-    not confuse.
+    not confuse. ``"slow-teardown"`` is the real macOS shape: ``print`` still
+    finds the service for the first few calls after bootout returned.
     """
-    if print_result == "loaded":
+    if print_result == "slow-teardown":
+        # launchd tears the service down asynchronously: `print` keeps finding
+        # it for a couple of calls after bootout has already returned.
+        print_body = (
+            '        print) printf x >> "$HOME/print.count";\n'
+            '            if [ "$(wc -c < "$HOME/print.count")" -le 3 ]; then return 0; fi;\n'
+            "            printf '%s\\n' 'Could not find service \"com.taos.mlx-server\""
+            " in domain for user gui: 501' >&2; return 1 ;;\n"
+        )
+    elif print_result == "loaded":
         print_body = '        print) printf "%s\\n" "com.taos.mlx-server = { ... }"; return 0 ;;\n'
     elif print_result == "error":
         print_body = (
@@ -609,12 +619,40 @@ def test_uninstall_refuses_to_report_a_still_loaded_agent(tmp_path: Path) -> Non
         _globals(tmp_path, model=str(model))
         + _functions("uninstall_mlx_agent", "plist_path", "agent_target", "xml_escape")
         + _launchctl_stub(print_result="loaded")
+        + 'sleep() { printf "sleep %s\\n" "$1" >> "$HOME/launchctl.log"; }\n'
         + 'id() { printf "501\\n"; }\n'
         + "uninstall_mlx_agent\n",
     )
     assert result.returncode == 1, result.stdout + result.stderr
     assert "still loaded" in result.stderr
     assert plist.exists(), "the plist of a still-loaded agent must not go away"
+    # The wait is bounded: about 10 s at 0.5 s steps, not forever.
+    calls = (tmp_path / "home" / "launchctl.log").read_text().splitlines()
+    assert calls.count("sleep 0.5") == 20
+    assert calls.count(f"launchctl print gui/501/{LABEL}") == 21
+
+
+def test_uninstall_waits_for_launchd_to_finish_the_bootout(tmp_path: Path) -> None:
+    """`launchctl bootout` returns before the service is torn down, so the next
+    `print` still finds it. On a real Mac (M4, macOS 27, lead run on #3351) every
+    uninstall reported a failure that did not happen and left the plist behind,
+    for launchd to reload with KeepAlive at the next login."""
+    model = tmp_path / "models" / "mlx" / "qwen2.5" / "qwen2.5-3b"
+    model.mkdir(parents=True)
+    plist = _plist_with_model(tmp_path, str(model))
+
+    result = _run_wrapper(
+        tmp_path,
+        _globals(tmp_path, model=str(model))
+        + _functions("uninstall_mlx_agent", "plist_path", "agent_target", "xml_escape")
+        + _launchctl_stub(print_result="slow-teardown")
+        + "sleep() { :; }\n"
+        + 'id() { printf "501\\n"; }\n'
+        + "uninstall_mlx_agent\n",
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "still loaded" not in result.stderr
+    assert not plist.exists(), "a confirmed unload must remove the plist"
 
 
 def test_uninstall_refuses_to_guess_when_launchctl_cannot_answer(
