@@ -9,6 +9,7 @@
   through to the anonymous view -- production got the redacted worker list with
   no error. The local imports now import only `verify_registry_token`; the
   module-level `_enforce_rotation_cutoff` is the single source for every call.
-  The promotion also now requires an active `agents:read` grant, so a registry
+  The promotion also requires an active `agents:read` grant, so a registry
   JWT minted by deploy for a DEPLOYED agent (owner user_id + `memory_read`
-  only) does not get `headless_full_view` (#3790, #4027).
+  only) does not get `headless_full_view`; without the grant it falls through
+  to the anonymous view, never a 403 (#3790, #4027).

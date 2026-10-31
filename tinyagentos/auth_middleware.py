@@ -997,16 +997,21 @@ class AuthMiddleware(BaseHTTPMiddleware):
                                         for g in await grants.list_grants(canonical_id)
                                     )
                                     if not has_agents_read:
-                                        raise HTTPException(
-                                            status_code=403,
-                                            detail="token does not hold an active agents:read grant",
-                                        )
-                                    request.state.user_id = None
-                                    request.state.is_admin = False
-                                    request.state.headless_full_view = True
-                                    request.state.agent_canonical_id = canonical_id
-                                    request.state.via = "registry_jwt"
-                                    return await call_next(request)
+                                        # No agents:read grant: fall through to the
+                                        # anonymous view, never a 403. A deployed
+                                        # agent minted by deploy carries owner
+                                        # user_id + memory_read only, so its JWT
+                                        # must not read the full worker list.
+                                        promoted = False
+                                    else:
+                                        promoted = True
+                                    if promoted:
+                                        request.state.user_id = None
+                                        request.state.is_admin = False
+                                        request.state.headless_full_view = True
+                                        request.state.agent_canonical_id = canonical_id
+                                        request.state.via = "registry_jwt"
+                                        return await call_next(request)
                         except Exception:
                             # Keep the anonymous fall-through: an invalid
                             # signature, expired token, rotation failure or
