@@ -1,0 +1,2 @@
+### Fixed
+- Disabled users with expired pending leases now have their expiry counts included in `tick()` totals; dispatcher backoff updates are now transactional; duplicate per-board expiry queries removed; card expiry cap test now asserts 4-expiry cards receive assignments.

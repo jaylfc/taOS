@@ -7,7 +7,8 @@ Triggers yield_resources() on the resource manager to throttle the worker.
 Platform support:
   - Linux: checks /proc for known game engines, monitors X11/Wayland
     fullscreen state via xdotool/xprop
-  - Windows: checks for fullscreen DirectX/Vulkan processes (future)
+  - Windows: enumerates processes via psutil and matches game patterns,
+    detects fullscreen window via Win32 API, monitors GPU via nvidia-smi
   - macOS: checks for fullscreen NSApplication state (future)
 
 This runs as a lightweight poller on the worker side — not on the
@@ -20,6 +21,7 @@ import logging
 import os
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -63,8 +65,40 @@ def detect_game_processes() -> list[dict]:
     Returns list of {pid, name, matched_pattern} for detected games.
     """
     found = []
+
+    if sys.platform == "win32":
+        # Windows: use psutil to enumerate processes
+        try:
+            import psutil
+        except ImportError:
+            return found
+
+        for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+            pid = None
+            try:
+                info = proc.info
+                pid = info.get("pid")
+                name = info.get("name") or ""
+                cmdline_list = info.get("cmdline") or []
+                cmdline = " ".join(cmdline_list)
+                check_str = f"{name} {cmdline}".lower()
+
+                for pattern in _GAME_PATTERNS:
+                    if pattern.search(check_str):
+                        found.append({
+                            "pid": pid,
+                            "name": name,
+                            "matched_pattern": pattern.pattern,
+                        })
+                        break
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+            except Exception as e:
+                logger.debug("Process scan failed for pid %s: %s", pid, e)
+        return found
+
+    # Linux: read /proc
     try:
-        # Read all process names from /proc
         for pid_dir in Path("/proc").iterdir():
             if not pid_dir.name.isdigit():
                 continue
@@ -122,6 +156,78 @@ def detect_fullscreen_x11() -> bool:
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
     return False
+
+
+def detect_fullscreen_windows() -> bool:
+    """Check if the foreground window is fullscreen on Windows.
+
+    Uses Win32 API via ctypes: GetForegroundWindow, GetWindowRect,
+    MonitorFromWindow, GetMonitorInfoW. Returns True if the window rect
+    matches the monitor rect. Ignores shell and desktop windows.
+    """
+    if sys.platform != "win32":
+        return False
+
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+
+        # Define required structures
+        class RECT(ctypes.Structure):
+            _fields_ = [
+                ("left", wintypes.LONG),
+                ("top", wintypes.LONG),
+                ("right", wintypes.LONG),
+                ("bottom", wintypes.LONG),
+            ]
+
+        class MONITORINFO(ctypes.Structure):
+            _fields_ = [
+                ("cbSize", wintypes.DWORD),
+                ("rcMonitor", RECT),
+                ("rcWork", RECT),
+                ("dwFlags", wintypes.DWORD),
+            ]
+
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return False
+
+        # Ignore shell and desktop windows
+        shell_hwnd = user32.GetShellWindow()
+        desktop_hwnd = user32.GetDesktopWindow()
+        if hwnd == shell_hwnd or hwnd == desktop_hwnd:
+            return False
+
+        # Get window rect
+        window_rect = RECT()
+        if not user32.GetWindowRect(hwnd, ctypes.byref(window_rect)):
+            return False
+
+        # Get monitor for this window
+        MONITOR_DEFAULTTONEAREST = 2
+        hmonitor = user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+        if not hmonitor:
+            return False
+
+        # Get monitor info
+        monitor_info = MONITORINFO()
+        monitor_info.cbSize = ctypes.sizeof(MONITORINFO)
+        if not user32.GetMonitorInfoW(hmonitor, ctypes.byref(monitor_info)):
+            return False
+
+        # Check if window rect matches monitor rect
+        monitor_rect = monitor_info.rcMonitor
+        return (
+            window_rect.left == monitor_rect.left
+            and window_rect.top == monitor_rect.top
+            and window_rect.right == monitor_rect.right
+            and window_rect.bottom == monitor_rect.bottom
+        )
+    except Exception:
+        return False
 
 
 def detect_gpu_heavy_process(threshold_pct: int = 70) -> bool:
@@ -187,7 +293,10 @@ class GamingDetector:
         main loop.
         """
         games = detect_game_processes()
-        fullscreen = detect_fullscreen_x11()
+        if sys.platform == "win32":
+            fullscreen = detect_fullscreen_windows()
+        else:
+            fullscreen = detect_fullscreen_x11()
         gpu_heavy = detect_gpu_heavy_process()
 
         detected = bool(games) or fullscreen or gpu_heavy

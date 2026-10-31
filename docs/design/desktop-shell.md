@@ -222,7 +222,6 @@ Every current TinyAgentOS htmx page becomes a React component rendered inside a 
 | Channels | `/channels` | Configure Telegram, Discord, etc. |
 | Secrets | `/secrets` | Encrypted key storage |
 | Tasks | `/tasks` | Scheduled jobs |
-| Import | `/import` | Drag-and-drop file import |
 | Images | `/images` | Image generation |
 
 ### OS Apps (vendored libraries + custom)

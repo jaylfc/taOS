@@ -1,0 +1,1 @@
+- a2a bus: a human sender whose username sanitises to nothing is now recorded as `@operator`, matching the admin branch, and the 64-character handle cap has a test.

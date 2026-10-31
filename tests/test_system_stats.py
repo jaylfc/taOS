@@ -160,6 +160,62 @@ class TestReadNvidiaVram:
 
 
 # ---------------------------------------------------------------------------
+# read_rocm_vram
+# ---------------------------------------------------------------------------
+
+
+class TestReadRocmVram:
+    @patch("tinyagentos.system_stats.subprocess.run")
+    @patch("tinyagentos.system_stats.shutil.which", return_value="/usr/bin/rocm-smi")
+    def test_parses_sample_json(self, mock_which, mock_run):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout='{"card0": {"VRAM Total Memory (B)": "17163091968", "VRAM Total Used Memory (B)": "12345678"}}',
+        )
+        from tinyagentos.system_stats import read_rocm_vram
+
+        result = read_rocm_vram()
+        assert result == (11, 16368)
+
+    @patch("tinyagentos.system_stats.shutil.which", return_value=None)
+    def test_returns_none_when_no_binary(self, mock_which):
+        from tinyagentos.system_stats import read_rocm_vram
+
+        assert read_rocm_vram() is None
+
+    @patch("tinyagentos.system_stats.subprocess.run")
+    @patch("tinyagentos.system_stats.shutil.which", return_value="/usr/bin/rocm-smi")
+    def test_nonzero_returncode(self, mock_which, mock_run):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="error"
+        )
+        from tinyagentos.system_stats import read_rocm_vram
+
+        assert read_rocm_vram() is None
+
+    @patch("tinyagentos.system_stats.subprocess.run")
+    @patch("tinyagentos.system_stats.shutil.which", return_value="/usr/bin/rocm-smi")
+    def test_invalid_json(self, mock_which, mock_run):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="not json"
+        )
+        from tinyagentos.system_stats import read_rocm_vram
+
+        assert read_rocm_vram() is None
+
+    @patch("tinyagentos.system_stats.subprocess.run")
+    @patch("tinyagentos.system_stats.shutil.which", return_value="/usr/bin/rocm-smi")
+    def test_missing_used_key(self, mock_which, mock_run):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout='{"card0": {"VRAM Total Memory (B)": "17163091968"}}'
+        )
+        from tinyagentos.system_stats import read_rocm_vram
+
+        assert read_rocm_vram() is None
+
+
+# ---------------------------------------------------------------------------
 # read_nvidia_gpu_load
 # ---------------------------------------------------------------------------
 

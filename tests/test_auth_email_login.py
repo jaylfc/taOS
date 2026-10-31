@@ -74,9 +74,13 @@ class TestRememberMeSessionTTL:
                 json={"username": "ttluser", "password": "mypass1!", "auto_login": True},
             )
         assert resp.status_code == 200
-        set_cookie = resp.headers.get("set-cookie", "")
+        session_cookie = next(
+            line
+            for line in resp.headers.get_list("set-cookie")
+            if line.startswith("taos_session=")
+        )
         # max-age must be present and > 0 for a long-lived session
-        assert "max-age=" in set_cookie.lower()
+        assert "max-age=" in session_cookie.lower()
 
     @pytest.mark.asyncio
     async def test_short_session_has_no_max_age(self, app):
@@ -88,9 +92,13 @@ class TestRememberMeSessionTTL:
                 json={"username": "shortuser", "password": "mypass1!", "auto_login": False},
             )
         assert resp.status_code == 200
-        set_cookie = resp.headers.get("set-cookie", "")
+        session_cookie = next(
+            line
+            for line in resp.headers.get_list("set-cookie")
+            if line.startswith("taos_session=")
+        )
         # Short-lived session must NOT have max-age (expires when browser closes)
-        assert "max-age=" not in set_cookie.lower()
+        assert "max-age=" not in session_cookie.lower()
 
     @pytest.mark.asyncio
     async def test_login_by_email_via_api(self, app):

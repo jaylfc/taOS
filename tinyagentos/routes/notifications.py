@@ -12,7 +12,7 @@ from pydantic import BaseModel, field_validator
 from tinyagentos.notifications import VALID_LEVELS
 
 from tinyagentos.auth import get_current_user
-from tinyagentos.agent_token_auth import check_agent_scope_for_project
+from tinyagentos.agent_token_auth import check_agent_scope_for_project, registry_agent_caller
 from tinyagentos.rate_limit import MovingWindowLimiter
 from tinyagentos.routes.auth import _require_admin
 
@@ -55,8 +55,17 @@ def _format_ts(ts: int) -> str:
 
 @router.get("/api/notifications")
 async def list_notifications(request: Request, unread_only: bool = False):
-    user_id = _notif_user_id(request)
     store = request.app.state.notifications
+    # tsk-f75p3z: a registry JWT is accepted here (it used to 401), resolved
+    # like _authorize_task_actor: a session wins, otherwise the Bearer must
+    # carry notifications_write.  An agent reads back ONLY what it posted
+    # (source ``agent:<canonical_id>``, stamped server-side by
+    # create_notification), with the recipient's read flag, never the user's
+    # other notifications.
+    agent_cid = await registry_agent_caller(request, "notifications_write")
+    if agent_cid is not None:
+        return await store.list(unread_only=unread_only, source=f"agent:{agent_cid}")
+    user_id = _notif_user_id(request)
     items = await store.list(unread_only=unread_only, user_id=user_id)
     # Return HTML for HTMX requests, JSON otherwise
     if request.headers.get("hx-request"):
@@ -204,6 +213,82 @@ async def list_archived_notifications(request: Request):
     user_id = _notif_user_id(request)
     store = request.app.state.notifications
     return await store.list_archived(user_id=user_id)
+
+
+@router.get("/api/notifications/history")
+async def list_notification_history(request: Request):
+    """Searchable notification history with filters and keyset paging.
+
+    Query params:
+      q: search title or message (literal % and _ via ESCAPE)
+      source: repeatable, filter by source
+      level: repeatable, filter by level
+      since: epoch seconds, lower bound on timestamp
+      until: epoch seconds, upper bound on timestamp
+      state: all | unread | read | archived | active (default all)
+      before: opaque cursor "<timestamp>:<id>" for keyset paging (strictly older)
+      limit: page size 1..200 (default 50)
+    Returns: {"items": [...], "next_before": "<cursor>" or null}
+    """
+    user_id = _notif_user_id(request)
+    store = request.app.state.notifications
+
+    q = request.query_params.get("q")
+    sources = request.query_params.getlist("source")
+    levels = request.query_params.getlist("level")
+    since_raw = request.query_params.get("since")
+    until_raw = request.query_params.get("until")
+    state = request.query_params.get("state", "all")
+    before = request.query_params.get("before")
+    limit_raw = request.query_params.get("limit", "50")
+
+    try:
+        since = int(since_raw) if since_raw is not None else None
+        until = int(until_raw) if until_raw is not None else None
+        limit = int(limit_raw)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid numeric parameter")
+
+    if state not in ("all", "unread", "read", "archived", "active"):
+        raise HTTPException(status_code=400, detail="invalid state")
+
+    if before is not None:
+        try:
+            before_ts, before_id = before.split(":", 1)
+            int(before_ts)
+            int(before_id)
+        except (ValueError, AttributeError):
+            raise HTTPException(status_code=400, detail="invalid cursor")
+
+    limit = max(1, min(limit, 200))
+
+    items = await store.search(
+        user_id=user_id,
+        q=q,
+        sources=sources if sources else None,
+        levels=levels if levels else None,
+        since=since,
+        until=until,
+        state=state,
+        before=before,
+        limit=limit,
+    )
+
+    next_before = None
+    if items and len(items) == limit:
+        last = items[-1]
+        next_before = f"{last['timestamp']}:{last['id']}"
+
+    return {"items": items, "next_before": next_before}
+
+
+@router.get("/api/notifications/history/sources")
+async def list_notification_history_sources(request: Request):
+    """Distinct notification sources visible to the calling user, sorted."""
+    user_id = _notif_user_id(request)
+    store = request.app.state.notifications
+    sources = await store.history_sources(user_id=user_id)
+    return {"sources": sources}
 
 
 @router.post("/api/notifications/{notif_id}/read")

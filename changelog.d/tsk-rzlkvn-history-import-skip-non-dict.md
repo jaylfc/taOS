@@ -1,0 +1,2 @@
+### Fixed
+- `iter_records` in `tinyagentos/history_import/claude_code.py` now skips valid JSON lines that are not objects (arrays, numbers, strings), preventing `AttributeError` in `to_envelopes`. The `_count_skipped_lines` helper also counts such lines so the manifest `skipped_lines` is accurate.

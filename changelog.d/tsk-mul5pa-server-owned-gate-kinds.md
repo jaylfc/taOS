@@ -1,0 +1,1 @@
+- Decisions: `POST /api/decisions` now refuses a server-owned gate `metadata.kind` (execution, delegation, device pairing, app grant, project create, collab delegation) with 400, and the Decisions app and chat decision cards show what approving a gate grants beside the question (tsk-mul5pa).

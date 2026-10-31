@@ -1,0 +1,4 @@
+### Added
+- BLE label PIN UI: confirm step always shows a "Label PIN" text input (inputMode=numeric, autoComplete=off) with a visible label and aria-describedby help text. When pin_required is true from the start response, the field is aria-required and Confirm is disabled until 4-12 digits are entered. The label_pin is sent only when non-empty in the confirm body. Two inline error alerts: label_pin_required ("This board needs the PIN from its label.") and invalid_label_pin ("The label PIN is 4 to 12 digits."). PIN is never logged or persisted.
+### Fixed
+- BLE label PIN no longer carries over between pairing sessions: labelPin and pinRequired are now reset on pair confirm success, cancel, modal close, and before starting a new session. Em dashes in BLE pairing docs replaced with colons.

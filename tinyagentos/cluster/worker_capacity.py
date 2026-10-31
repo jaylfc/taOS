@@ -102,17 +102,19 @@ def gpu_vram_snapshot() -> dict | None:
     """Return real-time free/used VRAM for the first GPU, or None.
 
     Dispatches to the appropriate probe based on what's available on
-    this worker (nvidia-smi, etc). Returns a dict with ``free_vram_mb``
-    and ``used_vram_mb`` integers, or ``None`` when no GPU probe is
-    available or the probe fails.
+    this worker (nvidia-smi, rocm-smi, etc). Returns a dict with
+    ``free_vram_mb`` and ``used_vram_mb`` integers, or ``None`` when no
+    GPU probe is available or the probe fails.
 
     Called from the worker heartbeat loop alongside capacity_snapshot().
-    Best-effort: a missing nvidia-smi or a probe timeout is not an error.
+    Best-effort: a missing nvidia-smi/rocm-smi or a probe timeout is not an error.
     """
-    from tinyagentos.system_stats import read_nvidia_vram
+    from tinyagentos.system_stats import read_nvidia_vram, read_rocm_vram
     import time
 
     pair = read_nvidia_vram()
+    if pair is None:
+        pair = read_rocm_vram()
     if pair is None:
         return None
     used_mb, total_mb = pair

@@ -38,6 +38,20 @@ async def test_create_project_rejects_duplicate_slug(store):
 
 
 @pytest.mark.asyncio
+async def test_new_project_gets_friendly_id(store):
+    p = await store.create_project(name="A", slug="taos", created_by="u")
+    assert p["id"].startswith("prj-taos-")
+
+
+@pytest.mark.asyncio
+async def test_existing_project_id_untouched(store):
+    p1 = await store.create_project(name="First", slug="first", created_by="u")
+    p2 = await store.create_project(name="Second", slug="second", created_by="u")
+    again = await store.get_project(p1["id"])
+    assert again["id"] == p1["id"]
+
+
+@pytest.mark.asyncio
 async def test_list_projects_filter_by_status(store):
     a = await store.create_project(name="A", slug="a", created_by="u")
     b = await store.create_project(name="B", slug="b", created_by="u")

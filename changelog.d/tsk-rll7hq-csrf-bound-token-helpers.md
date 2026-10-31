@@ -1,0 +1,1 @@
+- Add `mint_csrf_token(secret, session_id)` and `verify_bound(secret, token, session_id)` to `tinyagentos/middleware/csrf.py`: CSRF tokens of the form `<nonce>.<hmac_sha256(secret, session_id + nonce)>` that only verify for the session they were minted for. Helpers only, not wired into the middleware yet (CSRF binding 1/3).

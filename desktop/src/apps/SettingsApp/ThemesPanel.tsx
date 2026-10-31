@@ -7,6 +7,7 @@ import {
   previewTheme,
   revertPreview,
   keepTheme,
+  APP_TYPE_INDICATOR_OPTIONS,
 } from "@/stores/theme-store";
 import { useTaosAgentStore } from "@/stores/taos-agent-store";
 import { BUILTIN_THEMES } from "@/theme/builtin-themes";
@@ -27,6 +28,8 @@ export function ThemesPanel() {
   const [priorConfig, setPriorConfig] = useState<ThemeConfig>(EMPTY_CONFIG);
 
   const activeThemeId = useThemeStore((s) => s.activeThemeId);
+  const appTypeIndicator = useThemeStore((s) => s.appTypeIndicator);
+  const setAppTypeIndicator = useThemeStore((s) => s.setAppTypeIndicator);
   const openPanel = useTaosAgentStore((s) => s.openPanel);
 
   useEffect(() => {
@@ -134,6 +137,37 @@ export function ThemesPanel() {
             No themes installed yet.
           </p>
         )}
+      </div>
+
+      <div className="mt-5">
+        <h3 className="text-sm font-medium text-shell-text-secondary mb-2">App type indicators</h3>
+        <div
+          role="radiogroup"
+          aria-label="App type indicators"
+          className="flex items-center rounded-full border border-shell-border bg-shell-surface p-[3px]"
+        >
+          {APP_TYPE_INDICATOR_OPTIONS.map((option) => (
+            <button
+              key={option}
+              type="button"
+              role="radio"
+              aria-checked={appTypeIndicator === option}
+              aria-label={option === "badge" ? "Badges" : option === "outline" ? "Outlines" : "Off"}
+              onClick={() => setAppTypeIndicator(option)}
+              className={[
+                "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10.5px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40",
+                appTypeIndicator === option
+                  ? "bg-shell-surface-active text-shell-text"
+                  : "text-shell-text-secondary hover:text-shell-text",
+              ].join(" ")}
+            >
+              {option === "badge" ? "Badges" : option === "outline" ? "Outlines" : "Off"}
+            </button>
+          ))}
+        </div>
+        <p className="mt-1.5 text-xs text-shell-text-tertiary">
+          Show whether an app is a taOS, Linux, Android, web, container or agent-built app.
+        </p>
       </div>
 
       {previewId && (

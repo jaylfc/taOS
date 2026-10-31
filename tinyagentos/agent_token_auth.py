@@ -257,6 +257,35 @@ async def check_agent_scope(request: Request, required_scope: str) -> Optional[s
     return canonical_id
 
 
+async def registry_agent_caller(request: Request, required_scope: str) -> Optional[str]:
+    """Resolve a session-or-agent caller the way ``_authorize_task_actor``
+    (routes/projects.py) does, for routes that are NOT project-bound.
+
+    Resolution order:
+      1. An authenticated session (or local token) already set
+         ``request.state.user_id`` -> return None; the caller takes its
+         existing human path unchanged.
+      2. No Bearer, or a device bearer (``taosdev_`` prefix) -> return None;
+         the caller's own session/device handling decides.
+      3. Any other Bearer is treated as a registry JWT and verified exactly as
+         ``check_agent_scope`` (401 bad token, 403 inactive agent or missing
+         *required_scope* grant).  Returns the agent's canonical_id.
+
+    A human-principal registry token returns None (as ``check_agent_scope``
+    does) and so falls through to the caller's human path, which 401s it.
+    """
+    if getattr(request.state, "user_id", None):
+        return None
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.lower().startswith("bearer "):
+        return None
+    from tinyagentos.device_store import DEVICE_TOKEN_PREFIX
+
+    if auth_header[7:].strip().startswith(DEVICE_TOKEN_PREFIX):
+        return None
+    return await check_agent_scope(request, required_scope)
+
+
 async def check_human_identity(request: Request) -> Optional[str]:
     """Return the user_id from a valid Bearer registry JWT for a HUMAN principal.
 

@@ -148,13 +148,16 @@ function noteBackground(color: string): string {
 
 // Identity every skeleton carries back to its row, so the interactive board
 // (and anything reading the scene) can map an Excalidraw element to the taOS
-// element it came from without a side table.
+// element it came from without a side table. The updated_at stamp enables the
+// sync layer to detect stale local edits that would clobber a newer remote
+// change (see excalidraw-sync.ts invariants).
 function taosCustomData(el: CanvasElement): SkeletonCustomData {
   return {
     taos_id: el.id,
     taos_kind: el.kind,
     taos_author_id: el.author_id,
     taos_author_kind: el.author_kind,
+    taos_updated_at: el.updated_at,
   };
 }
 

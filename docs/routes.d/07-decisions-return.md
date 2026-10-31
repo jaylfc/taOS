@@ -4,11 +4,10 @@
 
 ## Grant shaping which decisions come back
 
-- **Global (null-project) grant**: null-project decisions ONLY
-- **Exactly one project grant**: that project's decisions, filtered in the store query
-- **Two or more projects**: fetched by agent, filtered in Python
+- **Global (null-project) grant**: null-project decisions, plus granted projects
+- **Exactly one granted scope**: those decisions, filtered in the store query
+- **Two or more scopes**: one store query per scope, merged newest first
 
 ### Limit interaction
 
-- The global and single-project paths push the project filter into the store query, so the 500 limit applies AFTER scoping (issue #2194)
-- The two-or-more-project path still fetches up to 500 rows then filters in Python, so an agent with several project grants and more than 500 decisions in total can still lose allowed-project rows to the limit (same shape as the original bug, narrower blast radius)
+- Every scope pushes the project filter into the store query, and the merged list is capped at 500, so the limit applies AFTER scoping (issue #2194)

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   pinMessage, unpinMessage, listPins,
-  editMessage, deleteMessage, markUnread,
+  editMessage, editAgentReply, deleteMessage, markUnread,
 } from "../chat-messages-api";
 
 describe("chat-messages-api", () => {
@@ -42,6 +42,17 @@ describe("chat-messages-api", () => {
     await editMessage("m1", "new text");
     expect(fetch).toHaveBeenCalledWith(
       "/api/chat/messages/m1",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ content: "new text" }),
+      }),
+    );
+  });
+
+  it("editAgentReply PATCHes the agent-reply route with content", async () => {
+    await editAgentReply("m1", "new text");
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/chat/messages/m1/agent-reply",
       expect.objectContaining({
         method: "PATCH",
         body: JSON.stringify({ content: "new text" }),

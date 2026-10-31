@@ -14,8 +14,12 @@ const MUTATING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 export function getCsrfToken(): string | null {
   if (typeof document === "undefined") return null;
-  const m = document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/);
-  return m?.[1] ? decodeURIComponent(m[1]) : null;
+  // Take the last csrf_token: the server reads the last same-name cookie, and
+  // re-issues its own host-only cookie as the newest, so it sorts after a
+  // parent-domain cookie planted from a sibling subdomain.
+  const matches = [...document.cookie.matchAll(/(?:^|;\s*)csrf_token=([^;]*)/g)];
+  const value = matches[matches.length - 1]?.[1];
+  return value ? decodeURIComponent(value) : null;
 }
 
 /**

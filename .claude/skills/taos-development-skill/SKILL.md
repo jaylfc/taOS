@@ -196,6 +196,11 @@ What this means when you write a test:
   It lives in its own module, not in `conftest.py`, because `tests/` is not a package and
   several `conftest.py` files exist, so a bare `from conftest import ...` binds whichever one
   is on `sys.path` first.
+- **The `csrf_token` must be bound to the session.** `verify_csrf` also checks
+  `verify_bound(secret, cookie, taos_session)`, so an arbitrary value next to a real session 403s.
+  The hook mints a bound token for any session made by `AuthManager.create_session`. If you
+  set the cookie and header by hand, mint it:
+  `from taos_test_csrf import bound_csrf_token; token = bound_csrf_token(app, session)`.
 - **`verify_csrf` exempts** safe methods, `Authorization: Bearer` callers, `_CREDENTIAL_PATHS`
   (the sign-in surfaces), and any request with no `taos_session` cookie. A test that never
   authenticates is unaffected.
@@ -689,6 +694,23 @@ Two signals, defense in depth:
 
 Removing any one protection pattern turns the gate red -- proven by a parametrized test that
 drops each pattern from a copy of the real `.gitignore` and asserts the guard fails.
+
+## Action-pinning gate
+
+A gate (`.github/workflows/action-pinning-gate.yml`, running `scripts/check_action_pinning.py`)
+fails when any `uses:` in `.github/workflows/` names a movable ref (a tag, a branch, a short
+SHA) instead of a full 40-char commit SHA. A retargeted tag runs new code in every workflow on
+its next run, the gate workflows included. When adding or bumping an action, resolve the tag's
+commit from the action repository (`git ls-remote https://github.com/<owner>/<repo>
+'refs/tags/<tag>' 'refs/tags/<tag>^{}'`, taking the `^{}` line for an annotated tag) and keep
+the tag as a trailing comment for humans and Dependabot:
+
+```yaml
+- uses: actions/checkout@<40-char-sha>  # v7
+```
+
+The check is on the ref shape, not the comment: an unpinned `uses:` with a `# v7` comment
+still fails. Local actions (`./...`) pass; `docker://` refs need an `@sha256:` digest.
 
 ## Upstream conventions (from CONTRIBUTING.md)
 

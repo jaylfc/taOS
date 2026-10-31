@@ -596,8 +596,10 @@ async def _resolve_send_identity(
         # principal-spelling policy for humans is not settled yet (taosmd
         # a2a-bus-auth-transition, open question 1). Forwarding it today would
         # present a credential whose sub cannot match the from it accompanies.
+        # A username of only non-printable characters sanitises to a bare "@";
+        # fall back to "@operator" exactly as the admin branch does.
         handle = _sanitise_handle(f"@{username}")
-        return _BusIdentity(handle or f"@{human_id}")
+        return _BusIdentity(handle if handle != "@" else "@operator")
 
     raise HTTPException(status_code=403, detail="forbidden")
 

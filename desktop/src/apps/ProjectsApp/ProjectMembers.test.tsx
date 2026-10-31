@@ -412,3 +412,353 @@ const registryEntry = {
   origin: "external-selfjoin",
   status: "active",
 };
+
+describe("ProjectMembers external registry reload for late-approved agents", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("moves a newly approved external agent into External / Connected agents after registry reload", async () => {
+    let registryCallCount = 0;
+    const fetchMock = vi.fn().mockImplementation((input: string) => {
+      if (input === "/api/projects/prj-test/members") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ items: [{ ...externalMember, member_id: "agent-new" }] }),
+          text: async () => "",
+        });
+      }
+      if (input === "/api/agents") {
+        return Promise.resolve({ ok: true, json: async () => [], text: async () => "" });
+      }
+      if (input === "/api/agents/registry") {
+        registryCallCount++;
+        if (registryCallCount === 1) {
+          return Promise.resolve({ ok: true, json: async () => [], text: async () => "" });
+        }
+        return Promise.resolve({
+          ok: true,
+          json: async () => [
+            {
+              origin: "external-selfjoin",
+              status: "active",
+              canonical_id: "agent-new",
+              handle: "@new",
+              display_name: "New",
+            },
+          ],
+          text: async () => "",
+        });
+      }
+      throw new Error(`Unmocked fetch: ${input}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ProjectMembers project={project} onChanged={vi.fn()} />);
+    await flush();
+
+    // Wait for the effect to detect the unresolved member and reload the registry
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 100));
+    });
+    await flush();
+
+    // After reload, the member should be in the External project members list
+    const externalList = screen.getByRole("list", { name: "External project members" });
+    expect(externalList).toBeInTheDocument();
+    expect(within(externalList).getByText("New")).toBeInTheDocument();
+    // The handle @new appears in the title attribute (tooltip), not as visible text
+    expect(within(externalList).getByTitle("@new")).toBeInTheDocument();
+
+    // And NOT in the main Project members list
+    const mainList = screen.getByRole("list", { name: "Project members" });
+    expect(within(mainList).queryByText("New")).not.toBeInTheDocument();
+    expect(within(mainList).queryByText("agent-new")).not.toBeInTheDocument();
+  });
+
+  it("does not loop when registry never contains the member id (fetches at most twice)", async () => {
+    let registryCallCount = 0;
+    const fetchMock = vi.fn().mockImplementation((input: string) => {
+      if (input === "/api/projects/prj-test/members") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ items: [{ ...externalMember, member_id: "agent-unknown" }] }),
+          text: async () => "",
+        });
+      }
+      if (input === "/api/agents") {
+        return Promise.resolve({ ok: true, json: async () => [], text: async () => "" });
+      }
+      if (input === "/api/agents/registry") {
+        registryCallCount++;
+        return Promise.resolve({ ok: true, json: async () => [], text: async () => "" });
+      }
+      throw new Error(`Unmocked fetch: ${input}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ProjectMembers project={project} onChanged={vi.fn()} />);
+    await flush();
+
+    // Wait for potential reload attempts
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 200));
+    });
+    await flush();
+
+    // Registry should be fetched at most twice (initial + one reload attempt)
+    expect(registryCallCount).toBeLessThanOrEqual(2);
+
+    // Member should stay in the main Project members list
+    const mainList = screen.getByRole("list", { name: "Project members" });
+    expect(within(mainList).getByText("agent-unknown")).toBeInTheDocument();
+
+    // External section should not render (no external members)
+    expect(screen.queryByText("External / Connected agents")).not.toBeInTheDocument();
+  });
+});
+
+describe("ProjectMembers registry race condition guard", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("ignores stale registry responses so an older empty reload cannot undo a newer one", async () => {
+    // We need exactly two concurrent reloadExternalRegistry calls:
+    // Call 1: unresolved-member effect (starts first, resolves LAST with empty)
+    // Call 2: triggered by a user action (starts second, resolves FIRST with agent-new)
+    // Use separate promises for each call to avoid cross-contamination
+    let resolveCall1!: (value: unknown) => void;
+    let resolveCall2!: (value: unknown) => void;
+    const call1Promise = new Promise((resolve) => {
+      resolveCall1 = resolve;
+    });
+    const call2Promise = new Promise((resolve) => {
+      resolveCall2 = resolve;
+    });
+
+    let totalRegistryCallCount = 0;
+    let reloadCallCount = 0;
+    let call1Returned = false, call2Returned = false;
+    const fetchMock = vi.fn().mockImplementation((input: string) => {
+      if (input === "/api/projects/prj-test/members") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ items: [externalMember, { ...externalMember, member_id: "agent-new" }] }),
+          text: async () => "",
+        });
+      }
+      if (input === "/api/agents") {
+        return Promise.resolve({ ok: true, json: async () => [], text: async () => "" });
+      }
+      if (input === "/api/agents/registry") {
+        totalRegistryCallCount++;
+        if (totalRegistryCallCount === 1) {
+          // Mount effect: resolve immediately with existing external agent
+          return Promise.resolve({
+            ok: true,
+            json: async () => [registryEntry],
+            text: async () => "",
+          });
+        }
+        // This is a reloadExternalRegistry call
+        reloadCallCount++;
+        if (reloadCallCount === 1) {
+          // First reload (unresolved-member effect) - deferred, resolves LAST with empty
+          return call1Promise.then(() => {
+            call1Returned = true;
+            return {
+              ok: true,
+              json: async () => [],
+              text: async () => "",
+            };
+          });
+        }
+        if (reloadCallCount > 2) {
+          return Promise.resolve({ ok: true, json: async () => [], text: async () => "" });
+        }
+        // Second reload (triggered by user action) - deferred, resolves FIRST with agent-new
+        return call2Promise.then(() => {
+          call2Returned = true;
+          return {
+            ok: true,
+            json: async () => [
+              registryEntry,
+              {
+                origin: "external-selfjoin",
+                status: "active",
+                canonical_id: "agent-new",
+                handle: "@new",
+                display_name: "New Agent",
+              },
+            ],
+            text: async () => "",
+          };
+        });
+      }
+      if (input === "/api/agents/registry/grok-taos-20260711-000736") {
+        return Promise.resolve({ ok: true, json: async () => ({ ok: true }), text: async () => "" });
+      }
+      if (input === "/api/projects/prj-test/members/grok-taos-20260711-000736/read") {
+        return Promise.resolve({ ok: true, json: async () => ({ ok: true }), text: async () => "" });
+      }
+      if (input === "/api/projects/prj-test/members/grok-taos-20260711-000736/edit") {
+        return Promise.resolve({ ok: true, json: async () => ({ ok: true }), text: async () => "" });
+      }
+      if (input === "/api/projects/prj-test/canvas/permissions/grok-taos-20260711-000736") {
+        return Promise.resolve({ ok: true, json: async () => ({ ok: true }), text: async () => "" });
+      }
+      throw new Error(`Unmocked fetch: ${input}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ProjectMembers project={project} onChanged={vi.fn()} />);
+    await flush();
+
+    // Wait for mount effect to resolve and unresolved-member effect to trigger first reload
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    await flush();
+
+    // At this point: mount effect resolved, unresolved-member effect ran and started reload call 1 (deferred)
+    // Now trigger a second reload by toggling a canvas permission on the external agent (calls onRefresh -> refresh)
+    const readCheckbox = screen.getByLabelText("Can read canvas for grok-taOS") as HTMLInputElement;
+    await act(async () => {
+      fireEvent.click(readCheckbox);
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    await flush();
+
+    // Verify both reloads are in flight before resolving call2
+    expect(reloadCallCount).toBe(2);
+
+    // Now we have two deferred reloads in flight: call 1 (unresolved-member) and call 2 (permission change -> refresh)
+    // Resolve the SECOND reload first (newer response with the agent-new)
+    resolveCall2({});
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    await flush();
+
+    // Record which call returned which payload for assertion messages
+    // call2Returned should be true now (second reload resolved first)
+    expect(call2Returned).toBe(true);
+    expect(call1Returned).toBe(false);
+
+    // Then resolve the FIRST reload (older empty response)
+    resolveCall1({});
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    await flush();
+
+    expect(reloadCallCount).toBe(2);
+
+    // call1Returned should be true now (first reload resolved after)
+    expect(call1Returned).toBe(true);
+
+    // After both settle, agent-new should be in External / Connected agents
+    const externalList = screen.getByRole("list", { name: "External project members" });
+    expect(externalList).toBeInTheDocument();
+    expect(within(externalList).getByText("New Agent")).toBeInTheDocument();
+    expect(within(externalList).getByTitle("@new")).toBeInTheDocument();
+
+    // And NOT in the main Project members list
+    const mainList = screen.getByRole("list", { name: "Project members" });
+    expect(within(mainList).queryByText("New Agent")).not.toBeInTheDocument();
+    expect(within(mainList).queryByText("agent-new")).not.toBeInTheDocument();
+  });
+});
+describe("ProjectMembers refresh race condition with unresolved member", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("keeps unresolved member in main list when refresh resolves before mount effect", async () => {
+    // Race: mount registry fetch (call 1) deferred, user-action refresh (call 2) resolves first.
+    // The unresolved member must remain in the main list after both settle.
+    let resolveMountRegistry!: (value: unknown) => void;
+    const mountRegistryPromise = new Promise((resolve) => {
+      resolveMountRegistry = resolve;
+    });
+
+    let totalRegistryCallCount = 0;
+    let reloadCallCount = 0;
+    let refreshResolved = false;
+    const fetchMock = vi.fn().mockImplementation((input: string) => {
+      if (input === "/api/projects/prj-test/members") {
+        // One native agent (in /api/agents) + one unresolved member (in no registry, not in /api/agents)
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            items: [memberRow("agent-a"), memberRow("unresolved-member")],
+          }),
+          text: async () => "",
+        });
+      }
+      if (input === "/api/agents") {
+        // agent-a exists so its canvas checkbox renders
+        return Promise.resolve({ ok: true, json: async () => [agentA], text: async () => "" });
+      }
+      if (input === "/api/agents/registry") {
+        totalRegistryCallCount++;
+        if (totalRegistryCallCount === 1) {
+          // Mount effect: deferred, resolves LAST with empty
+          return mountRegistryPromise.then(() => {
+            return { ok: true, json: async () => [], text: async () => "" };
+          });
+        }
+        // Reload call (refresh from user action or unresolved-member effect)
+        reloadCallCount++;
+        // Refresh call (user action): resolves FIRST with empty
+        if (reloadCallCount === 1) {
+          refreshResolved = true;
+          return Promise.resolve({ ok: true, json: async () => [], text: async () => "" });
+        }
+        // Unresolved-member effect reload: resolves with empty
+        return Promise.resolve({ ok: true, json: async () => [], text: async () => "" });
+      }
+      // Mock the canvas permission PATCH that the checkbox handler sends
+      if (input === "/api/projects/prj-test/canvas/permissions/agent-a") {
+        return Promise.resolve({ ok: true, json: async () => ({ ok: true }), text: async () => "" });
+      }
+      throw new Error(`Unmocked fetch: ${input}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ProjectMembers project={baseProject} onChanged={vi.fn()} />);
+    await flush();
+
+    // Wait for mount effect to start (it will hit the deferred promise)
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    await flush();
+
+    // Click the "Can read canvas" checkbox for agent-a -> triggers onRefresh -> refresh -> reloadExternalRegistry
+    const readCheckbox = screen.getByLabelText("Can read canvas for Alpha") as HTMLInputElement;
+    await act(async () => {
+      fireEvent.click(readCheckbox);
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    await flush();
+
+    // After refresh resolves, unresolved-member effect also fires (both are reload calls)
+    expect(reloadCallCount).toBe(2);
+    expect(refreshResolved).toBe(true);
+
+    // Now resolve the MOUNT call (call 1) last
+    resolveMountRegistry({});
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    await flush();
+
+    // Assert: exactly 2 reload calls were made (refresh + unresolved-member effect)
+    expect(reloadCallCount).toBe(2);
+    // Assert: unresolved-member is rendered in the main Project members list
+    const mainList = screen.getByRole("list", { name: "Project members" });
+    expect(within(mainList).getByText("unresolved-member")).toBeInTheDocument();
+  });
+});

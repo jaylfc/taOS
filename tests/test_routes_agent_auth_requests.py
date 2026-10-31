@@ -2589,6 +2589,82 @@ class TestDeferBindingApproval:
         finally:
             await grants.close()
 
+    @pytest.mark.asyncio
+    async def test_two_deferred_grants_inherit_earliest_expiry(self, tmp_path):
+        """Two live deferred grants: the new project grant inherits the EARLIEST
+        expiry, not the oldest grant's (which here is the later one)."""
+        from datetime import datetime, timedelta, timezone
+        from tinyagentos.agent_grants_store import AgentGrantsStore
+        from tinyagentos.routes.agent_auth_requests import add_agent_to_project
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        now = datetime.now(timezone.utc)
+        in_2_days = (now + timedelta(days=2)).isoformat()
+        in_1_hour = (now + timedelta(hours=1)).isoformat()
+        grants = AgentGrantsStore(tmp_path / "grants-earliest.db")
+        await grants.init()
+        try:
+            # OLDER grant (added first) expires LATER; NEWER grant expires sooner.
+            # Distinct scopes: UNIQUE(canonical_id, scope, project_id).
+            await grants.add_grant("agent-e", "project_tasks", project_id=None, expires_at=in_2_days)
+            await grants.add_grant("agent-e", "memory_read", project_id=None, expires_at=in_1_hour)
+            request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
+                agent_grants=grants,
+                relationships=SimpleNamespace(set_permission=AsyncMock()),
+                project_store=None,
+            )))
+            await add_agent_to_project(
+                request, canonical_id="agent-e", project_id="proj-1",
+                granted_scopes=["project_tasks"], decided_by="test",
+                expires_at=None, renew=False,
+            )
+            bound = [
+                g for g in await grants.list_grants("agent-e")
+                if g["scope"] == "project_tasks" and g["project_id"] == "proj-1"
+            ]
+            assert len(bound) == 1
+            assert bound[0]["expires_at"] == in_1_hour
+        finally:
+            await grants.close()
+
+    @pytest.mark.asyncio
+    async def test_expired_old_deferred_grant_does_not_block_live_one(self, tmp_path):
+        """An expired OLD deferred grant must not refuse the binding while a
+        NEWER deferred grant is still live."""
+        from datetime import datetime, timedelta, timezone
+        from tinyagentos.agent_grants_store import AgentGrantsStore
+        from tinyagentos.routes.agent_auth_requests import add_agent_to_project
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        now = datetime.now(timezone.utc)
+        expired = (now - timedelta(days=1)).isoformat()
+        in_1_hour = (now + timedelta(hours=1)).isoformat()
+        grants = AgentGrantsStore(tmp_path / "grants-expired-old.db")
+        await grants.init()
+        try:
+            await grants.add_grant("agent-x", "project_tasks", project_id=None, expires_at=expired)
+            await grants.add_grant("agent-x", "memory_read", project_id=None, expires_at=in_1_hour)
+            request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
+                agent_grants=grants,
+                relationships=SimpleNamespace(set_permission=AsyncMock()),
+                project_store=None,
+            )))
+            await add_agent_to_project(
+                request, canonical_id="agent-x", project_id="proj-1",
+                granted_scopes=["project_tasks"], decided_by="test",
+                expires_at=None, renew=False,
+            )
+            bound = [
+                g for g in await grants.list_grants("agent-x")
+                if g["scope"] == "project_tasks" and g["project_id"] == "proj-1"
+            ]
+            assert len(bound) == 1
+            assert bound[0]["expires_at"] == in_1_hour
+        finally:
+            await grants.close()
+
 
 class TestConsentApproveHandleCollisionGuard:
     """The consent-approve collision guard must NOT be blind to internal handles.

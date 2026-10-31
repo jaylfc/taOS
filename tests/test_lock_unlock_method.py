@@ -11,12 +11,12 @@ from __future__ import annotations
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from taos_test_csrf import bound_csrf_token
 
 from tinyagentos.auth import AuthManager, effective_unlock_method
 
 PASSWORD = "correct horse battery staple"
 UA = "Mozilla/5.0 (Linux; taOS kiosk) Chromium/131"
-CSRF = "t" * 64
 
 
 @pytest.fixture(autouse=True)
@@ -105,13 +105,14 @@ def _signed_in(client, app, username: str):
     uid = mgr.find_user(username)["id"]
     token = mgr.create_session(user_id=uid, user_agent=UA)
     client.cookies.set("taos_session", token)
-    client.cookies.set("csrf_token", CSRF)
+    client.cookies.set("csrf_token", bound_csrf_token(app, token))
     return token
 
 
 async def _put(client, **body):
     return await client.put(
-        "/api/settings/lock", json=body, headers={"X-CSRF-Token": CSRF},
+        "/api/settings/lock", json=body,
+        headers={"X-CSRF-Token": client.cookies.get("csrf_token") or ""},
     )
 
 
@@ -398,7 +399,7 @@ class TestPutLockRefuses:
     async def test_non_object_body_is_400(self, app, console):
         _signed_in(console, app, "owner")
         r = await console.put("/api/settings/lock", content=b"[1]",
-                              headers={"X-CSRF-Token": CSRF, "Content-Type": "application/json"})
+                              headers={"X-CSRF-Token": console.cookies["csrf_token"], "Content-Type": "application/json"})
         assert r.status_code == 400
 
     @pytest.mark.asyncio

@@ -1,4 +1,4 @@
-import type { AppManifest } from "@/registry/app-registry";
+import type { AppManifest, AppRuntime } from "@/registry/app-registry";
 
 /**
  * Event name emitted when the installed userspace-app list changes (install,
@@ -33,6 +33,14 @@ export function defaultProvenanceForTrust(trust?: string): AppProvenance {
 export function toAppManifest(row: UserspaceAppRow): AppManifest {
   const trust = row.trust ?? "community";
   const provenance = row.provenance ?? defaultProvenanceForTrust(trust);
+  // ai-generated wins over container: an agent-hosted app is still an agent, not
+  // a container, even when it ships as a container image.
+  const runtime: AppRuntime =
+    provenance === "ai-generated"
+      ? "agent"
+      : row.app_type === "container"
+        ? "container"
+        : "web";
   return {
     // Registry id is namespaced (mirrors "service:") so a community app cannot
     // shadow a built-in app id. The broker/bundle still use the raw app_id.
@@ -40,6 +48,7 @@ export function toAppManifest(row: UserspaceAppRow): AppManifest {
     name: row.name,
     icon: "layout-grid",
     category: "userspace",
+    runtime,
     component: () =>
       import("@/apps/SandboxedAppWindow").then((m) => ({
         default: (props: { windowId: string }) =>

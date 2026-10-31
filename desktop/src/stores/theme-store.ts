@@ -217,6 +217,22 @@ export function loadWallpaperFit(): WallpaperFit {
   return "fill";
 }
 
+// How the app-type indicator badge renders on app icons: a filled circular
+// chip ("badge"), a per-type outline ring ("outline"), or nothing ("off").
+// Persisted so a clean desktop survives a reload. Mirrors loadWallpaperFit.
+export const APP_TYPE_INDICATOR_OPTIONS = ["badge", "outline", "off"] as const;
+export type AppTypeIndicator = (typeof APP_TYPE_INDICATOR_OPTIONS)[number];
+const APP_TYPE_INDICATOR_KEY = "taos-app-type-indicator";
+export function loadAppTypeIndicator(): AppTypeIndicator {
+  try {
+    const raw = localStorage.getItem(APP_TYPE_INDICATOR_KEY);
+    if (raw && APP_TYPE_INDICATOR_OPTIONS.includes(raw as AppTypeIndicator)) return raw as AppTypeIndicator;
+  } catch {
+    // best-effort
+  }
+  return "badge";
+}
+
 interface ThemeStore {
   wallpaperId: string;
   wallpaperImage: string;
@@ -236,6 +252,7 @@ interface ThemeStore {
   showDesktopIcons: boolean;
   reduceEffects: boolean;
   wallpaperFit: WallpaperFit;
+  appTypeIndicator: AppTypeIndicator;
   structure: Record<string, { variant?: string } & Record<string, unknown>>;
   effects: { module: string; params?: Record<string, unknown> }[];
 
@@ -252,6 +269,7 @@ interface ThemeStore {
   toggleOverlayText: () => void;
   setWallpaperParam: (key: keyof WallpaperParams, value: number) => void;
   setWallpaperFit: (fit: WallpaperFit) => void;
+  setAppTypeIndicator: (mode: AppTypeIndicator) => void;
   toggleDesktopIcons: () => void;
   setReduceEffects: (on: boolean) => void;
   getWallpapers: () => Wallpaper[];
@@ -275,6 +293,7 @@ export const useThemeStore = create<ThemeStore>((set, get) => ({
   showDesktopIcons: true,
   reduceEffects: loadReduceEffects(),
   wallpaperFit: loadWallpaperFit(),
+  appTypeIndicator: loadAppTypeIndicator(),
   structure: {},
   effects: [],
 
@@ -340,6 +359,15 @@ export const useThemeStore = create<ThemeStore>((set, get) => ({
       // best-effort
     }
     set({ wallpaperFit: fit });
+  },
+
+  setAppTypeIndicator(mode) {
+    try {
+      localStorage.setItem(APP_TYPE_INDICATOR_KEY, mode);
+    } catch {
+      // best-effort
+    }
+    set({ appTypeIndicator: mode });
   },
 
   getWallpapers: () => WALLPAPERS,

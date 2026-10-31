@@ -152,6 +152,20 @@ FRAMEWORKS: dict[str, dict] = {
              "icon": "diagnostic", "requires_capability": "agent.terminal"},
         ],
     },
+    "nanobot": {
+        "id": "nanobot",
+        "name": "nanobot",
+        "description": "Lightweight personal AI agent (HKUDS/nanobot) -- taOS bridge to /v1/chat/completions on :8900",
+        "verification_status": "experimental",
+        "slash_commands": [
+            {"name": "help", "description": "List available commands"},
+            {"name": "clear", "description": "Clear the session context"},
+        ],
+        "shortcuts": [
+            {"kind": "container-terminal", "label": "Container shell",
+             "icon": "terminal", "requires_capability": "agent.shell"},
+        ],
+    },
     "opencrabs": {
         "id": "opencrabs",
         "name": "OpenCrabs",

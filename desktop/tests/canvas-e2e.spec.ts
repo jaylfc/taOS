@@ -59,22 +59,15 @@ async function openProjectCanvas(page: Page, projectName: string) {
     .getByTestId("workspace-tab-pills-scroller")
     .getByRole("tab", { name: /^canvas$/i })
     .click();
-  // tldraw pulls its bundle and assets before .tl-container mounts, which on
-  // emulated mobile WebKit in CI is slower than the 5 s the specs used.
-  await expect(page.locator(".tl-container")).toBeVisible({ timeout: 15_000 });
+  // Excalidraw mounts its canvas and the accessible element list before the
+  // test can assert on content.
+  await expect(page.locator(".excalidraw")).toBeVisible({ timeout: 15_000 });
 }
 
 test.describe("Project canvas board", () => {
   test("user adds note via API, sees it on canvas tab after reload", async ({
     page, request,
   }) => {
-    // Quarantined: navigation and mount are PROVEN working (openProjectCanvas
-    // gets past .tl-container), but a note seeded through
-    // POST /api/projects/<id>/canvas/elements never renders on the board.
-    // Cause not yet established -- either the REST element never becomes a
-    // tldraw shape, or tldraw renders its text where getByText cannot see it.
-    // Card tsk-hgmbpu decides which before anything is changed.
-    test.fixme(true, "tsk-hgmbpu: REST-seeded canvas elements do not render (hydration vs locator undecided)");
     const created = await request.post("/api/projects", {
       data: { name: `E2E Canvas ${uniq()}`, slug: `e2e-canvas-${uniq()}`, description: "" },
     });
@@ -93,19 +86,13 @@ test.describe("Project canvas board", () => {
     );
 
     await openProjectCanvas(page, project.name);
-    await expect(page.getByText("hello-from-test")).toBeVisible({ timeout: 5000 });
+    // Text assertions via the accessible element list (role="list" name="Canvas elements")
+    await expect(page.getByRole("list", { name: /canvas elements/i }).getByText("hello-from-test")).toBeVisible({ timeout: 5000 });
   });
 
   test("agent adds note via REST → user sees it without reload (SSE)", async ({
     page, request,
   }) => {
-    // Quarantined: navigation and mount are PROVEN working (openProjectCanvas
-    // gets past .tl-container), but a note seeded through
-    // POST /api/projects/<id>/canvas/elements never renders on the board.
-    // Cause not yet established -- either the REST element never becomes a
-    // tldraw shape, or tldraw renders its text where getByText cannot see it.
-    // Card tsk-hgmbpu decides which before anything is changed.
-    test.fixme(true, "tsk-hgmbpu: REST-seeded canvas elements do not render (hydration vs locator undecided)");
     const created = await request.post("/api/projects", {
       data: { name: `E2E SSE ${uniq()}`, slug: `e2e-sse-${uniq()}`, description: "" },
     });
@@ -125,6 +112,6 @@ test.describe("Project canvas board", () => {
                 payload: { text: "live-from-agent", color: "blue", font_size: 14 } } },
     );
 
-    await expect(page.getByText("live-from-agent")).toBeVisible({ timeout: 3000 });
+    await expect(page.getByRole("list", { name: /canvas elements/i }).getByText("live-from-agent")).toBeVisible({ timeout: 3000 });
   });
 });

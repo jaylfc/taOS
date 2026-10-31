@@ -653,9 +653,14 @@ class TestIsAgentDecisionsPath:
             "DELETE", "/api/decisions/dec-abc123/agent"
         ) is False
 
-    def test_human_list_refused(self):
-        """GET /api/decisions (human session list) must NOT match."""
-        assert _is_agent_decisions_path("GET", "/api/decisions") is False
+    def test_plain_list_admits_agent_bearer(self):
+        """tsk-f75p3z: GET /api/decisions admits an agent bearer; the route
+        then scopes the list to the agent's own decisions (see
+        tests/test_decisions_notifications_registry_jwt.py)."""
+        assert _is_agent_decisions_path("GET", "/api/decisions") is True
+        # Only the exact list path: by-id and history stay session-only.
+        assert _is_agent_decisions_path("GET", "/api/decisions/abc") is False
+        assert _is_agent_decisions_path("GET", "/api/decisions/abc/history") is False
 
     def test_post_withdraw_allowed(self):
         """tsk-5dulr5: the asker-side withdraw route admits an agent bearer."""

@@ -662,6 +662,62 @@ class TestBusHumanAuth:
         assert "\x00" not in sent_from
         assert len(sent_from) <= 64
 
+    async def _human_send_from(self, bus_client, user_id, username):
+        """Create a user, mint its human assertion, POST /send with it and
+        return the ``from`` the proxy forwarded to the bus."""
+        data = bus_client._app.state.auth._read_users()
+        data.setdefault("users", []).append({
+            "id": user_id,
+            "username": username,
+            "password_hash": hash_password("testpass1234"),
+            "is_admin": False,
+            "created_at": int(time.time()),
+        })
+        bus_client._app.state.auth._write_users(data)
+        session = bus_client._app.state.auth.create_session(
+            user_id=user_id, long_lived=True
+        )
+        bare_client = AsyncClient(
+            transport=ASGITransport(app=bus_client._app),
+            base_url="http://test",
+            cookies={"taos_session": session},
+            event_hooks=csrf_event_hooks(),
+        )
+        async with bare_client as bare:
+            resp = await bare.post("/api/a2a/bus/human-assertion")
+        assert resp.status_code == 200
+        token = resp.json()["assertion"]
+
+        ctx, client = _mock_bus_post({"id": 1, "from": "@x", "thread": "general"})
+        with patch(_BUS_PATCH, return_value=ctx):
+            async with _bare(bus_client._app) as bare:
+                resp = await bare.post(
+                    "/api/a2a/bus/send",
+                    json={"thread": "general", "body": "hello"},
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+        assert resp.status_code == 200
+        return client.post.call_args.kwargs["json"]["from"]
+
+    async def test_human_handle_over_64_chars_is_capped(self, bus_client):
+        """A username longer than the cap is recorded as @ plus its first 63
+        characters, so the whole handle is exactly 64."""
+        sent_from = await self._human_send_from(
+            bus_client, "test-long-user", "a" * 100
+        )
+        assert sent_from == "@" + "a" * 63
+
+    async def test_human_handle_sanitised_to_empty_falls_back_to_operator(
+        self, bus_client
+    ):
+        """A username made only of non-printable characters sanitises to a
+        bare "@"; the human branch falls back to "@operator", exactly as the
+        admin branch does, instead of recording an empty handle."""
+        sent_from = await self._human_send_from(
+            bus_client, "test-unprintable-user", "\x00\x01"
+        )
+        assert sent_from == "@operator"
+
     async def test_human_send_rejects_malformed_token(self, bus_client):
         """A malformed Bearer token on /send returns 401."""
         async with _bare(bus_client._app) as bare:

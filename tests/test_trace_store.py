@@ -6,6 +6,7 @@ import json
 import os
 import stat
 import time
+import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -23,6 +24,7 @@ from tinyagentos.trace_store import (
     SCHEMA_VERSION,
     SEAL_AGE_SECONDS,
     TRACE_SCHEMA,
+    ENVELOPE_V1_SCHEMA,
 )
 
 
@@ -34,6 +36,13 @@ def _ts(year=2024, month=1, day=15, hour=14, minute=0, second=0) -> float:
     """UTC timestamp for a specific date/time."""
     from datetime import datetime, timezone
     return datetime(year, month, day, hour, minute, second, tzinfo=timezone.utc).timestamp()
+
+
+def _hour_anchor(ts: float) -> int:
+    """Anchor a timestamp to 60s after the start of its UTC hour bucket.
+    This ensures all offsets up to +200s stay within the same hour bucket.
+    """
+    return (int(ts) // 3600) * 3600 + 60
 
 
 # ---------------------------------------------------------------------------
@@ -692,3 +701,307 @@ async def test_round_trip_valid_slug_after_safe_slug(tmp_path):
     events = await store.list()
     assert len(events) == 1
     await store.close()
+
+
+# ---------------------------------------------------------------------------
+# 18. Bulk historical import (T2b) — RED tests for import_envelopes / search_text
+# ---------------------------------------------------------------------------
+
+def _envelope(**overrides) -> dict:
+    """Build a valid v1 envelope with sane defaults for import tests."""
+    base = {
+        "v": SCHEMA_VERSION,
+        "id": overrides.pop("id", None) or ("env-" + uuid.uuid4().hex[:12]),
+        "trace_id": overrides.pop("trace_id", None),
+        "parent_id": overrides.pop("parent_id", None),
+        "created_at": overrides.pop("created_at", time.time()),
+        "agent_name": overrides.pop("agent_name", "importer-agent"),
+        "kind": overrides.pop("kind", "tool_result"),
+        "channel_id": overrides.pop("channel_id", None),
+        "thread_id": overrides.pop("thread_id", None),
+        "backend_name": overrides.pop("backend_name", None),
+        "model": overrides.pop("model", None),
+        "duration_ms": overrides.pop("duration_ms", None),
+        "tokens_in": overrides.pop("tokens_in", None),
+        "tokens_out": overrides.pop("tokens_out", None),
+        "cost_usd": overrides.pop("cost_usd", None),
+        "error": overrides.pop("error", None),
+        "payload": overrides.pop("payload", {}),
+    }
+    base.update(overrides)
+    return base
+
+
+@pytest.mark.asyncio
+async def test_import_envelopes_lands_in_bucket_db_not_late_jsonl(tmp_path):
+    """RED: import_envelopes routes 30-day-old events into the bucket DB and
+    writes no .late.jsonl sidecar (the sealed-bucket record() path would)."""
+    store = AgentTraceStore(tmp_path, "importer-agent")
+    now = time.time()
+    old_ts = _hour_anchor(now - 30 * 86400)
+    bucket = _bucket_key(old_ts)
+    envelopes = [
+        _envelope(id="imp-1", created_at=old_ts, kind="tool_result",
+                  payload={"tool": "shell", "result": "alpha-token-xyz"}),
+        _envelope(id="imp-2", created_at=old_ts + 5, kind="message_in",
+                  payload={"from": "user", "text": "second event"}),
+        _envelope(id="imp-3", created_at=old_ts + 10, kind="llm_call",
+                  payload={"status": "success", "messages": [], "response": "ok", "metadata": {}}),
+    ]
+    result = await store.import_envelopes(envelopes)
+    assert result["inserted"] == 3
+    assert result["duplicates"] == 0
+    assert bucket in result["buckets"]
+
+    events = await store.list(since=old_ts, until=old_ts + 20, limit=100)
+    ids = {e["id"] for e in events}
+    assert {"imp-1", "imp-2", "imp-3"}.issubset(ids), events
+
+    late_path = _bucket_late_jsonl_path(tmp_path, "importer-agent", bucket)
+    assert not late_path.exists(), "import must not write a .late.jsonl sidecar"
+
+    db_path = _bucket_db_path(tmp_path, "importer-agent", bucket)
+    assert db_path.exists()
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_import_envelopes_idempotent_duplicates(tmp_path):
+    """RED: re-running import_envelopes with the same ids reports duplicates."""
+    store = AgentTraceStore(tmp_path, "importer-agent")
+    now = time.time()
+    old_ts = _hour_anchor(now - 30 * 86400)
+    envelopes = [
+        _envelope(id=f"dup-{i}", created_at=old_ts + i, kind="tool_result",
+                  payload={"tool": "shell", "result": f"r{i}"})
+        for i in range(3)
+    ]
+    first = await store.import_envelopes(envelopes)
+    assert first["inserted"] == 3 and first["duplicates"] == 0
+
+    second = await store.import_envelopes(envelopes)
+    assert second["inserted"] == 0
+    assert second["duplicates"] == 3, second
+
+    events = await store.list(since=old_ts, until=old_ts + 10, limit=100)
+    assert len(events) == 3
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_search_text_finds_unique_token(tmp_path):
+    """RED: search_text finds a unique token from a tool_result and not from
+    another agent's store."""
+    store = AgentTraceStore(tmp_path, "searcher-agent")
+    now = time.time()
+    old_ts = _hour_anchor(now - 30 * 86400)
+    envelopes = [
+        _envelope(id="srch-1", created_at=old_ts, kind="tool_result",
+                  payload={"tool": "shell", "result": "the-unicorn-secret-42"}),
+        _envelope(id="srch-2", created_at=old_ts + 5, kind="message_in",
+                  payload={"from": "user", "text": "unrelated chatter"}),
+    ]
+    await store.import_envelopes(envelopes)
+
+    hits = await store.search_text("unicorn secret", since=old_ts - 10, limit=10)
+    assert any(h.get("id") == "srch-1" for h in hits), hits
+    assert not any(h.get("id") == "srch-2" for h in hits), hits
+    await store.close()
+
+    other = AgentTraceStore(tmp_path, "other-agent")
+    other_envs = [
+        _envelope(id="oth-1", created_at=old_ts, kind="tool_result",
+                  payload={"tool": "shell", "result": "totally different topic"}),
+    ]
+    await other.import_envelopes(other_envs)
+    other_hits = await other.search_text("unicorn secret", since=old_ts - 10, limit=10)
+    assert other_hits == [], other_hits
+    await other.close()
+
+
+# ---------------------------------------------------------------------------
+# 19. RED tests for tsk-yeyspv fixes
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_search_text_handles_card_ids_and_special_chars(tmp_path):
+    """RED: search_text should find card IDs like 'tsk-abc123' and handle
+    apostrophes like \"it's\" without raising FTS5 syntax errors."""
+    store = AgentTraceStore(tmp_path, "search-fix-agent")
+    now = time.time()
+    old_ts = _hour_anchor(now - 30 * 86400)
+    envelopes = [
+        _envelope(id="card-1", created_at=old_ts, kind="tool_result",
+                  payload={"tool": "shell", "result": "task completed: tsk-abc123"}),
+        _envelope(id="card-2", created_at=old_ts + 5, kind="message_in",
+                  payload={"from": "user", "text": "it's working now"}),
+    ]
+    await store.import_envelopes(envelopes)
+
+    # Card ID search should work (not raise "no such column")
+    hits = await store.search_text("tsk-abc123", since=old_ts - 10, limit=10)
+    assert any(h.get("id") == "card-1" for h in hits), f"expected card-1 in hits: {hits}"
+
+    # Apostrophe search should work (not raise "fts5: syntax error")
+    hits = await store.search_text("it's", since=old_ts - 10, limit=10)
+    assert isinstance(hits, list), f"expected list, got {type(hits)}: {hits}"
+    # Should find the event with "it's working now"
+    assert any(h.get("id") == "card-2" for h in hits), f"expected card-2 in hits: {hits}"
+
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_import_envelopes_sealed_bucket_reimport_returns_duplicates(tmp_path):
+    """RED: Re-importing into a sealed bucket should return duplicates=3,
+    inserted=0 without raising 'readonly database' error."""
+    store = AgentTraceStore(tmp_path, "sealed-reimport-agent")
+    now = time.time()
+    old_ts = _hour_anchor(now - 30 * 86400)
+    bucket = _bucket_key(old_ts)
+    envelopes = [
+        _envelope(id=f"sealed-{i}", created_at=old_ts + i, kind="tool_result",
+                  payload={"tool": "shell", "result": f"output-{i}"})
+        for i in range(3)
+    ]
+    # First import
+    result1 = await store.import_envelopes(envelopes)
+    assert result1["inserted"] == 3
+    assert result1["duplicates"] == 0
+
+    # Seal the bucket
+    db_path = _bucket_db_path(tmp_path, "sealed-reimport-agent", bucket)
+    os.chmod(str(db_path), 0o400)
+
+    try:
+        # Re-import same envelopes - should report duplicates, not raise
+        result2 = await store.import_envelopes(envelopes)
+        assert result2["inserted"] == 0, f"expected inserted=0, got {result2}"
+        assert result2["duplicates"] == 3, f"expected duplicates=3, got {result2}"
+    finally:
+        # Restore for cleanup
+        os.chmod(str(db_path), 0o600)
+
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_import_envelopes_sealed_bucket_new_envelope_raises_valueerror(tmp_path):
+    """RED: Importing a NEW envelope into a sealed bucket should raise ValueError
+    before writing to ANY bucket."""
+    store = AgentTraceStore(tmp_path, "sealed-new-agent")
+    now = time.time()
+    old_ts = _hour_anchor(now - 30 * 86400)
+    bucket = _bucket_key(old_ts)
+
+    # Import 3 envelopes into old bucket
+    old_envelopes = [
+        _envelope(id=f"old-{i}", created_at=old_ts + i, kind="tool_result",
+                  payload={"tool": "shell", "result": f"old-{i}"})
+        for i in range(3)
+    ]
+    await store.import_envelopes(old_envelopes)
+
+    # Seal the old bucket
+    db_path = _bucket_db_path(tmp_path, "sealed-new-agent", bucket)
+    os.chmod(str(db_path), 0o400)
+
+    # Also create a current bucket with some data
+    current_ts = now
+    current_bucket = _bucket_key(current_ts)
+    current_envelopes = [
+        _envelope(id=f"curr-{i}", created_at=current_ts + i, kind="tool_result",
+                  payload={"tool": "shell", "result": f"curr-{i}"})
+        for i in range(2)
+    ]
+    await store.import_envelopes(current_envelopes)
+
+    # Now try to import a mix: existing old envelopes (duplicates) + ONE new envelope for the sealed bucket
+    # AND a new envelope for the current bucket - this exercises the no-partial-commit guarantee
+    new_sealed_envelope = _envelope(id="new-sealed-1", created_at=old_ts + 100, kind="tool_result",
+                                    payload={"tool": "shell", "result": "new-in-sealed"})
+    new_current_envelope = _envelope(id="new-curr-1", created_at=current_ts + 10, kind="tool_result",
+                                     payload={"tool": "shell", "result": "new-in-current"})
+    mixed_envelopes = old_envelopes + [new_sealed_envelope, new_current_envelope]
+
+    try:
+        with pytest.raises(ValueError, match="sealed bucket"):
+            await store.import_envelopes(mixed_envelopes)
+    finally:
+        os.chmod(str(db_path), 0o600)
+
+    # Verify the NEW envelope was NOT written to the sealed bucket
+    events = await store.list(since=old_ts, until=old_ts + 200, limit=100)
+    ids = {e["id"] for e in events}
+    assert "new-sealed-1" not in ids, f"new-sealed-1 should not have been written: {ids}"
+
+    # Verify current bucket was not touched either (no partial commit)
+    current_events = await store.list(since=current_ts, until=current_ts + 20, limit=100)
+    current_ids = {e["id"] for e in current_events}
+    assert current_ids == {"curr-0", "curr-1"}, f"current bucket should be unchanged: {current_ids}"
+
+    await store.close()
+
+
+# ---------------------------------------------------------------------------
+# 20. Regression test: sealed-bucket works correctly near hour boundary
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_import_envelopes_sealed_bucket_works_near_hour_boundary(tmp_path, monkeypatch):
+    """Regression test: with hour-anchored timestamps, the sealed-bucket check
+    works correctly even when the test runs near an hour boundary.
+    Pins time.time() to 50s before an hour boundary and verifies ValueError
+    is raised for new envelopes targeting a sealed bucket."""
+    # Pin wall-clock to 50 seconds before the next UTC hour.
+    real_now = time.time()
+    pinned_now = (int(real_now) // 3600 + 1) * 3600 - 50
+
+    store = AgentTraceStore(tmp_path, "flake-demo-agent")
+
+    monkeypatch.setattr(time, "time", lambda: pinned_now)
+
+    # Use the FIXED hour-anchored computation (same as the other tests now).
+    now = pinned_now
+    old_ts = _hour_anchor(now - 30 * 86400)
+    bucket = _bucket_key(old_ts)
+
+    # Import old envelopes
+    old_envelopes = [
+        _envelope(id=f"old-{i}", created_at=old_ts + i, kind="tool_result",
+                  payload={"tool": "shell", "result": f"old-{i}"})
+        for i in range(3)
+    ]
+    await store.import_envelopes(old_envelopes)
+
+    # Seal the old bucket
+    db_path = _bucket_db_path(tmp_path, "flake-demo-agent", bucket)
+    os.chmod(str(db_path), 0o400)
+
+    try:
+        # Current bucket (also hour-anchored)
+        current_ts = _hour_anchor(now)
+        current_bucket = _bucket_key(current_ts)
+        current_envelopes = [
+            _envelope(id=f"curr-{i}", created_at=current_ts + i, kind="tool_result",
+                      payload={"tool": "shell", "result": f"curr-{i}"})
+            for i in range(2)
+        ]
+        await store.import_envelopes(current_envelopes)
+
+        # Try to import a NEW envelope for the sealed bucket
+        # With the hour-anchored computation, old_ts + 100 stays in the SAME bucket
+        # (since old_ts is anchored to 60s after hour start, +100 = 160s, well within the hour)
+        new_sealed_envelope = _envelope(id="new-sealed-1", created_at=old_ts + 100, kind="tool_result",
+                                        payload={"tool": "shell", "result": "new-in-sealed"})
+        new_current_envelope = _envelope(id="new-curr-1", created_at=current_ts + 10, kind="tool_result",
+                                         payload={"tool": "shell", "result": "new-in-current"})
+        mixed_envelopes = old_envelopes + [new_sealed_envelope, new_current_envelope]
+
+        # This SHOULD raise ValueError and now it DOES with the fix
+        with pytest.raises(ValueError, match="sealed bucket"):
+            await store.import_envelopes(mixed_envelopes)
+    finally:
+        # Restore for cleanup
+        os.chmod(str(db_path), 0o600)
+        await store.close()

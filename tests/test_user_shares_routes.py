@@ -11,11 +11,10 @@ store initialised on app.state.
 
 from __future__ import annotations
 
-import secrets
-
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from taos_test_csrf import bound_csrf_token
 from tinyagentos.user_shares_store import UserSharesStore
 
 
@@ -36,7 +35,7 @@ async def shares_client(client, tmp_data_dir):
         app.state.user_shares = store
 
     # Set CSRF token so mutating routes pass verify_csrf.
-    csrf_token = secrets.token_hex(32)
+    csrf_token = bound_csrf_token(app, client.cookies["taos_session"])
     client.cookies["csrf_token"] = csrf_token
     client.headers["X-CSRF-Token"] = csrf_token
 
@@ -61,7 +60,7 @@ async def bob_client(shares_client):
     bob_uid = bob_record["id"]
     bob_token = app.state.auth.create_session(user_id=bob_uid, long_lived=True)
 
-    csrf_token = secrets.token_hex(32)
+    csrf_token = bound_csrf_token(app, bob_token)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(

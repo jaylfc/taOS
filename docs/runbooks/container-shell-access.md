@@ -98,3 +98,48 @@ directly inside the container.
 - [Framework swap runbook](./framework-swap.md) — changing an agent's framework
 - [Discussion #357](https://github.com/jaylfc/tinyagentos/discussions/357) —
   original report that surfaced the `incus console` login gap
+
+
+## Agent wall probe
+
+The agent wall probe (`scripts/agent_wall_probe.py`) is a read-only diagnostic tool
+that runs inside an agent container to verify wall/containment. It uses only the
+Python standard library, prints one line per check in the format
+`<STATUS> <check-id> <detail>`, and exits with code 0 (no FAIL/UNKNOWN), 1 (any FAIL),
+or 2 (no FAIL but any UNKNOWN).
+
+### Usage
+
+```bash
+python3 agent_wall_probe.py [--controller URL] [--target HOST:PORT ...] [--internet URL] [--json]
+```
+
+Defaults: `--controller` from env `TAOS_URL` (fallback `http://127.0.0.1:6969`),
+`--internet` defaults to `https://example.com`. All addresses come from arguments/env
+only; no real network addresses are embedded in the tool.
+
+### Push into an agent container and run
+
+Using `incus file push` (LXC):
+
+```bash
+incus file push scripts/agent_wall_probe.py taos-agent-<slug>/tmp/agent_wall_probe.py
+incus exec taos-agent-<slug> -- python3 /tmp/agent_wall_probe.py
+```
+
+Using `docker cp`/`docker exec` (Docker):
+
+```bash
+docker cp scripts/agent_wall_probe.py taos-agent-<slug>:/tmp/agent_wall_probe.py
+docker exec -i taos-agent-<slug> python3 /tmp/agent_wall_probe.py
+```
+
+### Status meanings
+
+- `PASS` - wall holds
+- `FAIL` - wall breached
+- `UNKNOWN` - probe could not run (e.g. timeout on positive control or unreadable file); never counted as PASS
+- `SKIP` - check not applicable yet
+
+The positive control `internet-control` (HTTPS GET to `--internet`) gates `reach:`
+checks: if internet control fails, every `reach:` line becomes `UNKNOWN` instead of `PASS`.

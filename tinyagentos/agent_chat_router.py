@@ -60,6 +60,9 @@ class AgentChatRouter:
         """Drive one OpenClaw ACP turn, serialized per agent by its AgentLoop."""
         from tinyagentos.openclaw_acp_runtime import drive_turn
 
+        chat_messages = self._state.chat_messages
+        chat_hub = self._state.chat_hub
+
         loop = self._agent_loops.setdefault(agent_name, AgentLoop())
         action = await loop.handle_message(text, msg_id=trace_id)
         if action is LoopAction.QUEUED:
@@ -73,6 +76,26 @@ class AgentChatRouter:
         pending: list[tuple[str, Any]] = [(text, trace_id)]
         while pending:
             cur_text, cur_trace = pending.pop(0)
+            # Stamp delivered for this trace_id right before driving the turn
+            if chat_messages:
+                try:
+                    msg = await chat_messages.get_message(cur_trace)
+                    if msg:
+                        receipt_row = await chat_messages.mark_delivered(cur_trace, agent_name)
+                        if receipt_row and chat_hub:
+                            channel_id = msg.get("channel_id")
+                            if channel_id:
+                                await chat_hub.broadcast(channel_id, {
+                                    "type": "receipt",
+                                    "seq": chat_hub.next_seq(),
+                                    "message_id": receipt_row["message_id"],
+                                    "agent_id": receipt_row["reader_id"],
+                                    "reader_type": receipt_row["reader_type"],
+                                    "delivered_at": receipt_row["delivered_at"],
+                                    "seen_at": receipt_row["seen_at"],
+                                })
+                except Exception:
+                    logger.exception("agent_chat_router: mark_delivered failed for %s", agent_name)
             try:
                 await drive_turn(
                     slug=agent_name, text=cur_text, trace_id=cur_trace,
@@ -213,6 +236,7 @@ class AgentChatRouter:
                     build_context_window,
                     history_token_budget,
                 )
+                from tinyagentos.chat.guest_agents import resolve_guest
                 from tinyagentos.cluster.model_resolver import _find_model_manifest
 
                 known_windows: list[int] = []
@@ -221,6 +245,9 @@ class AgentChatRouter:
                 for agent_name in recipients:
                     agent = find_agent(config, agent_name)
                     if agent is None:
+                        # A registry guest has no model: unknown window.
+                        if await resolve_guest(self._state, agent_name):
+                            any_unknown = True
                         continue
                     model_id = agent.get("model") or ""
                     if not model_id:
@@ -277,9 +304,14 @@ class AgentChatRouter:
                 if policy is not None and not policy.try_acquire(policy_key, agent_name, settings):
                     continue
             agent = find_agent(config, agent_name)
+            guest = None
             if agent is None:
-                continue
-            if agent.get("status") != "running":
+                from tinyagentos.chat.guest_agents import resolve_guest
+                guest = await resolve_guest(self._state, agent_name)
+                if guest is None:
+                    continue
+                agent = guest
+            if guest is None and agent.get("status") != "running":
                 await self._post_system_reply(
                     agent_name, channel["id"],
                     f"[router] agent '{agent_name}' is not running (status={agent.get('status') or 'unknown'}).",
@@ -292,7 +324,7 @@ class AgentChatRouter:
                 )
                 continue
 
-            if agent.get("framework") == "openclaw" and _openclaw_transport() == "acp":
+            if guest is None and agent.get("framework") == "openclaw" and _openclaw_transport() == "acp":
                 # Fork-free path: drive the OpenClaw turn over ACP instead of the
                 # legacy taos-bridge SSE. The agent's gateway session carries its
                 # own history + AGENTS.md, so we send the user message and stream

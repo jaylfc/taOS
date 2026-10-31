@@ -41,13 +41,20 @@ async def test_submit_gpu_defaults_backward_compatible():
 async def test_queue_position_global_for_loads():
     arbiter = GpuArbiter(vram_reservation=_mgr(0))   # everything queues
     t1, t2, t3 = _task(), _task(), _task()
+    # Submit one at a time and settle after each: submit_gpu awaits
+    # asyncio.to_thread(self._vram.available_vram) (gpu_arbiter.py:279) before
+    # appending to the queue, so back-to-back submits can reorder by thread
+    # completion order. Settling between submits makes the enqueue order
+    # deterministic, so the position assertions hold by construction.
     f1 = asyncio.ensure_future(arbiter.submit_gpu(
         t1, required_vram_mb=1024, op="load", model="a", backend_name="b1"))
+    await _settle(lambda: arbiter.queue_position(t1.id) is not None)
     f2 = asyncio.ensure_future(arbiter.submit_gpu(
         t2, required_vram_mb=1024, op="load", model="b", backend_name="b1"))
+    await _settle(lambda: arbiter.queue_position(t2.id) is not None)
     f3 = asyncio.ensure_future(arbiter.submit_gpu(
         t3, required_vram_mb=1024, op="load", model="c", backend_name="b1"))
-    await _settle(lambda: all(arbiter.queue_position(t.id) is not None for t in (t1, t2, t3)))
+    await _settle(lambda: arbiter.queue_position(t3.id) is not None)
     assert arbiter.queue_position(t1.id) == 1
     assert arbiter.queue_position(t2.id) == 2
     assert arbiter.queue_position(t3.id) == 3
@@ -59,10 +66,16 @@ async def test_queue_position_global_for_loads():
 async def test_queue_position_per_model_for_inference():
     arbiter = GpuArbiter(vram_reservation=_mgr(0))
     ta, tb, ta2 = _task(), _task(), _task()
-    fs = [asyncio.ensure_future(arbiter.submit_gpu(
-              t, required_vram_mb=1024, op="inference", model=m, backend_name="b1"))
-          for t, m in ((ta, "m-a"), (tb, "m-b"), (ta2, "m-a"))]
-    await _settle(lambda: all(arbiter.queue_position(t.id) is not None for t in (ta, tb, ta2)))
+    fs = []
+    fs.append(asyncio.ensure_future(arbiter.submit_gpu(
+        ta, required_vram_mb=1024, op="inference", model="m-a", backend_name="b1")))
+    await _settle(lambda: arbiter.queue_position(ta.id) is not None)
+    fs.append(asyncio.ensure_future(arbiter.submit_gpu(
+        tb, required_vram_mb=1024, op="inference", model="m-b", backend_name="b1")))
+    await _settle(lambda: arbiter.queue_position(tb.id) is not None)
+    fs.append(asyncio.ensure_future(arbiter.submit_gpu(
+        ta2, required_vram_mb=1024, op="inference", model="m-a", backend_name="b1")))
+    await _settle(lambda: arbiter.queue_position(ta2.id) is not None)
     assert arbiter.queue_position(ta.id) == 1
     assert arbiter.queue_position(tb.id) == 1   # only m-b entries count
     assert arbiter.queue_position(ta2.id) == 2  # behind ta on m-a

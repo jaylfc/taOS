@@ -18,6 +18,7 @@ import { fetchTaosAgentConfig } from "@/lib/taos-agent-api";
 
 export const SHELL_LAUNCH_URL = "http://127.0.0.1:6973/launch";
 export const SHELL_LAUNCH_TIMEOUT_MS = 1500;
+const SHELL_BASE_URL = "http://127.0.0.1:6973";
 
 /**
  * System surfaces that stay in-page even on the handset. Settings mutates the
@@ -126,6 +127,115 @@ export async function launchInShell(appId: string): Promise<boolean> {
   } finally {
     clearTimeout(timer);
   }
+}
+
+export interface ShellWindow {
+  con_id: number;
+  app_id: string;
+  title: string;
+  label: string;
+  workspace: string;
+  focused: boolean;
+  /** mtime (seconds) of the window's last snapshot; null or absent when it has none. */
+  snapshot?: number | null;
+}
+
+/**
+ * One request to taos-shelld, bounded by SHELL_LAUNCH_TIMEOUT_MS. Resolves the
+ * parsed JSON body of a 2xx answer; undefined on a network error, a non-2xx, a
+ * non-JSON body or no answer in time. Never rejects.
+ */
+async function shellRequest(path: string, body?: unknown): Promise<unknown> {
+  const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => {
+      ctrl?.abort();
+      resolve(undefined);
+    }, SHELL_LAUNCH_TIMEOUT_MS);
+  });
+  const attempt = (async () => {
+    try {
+      const res = await fetch(
+        `${SHELL_BASE_URL}${path}`,
+        body === undefined
+          ? { signal: ctrl?.signal }
+          : {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "X-taOS-Shell": "1" },
+              body: JSON.stringify(body),
+              signal: ctrl?.signal,
+            },
+      );
+      if (!res.ok) return undefined;
+      return (await res.json()) as unknown;
+    } catch {
+      return undefined;
+    }
+  })();
+  try {
+    return await Promise.race([attempt, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function shellPostOk(path: string, body: unknown): Promise<boolean> {
+  const res = await shellRequest(path, body);
+  return !!res && typeof res === "object" && (res as { ok?: unknown }).ok === true;
+}
+
+/** Every native window taos-shelld lists (not the desktop itself); [] on any failure. */
+export async function listShellWindows(): Promise<ShellWindow[]> {
+  const res = await shellRequest("/windows");
+  return Array.isArray(res) ? (res as ShellWindow[]) : [];
+}
+
+/**
+ * Fetch a window's last snapshot as an object URL (blob:). The desktop CSP
+ * img-src does not allow the shell origin, so an <img> must never point at it
+ * directly. The caller owns the URL and must revoke it. null on a non-2xx, a
+ * network error or no answer within SHELL_LAUNCH_TIMEOUT_MS. Never rejects.
+ */
+export async function fetchShellSnapshot(conId: number): Promise<string | null> {
+  const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => {
+      ctrl?.abort();
+      resolve(null);
+    }, SHELL_LAUNCH_TIMEOUT_MS);
+  });
+  const attempt = (async () => {
+    try {
+      const res = await fetch(`${SHELL_BASE_URL}/snapshot/${conId}`, { signal: ctrl?.signal });
+      if (!res.ok) return null;
+      const blob = await res.blob();
+      // Lost the race to the timeout: nobody would revoke this URL.
+      if (ctrl?.signal.aborted) return null;
+      return URL.createObjectURL(blob);
+    } catch {
+      return null;
+    }
+  })();
+  try {
+    return await Promise.race([attempt, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export function focusShellWindow(conId: number): Promise<boolean> {
+  return shellPostOk("/focus", { con_id: conId });
+}
+
+export function closeShellWindow(conId: number): Promise<boolean> {
+  return shellPostOk("/close", { con_id: conId });
+}
+
+/** Open an http(s) URL in the handset's Firefox; false when the shell did not. */
+export function openUrlInShell(url: string): Promise<boolean> {
+  return shellPostOk("/open-url", { url });
 }
 
 /** Test-only: forget the cached device class. */

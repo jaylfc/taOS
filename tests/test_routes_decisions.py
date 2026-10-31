@@ -147,7 +147,7 @@ async def test_duplicate_labels_get_distinct_values(client):
 async def test_metadata_echoed_on_create(client):
     resp = await client.post("/api/decisions", json={
         "from_agent": "@a", "question": "q", "type": "free_text",
-        "metadata": {"kind": "app_grant", "app_id": "x", "capabilities": ["app.net"]},
+        "metadata": {"kind": "note_ref", "app_id": "x", "capabilities": ["app.net"]},
     })
     assert resp.status_code == 200
     assert resp.json()["metadata"]["app_id"] == "x"
@@ -682,16 +682,17 @@ async def test_device_bearer_execution_gate_refused(client, app):
     is a notification surface, not an approval channel for agent execution."""
     admin_uid = _admin_uid(app)
     device = await _register_device(app, admin_uid)
-    resp = await client.post("/api/decisions", json={
-        "from_agent": "agent-a",
-        "question": "Agent agent-a wants to run code_exec (code-exec)",
-        "type": "approve_deny",
-        "priority": "blocking",
-        "metadata": {"kind": "execution_gate", "agent_name": "agent-a",
-                     "action_class": "code-exec", "tool": "code_exec"},
-    })
-    assert resp.status_code == 200
-    d = resp.json()
+    # Gate kinds are server-owned (tsk-mul5pa): raise it the way the internal
+    # raiser does, not via POST /api/decisions.
+    d = await app.state.decision_store.create(
+        from_agent="agent-a",
+        question="Agent agent-a wants to run code_exec (code-exec)",
+        type="approve_deny",
+        priority="blocking",
+        user_id=admin_uid,
+        metadata={SERVER_RAISED_KEY: True, "kind": "execution_gate", "agent_name": "agent-a",
+                  "action_class": "code-exec", "tool": "code_exec"},
+    )
     resp = await client.post(
         f"/api/decisions/{d['id']}/answer",
         json={"value": "approve"},
@@ -706,16 +707,17 @@ async def test_device_bearer_delegation_gate_refused(client, app):
     """A device bearer must not approve a delegation_gate decision."""
     admin_uid = _admin_uid(app)
     device = await _register_device(app, admin_uid)
-    resp = await client.post("/api/decisions", json={
-        "from_agent": "agent-a",
-        "question": "Delegate task to agent-b?",
-        "type": "approve_deny",
-        "priority": "blocking",
-        "metadata": {"kind": "delegation_gate", "from_agent": "agent-a",
-                     "to_agent": "agent-b", "task_id": "task-1", "task_title": "Task 1"},
-    })
-    assert resp.status_code == 200
-    d = resp.json()
+    # Gate kinds are server-owned (tsk-mul5pa): raise it the way the internal
+    # raiser does, not via POST /api/decisions.
+    d = await app.state.decision_store.create(
+        from_agent="agent-a",
+        question="Delegate task to agent-b?",
+        type="approve_deny",
+        priority="blocking",
+        user_id=admin_uid,
+        metadata={SERVER_RAISED_KEY: True, "kind": "delegation_gate", "from_agent": "agent-a",
+                  "to_agent": "agent-b", "task_id": "task-1", "task_title": "Task 1"},
+    )
     resp = await client.post(
         f"/api/decisions/{d['id']}/answer",
         json={"value": "approve"},
@@ -726,6 +728,44 @@ async def test_device_bearer_delegation_gate_refused(client, app):
     policies = getattr(app.state, "execution_policies", None)
     if policies is not None:
         assert await policies.has_live_grant("agent-a", "delegate") is False
+
+
+@pytest.mark.asyncio
+async def test_device_bearer_collab_delegation_gate_refused(client, app):
+    """A device bearer must not approve a collab_delegation_gate decision.
+
+    This is the D1 cross-user delegation card: approving it mints a sponsored
+    project invite that grants a remote agent the default scope tier.  It is a
+    privileged grant, so the phone (a notification surface, not an approval
+    channel) must get a 409 — the same invariant that guards execution_gate,
+    delegation_gate and app_grant.  If ``collab_delegation_gate`` ever falls out
+    of GATE_DECISION_KINDS again this test returns 200 instead of 409, so it is
+    coverage against a re-drift, not a tautology."""
+    admin_uid = _admin_uid(app)
+    device = await _register_device(app, admin_uid)
+    # Gate kinds are server-owned (tsk-mul5pa): raise it the way the internal
+    # raiser does, not via POST /api/decisions.
+    d = await app.state.decision_store.create(
+        from_agent="hub:sponsor",
+        question="hub:sponsor wants to delegate agent 'assistant' (assistant) to this project",
+        type="approve_deny",
+        priority="blocking",
+        user_id=admin_uid,
+        metadata={SERVER_RAISED_KEY: True, "kind": "collab_delegation_gate",
+                  "contact_id": "hub:sponsor",
+                  "agent_slug": "assistant",
+                  "display_name": "assistant",
+                  "granted_scopes": ["a2a_send"],
+                  "elevated_scopes": [],
+                  "denied_scopes": [],
+                  "project_id": None},
+    )
+    resp = await client.post(
+        f"/api/decisions/{d['id']}/answer",
+        json={"value": "approve"},
+        headers=_bearer(device["scoped_token"]),
+    )
+    assert resp.status_code == 409
 
 
 @pytest.mark.asyncio
@@ -1298,16 +1338,17 @@ async def test_device_bearer_can_note_gate_decision(client, app):
     does not apply. FAILS with 404 before the route is implemented."""
     admin_uid = _admin_uid(app)
     device = await _register_device(app, admin_uid)
-    resp = await client.post("/api/decisions", json={
-        "from_agent": "agent-a",
-        "question": "Agent agent-a wants to run code_exec (code-exec)",
-        "type": "approve_deny",
-        "priority": "blocking",
-        "metadata": {"kind": "execution_gate", "agent_name": "agent-a",
-                     "action_class": "code-exec", "tool": "code_exec"},
-    })
-    assert resp.status_code == 200
-    d = resp.json()
+    # Gate kinds are server-owned (tsk-mul5pa): raise it the way the internal
+    # raiser does, not via POST /api/decisions.
+    d = await app.state.decision_store.create(
+        from_agent="agent-a",
+        question="Agent agent-a wants to run code_exec (code-exec)",
+        type="approve_deny",
+        priority="blocking",
+        user_id=admin_uid,
+        metadata={SERVER_RAISED_KEY: True, "kind": "execution_gate", "agent_name": "agent-a",
+                  "action_class": "code-exec", "tool": "code_exec"},
+    )
     resp = await client.post(
         f"/api/decisions/{d['id']}/note",
         json={"text": "checking this"},

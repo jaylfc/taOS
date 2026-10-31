@@ -56,7 +56,10 @@ class HealthMonitor:
         poll_budget = self._poll_budget_seconds or max(60, interval * 2)
         while True:
             try:
-                await asyncio.wait_for(self._poll_once(), timeout=poll_budget)
+                # asyncio.timeout, not wait_for: on 3.11 wait_for swallows a
+                # cancel that lands as the cycle completes, so stop() hangs.
+                async with asyncio.timeout(poll_budget):
+                    await self._poll_once()
             except asyncio.TimeoutError:
                 logger.error(f"Health poll exceeded {poll_budget}s budget — aborting cycle")
             except Exception as e:

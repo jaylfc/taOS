@@ -17,3 +17,15 @@ def test_new_id_unique_across_calls():
 def test_new_id_rejects_unknown_prefix():
     with pytest.raises(ValueError):
         new_id("bad")
+
+
+def test_friendly_project_id_uses_slug_and_month():
+    from tinyagentos.projects.ids import friendly_project_id
+    assert friendly_project_id("taOS", now=1759276800) == "prj-taos-2510"
+
+
+def test_friendly_project_id_empty_stem_falls_back():
+    from tinyagentos.projects.ids import friendly_project_id
+    import re
+    result = friendly_project_id("___")
+    assert re.fullmatch(r"prj-[a-z2-7]{6}", result), result

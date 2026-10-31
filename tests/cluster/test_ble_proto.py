@@ -24,7 +24,7 @@ import tinyagentos.cluster.ble.proto as proto
 # 2026-09: protocol v2 (commit/reveal nonces, release audit H1) was written
 # here first; taosusb's files/taosble/proto.py must be re-copied FROM this
 # file so the two stay byte-identical.
-EXPECTED_SHA256 = "ad6af4879a0da01bd5689fb0f0acc43ef7a36570d0b00a779fff0a9db7eac7c5"
+EXPECTED_SHA256 = "21ec982d27b6c5790338c31b3aa96d9a6f479514978d79064ca17a6fbc6667c1"
 
 
 def test_proto_is_byte_identical_to_vendored_source():

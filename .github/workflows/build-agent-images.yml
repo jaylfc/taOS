@@ -157,7 +157,7 @@ jobs:
       # Map the "openclaw"/"generic"/"hermes" base label to its published alias.
       ALIAS: ${{ matrix.base == 'openclaw' && 'taos-openclaw-base' || (matrix.base == 'generic' && 'taos-base' || 'taos-hermes-base') }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 
       - name: Extract openclaw version from install.sh
         if: matrix.base == 'openclaw'
@@ -279,6 +279,7 @@ jobs:
           # deps the config patch needs). Per-agent config (.env, config.yaml,
           # systemd unit, bridge) stays at deploy time -- only prerequisites
           # are baked so a hermes deploy from this image needs no live install.
+          # Source of truth for tag/commit: tinyagentos/scripts/install_hermes.sh
           sudo incus exec build-base -- bash -eux <<'BASH'
           export DEBIAN_FRONTEND=noninteractive
           export PATH="/root/.local/bin:$PATH"
@@ -290,8 +291,8 @@ jobs:
           echo 'export PATH="/root/.local/bin:$PATH"' >> /root/.bashrc
 
           # NousResearch hermes-agent prerequisites (no setup; config is per-agent).
-          curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh \
-            | bash -s -- --skip-setup
+          curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/v2026.8.31/scripts/install.sh \
+            | bash -s -- --skip-setup --commit "29112bef099274229cadff79cdff7bf7b99c4b77"
 
           # Deps the deploy-time config patch step relies on.
           pip3 install --break-system-packages --quiet pyyaml httpx
@@ -323,7 +324,7 @@ jobs:
           sudo incus image export "$ALIAS" "./$ALIAS-linux-$ARCH"
           ls -la "./$ALIAS-linux-$ARCH"*
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
         with:
           name: ${{ env.ALIAS }}-${{ matrix.arch }}
           path: ${{ env.ALIAS }}-linux-${{ matrix.arch }}.tar.gz
@@ -336,7 +337,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8
         with:
           pattern: taos-*base-*
           merge-multiple: true
@@ -376,7 +377,7 @@ jobs:
       # releases. Consumers (taOS deployer) point at the images repo directly.
       # Reuses ADD_TO_PROJECT_PAT (classic repo-scoped PAT already configured
       # on this repo) — it has Contents: write on jaylfc/tinyagentos-images.
-      - uses: softprops/action-gh-release@v3
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64  # v3
         with:
           repository: jaylfc/tinyagentos-images
           token: ${{ secrets.ADD_TO_PROJECT_PAT }}

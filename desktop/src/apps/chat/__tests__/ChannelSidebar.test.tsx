@@ -374,6 +374,175 @@ describe("ChannelSidebar — mobile", () => {
     fireEvent.click(screen.getByRole("button", { name: `Chat ${ch.name}` }));
     expect(onSelectChannel).toHaveBeenCalledWith("ch-1");
   });
+
+  it("renders People chip on mobile when liveAgents are present and filters people DMs", () => {
+    const onSelectChannel = vi.fn();
+    const dmAgent = makeDmChannel({ id: "dm-juniper", name: "juniper", members: ["user", "juniper"] });
+    const dmPerson = makeDmChannel({ id: "dm-mum", name: "mum", members: ["user", "mum"] });
+    const sections = [makeSection("DMs", [dmAgent, dmPerson])];
+    render(
+      <ChannelSidebar
+        {...buildProps({
+          isMobile: true,
+          sections,
+          liveAgents: [{ name: "juniper" }],
+          onSelectChannel,
+          agentRosterReady: true,
+        })}
+      />,
+    );
+    // People chip should render
+    const peopleChip = screen.getByRole("button", { name: "People" });
+    expect(peopleChip).toBeInTheDocument();
+    // Click People chip
+    fireEvent.click(peopleChip);
+    // Should show "mum" (person DM) and not "juniper" (agent DM)
+    expect(screen.getByText("mum")).toBeInTheDocument();
+    expect(screen.queryByText("juniper")).not.toBeInTheDocument();
+  });
+
+  /* RED-FIRST: test (i) - when liveAgents and archivedAgents are both empty,
+     agentNames is undefined, so all DMs stay under Agents (back-compat) */
+  it("mobile, liveAgents=[] and archivedAgents=[], one dm channel: Agents chip shown, no People chip", () => {
+    const onSelectChannel = vi.fn();
+    const dm = makeDmChannel({ id: "dm-someagent", name: "some-agent", members: ["user", "some-agent"] });
+    const sections = [makeSection("DMs", [dm])];
+    render(
+      <ChannelSidebar
+        {...buildProps({
+          isMobile: true,
+          sections,
+          liveAgents: [],
+          archivedAgents: [],
+          agentRosterReady: false,
+          onSelectChannel,
+        })}
+      />
+    );
+    // Agents chip should be shown (back-compat: all DMs are agents)
+    const agentsChip = screen.getByRole("button", { name: "Agents" });
+    expect(agentsChip).toBeInTheDocument();
+    // People chip should NOT be shown (no agentNames = back-compat)
+    const peopleChip = screen.queryByRole("button", { name: "People" });
+    expect(peopleChip).not.toBeInTheDocument();
+    // Clicking Agents chip should show the DM
+    fireEvent.click(agentsChip);
+    expect(screen.getByText("some-agent")).toBeInTheDocument();
+  });
+
+  /* RED-FIRST: test (ii) - with live agent + archived agent,
+      archived agent's name is included in agentNames,
+      so DM with archived agent is classified as agent DM, not people DM */
+  it("mobile, liveAgents + archivedAgents: archived agent DM classified as agent, People chip does NOT list it", () => {
+    const onSelectChannel = vi.fn();
+    const dmArchived = makeDmChannel({ id: "dm-oldbot", name: "old-bot", members: ["user", "old-bot"] });
+    const dmPerson = makeDmChannel({ id: "dm-mum", name: "mum", members: ["user", "mum"] });
+    const sections = [makeSection("DMs", [dmArchived, dmPerson])];
+    render(
+      <ChannelSidebar
+        {...buildProps({
+          isMobile: true,
+          sections,
+          liveAgents: [{ name: "some-agent" }],
+          archivedAgents: [{ id: "a1", archived_slug: "old-bot-x", original: { name: "old-bot" } }],
+          agentRosterReady: true,
+          onSelectChannel,
+        })}
+      />,
+    );
+    // Both "Agents" and "People" chips should render (there are DMs in both categories)
+    const agentsChip = screen.getByRole("button", { name: "Agents" });
+    expect(agentsChip).toBeInTheDocument();
+    const peopleChip = screen.getByRole("button", { name: "People" });
+    expect(peopleChip).toBeInTheDocument();
+    // Click People chip - should NOT list the old-bot DM (it's now an agent DM)
+    fireEvent.click(peopleChip);
+    expect(screen.queryByText("old-bot")).not.toBeInTheDocument();
+    expect(screen.getByText("mum")).toBeInTheDocument();
+    // Click Agents chip - should list the old-bot DM
+    fireEvent.click(agentsChip);
+    expect(screen.getByText("old-bot")).toBeInTheDocument();
+  });
+
+  /* RED-FIRST: test (iii) - mobile, agentRosterReady false,
+      liveAgents=[{name:"some-agent"}], dms with members ["user","old-bot"] and ["user","mum"]: no "People" chip button is shown */
+  it("mobile, agentRosterReady false, liveAgents=[{name:\"some-agent\"}], dms with members [\"user\",\"old-bot\"] and [\"user\",\"mum\"]: no \"People\" chip button is shown", () => {
+    const onSelectChannel = vi.fn();
+    const dmAgent = makeDmChannel({ id: "dm-agent", name: "some-agent", members: ["user", "some-agent"] });
+    const dmPerson = makeDmChannel({ id: "dm-person", name: "old-bot", members: ["user", "old-bot"] });
+    const sections = [makeSection("DMs", [dmAgent, dmPerson])];
+    render(
+      <ChannelSidebar
+        {...buildProps({
+          isMobile: true,
+          sections,
+          liveAgents: [{ name: "some-agent" }],
+          archivedAgents: [],
+          agentRosterReady: false,
+          onSelectChannel,
+        })}
+      />,
+    );
+    // People chip should NOT be shown when agentRosterReady is false
+    const peopleChip = screen.queryByRole("button", { name: "People" });
+    expect(peopleChip).not.toBeInTheDocument();
+    // Both DMs should appear under Agents (back-compat when roster not ready)
+    const agentsChip = screen.getByRole("button", { name: "Agents" });
+    expect(agentsChip).toBeInTheDocument();
+    fireEvent.click(agentsChip);
+    expect(screen.getByText("some-agent")).toBeInTheDocument();
+    expect(screen.getByText("old-bot")).toBeInTheDocument();
+  });
+
+  /* RED-FIRST: test (iv) - mobile, agentRosterReady true, liveAgents=[] and archivedAgents=[], dm with members ["user","mum"]: a "People" chip is shown and lists "mum" */
+  it("mobile, agentRosterReady true, liveAgents=[] and archivedAgents=[], dm with members [\"user\",\"mum\"]: a \"People\" chip is shown and lists \"mum\"", () => {
+    const onSelectChannel = vi.fn();
+    const dmPerson = makeDmChannel({ id: "dm-person", name: "mum", members: ["user", "mum"] });
+    const sections = [makeSection("DMs", [dmPerson])];
+    render(
+      <ChannelSidebar
+        {...buildProps({
+          isMobile: true,
+          sections,
+          liveAgents: [],
+          archivedAgents: [],
+          agentRosterReady: true,
+          onSelectChannel,
+        })}
+      />,
+    );
+    // People chip should be shown when roster is ready (even if empty)
+    const peopleChip = screen.getByRole("button", { name: "People" });
+    expect(peopleChip).toBeInTheDocument();
+    // Agents chip should NOT be shown (no agents)
+    const agentsChip = screen.queryByRole("button", { name: "Agents" });
+    expect(agentsChip).not.toBeInTheDocument();
+    // Clicking People chip should show the person DM
+    fireEvent.click(peopleChip);
+    expect(screen.getByText("mum")).toBeInTheDocument();
+  });
+
+  it("mobile, archived agent known only by archived_slug: its DM is classified as agent", () => {
+    const dmSlug = makeDmChannel({ id: "dm-slug", name: "old-bot-x", members: ["user", "old-bot-x"] });
+    const dmPerson = makeDmChannel({ id: "dm-mum", name: "mum", members: ["user", "mum"] });
+    const sections = [makeSection("DMs", [dmSlug, dmPerson])];
+    render(
+      <ChannelSidebar
+        {...buildProps({
+          isMobile: true,
+          sections,
+          liveAgents: [{ name: "some-agent" }],
+          archivedAgents: [{ id: "a1", archived_slug: "old-bot-x" }],
+          agentRosterReady: true,
+          onSelectChannel: vi.fn(),
+        })}
+      />
+    );
+    fireEvent.click(screen.getByRole("button", { name: "People" }));
+    expect(screen.queryByText("old-bot-x")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    expect(screen.getByText("old-bot-x")).toBeInTheDocument();
+  });
 });
 
 /* ------------------------------------------------------------------ */

@@ -88,11 +88,6 @@ def _is_repair_rejection(resp) -> bool:
         return False
 
 
-# Backend types that mean "this host has a GPU-class accelerator". Mirrors the
-# GPU backend set in tinyagentos/scheduler/discovery.py.
-_GPU_BACKEND_TYPES = {"vllm", "ollama", "exo", "mlx"}
-
-
 def _gpu_type(hardware: dict) -> str | None:
     """Return ``hardware.gpu.type`` from a serialised HardwareProfile.
 
@@ -117,12 +112,14 @@ def _collect_resources(
 
     Args:
         backends: live backend probe results, each carrying a ``type``.
-        gpu_type: ``hardware.gpu.type`` (``"apple"`` on Apple Silicon), or None.
+        gpu_type: ``hardware.gpu.type`` (``"apple"`` on Apple Silicon,
+            ``"nvidia"``/``"cuda"`` on NVIDIA, ``"amd"``/``"rocm"`` on AMD),
+            or None.
         platform_name: ``platform.system().lower()`` (``"darwin"`` on macOS).
             A Mac that is not Apple Silicon has no CUDA or ROCm device, so a
-            CPU-mode Ollama/llama.cpp backend there must not advertise
-            ``gpu-cuda-0`` -- that would contradict install-worker.sh's
-            Intel-Mac ``cpu-inference`` fallback.
+            backend running there must not advertise ``gpu-cuda-0`` -- that
+            would contradict install-worker.sh's Intel-Mac ``cpu-inference``
+            fallback.
 
     Installer-detected classes are unioned in from ``TAOS_WORKER_RESOURCES``
     (comma-separated). install-worker.sh exports ``gpu-metal,cpu-inference``
@@ -130,19 +127,27 @@ def _collect_resources(
     class advertised while its backend is stopped or not yet installed --
     the missing backend shows up as an unavailable capability instead of the
     worker silently vanishing from the scheduler's view.
+
+    GPU resources are derived from the hardware ``gpu_type`` rather than
+    gated on a live backend (taOS #3228). Previously, a GPU resource was
+    emitted only when a backend of type vllm/ollama/exo/mlx was live, and
+    then hardcoded to ``gpu-cuda-0`` -- so a llama.cpp-only NVIDIA worker and
+    any AMD/ROCm worker advertised only ``cpu-inference`` and could never
+    have their GPU leased. Now the hardware GPU class is trusted directly.
     """
     resources = ["cpu-inference"]
     if any(b.get("type") == "rkllama" for b in backends):
         resources.append("npu-rk3588")
-    if any(b.get("type") in _GPU_BACKEND_TYPES for b in backends):
-        if gpu_type == "apple":
-            resources.append("gpu-metal")
-        elif platform_name == "darwin":
-            # Intel Mac: macOS has no CUDA/ROCm class at all. The backend
-            # still serves, as cpu-inference.
-            pass
-        else:
-            resources.append("gpu-cuda-0")
+    if gpu_type == "apple":
+        resources.append("gpu-metal")
+    elif platform_name == "darwin":
+        # Intel Mac: macOS has no CUDA/ROCm class at all. The backend
+        # still serves, as cpu-inference.
+        pass
+    elif gpu_type in ("nvidia", "cuda"):
+        resources.append("gpu-cuda-0")
+    elif gpu_type in ("amd", "rocm"):
+        resources.append("gpu-rocm-0")
     for name in os.environ.get("TAOS_WORKER_RESOURCES", "").split(","):
         name = name.strip()
         if name and name not in resources:

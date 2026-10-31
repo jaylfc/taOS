@@ -1,0 +1,1 @@
+- Chat: the owner can edit the last completed agent reply in place (pencil on the bubble, hidden while streaming); the edited text is what the agent sees as context on the next turn (#834).

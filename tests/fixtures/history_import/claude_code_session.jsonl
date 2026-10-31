@@ -1,0 +1,10 @@
+{"type":"user","sessionId":"sess-1","uuid":"rec-u1","timestamp":"2026-10-10T10:00:00.000Z","message":{"content":[{"type":"text","text":"Hello, run Bash ls and read SECRET"}]}}
+{"type":"assistant","sessionId":"sess-1","uuid":"rec-a1","timestamp":"2026-10-10T10:00:05.000Z","message":{"content":[{"type":"thinking","thinking":"internal reasoning"},{"type":"text","text":"Sure, here is the SECRET plan."},{"type":"image","source":{"type":"base64","data":"AAEC","media_type":"image/png"}}]}}
+{"type":"assistant","sessionId":"sess-1","uuid":"rec-a2","timestamp":"2026-10-10T10:00:06.000Z","message":{"content":[{"type":"tool_use","id":"tu-bash","name":"Bash","input":{"command":"ls -la /tmp"}}]}}
+{"type":"user","sessionId":"sess-1","uuid":"rec-u2","timestamp":"2026-10-10T10:00:07.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"tu-bash","content":"SECRET token in output\na.txt","is_error":false}]}}
+{"type":"assistant","sessionId":"sess-1","uuid":"rec-a3","timestamp":"2026-10-10T10:00:08.000Z","message":{"content":[{"type":"tool_use","id":"tu-read","name":"Read","input":{"file_path":"foo.cred"}}]}}
+{"type":"user","sessionId":"sess-1","uuid":"rec-u3","timestamp":"2026-10-10T10:00:09.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"tu-read","content":"KEY=SUPERSECRET","is_error":false}]}}
+{"type":"user","sessionId":"sess-1","uuid":"rec-u9","timestamp":"2026-10-10T10:01:00.000Z","message":{"role":"user","content":"plain string prompt"}}
+{"type":"user","sessionId":"sess-1","uuid":"rec-u10","timestamp":"2026-10-10T10:01:01.000Z","isMeta":true,"message":{"role":"user","content":[{"type":"text","text":"skill body injection"}]}}
+{"type":"user","sessionId":"sess-1","uuid":"rec-u11","timestamp":"2026-10-10T10:01:02.000Z","isMeta":true,"message":{"role":"user","content":"command caveat"}}
+{not valid json

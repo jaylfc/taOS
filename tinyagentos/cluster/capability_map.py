@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS capability_map (
 );
 """
 
-VALID_STATUS = {"online", "offline", "draining"}
+VALID_STATUS = {"online", "offline", "draining", "yielded"}
 _COLS = "node_id, hostname, cpu, ram_mb, gpu, npu, status, last_seen"
 
 

@@ -30,4 +30,14 @@ describe("MessageEditor", () => {
     fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter", shiftKey: true });
     expect(onSave).not.toHaveBeenCalled();
   });
+
+  it("renders error with role alert when error prop provided", () => {
+    render(<MessageEditor initial="hi" onSave={vi.fn()} onCancel={vi.fn()} error="boom" />);
+    expect(screen.getByRole("alert")).toHaveTextContent("boom");
+  });
+
+  it("does not render alert when no error prop", () => {
+    render(<MessageEditor initial="hi" onSave={vi.fn()} onCancel={vi.fn()} />);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
 });

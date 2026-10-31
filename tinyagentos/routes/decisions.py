@@ -21,6 +21,7 @@ from tinyagentos.auth_context import CurrentUser
 from tinyagentos.decisions.decision_store import DECISION_TYPES, PRIORITIES
 from tinyagentos.device_auth import current_user_or_device
 from tinyagentos.events.bus import SystemEvent
+from tinyagentos.notification_labels import actor_label
 
 logger = logging.getLogger(__name__)
 
@@ -37,15 +38,30 @@ _ANSWER_THREAD = "decisions"
 # surface, not an approval channel), and the agent mirror path must refuse them
 # so an agent cannot self-approve a gate it created.  Keeping the list in one
 # place prevents drift between the two call sites and the applier functions.
-GATE_DECISION_KINDS = ("execution_gate", "delegation_gate", "app_grant")
+GATE_DECISION_KINDS = ("execution_gate", "delegation_gate", "app_grant", "collab_delegation_gate", "shell_command")
 
 # Server-stamped provenance marker for gate decisions (tsk-mul5pa).  The
 # public create path strips this key so an API caller can never self-stamp a
 # privileged gate; only the internal raisers (peer-inbox delegation dispatch,
-# execution-gate raiser, device-pairing raiser, app-grant flow) set it.  Every
+# execution-gate raiser, device-pairing raiser, app-grant flow, collab
+# delegation-gate raiser) set it.  Every
 # _apply_*_grant handler refuses to act when it is absent, so a caller-supplied
 # metadata.kind can never mint a grant on approval.
 SERVER_RAISED_KEY = "_server_raised"
+
+# Server-owned metadata kinds (tsk-mul5pa, Jay ruling 2026-09-02).  Only the
+# internal raisers may create a decision carrying one of these; the public
+# create path answers HTTP 400 whoever the caller is.  The human approving a
+# card sees the caller's free-text question, not the metadata that drives the
+# grant, so a privileged kind supplied over the wire is refused outright.
+SERVER_OWNED_KINDS = (
+    "execution_gate",
+    "delegation_gate",
+    "device_pairing",
+    "app_grant",
+    "project_create",
+    "collab_delegation_gate",
+)
 
 
 def _bus_url() -> str:
@@ -333,6 +349,11 @@ async def create_decision(
         return JSONResponse({"error": f"priority must be one of {PRIORITIES}"}, status_code=400)
     if body.type in ("single_select", "multi_select") and not body.options:
         return JSONResponse({"error": "select types require options"}, status_code=400)
+    if isinstance(body.metadata, dict) and body.metadata.get("kind") in SERVER_OWNED_KINDS:
+        return JSONResponse(
+            {"error": f"metadata.kind {body.metadata['kind']!r} is server-owned and cannot be set via the API"},
+            status_code=400,
+        )
 
     actor = await _resolve_decision_actor(request, body.project_id, agent_cid)
     # Agent identity is authoritative; a human may set from_agent in the body.
@@ -390,7 +411,10 @@ async def create_decision(
             ]
             await notifs.add(
                 title="Decision needed",
-                message=f"{from_agent} needs a decision: {body.question[:120]}",
+                message=(
+                    f"{await actor_label(request.app.state, from_agent)} needs a decision: "
+                    f"{body.question[:120]}"
+                ),
                 level="warning" if body.priority == "blocking" else "info",
                 source="decisions",
                 data={
@@ -402,6 +426,8 @@ async def create_decision(
                     "priority": body.priority,
                     "from_agent": from_agent,
                 },
+                # Only the decider's bell and push devices, never a broadcast.
+                user_id=actor.decider_user_id,
             )
         except Exception:
             pass
@@ -414,8 +440,22 @@ async def list_decisions(
     status: str | None = None,
     project_id: str | None = None,
     limit: int = 200,
-    user: CurrentUser = Depends(current_user_or_device),
 ):
+    # tsk-f75p3z: a registry JWT is accepted here (it used to 401), resolved
+    # like _authorize_task_actor: a session wins, otherwise the Bearer must
+    # carry decisions_write.  An agent sees ONLY the decisions it raised in its
+    # granted projects (the GET /api/decisions/agent set), never the user's
+    # inbox.  Device bearers keep the current_user_or_device path below.
+    from tinyagentos.agent_token_auth import registry_agent_caller
+
+    agent_cid = await registry_agent_caller(request, "decisions_write")
+    if agent_cid is not None:
+        items = await _agent_own_decisions(
+            request, agent_cid, status=status, project_id=project_id
+        )
+        return {"items": items[: max(1, min(int(limit), 500))]}
+
+    user = await current_user_or_device(request)
     store = request.app.state.decision_store
     # Non-admins see only their own decisions; admins see all.
     uid = None if user.is_admin else user.user_id
@@ -435,24 +475,36 @@ async def list_decisions(
 async def list_decisions_as_agent(request: Request):
     """Agent-facing list: filter by from_agent (the asking agent).  Only
     returns decisions whose project the agent holds an active decisions_write
-    grant for.  A global (null-project) grant means null-project decisions
-    only, matching _resolve_decision_actor's posting rule; otherwise, only
-    decisions from allowed projects are returned.  The store layer enforces
-    the from_agent binding so there is no cross-agent leakage.
+    grant for.  A global (null-project) grant covers null-project decisions,
+    matching _resolve_decision_actor's posting rule; each per-project grant
+    covers that project.  An agent holding both sees the union.  The store
+    layer enforces the from_agent binding so there is no cross-agent leakage.
 
-    LIMIT INTERACTION, and it is not uniform across the three paths: the global
-    and single-project paths push the project filter INTO the store query, so the
-    limit applies AFTER scoping (issue #2194).  The two-or-more-project path
-    cannot express that as one query, so it still fetches up to `limit` rows for
-    the agent and filters in Python afterwards; an agent holding grants on
-    several projects and carrying more than `limit` decisions in total can still
-    lose allowed-project rows to the limit there."""
-    from datetime import datetime, timezone
-    from tinyagentos.agent_token_auth import check_agent_scope, _grant_unexpired
+    LIMIT INTERACTION: each granted scope (null project or one project) is
+    queried with the project filter INSIDE the store query, and the merged
+    result is capped at 500 newest first, so the limit applies AFTER scoping
+    (issue #2194) however many grants the agent holds."""
+    from tinyagentos.agent_token_auth import check_agent_scope
 
     canonical_id = await check_agent_scope(request, "decisions_write")
     if canonical_id is None:
         return JSONResponse({"error": "agent identity not found"}, status_code=401)
+    return {"items": await _agent_own_decisions(request, canonical_id)}
+
+
+async def _agent_own_decisions(
+    request: Request,
+    canonical_id: str,
+    status: str | None = None,
+    project_id: str | None = None,
+) -> list[dict]:
+    """The decisions *canonical_id* raised, limited to the projects it holds an
+    active decisions_write grant for (rules in list_decisions_as_agent).
+    Shared by GET /api/decisions/agent and the registry-JWT path of
+    GET /api/decisions.  A *project_id* narrows the scope inside the store
+    query, so the row limit applies after that filter."""
+    from datetime import datetime, timezone
+    from tinyagentos.agent_token_auth import _grant_unexpired
 
     # Collect project IDs the agent has active decisions_write grants for.
     grants_store = request.app.state.agent_grants
@@ -465,26 +517,25 @@ async def list_decisions_as_agent(request: Request):
     }
 
     store = request.app.state.decision_store
-    # A global (null-project) grant means null-project decisions only,
-    # matching _resolve_decision_actor's posting rule.
-    # The project filter is pushed into the store query so the limit applies
-    # AFTER scoping (issue #2194) -- for the global and single-project paths.
-    # The multi-project fallback below still filters after the fetch.
-    if None in allowed_projects:
-        # Global grant: only null-project decisions
-        items = await store.list(from_agent=canonical_id, project_id=None, limit=500)
-    else:
-        # Per-project grants: only those projects.
-        # Push the project filter into the store query so the limit applies
-        # after scoping. If there is exactly one allowed project, use it
-        # directly; otherwise fall back to Python filtering after the fetch.
-        if len(allowed_projects) == 1:
-            project_id = allowed_projects.pop()
-            items = await store.list(from_agent=canonical_id, project_id=project_id, limit=500)
-        else:
-            items = await store.list(from_agent=canonical_id, limit=500)
-            items = [d for d in items if d.get("project_id") in allowed_projects]
-    return {"items": items}
+    # A global (null-project) grant covers null-project decisions, matching
+    # _resolve_decision_actor's posting rule; each per-project grant covers
+    # that project.  The allowed set is the union of both.  A requested
+    # project_id narrows the set to that one project (or nothing when not
+    # granted).
+    if project_id is not None:
+        allowed_projects &= {project_id}
+    if not allowed_projects:
+        return []
+    # Push the project filter into the store query so the limit applies after
+    # scoping (issue #2194).  Each allowed scope (None means IS NULL) is queried
+    # on its own, then the results are merged newest first and capped.
+    items: list[dict] = []
+    for scope in allowed_projects:
+        items.extend(
+            await store.list(from_agent=canonical_id, project_id=scope, status=status, limit=500)
+        )
+    items.sort(key=lambda d: d.get("created_at") or 0, reverse=True)
+    return items[:500]
 
 
 @router.get("/api/decisions/{decision_id}")
@@ -675,9 +726,44 @@ async def answer_decision(
     routed_deleg = await _apply_delegation_grant(request, updated, stored_value)
     routed_pair = await _apply_device_pairing_grant(request, updated, stored_value)
     routed_project_create = await _apply_project_create_grant(request, updated, stored_value)
-    if not (routed_app or routed_exec or routed_deleg or routed_pair or routed_project_create):
+    routed_collab = await _apply_collab_delegation_grant(request, updated, stored_value)
+    routed_shell = await _apply_shell_command_grant(request, updated, stored_value)
+    if not (routed_app or routed_exec or routed_deleg or routed_pair or routed_project_create
+            or routed_collab or routed_shell):
         await _route_answer_to_agent(updated, stored_value, note=body.note)
     return updated
+
+
+async def _apply_shell_command_grant(request: Request, decision: dict, value) -> bool:
+    """Side effect for a shell_command Decision (the taOS Agent's Claude Code
+    shell profile): the decision's metadata carries {kind: "shell_command",
+    program, user_id}. Approving it adds an allow rule for that program to the
+    user's profile, denying adds a deny rule. Mirrors ``_apply_execution_grant``:
+    the answer is already persisted, so a settings-store hiccup must not fail
+    the answer. There is no asking agent on the bus to route a reply to."""
+    meta = decision.get("metadata") or {}
+    if meta.get("kind") != "shell_command":
+        return False
+    if meta.get(SERVER_RAISED_KEY) is not True:
+        logger.warning(
+            "gate decision %s refused: missing server provenance (kind=%r)",
+            decision.get("id"), meta.get("kind"),
+        )
+        return False
+    store = getattr(request.app.state, "desktop_settings", None)
+    program = meta.get("program")
+    user_id = meta.get("user_id")
+    if store is None or not program or not user_id:
+        return True
+    from tinyagentos.taos_agent_shell_profile import set_rule
+    try:
+        await set_rule(store, user_id, program, "allow" if value == "approve" else "deny")
+    except Exception:
+        logger.warning(
+            "shell profile rule write failed for %s (decision %s)",
+            program, decision.get("id"), exc_info=True,
+        )
+    return True
 
 
 @router.post("/api/decisions/{decision_id}/note")
@@ -1006,6 +1092,109 @@ async def _apply_delegation_grant(request: Request, decision: dict, value) -> bo
     else:
         reply = "delegation approved, but assigning the task failed - please retry"
     await _route_answer_to_agent(decision, reply)
+    return True
+
+
+async def _deliver_delegation_invite(
+    request: Request,
+    meta: dict,
+    invite_id: str,
+) -> None:
+    """Best-effort: deliver a minted delegation invite_id to the requester
+    over the peer channel so their agent runner can redeem it.
+
+    Never raises — the invite is already minted and persisted on this side,
+    so a delivery failure must not roll it back.
+    """
+    contact_id = meta.get("contact_id", "")
+    agent_slug = meta.get("agent_slug", "")
+    project_id = meta.get("project_id", "")
+
+    if not contact_id or not invite_id:
+        return
+
+    contacts_store = getattr(request.app.state, "contacts_store", None)
+    if contacts_store is None:
+        return
+
+    try:
+        from tinyagentos.peer import send_envelope
+
+        body: dict = {
+            "invite_id": invite_id,
+            "agent_slug": agent_slug,
+            "project_id": project_id,
+        }
+        delivered, err = await send_envelope(
+            contacts_store,
+            to_contact_id=contact_id,
+            kind="delegation_status",
+            body=body,
+        )
+        if not delivered:
+            logger.warning(
+                "delegation_status delivery failed for decision invite %s: %s",
+                invite_id, err,
+            )
+    except Exception:
+        logger.warning(
+            "delegation_status delivery error for invite %s", invite_id, exc_info=True,
+        )
+
+
+async def _apply_collab_delegation_grant(request: Request, decision: dict, value) -> bool:
+    """Side effect for a cross-user collab delegation-gate Decision (D1): the
+    decision's metadata carries {kind: "collab_delegation_gate", contact_id,
+    agent_slug, display_name, granted_scopes, denied_scopes, project_id}.
+    Approving it mints the sponsored project invite via
+    ``complete_delegation_approval`` — this is the manual approval path that
+    previously had NO caller, so a delegation request reached a Decisions card
+    but nothing ever happened on approval.  Denying just routes the answer.
+    Mirrors ``_apply_delegation_grant``: the answer is already persisted, so a
+    mint hiccup must not fail the answer."""
+    meta = decision.get("metadata") or {}
+    if meta.get(SERVER_RAISED_KEY) is not True:
+        logger.warning(
+            "gate decision %s refused: missing server provenance (kind=%r)",
+            decision.get("id"), meta.get("kind"),
+        )
+        return False
+    if meta.get("kind") != "collab_delegation_gate":
+        return False
+    approved = value == "approve"
+    completed = False
+    invite_id = None
+    if approved:
+        try:
+            from tinyagentos.delegation_handler import complete_delegation_approval
+
+            result = await complete_delegation_approval(
+                request, decision_metadata=meta
+            )
+            completed = result.get("status") == "approved"
+            if completed:
+                invite_id = result.get("invite_id")
+        except Exception:
+            logger.warning(
+                "collab delegation approval failed for decision %s",
+                decision.get("id"), exc_info=True,
+            )
+    # The collab delegation decision's from_agent is a hub contact id (e.g.
+    # "hub:sponsor"), not an "@agent" handle, so _route_answer_to_agent is a
+    # no-op here; the mint result is delivered over the peer channel.  Keep the
+    # reply routing call for symmetry/consistency with the other gate handlers.
+    if not approved:
+        reply = "delegation denied"
+    elif completed:
+        reply = "delegation approved - the agent invite has been minted"
+    else:
+        reply = "delegation approved, but minting the invite failed - please retry"
+    await _route_answer_to_agent(decision, reply)
+    # Deliver the invite_id to the requester over the peer channel so their
+    # agent runner can redeem it.  Best-effort: the invite is already minted
+    # and persisted; a delivery failure does not roll back the mint.
+    if completed and invite_id:
+        await _deliver_delegation_invite(request, meta, invite_id)
     return True
 
 

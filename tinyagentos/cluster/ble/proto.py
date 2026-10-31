@@ -276,6 +276,15 @@ def derive_session_key(eph_priv, eph_peer_pub, static_priv, static_peer_pub, T):
     return HKDF(algorithm=hashes.SHA256(), length=32, salt=T, info=b"taos-ble-pair-v2").derive(ikm)
 
 
+def bind_label_pin_key(key, pin):
+    """Mix the printed label PIN into the 32-byte session key. The PIN never travels over BLE:
+    both ends mix it locally, so a wrong or missing PIN fails AEAD authentication."""
+    if not pin:
+        raise ValueError("empty label PIN")
+    return HKDF(algorithm=hashes.SHA256(), length=32, salt=pin.encode("utf-8"),
+                info=b"taos-label-pin-v1").derive(key)
+
+
 # ---- sealed messages --------------------------------------------------------------------------
 
 def seal(key, aad, plaintext, nonce):
@@ -399,8 +408,9 @@ class PairResponder:
     even failures are a reply (an error frame), never an exception, never silence."""
 
     def __init__(self, board_id, static_priv, *, paired=False, window_s=PAIR_WINDOW_S,
-                 now=time.time, max_failed_provisions=MAX_FAILED_PROVISIONS):
+                 now=time.time, max_failed_provisions=MAX_FAILED_PROVISIONS, label_pin=""):
         self.board_id = board_id
+        self._label_pin = label_pin
         self.static_priv = static_priv
         self.static_pub = static_priv.public_key()
         self.paired = paired
@@ -499,6 +509,8 @@ class PairResponder:
                                       self.static_priv, X25519PublicKey.from_public_bytes(p["cpub"]), T)
         except ValueError:
             return _err("bad hello")
+        if self._label_pin:
+            key = bind_label_pin_key(key, self._label_pin)
         self._session = {"T": T, "code": derive_code(T), "key": key, "cpub": p["cpub"],
                          "seen_nonces": set()}
         return json.dumps({"t": "reveal", "n": b64(p["b_n"])}).encode("utf-8")
@@ -617,6 +629,15 @@ class PairInitiator:
         self._session = {"T": T, "code": derive_code(T), "key": key, "bpub": p["bpub"],
                          "seen_nonces": set()}
         return self._session["code"]
+
+    def bind_label_pin(self, pin):
+        """Mix the label PIN the admin typed into this session's seal key (once)."""
+        if self._session is None:
+            raise ValueError("no session")
+        if self._session.get("pin_bound"):
+            raise ValueError("label PIN already bound")
+        self._session["key"] = bind_label_pin_key(self._session["key"], pin)
+        self._session["pin_bound"] = True
 
     def seal_provision(self, provision):
         pt = json.dumps(dict(provision, t="provision")).encode("utf-8")

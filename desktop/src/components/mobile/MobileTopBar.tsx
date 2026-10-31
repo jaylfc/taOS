@@ -5,6 +5,7 @@ import { useUpdateAvailable } from "@/hooks/use-update-available";
 import { useProcessStore } from "@/stores/process-store";
 import { StatusIndicators } from "../StatusIndicators";
 import { useIsPwa } from "@/hooks/use-is-pwa";
+import { isIOS } from "@/lib/platform";
 
 export const IOS_EDGE_BACKDROP_COLOR = "#141415";
 export const IOS_EDGE_BACKDROP_HEIGHT = "1px";
@@ -35,25 +36,25 @@ export function MobileTopBar({ onSearch }: Props) {
         paddingTop: "env(safe-area-inset-top, 0px)",
       }}
      >
-       {isPwa && typeof document !== "undefined" && createPortal(
-         <div
-           aria-hidden="true"
-           data-testid="ios-edge-backdrop"
-           style={{
-             position: "fixed",
-             top: 0,
-             left: 0,
-             right: 0,
-             // A 1px strip only: it masks the iOS 27 blur edge at the very top
-             // while the wallpaper shows through behind the bar.
-             height: IOS_EDGE_BACKDROP_HEIGHT,
-             backgroundColor: IOS_EDGE_BACKDROP_COLOR,
-             zIndex: 0,
-             pointerEvents: "none",
-           }}
-         />,
-         document.body,
-       )}
+{isPwa && typeof document !== "undefined" && createPortal(
+          <div
+            aria-hidden="true"
+            data-testid="ios-edge-backdrop"
+            style={{
+              position: "fixed",
+              top: 0,
+              left: 0,
+              right: 0,
+              // iOS 27 blurs the top edge unless a solid fixed element covers the
+              // whole top bar; the Android handset keeps the wallpaper with a 1px strip.
+              height: isIOS() ? MOBILE_TOP_BAR_HEIGHT : IOS_EDGE_BACKDROP_HEIGHT,
+              backgroundColor: IOS_EDGE_BACKDROP_COLOR,
+              zIndex: 0,
+              pointerEvents: "none",
+            }}
+          />,
+          document.body,
+        )}
        <div
          // No wordmark on the left: on the handset the front camera hole sits
          // there. Equal side columns keep the indicators centred, and pr-5

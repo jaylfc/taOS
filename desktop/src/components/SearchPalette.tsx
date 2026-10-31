@@ -5,6 +5,8 @@ import { useProcessStore } from "@/stores/process-store";
 import { useShortcut } from "@/hooks/use-shortcut-registry";
 import { useInstalledOptionalApps } from "@/hooks/use-installed-optional-apps";
 import * as icons from "lucide-react";
+import { AppTypeBadge } from "./AppTypeBadge";
+import { appRuntime, type AppRuntime } from "@/lib/app-runtime";
 
 interface Props {
   open: boolean;
@@ -20,6 +22,8 @@ interface SearchResult {
   type: "app" | "memory" | "action";
   action: () => void;
   subtitle?: string;
+  /** App results only: the engine the app runs on, for the type badge. */
+  runtime?: AppRuntime;
 }
 
 export function SearchPalette({ open, onClose, onOpenApp }: Props) {
@@ -55,6 +59,7 @@ export function SearchPalette({ open, onClose, onOpenApp }: Props) {
         category: app.category,
         icon: app.icon,
         type: "app" as const,
+        runtime: appRuntime(app),
         action: () => {
           const a = getApp(app.id);
           if (a) {
@@ -260,11 +265,12 @@ export function SearchPalette({ open, onClose, onOpenApp }: Props) {
                 }`}
               >
                 <div
-                  className={`w-7 h-7 rounded-md flex items-center justify-center ${
+                  className={`relative w-7 h-7 rounded-md flex items-center justify-center ${
                     i === selectedIndex ? "bg-accent/20 text-accent" : "bg-shell-surface text-shell-text-secondary"
                   }`}
                 >
                   {getIcon(result.icon)}
+                  {result.runtime && <AppTypeBadge runtime={result.runtime} size="sm" />}
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="text-xs text-shell-text truncate">{result.name}</div>

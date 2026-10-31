@@ -30,7 +30,7 @@ _LEGACY_RESOURCE_RE = RESOURCE_CLASS_RE
 
 # Valid worker-initiated status values that gate drain/update protection.
 # Keep in sync with the notification block below and the heartbeat guard.
-_VALID_STATUSES: frozenset[str] = frozenset({"draining", "update-available", "updating"})
+_VALID_STATUSES: frozenset[str] = frozenset({"draining", "update-available", "updating", "yielded"})
 
 
 def _format_hw(hw) -> str:
@@ -273,6 +273,11 @@ class ClusterManager:
                                 "Worker '%s' drained — all leases released, marked offline",
                                 worker.name,
                             )
+
+                    # Handle yielded workers: stay yielded across heartbeats
+                    # (taOS gaming mode). Leases already held are left alone.
+                    elif worker.status == "yielded":
+                        pass
 
                     # Handle updating workers: if they stop heartbeating they're
                     # stuck in a bad state — force-offline them so they can re-onboard.
@@ -577,10 +582,22 @@ class ClusterManager:
         # Block status-less heartbeats AND invalid status values for protected
         # workers. Explicit valid-status transitions (e.g. "update-available"
         # → "draining") are still honoured.
-        if worker.status not in _VALID_STATUSES or (status is not None and status in _VALID_STATUSES):
+        # Allow yielded workers to resume to online status.
+        if worker.status == "yielded" and status == "online":
+            worker.status = "online"
+        elif worker.status not in _VALID_STATUSES or (status is not None and status in _VALID_STATUSES):
             # Honour worker-initiated status transitions (taOS #890 C2).
             if status in _VALID_STATUSES:
-                worker.status = status
+                # Protect draining, update-available and updating from being
+                # overridden by an "online" heartbeat (keep today's behaviour).
+                if status == "online" and worker.status in (
+                    "draining",
+                    "update-available",
+                    "updating",
+                ):
+                    pass  # keep current status
+                else:
+                    worker.status = status
             else:
                 worker.status = "online"
         if models is not None:
@@ -674,11 +691,13 @@ class ClusterManager:
                 "draining": f"Worker '{worker.name}' self-initiated drain",
                 "update-available": f"Worker '{worker.name}' has an update available",
                 "updating": f"Worker '{worker.name}' is updating",
+                "yielded": f"Worker '{worker.name}' yielded its GPU",
             }
             detail_map = {
                 "draining": f"Worker '{worker.name}' is draining for {reason}. Tasks will complete before the update.",
                 "update-available": f"Worker '{worker.name}' reports an update is available (reason: {reason}). It will drain when ready.",
                 "updating": f"Worker '{worker.name}' is applying an update (reason: {reason}). It will restart when done.",
+                "yielded": f"Worker '{worker.name}' yielded its GPU (reason: {reason})",
             }
             try:
                 self._spawn_background_task(
@@ -714,7 +733,7 @@ class ClusterManager:
         # Only fire for workers that are genuinely "online" — a worker recovering
         # from a controller restart into "draining" or "updating" should NOT
         # trigger a false "back online" event (taOS #890 C2).
-        if self._notifications and prev_status in ("offline", "stale") and worker.status == "online":
+        if self._notifications and prev_status in ("offline", "stale", "yielded") and worker.status == "online":
             try:
                 self._spawn_background_task(
                     self._notifications.emit_event(

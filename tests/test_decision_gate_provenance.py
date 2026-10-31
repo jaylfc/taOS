@@ -81,28 +81,118 @@ def _admin_id(app) -> str:
     return ""
 
 
+async def _unstamped_decision(app, from_agent, project_id, type_, metadata, options=None):
+    """A gate decision persisted WITHOUT the server provenance marker (a legacy
+    row, or a raiser that forgot to stamp).  The public create path refuses
+    these kinds outright, so the handler guard is proven through the store."""
+    decision = await app.state.decision_store.create(
+        from_agent=from_agent,
+        question="Can I add a note to the board?",
+        type=type_,
+        options=options or [],
+        project_id=project_id,
+        metadata=metadata,
+    )
+    return decision["id"]
+
+
 # ---------------------------------------------------------------------------
-# execution_gate — primary proven pair (jaylfc: "execution_gate is the cheapest")
+# Server-owned kinds (Jay ruling 2026-09-02): the public create path refuses a
+# privileged metadata.kind with HTTP 400, whoever the caller is.
 # ---------------------------------------------------------------------------
 
+SERVER_OWNED_KINDS = (
+    "execution_gate",
+    "delegation_gate",
+    "device_pairing",
+    "app_grant",
+    "project_create",
+    "collab_delegation_gate",
+)
+
+
 @pytest.mark.asyncio
-async def test_api_created_execution_gate_metadata_mints_nothing(client):
-    """An agent-posted card carrying execution_gate metadata must mint no
-    execution grant when a human approves it."""
+async def test_api_created_gate_metadata_mints_nothing(client):
+    """The card's exact path: an agent with a genuine decisions_write grant
+    posts a harmless-looking question carrying collab_delegation_gate metadata.
+    The create is refused, so there is nothing for the owner to approve."""
     app = client._transport.app
     pid = await _new_project(client)
     cid, token = await _mint_agent(app, pid, ("decisions_write",))
 
-    body = _decision_body(
-        project_id=pid,
-        type="approve_deny",
-        metadata={"kind": "execution_gate", "agent_name": cid,
-                  "action_class": "test-exec", "tool": "test"},
-    )
+    body = {
+        "from_agent": "ignored-for-agent-callers",
+        "question": "Can I add a note to the board?",
+        "type": "approve_deny",
+        "project_id": pid,
+        "metadata": {"kind": "collab_delegation_gate",
+                     "contact_id": "contact-1",
+                     "project_id": pid,
+                     "granted_scopes": ["a2a_send"],
+                     "elevated_scopes": ["canvas_write"]},
+    }
     async with _agent_client(app, token) as ac:
         resp = await ac.post("/api/decisions", json=body)
+    assert resp.status_code == 400, (
+        f"expected 400 for a server-owned kind, got {resp.status_code}: {resp.text}"
+    )
+    rows = await app.state.decision_store.list(project_id=pid)
+    assert rows == [], f"expected 0 decisions, found {len(rows)}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", SERVER_OWNED_KINDS)
+async def test_agent_post_with_server_owned_kind_is_rejected(client, kind):
+    app = client._transport.app
+    pid = await _new_project(client)
+    _cid, token = await _mint_agent(app, pid, ("decisions_write",))
+
+    body = _decision_body(project_id=pid, metadata={"kind": kind})
+    async with _agent_client(app, token) as ac:
+        resp = await ac.post("/api/decisions", json=body)
+    assert resp.status_code == 400, resp.text
+    assert await app.state.decision_store.list(project_id=pid) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", SERVER_OWNED_KINDS)
+async def test_session_post_with_server_owned_kind_is_rejected(client, kind):
+    """A human session is an API caller too: only internal raisers may set a
+    server-owned kind."""
+    app = client._transport.app
+    body = _decision_body(question=f"session {kind}", metadata={"kind": kind})
+    resp = await client.post("/api/decisions", json=body)
+    assert resp.status_code == 400, resp.text
+    rows = await app.state.decision_store.list()
+    assert [r for r in rows if r["question"] == f"session {kind}"] == []
+
+
+@pytest.mark.asyncio
+async def test_api_post_with_ordinary_kind_still_created(client):
+    """Control: a non-privileged metadata.kind is still accepted and echoed."""
+    body = _decision_body(metadata={"kind": "decision", "ref": "x"})
+    resp = await client.post("/api/decisions", json=body)
     assert resp.status_code == 200, resp.text
-    did = resp.json()["id"]
+    assert resp.json()["metadata"] == {"kind": "decision", "ref": "x"}
+
+
+# ---------------------------------------------------------------------------
+# execution_gate -- primary proven pair (jaylfc: "execution_gate is the cheapest")
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_unstamped_execution_gate_metadata_mints_nothing(client):
+    """A card carrying execution_gate metadata without server provenance must
+    mint no execution grant when a human approves it."""
+    app = client._transport.app
+    pid = await _new_project(client)
+    cid, _token = await _mint_agent(app, pid, ("decisions_write",))
+
+    did = await _unstamped_decision(
+        app, cid, pid, "approve_deny",
+        {"kind": "execution_gate", "agent_name": cid,
+         "action_class": "test-exec", "tool": "test"},
+    )
 
     # The project owner (human) approves the card.
     resp = await client.post(f"/api/decisions/{did}/answer", json={"value": "approve"})
@@ -150,23 +240,18 @@ async def test_server_raised_execution_gate_still_mints_on_approval(client):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_api_created_app_grant_metadata_mints_nothing(client):
-    """An agent-posted card carrying app_grant metadata must write nothing to
-    the app_grants ledger when a human approves it."""
+async def test_unstamped_app_grant_metadata_mints_nothing(client):
+    """A card carrying app_grant metadata without server provenance must write
+    nothing to the app_grants ledger when a human approves it."""
     app = client._transport.app
     pid = await _new_project(client)
-    cid, token = await _mint_agent(app, pid, ("decisions_write",))
+    cid, _token = await _mint_agent(app, pid, ("decisions_write",))
 
-    body = _decision_body(
-        project_id=pid,
-        type="multi_select",
+    did = await _unstamped_decision(
+        app, cid, pid, "multi_select",
+        {"kind": "app_grant", "app_id": "testapp", "capabilities": ["net"]},
         options=[{"label": "Network access", "value": "net"}],
-        metadata={"kind": "app_grant", "app_id": "testapp", "capabilities": ["net"]},
     )
-    async with _agent_client(app, token) as ac:
-        resp = await ac.post("/api/decisions", json=body)
-    assert resp.status_code == 200, resp.text
-    did = resp.json()["id"]
 
     record = await app.state.decision_store.get(did)
     owner_uid = record.get("user_id") or ""
@@ -217,23 +302,19 @@ async def test_server_raised_app_grant_still_mints_on_approval(client):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_api_created_delegation_gate_metadata_mints_nothing(client):
-    """An agent-posted card carrying delegation_gate metadata must mint no
-    delegate grant (and complete no delegation) when a human approves it."""
+async def test_unstamped_delegation_gate_metadata_mints_nothing(client):
+    """A card carrying delegation_gate metadata without server provenance must
+    mint no delegate grant (and complete no delegation) when a human approves
+    it."""
     app = client._transport.app
     pid = await _new_project(client)
-    cid, token = await _mint_agent(app, pid, ("decisions_write",))
+    cid, _token = await _mint_agent(app, pid, ("decisions_write",))
 
-    body = _decision_body(
-        project_id=pid,
-        type="approve_deny",
-        metadata={"kind": "delegation_gate", "from_agent": cid,
-                  "to_agent": "to-agent", "task_title": "handoff", "note": ""},
+    did = await _unstamped_decision(
+        app, cid, pid, "approve_deny",
+        {"kind": "delegation_gate", "from_agent": cid,
+         "to_agent": "to-agent", "task_title": "handoff", "note": ""},
     )
-    async with _agent_client(app, token) as ac:
-        resp = await ac.post("/api/decisions", json=body)
-    assert resp.status_code == 200, resp.text
-    did = resp.json()["id"]
 
     resp = await client.post(f"/api/decisions/{did}/answer", json={"value": "approve"})
     assert resp.status_code == 200, resp.text
@@ -279,9 +360,10 @@ async def test_server_raised_delegation_gate_still_delegates_on_approval(client)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_api_created_device_pairing_metadata_mints_nothing(client, app):
-    """An agent-posted card carrying device_pairing metadata must mint no
-    device and leave the pair request pending when a human approves it."""
+async def test_unstamped_device_pairing_metadata_mints_nothing(client, app):
+    """A card carrying device_pairing metadata without server provenance must
+    mint no device and leave the pair request pending when a human approves
+    it."""
     # A real pending pair request so the control can prove the mint in the
     # counterpart test; this row must stay pending because the guard refuses.
     req = await app.state.device_pair_requests.create(
@@ -290,17 +372,12 @@ async def test_api_created_device_pairing_metadata_mints_nothing(client, app):
     pair_request_id = req["id"]
 
     pid = await _new_project(client)
-    cid, token = await _mint_agent(app, pid, ("decisions_write",))
+    cid, _token = await _mint_agent(app, pid, ("decisions_write",))
 
-    body = _decision_body(
-        project_id=pid,
-        type="approve_deny",
-        metadata={"kind": "device_pairing", "pair_request_id": pair_request_id},
+    did = await _unstamped_decision(
+        app, cid, pid, "approve_deny",
+        {"kind": "device_pairing", "pair_request_id": pair_request_id},
     )
-    async with _agent_client(app, token) as ac:
-        resp = await ac.post("/api/decisions", json=body)
-    assert resp.status_code == 200, resp.text
-    did = resp.json()["id"]
 
     resp = await client.post(f"/api/decisions/{did}/answer", json={"value": "approve"})
     assert resp.status_code == 200, resp.text

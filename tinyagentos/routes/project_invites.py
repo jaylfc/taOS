@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field, field_validator
 from tinyagentos.agent_registry_store import _slugify, agent_slug_or_fallback
 from tinyagentos.auth_context import CurrentUser, current_user, require_owner_or_admin
 from tinyagentos.auth_middleware import rate_limit_ok, rate_limit_retry_after
+from tinyagentos.notification_labels import project_label
 from tinyagentos.projects.invite_store import (
     InviteAlreadyRedeemedError,
     InviteExpiredError,
@@ -34,7 +35,8 @@ router = APIRouter()
 class MintInviteIn(BaseModel):
     scopes: list[str] = Field(default_factory=list)
     approval_mode: str = Field(default="auto", pattern="^(auto|manual)$")
-    check_interval_secs: int = Field(default=1800, ge=60)
+    check_interval_secs: int | None = Field(default=None, ge=60)
+    kind: str = Field(default="agent")
     # How long the invite stays redeemable. Omitted means the store default
     # (1 hour). Capped at 24 hours: the PIN is the security gate, expiry is
     # hygiene, but an indefinitely live link is not a state we want.
@@ -51,6 +53,10 @@ class MintOsInviteIn(BaseModel):
     approval_mode: str = Field(default="auto", pattern="^(auto|manual)$")
     check_interval_secs: int = Field(default=1800, ge=60)
     display_name: str | None = Field(default=None, max_length=64)
+    # How long the invite stays redeemable. Omitted means the store default
+    # (1 hour). Capped at 24 hours: the PIN is the security gate, expiry is
+    # hygiene, but an indefinitely live link is not a state we want.
+    ttl_secs: int | None = Field(default=None, ge=60, le=86400)
 
     @field_validator("display_name")
     @classmethod
@@ -448,6 +454,12 @@ async def build_connection_bundle(
 
     controller = await _build_controller_dict(request)
 
+    # cloud_agent kind: bundle must contain ONLY relay endpoints.
+    if invite_record.get("kind") == "cloud_agent":
+        controller["endpoints"] = [
+            ep for ep in controller["endpoints"] if ep.get("kind") == "relay"
+        ]
+
     # --- agent_handle scoped api surface ----------------------------------
     apis: dict = {}
     scopeset = set(granted_scopes)
@@ -825,13 +837,42 @@ async def mint_invite(
             {"error": f"unknown scopes: {unknown}; valid: {sorted(VALID_SCOPES)}"},
             status_code=400,
         )
+
+    kind = payload.kind
+    if kind not in ("agent", "cloud_agent"):
+        return JSONResponse(
+            {"error": f"invalid invite kind: {kind}; valid: ['agent', 'cloud_agent']"},
+            status_code=400,
+        )
+
+    check_interval_secs = payload.check_interval_secs
+
+    # cloud_agent kind: require a safe HTTPS relay URL and default check_interval_secs to 900.
+    if kind == "cloud_agent":
+        relay_url = os.environ.get("TAOS_CONTROLLER_RELAY_URL", "").strip()
+        if not relay_url or not _is_url_safe_for_credential(relay_url, allow_private=False):
+            return JSONResponse(
+                {
+                    "error": (
+                        "this taOS is not reachable from the internet: "
+                        "set up taOSgo first"
+                    )
+                },
+                status_code=400,
+            )
+        if check_interval_secs is None:
+            check_interval_secs = 900
+    elif check_interval_secs is None:
+        check_interval_secs = 1800
+
     try:
         result = await store.mint(
             project_id=project_id,
             scopes=list(payload.scopes),
             approval_mode=payload.approval_mode,
-            check_interval_secs=payload.check_interval_secs,
+            check_interval_secs=check_interval_secs,
             created_by=user.user_id,
+            kind=kind,
             ttl_secs=payload.ttl_secs,
         )
     except InvitePendingCapError as exc:
@@ -948,6 +989,7 @@ async def mint_os_invite(
             check_interval_secs=payload.check_interval_secs,
             created_by=user.user_id,
             display_name=payload.display_name,
+            ttl_secs=payload.ttl_secs,
         )
     except InvitePendingCapError as exc:
         return JSONResponse({"error": str(exc)}, status_code=429)
@@ -1114,7 +1156,7 @@ async def mint_collab_invite(
     envelope: dict | None = None
     delivery_error: str | None = None
     try:
-        from tinyagentos.peer import build_envelope, local_contact_id
+        from tinyagentos.peer import build_envelope, deliver_to_peer, local_contact_id
 
         # Both ends are canonical hub:<fingerprint> ids: ours from the
         # keystore, theirs is the contact row key.  hub_username is display only.
@@ -1136,39 +1178,19 @@ async def mint_collab_invite(
             )
 
             # POST the envelope to the remote contact's peer inbox.
-            # The peer link's endpoints are tried in priority order.
+            # The peer link's endpoints are tried in priority order, through
+            # the SSRF guard with the link's own endpoints as the allowance.
             peer_link = await contacts_store.get_peer_link(payload.contact_id)
             if peer_link is None or not peer_link.get("endpoints"):
                 delivery_error = "no peer endpoints for contact"
-            else:
-                import httpx
-
-                outbound_token = peer_link.get("outbound_token", "")
-                delivered = False
-                for ep in sorted(
-                    peer_link["endpoints"],
-                    key=lambda e: e.get("priority", 99),
-                ):
-                    inbox_url = f"{ep['url'].rstrip('/')}/api/peer/inbox"
-                    try:
-                        async with httpx.AsyncClient(timeout=10.0) as client:
-                            resp = await client.post(
-                                inbox_url,
-                                json={"envelope": envelope},
-                                headers={
-                                    "Authorization": f"Bearer {outbound_token}",
-                                    "Content-Type": "application/json",
-                                },
-                            )
-                            if 200 <= resp.status_code < 300:
-                                delivered = True
-                                break
-                    except Exception:
-                        continue
-                if not delivered:
-                    delivery_error = (
-                        "failed to deliver invite envelope to any peer endpoint"
-                    )
+            elif not peer_link.get("outbound_token"):
+                delivery_error = "peer handshake incomplete: no token for contact"
+            elif not await deliver_to_peer(
+                contacts_store, payload.contact_id, "/api/peer/inbox", envelope,
+            ):
+                delivery_error = (
+                    "failed to deliver invite envelope to any peer endpoint"
+                )
     except Exception as exc:
         delivery_error = f"envelope delivery failed: {exc}"
 
@@ -1255,6 +1277,15 @@ async def redeem_invite(request: Request, body: RedeemInviteIn):
     if "project_tasks" not in scopes:
         scopes = ["project_tasks"] + scopes
 
+    # Extract sponsor_contact_id from delegation-sponsored invites (D1).
+    invite_metadata = invite.get("metadata") or {}
+    if isinstance(invite_metadata, str):
+        try:
+            invite_metadata = json.loads(invite_metadata)
+        except (ValueError, TypeError):
+            invite_metadata = {}
+    sponsor_contact_id = invite_metadata.get("sponsor_contact_id") if isinstance(invite_metadata, dict) else None
+
     handle = _derive_handle(project.get("slug") or invite["project_id"], body.harness, body.label)
     handle = await _dedupe_handle(request, handle)
 
@@ -1289,6 +1320,7 @@ async def redeem_invite(request: Request, body: RedeemInviteIn):
                 effective_project=invite["project_id"],
                 decided_by=invite["created_by"],
                 project_id=invite["project_id"],
+                sponsor_contact_id=sponsor_contact_id,
             )
         except Exception as exc:  # noqa: BLE001 - surface as JSON error
             await store.rollback_to_pending(body.invite_id)
@@ -1346,6 +1378,15 @@ async def _redeem_os_level(request: Request, body: RedeemInviteIn, invite: dict,
             raw_scopes = []
     scopes = list(raw_scopes)
 
+    # Extract sponsor_contact_id from delegation-sponsored invites (D1).
+    invite_metadata = invite.get("metadata") or {}
+    if isinstance(invite_metadata, str):
+        try:
+            invite_metadata = json.loads(invite_metadata)
+        except (ValueError, TypeError):
+            invite_metadata = {}
+    sponsor_contact_id = invite_metadata.get("sponsor_contact_id") if isinstance(invite_metadata, dict) else None
+
     display_name = invite.get("display_name")
     handle = _derive_os_handle(display_name, body.harness, body.label)
     handle = await _dedupe_handle(request, handle)
@@ -1373,6 +1414,7 @@ async def _redeem_os_level(request: Request, body: RedeemInviteIn, invite: dict,
                 decided_by=invite["created_by"],
                 project_id=None,
                 display_name=display_name,
+                sponsor_contact_id=sponsor_contact_id,
             )
         except Exception as exc:  # noqa: BLE001 - surface as JSON error
             await store.rollback_to_pending(body.invite_id)
@@ -1416,12 +1458,20 @@ def _notify_pending_invite(request: Request, record: dict) -> None:
         return
     try:
         scopes = record.get("requested_scopes") or []
+        project_id = record.get("project_id")
         import asyncio
 
-        asyncio.create_task(
-            notifs.add(
+        async def _add() -> None:
+            # Name the invite's project and carry its id so the consent
+            # surface can preselect it (tsk-i7ghpa).
+            on_project = (
+                f" on {await project_label(request.app.state, project_id)}"
+                if project_id
+                else ""
+            )
+            await notifs.add(
                 title="Access request",
-                message=f"{record['identity_claim']} is requesting {', '.join(scopes)}",
+                message=f"{record['identity_claim']} is requesting {', '.join(scopes)}{on_project}",
                 level="info",
                 source="auth_requests",
                 data={
@@ -1429,9 +1479,11 @@ def _notify_pending_invite(request: Request, record: dict) -> None:
                     "identity_claim": record["identity_claim"],
                     "framework": record["framework"],
                     "requested_scopes": list(scopes),
+                    "project_id": project_id,
                 },
             )
-        )
+
+        asyncio.create_task(_add())
     except Exception:  # noqa: BLE001
         pass
 

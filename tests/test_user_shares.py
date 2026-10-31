@@ -26,7 +26,7 @@ async def shares_client(client, tmp_data_dir):
     Builds on the conftest client fixture (which handles auth + store init).
     """
     from tinyagentos.user_shares_store import UserSharesStore
-    import secrets
+    from taos_test_csrf import bound_csrf_token
 
     app = client._transport.app
 
@@ -48,7 +48,7 @@ async def shares_client(client, tmp_data_dir):
     target_uid = target_record["id"] if target_record else ""
 
     # Set CSRF token so POST/PUT/DELETE routes pass verify_csrf.
-    csrf_token = secrets.token_hex(32)
+    csrf_token = bound_csrf_token(app, client.cookies["taos_session"])
     client.cookies["csrf_token"] = csrf_token
     client.headers["X-CSRF-Token"] = csrf_token
 
@@ -67,7 +67,7 @@ async def shares_client_target(shares_client):
     Reuses shares_client's setup and just swaps session to target user.
     """
     from httpx import ASGITransport, AsyncClient
-    import secrets
+    from taos_test_csrf import bound_csrf_token
 
     app = shares_client._transport.app
     auth = app.state.auth
@@ -75,7 +75,7 @@ async def shares_client_target(shares_client):
     target_token = auth.create_session(user_id=target_uid, long_lived=True)
 
     # Set CSRF token.
-    csrf_token = secrets.token_hex(32)
+    csrf_token = bound_csrf_token(app, target_token)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(

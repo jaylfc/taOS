@@ -22,7 +22,7 @@ class FakeBoard:
     def __init__(self, *, board_id: str = "TEST", name: str | None = None,
                  state: str = "unpaired", pairable: bool = True,
                  advert_uuid: bool = True, advert_mfr: bool = True,
-                 caps: list[str] | None = None):
+                 caps: list[str] | None = None, label_pin: str = ""):
         self.board_id = board_id
         # What the board puts in its advert: the service UUID, the taOS
         # manufacturer-data marker, or both (the real board sends both).
@@ -33,10 +33,15 @@ class FakeBoard:
         self.pairable = pairable
         self.caps = caps if isinstance(caps, list) else None
         self.priv, self.pub = proto.x25519_keypair()
-        self.responder = proto.PairResponder(board_id, self.priv, paired=(state == "paired"))
+        self.label_pin = label_pin
+        self.responder = proto.PairResponder(
+            board_id, self.priv, paired=(state == "paired"), label_pin=label_pin
+        )
 
     def info_bytes(self) -> bytes:
-        caps = self.caps if self.caps is not None else ["agent"]
+        caps = list(self.caps if self.caps is not None else ["agent"])
+        if self.label_pin:
+            caps.append("pin-bound")
         frame = {
             "v": 1,
             "id": self.board_id,

@@ -2,6 +2,8 @@ import * as icons from "lucide-react";
 import { useMobileHomeStore } from "@/stores/mobile-home-store";
 import { useProcessStore } from "@/stores/process-store";
 import { getApp } from "@/registry/app-registry";
+import { appRuntime } from "@/lib/app-runtime";
+import { AppTypeBadge } from "@/components/AppTypeBadge";
 import { useIsSquareViewport } from "@/hooks/use-is-square-viewport";
 
 interface Props {
@@ -108,6 +110,7 @@ export function MobileDock({ onOpenApp, onToggleSwitcher, onOpenLaunchpad, activ
               onClick={() => onOpenApp(appId)}
               aria-label={`Open ${app.name}`}
               style={{
+                position: "relative",
                 width: 44,
                 height: 44,
                 borderRadius: 12,
@@ -121,6 +124,7 @@ export function MobileDock({ onOpenApp, onToggleSwitcher, onOpenLaunchpad, activ
               }}
             >
               <Icon size={22} style={{ color: "rgba(255,255,255,0.8)" }} />
+              <AppTypeBadge runtime={appRuntime(app)} size="md" />
             </button>
 
             {isActive && (

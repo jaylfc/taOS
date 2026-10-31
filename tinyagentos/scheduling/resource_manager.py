@@ -45,11 +45,10 @@ def _count_cpu_cores() -> int:
 
 def _detect_npu() -> int:
     """Detect RK3588 NPU cores. Returns 0 if no NPU."""
-    # RK3588 has 3 NPU cores exposed via /proc/device-tree
-    npu_path = Path("/sys/class/misc/mali0")  # Mali indicates RK3588
-    rknn_path = Path("/proc/device-tree/npu")
-    if rknn_path.exists() or npu_path.exists():
-        return 3  # RK3588 always has 3 cores
+    from tinyagentos.hardware import _detect_npu as _hw_detect_npu
+    info = _hw_detect_npu()
+    if info.type == "rknpu":
+        return info.cores
     return 0
 
 

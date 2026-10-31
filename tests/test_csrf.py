@@ -52,7 +52,9 @@ class TestVerifyCSRF:
         app.state.auth.setup_user("admin3", "Admin", "", "pass1234!")
         record = app.state.auth.find_user("admin3")
         token = app.state.auth.create_session(user_id=record["id"], long_lived=False)
-        csrf_val = "test-csrf-value-xyz"
+        from tinyagentos.middleware.csrf import get_csrf_secret, mint_csrf_token
+
+        csrf_val = mint_csrf_token(get_csrf_secret(app), token)
 
         transport = ASGITransport(app=app)
         async with AsyncClient(

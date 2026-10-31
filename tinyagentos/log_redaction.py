@@ -19,6 +19,7 @@ Design choices:
 """
 from __future__ import annotations
 
+import os
 import re
 
 PLACEHOLDER = "[REDACTED]"
@@ -93,6 +94,33 @@ _CONN_STR_RE = re.compile(r'(?P<pre>[a-zA-Z][a-zA-Z0-9+.\-]*://[^:/\s]+:)(?P<val
 # common substring and cause runaway redaction of unrelated text.
 _MIN_KNOWN_VALUE_LEN = 6
 
+# Tailnet IPv4 addresses (10/8, 100.64.0.0/10, 172.16/12, 192.168/16) -- leave
+# 127.0.0.1 and 0.0.0.0 alone. Leading \b so a public IP such as 110.1.2.3 is
+# not partially rewritten to 1[REDACTED].
+_IPV4_RE = re.compile(
+    r'\b(?:'
+    r'10\.\d{1,3}\.\d{1,3}\.\d{1,3}|'
+    r'100\.(6[4-9]|7[0-9]|8[0-9]|9[0-9]|1[0-1][0-9]|12[0-7])\.\d{1,3}\.\d{1,3}|'
+    r'172\.(1[6-9]|2[0-9]|3[0-1])\.\d{1,3}\.\d{1,3}|'
+    r'192\.168\.\d{1,3}\.\d{1,3}'
+    r')\b',
+    re.IGNORECASE,
+)
+
+# Tailnet host names: [a-z0-9-]+.tail[0-9a-f]+.ts.net
+_TAILNET_RE = re.compile(r'[a-z0-9-]+\.tail[0-9a-f]+\.ts\.net', re.IGNORECASE)
+
+# Invite URLs /i/<id>
+_INVITE_RE = re.compile(r'/i/\S+', re.IGNORECASE)
+
+# 6-8 digit PIN values following PIN/pin. The word PIN is anchored with \b so
+# "spinning" does not trip it; then either a colon/equals separator with
+# optional spaces (PIN: 482913, PIN=482913, your PIN:482913) or up to 3
+# intervening tokens (pin code is 482913). The whole match is replaced.
+_PIN_RE = re.compile(
+    r'(?i)\bPIN\b(?:\s*[:=]\s*|(?:\s+\S+){0,3}\s+)\d{6,8}\b',
+)
+
 
 def redact(text: str, known_values: "list[str] | None" = None) -> str:
     """Return `text` with credential-shaped spans replaced by PLACEHOLDER.
@@ -142,3 +170,57 @@ def redact_lines(lines: "list[str]", known_values: "list[str] | None" = None) ->
     a buggy upstream parser) cannot take down the whole page response.
     """
     return [redact(line if isinstance(line, str) else str(line), known_values) for line in lines]
+
+
+def redact_for_archive(text: str, known_values: "list[str] | None" = None) -> str:
+    """Redact text for archive storage, calling redact() then additional masks.
+
+    Adds masking for:
+    - Tailnet IPv4 addresses (10/8, 100.64.0.0/10, 172.16/12, 192.168/16),
+      leaving 127.0.0.1 and 0.0.0.0 alone
+    - Tailnet host names matching [a-z0-9-]+.tail[0-9a-f]+.ts.net
+    - Invite URLs /i/<id> and 6-8 digit PIN values following PIN/pin within 3 tokens
+    """
+    if not text:
+        return text
+
+    text = redact(text, known_values)
+
+    # a. IPv4: 10/8, 100.64.0.0/10, 172.16/12, 192.168/16 -- leave 127.0.0.1 and 0.0.0.0 alone
+    text = _IPV4_RE.sub(PLACEHOLDER, text)
+
+    # b. Tailnet host names: [a-z0-9-]+.tail[0-9a-f]+.ts.net
+    text = _TAILNET_RE.sub(PLACEHOLDER, text)
+
+    # c. Invite URLs /i/<id> and 6-8 digit PIN values following PIN/pin
+    text = _INVITE_RE.sub(PLACEHOLDER, text)
+    text = _PIN_RE.sub(PLACEHOLDER, text)
+
+    return text
+
+
+def is_secret_file_read(path: str) -> bool:
+    """Return True if the file path corresponds to a secret file read that should be
+    dropped entirely (not redacted) by the transcript importer.
+
+    True when:
+    - basename ends with .cred
+    - basename is .env or .env.*
+    - basename is config under a .taos-team directory
+    """
+    basename = os.path.basename(path)
+
+    # ends with .cred
+    if basename.endswith(".cred"):
+        return True
+
+    # is .env or .env.*
+    if basename == ".env" or basename.startswith(".env."):
+        return True
+
+    # is named config under a .taos-team directory
+    path_parts = path.replace("\\", "/").split("/")
+    if basename == "config" and ".taos-team" in path_parts:
+        return True
+
+    return False

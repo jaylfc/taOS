@@ -9,6 +9,7 @@ import { SearchPalette } from "@/components/SearchPalette";
 import { ShortcutProvider, useShortcut } from "@/hooks/use-shortcut-registry";
 import { useSessionPersistence } from "@/hooks/use-session-persistence";
 import { useDeviceMode } from "@/hooks/use-device-mode";
+import { useMobileControl } from "@/hooks/use-desktop-control";
 import { useIsPwa } from "@/hooks/use-is-pwa";
 import { useThemeStore, restoreActiveTheme, installWebkitRepaintGuards } from "@/stores/theme-store";
 import { useOnAuthReady } from "@/hooks/use-on-auth-ready";
@@ -37,6 +38,8 @@ import { SafetyFloor } from "@/components/SafetyFloor";
 import { withCsrf, getCsrfToken } from "@/lib/csrf";
 import { useLockOnScreenOff } from "@/shell/useLockOnScreenOff";
 import { useHomeKey } from "@/hooks/use-home-key";
+import { useSwitcherKey } from "@/hooks/use-switcher-key";
+import { installShellLinks } from "@/lib/shell-links";
 import { primeDeviceClass } from "@/lib/mobile-shell";
 
 interface SystemShortcutsProps {
@@ -211,7 +214,7 @@ export function App() {
   const effWallpaperFallback = useLightWallpaper ? wallpaperLightFallback : wallpaperFallback;
   const windows = useProcessStore((s) => s.windows);
   const openWindow = useProcessStore((s) => s.openWindow);
-  const closeWindow = useProcessStore((s) => s.closeWindow);
+  const removeWindow = useProcessStore((s) => s.removeWindow);
   const minimizeWindow = useProcessStore((s) => s.minimizeWindow);
 
   // Browser-mode flag: when on mobile but not in PWA, apply browser-safe
@@ -342,6 +345,13 @@ export function App() {
   // The handset nav bar's home button: the open app goes to the background
   // (it stays in the switcher), the home screen shows.
   useHomeKey(mode !== "desktop", handleMobileHome);
+  // The nav bar's switcher button: open it (F14 while open keeps it open).
+  const handleSwitcherKey = useCallback(() => setCardSwitcherOpen(true), []);
+  useSwitcherKey(mode !== "desktop", handleSwitcherKey);
+  // On the handset, links apps open in a new window go to Firefox.
+  useEffect(() => {
+    installShellLinks();
+  }, []);
 
   const handleSelectApp = useCallback((windowId: string) => {
     setActiveWindowId(windowId);
@@ -363,10 +373,12 @@ export function App() {
 
   const handleMobileClose = useCallback(() => {
     if (activeWindowId) {
-      closeWindow(activeWindowId);
+      // Remove, do not just mark closing: MobileAppWindow has no close
+      // animation to finish it, so the app would stay in the switcher.
+      removeWindow(activeWindowId);
       setActiveWindowId(null);
     }
-  }, [activeWindowId, closeWindow]);
+  }, [activeWindowId, removeWindow]);
 
   const handleMobileMinimise = useCallback(() => {
     if (activeWindowId) {
@@ -374,6 +386,10 @@ export function App() {
       setActiveWindowId(null);
     }
   }, [activeWindowId, minimizeWindow]);
+
+  // Agent window control (window.taosDesktop, taos:window) for the phone
+  // layout, which never mounts <Desktop/> and so never got its receiver.
+  useMobileControl({ setActive: setActiveWindowId }, mode !== "desktop");
 
   if (mode === "desktop") {
     return (

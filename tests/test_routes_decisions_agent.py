@@ -335,16 +335,17 @@ async def test_agent_mirror_does_not_write_execution_grant(client):
     pid = await _new_project(client)
     cid, token = await _mint_agent(app, pid, ("decisions_write",))
 
-    # Create an execution_gate decision as the agent
-    body = _decision_body(
-        project_id=pid,
+    # An execution_gate decision raised for the agent.  Gate kinds are
+    # server-owned (tsk-mul5pa), so raise it the way the internal raiser does.
+    decision = await app.state.decision_store.create(
+        from_agent=cid,
+        question="ship it?",
         type="approve_deny",
-        metadata={"kind": "execution_gate", "agent_name": cid, "action_class": "test-exec"},
+        project_id=pid,
+        metadata={"_server_raised": True, "kind": "execution_gate",
+                  "agent_name": cid, "action_class": "test-exec"},
     )
-    async with _agent_client(app, token) as ac:
-        resp = await ac.post("/api/decisions", json=body)
-    assert resp.status_code == 200, resp.text
-    did = resp.json()["id"]
+    did = decision["id"]
 
     # The agent mirrors "approve" -- gate-kind decisions MUST be refused.
     async with _agent_client(app, token) as ac:
@@ -876,3 +877,73 @@ async def test_agent_withdraw_empty_reason_400(client):
         resp = await ac.post(f"/api/decisions/{did}/withdraw", json={"reason": "  "})
     assert resp.status_code == 400, resp.text
     assert (await app.state.decision_store.get(did))["status"] == "pending"
+
+
+async def _global_plus_project_setup(client):
+    """Agent holding a global decisions_write grant AND a grant on project B.
+    It has one decision in each of: null project, project B, project A
+    (no grant on A).  Returns (app, token, pid_a, pid_b)."""
+    app = client._transport.app
+    pid_a = await _new_project(client, name="alpha", slug="alpha-gp")
+    pid_b = await _new_project(client, name="beta", slug="beta-gp")
+    cid, token = await _mint_agent(app, None, ("decisions_write",), handle="@global-plus")
+    await app.state.agent_grants.add_grant(cid, "decisions_write", project_id=pid_b)
+    for pid in (None, pid_a, pid_b):
+        resp = await client.post(
+            "/api/decisions",
+            json=_decision_body(project_id=pid, from_agent=cid),
+        )
+        assert resp.status_code == 200, resp.text
+    return app, token, pid_a, pid_b
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/api/decisions/agent", "/api/decisions"])
+async def test_global_grant_also_lists_separately_granted_projects(client, path):
+    """A global grant plus a grant on project B lists the union: the
+    null-project decision and the project-B one, never project A's."""
+    app, token, pid_a, pid_b = await _global_plus_project_setup(client)
+    async with _agent_client(app, token) as ac:
+        resp = await ac.get(path)
+    assert resp.status_code == 200, resp.text
+    projects = sorted((d["project_id"] or "") for d in resp.json()["items"])
+    assert projects == sorted(["", pid_b]), (
+        f"global grant hid the separately granted project: {projects}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_global_grant_project_filter_returns_granted_project(client):
+    """?project_id=B on the registry-JWT list returns the project-B decision
+    when B is granted alongside a global grant; an ungranted A stays empty."""
+    app, token, pid_a, pid_b = await _global_plus_project_setup(client)
+    async with _agent_client(app, token) as ac:
+        resp_b = await ac.get("/api/decisions", params={"project_id": pid_b})
+        resp_a = await ac.get("/api/decisions", params={"project_id": pid_a})
+    assert resp_b.status_code == 200, resp_b.text
+    assert [d["project_id"] for d in resp_b.json()["items"]] == [pid_b]
+    assert resp_a.status_code == 200, resp_a.text
+    assert resp_a.json()["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_multi_scope_list_applies_limit_after_scoping(client):
+    """With a global grant plus a grant on project B, an older project-B
+    decision is still listed when more than 500 newer decisions sit in an
+    ungranted project: each granted scope is queried on its own, so the row
+    limit applies after scoping (issue #2194)."""
+    app = client._transport.app
+    cid, token = await _mint_agent(app, None, ("decisions_write",), handle="@multi-limit")
+    await app.state.agent_grants.add_grant(cid, "decisions_write", project_id="proj-b")
+    store = app.state.decision_store
+    old_b = await store.create(
+        from_agent=cid, question="b q", type="approve_deny", project_id="proj-b"
+    )
+    for i in range(501):
+        await store.create(
+            from_agent=cid, question=f"c q {i}", type="approve_deny", project_id="proj-c"
+        )
+    async with _agent_client(app, token) as ac:
+        resp = await ac.get("/api/decisions/agent")
+    assert resp.status_code == 200, resp.text
+    assert [d["id"] for d in resp.json()["items"]] == [old_b["id"]]

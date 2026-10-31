@@ -4,6 +4,7 @@ GPU monitoring, and the GamingDetector state machine."""
 from __future__ import annotations
 
 import subprocess
+import sys
 
 import pytest
 
@@ -582,3 +583,222 @@ class TestGamingDetectorInit:
         assert det._rm is rm
         assert det._poll_interval == 5
         assert det._cooldown == 300
+
+
+# ---- Windows: detect_game_processes (win32) -----------------------------------
+
+class TestDetectGameProcessesWin32:
+    def test_detects_unreal_shipping_win32(self, monkeypatch):
+        """Windows: detects ue5-mygame-win64-shipping.exe via psutil."""
+        import psutil
+
+        class _FakeProc:
+            def __init__(self, pid, name, cmdline):
+                self.info = {"pid": pid, "name": name, "cmdline": cmdline}
+
+        fake_procs = [
+            _FakeProc(100, "explorer.exe", ["C:\\Windows\\explorer.exe"]),
+            _FakeProc(200, "ue5-mygame-win64-shipping.exe", ["C:\\Games\\MyGame\\Binaries\\Win64\\ue5-mygame-win64-shipping.exe"]),
+        ]
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(psutil, "process_iter", lambda attrs: iter(fake_procs))
+
+        result = gd.detect_game_processes()
+        assert len(result) == 1
+        assert result[0]["pid"] == 200
+        assert result[0]["name"] == "ue5-mygame-win64-shipping.exe"
+        assert "ue5" in result[0]["matched_pattern"]
+
+    def test_ignores_launcher_only_processes_win32(self, monkeypatch):
+        """Windows: steamwebhelper and epicgameslauncher alone are not games."""
+        import psutil
+
+        class _FakeProc:
+            def __init__(self, pid, name, cmdline):
+                self.info = {"pid": pid, "name": name, "cmdline": cmdline}
+
+        fake_procs = [
+            _FakeProc(100, "explorer.exe", ["C:\\Windows\\explorer.exe"]),
+            _FakeProc(200, "steamwebhelper.exe", ["C:\\Program Files\\Steam\\steamwebhelper.exe"]),
+            _FakeProc(300, "EpicGamesLauncher.exe", ["C:\\Program Files\\Epic Games\\Launcher\\EpicGamesLauncher.exe"]),
+        ]
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(psutil, "process_iter", lambda attrs: iter(fake_procs))
+
+        result = gd.detect_game_processes()
+        assert result == []
+
+    def test_skips_access_denied_win32(self, monkeypatch):
+        """Windows: AccessDenied on one process is skipped, others still checked."""
+        import psutil
+
+        class _FakeProc:
+            def __init__(self, pid, name, cmdline, raise_denied=False):
+                self.info = {"pid": pid, "name": name, "cmdline": cmdline}
+                self._raise_denied = raise_denied
+
+            @property
+            def info(self):
+                if self._raise_denied:
+                    raise psutil.AccessDenied(pid=self._pid)
+                return self._info
+
+            @info.setter
+            def info(self, value):
+                self._info = value
+                self._pid = value["pid"]
+
+        fake_procs = [
+            _FakeProc(100, "system.exe", [], raise_denied=True),
+            _FakeProc(200, "ue5-game-shipping.exe", ["C:\\Games\\ue5-game-shipping.exe"]),
+        ]
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(psutil, "process_iter", lambda attrs: iter(fake_procs))
+
+        result = gd.detect_game_processes()
+        assert len(result) == 1
+        assert result[0]["pid"] == 200
+
+
+# ---- Windows: detect_fullscreen_windows ---------------------------------------
+
+class TestDetectFullscreenWindows:
+    def _fake_user32(self, monkeypatch, **kwargs):
+        """Create a fake user32 with configurable behavior."""
+        import ctypes
+        from ctypes import wintypes
+
+        # Define structures matching the implementation
+        class RECT(ctypes.Structure):
+            _fields_ = [
+                ("left", wintypes.LONG),
+                ("top", wintypes.LONG),
+                ("right", wintypes.LONG),
+                ("bottom", wintypes.LONG),
+            ]
+
+        class MONITORINFO(ctypes.Structure):
+            _fields_ = [
+                ("cbSize", wintypes.DWORD),
+                ("rcMonitor", RECT),
+                ("rcWork", RECT),
+                ("dwFlags", wintypes.DWORD),
+            ]
+
+        class _FakeUser32:
+            def GetForegroundWindow(self):
+                return kwargs.get("foreground_hwnd", 12345)
+
+            def GetWindowRect(self, hwnd, rect_ptr):
+                rect = ctypes.cast(rect_ptr, ctypes.POINTER(RECT)).contents
+                rect.left = kwargs.get("window_left", 0)
+                rect.top = kwargs.get("window_top", 0)
+                rect.right = kwargs.get("window_right", 1920)
+                rect.bottom = kwargs.get("window_bottom", 1080)
+                return kwargs.get("get_window_rect_result", True)
+
+            def GetShellWindow(self):
+                return kwargs.get("shell_hwnd", 99999)
+
+            def GetDesktopWindow(self):
+                return kwargs.get("desktop_hwnd", 88888)
+
+            def MonitorFromWindow(self, hwnd, flags):
+                return kwargs.get("monitor_hwnd", 55555)
+
+            def GetMonitorInfoW(self, hmonitor, monitor_info_ptr):
+                monitor_info = ctypes.cast(monitor_info_ptr, ctypes.POINTER(MONITORINFO)).contents
+                monitor_info.rcMonitor.left = kwargs.get("monitor_left", 0)
+                monitor_info.rcMonitor.top = kwargs.get("monitor_top", 0)
+                monitor_info.rcMonitor.right = kwargs.get("monitor_right", 1920)
+                monitor_info.rcMonitor.bottom = kwargs.get("monitor_bottom", 1080)
+                return kwargs.get("get_monitor_info_result", True)
+
+        # Add windll to ctypes module (doesn't exist on Linux)
+        fake_windll = type("obj", (), {"user32": _FakeUser32()})()
+        # Use monkeypatch for proper isolation (raising=False allows creating new attr)
+        monkeypatch.setattr(ctypes, "windll", fake_windll, raising=False)
+        monkeypatch.setattr(sys, "platform", "win32")
+
+    def test_fullscreen_rect_equals_monitor(self, monkeypatch):
+        """Windows: window rect matching monitor rect returns True."""
+        self._fake_user32(monkeypatch)
+
+        assert gd.detect_fullscreen_windows() is True
+
+    def test_smaller_window_not_fullscreen(self, monkeypatch):
+        """Windows: window rect smaller than monitor returns False."""
+        self._fake_user32(monkeypatch, window_left=100, window_top=100, window_right=800, window_bottom=600)
+
+        assert gd.detect_fullscreen_windows() is False
+
+    def test_shell_window_returns_false(self, monkeypatch):
+        """Windows: GetShellWindow handle returns False."""
+        self._fake_user32(monkeypatch, foreground_hwnd=99999, shell_hwnd=99999)
+
+        assert gd.detect_fullscreen_windows() is False
+
+    def test_desktop_window_returns_false(self, monkeypatch):
+        """Windows: GetDesktopWindow handle returns False."""
+        self._fake_user32(monkeypatch, foreground_hwnd=88888, desktop_hwnd=88888)
+
+        assert gd.detect_fullscreen_windows() is False
+
+    def test_returns_false_on_linux(self, monkeypatch):
+        """Non-Windows: detect_fullscreen_windows returns False without importing windll."""
+        monkeypatch.setattr(sys, "platform", "linux")
+
+        assert gd.detect_fullscreen_windows() is False
+
+    def test_exception_returns_false(self, monkeypatch):
+        """Windows: any exception during detection returns False."""
+        import ctypes
+
+        class _FakeUser32:
+            def GetForegroundWindow(self):
+                raise OSError("access denied")
+
+            def GetShellWindow(self):
+                return 99999
+
+            def GetDesktopWindow(self):
+                return 88888
+
+        fake_windll = type("obj", (), {"user32": _FakeUser32()})()
+        monkeypatch.setattr(ctypes, "windll", fake_windll, raising=False)
+        monkeypatch.setattr(sys, "platform", "win32")
+
+        assert gd.detect_fullscreen_windows() is False
+
+
+# ---- GamingDetector.check() with Windows dispatch ------------------------------
+
+class TestGamingDetectorCheckWindows:
+    @pytest.mark.asyncio
+    async def test_check_dispatches_to_windows_fullscreen_on_win32(self, monkeypatch):
+        """GamingDetector.check() uses detect_fullscreen_windows on win32."""
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(gd, "detect_game_processes", lambda: [])
+        monkeypatch.setattr(gd, "detect_fullscreen_windows", lambda: True)
+        monkeypatch.setattr(gd, "detect_gpu_heavy_process", lambda: False)
+
+        det = GamingDetector(resource_manager=_FakeRM())
+        result = await det.check()
+        assert result["status"] == "yielded"
+        assert det.game_active is True
+
+    @pytest.mark.asyncio
+    async def test_check_uses_linux_fullscreen_on_linux(self, monkeypatch):
+        """GamingDetector.check() uses detect_fullscreen_x11 on linux."""
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(gd, "detect_game_processes", lambda: [])
+        monkeypatch.setattr(gd, "detect_fullscreen_x11", lambda: True)
+        monkeypatch.setattr(gd, "detect_gpu_heavy_process", lambda: False)
+
+        det = GamingDetector(resource_manager=_FakeRM())
+        result = await det.check()
+        assert result["status"] == "yielded"
+        assert det.game_active is True
