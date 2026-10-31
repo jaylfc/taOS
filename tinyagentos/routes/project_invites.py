@@ -53,6 +53,10 @@ class MintOsInviteIn(BaseModel):
     approval_mode: str = Field(default="auto", pattern="^(auto|manual)$")
     check_interval_secs: int = Field(default=1800, ge=60)
     display_name: str | None = Field(default=None, max_length=64)
+    # How long the invite stays redeemable. Omitted means the store default
+    # (1 hour). Capped at 24 hours: the PIN is the security gate, expiry is
+    # hygiene, but an indefinitely live link is not a state we want.
+    ttl_secs: int | None = Field(default=None, ge=60, le=86400)
 
     @field_validator("display_name")
     @classmethod
@@ -985,6 +989,7 @@ async def mint_os_invite(
             check_interval_secs=payload.check_interval_secs,
             created_by=user.user_id,
             display_name=payload.display_name,
+            ttl_secs=payload.ttl_secs,
         )
     except InvitePendingCapError as exc:
         return JSONResponse({"error": str(exc)}, status_code=429)

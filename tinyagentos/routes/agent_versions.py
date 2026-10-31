@@ -48,7 +48,7 @@ from tinyagentos.agent_git import (
     git_rev_parse,
     git_revert,
 )
-from tinyagentos.auth_context import current_user, require_owner_or_admin
+from tinyagentos.auth_context import current_user, require_owner_or_admin, resolve_agent_owner
 
 logger = logging.getLogger(__name__)
 
@@ -95,16 +95,9 @@ async def list_versions(request: Request, name: str):
         return JSONResponse({"error": f"Agent '{name}' not found"}, status_code=404)
 
     user = current_user(request)
-    registry = getattr(request.app.state, "agent_registry", None)
-    owner_user_id = agent.get("user_id")
-    if registry is not None:
-        try:
-            registry_agent = await registry.get_by_handle(name)
-        except RuntimeError:
-            registry_agent = None
-        if registry_agent is not None:
-            require_owner_or_admin(user, registry_agent["user_id"])
-            owner_user_id = None
+    # The registry attributes a config agent through its canonical id only
+    # (resolve_agent_owner); the config's own user_id is the fallback.
+    owner_user_id = await resolve_agent_owner(request, name) or agent.get("user_id")
     if owner_user_id:
         require_owner_or_admin(user, owner_user_id)
     elif not user.is_admin:
@@ -134,16 +127,9 @@ async def version_diff(request: Request, name: str, sha: str):
         return bad
 
     user = current_user(request)
-    registry = getattr(request.app.state, "agent_registry", None)
-    owner_user_id = agent.get("user_id")
-    if registry is not None:
-        try:
-            registry_agent = await registry.get_by_handle(name)
-        except RuntimeError:
-            registry_agent = None
-        if registry_agent is not None:
-            require_owner_or_admin(user, registry_agent["user_id"])
-            owner_user_id = None
+    # The registry attributes a config agent through its canonical id only
+    # (resolve_agent_owner); the config's own user_id is the fallback.
+    owner_user_id = await resolve_agent_owner(request, name) or agent.get("user_id")
     if owner_user_id:
         require_owner_or_admin(user, owner_user_id)
     elif not user.is_admin:
@@ -181,16 +167,9 @@ async def revert_version(request: Request, name: str, sha: str):
         return bad
 
     user = current_user(request)
-    registry = getattr(request.app.state, "agent_registry", None)
-    owner_user_id = agent.get("user_id")
-    if registry is not None:
-        try:
-            registry_agent = await registry.get_by_handle(name)
-        except RuntimeError:
-            registry_agent = None
-        if registry_agent is not None:
-            require_owner_or_admin(user, registry_agent["user_id"])
-            owner_user_id = None
+    # The registry attributes a config agent through its canonical id only
+    # (resolve_agent_owner); the config's own user_id is the fallback.
+    owner_user_id = await resolve_agent_owner(request, name) or agent.get("user_id")
     if owner_user_id:
         require_owner_or_admin(user, owner_user_id)
     elif not user.is_admin:

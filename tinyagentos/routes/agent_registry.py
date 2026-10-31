@@ -105,6 +105,8 @@ _ALLOWED_SCOPES = frozenset({
     "observatory_control",
     "notifications_write",
     "memory_read",
+    # Memory access: write to an agent's own memory namespace.
+    "memory_write",
 })
 
 

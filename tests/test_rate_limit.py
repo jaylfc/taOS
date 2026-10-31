@@ -58,6 +58,14 @@ class TestRateLimiter:
         assert r.check("ip-b") is True
         assert r.check("ip-b") is False
 
+    def test_injected_clock_controls_refill(self):
+        now = [0.0]
+        r = RateLimiter(capacity=1, refill_per_second=1.0, clock=lambda: now[0])
+        assert r.check("k") is True
+        assert r.check("k") is False
+        now[0] = 1.0
+        assert r.check("k") is True
+
 
 class TestShouldRateLimit:
     def test_get_exempt(self):
