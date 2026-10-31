@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import pytest
 import yaml
 
 _SPEC = importlib.util.spec_from_file_location(
@@ -153,3 +154,126 @@ def test_real_catalog_is_clean() -> None:
     root = Path(__file__).resolve().parent.parent / "app-catalog"
     errors = check_manifests.lint_managed(root)
     assert errors == [], "real catalog failed managed-lint:\n" + "\n".join(errors)
+
+
+# --- #148 Phase 0: model capability-field lint (warn-only) ---
+
+def _model_ok(mid: str = "qwen3-8b") -> dict:
+    return {
+        "id": mid,
+        "name": mid,
+        "type": "model",
+        "version": "1.0.0",
+        "family": "qwen3",
+        "min_context": 4096,
+        "max_context": 131072,
+        "variants": [
+            {
+                "id": "q4",
+                "format": "gguf",
+                "size_mb": 5000,
+                "vram_floor_mb": 6000,
+                "approx_tok_s_by_profile": {"gaming-pc-nvidia": 45.0},
+            }
+        ],
+    }
+
+
+def _write_model(root: Path, mid: str, manifest: dict) -> None:
+    d = root / "models" / mid
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "manifest.yaml").write_text(yaml.safe_dump(manifest))
+
+
+def test_model_fields_complete_passes(tmp_path: Path) -> None:
+    _write_model(tmp_path, "qwen3-8b", _model_ok())
+    assert check_manifests.lint_model_fields(tmp_path) == []
+
+
+def test_model_fields_missing_family_warns(tmp_path: Path) -> None:
+    m = _model_ok()
+    del m["family"]
+    _write_model(tmp_path, "qwen3-8b", m)
+    warns = check_manifests.lint_model_fields(tmp_path)
+    assert any("family" in w for w in warns)
+
+
+def test_model_fields_missing_context_warns(tmp_path: Path) -> None:
+    m = _model_ok()
+    del m["min_context"]
+    del m["max_context"]
+    _write_model(tmp_path, "qwen3-8b", m)
+    warns = check_manifests.lint_model_fields(tmp_path)
+    assert any("min_context" in w for w in warns)
+
+
+def test_model_fields_missing_envelope_warns(tmp_path: Path) -> None:
+    m = _model_ok()
+    del m["variants"][0]["vram_floor_mb"]
+    del m["variants"][0]["approx_tok_s_by_profile"]
+    _write_model(tmp_path, "qwen3-8b", m)
+    warns = check_manifests.lint_model_fields(tmp_path)
+    assert any("envelope" in w for w in warns)
+
+
+def test_model_fields_non_model_skipped(tmp_path: Path) -> None:
+    _write(tmp_path, "rkllama", _managed_ok())
+    # lint_model_fields only looks under models/, so the service manifest
+    # is invisible to it.
+    assert check_manifests.lint_model_fields(tmp_path) == []
+
+
+# --- Gate-integrity red proof (review lead request) ---
+#
+# These tests drive the real CLI entry point (main), not just the helper
+# functions, so deleting either new check from the gate makes them go red:
+#   * the AppManifest boundary validation in lint_managed, and
+#   * the #148 capability-field warnings in lint_model_fields.
+
+class TestGateRedProof:
+    """RED PROOF: the gate refuses a bad manifest and reports the new
+    capability fields; remove either check and these fail."""
+
+    def test_gate_refuses_manifest_failing_runtime_schema(self, tmp_path, capsys):
+        """A manifest the runtime's AppManifest model rejects must exit 1."""
+        _write(tmp_path, "bad-requires", {
+            "id": "bad-requires",
+            "name": "bad",
+            "type": "service",
+            "version": "1.0.0",
+            "requires": "ollama",
+        })
+        rc = check_manifests.main(["managed-lint", "--root", str(tmp_path)])
+        captured = capsys.readouterr()
+        assert rc == 1
+        assert "failed schema validation" in captured.err
+        assert "bad-requires" in captured.err
+
+    @pytest.mark.parametrize(
+        ("drop", "expected"),
+        [
+            ("family", "family"),
+            ("context", "min_context"),
+            ("envelope", "envelope"),
+        ],
+    )
+    def test_gate_warns_on_each_new_model_field(
+        self, tmp_path, capsys, drop, expected,
+    ):
+        """Each #148 capability check must reach stderr through main()."""
+        m = _model_ok()
+        if drop == "family":
+            del m["family"]
+        elif drop == "context":
+            del m["min_context"]
+            del m["max_context"]
+        else:
+            del m["variants"][0]["vram_floor_mb"]
+            del m["variants"][0]["approx_tok_s_by_profile"]
+        _write_model(tmp_path, "qwen3-8b", m)
+
+        rc = check_manifests.main(["managed-lint", "--root", str(tmp_path)])
+        err = capsys.readouterr().err
+        assert rc == 0  # warnings are warn-only, they do not fail the gate
+        assert "warn:" in err
+        assert expected in err

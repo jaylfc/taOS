@@ -133,6 +133,60 @@ def lint_managed(root: Path) -> list[str]:
     return errors
 
 
+def lint_model_fields(root: Path) -> list[str]:
+    """Return warnings for model manifests missing #148 capability fields.
+
+    Warn-only (never fails the gate): the 119 existing model manifests have
+    not been backfilled yet, so a hard error would go red immediately. Once
+    the backfill lands (Phase 2), promote the missing-``family`` warning to
+    an error.
+
+    Checked fields (taOS #146/#148 Phase 0):
+    - ``family`` — model family grouping (e.g. "qwen3").
+    - ``min_context`` / ``max_context`` — context window range (0 = unknown).
+    - Per-variant ``vram_floor_mb`` and ``approx_tok_s_by_profile`` — the
+      capability envelope pick_variant() reads. Only warned when the variant
+      has no envelope keys at all.
+    """
+    warnings: list[str] = []
+    models_dir = root / "models"
+    if not models_dir.is_dir():
+        return warnings
+    for manifest in sorted(models_dir.glob("*/manifest.yaml")):
+        mid_dir = manifest.parent.name
+        try:
+            data = yaml.safe_load(manifest.read_text())
+        except yaml.YAMLError:
+            continue  # pydantic validation in lint_managed reports this
+        if not isinstance(data, dict):
+            continue
+        if data.get("type") != "model":
+            continue
+        mid = str(data.get("id") or mid_dir)
+        if not data.get("family"):
+            warnings.append(
+                f"{mid}: missing 'family' (capability registry groups variants "
+                f"by family; backfill in taOS #148 Phase 2)"
+            )
+        if not data.get("min_context") and not data.get("max_context"):
+            warnings.append(
+                f"{mid}: missing 'min_context'/'max_context' (context window "
+                f"range; 0 = unknown)"
+            )
+        variants = data.get("variants") or []
+        if isinstance(variants, list):
+            for v in variants:
+                if not isinstance(v, dict):
+                    continue
+                vid = str(v.get("id") or "?")
+                if "vram_floor_mb" not in v and "approx_tok_s_by_profile" not in v:
+                    warnings.append(
+                        f"{mid} variant {vid}: no capability envelope "
+                        f"('vram_floor_mb' / 'approx_tok_s_by_profile')"
+                    )
+    return warnings
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["managed-lint"])
@@ -141,6 +195,9 @@ def main(argv: list[str] | None = None) -> int:
 
     root = Path(args.root)
     errors = lint_managed(root)
+    warnings = lint_model_fields(root)
+    for w in warnings:
+        print(f"  warn: {w}", file=sys.stderr)
     if errors:
         print("MANIFEST-LINT FAIL (managed-service contract):", file=sys.stderr)
         for e in errors:
