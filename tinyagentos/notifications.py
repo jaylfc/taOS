@@ -15,6 +15,10 @@ VALID_LEVELS = frozenset({"info", "success", "warning", "error"})
 
 logger = logging.getLogger(__name__)
 
+# Sources that should be pinned at the top of the notifications feed.
+# These are grant/consent requests that must stay visible until acted upon.
+PINNED_SOURCES = ("auth_requests", "agent_scope_requests")
+
 NOTIF_SCHEMA = """
 CREATE TABLE IF NOT EXISTS notifications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -247,19 +251,49 @@ class NotificationStore(BaseStore):
             raise ValueError("list() takes user_id or source, not both")
         if user_id is not None:
             # Per-user notifications: include both own notifications and broadcasts
+            # First, fetch pinned grant requests (non-archived, ignoring read/unread_only)
+            pinned_placeholders = ",".join("?" * len(PINNED_SOURCES))
+            pinned_sql = (
+                "SELECT n.id, n.timestamp, n.level, n.title, n.message, "
+                "COALESCE(nus.read_at, n.read) as read, n.source, n.data, n.user_id "
+                "FROM notifications n "
+                "LEFT JOIN notification_user_state nus ON n.id = nus.notification_id AND nus.user_id = ? "
+                f"WHERE (n.user_id IS NULL OR n.user_id = ?) AND n.archived = 0 AND (n.user_id IS NOT NULL OR nus.archived_at IS NULL) AND n.source IN ({pinned_placeholders}) "
+                "ORDER BY n.timestamp DESC"
+            )
+            pinned_params: tuple = (user_id, user_id) + PINNED_SOURCES
+            async with self._db.execute(pinned_sql, pinned_params) as cursor:
+                pinned_rows = await cursor.fetchall()
+            pinned_items = [_serialize_row(r) for r in pinned_rows]
+            for item in pinned_items:
+                item["pinned"] = True
+
+            # Then fetch regular (non-pinned) notifications with the limit
+            conds = [
+                "(n.user_id IS NULL OR n.user_id = ?)",
+                "n.archived = 0",
+                f"(n.source IS NULL OR n.source NOT IN ({pinned_placeholders}))",
+                "(n.user_id IS NOT NULL OR nus.archived_at IS NULL)",
+            ]
+            params_list = [user_id, user_id] + list(PINNED_SOURCES)
+            if unread_only:
+                conds.append("COALESCE(nus.read_at, n.read) = 0")
             sql = (
                 "SELECT n.id, n.timestamp, n.level, n.title, n.message, "
                 "COALESCE(nus.read_at, n.read) as read, n.source, n.data, n.user_id "
                 "FROM notifications n "
                 "LEFT JOIN notification_user_state nus ON n.id = nus.notification_id AND nus.user_id = ? "
-                f"WHERE (n.user_id IS NULL OR n.user_id = ?) AND n.archived = 0 AND (n.user_id IS NOT NULL OR nus.archived_at IS NULL)"
-                + (" AND COALESCE(nus.read_at, n.read) = 0" if unread_only else "") +
-                " ORDER BY n.timestamp DESC LIMIT ?"
+                f"WHERE {' AND '.join(conds)} "
+                "ORDER BY n.timestamp DESC LIMIT ?"
             )
-            params: tuple = (user_id, user_id, limit)
+            params = tuple(params_list + [limit])
             async with self._db.execute(sql, params) as cursor:
                 rows = await cursor.fetchall()
-            return [_serialize_row(r) for r in rows]
+            regular_items = [_serialize_row(r) for r in rows]
+            for item in regular_items:
+                item["pinned"] = False
+
+            return pinned_items + regular_items
         else:
             # Internal/system caller: unfiltered by user.  ``source`` narrows
             # to one sender (the agent path of GET /api/notifications lists

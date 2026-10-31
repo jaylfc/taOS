@@ -839,15 +839,35 @@ async def search_messages(
     if not q or len(q) < 2:
         return {"results": [], "query": q}
     msg_store = request.app.state.chat_messages
-    results = await msg_store.search(q, channel_id=channel_id, limit=limit)
     ch_store = request.app.state.chat_channels
-    readable: dict[str, bool] = {}
-    for r in results:
-        cid = r.get("channel_id")
-        if cid not in readable:
-            ch = await ch_store.get_channel(cid) if cid else None
-            readable[cid] = caller_can_read_channel(request, ch or {})
-    results = [r for r in results if readable[r.get("channel_id")]]
+
+    # Compute readable channel IDs first
+    is_admin = getattr(request.state, "is_admin", False)
+    is_local_token = getattr(request.state, "via", None) == "local_token"
+    if is_admin or is_local_token:
+        readable_channel_ids = None  # None means all channels
+    else:
+        uid = getattr(request.state, "user_id", None)
+        if uid is None:
+            readable_channel_ids = []
+        else:
+            member_channels = await ch_store.list_channels(member_id=str(uid))
+            readable_channel_ids = [c["id"] for c in member_channels if caller_can_read_channel(request, c)]
+
+    # If a specific channel_id was requested, intersect with readable
+    if channel_id is not None:
+        if readable_channel_ids is None:
+            readable_channel_ids = [channel_id]
+        elif channel_id in readable_channel_ids:
+            readable_channel_ids = [channel_id]
+        else:
+            readable_channel_ids = []
+
+    # Early return if no readable channels
+    if readable_channel_ids == []:
+        return {"results": [], "query": q}
+
+    results = await msg_store.search(q, channel_ids=readable_channel_ids, limit=limit)
     return {"results": results, "query": q}
 
 
@@ -994,14 +1014,21 @@ async def post_thinking(channel_id: str, body: dict, request: Request):
     bearer = request.headers.get("authorization", "")
     if not bearer.lower().startswith("bearer "):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
-    if auth is None or not auth.validate_local_token(bearer[7:].strip()):
-        return JSONResponse({"error": "Unauthorized"}, status_code=401)
-
-    bound_agent = auth.get_local_token_agent(bearer[7:].strip())
-    if bound_agent:
+    token = bearer[7:].strip()
+    via = getattr(request.state, "via", None)
+    if via == "registry_jwt_deployed_agent":
         slug = (body or {}).get("slug")
-        if slug != bound_agent:
-            return JSONResponse({"error": "forbidden: slug does not match credential"}, status_code=403)
+        expected = getattr(request.state, "agent_name", None)
+        if slug != expected:
+            return JSONResponse({"error": "slug does not match credential"}, status_code=403)
+    elif auth is None or not auth.validate_local_token(token):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    else:
+        bound_agent = auth.get_local_token_agent(token)
+        if bound_agent:
+            slug = (body or {}).get("slug")
+            if slug != bound_agent:
+                return JSONResponse({"error": "forbidden: slug does not match credential"}, status_code=403)
 
     slug = (body or {}).get("slug")
     state = (body or {}).get("state")

@@ -156,6 +156,12 @@ async def append_post(
     """
     author = author or identity.signing_fingerprint()
     async with _append_lock(store):
+        # A racing delete may have dropped a shared blob after the caller
+        # stored it; refuse rather than chain a post pointing at nothing.
+        for att in attachments or []:
+            blob = att.get("blob") if isinstance(att, dict) else None
+            if blob and not await store.has_blob(blob):
+                raise ValueError("attachment blob is missing; upload it again")
         seq, prev = await next_chain_position(store, author)
         post = build_post(
             visibility=visibility, text=text, attachments=attachments, author=author
@@ -176,24 +182,28 @@ async def delete_post(
 
     Compliant nodes drop the post body and its blobs on receipt (design
     "Deletion"). The tombstone itself remains in the chain index so the chain
-    stays verifiable. Raises ``ValueError`` if the post is unknown.
+    stays verifiable. Raises ``ValueError`` if the post is unknown, is not a
+    post, or was not authored by ``author``: only the origin may delete, so a
+    foreign post held locally is never tombstoned onto this node's chain.
     """
     author = author or identity.signing_fingerprint()
     post = await store.get_object(post_hash)
-    if post is None:
+    if post is None or post.get("type") != "post" or post.get("author") != author:
         raise ValueError("post not found")
     async with _append_lock(store):
         seq, prev = await next_chain_position(store, author)
         tomb = build_tombstone(author, post_hash, seq, prev)
         signed_tomb = hub_store.sign_object(tomb)
         await store.put_chain_object(signed_tomb)
-    # Drop the post body and every blob it referenced. The tombstone's index row
-    # survives, so the chain head advances and stays verifiable.
-    for att in post.get("attachments") or []:
-        blob = att.get("blob") if isinstance(att, dict) else None
-        if blob:
-            await store.drop_blob(blob)
-    await store.drop_object(post_hash)
+        # Drop the post body and every blob no other post still references.
+        # The tombstone's index row survives, so the chain head advances and
+        # stays verifiable. Held under the append lock so no post of the same
+        # blob can be chained between the reference check and the drop.
+        for att in post.get("attachments") or []:
+            blob = att.get("blob") if isinstance(att, dict) else None
+            if blob and not await store.blob_referenced(blob, exclude=post_hash):
+                await store.drop_blob(blob)
+        await store.drop_object(post_hash)
     return signed_tomb
 
 

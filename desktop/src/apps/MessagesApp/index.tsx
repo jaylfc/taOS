@@ -109,7 +109,7 @@ interface Channel {
   topic?: string;
   members?: string[];
   created_at?: string;
-  last_message_at?: string;
+  last_message_at?: string | number | null;
   lastPreview?: string;
   last_preview?: string;
   last_preview_author?: string;
@@ -259,18 +259,8 @@ type WsStatus = "connecting" | "connected" | "disconnected";
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
 
-/**
-* Coerce a server timestamp (number = seconds since epoch, string = ISO
-* or numeric) to milliseconds suitable for `new Date(...)`. The 1e12
-* threshold safely distinguishes seconds (~1.7e9 today) from ms (~1.7e12).
-*/
-export function toMs(ts: number | string): number {
-  if (typeof ts === "number") return ts < 1e12 ? ts * 1000 : ts;
-  if (ts === "" || ts == null) return Date.now();
-  const n = Number(ts);
-  if (!Number.isNaN(n)) return n < 1e12 ? n * 1000 : n;
-  return new Date(ts).getTime();
-}
+import { toMs } from "../chat/time";
+export { toMs } from "../chat/time";
 
 export function relativeTime(ts: number | string, nowMs: number = Date.now()): string {
   const ms = toMs(ts);
@@ -906,6 +896,7 @@ export function MessagesApp({
   const [projectChannelExpanded, setProjectChannelExpanded] = useState<Record<string, boolean>>({});
   const [liveAgents, setLiveAgents] = useState<LiveAgent[]>([]);
   const [archivedAgents, setArchivedAgents] = useState<ArchivedAgentEntry[]>([]);
+  const [agentRosterReady, setAgentRosterReady] = useState(false);
   const [selectedChannel, setSelectedChannel] = useState<string | null>(null);
   // External taOSmd coordination bus (read-only). Selecting a bus channel is a
   // separate mode from the internal project channels: when busSelected is set,
@@ -1055,28 +1046,38 @@ export function MessagesApp({
 
   /* ---- fetch agent lists for author resolution ---- */
   const fetchAgentLists = useCallback(async () => {
-    try {
-      const [liveRes, archRes] = await Promise.all([
-        fetch("/api/agents?include_guests=1"),
-        fetch("/api/agents/archived"),
-      ]);
-      if (liveRes.ok) {
-        const ct = liveRes.headers.get("content-type") ?? "";
-        if (ct.includes("application/json")) {
-          const data = await liveRes.json();
-          if (Array.isArray(data)) setLiveAgents(data as LiveAgent[]);
+    const loadLive = async (): Promise<LiveAgent[] | null> => {
+      try {
+        const res = await fetch("/api/agents?include_guests=1");
+        if (!res.ok) return null;
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setLiveAgents(data);
+          return data;
         }
+        return null;
+      } catch {
+        return null;
       }
-      if (archRes.ok) {
-        const ct = archRes.headers.get("content-type") ?? "";
-        if (ct.includes("application/json")) {
-          const data = await archRes.json();
-          if (Array.isArray(data)) setArchivedAgents(data as ArchivedAgentEntry[]);
+    };
+
+    const loadArchived = async (): Promise<ArchivedAgentEntry[] | null> => {
+      try {
+        const res = await fetch("/api/agents/archived");
+        if (!res.ok) return null;
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setArchivedAgents(data);
+          return data;
         }
+        return null;
+      } catch {
+        return null;
       }
-    } catch {
-      /* offline */
-    }
+    };
+
+    const [live, arch] = await Promise.all([loadLive(), loadArchived()]);
+    if (live !== null && arch !== null) setAgentRosterReady(true);
   }, []);
 
   /* ---- fetch messages for a channel ---- */
@@ -2259,6 +2260,7 @@ export function MessagesApp({
       nowMs={nowMs}
       liveAgents={liveAgents}
       archivedAgents={archivedAgents}
+      agentRosterReady={agentRosterReady}
       archivedChannels={archivedChannels}
       archivedExpanded={archivedExpanded}
       onToggleArchived={() => setArchivedExpanded((v) => !v)}

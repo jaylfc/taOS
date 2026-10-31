@@ -3,7 +3,7 @@ import { getLaunchableApps, getSearchableApps } from "@/registry/app-registry";
 
 describe("tier-3 search discoverability", () => {
   const TIER3_IDS = ["providers", "mcp", "channels"];
-  const REDIRECTED_IDS = ["notification-archive"];
+  const REDIRECTED_IDS = ["notification-history"];
 
   it("includes tier-3 apps in search results", () => {
     const ids = getSearchableApps(new Set()).map((a) => a.id);
@@ -19,11 +19,9 @@ describe("tier-3 search discoverability", () => {
     }
   });
 
-  it("excludes redirected apps from search results", () => {
+  it("notification-history is searchable as a tier-3 app", () => {
     const ids = getSearchableApps(new Set()).map((a) => a.id);
-    for (const id of REDIRECTED_IDS) {
-      expect(ids, `redirected app "${id}" should NOT be searchable`).not.toContain(id);
-    }
+    expect(ids).toContain("notification-history");
   });
 
   // Regression for the #2680 fix-forward: installed optional apps must stay

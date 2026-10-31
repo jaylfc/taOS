@@ -1,0 +1,657 @@
+"""PreToolUse hook for the Claude Code harness of the system taOS Agent.
+
+Claude Code runs this script before every shell tool call (wired by the
+settings file :mod:`tinyagentos.claude_code_runtime` passes with ``--settings``).
+It refuses ``git push`` and any ``gh`` call so the only route from the agent
+to GitHub is the gated taOS endpoint. Exit 2 blocks the call and hands stderr
+back to the model; unreadable input is refused too (fail closed).
+
+With ``--rules <file> --asks <file>`` it also applies the user's shell
+profile: every command it runs (the program, plus the subcommand for tools
+like ``npm`` or ``git``) must be on the profile's allow list. A denied one is
+refused; an undecided one is refused and appended to the asks file, which taOS turns into an approve/deny Decision for the user after
+the turn.
+
+Run as a plain script (``python claude_code_guard.py``): stdlib only, so it
+never imports taOS.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import shlex
+import sys
+
+# Short option letters for wrapper programs that take a value (next word)
+_WRAPPER_SHORT_OPTS_WITH_VALUE = {
+    "exec": frozenset({"a"}),
+    "sudo": frozenset({"u", "g", "C", "h", "p", "r", "t", "T", "U", "D", "a", "c", "R"}),
+    "doas": frozenset({"u", "C"}),
+    "env": frozenset({"u", "C", "a"}),
+}
+
+REFUSAL = ("Refused by taOS: the agent may not run `git push` or `gh` from the shell. "
+           "GitHub writes go through the taOS tool, which asks the user to confirm.")
+UNPARSEABLE_REFUSAL = ("Refused by taOS: this shell command could not be parsed, so it cannot be checked.")
+
+# Word edges that also treat path separators as boundaries, so `/usr/bin/gh`
+# and `bash -c 'git push'` match while `ghost` or `git-pushed` do not.
+_GH = re.compile(r"(?<![\w.-])gh(?![\w.-])")
+_GIT_PUSH = re.compile(r"(?<![\w.-])git(?![\w.-])[^;&|\n]*?(?<![\w.-])push(?![\w.-])")
+
+
+_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.DOTALL)
+_OPERATOR_CHARS = set("();&|<>")
+# Shell words that start a command position without being a program.
+_KEYWORDS = frozenset({"$", "!", "{", "}", "if", "then", "else", "elif", "fi",
+                       "do", "done", "while", "until", "case", "esac"})
+# Programs whose first non-option word is a subcommand: a rule for them can
+# name the subcommand too (``npm test``, ``git status``).
+SUBCOMMAND_PROGRAMS = frozenset({
+    "apt", "apt-get", "brew", "cargo", "dnf", "docker", "git", "go", "kubectl", "make",
+    "npm", "npx", "pip", "pip3", "pnpm", "podman", "snap", "systemctl", "uv", "yarn",
+})
+# Wrapper programs that prefix another program. After a wrapper we keep
+# expecting a program: skip its option words, NAME=value words (env), and for
+# timeout the first non-option word (the duration); for sudo/doas skip the
+# value of -u/-g/-C. The wrapper's own key is still added.
+WRAPPER_PROGRAMS = frozenset({
+    "env", "nice", "nohup", "timeout", "xargs", "sudo", "doas", "exec",
+    "command", "builtin", "time", "stdbuf", "setsid", "ionice", "chroot", "busybox",
+})
+# Options of wrapper programs that take a separate value (next word).
+_WRAPPER_OPTS_WITH_VALUE = {
+    "nice": frozenset({"-n", "--adjustment"}),
+    "ionice": frozenset({"-c", "-n", "-p", "--class", "--classdata", "--pid"}),
+    "stdbuf": frozenset({"-i", "-o", "-e", "--input", "--output", "--error"}),
+    "xargs": frozenset({
+        "-n", "-P", "-I", "-L", "-s", "-d", "-a", "-E",
+        "--max-args", "--max-procs", "--max-lines", "--max-chars",
+        "--delimiter", "--arg-file", "--process-slot-var",
+    }),
+    "timeout": frozenset({"-s", "--signal", "-k", "--kill-after"}),
+    "env": frozenset({"-a", "--argv0", "-u", "--unset", "-C", "--chdir"}),
+    "exec": frozenset({"-a"}),
+    "doas": frozenset({"-u", "-C", "--user", "--chdir"}),
+    "chroot": frozenset({"--userspec", "--groups"}),
+    "sudo": frozenset({"-a", "-c", "-R", "--auth-type", "--login-class", "--chroot", "-p", "--prompt", "--close-from", "--host", "--role", "--type", "--command-timeout", "--other-user", "--group", "--user"}),
+    "time": frozenset({"-f", "--format", "-o", "--output"}),
+}
+# Options of those programs that take a separate value (``git -C dir status``).
+_OPTIONS_WITH_VALUE = frozenset({
+    "-C", "-c", "--config-env",
+    "--git-dir", "--work-tree", "--namespace", "--super-prefix",
+})
+# Git options that take no value and are safe to ignore before the subcommand.
+_GIT_NO_VALUE_OPTS = frozenset({
+    "--no-pager", "-p", "--paginate", "-P",
+    "--bare", "--no-replace-objects",
+    "--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--icase-pathspecs",
+    "--no-optional-locks",
+})
+_SUBCOMMAND = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:+-]*")
+# Writing a file through the shell (``>``, ``>>``, ``&>``) is its own rule:
+# ``echo`` being allowed must not let ``echo x > ~/.bashrc`` through.
+OUTPUT_REDIRECT = "output-redirect"
+# ``git -c`` / ``--config-env`` / ``--exec-path`` can set an alias or pager that runs any
+# command, so ``git -c status`` needs this rule on top of ``git status``.
+GIT_CONFIG_OVERRIDE = "git -c"
+_DUP_TARGET = re.compile(r"[0-9]+-?|-")
+
+
+def _is_write_target(path: str) -> bool:
+    """Return True if the path is a write target that should be tagged.
+    The exact string /dev/null is exempt; everything else is a write target.
+    """
+    return path != "/dev/null"
+
+
+def _has_command_substitution_in_double_quotes(text: str) -> bool:
+    """Return True if $(...), ${...} or backtick occurs inside double quotes.
+
+    Tracks quote state: single quotes (no escapes), double quotes (backslash
+    escapes allowed), and backslash escapes outside single quotes.
+    """
+    in_single = False
+    in_double = False
+    escape = False
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if escape:
+            escape = False
+            i += 1
+            continue
+        if ch == "\\":
+            if not in_single:
+                escape = True
+            i += 1
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+            i += 1
+            continue
+        if ch == '"' and not in_single:
+            in_double = not in_double
+            i += 1
+            continue
+        if in_double:
+            # Check for $( or backtick
+            if ch == "$" and i + 1 < n and text[i + 1] == "(":
+                return True
+            if ch == "`":
+                return True
+        i += 1
+    return False
+
+
+def commands(command: str) -> list[str] | None:
+    """The rule keys of the commands a shell command runs, in order, without
+    duplicates; None when it cannot be parsed. A key is the program's basename
+    (``/usr/bin/curl`` is ``curl``), plus the subcommand for the programs in
+    :data:`SUBCOMMAND_PROGRAMS` (``npm run``, ``git status``). Pipes, lists,
+    subshells, ``$(...)``, backticks and newlines all start a new command."""
+    # Fail closed if command substitution appears inside double quotes.
+    if _has_command_substitution_in_double_quotes(command):
+        return None
+
+    text = command.replace("`", ";").replace("\n", ";")
+    lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return None
+    found: list[str] = []
+
+    def add(key: str) -> None:
+        if key not in found:
+            found.append(key)
+
+    expect = True
+    skip_next = False
+    redirect_target = False  # the next word is the target of an output redirection
+    prog_redirect_pending = False  # next word is a program-level output file (sort -o, time -o, etc.)
+    sub_of: str | None = None  # a program still waiting for its subcommand
+    prog: str | None = None  # the program of the current simple command
+    uniq_pos = 0  # positional argument count for uniq (2nd is output file)
+    uniq_end_opts = False  # -- seen for uniq, everything after is positional
+    # Wrapper state: when we are inside a wrapper program, what kind of skipping to do
+    wrapper: str | None = None  # current wrapper program name
+    wrapper_skip_duration = False  # for timeout: skip the first non-option (duration)
+    wrapper_skip_root = False  # for chroot: skip the first non-option (root dir)
+    env_split_string_pending = False  # for env -S/--split-string: next token is the split string
+    tee_end_opts = False
+    for tok in tokens:
+        if tok and set(tok) <= _OPERATOR_CHARS:
+            if set(tok) & set("<>") and not set(tok) & set(";|()"):
+                # A redirection: the next word is a file (or an fd for >&).
+                if ">" in tok:
+                    redirect_target = True
+                else:
+                    skip_next = True
+                continue
+            if sub_of:
+                add(sub_of)
+                sub_of = None
+            if wrapper:
+                wrapper = None
+                wrapper_skip_duration = False
+                wrapper_skip_root = False
+                env_split_string_pending = False
+            expect = True
+            prog = None
+            uniq_pos = 0
+            uniq_end_opts = False
+            tee_end_opts = False
+            skip_next = False
+            redirect_target = False
+            prog_redirect_pending = False
+            continue
+        if redirect_target:
+            redirect_target = False
+            if tok != "/dev/null" and not _DUP_TARGET.fullmatch(tok):
+                add(OUTPUT_REDIRECT)
+            continue
+        if prog_redirect_pending:
+            prog_redirect_pending = False
+            skip_next = False
+            if _is_write_target(tok):
+                add(OUTPUT_REDIRECT)
+            continue
+        if skip_next:
+            if env_split_string_pending:
+                env_split_string_pending = False
+                skip_next = False
+                # Parse the split string recursively
+                if "$" in tok or "\\" in tok:
+                    add("env -S")
+                else:
+                    sub_keys = _split_string_keys(tok)
+                    if sub_keys is None:
+                        add("env -S")
+                    else:
+                        for k in sub_keys:
+                            add(k)
+                continue
+            skip_next = False
+            continue
+        if sub_of:
+            if sub_of == "git":
+                if tok.startswith(("-c", "--config-env")):
+                    add(GIT_CONFIG_OVERRIDE)
+                elif tok.startswith("--exec-path"):
+                    add(GIT_CONFIG_OVERRIDE)
+                elif tok == "--output":
+                    prog_redirect_pending = True
+                elif tok.startswith("--output="):
+                    if _is_write_target(tok.split("=", 1)[1]):
+                        add(OUTPUT_REDIRECT)
+                elif tok.startswith("-") and tok not in _OPTIONS_WITH_VALUE and tok not in _GIT_NO_VALUE_OPTS:
+                    # Unknown git option before subcommand: fail closed.
+                    return None
+            if tok in _OPTIONS_WITH_VALUE:
+                skip_next = True
+            elif not tok.startswith("-"):
+                add(f"{sub_of} {tok}" if _SUBCOMMAND.fullmatch(tok) else sub_of)
+                sub_of = None
+            continue
+        if not expect or _ASSIGNMENT.fullmatch(tok) or tok in _KEYWORDS:
+            # Handle --output, sort options, and uniq positional output in argument position
+            if not expect:
+                # sort --compress-program and its prefixes: fail closed
+                if prog == "sort" and tok.startswith("--"):
+                    opt = tok[2:].split("=", 1)[0]
+                    if len(opt) >= 2 and "compress-program".startswith(opt):
+                        return None
+                    if len(opt) >= 1 and "output".startswith(opt):
+                        if "=" in tok:
+                            if _is_write_target(tok.split("=", 1)[1]):
+                                add(OUTPUT_REDIRECT)
+                        else:
+                            prog_redirect_pending = True
+                        continue
+                # sort clustered short option containing o (e.g. -ro, -o, -o/dev/null, -ro/dev/null)
+                if prog == "sort" and tok.startswith("-") and not tok.startswith("--") and "o" in tok[1:]:
+                    # The FIRST 'o' takes the value: everything after it is the attached
+                    # path (-o/tmp/foo), so a later 'o' inside the path is not an option.
+                    o_pos = tok.find("o", 1)
+                    if o_pos > 0:
+                        has_attached = o_pos < len(tok) - 1
+                        if has_attached:
+                            # Attached value form: -o/dev/null, -ro/dev/null
+                            attached_value = tok[o_pos + 1:]
+                            if _is_write_target(attached_value):
+                                add(OUTPUT_REDIRECT)
+                        else:
+                            # Separate value form: -o /dev/null, -ro /dev/null
+                            prog_redirect_pending = True
+                    continue
+                # tee: any non-option argument (file operand) is a write
+                if prog == "tee":
+                    if tee_end_opts or tok == "-":
+                        add(OUTPUT_REDIRECT)
+                        continue
+                    if tok == "--":
+                        tee_end_opts = True
+                        continue
+                    if tok.startswith("-"):
+                        continue
+                    if _is_write_target(tok):
+                        add(OUTPUT_REDIRECT)
+                    continue
+                # uniq positional argument counting: 2nd positional is output file
+                if prog == "uniq":
+                    if uniq_end_opts or tok == "-" or not tok.startswith("-"):
+                        # positional argument (after --, bare -, or non-option)
+                        uniq_pos += 1
+                        if uniq_pos == 2 and _is_write_target(tok):
+                            add(OUTPUT_REDIRECT)
+                        continue
+                    if tok == "--":
+                        uniq_end_opts = True
+                        continue
+                    if tok.startswith("--"):
+                        # long option: --skip-fields, --skip-chars, --check-chars
+                        opt = tok[2:].split("=", 1)[0]
+                        if "=" not in tok and opt and any(
+                            long_opt.startswith(opt) for long_opt in ("skip-fields", "skip-chars", "check-chars")
+                        ):
+                            skip_next = True
+                        continue
+                    # short cluster: -c, -f, -f1, -cf1, -cf, etc.
+                    for i, ch in enumerate(tok[1:]):
+                        if ch in "fsw":
+                            if i == len(tok) - 2:
+                                skip_next = True
+                            # else the rest of tok is the attached value
+                            break
+                        continue
+                # general --output handling (git diff, etc.)
+                if tok == "--output":
+                    prog_redirect_pending = True
+                elif tok.startswith("--output="):
+                    if _is_write_target(tok.split("=", 1)[1]):
+                        add(OUTPUT_REDIRECT)
+                continue
+            continue
+        name = os.path.basename(tok) or tok
+        # F5: command-position parameter expansion
+        # If we are in command position (expect == True) and the token contains $,
+        # decide based on the basename. If the basename itself contains $ (e.g.,
+        # $EDITOR, g${X}h, ${GH}), the command is unparseable -> fail closed.
+        # If only the directory part expands (e.g., $HOME/.local/bin/uv,
+        # "$VENV"/bin/pytest), keep the literal basename as the name.
+        if expect and "$" in tok:
+            if "$" in name:
+                return None
+            # else: directory part has $, but basename is literal; keep name as-is
+        # chroot: skip the first non-option (root dir) after options - must run BEFORE
+        # WRAPPER_PROGRAMS check so a root like /tmp/timeout is not mistaken for the
+        # timeout wrapper.
+        if wrapper == "chroot" and wrapper_skip_root:
+            if not tok.startswith("-"):
+                wrapper_skip_root = False
+                continue
+        # Handle wrapper programs: they prefix another program
+        if name in WRAPPER_PROGRAMS:
+            add(name)
+            wrapper = name
+            # For timeout, the first non-option after options is the duration (skip it)
+            if name == "timeout":
+                wrapper_skip_duration = True
+            # For chroot, the first non-option after options is the root dir (skip it)
+            if name == "chroot":
+                wrapper_skip_root = True
+            else:
+                wrapper_skip_root = False
+            # For sudo/doas, we need to skip values of -u, -g, -C
+            # For env, NAME=value assignments are handled by _ASSIGNMENT check above
+            # For other wrappers, just skip options (words starting with -)
+            expect = True  # keep expecting the real program
+            prog = name
+            uniq_pos = 0
+            uniq_end_opts = False
+            continue
+        # If we are in a wrapper context, skip its options
+        if wrapper:
+            # sudo/doas: skip -u user, -g group, -C dir (and their long forms)
+            if wrapper in ("sudo", "doas"):
+                if tok in ("-u", "-g", "-C", "--user", "--group", "--chdir"):
+                    skip_next = True
+                    continue
+                if tok.startswith(("-u", "-g", "-C")) and len(tok) > 2:
+                    # -uuser, -ggroup, -Cdir (attached value)
+                    continue
+            # exec: skip -a NAME (and -aNAME attached form)
+            if wrapper == "exec":
+                if tok == "-a":
+                    skip_next = True
+                    continue
+                if tok.startswith("-a") and len(tok) > 2:
+                    # -aNAME (attached value)
+                    continue
+            # Clustered short options that take a value (last letter in the option)
+            # For a token like -la, where 'a' takes a value, skip the next word
+            if wrapper in _WRAPPER_SHORT_OPTS_WITH_VALUE:
+                if tok.startswith("-") and not tok.startswith("--"):
+                    # Check if this is a short option (single dash) and last letter takes a value
+                    last_char = tok[-1]
+                    if last_char in _WRAPPER_SHORT_OPTS_WITH_VALUE[wrapper]:
+                        # Check that earlier letters in the token are not also value-taking
+                        # For sudo -Cu: 'u' takes a value, so -Cu should NOT skip next word
+                        # For exec -la: 'l' is not in value-taking set, 'a' is last, so -la skips next word
+                        earlier_letters = tok[1:-1]
+                        if not any(letter in _WRAPPER_SHORT_OPTS_WITH_VALUE[wrapper] for letter in earlier_letters):
+                            skip_next = True
+                            continue
+            # timeout: skip the first non-option (duration) after options
+            if wrapper == "timeout" and wrapper_skip_duration:
+                if not tok.startswith("-"):
+                    wrapper_skip_duration = False
+                    continue
+            # chroot: skip the first non-option (root dir) after options
+            if wrapper == "chroot" and wrapper_skip_root:
+                if not tok.startswith("-"):
+                    wrapper_skip_root = False
+                    continue
+            # env: handle -S/--split-string by parsing the split string recursively
+            if wrapper == "env":
+                split_string = None
+                if tok == "-S" or tok == "--split-string":
+                    skip_next = True
+                    env_split_string_pending = True
+                    continue
+                if tok.startswith("-S") and len(tok) > 2:
+                    # -S<text> attached form
+                    split_string = tok[2:]
+                elif tok.startswith("--split-string="):
+                    # --split-string=<text> attached form
+                    split_string = tok.split("=", 1)[1]
+                # Handle S in clustered short options (e.g., -iS, -iSls)
+                # Only applies to single-dash short-option clusters, not long options or bare words.
+                # Walk the cluster letters in order; stop at the first letter that takes a value
+                # (u, C, a for env). Only treat S as the split-string option if reached first.
+                if (wrapper == "env"
+                        and tok.startswith("-")
+                        and not tok.startswith("--")
+                        and "S" in tok
+                        and split_string is None):
+                    s_pos = tok.index("S")
+                    # Check letters before S for value-taking options
+                    value_taking = _WRAPPER_SHORT_OPTS_WITH_VALUE.get("env", frozenset())
+                    earlier = tok[1:s_pos]
+                    if not any(ch in value_taking for ch in earlier):
+                        after_S = tok[s_pos + 1:]
+                        if after_S:
+                            # Text after S is the attached split string
+                            split_string = after_S
+                        else:
+                            # S is at the end of the token (e.g., -iS), next token is the split string
+                            env_split_string_pending = True
+                            skip_next = True
+                if split_string is not None:
+                    # Parse the split string recursively
+                    # Fail closed if it contains $ (env var expansion), backslash, or doesn't parse,
+                    # or if the split string ends on a wrapper needing an operand
+                    if "$" in split_string or "\\" in split_string:
+                        add("env -S")
+                    else:
+                        sub_keys = _split_string_keys(split_string)
+                        if sub_keys is None:
+                            add("env -S")
+                        else:
+                            for k in sub_keys:
+                                add(k)
+                    continue
+            # Wrapper-specific options that take a separate value
+            if wrapper in _WRAPPER_OPTS_WITH_VALUE:
+                if tok in _WRAPPER_OPTS_WITH_VALUE[wrapper]:
+                    if wrapper == "time" and tok in ("-o", "--output", "-f", "--format"):
+                        if tok in ("-o", "--output"):
+                            prog_redirect_pending = True
+                    skip_next = True
+                    continue
+                # Handle attached forms like --userspec=VALUE, --groups=VALUE
+                # These should not set skip_next for the next word
+                if tok.startswith("--"):
+                    # Check for attached value form (--opt=value)
+                    for opt in _WRAPPER_OPTS_WITH_VALUE[wrapper]:
+                        if opt.startswith("--") and tok.startswith(opt + "="):
+                            if wrapper == "time" and opt == "--output":
+                                if _is_write_target(tok.split("=", 1)[1]):
+                                    add(OUTPUT_REDIRECT)
+                            # This is an attached form, don't skip_next
+                            break
+            # time: clustered short options (e.g. -ao, -po, -af, -apo, -ao/tmp/x, -af%e)
+            # GNU time short options: a p q v o f
+            # The first o or f ends the cluster: it takes a value (next word or attached),
+            # so -afo FILE is -a, -f with value "o", then FILE is the program.
+            if (wrapper == "time"
+                    and tok.startswith("-")
+                    and not tok.startswith("--")
+                    and len(tok) >= 3):
+                # Extract the leading valid letter cluster
+                i = 1
+                while i < len(tok) and tok[i] in "apqvof":
+                    takes_value = tok[i] in "of"
+                    i += 1
+                    if takes_value:
+                        break
+                letters = tok[1:i]
+                if letters:
+                    last = letters[-1]
+                    has_attached = i < len(tok)
+                    if last in ("o", "f"):
+                        if has_attached:
+                            # Attached value form: -ao/tmp/x, -af%e
+                            if last == "o":
+                                attached_value = tok[i:]
+                                if _is_write_target(attached_value):
+                                    add(OUTPUT_REDIRECT)
+                            # Don't skip_next, the value is attached
+                            continue
+                        else:
+                            # Separate value form: -ao FILE, -af %e, -apo /tmp/x
+                            if last == "o":
+                                prog_redirect_pending = True
+                            skip_next = True
+                            continue
+            # Other wrappers: skip options (words starting with -)
+            if tok.startswith("-"):
+                continue
+            # This token is the real program
+            wrapper = None
+            wrapper_skip_duration = False
+            wrapper_skip_root = False
+            env_split_string_pending = False
+            # Fall through to process as normal program
+        expect = False
+        prog = name
+        uniq_pos = 0
+        uniq_end_opts = False
+        tee_end_opts = False
+        if name in SUBCOMMAND_PROGRAMS:
+            sub_of = name
+        else:
+            add(name)
+    if sub_of:
+        add(sub_of)
+    return found
+
+
+def _split_string_keys(text: str) -> list[str] | None:
+    """Parse a split string for env -S/--split-string.
+
+    Returns the keys if parseable and the last key is not a wrapper program
+    that still needs an operand. Returns None if unparseable or if the last
+    key is a wrapper program (meaning the split string ends on a wrapper
+    that needs an operand, e.g. "timeout 60" where timeout needs a command).
+    """
+    keys = commands(text)
+    if keys is None:
+        return None
+    if keys and keys[-1] in WRAPPER_PROGRAMS:
+        return None
+    return keys
+
+
+def _covered(key: str, rules: set[str]) -> bool:
+    """A rule for the bare program covers every subcommand of it.
+
+    Exception: GIT_CONFIG_OVERRIDE and OUTPUT_REDIRECT match only an exact rule.
+    """
+    if key in (GIT_CONFIG_OVERRIDE, OUTPUT_REDIRECT):
+        return key in rules
+    return key in rules or key.split(" ", 1)[0] in rules
+
+
+def profile_refusal(command: str, allow: set[str], deny: set[str]) -> tuple[str | None, list[str]]:
+    """Check a shell command against a profile: the refusal message (or None)
+    and the undecided commands to ask the user about."""
+    keys = commands(command)
+    if keys is None:
+        return UNPARSEABLE_REFUSAL, []
+    denied = [k for k in keys if _covered(k, deny)]
+    if denied:
+        return (f"Refused by taOS: the user has denied `{denied[0]}` for the agent. "
+                "Do not retry it; find another way or ask the user."), []
+    unknown = [k for k in keys if not _covered(k, allow)]
+    if unknown:
+        listed = ", ".join(f"`{k}`" for k in unknown)
+        return (f"Refused by taOS: the user has not decided yet whether the agent may run {listed}. "
+                "taOS has asked them in the chat and in Decisions. Tell the user, and retry "
+                "after they allow it."), unknown
+    return None, []
+
+
+def refusal(payload: object) -> str | None:
+    """The refusal message for one PreToolUse payload, or None to allow it."""
+    if not isinstance(payload, dict):
+        return REFUSAL
+    if payload.get("tool_name") != "Bash":
+        return None
+    tool_input = payload.get("tool_input")
+    command = tool_input.get("command") if isinstance(tool_input, dict) else None
+    if not isinstance(command, str):
+        return REFUSAL
+    # Hard refusal on raw text (catches gh/git push in simple cases)
+    if _GH.search(command) or _GIT_PUSH.search(command):
+        return REFUSAL
+    # Hard refusal on parsed command keys (catches g""h, 'gh', etc.)
+    keys = commands(command)
+    if keys is None:
+        return UNPARSEABLE_REFUSAL
+    if keys:
+        for key in keys:
+            if key == "gh" or key.startswith("gh ") or key == "git push" or key == "env -S":
+                return REFUSAL
+    return None
+
+
+def _arg(argv: list[str], flag: str) -> str | None:
+    return argv[argv.index(flag) + 1] if flag in argv[:-1] else None
+
+
+def main(argv: list[str] | None = None) -> int:
+    try:
+        argv = sys.argv[1:] if argv is None else argv
+        try:
+            payload = json.loads(sys.stdin.read())
+        except ValueError:
+            payload = None
+        message = refusal(payload)
+        rules_path = _arg(argv, "--rules")
+        if message is None and rules_path and payload.get("tool_name") == "Bash":
+            command = payload["tool_input"]["command"]
+            try:
+                with open(rules_path, encoding="utf-8") as f:
+                    rules = json.load(f)
+                allow, deny = set(rules.get("allow") or ()), set(rules.get("deny") or ())
+            except (OSError, ValueError, AttributeError, TypeError):
+                print("Refused by taOS: the shell profile could not be read.", file=sys.stderr)
+                return 2
+            message, unknown = profile_refusal(command, allow, deny)
+            asks_path = _arg(argv, "--asks")
+            if unknown and asks_path:
+                try:
+                    with open(asks_path, "a", encoding="utf-8") as f:
+                        f.writelines(json.dumps({"program": key, "command": command}) + "\n"
+                                     for key in unknown)
+                except OSError:
+                    pass
+        if message is None:
+            return 0
+        print(message, file=sys.stderr)
+        return 2
+    except Exception:
+        # Fail closed: any unexpected error blocks the call
+        print(REFUSAL, file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

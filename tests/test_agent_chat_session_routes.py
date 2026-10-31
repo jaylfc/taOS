@@ -14,6 +14,9 @@ from httpx import ASGITransport, AsyncClient
 
 from tinyagentos.agent_registry_store import mint_registry_token
 from tinyagentos.bridge_session import BridgeSessionRegistry
+from tinyagentos.chat.channel_store import ChatChannelStore
+from tinyagentos.chat.guest_outbox import GuestOutbox
+from tinyagentos.chat.message_store import ChatMessageStore
 from taos_test_csrf import csrf_event_hooks
 
 EVENTS = "/api/agents/self/chat/events"
@@ -39,6 +42,39 @@ async def chat_app(app, tmp_data_dir):
         store = getattr(app.state, attr)
         if store._db is not None:
             await store.close()
+
+
+@pytest_asyncio.fixture
+async def chat_app_with_stores(app, tmp_data_dir):
+    """Chat app with real chat_channels and chat_messages stores for membership tests."""
+    for attr in ("agent_registry", "agent_grants", "metrics"):
+        store = getattr(app.state, attr)
+        if store._db is None:
+            await store.init()
+    # Initialise real chat stores
+    chat_messages = app.state.chat_messages
+    chat_channels = app.state.chat_channels
+    if chat_messages._db is None:
+        await chat_messages.init()
+    if chat_channels._db is None:
+        await chat_channels.init()
+    app.state.bridge_sessions = BridgeSessionRegistry(
+        trace_registry=None,
+        chat_messages=chat_messages,
+        chat_channels=chat_channels,
+        chat_hub=None,
+        archive=None,
+    )
+    app.state._startup_complete = True
+    yield app
+    for attr in ("agent_registry", "agent_grants", "metrics"):
+        store = getattr(app.state, attr)
+        if store._db is not None:
+            await store.close()
+    if chat_messages._db is not None:
+        await chat_messages.close()
+    if chat_channels._db is not None:
+        await chat_channels.close()
 
 
 async def _agent(app, handle, *, scopes=("chat_session",), display_name=None):
@@ -209,9 +245,334 @@ class TestChatSessionReply:
         assert "guest-b" not in slugs
 
 
+@pytest.mark.asyncio
+class TestChatSessionReplyMembership:
+    """Tests for channel membership enforcement on reply (Fix 1)."""
+
+    async def test_reply_foreign_channel_id_gets_403(self, chat_app_with_stores):
+        """Reply with a channel_id the agent is not a member of -> 403."""
+        _cid_a, token_a = await _agent(chat_app_with_stores, "@guest-a")
+        _cid_b, token_b = await _agent(chat_app_with_stores, "@guest-b")
+
+        # Create a channel that only guest-b is a member of
+        channels = chat_app_with_stores.state.chat_channels
+        foreign_channel = await channels.create_channel(
+            name="private",
+            type="group",
+            created_by="user",
+            members=["user", "guest-b"],
+        )
+        foreign_channel_id = foreign_channel["id"]
+
+        mock = AsyncMock()
+        chat_app_with_stores.state.bridge_sessions.record_reply = mock
+
+        async with _bare(chat_app_with_stores) as c:
+            r = await c.post(
+                REPLY,
+                headers=_hdr(token_a),
+                json={"kind": "final", "content": "hi", "channel_id": foreign_channel_id},
+            )
+        assert r.status_code == 403
+        assert r.json() == {"error": "not a member of this channel"}
+        mock.assert_not_called()
+
+    async def test_reply_trace_id_in_foreign_channel_gets_403(self, chat_app_with_stores):
+        """Reply with trace_id of a message in a channel the agent is not a member of -> 403."""
+        _cid_a, token_a = await _agent(chat_app_with_stores, "@guest-a")
+        _cid_b, token_b = await _agent(chat_app_with_stores, "@guest-b")
+
+        # Create a channel that only guest-b is a member of
+        channels = chat_app_with_stores.state.chat_channels
+        messages = chat_app_with_stores.state.chat_messages
+        foreign_channel = await channels.create_channel(
+            name="private",
+            type="group",
+            created_by="user",
+            members=["user", "guest-b"],
+        )
+        foreign_channel_id = foreign_channel["id"]
+
+        # Create a message in that channel from guest-b
+        msg = await messages.send_message(
+            channel_id=foreign_channel_id,
+            author_id="guest-b",
+            author_type="agent",
+            content="hello from guest-b",
+            state="complete",
+        )
+        trace_id = msg["id"]
+
+        mock = AsyncMock()
+        chat_app_with_stores.state.bridge_sessions.record_reply = mock
+
+        async with _bare(chat_app_with_stores) as c:
+            r = await c.post(
+                REPLY,
+                headers=_hdr(token_a),
+                json={"kind": "final", "content": "hi", "trace_id": trace_id},
+            )
+        assert r.status_code == 403
+        assert r.json() == {"error": "not a member of this channel"}
+        mock.assert_not_called()
+
+    async def test_reply_into_own_dm_is_202(self, chat_app_with_stores):
+        """Reply into the agent's own DM channel -> 202 (positive control)."""
+        _cid_a, token_a = await _agent(chat_app_with_stores, "@guest-a")
+
+        # Ensure the agent has a DM channel (create one if needed)
+        channels = chat_app_with_stores.state.chat_channels
+        await channels.create_channel(
+            name="DM with guest-a",
+            type="dm",
+            created_by="user",
+            members=["user", "guest-a"],
+        )
+
+        mock = AsyncMock()
+        chat_app_with_stores.state.bridge_sessions.record_reply = mock
+
+        async with _bare(chat_app_with_stores) as c:
+            r = await c.post(
+                REPLY,
+                headers=_hdr(token_a),
+                json={"kind": "final", "content": "hi"},
+            )
+        assert r.status_code == 202
+        mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+class TestChatSessionSlugCollision:
+    """Tests for registry agent slug collision enforcement (Fix 2)."""
+
+    async def test_second_registry_agent_with_colliding_slug_gets_403(self, chat_app):
+        """Two registry agents whose canonical_ids strip to the same slug -> 403."""
+        _cid1, token1 = await _agent(chat_app, "@agent-one", display_name="Shared Name")
+        _cid2, token2 = await _agent(chat_app, "@agent-two", display_name="Shared Name")
+
+        # First agent should work
+        mock = AsyncMock()
+        chat_app.state.bridge_sessions.record_reply = mock
+        async with _bare(chat_app) as c:
+            r1 = await c.post(REPLY, headers=_hdr(token1), json={"kind": "final", "content": "hi"})
+        assert r1.status_code == 202
+
+        # Second agent with same slug should be rejected on reply
+        async with _bare(chat_app) as c:
+            r2 = await c.post(REPLY, headers=_hdr(token2), json={"kind": "final", "content": "hi"})
+        assert r2.status_code == 403
+        assert r2.json() == {"error": "handle collides with another registry agent"}
+
+
 def test_chat_session_scope_registered_in_both_sets():
     from tinyagentos.routes.agent_auth_requests import VALID_SCOPES
     from tinyagentos.routes.agent_registry import _ALLOWED_SCOPES
 
     assert "chat_session" in VALID_SCOPES
     assert "chat_session" in _ALLOWED_SCOPES
+
+
+# --- Fake stores for replay receipt test ---
+class _FakeMessageStore:
+    """Minimal fake ChatMessageStore that tracks mark_delivered calls."""
+    def __init__(self):
+        self.messages = {}
+        self.mark_delivered_calls = []
+        self._seq = 0
+
+    async def send_message(self, **kwargs) -> dict:
+        self._seq += 1
+        msg = {"id": f"msg{self._seq}", **kwargs}
+        self.messages[msg["id"]] = msg
+        return msg
+
+    async def get_message(self, message_id: str) -> dict | None:
+        return self.messages.get(message_id)
+
+    async def mark_delivered(self, message_id: str, reader_id: str, reader_type: str = "agent") -> dict | None:
+        """Track calls to mark_delivered and return a fake receipt row."""
+        self.mark_delivered_calls.append((message_id, reader_id, reader_type))
+        msg = await self.get_message(message_id)
+        if msg is None:
+            return None
+        import time
+        return {
+            "message_id": message_id,
+            "reader_id": reader_id,
+            "reader_type": reader_type,
+            "delivered_at": time.time(),
+            "seen_at": None,
+        }
+
+
+@pytest.mark.asyncio
+class TestGuestOutboxReplayReceipt:
+    """Test that replayed guest outbox messages get their chat receipt stamped."""
+
+    async def test_replayed_guest_message_marks_delivered(self, chat_app, tmp_path):
+        """A guest message present in the outbox before the stream opens
+        should have mark_delivered called on its message id during replay."""
+        _cid, token = await _agent(chat_app, "@guest-replay")
+
+        # Set up a fake message store that tracks mark_delivered calls
+        fake_msg_store = _FakeMessageStore()
+        # Pre-create the message that the outbox payload references
+        await fake_msg_store.send_message(
+            channel_id="ch1",
+            author_id="user-123",
+            author_type="user",
+            content="replay me",
+            state="complete",
+            metadata={"trace_id": "trace-replay-1"},
+        )
+        # The message id sent in the outbox payload
+        msg_id = list(fake_msg_store.messages.keys())[0]
+
+        # Create guest outbox with a persisted message
+        outbox = GuestOutbox(tmp_path / "guest_outbox.db")
+        await outbox.init()
+        try:
+            # Append a user_message that references the pre-existing message id
+            await outbox.append("guest-replay", {
+                "id": msg_id,
+                "text": "replay me",
+                "trace_id": "trace-replay-1",
+                "channel_id": "ch1",
+                "from": "user-123",
+            })
+
+            # Wire up bridge session with the fake message store and outbox
+            bridge = BridgeSessionRegistry(
+                trace_registry=None,
+                chat_messages=fake_msg_store,
+                chat_channels=None,
+                chat_hub=None,
+                archive=None,
+            )
+            bridge._guest_outbox = outbox
+            bridge._is_guest = lambda slug: True
+
+            chat_app.state.bridge_sessions = bridge
+            chat_app.state.guest_outbox = outbox
+            chat_app.state.chat_messages = fake_msg_store
+
+            # Make the live subscription end immediately (we only care about replay)
+            async def empty_subscribe(slug):
+                return
+                yield  # make it an async generator
+
+            bridge.subscribe = empty_subscribe
+
+            async with _bare(chat_app) as c:
+                r = await c.get(EVENTS, headers=_hdr(token))
+
+            assert r.status_code == 200
+            # The replay should have yielded the message and called mark_delivered
+            assert len(fake_msg_store.mark_delivered_calls) == 1
+            called_msg_id, called_reader_id, _ = fake_msg_store.mark_delivered_calls[0]
+            assert called_msg_id == msg_id
+            assert called_reader_id == "guest-replay"
+        finally:
+            await outbox.close()
+
+
+@pytest.mark.asyncio
+class TestChatSessionSlugRegistryError:
+    async def test_registry_list_all_raises_returns_503_and_no_reply(self, chat_app):
+        _cid, token = await _agent(chat_app, "@guest-reg-err")
+        registry = chat_app.state.agent_registry
+        registry.list_all = AsyncMock(side_effect=RuntimeError("db"))
+        chat_app.state.bridge_sessions.record_reply = AsyncMock()
+        async with _bare(chat_app) as c:
+            r = await c.post(REPLY, headers=_hdr(token), json={"kind": "final", "content": "hi"})
+        assert r.status_code == 503
+        assert r.json() == {"error": "agent registry unavailable"}
+        chat_app.state.bridge_sessions.record_reply.assert_not_called()
+
+
+@pytest.mark.asyncio
+class TestChatSessionReplyTraceLookupError:
+    async def test_trace_id_lookup_raises_returns_503_and_no_reply(self, chat_app_with_stores):
+        _cid, token = await _agent(chat_app_with_stores, "@guest-trace-err")
+        messages = chat_app_with_stores.state.chat_messages
+        messages.get_message = AsyncMock(side_effect=RuntimeError("db"))
+        chat_app_with_stores.state.bridge_sessions.record_reply = AsyncMock()
+        async with _bare(chat_app_with_stores) as c:
+            r = await c.post(
+                REPLY,
+                headers=_hdr(token),
+                json={"kind": "final", "content": "hi", "trace_id": "msg-x"},
+            )
+        assert r.status_code == 503
+        assert r.json() == {"error": "chat store unavailable"}
+        chat_app_with_stores.state.bridge_sessions.record_reply.assert_not_called()
+
+    async def test_trace_id_not_found_still_returns_202(self, chat_app_with_stores):
+        _cid, token = await _agent(chat_app_with_stores, "@guest-trace-miss")
+        messages = chat_app_with_stores.state.chat_messages
+        messages.get_message = AsyncMock(return_value=None)
+        chat_app_with_stores.state.bridge_sessions.record_reply = AsyncMock()
+        async with _bare(chat_app_with_stores) as c:
+            r = await c.post(
+                REPLY,
+                headers=_hdr(token),
+                json={"kind": "final", "content": "hi", "trace_id": "msg-missing"},
+            )
+        assert r.status_code == 202
+        chat_app_with_stores.state.bridge_sessions.record_reply.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+class TestChatSessionReplyChannelLookupError:
+    async def test_channel_lookup_raises_returns_503_and_no_reply(self, chat_app_with_stores):
+        _cid, token = await _agent(chat_app_with_stores, "@guest-chan-err")
+        channels = chat_app_with_stores.state.chat_channels
+        channels.get_channel = AsyncMock(side_effect=RuntimeError("db"))
+        chat_app_with_stores.state.bridge_sessions.record_reply = AsyncMock()
+        async with _bare(chat_app_with_stores) as c:
+            r = await c.post(
+                REPLY,
+                headers=_hdr(token),
+                json={"kind": "final", "content": "hi", "channel_id": "chan-123"},
+            )
+        assert r.status_code == 503
+        assert r.json() == {"error": "chat store unavailable"}
+        chat_app_with_stores.state.bridge_sessions.record_reply.assert_not_called()
+
+    async def test_channel_id_not_a_string_returns_400(self, chat_app_with_stores):
+        _cid, token = await _agent(chat_app_with_stores, "@guest-chan-type")
+        chat_app_with_stores.state.bridge_sessions.record_reply = AsyncMock()
+        async with _bare(chat_app_with_stores) as c:
+            r1 = await c.post(
+                REPLY,
+                headers=_hdr(token),
+                json={"kind": "final", "content": "hi", "channel_id": ["list"]},
+            )
+            r2 = await c.post(
+                REPLY,
+                headers=_hdr(token),
+                json={"kind": "final", "content": "hi", "channel_id": {"dict": "value"}},
+            )
+        assert r1.status_code == 400
+        assert r1.json() == {"error": "invalid channel_id"}
+        assert r2.status_code == 400
+        assert r2.json() == {"error": "invalid channel_id"}
+        chat_app_with_stores.state.bridge_sessions.record_reply.assert_not_called()
+
+
+@pytest.mark.asyncio
+class TestChatSessionUnknownChannel:
+    async def test_reply_unknown_channel_id_gets_403(self, chat_app_with_stores):
+        _cid_a, token_a = await _agent(chat_app_with_stores, "@guest-a")
+        mock = AsyncMock()
+        chat_app_with_stores.state.bridge_sessions.record_reply = mock
+        async with _bare(chat_app_with_stores) as c:
+            r = await c.post(
+                REPLY,
+                headers=_hdr(token_a),
+                json={"kind": "final", "content": "hi", "channel_id": "chan-does-not-exist"},
+            )
+        assert r.status_code == 403
+        assert r.json() == {"error": "not a member of this channel"}
+        mock.assert_not_called()

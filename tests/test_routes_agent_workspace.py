@@ -194,3 +194,105 @@ class TestAgentWorkspaceRoutes:
         data = resp.json()
         assert data["total_files"] == 2
         assert data["total_size"] == 10
+
+
+# ---------------------------------------------------------------------------
+# Ownership: the workspace belongs to the agent's owner (security sweep)
+# ---------------------------------------------------------------------------
+
+import pytest_asyncio  # noqa: E402
+from httpx import ASGITransport, AsyncClient  # noqa: E402
+from taos_test_csrf import csrf_event_hooks  # noqa: E402
+
+
+def _add_member(app, username: str, password: str) -> str:
+    invite = app.state.auth.add_user_invite(username, "admin")
+    app.state.auth.complete_invite(username, invite, username.title(), f"{username}@test.com", password)
+    return app.state.auth.find_user(username)["id"]
+
+
+@pytest_asyncio.fixture
+async def owner_clients(app, client):
+    """``(alice, bob)`` member clients; agent ``alpha`` belongs to alice.
+
+    ``client`` is requested first so the shared app fixture has its admin and
+    stores set up. alice's registry row carries the canonical id the config
+    agent points at, so the owner check attributes ``alpha`` to her.
+    """
+    alice_uid = _add_member(app, "alice", "alicepass1")
+    bob_uid = _add_member(app, "bob", "bobspass11")
+    registry = app.state.agent_registry
+    if registry._db is None:
+        await registry.init()
+    row = await registry.register(framework="claude-code", display_name="alpha", user_id=alice_uid)
+    _add_agent(app, "alpha")
+    app.state.config.agents[-1]["registry_canonical_id"] = row["canonical_id"]
+    ws = app.state.agent_workspaces_dir / "alpha"
+    ws.mkdir(parents=True, exist_ok=True)
+    (ws / "secret.txt").write_bytes(b"alice only")
+
+    clients = []
+    for uid in (alice_uid, bob_uid):
+        token = app.state.auth.create_session(user_id=uid, long_lived=True)
+        clients.append(AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test",
+            cookies={"taos_session": token}, event_hooks=csrf_event_hooks(),
+        ))
+    try:
+        yield clients[0], clients[1]
+    finally:
+        for c in clients:
+            await c.aclose()
+        await registry.close()
+
+
+class TestAgentWorkspaceOwnership:
+
+    @pytest.mark.asyncio
+    async def test_owner_can_list_and_read(self, owner_clients):
+        alice, _bob = owner_clients
+        assert (await alice.get("/api/agents/alpha/workspace/files")).status_code == 200
+        resp = await alice.get("/api/agents/alpha/workspace/files/secret.txt")
+        assert resp.status_code == 200
+        assert resp.content == b"alice only"
+
+    @pytest.mark.asyncio
+    async def test_other_member_cannot_read(self, owner_clients):
+        _alice, bob = owner_clients
+        assert (await bob.get("/api/agents/alpha/workspace/files")).status_code == 403
+        assert (await bob.get("/api/agents/alpha/workspace/files/secret.txt")).status_code == 403
+        assert (await bob.get("/api/agents/alpha/workspace/stats")).status_code == 403
+        assert (await bob.get("/api/agents/alpha/workspace/trash")).status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_other_member_cannot_write_or_delete(self, owner_clients, app):
+        _alice, bob = owner_clients
+        ws = app.state.agent_workspaces_dir / "alpha"
+
+        resp = await bob.post(
+            "/api/agents/alpha/workspace/files/upload",
+            files={"file": ("planted.txt", io.BytesIO(b"x"), "text/plain")},
+        )
+        assert resp.status_code == 403
+        assert not (ws / "planted.txt").exists()
+
+        resp = await bob.post("/api/agents/alpha/workspace/mkdir", json={"path": "evil"})
+        assert resp.status_code == 403
+        assert not (ws / "evil").exists()
+
+        resp = await bob.delete("/api/agents/alpha/workspace/files/secret.txt")
+        assert resp.status_code == 403
+        assert (ws / "secret.txt").exists()
+
+        assert (await bob.delete("/api/agents/alpha/workspace/trash")).status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_agent_token_is_fenced_to_its_own_workspace(self, owner_clients, app):
+        _add_agent(app, "beta")
+        token = app.state.auth.mint_agent_local_token("beta")
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test",
+            headers={"Authorization": f"Bearer {token}"},
+        ) as beta:
+            assert (await beta.get("/api/agents/beta/workspace/files")).status_code == 200
+            assert (await beta.get("/api/agents/alpha/workspace/files")).status_code == 403

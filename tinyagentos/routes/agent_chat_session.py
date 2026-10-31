@@ -40,6 +40,31 @@ async def _resolve_slug(request: Request) -> str | JSONResponse:
             return JSONResponse(
                 {"error": "handle collides with a local agent"}, status_code=403
             )
+    # Two registry agents whose canonical_ids strip to the same slug must not
+    # share a session. Check for any OTHER active registry entry with the same
+    # derived slug. Allow the oldest (first registered) agent to proceed; reject
+    # any newer agents that collide.
+    registry = getattr(request.app.state, "agent_registry", None)
+    if registry is not None:
+        try:
+            active_agents = await registry.list_all(status="active")
+        except Exception:
+            logger.warning("agent registry list_all failed while resolving slug", exc_info=True)
+            return JSONResponse({"error": "agent registry unavailable"}, status_code=503)
+        # list_all returns agents ordered by id (oldest first) via
+        # SELECT * FROM agent_registry WHERE status = ? ORDER BY id. Find the first
+        # agent with this slug; if it's not the current agent, reject.
+        for other in active_agents:
+            other_cid = other.get("canonical_id")
+            if other_cid:
+                other_slug = _CANONICAL_AGENT_ID_RE.sub("", other_cid)
+                if other_slug == slug:
+                    if other_cid != cid:
+                        return JSONResponse(
+                            {"error": "handle collides with another registry agent"}, status_code=403
+                        )
+                    # This is the first agent with this slug; allow it.
+                    break
     return slug
 
 
@@ -103,6 +128,7 @@ async def self_chat_events(request: Request):
                     f"id: {row_id}\nevent: user_message\n"
                     f"data: {json.dumps(payload)}\n\n"
                 )
+                await bridge.mark_user_message_delivered(slug, payload)
                 await _delivered(row_id)
             async for frame in bridge.subscribe(slug):
                 row_id = _frame_id(frame)
@@ -125,6 +151,33 @@ async def self_chat_events(request: Request):
     )
 
 
+async def _resolve_target_channel(request: Request, body: dict) -> str | None | JSONResponse:
+    """Determine the target channel for a reply, mirroring _handle_reply logic.
+
+    Returns the channel_id if one can be determined, else None (falls back to
+    the agent's own DM in the bridge). Returns a JSONResponse on store errors.
+    """
+    # Explicit channel_id in body takes precedence.
+    channel_id = body.get("channel_id")
+    if channel_id is not None and not isinstance(channel_id, str):
+        return JSONResponse({"error": "invalid channel_id"}, status_code=400)
+    if channel_id:
+        return channel_id
+    # Fall back to the channel of the message named by trace_id.
+    trace_id = body.get("trace_id")
+    if trace_id:
+        chat_messages = getattr(request.app.state, "chat_messages", None)
+        if chat_messages is not None:
+            try:
+                orig = await chat_messages.get_message(trace_id)
+            except Exception:
+                logger.warning("chat message lookup failed while resolving reply target", exc_info=True)
+                return JSONResponse({"error": "chat store unavailable"}, status_code=503)
+            if orig and orig.get("channel_id"):
+                return orig["channel_id"]
+    return None
+
+
 @router.post("/api/agents/self/chat/reply")
 async def self_chat_reply(request: Request):
     """Record a reply from the calling agent under its own slug.
@@ -143,5 +196,29 @@ async def self_chat_reply(request: Request):
         return JSONResponse({"error": "invalid JSON"}, status_code=400)
     if not isinstance(body, dict):
         return JSONResponse({"error": "invalid JSON"}, status_code=400)
+
+    # Fix 1: enforce channel membership before accepting the reply.
+    target_channel_id = await _resolve_target_channel(request, body)
+    if isinstance(target_channel_id, JSONResponse):
+        return target_channel_id
+    if target_channel_id:
+        chat_channels = getattr(request.app.state, "chat_channels", None)
+        if chat_channels is not None:
+            try:
+                channel = await chat_channels.get_channel(target_channel_id)
+            except Exception:
+                logger.warning("chat channel lookup failed while checking reply membership", exc_info=True)
+                return JSONResponse({"error": "chat store unavailable"}, status_code=503)
+            if channel:
+                members = channel.get("members") or []
+                if slug not in members:
+                    return JSONResponse(
+                        {"error": "not a member of this channel"}, status_code=403
+                    )
+            else:
+                return JSONResponse(
+                    {"error": "not a member of this channel"}, status_code=403
+                )
+
     await bridge.record_reply(slug, body)
     return JSONResponse({"accepted": True}, status_code=202)
