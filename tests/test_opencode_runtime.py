@@ -233,6 +233,7 @@ async def test_ensure_running_raises_on_timeout(tmp_path, monkeypatch):
 # into a distinct, actionable exception rather than a generic subprocess error.
 # ---------------------------------------------------------------------------
 
+@pytest.mark.no_opencode_spawn_guard
 class TestResolveOpencodeBinary:
     def test_prefers_path_lookup(self, monkeypatch):
         from tinyagentos import opencode_runtime as ocr

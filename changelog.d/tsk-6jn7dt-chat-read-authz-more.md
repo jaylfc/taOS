@@ -1,0 +1,2 @@
+### Security
+- The remaining v1 chat reads now check channel membership too. `GET /api/chat/messages/{id}`, `GET /api/chat/channels/{id}/threads`, `GET /api/chat/channels/{id}/threads/{parent_id}/messages` and `GET /api/chat/channels/{id}/pins` return 403 `{"error": "forbidden: not a member"}` unless the caller is in the channel's `members`, an admin session, or the host local token; `GET /api/chat/search`, `GET /api/chat/unread` and `GET /api/chat/channels` (including its `last_preview`) leave out channels the caller cannot read (tsk-6jn7dt).

@@ -1,0 +1,4 @@
+### Fixed
+
+- **Registry JWT target resolution**: `POST /api/memory/remember` registry-JWT path (branch b) now resolves the target config agent by `registry_canonical_id` first (iterating `config.agents`), fixing a bug where a config agent whose name differs from the registry display-name/handle slug (e.g. display name "Research 2", config name "research-agent") incorrectly received 403 on its own write. Falls back to `_resolve_agent_name` (display-name/handle slug lookup) only when no matching `registry_canonical_id` is found.
+- **OSError handling**: `_agent_db_path` errors (e.g. disk full, permission denied) are now caught inside `memory_remember` and return 502 with `{"stored": false, "error": "..."}` instead of 500; `HTTPException` for invalid agent names (400) still propagates.

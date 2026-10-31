@@ -73,13 +73,36 @@ _BLOCKED_TLDS = (
 
 # Networks not covered by ipaddress's `is_private` flag but still
 # reachable on typical home networks / shared infrastructure.
+_CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")  # RFC 6598 CGNAT -- common on consumer ISPs
 _BLOCKED_NETWORKS = (
-    ipaddress.ip_network("100.64.0.0/10"),  # RFC 6598 CGNAT — common on consumer ISPs
+    _CGNAT_NETWORK,
     ipaddress.ip_network("fec0::/10"),      # RFC 3879 deprecated IPv6 site-local — still on legacy gear
 )
 
+_DEFAULT_PORTS = {"http": 80, "https": 443}
 
-def validate_url_or_raise(url: str, *, allow_private: bool = False) -> list[str]:
+
+def url_hostport(parsed) -> tuple[str, int] | None:
+    """``(lowercased hostname, port)`` of a parsed URL, the scheme's port when absent."""
+    if not parsed.hostname:
+        return None
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    if port is None:
+        port = _DEFAULT_PORTS.get(parsed.scheme)
+    if port is None:
+        return None
+    return parsed.hostname.strip().lower(), port
+
+
+def validate_url_or_raise(
+    url: str,
+    *,
+    allow_private: bool = False,
+    allow_hostports: frozenset[tuple[str, int]] = frozenset(),
+) -> list[str]:
     """Validate that `url` is safe to fetch.
 
     Parses the URL, checks scheme + hostname suffix, resolves DNS, and
@@ -98,6 +121,13 @@ def validate_url_or_raise(url: str, *, allow_private: bool = False) -> list[str]
     refusing loopback, link-local, multicast, reserved, and unspecified
     ranges. CGNAT is NOT permitted by ``allow_private`` — see
     `validate_resolved_addr` for the ranges that stay blocked either way.
+
+    ``allow_hostports`` is a set of exact ``(hostname, port)`` pairs the
+    caller already trusts (a peer link's recorded endpoints). A URL whose
+    lowercased hostname and port (the scheme default when absent) is in the
+    set may skip ONLY the ``is_private`` and CGNAT checks; loopback,
+    link-local, multicast, reserved and unspecified still raise. Never build
+    the set from the request or the remote side's own claims.
     """
     parsed = urlparse(url)
 
@@ -107,16 +137,22 @@ def validate_url_or_raise(url: str, *, allow_private: bool = False) -> list[str]
     if not parsed.hostname:
         raise SsrfBlockedError("URL has no hostname")
 
-    return resolve_and_validate(parsed.hostname, allow_private=allow_private)
+    known = url_hostport(parsed) in allow_hostports
+    return resolve_and_validate(
+        parsed.hostname, allow_private=allow_private or known, allow_cgnat=known,
+    )
 
 
-def resolve_and_validate(hostname: str, *, allow_private: bool = False) -> list[str]:
+def resolve_and_validate(
+    hostname: str, *, allow_private: bool = False, allow_cgnat: bool = False,
+) -> list[str]:
     """Resolve `hostname` once and validate every address it answers with.
 
     Returns the checked addresses in resolver order — the first is the one
     a connection should be opened to. Raises `SsrfBlockedError` if the
     hostname carries a blocked suffix, does not resolve, or resolves to any
-    blocked address. See `validate_resolved_addr` for ``allow_private``.
+    blocked address. See `validate_resolved_addr` for ``allow_private`` and
+    ``allow_cgnat``.
     """
     host = hostname.strip().lower()
 
@@ -165,12 +201,16 @@ def resolve_and_validate(hostname: str, *, allow_private: bool = False) -> list[
         raise SsrfBlockedError("hostname resolved to no addresses")
 
     for addr in addrs:
-        validate_resolved_addr(addr, allow_private=allow_private)
+        validate_resolved_addr(
+            addr, allow_private=allow_private, allow_cgnat=allow_cgnat,
+        )
 
     return addrs
 
 
-def validate_resolved_addr(addr: str, *, allow_private: bool = False) -> None:
+def validate_resolved_addr(
+    addr: str, *, allow_private: bool = False, allow_cgnat: bool = False,
+) -> None:
     """Validate that a resolved IP address is safe to connect to.
 
     Rejects loopback, RFC1918, link-local, multicast, broadcast,
@@ -183,6 +223,10 @@ def validate_resolved_addr(addr: str, *, allow_private: bool = False) -> None:
     (RFC 6598 ``100.64.0.0/10``) and deprecated IPv6 site-local
     (``fec0::/10``) — stays blocked regardless of allow_private, because
     our own A2A bus lives in the CGNAT range.
+
+    ``allow_cgnat=True`` lifts the CGNAT block alone. It is set only for an
+    exact ``(host, port)`` the caller already trusts (see
+    `validate_url_or_raise`'s ``allow_hostports``), never on its own.
     """
     try:
         ip = ipaddress.ip_address(addr)
@@ -207,6 +251,8 @@ def validate_resolved_addr(addr: str, *, allow_private: bool = False) -> None:
     # Always blocked, even when allow_private=True: CGNAT (our own A2A bus
     # lives in that range) and deprecated IPv6 site-local.
     for net in _BLOCKED_NETWORKS:
+        if allow_cgnat and net is _CGNAT_NETWORK:
+            continue
         if ip in net:
             raise SsrfBlockedError(
                 f"resolved address {addr!r} is in blocked network {net}"
@@ -227,10 +273,15 @@ class _PinnedResolutionBackend(httpcore.AsyncNetworkBackend):
     """
 
     def __init__(
-        self, inner: httpcore.AsyncNetworkBackend, *, allow_private: bool = False,
+        self,
+        inner: httpcore.AsyncNetworkBackend,
+        *,
+        allow_private: bool = False,
+        allow_hostports: frozenset[tuple[str, int]] = frozenset(),
     ) -> None:
         self._inner = inner
         self._allow_private = allow_private
+        self._allow_hostports = allow_hostports
 
     async def connect_tcp(
         self,
@@ -240,7 +291,12 @@ class _PinnedResolutionBackend(httpcore.AsyncNetworkBackend):
         local_address: str | None = None,
         socket_options: typing.Iterable[typing.Any] | None = None,
     ) -> httpcore.AsyncNetworkStream:
-        addrs = resolve_and_validate(host, allow_private=self._allow_private)
+        known = (host.strip().lower(), port) in self._allow_hostports
+        addrs = resolve_and_validate(
+            host,
+            allow_private=self._allow_private or known,
+            allow_cgnat=known,
+        )
         return await self._inner.connect_tcp(
             addrs[0],
             port,
@@ -272,7 +328,13 @@ class SsrfGuardedAsyncTransport(httpx.AsyncHTTPTransport):
     resolves and validates the hostname as part of opening the connection.
     """
 
-    def __init__(self, *, allow_private: bool = False, **kwargs: typing.Any) -> None:
+    def __init__(
+        self,
+        *,
+        allow_private: bool = False,
+        allow_hostports: frozenset[tuple[str, int]] = frozenset(),
+        **kwargs: typing.Any,
+    ) -> None:
         super().__init__(**kwargs)
         pool = getattr(self, "_pool", None)
         if not hasattr(pool, "_network_backend"):
@@ -284,13 +346,16 @@ class SsrfGuardedAsyncTransport(httpx.AsyncHTTPTransport):
                 "unpinned client."
             )
         pool._network_backend = _PinnedResolutionBackend(
-            pool._network_backend, allow_private=allow_private,
+            pool._network_backend,
+            allow_private=allow_private,
+            allow_hostports=allow_hostports,
         )
 
 
 def guarded_async_client(
     *,
     allow_private: bool = False,
+    allow_hostports: frozenset[tuple[str, int]] = frozenset(),
     verify: typing.Any = True,
     http2: bool = False,
     **kwargs: typing.Any,
@@ -307,10 +372,16 @@ def guarded_async_client(
     transport means `httpx` no longer picks up HTTP_PROXY/HTTPS_PROXY from
     the environment — proxying an untrusted fetch would defeat the pin
     anyway, since the proxy would do the resolving.
+
+    ``allow_hostports`` is checked per connection against the exact
+    ``(host, port)`` being opened; see `validate_url_or_raise`.
     """
     return httpx.AsyncClient(
         transport=SsrfGuardedAsyncTransport(
-            allow_private=allow_private, verify=verify, http2=http2,
+            allow_private=allow_private,
+            allow_hostports=allow_hostports,
+            verify=verify,
+            http2=http2,
         ),
         **kwargs,
     )

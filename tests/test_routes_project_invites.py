@@ -600,6 +600,79 @@ async def test_invite_info_html_escapes_project_name(client, app):
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in resp.text
 
 
+# ---------------------------------------------------------------------------
+# OS-level (project-less) invite TTL tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_os_mint_default_ttl_is_one_hour(client, app):
+    """OS-level invites default to the store default (1 hour) when ttl_secs is omitted."""
+    before = time.time()
+    resp = await client.post(
+        "/api/agents/invites",
+        json={"scopes": [], "approval_mode": "auto", "display_name": "Scout"},
+    )
+    assert resp.status_code == 200, resp.text
+    ttl = resp.json()["expires_ts"] - before
+    assert 3500 < ttl <= 3610
+
+
+@pytest.mark.asyncio
+async def test_os_mint_honours_ttl_secs(client, app):
+    """OS-level invite ttl_secs parameter is respected."""
+    before = time.time()
+    resp = await client.post(
+        "/api/agents/invites",
+        json={"scopes": [], "approval_mode": "auto", "display_name": "Scout", "ttl_secs": 86400},
+    )
+    assert resp.status_code == 200, resp.text
+    ttl = resp.json()["expires_ts"] - before
+    assert 86300 < ttl <= 86410
+
+
+@pytest.mark.asyncio
+async def test_os_mint_rejects_ttl_over_cap(client, app):
+    """OS-level invite ttl_secs must be <= 86400 (24 hours)."""
+    resp = await client.post(
+        "/api/agents/invites",
+        json={"scopes": [], "approval_mode": "auto", "display_name": "Scout", "ttl_secs": 999999},
+    )
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.asyncio
+async def test_os_mint_rejects_ttl_too_low(client, app):
+    """OS-level invite ttl_secs must be >= 60."""
+    resp = await client.post(
+        "/api/agents/invites",
+        json={"scopes": [], "approval_mode": "auto", "display_name": "Scout", "ttl_secs": 30},
+    )
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.asyncio
+async def test_os_mint_ttl_secs_600(client, app):
+    """OS-level invite with ttl_secs=600 expires within [590, 610] seconds."""
+    before = time.time()
+    resp = await client.post(
+        "/api/agents/invites",
+        json={"scopes": [], "approval_mode": "auto", "display_name": "Scout", "ttl_secs": 600},
+    )
+    assert resp.status_code == 200, resp.text
+    ttl = resp.json()["expires_ts"] - before
+    assert 590 <= ttl <= 610
+
+
+@pytest.mark.asyncio
+async def test_os_mint_rejects_ttl_90000(client, app):
+    """OS-level invite ttl_secs=90000 (over 24h) must be rejected."""
+    resp = await client.post(
+        "/api/agents/invites",
+        json={"scopes": [], "approval_mode": "auto", "display_name": "Scout", "ttl_secs": 90000},
+    )
+    assert resp.status_code == 422, resp.text
+
+
 @pytest.mark.asyncio
 async def test_guide_markdown_contains_required_instructions(client, app, monkeypatch, tmp_path):
     await _setup_agent_ecosystem(app, monkeypatch, tmp_path)

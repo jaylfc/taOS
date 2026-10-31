@@ -18,6 +18,7 @@ from tinyagentos.agent_token_auth import (
     check_agent_scope_for_project,
 )
 from tinyagentos.auth_context import CurrentUser, current_user
+from tinyagentos.notification_labels import actor_label, project_label, task_label
 from tinyagentos.projects.element_store import _SLUG_RE
 from tinyagentos.projects.folders import (
     ensure_element_folder,
@@ -97,6 +98,10 @@ class UpdateProjectIn(BaseModel):
     name: str | None = None
     description: str | None = None
     settings: dict | None = None
+
+
+class ProjectSettingIn(BaseModel):
+    value: object
 
 
 def _mirror(request: Request, project: dict) -> None:
@@ -233,6 +238,45 @@ async def update_project(
     await pstore.log_activity(project_id, user.user_id, "project.updated", payload.model_dump(exclude_none=True))
     _mirror(request, p)
     return p
+
+
+@router.get("/api/projects/{project_id}/settings/{key}")
+async def get_project_setting_route(
+    project_id: str,
+    key: str,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    store = request.app.state.project_store
+    p = await store.get_project(project_id)
+    if p is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if not user.is_admin and user.user_id != p["user_id"]:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    value = await store.get_project_setting(project_id, key)
+    return {"key": key, "value": value}
+
+
+@router.put("/api/projects/{project_id}/settings/{key}")
+async def set_project_setting_route(
+    project_id: str,
+    key: str,
+    payload: ProjectSettingIn,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    store = request.app.state.project_store
+    p = await store.get_project(project_id)
+    if p is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    require_owner_or_admin(user, p["user_id"])
+    ok = await store.set_project_setting(project_id, key, payload.value)
+    if not ok:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    await store.log_activity(
+        project_id, user.user_id, "project.settings.updated", {"key": key}
+    )
+    return {"key": key, "value": payload.value}
 
 
 @router.post("/api/projects/{project_id}/archive")
@@ -422,6 +466,76 @@ async def set_project_lead(
     return {"ok": True, "lead_member_id": body.member_id}
 
 
+async def _cloud_agent_canonical_id(request: Request, project_id: str, member_id: str) -> "str | None":
+    """Return ``member_id`` when that identity was minted by redeeming a kind
+    'cloud_agent' invite on this project, else None.
+
+    Lookup chain: the member row's member_id is the registry canonical_id; the
+    redeemed invite records the auth request it created
+    (``redeemed_request_id``), and that request's decision carries the minted
+    ``canonical_id``. The handle in ``redeemed_by`` is not used: handles are
+    re-issued once the old identity is gone, the canonical_id never is.
+    """
+    invites = getattr(request.app.state, "project_invites", None)
+    auth_store = getattr(request.app.state, "auth_requests", None)
+    if invites is None or auth_store is None:
+        return None
+    for inv in await invites.list_for_project(project_id):
+        if inv.get("kind") != "cloud_agent" or inv.get("status") != "redeemed":
+            continue
+        req_id = inv.get("redeemed_request_id")
+        if not req_id:
+            continue
+        record = await auth_store.get(req_id)
+        if record and record.get("canonical_id") == member_id:
+            return member_id
+    return None
+
+
+async def _revoke_cloud_agent_identity(
+    request: Request, project_id: str, member_id: str, user: CurrentUser
+) -> None:
+    """Revoke the registry identity of a cloud_agent member being removed (G5).
+
+    A cloud agent's identity exists only for the project it was invited to, so
+    removing it from the project also kills its token: the canonical_id lands
+    on GET /api/agents/registry/revoked and every agent-JWT route refuses it.
+    Members from kind 'agent' invites (and every other member) are untouched.
+    Uses the same store transition + governance audit as
+    DELETE /api/agents/registry/{id}.
+    """
+    canonical_id = await _cloud_agent_canonical_id(request, project_id, member_id)
+    if canonical_id is None:
+        return
+    from tinyagentos.routes.agent_registry import _audit_governance, _get_store
+
+    registry = _get_store(request)
+    record = await registry.get(canonical_id)
+    if record is None or record.get("status") == "revoked":
+        return
+    before_status = record.get("status") or "active"
+    try:
+        await registry.revoke(canonical_id)
+    except ValueError:
+        # Re-read to handle concurrent revoke during cloud_agent member removal
+        record = await registry.get(canonical_id)
+        if record is None or record.get("status") == "revoked":
+            # The revoke already happened, continue to remove_member
+            return
+        # Re-raise if the status hasn't changed
+        raise
+    await _audit_governance(
+        request,
+        action="revoke",
+        canonical_id=canonical_id,
+        actor_user_id=user.user_id,
+        before_status=before_status,
+        after_status="revoked",
+        reason="cloud_agent member removed",
+        project_id=project_id,
+    )
+
+
 @router.delete("/api/projects/{project_id}/members/{member_id}")
 async def remove_member(
     project_id: str,
@@ -434,6 +548,10 @@ async def remove_member(
     if isinstance(project_or_err, JSONResponse):
         return project_or_err
     project = project_or_err
+    # Revoke BEFORE removing the row: if the revoke fails the member is still
+    # listed and the owner can retry, instead of a gone member whose token
+    # stays live.
+    await _revoke_cloud_agent_identity(request, project_id, member_id, user)
     await pstore.remove_member(project_id, member_id)
     await pstore.log_activity(project_id, user.user_id, "member.removed", {"member_id": member_id})
     members = await pstore.list_members(project_id)
@@ -730,6 +848,17 @@ async def _authorize_project_lead(
     if project.get("lead_member_id") != caller:
         return JSONResponse({"error": "not found"}, status_code=404)
     return (caller, True, project)
+
+
+async def _task_event_message(
+    request: Request, task: dict, task_id: str, verb: str, actor_id: "str | None"
+) -> str:
+    """Notification text for a task lifecycle event, by name rather than id:
+    '"Fix login" closed by Jay on taOS' (tsk-i7ghpa)."""
+    state = request.app.state
+    actor = await actor_label(state, actor_id)
+    project = await project_label(state, task.get("project_id"))
+    return f"{task_label(task, task_id)} {verb} by {actor} on {project}"
 
 
 def _resolve_actor(
@@ -1140,7 +1269,11 @@ async def claim_task(
     await pstore.log_activity(project_id, claimer_id, "task.claimed", {"task_id": task_id})
     notifs = getattr(request.app.state, "notifications", None)
     if notifs is not None:
-        await notifs.emit_event("task.claimed", "Task claimed", f"{task_id} claimed by {claimer_id}")
+        await notifs.emit_event(
+            "task.claimed",
+            "Task claimed",
+            await _task_event_message(request, existing, task_id, "claimed", claimer_id),
+        )
     return await store.get_task(task_id)
 
 
@@ -1272,7 +1405,11 @@ async def close_task(
     await pstore.log_activity(project_id, closed_by, "task.closed", {"task_id": task_id})
     notifs = getattr(request.app.state, "notifications", None)
     if notifs is not None:
-        await notifs.emit_event("task.closed", "Task closed", f"{task_id} closed by {closed_by}")
+        await notifs.emit_event(
+            "task.closed",
+            "Task closed",
+            await _task_event_message(request, existing, task_id, "closed", closed_by),
+        )
     task = await store.get_task(task_id)
     qmd = getattr(request.app.state, "qmd_client", None)
     if qmd is not None and task is not None:
@@ -1314,7 +1451,11 @@ async def reopen_task(
     await pstore.log_activity(project_id, actor, "task.reopened", {"task_id": task_id})
     notifs = getattr(request.app.state, "notifications", None)
     if notifs is not None:
-        await notifs.emit_event("task.reopened", "Task reopened", f"{task_id} reopened by {actor}")
+        await notifs.emit_event(
+            "task.reopened",
+            "Task reopened",
+            await _task_event_message(request, existing, task_id, "reopened", actor),
+        )
     return await store.get_task(task_id)
 
 
@@ -1349,7 +1490,9 @@ async def unquarantine_task(
     notifs = getattr(request.app.state, "notifications", None)
     if notifs is not None:
         await notifs.emit_event(
-            "task.unquarantined", "Task unquarantined", f"{task_id} unquarantined by {actor_id}"
+            "task.unquarantined",
+            "Task unquarantined",
+            await _task_event_message(request, existing, task_id, "unquarantined", actor_id),
         )
     return await store.get_task(task_id)
 

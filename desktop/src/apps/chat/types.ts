@@ -8,7 +8,7 @@ export interface Channel {
   topic?: string;
   members?: string[];
   created_at?: string;
-  last_message_at?: string;
+  last_message_at?: string | number | null;
   lastPreview?: string;
   project_id?: string;
   settings?: {

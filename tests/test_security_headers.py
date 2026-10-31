@@ -59,6 +59,54 @@ class TestSecurityHeaders:
         assert resp.headers.get("x-content-type-options", "").lower() == "nosniff"
 
 
+def _connect_src(csp: str) -> list[str]:
+    for directive in csp.split(";"):
+        parts = directive.split()
+        if parts and parts[0] == "connect-src":
+            return parts[1:]
+    raise AssertionError(f"no connect-src in {csp!r}")
+
+
+class TestMobileShellConnectSrc:
+    """The handset's taOS desktop launches apps through taos-shelld on
+    http://127.0.0.1:6973 (desktop/src/lib/mobile-shell.ts). Without that
+    origin in connect-src Chromium blocks the fetch before it leaves the page
+    and every dock tap falls back to an in-page window. Only a mobile device
+    gets the origin; the device class comes from the same decision the
+    config route reports."""
+
+    @staticmethod
+    def _decide(app, device_class):
+        from tinyagentos.taos_agent_runtime import FrameworkDecision
+        app.state.taos_agent_framework_decision = FrameworkDecision(
+            "opencode", "opencode", "test", device_class)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", ["/api/health", "/auth/login"])
+    async def test_mobile_allows_exact_shelld_origin(self, app, client, path):
+        base = _connect_src((await client.get(path)).headers["content-security-policy"])
+        self._decide(app, "mobile")
+        resp = await client.get(path)
+        tokens = _connect_src(resp.headers["content-security-policy"])
+        assert "http://127.0.0.1:6973" in tokens
+        # Exactly one origin added: no wildcard port, no https twin, no host.
+        assert sorted(tokens) == sorted(base + ["http://127.0.0.1:6973"])
+
+    @pytest.mark.asyncio
+    async def test_desktop_does_not_allow_shelld_origin(self, app, client):
+        self._decide(app, "desktop")
+        resp = await client.get("/api/health")
+        csp = resp.headers["content-security-policy"]
+        assert "6973" not in csp
+        assert "127.0.0.1" not in _connect_src(csp)
+
+    @pytest.mark.asyncio
+    async def test_no_decision_does_not_allow_shelld_origin(self, app, client):
+        app.state.taos_agent_framework_decision = None
+        resp = await client.get("/api/health")
+        assert "6973" not in resp.headers["content-security-policy"]
+
+
 class TestProxyFrameSrc:
     def test_safe_host_allowed(self):
         from tinyagentos.middleware.security_headers import _SAFE_HOST_RE

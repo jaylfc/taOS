@@ -17,6 +17,7 @@ import {
   Play,
   Sparkles,
   Globe,
+  ChevronLeft,
 } from "lucide-react";
 import {
   Button,
@@ -49,6 +50,7 @@ import { AllThreadsList } from "../chat/AllThreadsList";
 import { ChannelSwitcher } from "../chat/ChannelSwitcher";
 import { useChatNotifications } from "../chat/useChatNotifications";
 import { MessageInput } from "../chat/MessageInput";
+import { describeChannelParty } from "../chat/channel-party";
 import { MessageList, type MessageListHandle } from "../chat/MessageList";
 import {
   pinMessage, unpinMessage, listPins,
@@ -109,7 +111,7 @@ interface Channel {
   topic?: string;
   members?: string[];
   created_at?: string;
-  last_message_at?: string;
+  last_message_at?: string | number | null;
   lastPreview?: string;
   last_preview?: string;
   last_preview_author?: string;
@@ -259,18 +261,8 @@ type WsStatus = "connecting" | "connected" | "disconnected";
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
 
-/**
-* Coerce a server timestamp (number = seconds since epoch, string = ISO
-* or numeric) to milliseconds suitable for `new Date(...)`. The 1e12
-* threshold safely distinguishes seconds (~1.7e9 today) from ms (~1.7e12).
-*/
-export function toMs(ts: number | string): number {
-  if (typeof ts === "number") return ts < 1e12 ? ts * 1000 : ts;
-  if (ts === "" || ts == null) return Date.now();
-  const n = Number(ts);
-  if (!Number.isNaN(n)) return n < 1e12 ? n * 1000 : n;
-  return new Date(ts).getTime();
-}
+import { toMs } from "../chat/time";
+export { toMs } from "../chat/time";
 
 export function relativeTime(ts: number | string, nowMs: number = Date.now()): string {
   const ms = toMs(ts);
@@ -906,6 +898,7 @@ export function MessagesApp({
   const [projectChannelExpanded, setProjectChannelExpanded] = useState<Record<string, boolean>>({});
   const [liveAgents, setLiveAgents] = useState<LiveAgent[]>([]);
   const [archivedAgents, setArchivedAgents] = useState<ArchivedAgentEntry[]>([]);
+  const [agentRosterReady, setAgentRosterReady] = useState(false);
   const [selectedChannel, setSelectedChannel] = useState<string | null>(null);
   // External taOSmd coordination bus (read-only). Selecting a bus channel is a
   // separate mode from the internal project channels: when busSelected is set,
@@ -1000,7 +993,9 @@ export function MessagesApp({
   const reconnectDelayRef = useRef(1000);
   const reconnectAttemptsRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const agentListTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevChannelRef = useRef<string | null>(null);
+  const lastFetchRef = useRef<number>(0);
 
   /* ---- fetch channels + unread ---- */
   const fetchChannels = useCallback(async () => {
@@ -1053,28 +1048,38 @@ export function MessagesApp({
 
   /* ---- fetch agent lists for author resolution ---- */
   const fetchAgentLists = useCallback(async () => {
-    try {
-      const [liveRes, archRes] = await Promise.all([
-        fetch("/api/agents"),
-        fetch("/api/agents/archived"),
-      ]);
-      if (liveRes.ok) {
-        const ct = liveRes.headers.get("content-type") ?? "";
-        if (ct.includes("application/json")) {
-          const data = await liveRes.json();
-          if (Array.isArray(data)) setLiveAgents(data as LiveAgent[]);
+    const loadLive = async (): Promise<LiveAgent[] | null> => {
+      try {
+        const res = await fetch("/api/agents?include_guests=1");
+        if (!res.ok) return null;
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setLiveAgents(data);
+          return data;
         }
+        return null;
+      } catch {
+        return null;
       }
-      if (archRes.ok) {
-        const ct = archRes.headers.get("content-type") ?? "";
-        if (ct.includes("application/json")) {
-          const data = await archRes.json();
-          if (Array.isArray(data)) setArchivedAgents(data as ArchivedAgentEntry[]);
+    };
+
+    const loadArchived = async (): Promise<ArchivedAgentEntry[] | null> => {
+      try {
+        const res = await fetch("/api/agents/archived");
+        if (!res.ok) return null;
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setArchivedAgents(data);
+          return data;
         }
+        return null;
+      } catch {
+        return null;
       }
-    } catch {
-      /* offline */
-    }
+    };
+
+    const [live, arch] = await Promise.all([loadLive(), loadArchived()]);
+    if (live !== null && arch !== null) setAgentRosterReady(true);
   }, []);
 
   /* ---- fetch messages for a channel ---- */
@@ -1305,6 +1310,26 @@ export function MessagesApp({
               ),
             );
             break;
+
+          case "receipt":
+            if (data.message_id) {
+              setReceipts((prev) => {
+                const existing = prev[data.message_id] ?? [];
+                const idx = existing.findIndex((r) => r.agent_id === data.agent_id);
+                const updated: Receipt = {
+                  message_id: data.message_id,
+                  agent_id: data.agent_id,
+                  reader_type: data.reader_type,
+                  delivered_at: data.delivered_at ?? existing[idx]?.delivered_at ?? null,
+                  seen_at: data.seen_at ?? existing[idx]?.seen_at ?? null,
+                };
+                const next = [...existing];
+                if (idx >= 0) next[idx] = updated;
+                else next.push(updated);
+                return { ...prev, [data.message_id]: next };
+              });
+            }
+            break;
         }
       } catch {
         /* bad json */
@@ -1332,42 +1357,6 @@ export function MessagesApp({
     };
 
     wsRef.current = ws;
-  }, []);
-
-  /* ---- A2A bus stream: live receipt updates ---- */
-  useEffect(() => {
-    if (typeof EventSource === "undefined") {
-      console.debug("[MessagesApp] EventSource unavailable, skipping A2A bus stream");
-      return;
-    }
-    const es = new EventSource("/api/a2a/bus/stream");
-    es.onmessage = (ev) => {
-      try {
-        const data = JSON.parse(ev.data);
-        if (data.type === "receipt" && data.message_id) {
-          setReceipts((prev) => {
-            const existing = prev[data.message_id] ?? [];
-            const idx = existing.findIndex((r) => r.agent_id === data.agent_id);
-            const updated: Receipt = {
-              message_id: data.message_id,
-              agent_id: data.agent_id,
-              delivered_at: data.delivered_at ?? existing[idx]?.delivered_at ?? null,
-              seen_at: data.seen_at ?? existing[idx]?.seen_at ?? null,
-            };
-            const next = [...existing];
-            if (idx >= 0) next[idx] = updated;
-            else next.push(updated);
-            return { ...prev, [data.message_id]: next };
-          });
-        }
-      } catch {
-        /* ignore malformed stream event */
-      }
-    };
-    es.onerror = () => {
-      /* let the browser reconnect; do not force-close */
-    };
-    return () => es.close();
   }, []);
 
   /* ---- emoji popover: escape and outside click ---- */
@@ -1410,6 +1399,44 @@ export function MessagesApp({
   }, [fetchChannels, fetchArchivedChannels, fetchAgentLists, connectWs]);
 
   useRefreshOnFocus(fetchChannels);
+
+  /* ---- refresh agent lists on focus/visibility (guest agents granted while open) ---- */
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const THROTTLE_MS = 10000;
+
+    const clearTimer = () => {
+      if (agentListTimerRef.current) {
+        clearTimeout(agentListTimerRef.current);
+        agentListTimerRef.current = null;
+      }
+    };
+
+    const scheduleFetch = () => {
+      const now = Date.now();
+      if (now - lastFetchRef.current < THROTTLE_MS) return;
+      lastFetchRef.current = now;
+      clearTimer();
+      agentListTimerRef.current = setTimeout(() => {
+        agentListTimerRef.current = null;
+        fetchAgentLists();
+      }, 0);
+    };
+
+    const onFocus = () => scheduleFetch();
+    const onVisibilityChange = () => {
+      if (!document.hidden) scheduleFetch();
+    };
+
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      clearTimer();
+    };
+  }, [fetchAgentLists]);
 
   /* ---- keep unreadRef in sync with the unread state without re-running
   * the channel-selection effect (which would re-capture the pending count). ---- */
@@ -2235,6 +2262,7 @@ export function MessagesApp({
       nowMs={nowMs}
       liveAgents={liveAgents}
       archivedAgents={archivedAgents}
+      agentRosterReady={agentRosterReady}
       archivedChannels={archivedChannels}
       archivedExpanded={archivedExpanded}
       onToggleArchived={() => setArchivedExpanded((v) => !v)}
@@ -2261,10 +2289,56 @@ export function MessagesApp({
   /*  Message area                                                     */
   /* ---------------------------------------------------------------- */
 
+  const mobileParty = describeChannelParty(currentChannel, liveAgents, "kind");
+
   const messageAreaUI = busSelected ? (
     <A2aBusMessageView channel={busSelected} />
   ) : (
-    <div className="relative flex-1 flex flex-col min-w-0 h-full">
+    <div
+      className="relative flex-1 flex flex-col min-w-0 h-full"
+      style={
+        isMobile
+          ? {
+              // Subtle deep-slate wash with a hint of teal at the top. Built on
+              // the theme base token so text contrast is unchanged.
+              backgroundColor: "var(--color-shell-bg)",
+              backgroundImage:
+                "radial-gradient(120% 55% at 50% 0%, rgba(45, 212, 191, 0.09), transparent 70%)",
+            }
+          : undefined
+      }
+    >
+      {isMobile && selectedChannel && (
+        <header
+          className="shrink-0 flex items-center gap-3 px-[10px] pb-2"
+          style={{ paddingTop: "max(env(safe-area-inset-top), 8px)" }}
+        >
+          <button
+            type="button"
+            onClick={() => { setSelectedChannel(null); setBusSelected(null); }}
+            aria-label="Back to chats"
+            className="h-10 w-10 shrink-0 rounded-xl flex items-center justify-center border border-shell-border bg-shell-surface backdrop-blur-xl text-shell-text active:opacity-60"
+          >
+            <ChevronLeft size={22} strokeWidth={2.25} aria-hidden="true" />
+          </button>
+          <div className="min-w-0 flex-1">
+            <h1 className="text-[16px] font-semibold leading-tight truncate text-shell-text">
+              {mobileParty.title || currentChannel?.name || ""}
+            </h1>
+            {mobileParty.kind === "group" ? (
+              mobileParty.subtitle && (
+                <div className="text-[12px] leading-tight truncate text-shell-text-tertiary">
+                  {mobileParty.subtitle}
+                </div>
+              )
+            ) : (
+              mobileParty.kind === "agent" && (
+                <div className="text-[12px] leading-tight truncate text-shell-text-tertiary">Agent</div>
+              )
+            )}
+          </div>
+        </header>
+      )}
       {selectedChannel && !atBottom && (
         <button
           type="button"
@@ -2371,6 +2445,7 @@ export function MessagesApp({
             typingHumans={typingHumans}
             typingAgents={typingAgents}
             receipts={receipts}
+            hideHeader={isMobile}
           />
 
           {/* #1741: stall banner — surfaces only when a response is abnormally
@@ -2503,6 +2578,18 @@ className="shrink-0 p-0.5 rounded hover:bg-shell-surface-active transition-color
               uploadFileAttachment(id, entry.file);
             }}
             onFileUpload={handleFileUpload}
+            liveAgents={liveAgents}
+            onOpenSettings={handleOpenSettings}
+            onToggleAllThreads={() => {
+              if (showAllThreads) { setShowAllThreads(false); }
+              else { closeThread(); setShowSettings(false); setShowSearch(false); setShowAllThreads(true); }
+            }}
+            onToggleSearch={() => {
+              if (showSearch) { setShowSearch(false); }
+              else { closeThread(); setShowSettings(false); setShowAllThreads(false); setShowSearch(true); }
+            }}
+            pinnedCount={pinnedMessages.length}
+            onTogglePinned={() => setPinnedPopoverOpen((o) => !o)}
             onSlashPick={(slug, cmd) => setInput(`@${slug} /${cmd} `)}
             onSlashClose={() => {}}
             onPaste={(e) => {
@@ -2549,6 +2636,7 @@ className="shrink-0 p-0.5 rounded hover:bg-shell-surface-active transition-color
           // name and the dead space it took up. Desktop keeps it.
           detailTitle={isMobile ? undefined : (busSelected ?? currentChannel?.name)}
           listWidth={240}
+          hideDetailNav={isMobile && selectedChannel !== null && busSelected === null}
           list={channelListUI}
           detail={messageAreaUI}
         />

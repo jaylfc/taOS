@@ -20,6 +20,7 @@ def _req(**overrides) -> DeployRequest:
         data_dir=Path("/tmp/taos-test-data"),
     )
     defaults.update(overrides)
+    defaults["extra_config"] = {"agent_controller_port": 6972, **(defaults.get("extra_config") or {})}
     return DeployRequest(**defaults)
 
 

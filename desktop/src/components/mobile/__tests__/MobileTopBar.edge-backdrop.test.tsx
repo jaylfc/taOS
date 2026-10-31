@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { MobileTopBar } from "../MobileTopBar";
+import { MobileTopBar, MOBILE_TOP_BAR_HEIGHT } from "../MobileTopBar";
 
 // Mock the stores and hooks with implementations (except useIsPwa)
 vi.mock("@/stores/notification-store", () => ({
@@ -29,6 +29,12 @@ vi.mock("../StatusIndicators", () => ({
   },
 }));
 
+// Mock isIOS at the top level with a mutable implementation
+let mockIsIOS = false;
+vi.mock("@/lib/platform", () => ({
+  isIOS: () => mockIsIOS,
+}));
+
 // Mock matchMedia and navigator.standalone
 let matchMediaListeners: Map<string, Set<(e: { matches: boolean }) => void>>;
 
@@ -52,10 +58,16 @@ function createMql(matches: boolean) {
 }
 
 beforeEach(() => {
+  // Clean up any portal backdrop from a previous test that crashed before unmount
+  const leftover = document.body.querySelector('[data-testid="ios-edge-backdrop"]');
+  if (leftover && leftover.parentElement === document.body) leftover.remove();
+
   matchMediaListeners = new Map();
   vi.stubGlobal("matchMedia", vi.fn((query: string) => createMql(false)));
   // Reset navigator.standalone
   Object.defineProperty(navigator, "standalone", { value: undefined, configurable: true });
+  // Reset isIOS mock
+  mockIsIOS = false;
 });
 
 afterEach(() => {
@@ -74,22 +86,52 @@ describe("MobileTopBar edge backdrop", () => {
     // Also set matchMedia to return true for (display-mode: standalone)
     vi.stubGlobal("matchMedia", vi.fn((query: string) => createMql(true)));
 
+    // Mock isIOS to return false for this test (non-iOS platform)
+    mockIsIOS = false;
+
     // Render the component
     render(<MobileTopBar onSearch={() => {}} />);
 
-     // Check that the backdrop exists and is a direct child of document.body
-     const backdrop = document.body.querySelector('[data-testid="ios-edge-backdrop"]');
-     expect(backdrop).not.toBeNull();
-     expect(backdrop.parentElement).toBe(document.body);
+    // Check that the backdrop exists and is a direct child of document.body
+    const backdrop = document.body.querySelector('[data-testid="ios-edge-backdrop"]');
+    expect(backdrop).not.toBeNull();
+    expect(backdrop.parentElement).toBe(document.body);
 
-     // Check its style
-     expect(backdrop.style.position).toBe("fixed");
-     // A 1px strip at the top, not a full-height bar: the wallpaper shows through.
-     expect(backdrop.style.top).toBe("0px");
-     expect(backdrop.style.height).toBe("1px");
-     expect(backdrop.style.backgroundColor).toBe("rgb(20, 20, 21)");
-     // Ensure it's not rgba (i.e., opaque)
-     expect(backdrop.style.backgroundColor).not.toContain("rgba");
+    // Check its style
+    expect(backdrop.style.position).toBe("fixed");
+    // A 1px strip at the top, not a full-height bar: the wallpaper shows through.
+    expect(backdrop.style.top).toBe("0px");
+    expect(backdrop.style.height).toBe("1px");
+    expect(backdrop.style.backgroundColor).toBe("rgb(20, 20, 21)");
+    // Ensure it's not rgba (i.e., opaque)
+    expect(backdrop.style.backgroundColor).not.toContain("rgba");
+  });
+
+  it("uses the full top-bar height on iOS so the iOS 27 edge blur is covered", () => {
+    // Set up navigator.standalone = true for iOS PWA
+    Object.defineProperty(navigator, "standalone", {
+      value: true,
+      configurable: true,
+    });
+    // Also set matchMedia to return true for (display-mode: standalone)
+    vi.stubGlobal("matchMedia", vi.fn((query: string) => createMql(true)));
+
+    // Mock isIOS to return true for this test
+    mockIsIOS = true;
+
+    // Render the component
+    render(<MobileTopBar onSearch={() => {}} />);
+
+    // Check that the backdrop exists
+    const backdrop = document.body.querySelector('[data-testid="ios-edge-backdrop"]');
+    expect(backdrop).not.toBeNull();
+
+    // On iOS the backdrop should cover the full top bar height
+    // The browser normalizes calc() expressions (reorders terms, expands env()),
+    // so check that the computed height contains the key parts from the constant.
+    const height = backdrop.style.height;
+    expect(height).toContain("44px");
+    expect(height).toContain("safe-area-inset-top");
   });
 
   it("does not render the backdrop when not in standalone mode", () => {

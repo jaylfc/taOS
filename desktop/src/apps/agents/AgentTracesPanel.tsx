@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import {
   Activity, AlertCircle, Brain, Bug, ChevronDown, ChevronRight,
-  Cpu, Loader2, MessageSquare, Shield, Wrench, Zap,
+  Cpu, GitPullRequest, Loader2, MessageSquare, Shield, Undo2, Wrench, Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui";
 
@@ -57,6 +57,8 @@ const KIND_ICON: Record<string, React.ComponentType<{ size?: number; className?:
   error: AlertCircle,
   lifecycle: Zap,
   reasoning_audit: Shield,
+  external_write: GitPullRequest,
+  local_fix: Undo2,
 };
 
 const KIND_COLOR: Record<string, string> = {
@@ -69,11 +71,32 @@ const KIND_COLOR: Record<string, string> = {
   error: "text-red-400",
   lifecycle: "text-shell-text-tertiary",
   reasoning_audit: "text-shell-text-secondary",
+  external_write: "text-purple-400",
+  local_fix: "text-orange-400",
 };
+
+// Kind filter for the trace list. The taOS agent's audit rows (spec
+// section 4) get their own entries so its actions can be read on their own.
+const KIND_FILTERS: { value: string; label: string }[] = [
+  { value: "", label: "All events" },
+  { value: "external_write", label: "External writes" },
+  { value: "local_fix", label: "Local fixes" },
+  { value: "llm_call", label: "LLM calls" },
+  { value: "tool_call", label: "Tool calls" },
+  { value: "error", label: "Errors" },
+];
 
 function kindLabel(evt: TraceEvent): string {
   if (evt.kind === "llm_call" && evt.model) {
     return evt.model.split("/").pop() ?? evt.model;
+  }
+  if (evt.kind === "external_write") {
+    const p = evt.payload as { action?: string; state?: string };
+    return p.state ? `${p.action ?? "external write"} (${p.state})` : (p.action ?? "external write");
+  }
+  if (evt.kind === "local_fix") {
+    const p = evt.payload as { tool?: string; target?: string };
+    return `local fix: ${p.tool ?? ""}${p.target ? ` on ${p.target}` : ""}`;
   }
   if (evt.kind === "tool_call" || evt.kind === "tool_result") {
     const tool = (evt.payload as { tool?: string }).tool;
@@ -128,11 +151,13 @@ export function AgentTracesPanel({ agentName }: { agentName: string }) {
   const [spansLoading, setSpansLoading] = useState(false);
   const [debug, setDebug] = useState(false);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [kindFilter, setKindFilter] = useState("");
 
   const loadEvents = useCallback(async () => {
     try {
+      const kindParam = kindFilter ? `&kind=${encodeURIComponent(kindFilter)}` : "";
       const res = await fetch(
-        `/api/agents/${encodeURIComponent(agentName)}/trace?limit=100`,
+        `/api/agents/${encodeURIComponent(agentName)}/trace?limit=100${kindParam}`,
       );
       if (res.ok) {
         const data = await res.json();
@@ -143,7 +168,7 @@ export function AgentTracesPanel({ agentName }: { agentName: string }) {
       // ignore — keep stale state visible
     }
     setLoading(false);
-  }, [agentName]);
+  }, [agentName, kindFilter]);
 
   useEffect(() => {
     loadEvents();
@@ -228,10 +253,20 @@ export function AgentTracesPanel({ agentName }: { agentName: string }) {
             reasoning {auditVerdict}
           </span>
         )}
+        <select
+          value={kindFilter}
+          onChange={(e) => setKindFilter(e.target.value)}
+          aria-label="Filter traces by kind"
+          className="ml-auto bg-shell-bg border border-white/10 rounded px-1 py-0.5 text-[11px] text-shell-text-secondary"
+        >
+          {KIND_FILTERS.map((f) => (
+            <option key={f.value} value={f.value}>{f.label}</option>
+          ))}
+        </select>
         <Button
           variant="ghost"
           size="icon"
-          className={`ml-auto h-5 w-5 ${debug ? "text-yellow-400" : "text-shell-text-tertiary"}`}
+          className={`h-5 w-5 ${debug ? "text-yellow-400" : "text-shell-text-tertiary"}`}
           onClick={() => setDebug((d) => !d)}
           title="Toggle debug mode"
           aria-label="Toggle debug mode"
