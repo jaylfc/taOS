@@ -285,20 +285,21 @@ async def test_a_far_seq_does_not_make_gap_reporting_unbounded(stores):
 
 
 @pytest.mark.asyncio
-async def test_non_list_attachments_are_rejected(stores):
+@pytest.mark.parametrize("attachments", [5, ["not an object"]])
+async def test_malformed_attachments_are_rejected(stores, attachments):
     _origin, receiver = stores
     alice = Author()
     await _pin(receiver, alice)
-    bad = alice.post("bad", attachments=5)
+    bad = alice.post("bad", attachments=attachments)
 
     report = await ingest.ingest_chain_range(receiver, alice.fp, {"entries": [_entry(bad)]})
 
-    assert report.rejected == [(1, "attachments must be a list")]
+    assert report.rejected == [(1, "attachments must be a list of objects")]
     assert await _object_count(receiver) == 0
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("payload", [["not", "an", "object"], {"entries": 5}, {"tombstones": "x"}])
+@pytest.mark.parametrize("payload", [[], ["not", "an", "object"], {"entries": 42}, {"tombstones": "x"}])
 async def test_a_malformed_payload_is_rejected_not_raised(stores, payload):
     _origin, receiver = stores
     alice = Author()
@@ -365,3 +366,70 @@ async def test_a_body_less_entry_over_a_different_held_row_is_a_fork(stores):
     report = await ingest.ingest_chain_range(receiver, alice.fp, {"entries": [entry]})
 
     assert report.forks == [1] and report.index_only == []
+
+
+@pytest.mark.asyncio
+async def test_a_prev_that_misses_the_held_previous_entry_is_rejected(stores):
+    origin, receiver = stores
+    alice = Author()
+    await _publish(origin, alice.post("one"))
+    await _pin(receiver, alice)
+    await ingest.ingest_chain_range(receiver, alice.fp, await _payload(origin, alice.fp))
+
+    alice.head = "0" * 64
+    bad = alice.post("two, linked to the wrong previous entry")
+    report = await ingest.ingest_chain_range(receiver, alice.fp, {"entries": [_entry(bad)]})
+
+    assert report.rejected == [(2, "prev does not link to the held previous entry")]
+    assert await receiver.get_object(hub_store.object_hash(bad)) is None
+
+
+@pytest.mark.asyncio
+async def test_a_gap_fill_that_misses_the_held_next_entry_is_rejected(stores):
+    origin, receiver = stores
+    alice = Author()
+    await _publish(origin, alice.post("one"), alice.post("two"))
+    await _pin(receiver, alice)
+    await ingest.ingest_chain_range(receiver, alice.fp, await _payload(origin, alice.fp, after_seq=1))
+
+    alice.seq, alice.head = 0, None
+    bad = alice.post("a different one")
+    report = await ingest.ingest_chain_range(receiver, alice.fp, {"entries": [_entry(bad)]})
+
+    assert report.rejected == [(1, "held next entry does not link to this entry")]
+    assert await receiver.get_object(hub_store.object_hash(bad)) is None
+
+
+@pytest.mark.asyncio
+async def test_a_tombstone_drops_an_unshared_blob(stores):
+    origin, receiver = stores
+    alice = Author()
+    data = b"\x89PNG\r\n\x1a\n only theirs"
+    blob = await receiver.put_blob(data, mime="image/png")
+    gone = alice.post("theirs", attachments=[{"blob": blob, "size": len(data), "mime": "image/png"}])
+    await _publish(origin, gone)
+    await _pin(receiver, alice)
+    await ingest.ingest_chain_range(receiver, alice.fp, await _payload(origin, alice.fp))
+
+    await _publish(origin, alice.tombstone(hub_store.object_hash(gone)))
+    await ingest.ingest_chain_range(receiver, alice.fp, await _payload(origin, alice.fp, after_seq=1))
+
+    assert not await receiver.has_blob(blob)
+
+
+@pytest.mark.asyncio
+async def test_two_valid_entries_at_one_seq_keep_the_first_and_report_a_fork(stores):
+    _origin, receiver = stores
+    alice = Author()
+    first = alice.post("first")
+    alice.seq, alice.head = 0, None
+    second = alice.post("second")
+    await _pin(receiver, alice)
+
+    report = await ingest.ingest_chain_range(
+        receiver, alice.fp, {"entries": [_entry(first), _entry(second)]}
+    )
+
+    assert report.stored == [1] and report.forks == [1]
+    assert (await receiver.get_chain_entry(alice.fp, 1))["hash"] == hub_store.object_hash(first)
+    assert await receiver.get_object(hub_store.object_hash(second)) is None

@@ -73,8 +73,10 @@ def _check_object(obj: dict, author: str, signing_pubkey: str) -> str | None:
     if obj["type"] == "tombstone" and not isinstance(obj.get("target"), str):
         return "tombstone has no target"
     attachments = obj.get("attachments")
-    if obj["type"] == "post" and attachments is not None and not isinstance(attachments, list):
-        return "attachments must be a list"
+    if obj["type"] == "post" and attachments is not None and (
+        not isinstance(attachments, list) or not all(isinstance(a, dict) for a in attachments)
+    ):
+        return "attachments must be a list of objects"
     if not hub_store.verify_object(obj, signing_pubkey):
         return "signature does not verify against the pinned key"
     return None
