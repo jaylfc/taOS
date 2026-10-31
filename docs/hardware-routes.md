@@ -26,6 +26,19 @@
 - 422 `invalid_ssid` / `invalid_psk`; 404 `no_wifi_device`
 - 403 `not_permitted` (polkit); 502 `connect_failed`
 
+### POST /api/hardware/wifi/scan
+
+- Body: `{iface?}`; triggers RequestScan on one or all Wi-Fi devices
+- 202 `{"ok": true, "scanning": [<iface>...]}` on success
+- 503 `networkmanager_unavailable`; 404 `unknown_iface`; 502 `scan_failed`
+
+### POST /api/hardware/wifi/forget
+
+- Body: `{ssid}`; deletes matching 802-11-wireless system profiles by exact SSID byte match
+- 422 `invalid_ssid` if SSID not 1..32 bytes UTF-8; zero busctl calls
+- Success: `{"ok": true, "removed": <n>}`; 404 `unknown_ssid` if no match
+- 502 `write_failed` (polkit) if Delete fails; never calls GetSecrets
+
 ### GET /api/hardware/bluetooth
 
 - Response: `available`, `adapters[]`, `devices[]`

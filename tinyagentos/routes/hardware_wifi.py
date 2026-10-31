@@ -28,6 +28,14 @@ class WifiDisconnectBody(BaseModel):
     iface: str
 
 
+class WifiScanBody(BaseModel):
+    iface: str | None = None
+
+
+class WifiForgetBody(BaseModel):
+    ssid: str
+
+
 def _get_data(val: object | None) -> object | None:
     if isinstance(val, dict) and "data" in val:
         return val.get("data")
@@ -292,6 +300,10 @@ def _write_failed_response() -> JSONResponse:
     )
 
 
+def _scan_failed_response() -> JSONResponse:
+    return JSONResponse({"error": "scan_failed"}, status_code=502)
+
+
 @router.post("/api/hardware/wifi/enabled", dependencies=[Depends(require_admin)])
 async def set_wifi_enabled(body: WifiEnabledBody):
     rc, _ = await busctl(
@@ -420,6 +432,131 @@ async def wifi_connect(body: WifiConnectBody):
     if result == "dbus_fast_missing":
         return JSONResponse({"error": "dbus_fast_missing"}, status_code=503)
     return JSONResponse({"error": "connect_failed", "dbus_error": result}, status_code=502)
+
+
+@router.post("/api/hardware/wifi/scan", dependencies=[Depends(require_admin)])
+async def wifi_scan(body: WifiScanBody):
+    rc, _ = await busctl(
+        "get-property",
+        "org.freedesktop.NetworkManager",
+        "/org/freedesktop/NetworkManager",
+        "org.freedesktop.NetworkManager",
+        "WirelessEnabled",
+    )
+    if rc != 0:
+        return _nm_unavailable_response()
+
+    devices = await _wifi_devices()
+    target_devices: list[tuple[str, str]] = []
+    if body.iface:
+        for path, iface in devices:
+            if iface == body.iface:
+                target_devices.append((path, iface))
+                break
+        if not target_devices:
+            return JSONResponse({"error": "unknown_iface"}, status_code=404)
+    else:
+        target_devices = devices
+
+    scanning_ifaces: list[str] = []
+    for device_path, iface in target_devices:
+        rc, _ = await busctl(
+            "call",
+            "org.freedesktop.NetworkManager",
+            device_path,
+            "org.freedesktop.NetworkManager.Device.Wireless",
+            "RequestScan",
+            "a{sv}",
+            "0",
+        )
+        if rc != 0:
+            return _scan_failed_response()
+        scanning_ifaces.append(iface)
+
+    return JSONResponse({"ok": True, "scanning": scanning_ifaces}, status_code=202)
+
+
+@router.post("/api/hardware/wifi/forget", dependencies=[Depends(require_admin)])
+async def wifi_forget(body: WifiForgetBody):
+    ssid_bytes = body.ssid.encode("utf-8")
+    if not (1 <= len(ssid_bytes) <= 32):
+        return JSONResponse({"error": "invalid_ssid"}, status_code=422)
+
+    rc, connections_data = await busctl(
+        "call",
+        "org.freedesktop.NetworkManager",
+        "/org/freedesktop/NetworkManager/Settings",
+        "org.freedesktop.NetworkManager.Settings",
+        "ListConnections",
+    )
+    if rc != 0 or connections_data is None:
+        return _write_failed_response()
+
+    conn_list = _get_data(connections_data)
+    if isinstance(conn_list, list) and len(conn_list) > 0 and isinstance(conn_list[0], list):
+        paths = [p for p in conn_list[0] if isinstance(p, str)]
+    elif isinstance(conn_list, list):
+        paths = [p for p in conn_list if isinstance(p, str)]
+    else:
+        paths = []
+
+    removed = 0
+    for path in paths:
+        if not isinstance(path, str):
+            continue
+        rc_gs, gs_data = await busctl(
+            "call",
+            "org.freedesktop.NetworkManager",
+            path,
+            "org.freedesktop.NetworkManager.Settings.Connection",
+            "GetSettings",
+        )
+        if rc_gs != 0 or gs_data is None:
+            continue
+        settings = _get_data(gs_data)
+        if isinstance(settings, list) and len(settings) > 0 and isinstance(settings[0], dict):
+            settings = settings[0]
+        if not isinstance(settings, dict):
+            continue
+
+        conn_section = settings.get("connection")
+        conn_type = conn_section.get("type") if isinstance(conn_section, dict) else None
+        if isinstance(conn_type, tuple) and conn_type[0] == "s":
+            conn_type = conn_type[1]
+        if conn_type != "802-11-wireless":
+            continue
+
+        wireless_section = settings.get("802-11-wireless")
+        ssid_variant = wireless_section.get("ssid") if isinstance(wireless_section, dict) else None
+        if isinstance(ssid_variant, tuple) and ssid_variant[0] == "ay":
+            ssid_val = ssid_variant[1]
+        else:
+            ssid_val = ssid_variant
+        if not isinstance(ssid_val, (bytes, bytearray, list)):
+            continue
+        if isinstance(ssid_val, list):
+            try:
+                ssid_val = bytes([int(b) for b in ssid_val])
+            except Exception:
+                continue
+        if bytes(ssid_val) != ssid_bytes:
+            continue
+
+        rc_del, _ = await busctl(
+            "call",
+            "org.freedesktop.NetworkManager",
+            path,
+            "org.freedesktop.NetworkManager.Settings.Connection",
+            "Delete",
+        )
+        if rc_del != 0:
+            return _write_failed_response()
+        removed += 1
+
+    if removed == 0:
+        return JSONResponse({"error": "unknown_ssid"}, status_code=404)
+
+    return {"ok": True, "removed": removed}
 
 
 async def _nm_add_and_activate(settings: dict, device_path: str, iface: str | None = None) -> str | None:
