@@ -235,6 +235,18 @@ class TestMemoryRemember:
             "/ingest": {"status": "ok"},
         })
 
+        app = client_with_qmd._transport.app
+        config = app.state.config
+        from tinyagentos.agent_db import find_agent
+        if find_agent(config, "agent-a") is None:
+            config.agents.append({
+                "name": "agent-a",
+                "display_name": "Agent A",
+                "host": "",
+                "qmd_index": "agent-a",
+                "color": "#888",
+            })
+
         resp = await client_with_qmd.post("/api/memory/remember", json={"text": "test memory", "agent": "agent-a"})
         assert resp.status_code == 200
         data = resp.json()
@@ -301,6 +313,19 @@ class TestMemoryRemember:
         await registry.set_status(cid_alice, "active")
         await grants.add_grant(cid_alice, "memory_write", project_id="prj-1")
 
+        # Add config agent for alice's agent (required for the new 404 behavior)
+        config = app.state.config
+        from tinyagentos.agent_db import find_agent
+        if find_agent(config, "alice-agent") is None:
+            config.agents.append({
+                "name": "alice-agent",
+                "display_name": "Alice's Agent",
+                "host": "",
+                "qmd_index": "alice-agent",
+                "color": "#888",
+                "registry_canonical_id": cid_alice,
+            })
+
         # Bob (non-admin) tries to write to Alice's agent -> 403
         bob_token = auth.create_session(user_id=bob_uid, long_lived=True)
         async with AsyncClient(
@@ -309,7 +334,7 @@ class TestMemoryRemember:
             cookies={"taos_session": bob_token},
             event_hooks=csrf_event_hooks(),
         ) as client:
-            resp = await client.post("/api/memory/remember", json={"text": "test memory", "agent": cid_alice})
+            resp = await client.post("/api/memory/remember", json={"text": "test memory", "agent": "alice-agent"})
             assert resp.status_code == 403
             assert resp.json()["detail"] == "forbidden"
 
@@ -321,7 +346,7 @@ class TestMemoryRemember:
             cookies={"taos_session": alice_token},
             event_hooks=csrf_event_hooks(),
         ) as client:
-            resp = await client.post("/api/memory/remember", json={"text": "test memory", "agent": cid_alice})
+            resp = await client.post("/api/memory/remember", json={"text": "test memory", "agent": "alice-agent"})
             assert resp.status_code == 200
             assert resp.json()["stored"] is True
 
@@ -902,7 +927,7 @@ class TestMemoryRemember:
             assert db_path.endswith("/research-agent/index.sqlite"), f"dbPath was {db_path}"
 
     async def test_agent_db_path_oserror_returns_502(self, client_with_qmd, monkeypatch):
-        """_agent_db_path raising OSError -> 502 with stored:false."""
+        """_agent_db_path raising OSError -> 502 with stored:false and generic error message."""
         _stub_http(client_with_qmd, {
             "/ingest": {"status": "ok"},
         })
@@ -939,12 +964,12 @@ class TestMemoryRemember:
 
         token = mint_registry_token(cid, priv, user_id="u", framework="test", project_id="prj-1")
 
-        # Monkeypatch _agent_db_path to raise OSError
+        # Monkeypatch _agent_db_path to raise OSError with absolute path
         from tinyagentos.routes import memory as memory_module
         original_agent_db_path = memory_module._agent_db_path
 
         def failing_agent_db_path(request, agent):
-            raise OSError("disk full")
+            raise OSError("/srv/secret/path")
 
         monkeypatch.setattr(memory_module, "_agent_db_path", failing_agent_db_path)
 
@@ -953,7 +978,166 @@ class TestMemoryRemember:
             assert resp.status_code == 502, f"expected 502, got {resp.status_code}: {resp.text}"
             data = resp.json()
             assert data["stored"] is False
-            assert "disk full" in data["error"]
+            assert data["error"] == "memory store unavailable"
+            assert "/srv/secret" not in resp.text
 
         # Restore
         monkeypatch.setattr(memory_module, "_agent_db_path", original_agent_db_path)
+
+    async def test_admin_session_unknown_agent_returns_404(self, client_with_qmd):
+        """Admin session with body.agent='no-such-agent' -> 404 unknown agent, ingest NOT called."""
+        _stub_http(client_with_qmd, {
+            "/ingest": {"status": "ok"},
+        })
+
+        # Admin session (conftest client fixture) posts agent=nonexistent
+        resp = await client_with_qmd.post("/api/memory/remember", json={"text": "test memory", "agent": "no-such-agent"})
+        assert resp.status_code == 404, f"expected 404, got {resp.status_code}: {resp.text}"
+        assert resp.json()["detail"] == "unknown agent"
+        # Verify ingest was NOT called
+        assert client_with_qmd._transport.app.state.http_client.post.call_args is None, (
+            "ingest was called despite the 404 -- should not write for unknown agent"
+        )
+
+    async def test_qmd_ingest_oserror_returns_502_generic(self, client_with_qmd, monkeypatch):
+        """qmd /ingest raising OSError -> 502 with stored:false and generic error message."""
+        app = client_with_qmd._transport.app
+        await self._init_stores(app)
+
+        registry = app.state.agent_registry
+        grants = app.state.agent_grants
+        priv, _pub = app.state.agent_registry_keypair
+
+        rec = await registry.register(
+            framework="test",
+            display_name="Test Agent",
+            origin="external-selfjoin",
+            handle="@test-agent-ingest-error",
+        )
+        cid = rec["canonical_id"]
+        await registry.set_status(cid, "active")
+        await grants.add_grant(cid, "memory_write", project_id="prj-1")
+
+        # Add config agent
+        config = app.state.config
+        from tinyagentos.agent_db import find_agent
+        if find_agent(config, "test-agent-ingest-error") is None:
+            config.agents.append({
+                "name": "test-agent-ingest-error",
+                "display_name": "Test Agent",
+                "host": "",
+                "qmd_index": "test-agent-ingest-error",
+                "color": "#888",
+                "registry_canonical_id": cid,
+            })
+
+        token = mint_registry_token(cid, priv, user_id="u", framework="test", project_id="prj-1")
+
+        # Monkeypatch http_client.post to raise OSError with absolute path
+        from tinyagentos.routes import memory as memory_module
+        original_post = app.state.http_client.post
+
+        async def failing_post(*args, **kwargs):
+            raise OSError("/srv/secret/qmd/path")
+
+        monkeypatch.setattr(app.state.http_client, "post", failing_post)
+
+        async with _make_client_with_token(app, token) as client:
+            resp = await client.post("/api/memory/remember", json={"text": "test memory"})
+            assert resp.status_code == 502, f"expected 502, got {resp.status_code}: {resp.text}"
+            data = resp.json()
+            assert data["stored"] is False
+            assert data["error"] == "memory store unavailable"
+            assert "/srv/secret" not in resp.text
+
+        # Restore
+        monkeypatch.setattr(app.state.http_client, "post", original_post)
+
+    async def test_two_writes_same_microsecond_different_paths(self, client_with_qmd, monkeypatch):
+        """Two writes with frozen datetime -> two different payload paths (uuid4 suffix)."""
+        _stub_http(client_with_qmd, {
+            "/ingest": {"status": "ok"},
+        })
+
+        app = client_with_qmd._transport.app
+        await self._init_stores(app)
+
+        registry = app.state.agent_registry
+        grants = app.state.agent_grants
+        priv, _pub = app.state.agent_registry_keypair
+
+        rec = await registry.register(
+            framework="test",
+            display_name="Test Agent",
+            origin="external-selfjoin",
+            handle="@test-agent-uuid",
+        )
+        cid = rec["canonical_id"]
+        await registry.set_status(cid, "active")
+        await grants.add_grant(cid, "memory_write", project_id="prj-1")
+
+        # Add config agent
+        config = app.state.config
+        from tinyagentos.agent_db import find_agent
+        if find_agent(config, "test-agent-uuid") is None:
+            config.agents.append({
+                "name": "test-agent-uuid",
+                "display_name": "Test Agent",
+                "host": "",
+                "qmd_index": "test-agent-uuid",
+                "color": "#888",
+                "registry_canonical_id": cid,
+            })
+
+        token = mint_registry_token(cid, priv, user_id="u", framework="test", project_id="prj-1")
+
+        # Freeze datetime to the same timestamp for both calls
+        from datetime import datetime, UTC
+        frozen_time = datetime(2026, 10, 31, 12, 0, 0, tzinfo=UTC)
+        
+        from tinyagentos.routes import memory as memory_module
+        original_datetime = memory_module.datetime
+
+        class FrozenDatetime:
+            @classmethod
+            def now(cls, tz=None):
+                return frozen_time
+            
+            # Delegate other attributes to the real datetime
+            def __getattr__(self, name):
+                return getattr(original_datetime, name)
+
+        monkeypatch.setattr(memory_module, "datetime", FrozenDatetime)
+
+        paths = []
+        async with _make_client_with_token(app, token) as client:
+            # First write
+            resp1 = await client.post("/api/memory/remember", json={"text": "first memory"})
+            assert resp1.status_code == 200
+            call_kwargs1 = app.state.http_client.post.call_args.kwargs
+            path1 = call_kwargs1["json"]["path"]
+            paths.append(path1)
+            
+            # Second write
+            resp2 = await client.post("/api/memory/remember", json={"text": "second memory"})
+            assert resp2.status_code == 200
+            call_kwargs2 = app.state.http_client.post.call_args.kwargs
+            path2 = call_kwargs2["json"]["path"]
+            paths.append(path2)
+
+        # Restore
+        monkeypatch.setattr(memory_module, "datetime", original_datetime)
+
+        # Both paths should be different (uuid4 suffix)
+        assert paths[0] != paths[1], f"Paths should differ but both are {paths[0]}"
+        # Both should start with remember/ and end with .md
+        for p in paths:
+            assert p.startswith("remember/"), f"Path should start with 'remember/': {p}"
+            assert p.endswith(".md"), f"Path should end with '.md': {p}"
+        # Should contain timestamp and uuid suffix
+        assert "-2026-10-31T12:00:00" in paths[0] or "2026-10-31T12:00:00" in paths[0]
+        # The key assertion: two different UUID suffixes
+        import re
+        uuid_pattern = r"remember/.*-[a-f0-9]{8}\.md$"
+        assert re.match(uuid_pattern, paths[0]), f"First path should have uuid suffix: {paths[0]}"
+        assert re.match(uuid_pattern, paths[1]), f"Second path should have uuid suffix: {paths[1]}"
