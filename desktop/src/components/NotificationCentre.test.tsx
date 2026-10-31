@@ -32,6 +32,8 @@ vi.mock("@/stores/notification-store", () => ({
     if (typeof sel === "function") return sel(state);
     return state;
   },
+  isPinned: (n: Notification) =>
+    !n.archived && (n.source === "auth_requests" || n.source === "agent_scope_requests"),
 }));
 
 vi.mock("@/stores/process-store", () => ({
@@ -104,19 +106,19 @@ describe("NotificationCentre click routing", () => {
     expect(markRead).toHaveBeenCalledWith("srv-2");
   });
 
-  it("caps the inbox at 10 items and shows overflow indicator", () => {
+  it("renders every active row in the inbox (no cap, no overflow indicator)", () => {
     notifications = Array.from({ length: 12 }, (_, i) =>
       notif({ id: `srv-${i}`, title: `Note ${i}` }),
     );
     render(<NotificationCentre />);
 
-    // Only the first 10 are visible in the inbox.
+    // All 12 active items render; nothing is truncated behind a cap.
     expect(screen.getByText("Note 0")).toBeInTheDocument();
-    expect(screen.getByText("Note 9")).toBeInTheDocument();
-    expect(screen.queryByText("Note 10")).not.toBeInTheDocument();
+    expect(screen.getByText("Note 11")).toBeInTheDocument();
+    expect(screen.queryByText("Note 12")).not.toBeInTheDocument();
 
-    // Shows overflow indicator text.
-    expect(screen.getByText(/\+2 more in history/)).toBeInTheDocument();
+    // No overflow indicator text remains.
+    expect(screen.queryByText(/more in history/)).not.toBeInTheDocument();
   });
 
   it("does not show overflow indicator when there are 10 or fewer items", () => {
@@ -125,6 +127,47 @@ describe("NotificationCentre click routing", () => {
     );
     render(<NotificationCentre />);
     expect(screen.queryByText(/more in history/)).not.toBeInTheDocument();
+  });
+
+  it("pins an auth_requests grant row above newer rows and keeps it there after being read", () => {
+    // The grant request is the OLDEST row; 15 newer task.closed rows would
+    // bury it under a newest-first sort. It must stay on top regardless.
+    const authTs = Date.now() - 100_000;
+    notifications = [
+      notif({
+        id: "srv-auth",
+        source: "auth_requests",
+        title: "Grant request",
+        data: { request_id: "req-pin", requested_scopes: ["memory_read"] },
+        timestamp: authTs,
+      }),
+      ...Array.from({ length: 15 }, (_, i) =>
+        notif({
+          id: `srv-c${i}`,
+          source: "task.closed",
+          title: `Note ${i}`,
+          timestamp: Date.now() + i,
+        }),
+      ),
+    ];
+    const { rerender } = render(<NotificationCentre />);
+
+    // The pinned grant row renders first, ahead of every newer task row.
+    const authEl = screen.getByText("Grant request");
+    const note0El = screen.getByText("Note 0");
+    expect(authEl.compareDocumentPosition(note0El) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    // A visible "Needs your approval" label (text, not colour only).
+    expect(screen.getByText("Needs your approval")).toBeInTheDocument();
+
+    // Reading the pinned row must NOT unpin it: it stays first.
+    notifications[0].read = true;
+    markRead("srv-auth");
+    rerender(<NotificationCentre />);
+
+    const authEl2 = screen.getByText("Grant request");
+    const note0El2 = screen.getByText("Note 0");
+    expect(authEl2.compareDocumentPosition(note0El2) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("renders a View history button that opens the notification-history window with no section", () => {

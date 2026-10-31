@@ -1,0 +1,2 @@
+### Fixed
+- `AgentLoop.reach_safe_point()` now restores loop state to `IDLE` and re-surfaces queued messages if cancelled while awaiting `cancel_subagents()`. Previously a `CancelledError` during the 10-second subagent cancellation wait left the loop wedged in `SAFE_POINT`, causing subsequent messages to be incorrectly queued.

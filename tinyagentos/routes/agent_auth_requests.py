@@ -115,6 +115,8 @@ VALID_SCOPES = frozenset({
     "project_lists",
     # Memory access: read an agent's own memory index.
     "memory_read",
+    # Memory access: write to an agent's own memory namespace.
+    "memory_write",
 })
 
 
