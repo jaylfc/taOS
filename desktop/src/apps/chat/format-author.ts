@@ -6,6 +6,7 @@ export interface AuthorContext {
 type AuthorLike = { author_id: string; author_type?: "user" | "agent" | "system" };
 
 // The single-user web client posts its own messages with the literal author_id "user".
+// Stopgap until the backend stamps real author ids (card tsk-oxv4sh); then drop the "user" branch.
 export function isOwnMessage(msg: AuthorLike, currentUserId: string | null | undefined): boolean {
   return (
     msg.author_type === "user" &&
