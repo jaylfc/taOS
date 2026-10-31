@@ -14,7 +14,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import HTMLResponse, RedirectResponse
 
 from tinyagentos.agent_token_auth import (
-    _enforce_rotation_cutoff, _get_keypair, _get_store, check_agent_identity,
+    _enforce_rotation_cutoff, _get_grants_store, _get_keypair, _get_store,
+    _grant_unexpired, check_agent_identity,
 )
 from tinyagentos.auth import AuthStoreCorruptError
 from tinyagentos.device_scopes import (
@@ -981,6 +982,25 @@ class AuthMiddleware(BaseHTTPMiddleware):
                                 record = await registry.get(canonical_id)
                                 if record is not None and record.get("status") == "active":
                                     _enforce_rotation_cutoff(record, payload)
+                                    # The promotion requires agents:read, the
+                                    # same scope the device-token branch enforces
+                                    # here: a deployed agent minted by deploy
+                                    # carries owner user_id + memory_read only,
+                                    # so its JWT must not read the full worker
+                                    # list. Without the grant it falls through
+                                    # to the anonymous view, never a 401.
+                                    grants = _get_grants_store(request)
+                                    now = datetime.now(UTC)
+                                    has_agents_read = any(
+                                        g.get("scope") == AGENTS_READ
+                                        and _grant_unexpired(g.get("expires_at"), now)
+                                        for g in await grants.list_grants(canonical_id)
+                                    )
+                                    if not has_agents_read:
+                                        raise HTTPException(
+                                            status_code=403,
+                                            detail="token does not hold an active agents:read grant",
+                                        )
                                     request.state.user_id = None
                                     request.state.is_admin = False
                                     request.state.headless_full_view = True
@@ -1094,10 +1114,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 # Never set registry_jwt_candidate for these paths.
                 if _is_agent_deployed_runtime_path(request.method, path):
                     try:
-                        from tinyagentos.agent_token_auth import (
-                            verify_registry_token,
-                            _enforce_rotation_cutoff,
-                        )
+                        from tinyagentos.agent_token_auth import verify_registry_token
                         _private_pem, public_pem = _get_keypair(request)
                         payload = verify_registry_token(presented, public_pem)
                         canonical_id = payload.get("sub", "")
@@ -1151,10 +1168,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                         # Verify the token and check if it's the native agent (all allowlisted paths)
                         # or a deployed agent on skill-exec paths.
                         try:
-                            from tinyagentos.agent_token_auth import (
-                                verify_registry_token,
-                                _enforce_rotation_cutoff,
-                            )
+                            from tinyagentos.agent_token_auth import verify_registry_token
                             from tinyagentos.native_agent_identity import (
                                 NATIVE_AGENT_ORIGIN,
                             )

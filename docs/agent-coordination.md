@@ -2145,9 +2145,11 @@ Auth-exempt. Anonymous callers get a stripped view (`name`, `status`,
 caller to the full view: a local token authenticates as the primary user
 (admin only once a primary user exists), a device token holding
 `agents:read` gets the full worker objects without admin, and a registry
-JWT from an active agent gets them too. A device token without
-`agents:read`, and any invalid token, stay anonymous. `signing_key` is
-stripped for everyone.
+JWT from an active agent holding an active `agents:read` grant gets them
+too. A device token without `agents:read`, a registry JWT without
+`agents:read` (e.g. one minted by deploy for a DEPLOYED agent, which carries
+owner user_id + `memory_read` only), and any invalid token, stay anonymous.
+`signing_key` is stripped for everyone.
 
 ## Cluster capability + placement map (`GET /api/cluster/map`, admin-only)
 

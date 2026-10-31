@@ -171,6 +171,8 @@ class TestExemptGetBearerTokens:
         record = {"status": "active", "token_min_iat": 0}
         registry = AsyncMock()
         registry.get = AsyncMock(return_value=record)
+        grants = AsyncMock()
+        grants.list_grants = AsyncMock(return_value=[{"scope": "agents:read", "expires_at": None}])
         req = _make_request(headers={"authorization": "Bearer jwt-token"})
         with (
             patch(
@@ -179,12 +181,54 @@ class TestExemptGetBearerTokens:
             ),
             patch.object(am, "_get_keypair", return_value=(b"priv", b"pub")),
             patch.object(am, "_get_store", return_value=registry),
+            patch.object(am, "_get_grants_store", return_value=grants),
             patch.object(am, "_enforce_rotation_cutoff", return_value=None),
         ):
             out = _run_dispatch(req, mgr)
         assert out.state_flags["is_admin"] is False
         assert out.state_flags["headless_full_view"] is True
         assert out.state_flags["via"] == "registry_jwt"
+
+    def test_deployed_agent_jwt_without_agents_read_stays_anonymous(self):
+        # A registry JWT minted by deploy for a DEPLOYED agent carries owner
+        # user_id + memory_read only (see tests/test_deploy_agent_registry_jwt.py).
+        # The exempt-GET promotion requires agents:read (the same scope the
+        # device-token branch enforces), so a deployed-agent JWT without it
+        # must NOT get headless_full_view -- it stays anonymous, never a 401.
+        mgr = _default_auth_mgr()
+        payload = {
+            "sub": "agent-20261029-120000",
+            "principal_type": "agent",
+            "iat": 1000,
+        }
+        record = {
+            "status": "active",
+            "token_min_iat": 0,
+            "origin": "taos-deployed",
+            "user_id": "user-1",
+        }
+        registry = AsyncMock()
+        registry.get = AsyncMock(return_value=record)
+        grants = AsyncMock()
+        # Deploy mints exactly memory_read; no agents:read grant.
+        grants.list_grants = AsyncMock(
+            return_value=[{"scope": "memory_read", "expires_at": None}]
+        )
+        req = _make_request(headers={"authorization": "Bearer jwt-deployed"})
+        with (
+            patch(
+                "tinyagentos.agent_token_auth.verify_registry_token",
+                return_value=payload,
+            ),
+            patch.object(am, "_get_keypair", return_value=(b"priv", b"pub")),
+            patch.object(am, "_get_store", return_value=registry),
+            patch.object(am, "_get_grants_store", return_value=grants),
+            patch.object(am, "_enforce_rotation_cutoff", return_value=None),
+        ):
+            out = _run_dispatch(req, mgr)
+        assert out.state_flags["headless_full_view"] is None
+        assert out.state_flags["is_admin"] is False
+        assert out.state_flags["via"] == "exempt"
 
     def test_inactive_agent_jwt_stays_anonymous(self):
         mgr = _default_auth_mgr()
