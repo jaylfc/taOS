@@ -1535,7 +1535,7 @@ All routes are admin-only via `Depends(require_admin)`. See [docs/hardware-route
 
 ## Hub chain export and blobs (social phase 0, local only)
 
-Route module `tinyagentos/routes/hub.py`, signed-in users of the box only:
+Route module `tinyagentos/routes/hub.py`, admin-only:
 
 - `GET /api/hub/chain?after_seq=&limit=` returns this node's own chain page
   (`entries`, `object` is `null` once a tombstone dropped the body), the `head`,
@@ -1545,6 +1545,10 @@ Route module `tinyagentos/routes/hub.py`, signed-in users of the box only:
 - `GET /api/hub/blobs/{sha256}` returns a stored post image. Non-image blobs
   are served as an `application/octet-stream` attachment; every response is
   `nosniff` and sandboxed.
+- `GET /api/hub/timeline` returns this node's own posts (timeline). Friends-only
+  posts are only visible to admins.
+- `POST /api/hub/posts/{post_hash}/delete` deletes a post via a signed tombstone.
+  Only admins can delete posts.
 
 No peer can reach these; peer-facing hubsync routes are phase 1 of the hub
 social peer-to-peer design (pending owner review).
