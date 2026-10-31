@@ -52,13 +52,16 @@ vi.mock("@/registry/app-registry", () => ({
 }));
 
 vi.mock("../chat/MessageList", () => ({
-  MessageList: () => <div data-testid="message-list" />,
+  MessageList: ({ hideHeader, pinnedPopoverOpen }: { hideHeader?: boolean; pinnedPopoverOpen?: boolean }) => (
+    <div data-testid="message-list" data-hide-header={String(!!hideHeader)} data-pin-open={String(!!pinnedPopoverOpen)} />
+  ),
 }));
 
 vi.mock("../chat/MessageInput", () => ({
-  MessageInput: ({ onToggleSearch }: { onToggleSearch?: () => void }) => (
+  MessageInput: ({ onToggleSearch, onTogglePinned }: { onToggleSearch?: () => void; onTogglePinned?: () => void }) => (
     <div data-testid="message-input">
       <button type="button" onClick={onToggleSearch}>mock-search</button>
+      <button type="button" onClick={onTogglePinned}>mock-pinned</button>
     </div>
   ),
 }));
@@ -205,6 +208,15 @@ describe("MessagesApp mobile thread header", () => {
     await openGroup();
     fireEvent.click(screen.getByRole("button", { name: "mock-search" }));
     await waitFor(() => expect(document.getElementById("search-panel")).toBeInTheDocument());
+  });
+
+  it("hides the list header on mobile and the Pinned messages action opens the pinned popover", async () => {
+    await openGroup();
+    const list = screen.getByTestId("message-list");
+    expect(list).toHaveAttribute("data-hide-header", "true");
+    expect(list).toHaveAttribute("data-pin-open", "false");
+    fireEvent.click(screen.getByRole("button", { name: "mock-pinned" }));
+    await waitFor(() => expect(screen.getByTestId("message-list")).toHaveAttribute("data-pin-open", "true"));
   });
 
   it("Back to chats returns to the list", async () => {

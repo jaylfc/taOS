@@ -41,6 +41,10 @@ export function describeChannelParty(
   return {
     title: name,
     kind: "group",
-    subtitle: n > 0 ? `${n} ${n === 1 ? "person" : "people"}` : "",
+    // The member count wins; the topic is only a fallback when there is none.
+    subtitle:
+      n > 0
+        ? `${n} ${n === 1 ? "person" : "people"}`
+        : (channel?.topic || channel?.description || "").trim(),
   };
 }

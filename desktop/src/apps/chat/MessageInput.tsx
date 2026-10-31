@@ -11,6 +11,8 @@ import {
   Search,
   Users,
   Info,
+  Pin,
+  BookOpen,
 } from "lucide-react";
 import Picker, { Theme } from "emoji-picker-react";
 import { Button, Textarea } from "@/components/ui";
@@ -69,7 +71,11 @@ export interface MessageInputProps {
   onOpenSettings?: () => void;
   onToggleAllThreads?: () => void;
   onToggleSearch?: () => void;
+  pinnedCount?: number;
+  onTogglePinned?: () => void;
 }
+
+const CHAT_GUIDE_URL = "https://github.com/jaylfc/tinyagentos/blob/master/docs/chat-guide.md";
 
 export function MessageInput({
   value,
@@ -100,6 +106,8 @@ export function MessageInput({
   onOpenSettings,
   onToggleAllThreads,
   onToggleSearch,
+  pinnedCount = 0,
+  onTogglePinned,
 }: MessageInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -203,12 +211,20 @@ export function MessageInput({
       ? "This chat is archived"
       : `Message ${party.title || channel?.name || ""}`.trimEnd();
     const members = (channel?.members ?? []).filter((m) => m !== "user");
-    const menuItems: { label: string; icon: React.ReactNode; run: () => void }[] = [];
+    const menuItems: { label: string; icon: React.ReactNode; run: () => void; badge?: string }[] = [];
     if (channel && channel.type !== "dm" && onOpenSettings) {
       menuItems.push({ label: "Channel info", icon: <Info size={15} aria-hidden="true" />, run: onOpenSettings });
     }
     if (onToggleAllThreads) {
       menuItems.push({ label: "Threads", icon: <MessagesSquare size={15} aria-hidden="true" />, run: onToggleAllThreads });
+    }
+    if (onTogglePinned) {
+      menuItems.push({
+        label: "Pinned messages",
+        icon: <Pin size={15} aria-hidden="true" />,
+        run: onTogglePinned,
+        badge: pinnedCount > 0 ? String(pinnedCount) : undefined,
+      });
     }
     if (onToggleSearch) {
       menuItems.push({ label: "Search", icon: <Search size={15} aria-hidden="true" />, run: onToggleSearch });
@@ -275,7 +291,7 @@ export function MessageInput({
                   </div>
                 )}
               </div>
-              {menuItems.length > 0 && (
+              {(
                 <div className="relative shrink-0" ref={menuWrapRef}>
                   <button
                     type="button"
@@ -308,9 +324,21 @@ export function MessageInput({
                           className="w-full flex items-center gap-2.5 px-3 py-2.5 text-[14px] text-left text-shell-text hover:bg-shell-surface-hover"
                         >
                           {it.icon}
-                          {it.label}
+                          <span className="flex-1">{it.label}</span>
+                          {it.badge && <span className="text-[12px] text-shell-text-tertiary">{it.badge}</span>}
                         </button>
                       ))}
+                      <a
+                        role="menuitem"
+                        href={CHAT_GUIDE_URL}
+                        target="_blank"
+                        rel="noreferrer"
+                        onClick={() => setMenuOpen(false)}
+                        className="w-full flex items-center gap-2.5 px-3 py-2.5 text-[14px] text-left text-shell-text hover:bg-shell-surface-hover"
+                      >
+                        <BookOpen size={15} aria-hidden="true" />
+                        <span className="flex-1">Guide</span>
+                      </a>
                     </div>
                   )}
                 </div>

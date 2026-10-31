@@ -2369,10 +2369,6 @@ export function MessagesApp({
         </div>
       ) : (
         <>
-          {/* On mobile the header above replaces the list's own channel
-              header (its actions live in the composer menu), so hide that
-              first child. `contents` keeps the desktop layout untouched. */}
-          <div className={isMobile ? "flex flex-col flex-1 min-h-0 [&>div:first-child]:hidden" : "contents"}>
           <MessageList
             ref={messageListHandleRef}
             messages={messages}
@@ -2449,8 +2445,8 @@ export function MessagesApp({
             typingHumans={typingHumans}
             typingAgents={typingAgents}
             receipts={receipts}
+            hideHeader={isMobile}
           />
-          </div>
 
           {/* #1741: stall banner — surfaces only when a response is abnormally
               slow or has gone quiet, so a stalled generation no longer looks
@@ -2592,6 +2588,8 @@ className="shrink-0 p-0.5 rounded hover:bg-shell-surface-active transition-color
               if (showSearch) { setShowSearch(false); }
               else { closeThread(); setShowSettings(false); setShowAllThreads(false); setShowSearch(true); }
             }}
+            pinnedCount={pinnedMessages.length}
+            onTogglePinned={() => setPinnedPopoverOpen((o) => !o)}
             onSlashPick={(slug, cmd) => setInput(`@${slug} /${cmd} `)}
             onSlashClose={() => {}}
             onPaste={(e) => {

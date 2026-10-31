@@ -430,6 +430,7 @@ describe("MessageInput", () => {
         "Threads",
         "Search",
         "Members",
+        "Guide",
       ]);
       fireEvent.click(within(menu).getByRole("menuitem", { name: "Search" }));
       expect(onToggleSearch).toHaveBeenCalledTimes(1);
@@ -437,6 +438,21 @@ describe("MessageInput", () => {
       fireEvent.click(screen.getByRole("button", { name: /more options/i }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Threads" }));
       expect(onToggleAllThreads).toHaveBeenCalledTimes(1);
+    });
+
+    it("the menu exposes Pinned messages with the count and calls the pin handler, plus a Guide link", () => {
+      const onTogglePinned = vi.fn();
+      render(<MessageInput {...mobile({ onTogglePinned, pinnedCount: 3 })} />);
+      fireEvent.click(screen.getByRole("button", { name: /more options/i }));
+      const item = screen.getByRole("menuitem", { name: /Pinned messages/ });
+      expect(item).toHaveTextContent("3");
+      fireEvent.click(item);
+      expect(onTogglePinned).toHaveBeenCalledTimes(1);
+      fireEvent.click(screen.getByRole("button", { name: /more options/i }));
+      expect(screen.getByRole("menuitem", { name: "Guide" })).toHaveAttribute(
+        "href",
+        expect.stringContaining("chat-guide.md"),
+      );
     });
 
     it("the + button uses the existing file upload", () => {
