@@ -180,13 +180,15 @@ class LMStudioAdapter(BackendAdapter):
     """Adapter for LM Studio's OpenAI-compatible local server.
 
     LM Studio serves an OpenAI-compatible API on :1234 with no /health
-    endpoint. We probe GET /v1/models directly — a 200 means the server
-    is up and we get the model list in one shot.
+    endpoint. We probe GET /v1/models directly: a 200 means the server
+    is up and we get the model list in one shot. Controller-configured
+    backends reach health() with the stored URL as-is, and http://host:1234/v1
+    is the form LM Studio shows users, so a trailing /v1 is stripped first.
     """
 
     async def health(self, client: httpx.AsyncClient, url: str) -> dict:
         start = time.monotonic()
-        base = url.rstrip("/")
+        base = url.rstrip("/").removesuffix("/v1")
         try:
             resp = await client.get(f"{base}/v1/models", timeout=10)
             elapsed_ms = int((time.monotonic() - start) * 1000)

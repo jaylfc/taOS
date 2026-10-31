@@ -540,8 +540,10 @@ class TestGenerateLiteLLMLlamaCppEmbeddingDiscovery:
 
 class TestGenerateLiteLLMLmstudioEmbeddingDiscovery:
 
-    def test_lmstudio_not_in_all_types_no_embedding_discovery(self):
+    def test_lmstudio_not_in_all_types_no_embedding_discovery(self, monkeypatch):
         """lmstudio backend not in ALL_TYPES gets no embedding discovery."""
+        import tinyagentos.litellm_config as cfg_mod
+        monkeypatch.setattr(cfg_mod, "ALL_TYPES", cfg_mod.ALL_TYPES - {"lmstudio"})
         backends = [
             {"name": "lmstudio-local", "type": "lmstudio", "url": "http://localhost:1234"}
         ]
@@ -552,6 +554,47 @@ class TestGenerateLiteLLMLmstudioEmbeddingDiscovery:
         assert len(ml) == 1
         assert ml[0]["model_name"] == "default"
         assert ml[0]["litellm_params"]["model"] == "openai/default"
+
+    def test_lmstudio_embedding_api_base_ends_in_v1(self):
+        """A bare LM Studio URL must reach /v1/embeddings, not /embeddings."""
+        backends = [
+            {"name": "lmstudio-local", "type": "lmstudio", "url": "http://localhost:1234"}
+        ]
+        discovered = {"http://localhost:1234": ["llama-3.1-8b", "nomic-embed-text-v1.5"]}
+        ml = _model_table(backends, discovered=discovered)["model_list"]
+        embed = [e for e in ml if e.get("model_info", {}).get("mode") == "embedding"]
+        assert {e["model_name"] for e in embed} == {"nomic-embed-text-v1.5", EMBEDDING_ALIAS}
+        assert {e["litellm_params"]["api_base"] for e in embed} == {"http://localhost:1234/v1"}
+
+    def test_lmstudio_discovery_probes_the_versioned_models_path(self):
+        """LM Studio answers GET /models with HTTP 200 and an error body, so a
+        bare URL must be probed at /v1/models or no embedding model is found."""
+        from unittest.mock import MagicMock, patch
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = {"data": [{"id": "nomic-embed-text-v1.5"}]}
+        backends = [
+            {"name": "lmstudio-local", "type": "lmstudio", "url": "http://localhost:1234"}
+        ]
+        with patch("tinyagentos.litellm_config.httpx.get", return_value=resp) as get:
+            _model_table(backends)
+        assert get.call_args.args[0] == "http://localhost:1234/v1/models"
+
+    @pytest.mark.asyncio
+    async def test_lmstudio_concurrent_discovery_probes_versioned_path_and_keys_by_url(self):
+        from unittest.mock import MagicMock, patch
+        from tinyagentos.litellm_config import _discover_openai_compatible_backends_concurrent
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = {"data": [{"id": "nomic-embed-text-v1.5"}]}
+        backends = [
+            {"name": "lmstudio-local", "type": "lmstudio", "url": "http://localhost:1234/"}
+        ]
+        with patch("tinyagentos.litellm_config.httpx.get", return_value=resp) as get:
+            found = await _discover_openai_compatible_backends_concurrent(
+                backends, keys={"http://localhost:1234": "sk-test"}
+            )
+        assert get.call_args.args[0] == "http://localhost:1234/v1/models"
+        assert get.call_args.kwargs["headers"] == {"Authorization": "Bearer sk-test"}
+        assert found == {"http://localhost:1234": ["nomic-embed-text-v1.5"]}
 
     def test_lmstudio_in_all_types_embedding_discovery_works(self):
         """If lmstudio were in ALL_TYPES, embedding discovery would work like llama-cpp."""
@@ -574,12 +617,12 @@ class TestGenerateLiteLLMLmstudioEmbeddingDiscovery:
             # lmstudio uses openai prefix for embeddings (from BACKEND_TYPE_MAP)
             assert embed_entry["litellm_params"]["model"] == "openai/nomic-embed-text-v1.5"
             assert embed_entry["model_info"]["mode"] == "embedding"
-            assert embed_entry["litellm_params"]["api_base"] == "http://localhost:1234"
+            assert embed_entry["litellm_params"]["api_base"] == "http://localhost:1234/v1"
             alias_entry = ml[2]
             assert alias_entry["model_name"] == EMBEDDING_ALIAS
             assert alias_entry["model_info"]["mode"] == "embedding"
             assert alias_entry["litellm_params"]["model"] == "openai/nomic-embed-text-v1.5"
-            assert alias_entry["litellm_params"]["api_base"] == "http://localhost:1234"
+            assert alias_entry["litellm_params"]["api_base"] == "http://localhost:1234/v1"
         finally:
             providers_mod.ALL_TYPES.clear()
             providers_mod.ALL_TYPES.update(original_all_types)

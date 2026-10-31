@@ -6,3 +6,6 @@
   capabilities, maps to the `openai` LiteLLM prefix, and is given an
   `api_base` so litellm_config routes to the LAN URL instead of cloud
   OpenAI. A dedicated adapter health-checks `/v1/models`.
+  A bare `http://host:1234` or the `/v1` form LM Studio displays both work:
+  the health probe does not double the version prefix, and embedding
+  discovery and embedding routes use `/v1`.

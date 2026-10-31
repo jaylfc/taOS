@@ -239,6 +239,20 @@ class TestLMStudioAdapter:
         assert "Connection refused" in result["error"]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("url", ["http://127.0.0.1:1234/v1", "http://127.0.0.1:1234/v1/"])
+    async def test_versioned_url_probes_v1_models_once(self, url):
+        """The /v1 form LM Studio itself shows users must not probe /v1/v1/models."""
+        from tinyagentos.backend_adapters import LMStudioAdapter
+
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock(return_value=None)
+        resp.json.return_value = {"data": []}
+        mock_client.get.return_value = resp
+        await LMStudioAdapter().health(mock_client, url)
+        assert mock_client.get.call_args.args[0] == "http://127.0.0.1:1234/v1/models"
+
+    @pytest.mark.asyncio
     async def test_get_adapter_lmstudio(self):
         from tinyagentos.backend_adapters import LMStudioAdapter
 

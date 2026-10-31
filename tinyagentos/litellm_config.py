@@ -144,26 +144,31 @@ async def _discover_openai_compatible_backends_concurrent(
     """
     import asyncio
 
-    openai_urls = [
-        b.get("url", "").rstrip("/")
+    probes = [
+        (b.get("url", "").rstrip("/"), b.get("type"))
         for b in backends
         if (b.get("type") == "llama-cpp"
             or (b.get("type") == "lmstudio" and "lmstudio" in ALL_TYPES))
         and b.get("url")
     ]
-    if not openai_urls:
+    if not probes:
         return {}
     key_map = keys or {}
     results = await asyncio.gather(
         *(
-            asyncio.to_thread(_discover_openai_compatible_models, url, timeout, api_key=key_map.get(url))
-            for url in openai_urls
+            asyncio.to_thread(
+                _discover_openai_compatible_models,
+                inference_api_base(backend_type, url),
+                timeout,
+                api_key=key_map.get(url),
+            )
+            for url, backend_type in probes
         ),
         return_exceptions=True,
     )
     return {
         url: (res if isinstance(res, list) else [])
-        for url, res in zip(openai_urls, results)
+        for (url, _), res in zip(probes, results)
     }
 
 
@@ -423,7 +428,7 @@ def build_model_list(
                 # Authenticated probing (with api_key/api_key_secret) happens
                 # on the gateway request path via _discovered(); the config
                 # writer has no secrets store and calls this keyless probe.
-                _probed = _discover_openai_compatible_models(url) if discover else []
+                _probed = _discover_openai_compatible_models(inference_api_base(backend_type, url)) if discover else []
             if _probed:
                 embed_prefix = BACKEND_TYPE_MAP.get(backend_type, "openai")
                 for discovered_name in _probed:
@@ -431,7 +436,7 @@ def build_model_list(
                         continue
                     embed_params = {
                         "model": f"{embed_prefix}/{discovered_name}",
-                        "api_base": url,
+                        "api_base": inference_api_base(backend_type, url),
                     }
                     # API key from secrets reference (same precedence as the
                     # chat entry: api_key_secret first, else api_key), so a
