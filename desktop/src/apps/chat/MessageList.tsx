@@ -301,7 +301,9 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
 
   // Editing replaces the message actions; drop any selection when editing starts.
   useEffect(() => {
-    if (editingMessageId) setSelectedMessageId(null);
+    if (!editingMessageId) return;
+    clearPressTimer();
+    setSelectedMessageId(null);
   }, [editingMessageId]);
 
   // Tapping anywhere outside the selected row (and outside the emoji popover)
@@ -878,7 +880,9 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                 >
                   {editingMessageId !== msg.id && (
                     <span id={`msg-actions-hint-${msg.id}`} className="sr-only">
-                      Press Enter to open message actions
+                      {selectedMessageId === msg.id
+                        ? "Press Enter to close message actions"
+                        : "Press Enter to open message actions"}
                     </span>
                   )}
                   {!own && (
