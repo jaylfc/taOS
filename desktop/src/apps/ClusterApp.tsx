@@ -8,12 +8,13 @@ import {
 } from "lucide-react";
 import { Button, Card, CardContent, Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import type { ClusterWorker, ClusterDevice, WorkerStatus, BleScanDevice, ClusterMap } from "@/lib/cluster";
+import type { ClusterWorker, ClusterDevice, WorkerStatus, BleScanDevice, ClusterMap, ClusterResources } from "@/lib/cluster";
 import {
   CapabilityMapList,
   CapabilityMapDetail,
   PlacementOverview,
 } from "./ClusterApp.capabilityMap";
+import { ClusterResourcesPanel } from "./ClusterApp.resources";
 import {
   workerStatus,
   workerHardwareSummary,
@@ -28,7 +29,7 @@ import { useRefreshOnFocus } from "@/hooks/use-refresh-on-focus";
 import { copyText } from "@/lib/clipboard";
 
 type SortKey = "name" | "status" | "last_seen";
-type Tab = "nodes" | "map" | "devices";
+type Tab = "nodes" | "map" | "resources" | "devices";
 
 const STATUS_ORDER: Record<WorkerStatus, number> = {
   online: 0,
@@ -855,6 +856,10 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
   const [selectedCapability, setSelectedCapability] = useState<string | null>(null);
   const [mapLoading, setMapLoading] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
+  // Agent offices S10: read-only resource inventory for the Resources tab.
+  const [clusterResources, setClusterResources] = useState<ClusterResources | null>(null);
+  const [resourcesLoading, setResourcesLoading] = useState(false);
+  const [resourcesError, setResourcesError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<{
@@ -868,6 +873,8 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
   // manual refresh button can overlap, and an older response must not
   // overwrite a newer map (or a newer error) with stale data.
   const mapRequestId = useRef(0);
+  // Same guard for the resources fetch.
+  const resourcesRequestId = useRef(0);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -958,18 +965,56 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
     }
   }, []);
 
+  const fetchResources = useCallback(async () => {
+    const requestId = ++resourcesRequestId.current;
+    setResourcesLoading(true);
+    try {
+      const res = await fetch("/api/cluster/resources", { headers: { Accept: "application/json" } });
+      if (requestId !== resourcesRequestId.current) return; // superseded by a newer request
+      if (!res.ok) {
+        setResourcesError(
+          res.status === 403
+            ? "Admin session required to view cluster resources."
+            : `Could not load cluster resources (${res.status}).`,
+        );
+        return;
+      }
+      const json = (await res.json()) as ClusterResources;
+      if (requestId !== resourcesRequestId.current) return;
+      if (json && Array.isArray(json.resources) && Array.isArray(json.errors)) {
+        setClusterResources(json);
+        setResourcesError(null);
+      } else {
+        setResourcesError("Unexpected cluster resources response.");
+      }
+    } catch {
+      if (requestId !== resourcesRequestId.current) return;
+      setResourcesError("Could not load cluster resources.");
+    } finally {
+      if (requestId === resourcesRequestId.current) setResourcesLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (activeTab === "devices") {
       fetchDevices();
     } else if (activeTab === "map") {
       fetchMap();
+    } else if (activeTab === "resources") {
+      fetchResources();
     } else {
       fetchWorkers();
     }
-  }, [activeTab, fetchDevices, fetchMap, fetchWorkers]);
+  }, [activeTab, fetchDevices, fetchMap, fetchResources, fetchWorkers]);
 
   useRefreshOnFocus(
-    activeTab === "devices" ? fetchDevices : activeTab === "map" ? fetchMap : fetchWorkers,
+    activeTab === "devices"
+      ? fetchDevices
+      : activeTab === "map"
+        ? fetchMap
+        : activeTab === "resources"
+          ? fetchResources
+          : fetchWorkers,
     1000,
   );
 
@@ -1094,6 +1139,8 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
   const [pairStarting, setPairStarting] = useState(false);
   const [pairConfirming, setPairConfirming] = useState(false);
   const [pairError, setPairError] = useState<string | null>(null);
+  const [labelPin, setLabelPin] = useState("");
+  const [pinRequired, setPinRequired] = useState(false);
   const pairCodeRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -1148,12 +1195,14 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
       });
       if (res.ok) {
         const json = await res.json();
+        setLabelPin("");
         setPairSession({
           session: json.session,
           code: json.code,
           board_id: json.board_id,
           name: json.name,
         });
+        setPinRequired(json.pin_required ?? false);
       } else if (res.status === 409) {
         setPairError("This device isn't pairable right now. It may already be paired, or be pausing after failed attempts. Wait a minute and try again.");
       } else if (res.status === 504) {
@@ -1175,15 +1224,21 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
     setPairConfirming(true);
     setPairError(null);
     try {
+      const body = JSON.stringify({
+        session: pairSession.session,
+        ...(labelPin.trim() ? { label_pin: labelPin.trim() } : {}),
+      });
       const res = await fetch("/api/cluster/ble/pair/confirm", {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ session: pairSession.session }),
+        body,
       });
       if (res.ok) {
         const json = await res.json();
         showToast(`Device "${json?.node?.name ?? pairSession.name}" paired`);
         setPairSession(null);
+        setLabelPin("");
+        setPinRequired(false);
         setAddOpen(false);
         setBleDevices([]);
         setBleScanned(false);
@@ -1193,6 +1248,15 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
       } else if (res.status === 502) {
         const j = await res.json().catch(() => ({}));
         setPairError(j?.why ? String(j.why) : "The device rejected pairing.");
+      } else if (res.status === 400) {
+        const j = await res.json().catch(() => ({}));
+        if (j.error === "label_pin_required") {
+          setPairError("This board needs the PIN from its label.");
+        } else if (j.error === "invalid_label_pin") {
+          setPairError("The label PIN is 4 to 12 digits.");
+        } else {
+          setPairError(j?.error ? String(j.error) : `Confirm failed (${res.status})`);
+        }
       } else {
         const j = await res.json().catch(() => ({}));
         setPairError(j?.error ? String(j.error) : `Confirm failed (${res.status})`);
@@ -1201,11 +1265,13 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
       setPairError(e instanceof Error ? e.message : "Network error");
     }
     setPairConfirming(false);
-  }, [pairSession, showToast, fetchWorkers]);
+  }, [pairSession, labelPin, showToast, fetchWorkers]);
 
   const handleBlePairCancel = useCallback(() => {
     if (pairSession) cancelBlePairSession(pairSession.session);
     setPairSession(null);
+    setLabelPin("");
+    setPinRequired(false);
     setPairError(null);
   }, [pairSession, cancelBlePairSession]);
 
@@ -1215,6 +1281,8 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
     setAddOpen(false);
     setAddTab("manual");
     setPairSession(null);
+    setLabelPin("");
+    setPinRequired(false);
     setPairError(null);
   }, [addBusy, pairStarting, pairConfirming, pairSession, cancelBlePairSession]);
 
@@ -1402,6 +1470,25 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
             </button>
             <button
               type="button"
+              role="tab"
+              aria-selected={activeTab === "resources"}
+              aria-controls="cluster-resources-panel"
+              onClick={() => {
+                setActiveTab("resources");
+                setSelected(null);
+                setSelectedDevice(null);
+              }}
+              className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
+                activeTab === "resources"
+                  ? "bg-accent text-white"
+                  : "text-shell-text-tertiary hover:text-shell-text hover:bg-white/[0.06]"
+              }`}
+              aria-label="Show cluster resources"
+            >
+              Resources
+            </button>
+            <button
+              type="button"
               onClick={() => {
                 setActiveTab("devices");
                 setSelected(null);
@@ -1425,6 +1512,12 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
           {activeTab === "devices" && (
             <span className="text-xs text-shell-text-tertiary truncate">
               {devices.length} device{devices.length === 1 ? "" : "s"}
+            </span>
+          )}
+          {activeTab === "resources" && (
+            <span className="text-xs text-shell-text-tertiary truncate">
+              {clusterResources?.resources.length ?? 0} resource
+              {(clusterResources?.resources.length ?? 0) === 1 ? "" : "s"}
             </span>
           )}
           {activeTab === "map" && (
@@ -1471,14 +1564,22 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
             variant="ghost"
             size="icon"
             onClick={
-              activeTab === "devices" ? fetchDevices : activeTab === "map" ? fetchMap : fetchWorkers
+              activeTab === "devices"
+                ? fetchDevices
+                : activeTab === "map"
+                  ? fetchMap
+                  : activeTab === "resources"
+                    ? fetchResources
+                    : fetchWorkers
             }
             aria-label={
               activeTab === "devices"
                 ? "Refresh device list"
                 : activeTab === "map"
                   ? "Refresh capability map"
-                  : "Refresh worker list"
+                  : activeTab === "resources"
+                    ? "Refresh cluster resources"
+                    : "Refresh worker list"
             }
           >
             <RefreshCw size={14} />
@@ -1488,6 +1589,20 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
 
       {/* Master-detail */}
       <div className="flex-1 min-h-0 overflow-hidden">
+        {activeTab === "resources" ? (
+          <div
+            id="cluster-resources-panel"
+            role="tabpanel"
+            aria-label="Cluster resources"
+            className="h-full overflow-y-auto"
+          >
+            <ClusterResourcesPanel
+              data={clusterResources}
+              loading={resourcesLoading}
+              error={resourcesError}
+            />
+          </div>
+        ) : (
         <MobileSplitView
           listTitle={
             activeTab === "devices"
@@ -1642,6 +1757,7 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
             )
           }
         />
+        )}
       </div>
 
       {/* Add device modal (manual worker pairing / free-tier, or Bluetooth) */}
@@ -1733,6 +1849,28 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
                         {pairSession.code.slice(0, 3)} {pairSession.code.slice(3)}
                       </span>
                     </div>
+                    <div className="mb-3">
+                      <label className="block text-[10px] text-shell-text-tertiary mb-1" htmlFor="label-pin">
+                        Label PIN
+                      </label>
+                      <input
+                        id="label-pin"
+                        data-testid="label-pin-input"
+                        type="text"
+                        inputMode="numeric"
+                        autoComplete="off"
+                        value={labelPin}
+                        onChange={(e) => setLabelPin(e.target.value)}
+                        aria-describedby="label-pin-help"
+                        aria-required={pinRequired}
+                        aria-label="Label PIN"
+                        role="textbox"
+                        className="w-full h-9 mb-1 rounded-md border border-white/10 bg-shell-bg px-2.5 text-sm text-shell-text focus-visible:outline-none focus-visible:border-accent/40 focus-visible:ring-2 focus-visible:ring-accent/20"
+                      />
+                      <p id="label-pin-help" className="text-[10px] text-shell-text-tertiary">
+                        The PIN printed on the board's label. Leave empty if your board has no label.
+                      </p>
+                    </div>
                     {pairError && (
                       <p className="text-[11px] text-red-300 mt-1" role="alert">
                         {pairError}
@@ -1751,7 +1889,7 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
                         variant="default"
                         size="sm"
                         onClick={handleBlePairConfirm}
-                        disabled={pairConfirming}
+                        disabled={pairConfirming || (pinRequired && (labelPin.trim().length < 4 || labelPin.trim().length > 12))}
                       >
                         {pairConfirming ? "Pairing..." : "Pair"}
                       </Button>

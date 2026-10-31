@@ -12,7 +12,7 @@ async def test_claim_emits_notification(client):
     notifs = (await client.get("/api/notifications")).json()
     claimed = [n for n in notifs if n["source"] == "task.claimed"]
     assert len(claimed) == 1
-    assert t["id"] in claimed[0]["message"]
+    assert '"T1"' in claimed[0]["message"]
     assert "agent-1" in claimed[0]["message"]
 
 
@@ -31,7 +31,7 @@ async def test_close_emits_notification(client):
     notifs = (await client.get("/api/notifications")).json()
     closed = [n for n in notifs if n["source"] == "task.closed"]
     assert len(closed) == 1
-    assert t["id"] in closed[0]["message"]
+    assert '"T1"' in closed[0]["message"]
     assert "agent-1" in closed[0]["message"]
 
 

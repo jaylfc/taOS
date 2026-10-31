@@ -14,6 +14,7 @@ def _req(**overrides) -> DeployRequest:
         data_dir=Path("/tmp/taos-test-data"),
     )
     defaults.update(overrides)
+    defaults["extra_config"] = {"agent_controller_port": 6972, **(defaults.get("extra_config") or {})}
     return DeployRequest(**defaults)
 
 
@@ -55,7 +56,7 @@ class TestDeployAgent:
         mock_proxy = MagicMock(spec=["port", "create_agent_key"])
         mock_proxy.port = 7834
         mock_proxy.create_agent_key = AsyncMock(return_value="sk-local-key")
-        extra = {"llm_proxy": mock_proxy, "llm_gateway_port": 7838} if with_proxy else None
+        extra = {"llm_proxy": mock_proxy, "llm_gateway_port": 7838, "agent_controller_port": 6972} if with_proxy else None
         req = _req(data_dir=tmp_path, remote="fedora-worker", taos_host="100.64.0.10",
                    extra_config=extra)
 
@@ -188,7 +189,7 @@ class TestDeployAgent:
         req = _req(
             name="proxy-test",
             data_dir=tmp_path,
-            extra_config={"llm_proxy": mock_proxy, "llm_gateway_port": 7838},
+            extra_config={"llm_proxy": mock_proxy, "llm_gateway_port": 7838, "agent_controller_port": 6972},
         )
 
         async def mock_exec_fn(name, cmd, **kwargs):
@@ -232,7 +233,7 @@ class TestDeployAgent:
         req = _req(
             name="routing-only",
             data_dir=tmp_path,
-            extra_config={"llm_proxy": mock_proxy, "llm_gateway_port": 7838},
+            extra_config={"llm_proxy": mock_proxy, "llm_gateway_port": 7838, "agent_controller_port": 6972},
         )
 
         with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
@@ -261,7 +262,7 @@ class TestDeployAgent:
             name="fallback-emb",
             model="kilo-auto/free",
             data_dir=tmp_path,
-            extra_config={"llm_proxy": mock_proxy, "llm_gateway_port": 7838},
+            extra_config={"llm_proxy": mock_proxy, "llm_gateway_port": 7838, "agent_controller_port": 6972},
         )
 
         with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
@@ -292,7 +293,7 @@ class TestDeployAgent:
         req = _req(
             name="master-key-test",
             data_dir=tmp_path,
-            extra_config={"llm_proxy": mock_proxy, "llm_gateway_port": 7838},
+            extra_config={"llm_proxy": mock_proxy, "llm_gateway_port": 7838, "agent_controller_port": 6972},
         )
 
         async def mock_exec_fn(name, cmd, **kwargs):
@@ -332,7 +333,7 @@ class TestDeployAgent:
             model="kilo-auto/free",
             fallback_models=["kilo-auto/balanced", "kilo-auto/frontier"],
             data_dir=tmp_path,
-            extra_config={"llm_proxy": mock_proxy, "llm_gateway_port": 7838},
+            extra_config={"llm_proxy": mock_proxy, "llm_gateway_port": 7838, "agent_controller_port": 6972},
         )
 
         async def mock_exec_fn(name, cmd, **kwargs):
@@ -361,7 +362,7 @@ class TestDeployAgent:
         mock_proxy.port = 7834
         mock_proxy.create_agent_key = AsyncMock(return_value=None)
         req = _req(name="db-broken", data_dir=tmp_path,
-                   extra_config={"llm_proxy": mock_proxy, "llm_gateway_port": 7838})
+                   extra_config={"llm_proxy": mock_proxy, "llm_gateway_port": 7838, "agent_controller_port": 6972})
 
         with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
              patch("tinyagentos.deployer._mint_local_scoped_key", return_value=None):
@@ -669,7 +670,7 @@ class TestDeployAgent:
         req = _req(
             name="legacy-port",
             data_dir=tmp_path,
-            extra_config={"llm_proxy": mock_proxy, "llm_gateway_port": 7838},
+            extra_config={"llm_proxy": mock_proxy, "llm_gateway_port": 7838, "agent_controller_port": 6972},
         )
 
         async def mock_exec_fn(name, cmd, **kwargs):
@@ -904,7 +905,7 @@ class TestDeployAgent:
             name="emb-test",
             model="kilo-auto/free",
             data_dir=tmp_path,
-            extra_config={"llm_proxy": proxy, "llm_gateway_port": 7838},
+            extra_config={"llm_proxy": proxy, "llm_gateway_port": 7838, "agent_controller_port": 6972},
         )
 
         async def mock_exec(name, cmd, **kwargs):
@@ -1275,7 +1276,7 @@ class TestMasterKeyFallback:
         async def mock_exec(name, cmd, **kwargs):
             return (0, "10.0.0.5") if "hostname -I" in " ".join(cmd) else (0, "ok")
         req = _req(data_dir=tmp_path, framework="hermes", model="kilo-auto/free",
-                   extra_config={"llm_proxy": self._proxy(), "llm_gateway_port": 7838})
+                   extra_config={"llm_proxy": self._proxy(), "llm_gateway_port": 7838, "agent_controller_port": 6972})
         with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
              patch("tinyagentos.deployer.exec_in_container", side_effect=mock_exec), \
              patch("tinyagentos.deployer.push_file", new_callable=AsyncMock, return_value=(0, "")), \
@@ -1315,7 +1316,7 @@ class TestMasterKeyFallback:
             model=None,
             fallback_models=[],
             data_dir=tmp_path,
-            extra_config={"llm_proxy": mock_proxy, "llm_gateway_port": 7838},
+            extra_config={"llm_proxy": mock_proxy, "llm_gateway_port": 7838, "agent_controller_port": 6972},
         )
 
         with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \

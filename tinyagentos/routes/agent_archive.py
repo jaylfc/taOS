@@ -146,6 +146,10 @@ async def archive_agent_fully(request: Request, name: str) -> dict:
                     )
             config.agents = [a for a in config.agents if a["name"] != name]
             await save_config_locked(config, config.config_path)
+            try:
+                request.app.state.auth.unbind_local_token_agent(slug)
+            except Exception as exc:  # noqa: BLE001 - best-effort revocation
+                logger.warning("archive(orphan): unbind local token for %s failed: %s", slug, exc)
             return {
                 "status": "deleted",
                 "name": slug,
@@ -168,6 +172,10 @@ async def archive_agent_fully(request: Request, name: str) -> dict:
         config.agents = [a for a in config.agents if a["name"] != name]
         config.archived_agents.append(archive_entry)
         await save_config_locked(config, config.config_path)
+        try:
+            request.app.state.auth.unbind_local_token_agent(slug)
+        except Exception as exc:  # noqa: BLE001 - best-effort revocation
+            logger.warning("archive(orphan): unbind local token for %s failed: %s", slug, exc)
         return {
             "status": "archived",
             "name": slug,

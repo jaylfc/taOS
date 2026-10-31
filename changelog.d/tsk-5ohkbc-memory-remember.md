@@ -1,0 +1,1 @@
+- agents can now write their own taOSmd memory via POST /api/memory/remember, gated by the memory_write scope (registry JWT) or a bound local token, fenced to the caller's own agent; admin sessions must name the agent.

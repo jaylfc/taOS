@@ -10,6 +10,7 @@ import {
   AlertCircle,
   History,
   ShieldQuestion,
+  KeyRound,
 } from "lucide-react";
 import { Button, Textarea } from "@/components/ui";
 import { ConsentActions } from "@/components/ConsentActions";
@@ -88,6 +89,20 @@ interface AuthRequest {
   project_id?: string;
   duration_secs?: number;
   human_duration?: string;
+}
+
+// A pending scope request from an ALREADY-REGISTERED agent asking for more
+// scopes on its own identity (GET /api/agents/scope-requests). A different
+// collection from AuthRequest: approving adds grants to the existing
+// canonical_id and mints nothing.
+interface ScopeRequest {
+  id: string;
+  canonical_id: string;
+  agent_display_name?: string;
+  requested_scopes: string[];
+  project_id?: string | null;
+  reason?: string;
+  created_ts?: string;
 }
 
 // created_at is stored as an epoch-seconds REAL on the backend, but the API
@@ -684,6 +699,89 @@ function AuthRequestCard({
   );
 }
 
+function ScopeRequestCard({
+  req,
+  onResolved,
+}: {
+  req: ScopeRequest;
+  onResolved: () => void;
+}) {
+  // Every requested scope starts ticked; unticking narrows the grant. The
+  // backend enforces narrow-not-widen, so only a subset can ever be sent.
+  const [granted, setGranted] = useState<string[]>(req.requested_scopes);
+  function toggle(scope: string) {
+    setGranted((cur) =>
+      cur.includes(scope)
+        ? cur.filter((s) => s !== scope)
+        : req.requested_scopes.filter((s) => s === scope || cur.includes(s)),
+    );
+  }
+  const display = req.agent_display_name?.trim();
+  return (
+    <li className="flex flex-col gap-2 rounded-xl border border-shell-border bg-shell-bg-deep p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-400">
+          <KeyRound size={11} className="shrink-0" />
+          Scope request
+        </span>
+        {/* The agent-supplied project_id is only what was ASKED for. The
+            binding that will actually apply is shown by ConsentActions below:
+            a global-capable grant lands OS-wide regardless (#3452). */}
+        <span className="rounded-full bg-shell-surface px-2 py-0.5 text-xs text-shell-text-secondary">
+          {req.project_id ? (
+            <>
+              Requested project <code>{req.project_id}</code>
+            </>
+          ) : (
+            "No project requested"
+          )}
+        </span>
+        {req.created_ts && (
+          <span className="ml-auto inline-flex items-center gap-1 text-xs text-shell-text-tertiary">
+            <Clock size={11} className="shrink-0" />
+            {relativeTime(req.created_ts)}
+          </span>
+        )}
+      </div>
+      <p className="text-sm font-medium text-shell-text break-all">
+        {display && display !== req.canonical_id && <span className="mr-1.5">{display}</span>}
+        <code className="text-xs text-shell-text-secondary">{req.canonical_id}</code>
+      </p>
+      {req.reason && (
+        <p className="text-xs italic text-shell-text-secondary">"{req.reason}"</p>
+      )}
+      <fieldset className="flex flex-wrap gap-2">
+        <legend className="sr-only">Scopes to grant</legend>
+        {req.requested_scopes.map((s) => (
+          <label
+            key={s}
+            className="inline-flex items-center gap-1 rounded bg-shell-surface px-2 py-0.5 text-[11px] font-mono text-shell-text-secondary"
+          >
+            <input
+              type="checkbox"
+              checked={granted.includes(s)}
+              onChange={() => toggle(s)}
+              aria-label={`Grant ${s}`}
+            />
+            {s}
+          </label>
+        ))}
+      </fieldset>
+      <ConsentActions
+        requestId={req.id}
+        source="agent_scope_requests"
+        canonicalId={req.canonical_id}
+        scopes={req.requested_scopes}
+        grantedScopes={granted}
+        requestedProjectId={req.project_id ?? undefined}
+        denyReasonRequired
+        showEffectiveBinding
+        onResolved={onResolved}
+      />
+    </li>
+  );
+}
+
 type TabKey = "pending" | "answered" | "withdrawn";
 
 export function DecisionsApp({ windowId: _windowId }: { windowId: string }) {
@@ -692,12 +790,32 @@ export function DecisionsApp({ windowId: _windowId }: { windowId: string }) {
   const [answered, setAnswered] = useState<Decision[]>([]);
   const [withdrawn, setWithdrawn] = useState<Decision[]>([]);
   const [authRequests, setAuthRequests] = useState<AuthRequest[]>([]);
+  const [scopeRequests, setScopeRequests] = useState<ScopeRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const latestSeq = useRef(0);
 
   const load = useCallback(async (opts?: { silent?: boolean }) => {
     const seq = ++latestSeq.current;
     if (!opts?.silent) setLoading(true);
+    // Pending agent scope requests (tsk-6ghcrv) load on their own task, started
+    // before the Promise.all below: a 403 (caller owns no agents) or a network
+    // error here must not blank the decisions inbox, and a failed decisions
+    // load must not stop this list from loading either.
+    void (async () => {
+      try {
+        const sRes = await fetch("/api/agents/scope-requests?status=pending", {
+          credentials: "include",
+        });
+        if (sRes.ok) {
+          const data = await sRes.json();
+          const reqs = data?.requests;
+          if (seq === latestSeq.current)
+            setScopeRequests(Array.isArray(reqs) ? (reqs as ScopeRequest[]) : []);
+        }
+      } catch {
+        // Best-effort: keep the last scope-request list in place.
+      }
+    })();
     try {
       const [pRes, aRes, rRes] = await Promise.all([
         fetch("/api/decisions?status=pending", { credentials: "include" }),
@@ -853,6 +971,26 @@ export function DecisionsApp({ windowId: _windowId }: { windowId: string }) {
             <ul className="flex flex-col gap-2">
               {authRequests.map((req) => (
                 <AuthRequestCard
+                  key={req.id}
+                  req={req}
+                  onResolved={() => load({ silent: true })}
+                />
+              ))}
+            </ul>
+          </section>
+        )}
+        {/* Pending agent scope requests (tsk-6ghcrv): an existing agent asking
+            for more scopes on its own identity. Approve can grant a subset;
+            deny requires a reason. */}
+        {tab === "pending" && scopeRequests.length > 0 && (
+          <section className="mb-4 flex flex-col gap-2" aria-label="Scope requests">
+            <h2 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-shell-text-tertiary">
+              <KeyRound size={13} className="shrink-0 text-amber-400" />
+              Scope requests ({scopeRequests.length})
+            </h2>
+            <ul className="flex flex-col gap-2">
+              {scopeRequests.map((req) => (
+                <ScopeRequestCard
                   key={req.id}
                   req={req}
                   onResolved={() => load({ silent: true })}

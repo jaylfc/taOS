@@ -1,0 +1,3 @@
+### Added
+
+- The installer now asks whether to boot this machine into the taOS desktop (local) or run headless (remote-only). `TAOS_DESKTOP=local|headless` answers it for unattended installs. When `local` is chosen, `scripts/kiosk-setup.sh` runs and `taos-kiosk.service` is enabled so the machine boots into the taOS desktop. Local mode also sets graphical.target as the default boot target so the desktop starts after a reboot.

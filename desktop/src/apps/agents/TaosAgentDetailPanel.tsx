@@ -1,8 +1,9 @@
 import { useState, useEffect } from "react";
-import { Bot, Settings, X } from "lucide-react";
+import { Activity, Bot, Settings, TerminalSquare, X } from "lucide-react";
 import { ModelPickerModal } from "@/components/ModelPickerModal";
 import type { AgentModel } from "@/components/ModelPickerFlow";
 import { loadAgentModels } from "@/lib/models";
+import { TaosAgentShellTab } from "./TaosAgentShellTab";
 import {
   fetchTaosAgentConfig,
   setTaosAgentModel,
@@ -17,13 +18,14 @@ import {
   TabsList,
   TabsTrigger,
 } from "@/components/ui";
+import { TaosAgentActivity } from "./TaosAgentActivity";
 
 /* ------------------------------------------------------------------ */
 /*  TaosAgentDetailPanel                                               */
 /*  Same chrome as AgentDetailPanel but wired to /api/taos-agent/*    */
 /* ------------------------------------------------------------------ */
 
-type TaosDetailTab = "settings" | "persona";
+type TaosDetailTab = "settings" | "persona" | "activity" | "shell";
 
 export function TaosAgentDetailPanel({
   onClose,
@@ -170,6 +172,14 @@ export function TaosAgentDetailPanel({
             <TabsTrigger value="persona">
               <Bot size={13} className="mr-1.5" />
               Persona
+            </TabsTrigger>
+            <TabsTrigger value="activity">
+              <Activity size={13} className="mr-1.5" />
+              Activity
+            </TabsTrigger>
+            <TabsTrigger value="shell">
+              <TerminalSquare size={13} className="mr-1.5" />
+              Shell
             </TabsTrigger>
           </TabsList>
         </div>
@@ -332,6 +342,19 @@ export function TaosAgentDetailPanel({
                 )}
               </>
             )}
+          </div>
+        </TabsContent>
+
+        {/* Activity tab: external writes and local fixes */}
+        <TabsContent value="activity" className="h-full mt-0">
+          <div className="h-full overflow-auto p-4">
+            {tab === "activity" && <TaosAgentActivity />}
+          </div>
+        </TabsContent>
+        {/* Shell tab: the allow/deny profile for the agent's shell */}
+        <TabsContent value="shell" className="h-full mt-0">
+          <div className="h-full overflow-auto p-4">
+            {tab === "shell" && <TaosAgentShellTab />}
           </div>
         </TabsContent>
       </div>

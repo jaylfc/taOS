@@ -90,7 +90,10 @@ class HardwareProfile:
 
     @property
     def profile_id(self) -> str:
-        arch = "arm" if self.cpu.arch in ("aarch64", "armv7l") else "x86"
+        # "arm64" is what platform.machine() returns on macOS / Apple Silicon;
+        # without it an M1/M2 Mac was labelled x86 and missed the arm-* tiers.
+        # Matches the arch mapping in cluster/capabilities.py.
+        arch = "arm" if self.cpu.arch in ("aarch64", "armv7l", "arm64") else "x86"
         if self.npu.type != "none":
             accel = "npu"
         elif self.gpu.cuda:
@@ -205,6 +208,20 @@ def _detect_cpu() -> CpuInfo:
 
 
 def _detect_ram() -> int:
+    # macOS / Apple Silicon has no /proc/meminfo. hw.memsize reports total
+    # physical RAM in bytes, and unified memory means that is also the pool the
+    # GPU draws from. Without this branch ram_mb is 0 on a Mac, which collapses
+    # the RAM-derived profile tier and every capacity hint to "unknown".
+    if platform.system() == "Darwin":
+        try:
+            import subprocess
+            mem_bytes = int(subprocess.run(["sysctl", "-n", "hw.memsize"],
+                                           capture_output=True, text=True, timeout=5).stdout.strip())
+            total_mb = mem_bytes // (1024 * 1024)
+            if total_mb > 0:
+                return total_mb
+        except Exception:
+            pass
     try:
         meminfo = Path("/proc/meminfo").read_text()
         for line in meminfo.split("\n"):
@@ -637,19 +654,28 @@ def _detect_os() -> OsInfo:
 def _detect_device_class() -> str | None:
     """Detect if this is a taOSmobile handset.
 
-    A taOSmobile handset is identified by the presence of the taos-kiosk.service
-    systemd unit (which only exists on devices provisioned as taOS handsets).
-    This mirrors the capability probe used by /api/system/session-mode.
+    A taOSmobile handset is identified by the presence of BOTH the
+    taos-kiosk.service AND plasma-mobile.service systemd units. The kiosk unit
+    provides the taOS shell; the plasma unit is the stock KDE phone shell that
+    acts as the fallback. A desk runs the kiosk unit only and is NOT a handset.
     """
     try:
         import subprocess
-        result = subprocess.run(
+        kiosk_result = subprocess.run(
             ["systemctl", "cat", "taos-kiosk.service"],
             capture_output=True,
             text=True,
             timeout=5,
         )
-        if result.returncode == 0:
+        if kiosk_result.returncode != 0:
+            return None
+        plasma_result = subprocess.run(
+            ["systemctl", "cat", "plasma-mobile.service"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if plasma_result.returncode == 0:
             return "mobile"
     except (subprocess.SubprocessError, FileNotFoundError):
         pass

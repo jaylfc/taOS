@@ -37,6 +37,7 @@ class PairStartBody(BaseModel):
 
 class PairSessionBody(BaseModel):
     session: str
+    label_pin: str = ""
 
 
 def _manager(request: Request):
@@ -90,11 +91,14 @@ async def ble_pair_confirm(request: Request, body: PairSessionBody):
     session_id = body.session.strip()
     if not session_id:
         return JSONResponse({"error": "session is required"}, status_code=400)
+    label_pin = body.label_pin.strip()
+    if label_pin and not (4 <= len(label_pin) <= 12 and label_pin.isascii() and label_pin.isdigit()):
+        return JSONResponse({"error": "invalid_label_pin"}, status_code=400)
     manager = _manager(request)
     if manager is None:
         return JSONResponse({"error": "bluetooth_unavailable"}, status_code=503)
     try:
-        node = await manager.confirm(session_id)
+        node = await manager.confirm(session_id, label_pin=label_pin)
     except BluetoothError:
         return JSONResponse({"error": "bluetooth_unavailable"}, status_code=503)
     except PairError as exc:

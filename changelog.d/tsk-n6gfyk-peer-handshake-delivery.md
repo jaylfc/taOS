@@ -1,0 +1,3 @@
+### Fixed
+
+- Friend-accept now completes the peer handshake: the accepting node delivers a signed handshake to the requester's new `POST /api/peer/handshake` (authenticated by the envelope's signing key and the requester's own outgoing friend-request edge, not a bearer), the requester pins the accepter and answers with a signed `handshake_reply`, and both sides end up holding each other's peer token so `/api/peer/*` calls authenticate in both directions. Peer delivery (handshake and collab invites) goes through the SSRF guard, which now allows a private or CGNAT address only for an exact host and port recorded on that contact's own peer link; loopback, link-local and metadata addresses stay blocked.
