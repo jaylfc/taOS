@@ -210,6 +210,12 @@ the config agent whose `registry_canonical_id` equals it. A display name or
 handle match no longer counts, so an identity named like another user's agent
 cannot delegate as it or read its memory index.
 
+**`POST /api/chat/attachments/from-path` is contained and owner-checked.** The
+`/workspaces/<owner>/...` owner segment must be a plain name under
+`agent-workspaces/` (no `.` or `..`), an `agent-workspace` source needs the
+agent's owner, an admin, or that agent's own bound token, and a project `slug`
+is authorized before any file is copied.
+
 **Agent workspaces are owner-only.** Every `/api/agents/{agent_name}/workspace/*`
 route (`tinyagentos/routes/agent_workspace.py`) runs `require_agent_owner_or_admin`
 router-wide, and a per-agent local token may only reach its own agent's
