@@ -279,6 +279,7 @@ jobs:
           # deps the config patch needs). Per-agent config (.env, config.yaml,
           # systemd unit, bridge) stays at deploy time -- only prerequisites
           # are baked so a hermes deploy from this image needs no live install.
+          # Source of truth for tag/commit: tinyagentos/scripts/install_hermes.sh
           sudo incus exec build-base -- bash -eux <<'BASH'
           export DEBIAN_FRONTEND=noninteractive
           export PATH="/root/.local/bin:$PATH"
@@ -290,8 +291,8 @@ jobs:
           echo 'export PATH="/root/.local/bin:$PATH"' >> /root/.bashrc
 
           # NousResearch hermes-agent prerequisites (no setup; config is per-agent).
-          curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh \
-            | bash -s -- --skip-setup
+          curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/v2026.8.31/scripts/install.sh \
+            | bash -s -- --skip-setup --commit "29112bef099274229cadff79cdff7bf7b99c4b77"
 
           # Deps the deploy-time config patch step relies on.
           pip3 install --break-system-packages --quiet pyyaml httpx
