@@ -81,7 +81,7 @@ def resolve_url(base_url: str, rel: str) -> str:
 
 
 def validate_manifest(doc) -> dict:
-    if doc.get("kind") != MANIFEST_KIND:
+    if not isinstance(doc, dict) or doc.get("kind") != MANIFEST_KIND:
         raise DesktopManifestKindError("manifest kind missing or not orb-desktop-apps")
 
     apps = doc.get("apps")
@@ -128,8 +128,10 @@ def validate_manifest(doc) -> dict:
                 if not isinstance(file_entry, dict):
                     raise DesktopManifestInvalid(f"{app_id} {ver_str} {platform_key}: file entry must be a dict")
 
-                file_url = file_entry.get("url")
-                validate_relative_url(file_url)
+                try:
+                    validate_relative_url(file_entry.get("url"))
+                except DesktopManifestInvalid as e:
+                    raise DesktopManifestInvalid(f"{app_id} {ver_str} {platform_key}: {e}") from e
 
                 sha256 = file_entry.get("sha256")
                 if not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", sha256):

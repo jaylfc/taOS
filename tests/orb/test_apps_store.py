@@ -157,6 +157,25 @@ def test_validate_manifest_kind_wrong_raises_kind_error():
         apps_store.validate_manifest(manifest)
 
 
+@pytest.mark.parametrize("doc", [[], "x", None, 1])
+def test_validate_manifest_non_dict_raises_kind_error(doc):
+    """A non-object document raises DesktopManifestKindError, not AttributeError."""
+    with pytest.raises(apps_store.DesktopManifestKindError):
+        apps_store.validate_manifest(doc)
+
+
+def test_validate_manifest_bad_url_names_app_version_platform():
+    """A bad file url is refused with the app id, version and platform in the message."""
+    manifest = make_valid_manifest()
+    v = manifest["apps"][0]["versions"][0]
+    plat = sorted(v["files"])[0]
+    v["files"][plat]["url"] = "../x"
+    with pytest.raises(apps_store.DesktopManifestInvalid) as e:
+        apps_store.validate_manifest(manifest)
+    msg = str(e.value)
+    assert manifest["apps"][0]["id"] in msg and v["version"] in msg and plat in msg
+
+
 def test_validate_manifest_firmware_shaped_no_kind_raises_kind_error():
     """Firmware-shaped doc without kind raises DesktopManifestKindError."""
     manifest = {
