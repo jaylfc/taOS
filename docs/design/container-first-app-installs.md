@@ -114,7 +114,7 @@ app_containers
   name          user-facing, e.g. "ArtCraft"
   runtime       "lxc" | "docker"
   node          "local" or an Incus remote / worker id
-  backend_ref   incus name (taos-app-<id>) or docker compose project
+  backend_ref   incus name (taos-ac-<container id>) or docker compose project
   base_image    e.g. images:debian/bookworm
   limits        {memory, cpu, disk, gpu}
   created_by    "install" | "suite" | "user"
@@ -140,6 +140,30 @@ filesystem would be lost on recreate.
 **Runtime choice:** LXC where available (the existing coexistence policy in
 `docs/design/lxc-docker-coexistence.md`), Docker where the manifest only ships
 an OCI image, or where LXC is not available (macOS, Docker-only hosts).
+
+### Userspace container apps stay separate
+
+Userspace `.taosapp` apps with a backend run as `taos-app-<id>` through
+`tinyagentos/userspace/container_deploy.py`, which by its own docstring is
+"SEPARATE from the agent deployer". They are Docker only, bound to
+`127.0.0.1`, capped at a fixed 512m / 1 CPU, tracked in `UserspaceAppStore`
+(`tinyagentos/userspace/store.py`) and reached through
+`/api/userspace-apps/<id>/proxy` under the bundle CSP and provenance badge,
+not through `/apps/<id>/`.
+
+They do **not** fold into `app_containers` in phases 1 to 7. They are
+untrusted third-party code with a permissions broker and a provenance model,
+one image per app, never shared and never placed on another node; catalog
+app containers are admin-installed, shareable and movable. Merging them
+would either loosen the userspace sandbox or drag its constraints onto
+catalog apps. Two consequences for this design:
+
+- App container names use `taos-ac-<container id>`, never `taos-app-`, so the
+  two systems cannot collide on a container name. Keying on the container id
+  (not an app id) also fits a container that holds several apps.
+- The shared piece is the low-level `ContainerBackend` primitive, as today.
+  Whether userspace apps later become `app_containers` rows with
+  `created_by: "userspace"` (to gain moves) is left as an open question.
 
 ## 4. Manifest fields
 
@@ -199,6 +223,82 @@ static web build, which is the cleanest case for this design:
   `path_prefix`, so every app still opens as its own desktop window.
 - Updating one app replaces one directory and reloads the server.
 
+### Serving web builds: CSP, sandbox and origin
+
+Static web builds such as ArtCraft hit three blockers in today's serving
+paths:
+
+- **No `wasm-unsafe-eval`.** The userspace bundle CSP (`_bundle_csp` in
+  `tinyagentos/routes/userspace_apps.py`) allows
+  `script-src 'self' 'unsafe-inline' blob:` only. `/apps/<id>/` responses
+  that carry no CSP of their own get the controller default from
+  `tinyagentos/middleware/security_headers.py` (`setdefault`,
+  `script-src 'self'`). Neither lets a page compile WebAssembly.
+- **No `allow-downloads`.** The userspace window
+  (`computeSandboxAttr` in `desktop/src/apps/SandboxedAppWindow.tsx`)
+  sandboxes to `allow-scripts` only, and the bundle CSP `sandbox` directive
+  adds just `allow-forms allow-popups`. So an export or "save image" in a
+  userspace build cannot download. The service window
+  (`desktop/src/apps/ServiceAppWindow.tsx`) does grant `allow-downloads`,
+  but only alongside the next problem.
+- **`/apps/<id>/` is same-origin with the shell.** `ServiceAppWindow.tsx`
+  frames it with `allow-same-origin`, and `tinyagentos/routes/service_proxy.py`
+  serves it on the controller origin. The proxy strips taOS cookies on the
+  way to the upstream, but in the browser the framed page is the shell's
+  origin: its scripts can call `/api/...` with the user's session. Adding
+  `wasm-unsafe-eval` there would loosen the shell's own policy.
+
+The fix reuses the pattern already shipped for the Browser:
+`tinyagentos/browser_proxy_origin.py` runs a second, API-free ASGI app on
+its own port (`browser_proxy_port`, default 6970), authenticated by a
+short-lived ticket redeemed for an origin-scoped cookie, and
+`security_headers.py` adds that origin to `frame-src`.
+
+**Phase 2: an apps origin.** Container-placed apps are served from a new
+API-free apps origin (config `server.apps_origin_port`, a sibling of
+`browser_proxy_port`) instead of the controller origin. It exposes only
+the `/apps/<id>/` proxy and a ticket redeem endpoint, mirroring
+`browser_proxy_origin.py`; the main app mints the ticket when a window
+opens. `security_headers.py` adds the apps origin to `frame-src`. On the
+apps origin the proxy passes the upstream app's own CSP through; when the
+upstream sends none, it sets a baseline (`default-src 'self'`,
+`script-src 'self'`, `frame-ancestors` the shell origin) instead of the
+shell's policy. `allow-same-origin` stays on the iframe, which is now safe
+because that origin holds no taOS API and no `taos_session` cookie.
+Legacy host installs keep today's same-origin `/apps/<id>/` path until
+they are migrated (phase 7).
+
+**Phase 3: per-container origin, WebAssembly and downloads.**
+
+- **Origin per app container.** Each app container gets its own origin:
+  by default its own port on the apps listener, allocated from a reserved
+  range like other host ports (`tinyagentos/installers/port_allocator.py`);
+  a subdomain `<container>.<apps domain>` when the owner configures a
+  wildcard name and certificate. The boundary is the container, not the
+  app: apps that share a container already share a filesystem and process
+  space, so separate origins between them would add nothing. "Own
+  container" in the dialog therefore also means "own origin".
+- **WebAssembly is opt-in.** The proxy adds `'wasm-unsafe-eval'` to
+  `script-src` only when the app's manifest declares it and the app is on
+  an isolated per-container origin. It is never added to the shell CSP,
+  the userspace bundle CSP, or a shared apps origin.
+- **Downloads are opt-in.** The iframe gets `allow-downloads` only when the
+  manifest declares it; the install dialog lists both grants ("Runs
+  WebAssembly", "Can save files to your computer") next to the install
+  button.
+
+```yaml
+install:
+  container:
+    serve:
+      port: 8080
+      path_prefix: /paint/
+      web: {wasm: true, downloads: true}   # both default false
+```
+
+Out of scope here: userspace `.taosapp` bundles keep their current CSP and
+sandbox (see "Userspace container apps stay separate").
+
 ## 5. Install dialog UX
 
 Install becomes a modal (`role="dialog"`, `aria-modal`, focus trapped,
@@ -242,14 +342,40 @@ API change: `install-v2` gains an optional `placement` object:
 
 ```json
 {"app_id": "...", "target_remote": "local",
- "placement": {"mode": "new" | "existing", "container_id": "ac-...",
+ "placement": {"mode": "new" | "existing" | "host", "container_id": "ac-...",
                "runtime": "lxc" | "docker"},
  "inputs": {"admin_password": "..."}}
 ```
 
 New read route: `GET /api/store/containers?compatible_with=<app_id>&node=...`.
 Suites: `POST /api/store/suites/install {suite_id, mode, apps?, placement}`.
-Omitting `placement` means `new`, so old clients keep working.
+Omitting `placement` is transitional: until phase 4 it means a host (legacy)
+install exactly as today, so old clients keep working and nothing changes
+for them while phases 2 and 3 land. From phase 4 (default flip) an omitted
+`placement` means `{"mode": "new"}`; a client that still wants a host
+install must then send `{"mode": "host"}`.
+
+`target_remote` with a `placement` creates the container **on** that node,
+it never relabels. Today only the `lxc` path does this
+(`tinyagentos/installers/lxc_installer.py` addresses `<remote>:<name>` on an
+Incus remote); for `docker` / `pip` / `script`, `_legacy_install` in
+`tinyagentos/routes/store_install.py` runs the installer on the controller
+and only records `_resolve_host(target_remote)` as `runtime_host`. Remote
+creation lands as follows:
+
+- **Phase 2, LXC:** `ContainerPlacement` creates and execs in the container
+  through the Incus remote (`<remote>:taos-ac-<id>`), the same pattern
+  `lxc_installer.py` and `tinyagentos/cluster/service_migrator.py` already
+  use. Remote LXC placement works from the first container phase.
+- **Phase 6, Docker:** the worker has no generic container API (its deploy
+  endpoint, `tinyagentos/worker/deploy.py`, is a fixed command allowlist), so
+  remote Docker needs a new authenticated worker endpoint that applies a
+  compose project from a pinned spec. It lands with Move, which needs the
+  same "recreate this project on node X" step. Until then a Docker
+  `placement` with a non-local `target_remote` is refused with a 400 and the
+  dialog only offers nodes where the chosen runtime can be created.
+- The legacy relabel stays for omitted `placement` until phase 4, and is
+  then reached only by an explicit host install.
 
 ## 6. Moving containers across the cluster
 
@@ -290,17 +416,24 @@ Each phase is one PR, mergeable alone, with tests and its changelog fragment.
    `install_registry` written on install. No behaviour change.
 2. **LXC placement executor.** A `ContainerPlacement` service that creates or
    reuses an app container and runs `pip` / `script` / `npm` / `static`
-   inside it. `install-v2` uses it when `placement` is sent; host installs
-   remain the default until phase 4. Proxy gets `path_prefix`.
+   inside it, locally or on an Incus remote. `install-v2` uses it when
+   `placement` is sent; an omitted `placement` stays a host install until
+   phase 4. Proxy gets `path_prefix`. The API-free apps origin serves
+   container-placed apps.
 3. **Install dialog.** The modal, `requires.inputs`, the compatible
-   containers route, keyboard and ARIA tests.
-4. **Default flip.** New installs default to container placement; the
-   docker path moves to a compose project per app container. Existing host
+   containers route, keyboard and ARIA tests. Per-container origins, and the
+   manifest-gated `wasm-unsafe-eval` and `allow-downloads` grants shown in
+   the dialog.
+4. **Default flip.** An omitted `placement` now means `new`; host installs
+   need `{"mode": "host"}`. The docker path moves to a compose project per
+   app container (local node only). Existing host
    installs keep working and are labelled "host".
 5. **Suites.** `suite` catalog type, loader, suite install route, whole and
    per-app modes, ArtCraft manifests.
 6. **Move.** Container move for LXC (wrapping `migrate_container`) and
-   Docker (volume tar), with the UI and target filtering.
+   Docker (volume tar), with the UI and target filtering. Adds the worker
+   endpoint that creates a compose project on a remote node, which also
+   enables Docker placement on a remote at install time.
 7. **Migrate old host installs** into containers, opt-in per app.
 8. **Host-native streamed tier** (separate design when picked up).
 
@@ -321,3 +454,12 @@ two-node cluster with a GPU worker for 6.
    any user for their own apps?
 6. Should `npm` / `uvx` / `apt` manifests, which have no installer today, be
    container-only from day one?
+7. Should legacy host installs on `/apps/<id>/` lose `allow-same-origin`
+   before phase 7 migrates them, at the cost of breaking apps that rely on
+   cookies or storage?
+8. Should userspace `.taosapp` container apps later become `app_containers`
+   rows (`created_by: "userspace"`) so they can move, or stay separate for
+   good?
+9. Per-container origins by port by default: acceptable port usage on a
+   box with many containers, or should the apps origin require a wildcard
+   subdomain?
