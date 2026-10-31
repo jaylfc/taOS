@@ -617,3 +617,23 @@ def test_load_cached_catalog_desktop_kind_rejected(tmp_path, test_key, keys_dict
     # state must be unchanged (serial still 8)
     state_text = state_path.read_text()
     assert '"serial": 8' in state_text
+
+
+def test_accept_and_cache_refuses_desktop_kind_before_any_work(tmp_path, test_key, keys_dict):
+    """_accept_and_cache must refuse a non-firmware kind before it records the
+    serial or writes the cache; load_catalog's own check runs only after both."""
+    private_key, _, _ = test_key
+    catalog = {"serial": 5, "kind": "orb-desktop-apps", "apps": []}
+    catalog_bytes = json.dumps(catalog).encode("utf-8")
+    sig_bytes = sign_catalog(private_key, catalog_bytes)
+
+    cache_dir = tmp_path / "cache"
+    state_path = tmp_path / "state.json"
+    from tinyagentos.orb import catalog_fetch
+
+    with pytest.raises(OrbError) as exc:
+        catalog_fetch._accept_and_cache(catalog_bytes, sig_bytes, state_path, keys_dict, cache_dir)
+    assert "orb-desktop-apps" in str(exc.value)
+    assert not state_path.exists()
+    assert not (cache_dir / "catalog.json").exists()
+    assert not (cache_dir / "catalog.json.sig").exists()
