@@ -279,7 +279,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
   const pressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pressStartRef = useRef<{ x: number; y: number } | null>(null);
-  const lastLongPressAtRef = useRef(0);
+  const lastLongPressRef = useRef<{ id: string; at: number } | null>(null);
 
   const clearPressTimer = () => {
     if (pressTimerRef.current) {
@@ -332,7 +332,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
       pressStartRef.current = { x: e.clientX ?? 0, y: e.clientY ?? 0 };
       pressTimerRef.current = setTimeout(() => {
         pressTimerRef.current = null;
-        lastLongPressAtRef.current = Date.now();
+        lastLongPressRef.current = { id, at: Date.now() };
         toggleSelected(id);
       }, LONG_PRESS_MS);
     },
@@ -345,11 +345,13 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
     },
     onPointerUp: clearPressTimer,
     onPointerCancel: clearPressTimer,
+    onPointerLeave: clearPressTimer,
     onContextMenu: (e: React.MouseEvent) => {
       if ((e.target as Element).closest?.(INTERACTIVE)) return;
       e.preventDefault();
       // Android fires contextmenu right after our own long-press; do not toggle twice.
-      if (Date.now() - lastLongPressAtRef.current < 800) return;
+      const last = lastLongPressRef.current;
+      if (last && last.id === id && Date.now() - last.at < 800) return;
       clearPressTimer();
       toggleSelected(id);
     },
@@ -397,7 +399,12 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
   if (isMobile) {
     for (let k = messages.length - 1; k >= 0; k--) {
       const m = messages[k] as MessageRow;
-      if (isOwnMessage(m, currentUserId)) {
+      if (
+        isOwnMessage(m, currentUserId) &&
+        !m.deleted_at &&
+        m.state !== "pending" &&
+        m.state !== "streaming"
+      ) {
         lastOwnIndex = k;
         break;
       }
@@ -771,6 +778,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
             const lastOfRun = breaksRun(msg, next);
             const nameText = displayAuthor(msg, { currentUserId, currentUserDisplayName });
             const showNameRow = !own && firstOfRun && (!isDm || isDeadAgent);
+            const showHeaderRow = !own && firstOfRun;
             const selected = selectedMessageId === msg.id;
             const settled = msg.state !== "pending" && msg.state !== "streaming";
             const showAgentFooter =
@@ -858,8 +866,13 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                     own ? "justify-end" : "justify-start"
                   } ${firstOfRun ? "mt-2.5" : ""} ${hasReactions ? "mb-3" : ""}`}
                   title={new Date(toMs(msg.created_at)).toLocaleString()}
-                  {...mobileRowHandlers(msg.id)}
+                  role="group"
+                  aria-describedby={`msg-actions-hint-${msg.id}`}
+                  {...(editingMessageId === msg.id ? {} : mobileRowHandlers(msg.id))}
                 >
+                  <span id={`msg-actions-hint-${msg.id}`} className="sr-only">
+                    Press Enter to open message actions
+                  </span>
                   {!own && (
                     <div className="w-7 shrink-0">
                       {lastOfRun && (
@@ -885,9 +898,9 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                   <div
                     className={`flex flex-col min-w-0 max-w-[78%] ${own ? "items-end" : "items-start"}`}
                   >
-                    {showNameRow && (
+                    {showHeaderRow && (
                       <div className="flex items-baseline gap-1.5 mb-0.5 px-1">
-                        <span
+                        {showNameRow && (<span
                           className={`text-[12px] font-semibold ${isDeadAgent ? "line-through" : ""}`}
                           style={{
                             color: isDeadAgent ? undefined : nameColorFor(msg.author_id),
@@ -896,7 +909,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                           title={authorTooltip}
                         >
                           {nameText}
-                        </span>
+                        </span>)}
                         {isAgent && !isDeadAgent && !isDm && (
                           <span className="text-[10px] text-shell-text-tertiary">agent</span>
                         )}
@@ -905,6 +918,12 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                             {authorState === "archived" ? "inactive" : "removed"}
                           </span>
                         )}
+                        <span
+                          className="text-[10px] text-shell-text-tertiary"
+                          title={new Date(toMs(msg.created_at)).toLocaleString()}
+                        >
+                          {relativeTime(msg.created_at, nowMs)}
+                        </span>
                       </div>
                     )}
                     <div
@@ -1034,7 +1053,6 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                 }`}
                 onMouseEnter={() => onHoverMessage(msg.id)}
                 onMouseLeave={() => onHoverMessage(null)}
-                {...(isMobile ? mobileRowHandlers(msg.id) : {})}
               >
                 {/* avatar gutter */}
                 <div

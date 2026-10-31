@@ -32,7 +32,7 @@ export function ReactionBar({
     <div
       className={
         compact
-          ? `absolute -bottom-3 z-10 flex gap-1 ${side === "left" ? "left-2" : "right-2"}`
+          ? `absolute -bottom-3 left-2 right-2 z-10 flex flex-wrap gap-1 ${side === "left" ? "justify-start" : "justify-end"}`
           : "flex flex-wrap gap-1 mt-1.5"
       }
     >
