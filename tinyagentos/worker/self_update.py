@@ -117,6 +117,12 @@ async def _run_helper(
         }
     except asyncio.TimeoutError:
         logger.error("self-update: '%s' timed out after %.0fs", args[0], timeout)
+        # wait_for only cancels the wait; the helper itself is still running.
+        try:
+            proc.kill()
+            await proc.wait()
+        except ProcessLookupError:
+            pass
         return {
             "ok": False,
             "output": f"timed out after {timeout:.0f}s",

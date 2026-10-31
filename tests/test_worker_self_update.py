@@ -799,3 +799,33 @@ class TestPullUpdateValidation:
         assert result["ok"] is True
         fetch = [c for c in calls if c[0] == "fetch"][0]
         assert fetch == ["fetch", "--quiet", "origin", "--", "master"]
+
+
+class TestRunHelperTimeout:
+    @pytest.mark.asyncio
+    async def test_timeout_kills_the_helper_process(self, monkeypatch):
+        """wait_for only cancels the wait: without a kill the sudo'd helper is
+        orphaned and keeps running after the update has given up on it."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from tinyagentos.worker import self_update as su
+
+        proc = MagicMock()
+        proc.returncode = None
+
+        async def never_finishes():
+            await asyncio.sleep(3600)
+
+        proc.communicate = never_finishes
+        proc.wait = AsyncMock(return_value=-9)
+        monkeypatch.setattr(su.shutil, "which", lambda _: su.DEPLOY_HELPER)
+        monkeypatch.setattr(
+            su.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)
+        )
+
+        result = await su._run_helper(["checkpoint"], timeout=0.01)
+
+        assert result["ok"] is False
+        proc.kill.assert_called_once()
+        proc.wait.assert_awaited_once()
+
