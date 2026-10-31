@@ -213,7 +213,7 @@ as groups, each device or share as a row with model or source, size, usage
 bar, health dot and role chips; an Attach button for unmanaged devices and
 an Add share form; a role editor with the placement hint for each role; a
 jobs strip. The same view hosts the install-location chooser
-(jaylfc/taOS#149), since choosing where something installs is choosing a
+(#149 on the owner's tracker), since choosing where something installs is choosing a
 device with the right role. Keyboard and screen reader access as for every
 taOS panel (list semantics, labelled controls, confirm dialogs with
 `role="alertdialog"`).
@@ -239,7 +239,7 @@ taOS panel (list semantics, labelled controls, confirm dialogs with
 
 1. Where does storage management live? Per the owner's ruling, in the
    Cluster app (see UI), which is also the home for the install-location
-   chooser (jaylfc/taOS#149). Open part: should Settings keep a read-only
+   chooser (#149 on the owner's tracker). Open part: should Settings keep a read-only
    summary that links there? Proposal: yes.
 2. Should taOS auto-attach a known device (seen before, same UUID) when it is
    plugged in again? Proposal: yes for devices that hold a role, never for
