@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from tinyagentos.auth_context import (
     CurrentUser,
     current_user,
+    require_agent_access,
     require_agent_owner_or_admin,
 )
 
@@ -20,17 +21,8 @@ router = APIRouter()
 async def _require_agent_access(
     request: Request, name: str, user: CurrentUser = Depends(current_user)
 ) -> None:
-    """Only the agent's owner, an admin, or the agent itself may read its data.
-
-    A per-agent local token maps to the admin user, so the owner check alone
-    would let agent A read agent B's messages; a bound token is fenced to its
-    own agent first. Runs before any lookup, so an unknown agent and someone
-    else's agent both answer 403.
-    """
-    bound = getattr(request.state, "agent_name", None)
-    if bound and bound != name:
-        raise HTTPException(status_code=403, detail="forbidden")
-    await require_agent_owner_or_admin(request, user, name)
+    """Only the agent's owner, an admin, or the agent itself may read its data."""
+    await require_agent_access(request, user, name)
 
 
 class SendMessageRequest(BaseModel):

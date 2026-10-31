@@ -9,12 +9,12 @@ import shutil
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from filelock import FileLock
 
 from tinyagentos.atomic_io import atomic_write_text
-from tinyagentos.auth_context import current_user, require_agent_owner_or_admin
+from tinyagentos.auth_context import current_user, require_agent_access
 from tinyagentos.routes.project_files import _authorize_files_actor
 
 router = APIRouter()
@@ -144,10 +144,7 @@ async def attachment_from_path(body: dict, request: Request):
             return JSONResponse(
                 {"error": "slug must match path owner for agent-workspace"}, status_code=400
             )
-        bound = getattr(request.state, "agent_name", None)
-        if bound and bound != slug:
-            raise HTTPException(status_code=403, detail="forbidden")
-        await require_agent_owner_or_admin(request, current_user(request), slug)
+        await require_agent_access(request, current_user(request), slug)
     try:
         src = _resolve_workspace_path(data_dir, source, slug, vfs_path)
     except ValueError as e:

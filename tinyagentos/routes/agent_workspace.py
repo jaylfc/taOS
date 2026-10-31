@@ -5,11 +5,11 @@ import json
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form, Query
+from fastapi import APIRouter, Depends, Request, UploadFile, File, Form, Query
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from tinyagentos.auth_context import CurrentUser, current_user, require_agent_owner_or_admin
+from tinyagentos.auth_context import CurrentUser, current_user, require_agent_access
 from tinyagentos.routes.user_workspace import (
     _dir_signature,
     _list_dir,
@@ -34,15 +34,10 @@ async def _require_agent_access(
 ) -> None:
     """Only the agent's owner, an admin, or the agent itself may touch its workspace.
 
-    A per-agent local token maps to the admin user, so the owner check alone
-    would let agent A read or rewrite agent B's files; a bound token is fenced
-    to its own agent first. Every route in this module carries ``{agent_name}``,
-    so the check runs once, router-wide, before any handler.
+    Every route in this module carries ``{agent_name}``, so the check runs
+    once, router-wide, before any handler.
     """
-    bound = getattr(request.state, "agent_name", None)
-    if bound and bound != agent_name:
-        raise HTTPException(status_code=403, detail="forbidden")
-    await require_agent_owner_or_admin(request, user, agent_name)
+    await require_agent_access(request, user, agent_name)
 
 
 router = APIRouter(dependencies=[Depends(_require_agent_access)])
