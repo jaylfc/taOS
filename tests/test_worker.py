@@ -75,6 +75,35 @@ class TestDetectCapabilities:
         assert "image-generation" in caps
         assert "embedding" not in caps
 
+    def test_whisper_backend(self):
+        """A whisper backend advertises asr only (taOS #3231)."""
+        agent = WorkerAgent("http://localhost:6969")
+        backends = [{"type": "whisper", "url": "http://localhost:9000"}]
+        with patch("shutil.which", return_value=None):
+            caps = agent.detect_capabilities(backends)
+        assert "asr" in caps
+        assert "llm-chat" not in caps
+        assert "tts" not in caps
+
+    def test_kokoro_backend(self):
+        """A kokoro backend advertises tts only (taOS #3231)."""
+        agent = WorkerAgent("http://localhost:6969")
+        backends = [{"type": "kokoro", "url": "http://localhost:8880"}]
+        with patch("shutil.which", return_value=None):
+            caps = agent.detect_capabilities(backends)
+        assert "tts" in caps
+        assert "llm-chat" not in caps
+        assert "asr" not in caps
+
+    def test_moss_backend(self):
+        """A moss backend advertises tts only (taOS #3231)."""
+        agent = WorkerAgent("http://localhost:6969")
+        backends = [{"type": "moss", "url": "http://localhost:30000"}]
+        with patch("shutil.which", return_value=None):
+            caps = agent.detect_capabilities(backends)
+        assert "tts" in caps
+        assert "asr" not in caps
+
     def test_respects_preattached_capabilities(self):
         """If the caller attaches a per-backend capabilities field (modern
         detect_backends shape from live probing), detect_capabilities uses
