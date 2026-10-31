@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import React from "react";
 
 // Stub the heavy data hooks / stores MessagesApp transitively imports so the
@@ -55,9 +55,17 @@ vi.mock("../chat/MessageList", () => ({
   MessageList: () => <div data-testid="message-list" />,
 }));
 
-vi.mock("../chat/MessageInput", () => ({
-  MessageInput: () => <div data-testid="message-input" />,
-}));
+vi.mock("../chat/MessageInput", async () => {
+  const actual = await vi.importActual<typeof import("../chat/MessageInput")>("../chat/MessageInput");
+  return {
+    ...actual,
+    MessageInput: ({ onToggleSearch }: { onToggleSearch?: () => void }) => (
+      <div data-testid="message-input">
+        <button type="button" onClick={onToggleSearch}>mock-search</button>
+      </div>
+    ),
+  };
+});
 
 // Surface the listTitle so the test can verify the production code actually
 // routed through this component (vs a desktop-branch element wearing the
@@ -88,12 +96,22 @@ vi.mock("../MessagesApp.a2aSelection", () => ({
 }));
 
 vi.mock("../chat/ChannelSidebar", () => ({
-  ChannelSidebar: ({ liveAgents, agentRosterReady }: { liveAgents: unknown; agentRosterReady: unknown }) => (
+  ChannelSidebar: ({
+    liveAgents,
+    agentRosterReady,
+    onSelectChannel,
+  }: {
+    liveAgents: unknown;
+    agentRosterReady: unknown;
+    onSelectChannel?: (id: string) => void;
+  }) => (
     <div
       data-testid="channel-sidebar"
       data-live-agents={JSON.stringify(liveAgents)}
       data-agent-roster-ready={String(agentRosterReady)}
-    />
+    >
+      <button type="button" onClick={() => onSelectChannel?.("ch-g")}>open-group</button>
+    </div>
   ),
 }));
 
@@ -126,6 +144,74 @@ describe("MessagesApp mobile shell", () => {
     // The channel sidebar still renders in the desktop side-by-side layout
     // (it is the same list, just inside a different split-view variant).
     expect(screen.getByTestId("channel-sidebar")).toBeInTheDocument();
+  });
+});
+
+describe("MessagesApp mobile thread header", () => {
+  let originalFetch: typeof global.fetch;
+
+  beforeEach(() => {
+    (useIsMobile as ReturnType<typeof vi.fn>).mockReset();
+    (useIsMobile as ReturnType<typeof vi.fn>).mockReturnValue(true);
+    originalFetch = global.fetch;
+    global.fetch = vi.fn().mockImplementation((url: string) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      const ok = (body: unknown) =>
+        Promise.resolve({
+          ok: true,
+          headers: { get: () => "application/json" },
+          json: () => Promise.resolve(body),
+        } as unknown as Response);
+      if (urlStr.includes("/api/chat/channels") && !urlStr.includes("/messages")) {
+        return ok({
+          channels: [
+            { id: "ch-g", name: "design", type: "group", members: ["user", "tom", "lin"] },
+          ],
+          unread: {},
+        });
+      }
+      if (urlStr.includes("/api/chat/unread")) return ok({ unread: {} });
+      if (urlStr.includes("/api/agents")) return ok([]);
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        headers: { get: () => "application/json" },
+        json: () => Promise.resolve({}),
+      } as unknown as Response);
+    });
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  async function openGroup() {
+    render(<MessagesApp windowId="test" />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "open-group" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "open-group" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Back to chats" })).toBeInTheDocument());
+  }
+
+  it("shows one header row: a Back to chats button, the title and the member count", async () => {
+    await openGroup();
+    const header = screen.getByRole("banner");
+    expect(header).toHaveTextContent("design");
+    expect(header).toHaveTextContent("3 people");
+    // The old text-link back row ("< Messages") is not rendered.
+    expect(screen.queryByRole("button", { name: /^Back to Messages$/ })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("banner")).toHaveLength(1);
+  });
+
+  it("wires the composer search action to the search panel", async () => {
+    await openGroup();
+    fireEvent.click(screen.getByRole("button", { name: "mock-search" }));
+    await waitFor(() => expect(document.getElementById("search-panel")).toBeInTheDocument());
+  });
+
+  it("Back to chats returns to the list", async () => {
+    await openGroup();
+    fireEvent.click(screen.getByRole("button", { name: "Back to chats" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Back to chats" })).not.toBeInTheDocument());
   });
 });
 

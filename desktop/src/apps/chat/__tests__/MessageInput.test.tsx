@@ -1,9 +1,19 @@
 import { describe, it, expect, vi } from "vitest";
+import { within } from "@testing-library/react";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { MessageInput } from "../MessageInput";
 import type { Channel } from "../types";
 import type { SlashCommandsBySlug } from "../SlashMenu";
 import type { PendingAttachment } from "../AttachmentsBar";
+
+vi.mock("emoji-picker-react", () => ({
+  default: ({ onEmojiClick }: { onEmojiClick: (d: { emoji: string }) => void }) => (
+    <button type="button" data-testid="mock-picker" onClick={() => onEmojiClick({ emoji: "\u{1F600}" })}>
+      pick
+    </button>
+  ),
+  Theme: { DARK: "dark", LIGHT: "light", AUTO: "auto" },
+}));
 
 const baseChannel: Channel = {
   id: "ch-1",
@@ -327,10 +337,8 @@ describe("MessageInput", () => {
     // jsdom with React 19 does not render inline style attributes, so we
     // verify the component mounts cleanly in mobile mode rather than
     // inspecting pixel-level CSS.
-    const { container } = render(
-      <MessageInput {...defaultProps({ isMobile: true, keyboardInset: 300 })} />,
-    );
-    expect(container.querySelector(".border-t")).toBeTruthy();
+    render(<MessageInput {...defaultProps({ isMobile: true, keyboardInset: 300 })} />);
+    expect(screen.getByTestId("mobile-composer")).toBeInTheDocument();
   });
 
   it("renders without error when isMobile is false", () => {
@@ -369,5 +377,106 @@ describe("MessageInput", () => {
   it("disables send button when value is only whitespace", () => {
     render(<MessageInput {...defaultProps({ value: "   " })} />);
     expect(screen.getByRole("button", { name: /send message/i })).toBeDisabled();
+  });
+
+  /* ---- mobile composer ---- */
+
+  describe("mobile composer", () => {
+    const groupChannel: Channel = {
+      id: "ch-g",
+      name: "design",
+      type: "group",
+      members: ["user", "tom", "lin", "ana"],
+    };
+    const mobile = (o: Partial<Parameters<typeof MessageInput>[0]> = {}) =>
+      defaultProps({
+        isMobile: true,
+        channel: groupChannel,
+        onOpenSettings: vi.fn(),
+        onToggleAllThreads: vi.fn(),
+        onToggleSearch: vi.fn(),
+        ...o,
+      });
+
+    it("shows the channel name and member count in the context row", () => {
+      render(<MessageInput {...mobile()} />);
+      const card = screen.getByTestId("mobile-composer");
+      expect(within(card).getByText("design")).toBeInTheDocument();
+      expect(within(card).getByText("4 people")).toBeInTheDocument();
+      expect(screen.getByPlaceholderText("Message design")).toBeInTheDocument();
+    });
+
+    it("hides send when empty, shows an enabled send after typing, Enter sends once", () => {
+      const onSend = vi.fn();
+      const { rerender } = render(<MessageInput {...mobile({ onSend })} />);
+      expect(screen.queryByRole("button", { name: /send message/i })).not.toBeInTheDocument();
+      rerender(<MessageInput {...mobile({ onSend, value: "hi" })} />);
+      const send = screen.getByRole("button", { name: /send message/i });
+      expect(send).not.toBeDisabled();
+      fireEvent.keyDown(screen.getByRole("textbox", { name: /message input/i }), { key: "Enter" });
+      expect(onSend).toHaveBeenCalledTimes(1);
+      fireEvent.click(send);
+      expect(onSend).toHaveBeenCalledTimes(2);
+    });
+
+    it("the options menu exposes search and threads and calls the same handlers", () => {
+      const onToggleSearch = vi.fn();
+      const onToggleAllThreads = vi.fn();
+      render(<MessageInput {...mobile({ onToggleSearch, onToggleAllThreads })} />);
+      fireEvent.click(screen.getByRole("button", { name: /more options/i }));
+      const menu = screen.getByRole("menu");
+      expect(within(menu).getAllByRole("menuitem").map((i) => i.textContent)).toEqual([
+        "Channel info",
+        "Threads",
+        "Search",
+        "Members",
+      ]);
+      fireEvent.click(within(menu).getByRole("menuitem", { name: "Search" }));
+      expect(onToggleSearch).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: /more options/i }));
+      fireEvent.click(screen.getByRole("menuitem", { name: "Threads" }));
+      expect(onToggleAllThreads).toHaveBeenCalledTimes(1);
+    });
+
+    it("the + button uses the existing file upload", () => {
+      const onFileUpload = vi.fn();
+      render(<MessageInput {...mobile({ onFileUpload })} />);
+      fireEvent.click(screen.getByRole("button", { name: "Add attachment" }));
+      expect(onFileUpload).toHaveBeenCalled();
+    });
+
+    it("inserts an emoji from the picker via onChange", () => {
+      const onChange = vi.fn();
+      render(<MessageInput {...mobile({ onChange, value: "ab" })} />);
+      fireEvent.click(screen.getByRole("button", { name: /insert emoji/i }));
+      fireEvent.click(screen.getByTestId("mock-picker"));
+      expect(onChange).toHaveBeenCalledWith(expect.stringContaining("\u{1F600}"));
+    });
+
+    it("for an agent DM shows the agent name and its framework and model, never invented values", () => {
+      const dm: Channel = { id: "d", name: "tom", type: "dm", members: ["user", "tom"] };
+      const { rerender } = render(
+        <MessageInput
+          {...mobile({
+            channel: dm,
+            liveAgents: [{ name: "tom", display_name: "Tom", framework: "openclaw", model: "qwen" }],
+          })}
+        />,
+      );
+      expect(screen.getByText("Tom")).toBeInTheDocument();
+      expect(screen.getByText("openclaw \u00b7 qwen")).toBeInTheDocument();
+      expect(screen.getByPlaceholderText("Message Tom")).toBeInTheDocument();
+      rerender(
+        <MessageInput {...mobile({ channel: dm, liveAgents: [{ name: "tom", display_name: "Tom" }] })} />,
+      );
+      expect(screen.getByText("Agent")).toBeInTheDocument();
+    });
+
+    it("keeps the desktop composer unchanged", () => {
+      render(<MessageInput {...defaultProps()} />);
+      expect(screen.queryByTestId("mobile-composer")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /upload file/i })).toBeInTheDocument();
+    });
   });
 });

@@ -17,6 +17,7 @@ import {
   Play,
   Sparkles,
   Globe,
+  ChevronLeft,
 } from "lucide-react";
 import {
   Button,
@@ -48,7 +49,7 @@ import { type PinnedMessage } from "../chat/PinnedMessagesPopover";
 import { AllThreadsList } from "../chat/AllThreadsList";
 import { ChannelSwitcher } from "../chat/ChannelSwitcher";
 import { useChatNotifications } from "../chat/useChatNotifications";
-import { MessageInput } from "../chat/MessageInput";
+import { MessageInput, describeChannelParty } from "../chat/MessageInput";
 import { MessageList, type MessageListHandle } from "../chat/MessageList";
 import {
   pinMessage, unpinMessage, listPins,
@@ -2287,10 +2288,56 @@ export function MessagesApp({
   /*  Message area                                                     */
   /* ---------------------------------------------------------------- */
 
+  const mobileParty = describeChannelParty(currentChannel, liveAgents, "kind");
+
   const messageAreaUI = busSelected ? (
     <A2aBusMessageView channel={busSelected} />
   ) : (
-    <div className="relative flex-1 flex flex-col min-w-0 h-full">
+    <div
+      className="relative flex-1 flex flex-col min-w-0 h-full"
+      style={
+        isMobile
+          ? {
+              // Subtle deep-slate wash with a hint of teal at the top. Built on
+              // the theme base token so text contrast is unchanged.
+              backgroundColor: "var(--color-shell-bg)",
+              backgroundImage:
+                "radial-gradient(120% 55% at 50% 0%, rgba(45, 212, 191, 0.09), transparent 70%)",
+            }
+          : undefined
+      }
+    >
+      {isMobile && selectedChannel && (
+        <header
+          className="shrink-0 flex items-center gap-3 px-[10px] pb-2"
+          style={{ paddingTop: "max(env(safe-area-inset-top), 8px)" }}
+        >
+          <button
+            type="button"
+            onClick={() => { setSelectedChannel(null); setBusSelected(null); }}
+            aria-label="Back to chats"
+            className="h-10 w-10 shrink-0 rounded-xl flex items-center justify-center border border-shell-border bg-shell-surface backdrop-blur-xl text-shell-text active:opacity-60"
+          >
+            <ChevronLeft size={22} strokeWidth={2.25} aria-hidden="true" />
+          </button>
+          <div className="min-w-0 flex-1">
+            <h1 className="text-[16px] font-semibold leading-tight truncate text-shell-text">
+              {mobileParty.title || currentChannel?.name || ""}
+            </h1>
+            {mobileParty.kind === "group" ? (
+              mobileParty.subtitle && (
+                <div className="text-[12px] leading-tight truncate text-shell-text-tertiary">
+                  {mobileParty.subtitle}
+                </div>
+              )
+            ) : (
+              mobileParty.kind === "agent" && (
+                <div className="text-[12px] leading-tight truncate text-shell-text-tertiary">Agent</div>
+              )
+            )}
+          </div>
+        </header>
+      )}
       {selectedChannel && !atBottom && (
         <button
           type="button"
@@ -2321,6 +2368,10 @@ export function MessagesApp({
         </div>
       ) : (
         <>
+          {/* On mobile the header above replaces the list's own channel
+              header (its actions live in the composer menu), so hide that
+              first child. `contents` keeps the desktop layout untouched. */}
+          <div className={isMobile ? "flex flex-col flex-1 min-h-0 [&>div:first-child]:hidden" : "contents"}>
           <MessageList
             ref={messageListHandleRef}
             messages={messages}
@@ -2398,6 +2449,7 @@ export function MessagesApp({
             typingAgents={typingAgents}
             receipts={receipts}
           />
+          </div>
 
           {/* #1741: stall banner — surfaces only when a response is abnormally
               slow or has gone quiet, so a stalled generation no longer looks
@@ -2529,6 +2581,16 @@ className="shrink-0 p-0.5 rounded hover:bg-shell-surface-active transition-color
               uploadFileAttachment(id, entry.file);
             }}
             onFileUpload={handleFileUpload}
+            liveAgents={liveAgents}
+            onOpenSettings={handleOpenSettings}
+            onToggleAllThreads={() => {
+              if (showAllThreads) { setShowAllThreads(false); }
+              else { closeThread(); setShowSettings(false); setShowSearch(false); setShowAllThreads(true); }
+            }}
+            onToggleSearch={() => {
+              if (showSearch) { setShowSearch(false); }
+              else { closeThread(); setShowSettings(false); setShowAllThreads(false); setShowSearch(true); }
+            }}
             onSlashPick={(slug, cmd) => setInput(`@${slug} /${cmd} `)}
             onSlashClose={() => {}}
             onPaste={(e) => {
@@ -2575,6 +2637,7 @@ className="shrink-0 p-0.5 rounded hover:bg-shell-surface-active transition-color
           // name and the dead space it took up. Desktop keeps it.
           detailTitle={isMobile ? undefined : (busSelected ?? currentChannel?.name)}
           listWidth={240}
+          hideDetailNav={isMobile && selectedChannel !== null && busSelected === null}
           list={channelListUI}
           detail={messageAreaUI}
         />
