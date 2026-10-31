@@ -8,4 +8,4 @@
   name could write into that user's index. A config agent with no `registry_canonical_id`
   falls back to the raw value, which the registry cannot attribute, so non-admins get 403
   (fail closed) while admins pass. The bound-local-token and registry-JWT branches are
-  unchanged.
+  unchanged by the hlr54s change (the registry-JWT branch was later changed by tsk-jke3kk).

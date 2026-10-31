@@ -24,6 +24,7 @@ The headers are built by ``build_trace_context_headers()``.
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import datetime, UTC
 from pathlib import Path
 
@@ -418,27 +419,26 @@ async def memory_remember(request: Request, body: RememberRequest):
                 if a.get("registry_canonical_id") == raw:
                     target = a
                     break
+        # If nothing resolved, return 404 before any write
+        if target is None:
+            raise HTTPException(status_code=404, detail="unknown agent")
         # For human/admin sessions (not unbound host token), verify agent
         # ownership against the resolved target.
         # - If target has a registry_canonical_id: authorize against that id.
         # - If target has NO registry_canonical_id: admin only (config-only
         #   agent cannot be attributed by the registry; non-admins are
         #   forbidden).
-        # - If nothing resolved: authorize against raw.
         if getattr(request.state, "via", None) != "local_token":
             user = current_user(request)
-            if target is not None:
-                if target.get("registry_canonical_id"):
-                    await require_agent_owner_or_admin(
-                        request, user, target["registry_canonical_id"]
-                    )
-                else:
-                    if not user.is_admin:
-                        raise HTTPException(status_code=403, detail="forbidden")
+            if target.get("registry_canonical_id"):
+                await require_agent_owner_or_admin(
+                    request, user, target["registry_canonical_id"]
+                )
             else:
-                await require_agent_owner_or_admin(request, user, raw)
-        # Write with the resolved config agent name when resolved, else raw.
-        agent = target["name"] if target is not None else raw
+                if not user.is_admin:
+                    raise HTTPException(status_code=403, detail="forbidden")
+        # Write with the resolved config agent name
+        agent = target["name"]
 
     # Write through shared qmd serve /ingest (same pattern as import_data.py)
     http_client = request.app.state.http_client
@@ -450,10 +450,10 @@ async def memory_remember(request: Request, body: RememberRequest):
         db_path = _agent_db_path(request, agent)
     except OSError as exc:
         logger.warning("agent db path error: %s", exc)
-        return JSONResponse({"stored": False, "error": str(exc)}, status_code=502)
+        return JSONResponse({"stored": False, "error": "memory store unavailable"}, status_code=502)
     payload = {
         "body": body.text,
-        "path": f"remember/{timestamp}.md",
+        "path": f"remember/{timestamp}-{uuid.uuid4().hex[:8]}.md",
         "title": body.title or "remembered",
         "collection": "remember",
         "dbPath": db_path,
@@ -466,4 +466,4 @@ async def memory_remember(request: Request, body: RememberRequest):
         return {"stored": True, "agent": agent}
     except Exception as exc:
         logger.warning("qmd /ingest failed: %s", exc)
-        return JSONResponse({"stored": False, "error": str(exc)}, status_code=502)
+        return JSONResponse({"stored": False, "error": "memory store unavailable"}, status_code=502)
