@@ -1437,6 +1437,8 @@ async def test_read_routes_do_not_leak_decided_by(client, monkeypatch, tmp_path)
             "granted_scopes",
             "created_ts",
             "decided_ts",
+            # Opted in by tsk-6ghcrv: the approver's refusal reason.
+            "deny_reason",
         }
 
         owner_one = await client.get(
@@ -1723,5 +1725,94 @@ async def test_create_persists_duration_secs(tmp_path):
             duration_secs=None,
         )
         assert none_rec["duration_secs"] is None
+    finally:
+        await store.close()
+
+
+# ---------------------------------------------------------------------------
+# Deny reason (tsk-6ghcrv): the Decisions app requires a reason to deny, and
+# the reason is recorded on the row and readable by the agent that asked.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_deny_records_reason_and_clears_pending(client, monkeypatch, tmp_path):
+    env = await _wire(client, monkeypatch, tmp_path)
+    try:
+        cid = await _register_active(env)
+        rec = await env.scope_store.create(
+            canonical_id=cid,
+            requested_scopes=["decisions_read", "decisions_write"],
+            project_id=None,
+            reason="ask the user questions",
+        )
+        resp = await client.post(
+            f"/api/agents/registry/{cid}/scope-requests/{rec['id']}/deny",
+            json={"reason": "too broad for an OS-wide grant"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["status"] == "refused"
+
+        # The reason is persisted and part of the public read shape, so the
+        # agent can learn WHY it was refused instead of re-filing blind.
+        one = await client.get(f"/api/agents/registry/{cid}/scope-requests/{rec['id']}")
+        assert one.status_code == 200, one.text
+        assert one.json()["status"] == "refused"
+        assert one.json()["deny_reason"] == "too broad for an OS-wide grant"
+
+        # The row has left the pending list the Decisions app renders.
+        pending = await client.get("/api/agents/scope-requests?status=pending")
+        assert pending.status_code == 200, pending.text
+        assert pending.json()["requests"] == []
+        assert await env.grants.list_grants(cid) == []
+    finally:
+        await env.close()
+
+
+@pytest.mark.asyncio
+async def test_deny_without_body_still_works_and_reason_is_null(
+    client, monkeypatch, tmp_path
+):
+    """The bell/toast Deny posts no body; that stays valid (reason recorded as null)."""
+    env = await _wire(client, monkeypatch, tmp_path)
+    try:
+        cid = await _register_active(env)
+        rec = await env.scope_store.create(canonical_id=cid, requested_scopes=["a2a_send"])
+        resp = await client.post(
+            f"/api/agents/registry/{cid}/scope-requests/{rec['id']}/deny",
+        )
+        assert resp.status_code == 200, resp.text
+        one = await client.get(f"/api/agents/registry/{cid}/scope-requests/{rec['id']}")
+        assert one.json()["deny_reason"] is None
+    finally:
+        await env.close()
+
+
+@pytest.mark.asyncio
+async def test_store_migrates_deny_reason_column_onto_existing_db(tmp_path):
+    """A pre-existing agent_scope_requests.db (no deny_reason column) gains the
+    column on init, and set_decision records the reason into it."""
+    import aiosqlite
+
+    path = tmp_path / "scope.db"
+    async with aiosqlite.connect(path) as db:
+        await db.execute(
+            "CREATE TABLE agent_scope_requests ("
+            " id TEXT PRIMARY KEY, canonical_id TEXT NOT NULL,"
+            " requested_scopes TEXT NOT NULL DEFAULT '[]', project_id TEXT,"
+            " reason TEXT NOT NULL DEFAULT '', duration_secs INTEGER,"
+            " status TEXT NOT NULL DEFAULT 'pending', granted_scopes TEXT,"
+            " created_ts TEXT NOT NULL, decided_ts TEXT, decided_by TEXT)"
+        )
+        await db.commit()
+
+    store = AgentScopeRequestsStore(path)
+    await store.init()
+    try:
+        rec = await store.create(canonical_id="agent-1", requested_scopes=["a2a_send"])
+        out = await store.set_decision(
+            rec["id"], "refused", decided_by="u1", deny_reason="not needed"
+        )
+        assert out is not None
+        assert out["deny_reason"] == "not needed"
     finally:
         await store.close()

@@ -1,0 +1,2 @@
+### Security
+- Chat reads now check who is asking. `GET /api/chat/channels/{id}`, `GET /api/chat/channels/{id}/messages`, `GET /api/chat/v2/channels/{id}`, `GET /api/chat/v2/channels/{id}/messages` and `GET /api/chat/v2/messages/{id}` return 403 `{"error": "forbidden: not a member"}` unless the caller is in the channel's `members`, an admin session, or the host local token; `GET /api/chat/v2/channels` lists only the caller's channels. A v2 read of a bus thread with no controller channel row follows the same reader rule as `GET /api/a2a/bus/messages` (tsk-5lnlrr).

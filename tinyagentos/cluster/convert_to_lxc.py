@@ -75,7 +75,8 @@ async def drain_and_delete_agents(agents: list[dict[str, str]]) -> None:
             logger.warning("delete %s failed: %s", agent["name"], r.stderr)
 
 
-async def redeploy_agents(agent_configs: list[dict[str, Any]], llm_proxy=None, gateway_port: int = 0) -> list[str]:
+async def redeploy_agents(agent_configs: list[dict[str, Any]], llm_proxy=None, gateway_port: int = 0,
+                          agent_controller_port: int = 0) -> list[str]:
     """Redeploy each agent into the new worker LXC's nested incus.
 
     Each entry is the agent's row from agents.json (name, framework, model,
@@ -93,6 +94,8 @@ async def redeploy_agents(agent_configs: list[dict[str, Any]], llm_proxy=None, g
             extra_config["llm_proxy"] = llm_proxy
         if gateway_port:
             extra_config["llm_gateway_port"] = gateway_port
+        if agent_controller_port:
+            extra_config["agent_controller_port"] = agent_controller_port
         req = DeployRequest(
             **{k: v for k, v in cfg.items() if k != "extra_config"},
             extra_config=extra_config,

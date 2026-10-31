@@ -1,0 +1,2 @@
+### Fixed
+- Hardware detection on macOS / Apple Silicon: `_detect_ram()` now reads `sysctl -n hw.memsize` (macOS has no `/proc/meminfo`), so `ram_mb` is no longer reported as 0 and the RAM-derived profile tier stays real. `profile_id` now treats `arm64` as arm (matching the mapping in `cluster/capabilities.py`), so an M1/M2 machine is no longer labelled `x86-...` and correctly lands on the `arm-cpu-*` catalog tiers (#3791).

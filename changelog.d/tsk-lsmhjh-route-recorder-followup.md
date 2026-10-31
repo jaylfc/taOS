@@ -1,0 +1,2 @@
+### Fixed
+- Agent token route recorder now re-raises I/O errors from the rotating file handler so the warning "Failed to record agent token route" fires and the request status is unchanged when recording fails.

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tinyagentos"
-version = "1.0.0-beta.55"
+version = "1.0.0-beta.56"
 description = "Self-hosted AI agent memory system for low-power hardware"
 license = { file = "LICENSE" }
 # Upper-capped at <3.15 because the proxy extra's litellm (pinned
@@ -80,11 +80,13 @@ dependencies = [
     # relicence or CVE reached users without tripping any gate. Declared here so
     # it goes through the lockfile like everything else.
     "yt-dlp>=2025.1.15",
+    # needed by the hardware Wi-Fi connect route (PSK over the system bus in-process, never on a busctl argv).
+    "dbus-fast>=5.0.22; sys_platform == 'linux'",
     "pypdf>=6.17",
 ]
 
 [project.optional-dependencies]
-worker = ["pystray>=0.19.0", "Pillow>=10.0"]
+worker = ["pystray>=0.19.0", "Pillow>=10.0", "pyserial>=3.5"]
 # Model torrent mesh (optional): libtorrent has no PyPI wheel on most platforms
 # (OS-level libtorrent-rasterbar / python3-libtorrent), so it must not be a core
 # dependency or fresh installs abort. torrent_downloader guards the import and
@@ -97,6 +99,9 @@ torrent = ["libtorrent>=2.0.9"]
 # bluetooth_unavailable when it (or an adapter) is missing, instead of every
 # install failing to boot without it.
 ble = ["bleak>=0.22.0"]
+# Orb companion (tinyagentos/orb): USB serial to the taOS Orb.
+# transport.py imports pyserial lazily, so installs without it still boot.
+orb = ["pyserial>=3.5"]
 # DEPRECATED, intentionally empty. The LiteLLM process is gone (#3313), but the
 # updater that RUNS an update is the OLD code already on the box, and before
 # #3313 it called `uv sync --frozen --extra proxy`. uv refuses an undefined
@@ -160,6 +165,7 @@ markers = [
     # workflow); inert in a normal test run.
     "guards(target, replace=None, must_kill=None): guard test's protected function; see scripts/check_non_discriminating.py",
     "skip_if_no_embed_backend: skip when no embed backend can serve the test (qmd unreachable and onnxruntime absent)",
+    "no_opencode_spawn_guard: opt out of the autouse fixture that blocks real opencode spawns (for tests that test resolve_opencode_binary directly)",
 ]
 filterwarnings = [
     # Asyncio teardown emits unraisable RuntimeError("Event loop is closed")

@@ -16,7 +16,10 @@ from pydantic import BaseModel, ConfigDict
 import taosmd.agents as tm_agents
 
 from tinyagentos.agent_db import find_agent, get_agent_summaries
+from tinyagentos.agent_controller_listener import agent_controller_live_port
 from tinyagentos.llm_gateway.cutover import llm_gateway_live_port, llm_gateway_models_check
+from tinyagentos.agent_registry_store import mint_registry_token
+from tinyagentos.agent_token_auth import _get_grants_store, _get_keypair
 from tinyagentos.config import (
     save_config_locked,
     slugify_agent_name,
@@ -173,9 +176,20 @@ class IdempotencyCache:
 
 
 @router.get("/api/agents")
-async def list_agents(request: Request):
-    """List all configured agents."""
-    return request.app.state.config.agents
+async def list_agents(request: Request, include_guests: bool = False):
+    """List all configured agents.
+
+    With ``include_guests=1`` also append registry guest agents (active rows
+    holding a ``chat_session`` grant) whose name does not collide with a
+    config agent. Default output is unchanged.
+    """
+    agents = request.app.state.config.agents
+    if not include_guests:
+        return agents
+    from tinyagentos.chat.guest_agents import list_guests
+    taken = {a.get("name") for a in agents}
+    guests = [g for g in await list_guests(request.app.state) if g["name"] not in taken]
+    return [*agents, *guests]
 
 
 @router.get("/api/agents/containers")
@@ -760,13 +774,40 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
         # subjects and memory namespaces.
         ar = getattr(request.app.state, "agent_registry", None)
         canonical_id = None
+        agent_jwt = ""
+        grants_store_for_deploy = None
         if ar is not None and getattr(ar, "_db", None) is not None:
             try:
+                user_id = getattr(request.state, "user_id", None) or ""
                 rec = await ar.register(
                     framework=body.framework,
                     display_name=display_name,
+                    user_id=user_id,
                 )
                 canonical_id = rec.get("canonical_id")
+                # Add memory_read grant for the deployed agent.
+                try:
+                    grants_store_for_deploy = _get_grants_store(request)
+                    await grants_store_for_deploy.add_grant(canonical_id, "memory_read")
+                    grant_succeeded = True
+                except Exception as e:
+                    logger.warning("Failed to add memory_read grant for %s: %s", canonical_id, e)
+                    grant_succeeded = False
+                if grant_succeeded and canonical_id is not None:
+                    # Mint registry JWT for the deployed agent.
+                    try:
+                        private_pem, _public_pem = _get_keypair(request)
+                        agent_jwt = mint_registry_token(
+                            canonical_id,
+                            private_pem,
+                            user_id=user_id,
+                            framework=body.framework,
+                        )
+                    except Exception as e:
+                        logger.warning("Failed to mint registry token for %s: %s", canonical_id, e)
+                        agent_jwt = ""
+                else:
+                    agent_jwt = ""
             except ValueError as e:
                 # Reserved-prefix names are a user error, not a server fault.
                 err_body = {"error": str(e)}
@@ -835,6 +876,12 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
         from tinyagentos.deployer import deploy_agent, DeployRequest
         llm_proxy = getattr(request.app.state, "llm_proxy", None)
         secrets_store = getattr(request.app.state, "secrets", None)
+        grants_store_for_revoke = grants_store_for_deploy
+        if grants_store_for_revoke is None:
+            try:
+                grants_store_for_revoke = _get_grants_store(request)
+            except Exception:
+                grants_store_for_revoke = None
 
         async def _background_deploy():
             try:
@@ -883,6 +930,11 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
                                 "name": body.name,
                                 "error": err_msg,
                             }
+                            if canonical_id is not None and grants_store_for_revoke is not None:
+                                try:
+                                    await grants_store_for_revoke.revoke_grant(canonical_id, "memory_read")
+                                except Exception as revoke_exc:
+                                    logger.warning("Failed to revoke memory_read grant for %s: %s", canonical_id, revoke_exc)
                             notif = getattr(request.app.state, "notifications", None)
                             if notif:
                                 await notif.add(
@@ -920,6 +972,7 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
                         "llm_proxy": llm_proxy,
                         "registry": request.app.state.registry,
                         "llm_gateway_port": llm_gateway_live_port(request.app.state),
+                        "agent_controller_port": agent_controller_live_port(request.app.state),
                         "llm_gateway_models_problem": llm_gateway_models_check(request.app.state),
                     },
                     can_read_user_memory=body.can_read_user_memory,
@@ -927,6 +980,7 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
                     remote=deploy_remote,
                     taos_host=deploy_taos_host,
                     memory_mode=body.memory_mode,
+                    agent_token=agent_jwt,
                 ))
                 agent = find_agent(config, body.name)
                 if result.get("success"):
@@ -997,6 +1051,11 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
                         "name": body.name,
                         "error": err_msg,
                     }
+                    if canonical_id is not None and grants_store_for_revoke is not None:
+                        try:
+                            await grants_store_for_revoke.revoke_grant(canonical_id, "memory_read")
+                        except Exception as revoke_exc:
+                            logger.warning("Failed to revoke memory_read grant for %s: %s", canonical_id, revoke_exc)
                     notif = getattr(request.app.state, "notifications", None)
                     if notif:
                         await notif.add(
@@ -1015,6 +1074,11 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
                     "name": body.name,
                     "error": err_msg,
                 }
+                if canonical_id is not None and grants_store_for_revoke is not None:
+                    try:
+                        await grants_store_for_revoke.revoke_grant(canonical_id, "memory_read")
+                    except Exception as revoke_exc:
+                        logger.warning("Failed to revoke memory_read grant for %s: %s", canonical_id, revoke_exc)
                 notif = getattr(request.app.state, "notifications", None)
                 if notif:
                     await notif.add(

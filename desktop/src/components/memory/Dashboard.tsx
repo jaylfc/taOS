@@ -115,6 +115,20 @@ export function Dashboard() {
     return String(v);
   };
 
+  // Compute crystal count and withLessons from stats.crystals
+  let crystalCount: number | undefined;
+  let withLessons: number | undefined;
+  if (typeof stats.crystals === 'number') {
+    crystalCount = stats.crystals;
+  } else if (stats.crystals && typeof stats.crystals === 'object' && 'total_crystals' in stats.crystals && typeof stats.crystals.total_crystals === 'number') {
+    crystalCount = stats.crystals.total_crystals;
+    if (typeof stats.crystals.with_lessons === 'number') {
+      withLessons = stats.crystals.with_lessons;
+    }
+  } else if (typeof catalogStats.crystals === 'number') {
+    crystalCount = catalogStats.crystals;
+  }
+
   return (
     <section className="flex flex-col gap-5 p-4 overflow-auto h-full" aria-label="Memory dashboard">
       <div className="flex items-center justify-between">
@@ -165,8 +179,8 @@ export function Dashboard() {
         <StatCard
           icon={<Sparkles size={18} />}
           label="Crystals"
-          value={fmt(stats.crystals ?? catalogStats.crystals)}
-          sub="narratives"
+          value={fmt(crystalCount)}
+          sub={withLessons !== undefined ? `${withLessons} with lessons` : "narratives"}
           accent="text-pink-400"
         />
         {stats.last_indexed && (
