@@ -6,5 +6,7 @@
   (`via == "local_token"`) and other non-browser callers; those callers now
   keep today's dev behaviour of storing the body author as sent. The check
   applies only when `request.state.via == "session"`: author_type is forced to
-  "user" and author_id must be missing, "user", or the caller's user_id, else
-  403 `{"error": "author_id must be the caller"}`.
+  "user" and author_id must be missing (defaults to the caller's user_id), "user",
+  or the caller's user_id, else 403
+  `{"detail": {"error": "author_id must be the caller"}}`. A non-string
+  author_id now returns that 403 instead of a 500.

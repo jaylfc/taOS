@@ -395,8 +395,9 @@ async def test_post_message_session_user_author_type_agent_with_user_id_forced_t
 
 
 @pytest.mark.asyncio
-async def test_post_message_session_user_missing_author_id_defaults_to_user(client):
-    """Session user posting without author_id => stored author_id='user', author_type='user'."""
+async def test_post_message_session_user_missing_author_id_defaults_to_caller(client):
+    """Session user posting without author_id => stored author_id is the caller's
+    user id (so edit/delete ownership checks match), author_type='user'."""
     ch = await _create_channel_http(client)
     resp = await client.post("/api/chat/messages", json={
         "channel_id": ch["id"],
@@ -405,9 +406,40 @@ async def test_post_message_session_user_missing_author_id_defaults_to_user(clie
     })
     assert resp.status_code == 200
     body = resp.json()
-    assert body["author_id"] == "user"
+    admin_id = client._transport.app.state.auth.find_user("admin")["id"]
+    assert body["author_id"] == str(admin_id)
     assert body["author_type"] == "user"
     assert body["content"] == "hello"
+
+
+@pytest.mark.asyncio
+async def test_post_message_session_user_rejects_foreign_user_author_id(client):
+    """Session user posting a foreign author_id with author_type='user' => 403."""
+    ch = await _create_channel_http(client)
+    resp = await client.post("/api/chat/messages", json={
+        "channel_id": ch["id"],
+        "author_id": "someone-else",
+        "author_type": "user",
+        "content": "impersonation attempt",
+    })
+    assert resp.status_code == 403
+    assert resp.json() == {"detail": {"error": "author_id must be the caller"}}
+    messages = await client._transport.app.state.chat_messages.get_messages(ch["id"])
+    assert len(messages) == 0
+
+
+@pytest.mark.asyncio
+async def test_post_message_session_user_rejects_non_string_author_id(client):
+    """Session user posting a non-string author_id (a list) => 403, not a 500."""
+    ch = await _create_channel_http(client)
+    resp = await client.post("/api/chat/messages", json={
+        "channel_id": ch["id"],
+        "author_id": ["x"],
+        "author_type": "user",
+        "content": "hello",
+    })
+    assert resp.status_code == 403
+    assert resp.json() == {"detail": {"error": "author_id must be the caller"}}
 
 
 @pytest.mark.asyncio

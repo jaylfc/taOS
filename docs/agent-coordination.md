@@ -2503,9 +2503,10 @@ Device bearers: the author is forced to the device's user (author_id=user_id,
     local token): author_id/author_type are forced to the bound agent's name and
     "agent". Browser sessions (cookie auth, no bound agent, and the middleware
     sets `request.state.via == "session"`): author_type is forced to "user";
-    author_id is accepted only if missing (defaults to "user"), equal to "user",
-    or equal to the caller's user_id; any other value returns 403
-    `{"error": "author_id must be the caller"}`. Every other caller (the host
+    author_id is accepted only if missing (defaults to the caller's user_id),
+    equal to "user", or equal to the caller's user_id; any other value
+    (including a non-string) returns 403
+    `{"detail": {"error": "author_id must be the caller"}}`. Every other caller (the host
     local token with `via == "local_token"`, loopback, registry JWT variants)
     keeps today's dev behaviour: the body author is stored as sent.
 

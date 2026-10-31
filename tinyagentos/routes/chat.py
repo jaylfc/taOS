@@ -356,10 +356,13 @@ async def post_message(request: Request, user: CurrentUser = Depends(current_use
     elif getattr(request.state, "via", None) == "session":
         allowed_author_ids = {"user", str(user.user_id)}
         author_id = body.get("author_id")
+        if author_id is not None and not isinstance(author_id, str):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=403, detail={"error": "author_id must be the caller"})
         if author_id is not None and author_id not in allowed_author_ids:
             from fastapi import HTTPException
             raise HTTPException(status_code=403, detail={"error": "author_id must be the caller"})
-        body["author_id"] = author_id if author_id is not None else "user"
+        body["author_id"] = author_id if author_id is not None else str(user.user_id)
         body["author_type"] = "user"
     
     msg_store = request.app.state.chat_messages
