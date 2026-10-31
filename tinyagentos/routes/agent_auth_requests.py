@@ -40,6 +40,7 @@ from tinyagentos.agent_registry_store import (
 from tinyagentos.agent_token_auth import check_agent_identity, check_agent_identity_claims
 from tinyagentos.auth_context import CurrentUser, current_user, require_owner_or_admin
 from tinyagentos.base_store import PendingCapExceeded
+from tinyagentos.config import slugify_agent_name
 from tinyagentos.notification_labels import project_label
 from tinyagentos.routes.projects import _free_suggestions
 
@@ -961,7 +962,23 @@ async def approve_request_record(
         #
         # A holder of a FOREIGN origin is never reused: reactivating it would
         # hand an internal identity to the consent flow.
-        candidate = await registry.get_by_handle(handle, status="pending")
+        #
+        # Two pending rows can share a normalised handle and the lookups return
+        # only one of them, so the identity the proof names is tried first. A
+        # valid token for the other row would otherwise 409 on the canonical-id
+        # check below with no way to resubmit past it.
+        candidate = None
+        proven_cid = record.get("proven_canonical_id")
+        if proven_cid:
+            proven = await registry.get(proven_cid)
+            if (
+                proven is not None
+                and proven.get("status") == "pending"
+                and slugify_agent_name(proven.get("handle") or "") == slugify_agent_name(handle)
+            ):
+                candidate = proven
+        if candidate is None:
+            candidate = await registry.get_by_handle(handle, status="pending")
         if candidate is None:
             candidate = await registry.get_by_handle_normalised(
                 handle, status="pending"

@@ -928,6 +928,50 @@ class TestAuthRequestRoutes:
         assert body["canonical_id"] == original_cid
         assert body["token"]
 
+    async def test_approve_reuses_the_pending_identity_the_proof_names(
+        self, consent_client
+    ):
+        """Two pending rows can share a normalised handle. The lookups find only
+        one of them, so a valid token for the other must still pick its own
+        identity instead of 409ing forever."""
+        app = consent_client._transport.app
+        registry = app.state.agent_registry
+        transport = ASGITransport(app=app)
+
+        other_spelling = await registry.register(
+            framework="hermes",
+            display_name="Hermes",
+            handle="Hermes-Two-Rows",
+            origin="external-selfjoin",
+        )
+        exact = await registry.register(
+            framework="hermes",
+            display_name="Hermes",
+            handle="hermes-two-rows",
+            origin="external-selfjoin",
+        )
+        assert other_spelling["status"] == exact["status"] == "pending"
+
+        private_pem, _public_pem = app.state.agent_registry_keypair
+        proof = mint_registry_token(
+            other_spelling["canonical_id"], private_pem, user_id="test", framework="hermes"
+        )
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            create_resp = await bare.post(
+                "/api/agents/auth-requests",
+                json={**_CREATE_BODY, "identity_claim": "hermes-two-rows"},
+                headers={"Authorization": f"Bearer {proof}"},
+            )
+        assert create_resp.json()["proof_status"] == "accepted"
+
+        resp = await consent_client.post(
+            f"/api/agents/auth-requests/{create_resp.json()['request_id']}/approve",
+            json={"granted_scopes": ["a2a_send"]},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["canonical_id"] == other_spelling["canonical_id"]
+        assert (await registry.get(exact["canonical_id"]))["status"] == "pending"
+
     async def test_approve_non_active_identity_without_proof_returns_409(
         self, consent_client
     ):
