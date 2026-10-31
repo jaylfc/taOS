@@ -1,4 +1,4 @@
-"""Tests for ChatMessageStore — 19 tests."""
+"""Tests for ChatMessageStore and POST /api/chat/messages HTTP route."""
 from __future__ import annotations
 
 import asyncio
@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 import pytest_asyncio
+from httpx import AsyncClient
 
 from tinyagentos.chat.message_store import ChatMessageStore
 
@@ -326,3 +327,84 @@ async def test_append_multiple_content_blocks(tmp_path):
         {"kind": "decision", "decision_id": "dec-1"},
         {"kind": "text", "text": "follow-up"},
     ]
+
+
+# ── HTTP POST /api/chat/messages author validation ─────────────────────────────
+
+async def _create_channel_http(client: AsyncClient, name: str = "general") -> dict:
+    """Helper: create a chat channel via the channel store directly."""
+    app = client._transport.app
+    ch_store = app.state.chat_channels
+    return await ch_store.create_channel(name=name, type="text", created_by="user")
+
+
+@pytest.mark.asyncio
+async def test_post_message_session_user_rejects_foreign_agent_author_id(client):
+    """Session user posting author_id='juniper', author_type='agent' => 403, no message stored."""
+    ch = await _create_channel_http(client)
+    resp = await client.post("/api/chat/messages", json={
+        "channel_id": ch["id"],
+        "author_id": "juniper",
+        "author_type": "agent",
+        "content": "impersonation attempt",
+    })
+    assert resp.status_code == 403
+    body = resp.json()
+    # FastAPI wraps dict detail in {"detail": {...}} or returns string detail directly
+    detail = body.get("detail") or body.get("error")
+    assert detail == "author_id must be the caller" or (isinstance(detail, dict) and detail.get("error") == "author_id must be the caller")
+    # Verify no message was stored
+    app = client._transport.app
+    msg_store = app.state.chat_messages
+    messages = await msg_store.get_messages(ch["id"])
+    assert len(messages) == 0
+
+
+@pytest.mark.asyncio
+async def test_post_message_session_user_author_id_user_accepted(client):
+    """Session user posting author_id='user' => 200, stored author_type='user'."""
+    ch = await _create_channel_http(client)
+    resp = await client.post("/api/chat/messages", json={
+        "channel_id": ch["id"],
+        "author_id": "user",
+        "author_type": "user",
+        "content": "hello from user",
+    })
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["author_id"] == "user"
+    assert body["author_type"] == "user"
+    assert body["content"] == "hello from user"
+
+
+@pytest.mark.asyncio
+async def test_post_message_session_user_author_type_agent_with_user_id_forced_to_user(client):
+    """Session user posting author_type='agent' with author_id='user' => stored author_type='user'."""
+    ch = await _create_channel_http(client)
+    resp = await client.post("/api/chat/messages", json={
+        "channel_id": ch["id"],
+        "author_id": "user",
+        "author_type": "agent",  # Should be forced to 'user'
+        "content": "hello",
+    })
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["author_id"] == "user"
+    assert body["author_type"] == "user"  # Forced to 'user'
+    assert body["content"] == "hello"
+
+
+@pytest.mark.asyncio
+async def test_post_message_session_user_missing_author_id_defaults_to_user(client):
+    """Session user posting without author_id => stored author_id='user', author_type='user'."""
+    ch = await _create_channel_http(client)
+    resp = await client.post("/api/chat/messages", json={
+        "channel_id": ch["id"],
+        "author_type": "user",
+        "content": "hello",
+    })
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["author_id"] == "user"
+    assert body["author_type"] == "user"
+    assert body["content"] == "hello"
