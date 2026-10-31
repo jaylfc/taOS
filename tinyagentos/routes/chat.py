@@ -362,7 +362,10 @@ async def post_message(request: Request, user: CurrentUser = Depends(current_use
         if author_id is not None and author_id not in allowed_author_ids:
             from fastapi import HTTPException
             raise HTTPException(status_code=403, detail={"error": "author_id must be the caller"})
-        body["author_id"] = author_id if author_id is not None else str(user.user_id)
+        # Store the caller's user id for both a missing author_id and the literal
+        # "user" (the desktop SPA sends "user"), so edit/delete ownership checks,
+        # which compare against the session user's id, match the sender.
+        body["author_id"] = str(user.user_id)
         body["author_type"] = "user"
     
     msg_store = request.app.state.chat_messages

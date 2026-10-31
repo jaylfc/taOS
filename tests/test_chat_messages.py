@@ -362,7 +362,8 @@ async def test_post_message_session_user_rejects_foreign_agent_author_id(client)
 
 @pytest.mark.asyncio
 async def test_post_message_session_user_author_id_user_accepted(client):
-    """Session user posting author_id='user' => 200, stored author_type='user'."""
+    """Session user posting author_id='user' => 200, stored author_id is the
+    caller's user id, author_type='user'."""
     ch = await _create_channel_http(client)
     resp = await client.post("/api/chat/messages", json={
         "channel_id": ch["id"],
@@ -372,7 +373,8 @@ async def test_post_message_session_user_author_id_user_accepted(client):
     })
     assert resp.status_code == 200
     body = resp.json()
-    assert body["author_id"] == "user"
+    admin_id = client._transport.app.state.auth.find_user("admin")["id"]
+    assert body["author_id"] == str(admin_id)
     assert body["author_type"] == "user"
     assert body["content"] == "hello from user"
 
@@ -389,7 +391,8 @@ async def test_post_message_session_user_author_type_agent_with_user_id_forced_t
     })
     assert resp.status_code == 200
     body = resp.json()
-    assert body["author_id"] == "user"
+    admin_id = client._transport.app.state.auth.find_user("admin")["id"]
+    assert body["author_id"] == str(admin_id)
     assert body["author_type"] == "user"  # Forced to 'user'
     assert body["content"] == "hello"
 
