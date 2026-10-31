@@ -42,6 +42,28 @@ import type { LiveAgent, ArchivedAgentEntry, Channel } from "./types";
 
 const EMOJI_PICKER = ["👍", "❤️", "😂", "🎉", "🤔", "👀", "🚀", "✅"];
 
+/** Per-person name colours for mobile bubbles; readable on dark surfaces. */
+const NAME_COLORS = [
+  "hsl(28 72% 68%)",
+  "hsl(200 72% 68%)",
+  "hsl(100 72% 68%)",
+  "hsl(330 72% 68%)",
+  "hsl(260 72% 68%)",
+  "hsl(50 72% 68%)",
+  "hsl(170 72% 68%)",
+  "hsl(5 72% 68%)",
+];
+
+function nameColorFor(authorId: string): string {
+  let hash = 0;
+  for (let i = 0; i < authorId.length; i++) {
+    hash = (hash * 31 + authorId.charCodeAt(i)) | 0;
+  }
+  return NAME_COLORS[Math.abs(hash) % NAME_COLORS.length] as string;
+}
+
+const RUN_GAP_MS = 5 * 60 * 1000;
+
 type ReceiptTickState = "sent" | "delivered" | "seen";
 
 function computeReceiptTick(
@@ -355,6 +377,30 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
   for (const m of messages) {
     if (m.author_type === "agent" && !m.deleted_at && !m.ephemeral) {
       lastAgentByThread.set(m.thread_id ?? "", m.id);
+    }
+  }
+
+  const isDm = channel?.type === "dm" || channel?.type === "dm-remote";
+
+  /** True when `b` does not continue the sender run that `a` belongs to. */
+  const breaksRun = (a: MessageRow | undefined, b: MessageRow | undefined) => {
+    if (!a || !b) return true;
+    if (a.author_id !== b.author_id || a.author_type !== b.author_type) return true;
+    const am = toMs(a.created_at);
+    const bm = toMs(b.created_at);
+    if (new Date(am).toDateString() !== new Date(bm).toDateString()) return true;
+    return Math.abs(bm - am) > RUN_GAP_MS;
+  };
+
+  // The one receipt line on mobile lives under the last own message only.
+  let lastOwnIndex = -1;
+  if (isMobile) {
+    for (let k = messages.length - 1; k >= 0; k--) {
+      const m = messages[k] as MessageRow;
+      if (isOwnMessage(m, currentUserId)) {
+        lastOwnIndex = k;
+        break;
+      }
     }
   }
 
@@ -719,6 +765,244 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                       document.body,
                     );
 
+          if (isMobile) {
+            const next = i < messages.length - 1 ? messages[i + 1] : undefined;
+            const firstOfRun = breaksRun(prev, msg);
+            const lastOfRun = breaksRun(msg, next);
+            const nameText = displayAuthor(msg, { currentUserId, currentUserDisplayName });
+            const showNameRow = !own && firstOfRun && (!isDm || isDeadAgent);
+            const selected = selectedMessageId === msg.id;
+            const settled = msg.state !== "pending" && msg.state !== "streaming";
+            const showAgentFooter =
+              isAgent &&
+              !!msg.content &&
+              settled &&
+              !msg.deleted_at &&
+              editingMessageId !== msg.id;
+            const canEditReply =
+              !!onEditAgentReply &&
+              msg.id === lastAgentByThread.get(msg.thread_id ?? "") &&
+              (msg.state ?? "complete") === "complete" &&
+              !msg.content_blocks?.length;
+            const hasReactions = !!msg.reactions && Object.keys(msg.reactions).length > 0;
+
+            let receiptLine: React.ReactNode = null;
+            if (i === lastOwnIndex && settled && !msg.deleted_at) {
+              let label: string | null = null;
+              let seen = false;
+              if (channel?.type === "dm-remote") {
+                if (msg.delivered_at) label = "Delivered";
+              } else {
+                const list = msg.receipts ?? receipts[msg.id] ?? [];
+                const tick = computeReceiptTick(own, currentUserId, channel?.members, list);
+                if (tick === "seen") {
+                  const seenAt = list.find(
+                    (r) =>
+                      (channel?.members ?? []).includes(r.agent_id) &&
+                      r.agent_id !== currentUserId &&
+                      r.agent_id !== "user",
+                  )?.seen_at;
+                  seen = true;
+                  label =
+                    seenAt != null
+                      ? `Read ${new Date(seenAt * 1000).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`
+                      : "Read";
+                } else if (tick === "delivered") {
+                  label = "Delivered";
+                }
+              }
+              if (label) {
+                receiptLine = (
+                  <div
+                    data-receipt-line="true"
+                    className="mt-1 flex items-center justify-end gap-1 text-[11px] text-shell-text-tertiary select-none"
+                  >
+                    {seen && <CheckCheck size={12} aria-hidden="true" />}
+                    <span>{label}</span>
+                  </div>
+                );
+              }
+            }
+
+            const bubbleRadius = own
+              ? `rounded-[18px] ${lastOfRun ? "rounded-br-[6px]" : ""}`
+              : `rounded-[18px] ${lastOfRun ? "rounded-bl-[6px]" : ""}`;
+            const bubbleTone = own
+              ? "bg-accent text-shell-bg-deep"
+              : "bg-shell-surface border border-shell-border/60 text-shell-text";
+
+            return (
+              <React.Fragment key={msg.id}>
+                {showDaySeparator && (
+                  <div className="flex justify-center my-3 select-none">
+                    <span className="text-[11px] text-shell-text-tertiary font-medium">
+                      {dayLabel(msg.created_at)}
+                    </span>
+                  </div>
+                )}
+                {newDividerAtId === msg.id && (
+                  <div
+                    role="separator"
+                    aria-label="New messages"
+                    className="flex items-center gap-3 my-3 select-none"
+                  >
+                    <div className="flex-1 h-px bg-accent/25" />
+                    <span className="text-[11px] text-accent-strong font-semibold">New</span>
+                    <div className="flex-1 h-px bg-accent/25" />
+                  </div>
+                )}
+                <div
+                  data-message-id={msg.id}
+                  data-own={own ? "true" : "false"}
+                  className={`relative flex items-end gap-2 px-1 select-none outline-none ${
+                    own ? "justify-end" : "justify-start"
+                  } ${firstOfRun ? "mt-2.5" : ""} ${hasReactions ? "mb-3" : ""}`}
+                  title={new Date(toMs(msg.created_at)).toLocaleString()}
+                  {...mobileRowHandlers(msg.id)}
+                >
+                  {!own && (
+                    <div className="w-7 shrink-0">
+                      {lastOfRun && (
+                        <MessageAvatar
+                          size={28}
+                          variant="tile"
+                          authorId={msg.author_id}
+                          displayName={nameText}
+                          kind={isAgent ? "agent" : "user"}
+                          dead={isDeadAgent}
+                          emoji={
+                            isAgent
+                              ? resolveAgentEmoji(
+                                  liveAgents.find((a) => a.name === msg.author_id)?.emoji,
+                                  liveAgents.find((a) => a.name === msg.author_id)?.framework,
+                                )
+                              : undefined
+                          }
+                        />
+                      )}
+                    </div>
+                  )}
+                  <div
+                    className={`flex flex-col min-w-0 max-w-[78%] ${own ? "items-end" : "items-start"}`}
+                  >
+                    {showNameRow && (
+                      <div className="flex items-baseline gap-1.5 mb-0.5 px-1">
+                        <span
+                          className={`text-[12px] font-semibold ${isDeadAgent ? "line-through" : ""}`}
+                          style={{
+                            color: isDeadAgent ? undefined : nameColorFor(msg.author_id),
+                            opacity: isDeadAgent ? 0.55 : undefined,
+                          }}
+                          title={authorTooltip}
+                        >
+                          {nameText}
+                        </span>
+                        {isAgent && !isDeadAgent && !isDm && (
+                          <span className="text-[10px] text-shell-text-tertiary">agent</span>
+                        )}
+                        {isDeadAgent && (
+                          <span className="text-[10px] text-shell-text-tertiary">
+                            {authorState === "archived" ? "inactive" : "removed"}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    <div
+                      className={`relative max-w-full ${bubbleRadius} ${bubbleTone} px-3 py-1.5 ${
+                        selected ? "ring-1 ring-accent-line" : ""
+                      }`}
+                    >
+                      {msg.deleted_at ? (
+                        <MessageTombstone />
+                      ) : editingMessageId === msg.id ? (
+                        <MessageEditor
+                          initial={msg.content}
+                          onSave={(content) => onSaveEdit(msg.id, content)}
+                          onCancel={onCancelEdit}
+                          error={editError}
+                        />
+                      ) : (
+                        <>
+                          <div
+                            className={`text-[15px] leading-[1.4] whitespace-pre-wrap break-words ${
+                              isDeadAgent ? "opacity-80" : ""
+                            }`}
+                          >
+                            {renderContent(msg.content, msg.content_blocks)}
+                            {msg.state === "pending" && <span className="ml-1 opacity-70">...</span>}
+                            {msg.state === "streaming" && (
+                              <span className="ml-1 inline-flex gap-0.5">
+                                <span className="w-1 h-1 bg-accent rounded-full animate-bounce [animation-delay:0ms]" />
+                                <span className="w-1 h-1 bg-accent rounded-full animate-bounce [animation-delay:150ms]" />
+                                <span className="w-1 h-1 bg-accent rounded-full animate-bounce [animation-delay:300ms]" />
+                              </span>
+                            )}
+                            {msg.state === "error" && (
+                              <span className="ml-1 text-red-400 text-[11px]">(error)</span>
+                            )}
+                            {msg.edited_at && (
+                              <span className="ml-1.5 text-[10px] opacity-70">(edited)</span>
+                            )}
+                          </div>
+                          {showAgentFooter && (
+                            <div className="mt-1.5 pt-1 border-t border-shell-border/60 flex items-center gap-2 text-[11px] text-shell-text-tertiary">
+                              <CopyButton
+                                content={msg.content}
+                                icon
+                                className="p-1 -ml-1 rounded text-shell-text-tertiary hover:text-shell-text select-none"
+                              />
+                              {canEditReply && (
+                                <button
+                                  type="button"
+                                  onClick={() => onEditAgentReply?.(msg.id)}
+                                  aria-label="Edit reply"
+                                  title="Edit reply"
+                                  className="p-1 rounded text-shell-text-tertiary hover:text-shell-text select-none"
+                                >
+                                  <Pencil size={13} aria-hidden="true" />
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </>
+                      )}
+                      {hasReactions && (
+                        <ReactionBar
+                          compact
+                          side={own ? "left" : "right"}
+                          reactions={msg.reactions as Record<string, string[]>}
+                          messageId={msg.id}
+                          currentUserId={currentUserId}
+                          onToggle={onToggleReaction}
+                        />
+                      )}
+                    </div>
+                    {msg.metadata?.pin_requested && msg.author_type === "agent" && (
+                      <PinRequestAffordance
+                        authorId={msg.author_id}
+                        onApprove={() => onApprovePinRequest(msg.id)}
+                      />
+                    )}
+                    {canvasBlock}
+                    <AttachmentGallery attachments={msg.attachments || []} />
+                    {typeof msg.reply_count === "number" && msg.reply_count > 0 && (
+                      <ThreadIndicator
+                        replyCount={msg.reply_count}
+                        lastReplyAt={msg.last_reply_at ?? null}
+                        onOpen={() =>
+                          onOpenThread(msg.channel_id ?? selectedChannel ?? "", msg.id)
+                        }
+                      />
+                    )}
+                    {receiptLine}
+                    {emojiPortal}
+                  </div>
+                  {hoverActions}
+                </div>
+              </React.Fragment>
+            );
+          }
+
           return (
             <React.Fragment key={msg.id}>
               {showDaySeparator && (
@@ -999,9 +1283,12 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
 function CopyButton({
   content,
   className,
+  icon = false,
 }: {
   content: string;
   className?: string;
+  /** Render lucide icons instead of the emoji glyphs (mobile bubble footer). */
+  icon?: boolean;
 }) {
   const [copied, setCopied] = React.useState(false);
   const [clipError, setClipError] = React.useState(false);
@@ -1044,7 +1331,15 @@ function CopyButton({
       }
       className={className}
     >
-      {copied ? (
+      {icon ? (
+        copied ? (
+          <Check size={14} aria-hidden="true" />
+        ) : clipError ? (
+          <X size={14} aria-hidden="true" className="text-red-400" />
+        ) : (
+          <Copy size={14} aria-hidden="true" />
+        )
+      ) : copied ? (
         <span>✓</span>
       ) : clipError ? (
         <span className="text-red-400">✕</span>

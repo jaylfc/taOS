@@ -855,6 +855,143 @@ describe("MessageList", () => {
     });
   });
 
+  /* ---- mobile bubble layout ---- */
+
+  describe("mobile bubbles", () => {
+    const rowOf = (c: HTMLElement, id: string) =>
+      c.querySelector(`[data-message-id="${id}"]`) as HTMLElement;
+    const ts = 1700000000;
+    function renderBubbles(
+      messages: MessageRow[],
+      extra: Partial<MessageListProps> = {},
+      ch: Partial<Channel> = {},
+    ) {
+      return render(
+        <MessageList
+          {...defaults({
+            selectedChannel: "ch1",
+            channel: channel(ch),
+            messages,
+            isMobile: true,
+            currentUserId: "u-123",
+            currentUserDisplayName: null,
+            ...extra,
+          })}
+        />,
+      );
+    }
+
+    it("marks the web client's own messages (author_id 'user') as own and right-aligned", () => {
+      const { container } = renderBubbles([
+        msg({ id: "a", author_id: "user", content: "mine", created_at: ts }),
+        msg({ id: "b", author_id: "bob", content: "theirs", created_at: ts + 10 }),
+      ]);
+      const own = rowOf(container, "a");
+      expect(own.getAttribute("data-own")).toBe("true");
+      expect(own.className).toContain("justify-end");
+      expect(rowOf(container, "b").getAttribute("data-own")).toBe("false");
+      expect(rowOf(container, "b").className).toContain("justify-start");
+      expect(screen.queryByText("You")).toBeNull();
+    });
+
+    it("shows the sender name once per run in a group channel", () => {
+      renderBubbles(
+        [
+          msg({ id: "a", author_id: "bob", content: "one", created_at: ts }),
+          msg({ id: "b", author_id: "bob", content: "two", created_at: ts + 10 }),
+          msg({ id: "c", author_id: "bob", content: "three", created_at: ts + 20 }),
+        ],
+        {},
+        { type: "group" },
+      );
+      expect(screen.getAllByText("bob")).toHaveLength(1);
+    });
+
+    it("omits the sender name in a DM", () => {
+      renderBubbles(
+        [msg({ id: "a", author_id: "bob", content: "hi", created_at: ts })],
+        {},
+        { type: "dm", members: ["user", "bob"] },
+      );
+      expect(screen.queryByText("bob")).toBeNull();
+    });
+
+    it("renders the read receipt once, under the last own message only", () => {
+      const members = ["user", "tom"];
+      const { container } = renderBubbles(
+        [
+          msg({ id: "a", author_id: "user", content: "first", created_at: ts }),
+          msg({ id: "b", author_id: "user", content: "second", created_at: ts + 10 }),
+          msg({ id: "c", author_id: "tom", author_type: "agent", content: "reply", created_at: ts + 20 }),
+        ],
+        {
+          receipts: {
+            a: [{ message_id: "a", agent_id: "tom", delivered_at: ts, seen_at: ts + 5 }],
+            b: [{ message_id: "b", agent_id: "tom", delivered_at: ts + 10, seen_at: ts + 15 }],
+          },
+        },
+        { type: "dm", members },
+      );
+      const lines = container.querySelectorAll('[data-receipt-line="true"]');
+      expect(lines).toHaveLength(1);
+      expect(rowOf(container, "b").contains(lines[0] as Element)).toBe(true);
+      expect(lines[0]?.textContent).toMatch(/^Read /);
+    });
+
+    it("shows Delivered when delivered but not seen, and nothing when only sent", () => {
+      const members = ["user", "tom"];
+      const base = [msg({ id: "a", author_id: "user", content: "x", created_at: ts })];
+      const { container, unmount } = renderBubbles(
+        base,
+        { receipts: { a: [{ message_id: "a", agent_id: "tom", delivered_at: ts, seen_at: null }] } },
+        { type: "dm", members },
+      );
+      expect(container.querySelector('[data-receipt-line="true"]')?.textContent).toBe("Delivered");
+      unmount();
+      const second = renderBubbles(base, { receipts: {} }, { type: "dm", members });
+      expect(second.container.querySelector('[data-receipt-line="true"]')).toBeNull();
+    });
+
+    it("puts the avatar only on the last bubble of a run", () => {
+      const { container } = renderBubbles(
+        [
+          msg({ id: "a", author_id: "bob", content: "one", created_at: ts }),
+          msg({ id: "b", author_id: "bob", content: "two", created_at: ts + 10 }),
+        ],
+        {},
+        { type: "group" },
+      );
+      expect(rowOf(container, "a").querySelector('[style*="width: 28px"]')).toBeNull();
+      expect(rowOf(container, "b").querySelector('[style*="width: 28px"]')).not.toBeNull();
+    });
+
+    it("gives agent bubbles an always-visible Copy button and a muted agent suffix in groups", () => {
+      renderBubbles(
+        [msg({ id: "a", author_id: "tom", author_type: "agent", content: "hello", created_at: ts })],
+        { liveAgents: [{ name: "tom" }] },
+        { type: "group" },
+      );
+      expect(screen.getByRole("button", { name: "Copy message" })).toBeInTheDocument();
+      expect(screen.getByText("agent")).toBeInTheDocument();
+    });
+
+    it("renders reactions as a compact chip inside the bubble", () => {
+      const { container } = renderBubbles([
+        msg({ id: "a", author_id: "bob", content: "hey", created_at: ts, reactions: { "😍": ["x", "y", "z"] } }),
+      ]);
+      const chip = within(rowOf(container, "a")).getByRole("button", { name: /😍/ });
+      expect(chip.textContent).toContain("3");
+      expect(chip.parentElement?.className).toContain("absolute");
+    });
+
+    it("keeps thread indicator and pending state visible", () => {
+      renderBubbles([
+        msg({ id: "a", author_id: "bob", content: "hey", created_at: ts, reply_count: 2, state: "pending" }),
+      ]);
+      expect(screen.getByText(/2 replies/i)).toBeInTheDocument();
+    });
+  });
+
   /* ---- pinned messages ---- */
 
   describe("pinned messages", () => {
