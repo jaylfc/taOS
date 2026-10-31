@@ -9,6 +9,7 @@ import { SearchPalette } from "@/components/SearchPalette";
 import { ShortcutProvider, useShortcut } from "@/hooks/use-shortcut-registry";
 import { useSessionPersistence } from "@/hooks/use-session-persistence";
 import { useDeviceMode } from "@/hooks/use-device-mode";
+import { useMobileControl } from "@/hooks/use-desktop-control";
 import { useIsPwa } from "@/hooks/use-is-pwa";
 import { useThemeStore, restoreActiveTheme, installWebkitRepaintGuards } from "@/stores/theme-store";
 import { useOnAuthReady } from "@/hooks/use-on-auth-ready";
@@ -213,7 +214,7 @@ export function App() {
   const effWallpaperFallback = useLightWallpaper ? wallpaperLightFallback : wallpaperFallback;
   const windows = useProcessStore((s) => s.windows);
   const openWindow = useProcessStore((s) => s.openWindow);
-  const closeWindow = useProcessStore((s) => s.closeWindow);
+  const removeWindow = useProcessStore((s) => s.removeWindow);
   const minimizeWindow = useProcessStore((s) => s.minimizeWindow);
 
   // Browser-mode flag: when on mobile but not in PWA, apply browser-safe
@@ -372,10 +373,12 @@ export function App() {
 
   const handleMobileClose = useCallback(() => {
     if (activeWindowId) {
-      closeWindow(activeWindowId);
+      // Remove, do not just mark closing: MobileAppWindow has no close
+      // animation to finish it, so the app would stay in the switcher.
+      removeWindow(activeWindowId);
       setActiveWindowId(null);
     }
-  }, [activeWindowId, closeWindow]);
+  }, [activeWindowId, removeWindow]);
 
   const handleMobileMinimise = useCallback(() => {
     if (activeWindowId) {
@@ -383,6 +386,10 @@ export function App() {
       setActiveWindowId(null);
     }
   }, [activeWindowId, minimizeWindow]);
+
+  // Agent window control (window.taosDesktop, taos:window) for the phone
+  // layout, which never mounts <Desktop/> and so never got its receiver.
+  useMobileControl({ setActive: setActiveWindowId }, mode !== "desktop");
 
   if (mode === "desktop") {
     return (

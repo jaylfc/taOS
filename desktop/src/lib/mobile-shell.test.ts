@@ -3,6 +3,7 @@ import { useProcessStore } from "@/stores/process-store";
 import {
   _resetMobileShellForTests,
   closeShellWindow,
+  fetchShellSnapshot,
   focusShellWindow,
   listShellWindows,
   openUrlInShell,
@@ -350,4 +351,53 @@ describe("shell window and url calls", () => {
       expect(await p).toBe(false);
     });
   }
+});
+
+describe("fetchShellSnapshot", () => {
+  const created = vi.fn(() => "blob:mock-url");
+  const original = URL.createObjectURL;
+
+  beforeEach(() => {
+    created.mockClear();
+    Object.defineProperty(URL, "createObjectURL", { value: created, configurable: true, writable: true });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(URL, "createObjectURL", { value: original, configurable: true, writable: true });
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it("GETs /snapshot/<con_id> and returns an object URL for the image", async () => {
+    // A string body: jsdom's Blob cannot be streamed by Node's Response.
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(new Response("jpeg", { status: 200, headers: { "Content-Type": "image/jpeg" } })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await fetchShellSnapshot(7)).toBe("blob:mock-url");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String((fetchMock.mock.calls[0] as unknown[])[0])).toBe("http://127.0.0.1:6973/snapshot/7");
+    expect(created).toHaveBeenCalledTimes(1);
+    expect((created.mock.calls[0] as unknown[]).length).toBe(1);
+  });
+
+  it("returns null on 404 without making an object URL", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response("missing", { status: 404 }))));
+    expect(await fetchShellSnapshot(7)).toBeNull();
+    expect(created).not.toHaveBeenCalled();
+  });
+
+  it("returns null when fetch rejects", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new TypeError("down"))));
+    expect(await fetchShellSnapshot(7)).toBeNull();
+  });
+
+  it("returns null when the shell does not answer in time", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
+    vi.useFakeTimers();
+    const p = fetchShellSnapshot(7);
+    await vi.advanceTimersByTimeAsync(SHELL_LAUNCH_TIMEOUT_MS + 1);
+    expect(await p).toBeNull();
+    expect(created).not.toHaveBeenCalled();
+  });
 });

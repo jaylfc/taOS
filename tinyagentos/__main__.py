@@ -79,6 +79,15 @@ def main() -> None:
         # reconcile moves agents only onto a port that answers with it.
         app.state.llm_gateway_listener_identity = secrets.token_urlsafe(24)
 
+    # Agent controller listener (loopback only): where each agent's
+    # taos-proxy-taos device connects, so agent requests never look local.
+    agent_ctl_port = _agent_controller_listener_port(
+        config, taken={port, proxy_port, tls_port, gateway_port})
+    if hasattr(app, "state"):
+        app.state.main_port = port
+        app.state.agent_controller_port = agent_ctl_port
+        app.state.agent_controller_listener_identity = secrets.token_urlsafe(24)
+
     if not proxy_port or proxy_port == port:
         # Single-port fallback: the browser proxy stays on the main origin
         # (as it has historically). No separate-origin / SW isolation, but
@@ -97,14 +106,14 @@ def main() -> None:
         # long-lived connections (SSE streams, cluster heartbeats) to close on
         # SIGTERM, so a restart hung the full 45s systemd stop timeout. Bound it
         # so the lifespan shutdown actually runs and the process exits fast.
-        if not _gateway_listener_wanted(gateway_port) and not tls_port:
+        if not _gateway_listener_wanted(gateway_port) and not tls_port and not agent_ctl_port:
             uvicorn.run(
                 app, host=host, port=port, backlog=128, timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SECS
             )
             return
         _serve_dual_port(app, host=host, port=port, proxy_port=0,
                          gateway_port=gateway_port if _gateway_listener_wanted(gateway_port) else 0,
-                         tls_port=tls_port)
+                         tls_port=tls_port, agent_controller_port=agent_ctl_port)
         return
 
     # Advertise the proxy port to the frontend (see proxy_config route) so it
@@ -114,7 +123,7 @@ def main() -> None:
 
     _serve_dual_port(app, host=host, port=port, proxy_port=proxy_port,
                      gateway_port=gateway_port if _gateway_listener_wanted(gateway_port) else 0,
-                     tls_port=tls_port)
+                     tls_port=tls_port, agent_controller_port=agent_ctl_port)
 
 
 def _gateway_listener_port(config, *, taken: set) -> int:
@@ -136,6 +145,25 @@ def _gateway_listener_port(config, *, taken: set) -> int:
     return gw
 
 
+def _agent_controller_listener_port(config, *, taken: set) -> int:
+    """The agent controller listener port, or 0 when invalid / clashing."""
+    import logging
+
+    from tinyagentos.agent_controller_listener import agent_controller_port
+
+    try:
+        ctl = agent_controller_port(config)
+    except (TypeError, ValueError):
+        logging.getLogger(__name__).error("agent controller listener: invalid port; listener disabled")
+        return 0
+    if ctl and ctl in taken:
+        logging.getLogger(__name__).error(
+            "agent controller listener: port %d clashes with a controller port; listener disabled", ctl,
+        )
+        return 0
+    return ctl
+
+
 def _gateway_listener_wanted(gateway_port: int) -> bool:
     """True unless the listener port is 0 (disabled or clashing).
 
@@ -143,7 +171,8 @@ def _gateway_listener_wanted(gateway_port: int) -> bool:
     return bool(gateway_port)
 
 
-def _serve_dual_port(app, *, host: str, port: int, proxy_port: int, gateway_port: int = 0, tls_port: int = 0) -> None:
+def _serve_dual_port(app, *, host: str, port: int, proxy_port: int, gateway_port: int = 0, tls_port: int = 0,
+                       agent_controller_port: int = 0) -> None:
     """Run the main app and the browser-proxy origin concurrently.
 
     ``uvicorn.run`` is blocking and we need two or three servers, so we drive
@@ -192,6 +221,20 @@ def _serve_dual_port(app, *, host: str, port: int, proxy_port: int, gateway_port
             host="127.0.0.1", port=gateway_port, backlog=128, lifespan="off",
             timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SECS,
         )
+    agent_ctl_config = None
+    if agent_controller_port:
+        from tinyagentos.agent_controller_listener import create_agent_controller_app
+
+        agent_ctl_config = uvicorn.Config(
+            create_agent_controller_app(
+                app, identity=getattr(app.state, "agent_controller_listener_identity", None),
+            ),
+            host="127.0.0.1", port=agent_controller_port, backlog=128, lifespan="off",
+            # Every connection here comes from loopback (the proxy device), so
+            # forwarded headers from it must never be trusted.
+            proxy_headers=False,
+            timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SECS,
+        )
     tls_config = None
     if tls_port:
         _tls_cert = getattr(app.state, "device_tls_cert_path", None)
@@ -226,6 +269,10 @@ def _serve_dual_port(app, *, host: str, port: int, proxy_port: int, gateway_port
     proxy_server = _NoSignalServer(proxy_config) if proxy_config is not None else None
     tls_server = _NoSignalServer(tls_config) if tls_config is not None else None
     sidecars = (_NoSignalServer(gateway_config),) if gateway_config is not None else ()
+    if agent_ctl_config is not None:
+        agent_ctl_server = _NoSignalServer(agent_ctl_config)
+        agent_ctl_server.sidecar_name = "agent controller"
+        sidecars += (agent_ctl_server,)
 
     started = asyncio.run(_serve_until_first_exit(main_server, proxy_server, sidecars=sidecars, tls_server=tls_server))
     if not started:
@@ -253,7 +300,8 @@ async def _serve_sidecar(server, *, name: str) -> None:
             "%s listener stopped (%s); %s",
             name,
             type(exc).__name__,
-            "agents have no LLM path until it is back" if name == "llm gateway agent" else "embedded devices will be unable to connect",
+            "agents have no LLM path until it is back" if name == "llm gateway agent"
+            else "agents cannot reach the controller until it is back" if name == "agent controller" else "embedded devices will be unable to connect",
         )
 
 
@@ -300,7 +348,7 @@ async def _serve_until_first_exit(main_server, proxy_server=None, *, sidecars=()
     tls_task = None
     if tls_server is not None:
         tls_task = (asyncio.create_task(_serve_sidecar(tls_server, name="TLS device")), tls_server)
-    side = [(asyncio.create_task(_serve_sidecar(s, name="llm gateway agent")), s) for s in sidecars]
+    side = [(asyncio.create_task(_serve_sidecar(s, name=getattr(s, "sidecar_name", "llm gateway agent"))), s) for s in sidecars]
 
     done, pending = await asyncio.wait(
         {t for t, _ in tasks},

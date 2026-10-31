@@ -35,10 +35,18 @@ from httpx import ASGITransport, AsyncClient
 REPO = Path(__file__).resolve().parents[1]
 
 
-def _free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+def _reserve_free_port() -> socket.socket:
+    """Return a socket already bound to a free port on 127.0.0.1.
+
+    The caller must keep the socket open for as long as the port has to stay
+    reserved. The previous helper closed its socket before returning, which put
+    the port straight back into the ephemeral pool where another process on the
+    runner could claim it before the test re-bound it minutes later (TOCTOU ->
+    ``OSError: [Errno 98] Address already in use``).
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("127.0.0.1", 0))
+    return s
 
 
 def _is_litellm_argv(argv) -> bool:
@@ -59,7 +67,8 @@ async def test_startup_spawns_no_litellm_process(tmp_path, monkeypatch):
     controller tries to start. Nothing may be LiteLLM (or a self-heal install
     of the proxy extra), no LiteLLM config dir may be written, and the
     configured LiteLLM port stays free."""
-    litellm_port = _free_port()
+    _port_guard = _reserve_free_port()
+    litellm_port = _port_guard.getsockname()[1]
     config = {
         "server": {"host": "0.0.0.0", "port": 6969, "litellm_port": litellm_port},
         "backends": [],
@@ -119,8 +128,15 @@ async def test_startup_spawns_no_litellm_process(tmp_path, monkeypatch):
 
     assert spawned == [], f"startup tried to run LiteLLM: {spawned}"
     assert not (tmp_path / "litellm").exists(), "startup wrote a LiteLLM config dir"
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", litellm_port))  # nothing holds the LiteLLM port
+    # _port_guard has owned litellm_port since before startup, so nothing else
+    # could have bound it. Re-binding here to prove the port was free is what
+    # made this test flaky: _free_port() released the port to the ephemeral pool
+    # as soon as it closed its socket, and an unrelated process on the runner
+    # could claim it before this line (Errno 98; shard 3/4 of run 38672903349).
+    # Holding the guard for the whole test is the race-free form of "nothing
+    # holds the LiteLLM port" -- had startup bound it, that bind would have
+    # raised EADDRINUSE instead of reaching here.
+    _port_guard.close()
 
 
 # ---------------------------------------------------------------------------
@@ -405,7 +421,7 @@ async def test_remote_deploy_refused_with_named_reason(tmp_path):
     req = DeployRequest(
         name="far", framework="smolagents", model="m1", data_dir=tmp_path,
         remote="fedora-worker", taos_host="100.64.0.1",
-        extra_config={"llm_proxy": LLMProxy(port=7834, data_dir=tmp_path), "llm_gateway_port": 7838},
+        extra_config={"llm_proxy": LLMProxy(port=7834, data_dir=tmp_path), "llm_gateway_port": 7838, "agent_controller_port": 6972},
     )
     p_create, p_exec, p_push, p_dev = _deploy_patches()
     with p_create as create, p_exec, p_push, p_dev:
@@ -428,7 +444,7 @@ async def test_local_deploy_env_uses_in_container_address(tmp_path):
         name="near", framework="smolagents", model="m1", data_dir=tmp_path,
         extra_config={
             "llm_proxy": LLMProxy(port=7834, data_dir=tmp_path),
-            "llm_gateway_port": 7838,
+            "llm_gateway_port": 7838, "agent_controller_port": 6972,
             "llm_gateway_models_problem": AsyncMock(return_value=None),
         },
     )

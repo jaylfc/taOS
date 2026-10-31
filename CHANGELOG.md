@@ -7,6 +7,14 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+## [1.0.0-beta.56] - 2026-10-13
+
+Security hotfix cut from beta.55.
+
+### Security
+
+- Agent containers now reach the controller through a dedicated loopback listener (`agent_controller_port`, default 6972) so agent requests are never mistaken for the local console. New deploys are refused until the listener is verified, and existing agents are moved onto it at controller startup. (GHSA-j7pr-x9wf-86g6)
+
 ## [1.0.0-beta.55] - 2026-10-01
 
 ### Added

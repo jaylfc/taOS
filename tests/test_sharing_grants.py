@@ -180,26 +180,50 @@ class TestSharingGrantStore:
 
 # ── Route tests ───────────────────────────────────────────────────────
 @pytest.mark.asyncio
-async def test_create_grant_route(client):
+async def test_create_grant_route(client, app):
+    # Create a project artifact
+    project_store = app.state.project_store
+    admin_id = client._transport.app.state.auth.find_user("admin")["id"]
+    project = await project_store.create_project(
+        name="Test Project",
+        slug="test-project",
+        created_by=admin_id,
+        user_id=admin_id,
+        description="Test project for ownership validation"
+    )
+    project_id = project["id"]
+    
     resp = await client.post(
         "/api/sharing/grants",
-        json={"artifact_id": "artifact-1", "artifact_kind": "app", "grantee": "grantee1"},
+        json={"artifact_id": project_id, "artifact_kind": "project", "grantee": "grantee1"},
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert data["artifact_id"] == "artifact-1"
-    assert data["artifact_kind"] == "app"
+    assert data["artifact_id"] == project_id
+    assert data["artifact_kind"] == "project"
     assert data["grantee"] == "grantee1"
     assert data["status"] == "active"
-    assert data["owner_id"] == client._transport.app.state.auth.find_user("admin")["id"]
+    assert data["owner_id"] == admin_id
 
 
 @pytest.mark.asyncio
-async def test_create_grant_dedupe_route(client):
+async def test_create_grant_dedupe_route(client, app):
+    # Create a project artifact
+    project_store = app.state.project_store
+    admin_id = client._transport.app.state.auth.find_user("admin")["id"]
+    project = await project_store.create_project(
+        name="Test Project 2",
+        slug="test-project-2",
+        created_by=admin_id,
+        user_id=admin_id,
+        description="Test project for ownership validation"
+    )
+    project_id = project["id"]
+    
     # First grant
     r1 = await client.post(
         "/api/sharing/grants",
-        json={"artifact_id": "artifact-1", "artifact_kind": "app", "grantee": "grantee1"},
+        json={"artifact_id": project_id, "artifact_kind": "project", "grantee": "grantee1"},
     )
     assert r1.status_code == 200
     first = r1.json()
@@ -207,7 +231,7 @@ async def test_create_grant_dedupe_route(client):
     # Second grant for same artifact + grantee should return same grant
     r2 = await client.post(
         "/api/sharing/grants",
-        json={"artifact_id": "artifact-1", "artifact_kind": "app", "grantee": "grantee1"},
+        json={"artifact_id": project_id, "artifact_kind": "project", "grantee": "grantee1"},
     )
     assert r2.status_code == 200
     second = r2.json()
@@ -215,11 +239,23 @@ async def test_create_grant_dedupe_route(client):
 
 
 @pytest.mark.asyncio
-async def test_create_grant_reactivates_revoked_route(client):
+async def test_create_grant_reactivates_revoked_route(client, app):
+    # Create a project artifact
+    project_store = app.state.project_store
+    admin_id = client._transport.app.state.auth.find_user("admin")["id"]
+    project = await project_store.create_project(
+        name="Test Project 3",
+        slug="test-project-3",
+        created_by=admin_id,
+        user_id=admin_id,
+        description="Test project for ownership validation"
+    )
+    project_id = project["id"]
+
     # Create then revoke
     r1 = await client.post(
         "/api/sharing/grants",
-        json={"artifact_id": "artifact-1", "artifact_kind": "app", "grantee": "grantee1"},
+        json={"artifact_id": project_id, "artifact_kind": "project", "grantee": "grantee1"},
     )
     grant = r1.json()
     await client.delete(f"/api/sharing/grants/{grant['id']}")
@@ -227,7 +263,7 @@ async def test_create_grant_reactivates_revoked_route(client):
     # Re-grant should reactivate
     r2 = await client.post(
         "/api/sharing/grants",
-        json={"artifact_id": "artifact-1", "artifact_kind": "app", "grantee": "grantee1"},
+        json={"artifact_id": project_id, "artifact_kind": "project", "grantee": "grantee1"},
     )
     assert r2.status_code == 200
     reactivated = r2.json()
@@ -236,10 +272,22 @@ async def test_create_grant_reactivates_revoked_route(client):
 
 
 @pytest.mark.asyncio
-async def test_revoke_grant_route(client):
+async def test_revoke_grant_route(client, app):
+    # Create a project artifact
+    project_store = app.state.project_store
+    admin_id = client._transport.app.state.auth.find_user("admin")["id"]
+    project = await project_store.create_project(
+        name="Test Project 4",
+        slug="test-project-4",
+        created_by=admin_id,
+        user_id=admin_id,
+        description="Test project for ownership validation"
+    )
+    project_id = project["id"]
+
     r1 = await client.post(
         "/api/sharing/grants",
-        json={"artifact_id": "artifact-1", "artifact_kind": "app", "grantee": "grantee1"},
+        json={"artifact_id": project_id, "artifact_kind": "project", "grantee": "grantee1"},
     )
     grant = r1.json()
 
@@ -255,10 +303,22 @@ async def test_revoke_grant_route(client):
 
 @pytest.mark.asyncio
 async def test_revoke_grant_non_owner_403(client, app):
+    # Create a project artifact
+    project_store = app.state.project_store
+    admin_id = client._transport.app.state.auth.find_user("admin")["id"]
+    project = await project_store.create_project(
+        name="Test Project 5",
+        slug="test-project-5",
+        created_by=admin_id,
+        user_id=admin_id,
+        description="Test project for ownership validation"
+    )
+    project_id = project["id"]
+
     # Create grant as admin (owner)
     r1 = await client.post(
         "/api/sharing/grants",
-        json={"artifact_id": "artifact-1", "artifact_kind": "app", "grantee": "grantee1"},
+        json={"artifact_id": project_id, "artifact_kind": "project", "grantee": "grantee1"},
     )
     grant = r1.json()
 
@@ -285,21 +345,43 @@ async def test_revoke_grant_non_owner_403(client, app):
 
 
 @pytest.mark.asyncio
-async def test_list_owned_grants_route(client):
+async def test_list_owned_grants_route(client, app):
+    # Create two project artifacts
+    project_store = app.state.project_store
+    admin_id = client._transport.app.state.auth.find_user("admin")["id"]
+    
+    project1 = await project_store.create_project(
+        name="Test Project A",
+        slug="test-project-a",
+        created_by=admin_id,
+        user_id=admin_id,
+        description="Test project for ownership validation"
+    )
+    project1_id = project1["id"]
+    
+    project2 = await project_store.create_project(
+        name="Test Project B",
+        slug="test-project-b",
+        created_by=admin_id,
+        user_id=admin_id,
+        description="Test project for ownership validation"
+    )
+    project2_id = project2["id"]
+
     await client.post(
         "/api/sharing/grants",
-        json={"artifact_id": "artifact-1", "artifact_kind": "app", "grantee": "grantee1"},
+        json={"artifact_id": project1_id, "artifact_kind": "project", "grantee": "grantee1"},
     )
     await client.post(
         "/api/sharing/grants",
-        json={"artifact_id": "artifact-2", "artifact_kind": "game", "grantee": "grantee2"},
+        json={"artifact_id": project2_id, "artifact_kind": "project", "grantee": "grantee2"},
     )
 
     resp = await client.get("/api/sharing/grants/mine")
     assert resp.status_code == 200
     grants = resp.json()
     assert len(grants) == 2
-    assert {g["artifact_id"] for g in grants} == {"artifact-1", "artifact-2"}
+    assert {g["artifact_id"] for g in grants} == {project1_id, project2_id}
 
 
 @pytest.mark.asyncio
@@ -308,20 +390,51 @@ async def test_list_shared_with_me_route(client, app):
     invite_code = app.state.auth.add_user_invite("grantee_user", "admin")
     app.state.auth.complete_invite("grantee_user", invite_code, "Grantee", "grantee@example.com", "testpass")
 
+    # Create project artifacts
+    project_store = app.state.project_store
+    admin_id = client._transport.app.state.auth.find_user("admin")["id"]
+    
+    project1 = await project_store.create_project(
+        name="Test Project C",
+        slug="test-project-c",
+        created_by=admin_id,
+        user_id=admin_id,
+        description="Test project for ownership validation"
+    )
+    project1_id = project1["id"]
+    
+    project2 = await project_store.create_project(
+        name="Test Project D",
+        slug="test-project-d",
+        created_by=admin_id,
+        user_id=admin_id,
+        description="Test project for ownership validation"
+    )
+    project2_id = project2["id"]
+    
+    project3 = await project_store.create_project(
+        name="Test Project E",
+        slug="test-project-e",
+        created_by=admin_id,
+        user_id=admin_id,
+        description="Test project for ownership validation"
+    )
+    project3_id = project3["id"]
+
     # Admin shares with grantee_user by username
     await client.post(
         "/api/sharing/grants",
-        json={"artifact_id": "artifact-1", "artifact_kind": "app", "grantee": "grantee_user"},
+        json={"artifact_id": project1_id, "artifact_kind": "project", "grantee": "grantee_user"},
     )
     # Admin shares with grantee_user by email
     await client.post(
         "/api/sharing/grants",
-        json={"artifact_id": "artifact-2", "artifact_kind": "game", "grantee": "grantee@example.com"},
+        json={"artifact_id": project2_id, "artifact_kind": "project", "grantee": "grantee@example.com"},
     )
     # Another artifact shared with someone else
     await client.post(
         "/api/sharing/grants",
-        json={"artifact_id": "artifact-3", "artifact_kind": "project", "grantee": "other_person"},
+        json={"artifact_id": project3_id, "artifact_kind": "project", "grantee": "other_person"},
     )
 
     # Login as grantee_user
@@ -342,7 +455,7 @@ async def test_list_shared_with_me_route(client, app):
         assert resp.status_code == 200
         grants = resp.json()
         assert len(grants) == 2
-        assert {g["artifact_id"] for g in grants} == {"artifact-1", "artifact-2"}
+        assert {g["artifact_id"] for g in grants} == {project1_id, project2_id}
         assert all(g["status"] == "active" for g in grants)
 
 
@@ -351,16 +464,40 @@ async def test_list_shared_with_me_only_active(client, app):
     invite_code = app.state.auth.add_user_invite("grantee_user", "admin")
     app.state.auth.complete_invite("grantee_user", invite_code, "Grantee", "grantee@example.com", "testpass")
 
+    # Create project artifacts
+    project_store = app.state.project_store
+    admin_id = client._transport.app.state.auth.find_user("admin")["id"]
+    
+    project1 = await project_store.create_project(
+        name="Test Project F",
+        slug="test-project-f",
+        created_by=admin_id,
+        user_id=admin_id,
+        description="Test project for ownership validation"
+    )
+    project1_id = project1["id"]
+    
+    project2 = await project_store.create_project(
+        name="Test Project G",
+        slug="test-project-g",
+        created_by=admin_id,
+        user_id=admin_id,
+        description="Test project for ownership validation"
+    )
+    project2_id = project2["id"]
+
     r1 = await client.post(
         "/api/sharing/grants",
-        json={"artifact_id": "artifact-1", "artifact_kind": "app", "grantee": "grantee_user"},
+        json={"artifact_id": project1_id, "artifact_kind": "project", "grantee": "grantee_user"},
     )
     grant = r1.json()
+
+    # Revoke it
     await client.delete(f"/api/sharing/grants/{grant['id']}")  # revoke it
 
     await client.post(
         "/api/sharing/grants",
-        json={"artifact_id": "artifact-2", "artifact_kind": "game", "grantee": "grantee_user"},
+        json={"artifact_id": project2_id, "artifact_kind": "project", "grantee": "grantee_user"},
     )
 
     grantee_record = app.state.auth.find_user("grantee_user")
@@ -380,19 +517,33 @@ async def test_list_shared_with_me_only_active(client, app):
         assert resp.status_code == 200
         grants = resp.json()
         assert len(grants) == 1
-        assert grants[0]["artifact_id"] == "artifact-2"
+        assert grants[0]["artifact_id"] == project2_id
         assert grants[0]["status"] == "active"
 
 
 @pytest.mark.asyncio
 async def test_other_owner_cannot_hijack_active_grant(client, app):
+    # Create a project artifact owned by admin
+    project_store = app.state.project_store
+    admin_id = client._transport.app.state.auth.find_user("admin")["id"]
+    project = await project_store.create_project(
+        name="Test Project Hijack",
+        slug="test-project-hijack",
+        created_by=admin_id,
+        user_id=admin_id,
+        description="Test project for ownership validation"
+    )
+    project_id = project["id"]
+
+    # Owner A (admin) creates an active grant on project P for grantee G
     r1 = await client.post(
         "/api/sharing/grants",
-        json={"artifact_id": "art-2", "artifact_kind": "app", "grantee": "zed"},
+        json={"artifact_id": project_id, "artifact_kind": "project", "grantee": "zed"},
     )
     assert r1.status_code == 200
     grant_a = r1.json()
 
+    # Create a different user B (not P's owner)
     invite_code = app.state.auth.add_user_invite("userb", "admin")
     app.state.auth.complete_invite("userb", invite_code, "User B", "userb@example.com", "testpass")
     user_b_record = app.state.auth.find_user("userb")
@@ -408,12 +559,13 @@ async def test_other_owner_cannot_hijack_active_grant(client, app):
         cookies={"taos_session": user_b_token, "csrf_token": csrf_token},
         headers={"X-CSRF-Token": csrf_token},
     ) as user_b_client:
+        # User B POSTs the same grant for P and G
         r2 = await user_b_client.post(
             "/api/sharing/grants",
-            json={"artifact_id": "art-2", "artifact_kind": "app", "grantee": "zed"},
+            json={"artifact_id": project_id, "artifact_kind": "project", "grantee": "zed"},
         )
         assert r2.status_code == 403
-        assert r2.json()["error"] == "artifact is shared by another owner"
+        assert r2.json()["error"] == "you do not own this artifact"
         r3 = await user_b_client.get("/api/sharing/grants/mine")
         assert r3.status_code == 200
         assert r3.json() == []

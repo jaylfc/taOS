@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
+import { render, screen, act, cleanup, waitFor } from "@testing-library/react";
 import React from "react";
 
 vi.mock("@/hooks/use-is-mobile", () => ({ useIsMobile: vi.fn() }));
@@ -41,11 +41,44 @@ vi.mock("@/registry/app-registry", () => ({
 vi.mock("../chat/ChannelSidebar", () => ({
   ChannelSidebar: () => <div data-testid="channel-sidebar" />,
 }));
-vi.mock("../chat/MessageList", () => ({
-  MessageList: () => <div data-testid="message-list" />,
-}));
+// vi.mock("../chat/MessageList", () => ({
+//   MessageList: () => <div data-testid="message-list" />,
+// }));
 vi.mock("../chat/MessageInput", () => ({
   MessageInput: () => <div data-testid="message-input" />,
+}));
+vi.mock("../chat/MessageAvatar", () => ({
+  MessageAvatar: ({ children, ...props }: React.HTMLAttributes<HTMLDivElement>) => <div {...props}>{children}</div>,
+}));
+vi.mock("../chat/MessageHoverActions", () => ({
+  MessageHoverActions: () => <div data-testid="message-hover-actions" />,
+}));
+vi.mock("../chat/MessageEditor", () => ({
+  MessageEditor: () => <div data-testid="message-editor" />,
+}));
+vi.mock("../chat/MessageTombstone", () => ({
+  MessageTombstone: () => <div data-testid="message-tombstone" />,
+}));
+vi.mock("../chat/ThreadIndicator", () => ({
+  ThreadIndicator: () => <div data-testid="thread-indicator" />,
+}));
+vi.mock("../chat/AttachmentGallery", () => ({
+  AttachmentGallery: () => <div data-testid="attachment-gallery" />,
+}));
+vi.mock("../chat/PinBadge", () => ({
+  PinBadge: () => <div data-testid="pin-badge" />,
+}));
+vi.mock("../chat/PinnedMessagesPopover", () => ({
+  PinnedMessagesPopover: () => <div data-testid="pinned-messages-popover" />,
+}));
+vi.mock("../chat/TypingFooter", () => ({
+  TypingFooter: () => <div data-testid="typing-footer" />,
+}));
+vi.mock("../chat/PinRequestAffordance", () => ({
+  PinRequestAffordance: () => <div data-testid="pin-request-affordance" />,
+}));
+vi.mock("../chat/ReactionBar", () => ({
+  ReactionBar: () => <div data-testid="reaction-bar" />,
 }));
 vi.mock("../chat/A2aBusPanel", () => ({
   A2aBusMessageView: () => <div data-testid="a2a-bus-view" />,
@@ -75,6 +108,9 @@ vi.mock("../MessagesApp.stallWatch", () => ({
 vi.mock("../MessagesApp.a2aSelection", () => ({
   selectInitialBusChannel: vi.fn(),
   selectFirstBoundChannel: vi.fn(),
+  readLastChannel: vi.fn(),
+  writeLastChannel: vi.fn(),
+  findA2aChannelId: vi.fn(() => "ch1"),
 }));
 
 import { useIsMobile } from "@/hooks/use-is-mobile";
@@ -115,70 +151,224 @@ class FakeEventSource {
   }
 }
 
-describe("MessagesApp receipt EventSource guard", () => {
+/* ------------------------------------------------------------------ */
+/*  MockWebSocket mirroring MessagesApp.ws.test.tsx                   */
+/* ------------------------------------------------------------------ */
+
+class MockWebSocket {
+  static instances: MockWebSocket[] = [];
+  static CONNECTING = 0;
+  static OPEN = 1;
+  static CLOSING = 2;
+  static CLOSED = 3;
+
+  url: string;
+  readyState: number;
+  onopen: (() => void) | null = null;
+  onclose: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  onmessage: ((event: { data: string }) => void) | null = null;
+
+  constructor(url: string) {
+    this.url = url;
+    this.readyState = MockWebSocket.CONNECTING;
+    MockWebSocket.instances.push(this);
+  }
+
+  send(_data: unknown) {}
+  close() {
+    this.readyState = MockWebSocket.CLOSED;
+    this.onclose?.();
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Helpers                                                            */
+/* ------------------------------------------------------------------ */
+
+function reset() {
+  MockWebSocket.instances = [];
+  FakeEventSource.instances = [];
+  vi.clearAllTimers();
+  vi.clearAllMocks();
+  (useIsMobile as ReturnType<typeof vi.fn>).mockReturnValue(false);
+}
+
+async function openFirstSocket() {
+  const ws = MockWebSocket.instances[0];
+  ws.readyState = MockWebSocket.OPEN;
+  ws.onopen?.();
+  await act(async () => {});
+}
+
+describe("MessagesApp receipts over the chat websocket", () => {
+  const originalFetch = globalThis.fetch;
   const originalEventSource = globalThis.EventSource;
+  const originalWebSocket = globalThis.WebSocket;
 
   beforeEach(() => {
-    (useIsMobile as ReturnType<typeof vi.fn>).mockReturnValue(false);
-    FakeEventSource.instances = [];
+    reset();
+    vi.stubGlobal("WebSocket", MockWebSocket);
+    vi.stubGlobal("EventSource", FakeEventSource);
   });
 
   afterEach(() => {
+    vi.unstubAllGlobals();
+    globalThis.fetch = originalFetch;
     cleanup();
-    Object.defineProperty(globalThis, "EventSource", {
-      value: originalEventSource,
-      writable: true,
-      configurable: true,
-    });
   });
 
-  it("mounts without throwing when EventSource is undefined and still renders", () => {
-    Object.defineProperty(globalThis, "EventSource", {
-      value: undefined,
-      writable: true,
-      configurable: true,
-    });
-
-    expect(() => {
-      render(<MessagesApp windowId="test" />);
-    }).not.toThrow();
-
-    expect(screen.getByTestId("channel-sidebar")).toBeInTheDocument();
-  });
-
-  it("continues delivering receipt messages after a transient error", async () => {
-    Object.defineProperty(globalThis, "EventSource", {
-      value: FakeEventSource,
-      writable: true,
-      configurable: true,
-    });
+  it("opens no EventSource", async () => {
+    vi.useFakeTimers();
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ channels: [], unread: {} }),
+    }) as typeof fetch;
 
     render(<MessagesApp windowId="test" />);
 
-    const instance = FakeEventSource.instances[0];
-    expect(instance).toBeDefined();
+    await act(async () => {});
 
-    // Simulate an error event from the stream
-    instance.simulateError();
-
-    // Simulate a receipt message event arriving after the error
-    let receiptHandled = false;
-    const originalOnMessage = instance.onmessage;
-    instance.onmessage = ((ev: MessageEvent) => {
-      receiptHandled = true;
-      if (originalOnMessage) originalOnMessage(ev);
-    });
-
-    instance.simulateMessage(
-      JSON.stringify({
-        type: "receipt",
-        message_id: "m1",
-        agent_id: "peer",
-        delivered_at: 1000,
-        seen_at: null,
-      }),
-    );
-
-    expect(receiptHandled).toBe(true);
+    expect(FakeEventSource.instances).toHaveLength(0);
+    vi.useRealTimers();
   });
+
+  it("a websocket receipt event marks the message Seen", async () => {
+    let fetchCallCount = 0;
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const u = typeof url === "string" ? url : url.toString();
+      fetchCallCount++;
+
+      if (u.includes("/auth/me")) {
+        return {
+          ok: true,
+          json: async () => ({ user: { id: "me", username: "me" } }),
+        } as Response;
+      }
+
+      if (u.includes("/api/chat/channels") && !u.includes("/messages")) {
+        return {
+          ok: true,
+          json: async () => ({
+            channels: [
+              {
+                id: "ch1",
+                name: "Test Channel",
+                type: "topic",
+                members: ["me", "peer"],
+              },
+            ],
+            unread: {},
+          }),
+        } as Response;
+      }
+
+      if (u.includes("/api/agents") && !u.includes("/archived")) {
+        return {
+          ok: true,
+          headers: new Headers({ "content-type": "application/json" }),
+          json: async () => [],
+        } as Response;
+      }
+
+      if (u.includes("/api/agents/archived")) {
+        return {
+          ok: true,
+          headers: new Headers({ "content-type": "application/json" }),
+          json: async () => [],
+        } as Response;
+      }
+
+      if (u.includes("/api/chat/channels/ch1/messages")) {
+        return {
+          ok: true,
+          json: async () => ({
+            messages: [
+              {
+                id: "msg1",
+                channel_id: "ch1",
+                author_id: "me",
+                author_type: "user",
+                content: "hello",
+                created_at: Date.now() / 1000,
+                state: "complete",
+              },
+            ],
+          }),
+        } as Response;
+      }
+
+      if (u.includes("/api/chat/messages/msg1/receipts")) {
+        return {
+          ok: true,
+          json: async () => ({ receipts: [] }),
+        } as Response;
+      }
+
+      if (u.includes("/api/chat/receipts")) {
+        return {
+          ok: true,
+          json: async () => ({}),
+        } as Response;
+      }
+
+      if (u.includes("/api/frameworks/slash-commands")) {
+        return {
+          ok: true,
+          json: async () => ({}),
+        } as Response;
+      }
+
+      if (u.includes("/api/chat/unread")) {
+        return {
+          ok: true,
+          json: async () => ({ unread: {} }),
+        } as Response;
+      }
+
+      if (u.includes("/api/chat/pins")) {
+        return {
+          ok: true,
+          json: async () => [],
+        } as Response;
+      }
+
+      return {
+        ok: false,
+        status: 404,
+        json: async () => ({ error: "not found" }),
+      } as Response;
+    });
+    globalThis.fetch = fetchMock;
+
+    render(<MessagesApp windowId="test" scope={{ projectId: "proj1" }} />);
+
+    await act(async () => {});
+    await openFirstSocket();
+
+    await act(async () => {});
+    await waitFor(() => expect(screen.getByText("hello")).toBeInTheDocument(), { timeout: 10000 });
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining("/api/chat/messages/msg1/receipts"),
+      ),
+    );
+    await act(async () => {});
+
+    const ws = MockWebSocket.instances[0];
+    act(() => {
+      ws.onmessage?.({ data: JSON.stringify({
+        type: "receipt",
+        message_id: "msg1",
+        agent_id: "peer",
+        reader_type: "agent",
+        delivered_at: 1000,
+        seen_at: 2000,
+      }) });
+    });
+    await act(async () => {});
+
+    await screen.findByLabelText("Seen", { timeout: 10000 });
+  }, 20000);
 });

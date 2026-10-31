@@ -13,13 +13,13 @@ import pytest
 from tinyagentos.scheduler.backend_catalog import BackendCatalog
 
 
-async def _until(pred, timeout=5.0):
-    """Wait until predicate is True, polling with 5ms sleeps."""
+async def _wait_until(pred, timeout=2.0, step=0.01):
+    """Wait until predicate is True, polling with configurable step."""
     start = asyncio.get_event_loop().time()
     while not pred():
-        await asyncio.sleep(0.005)
+        await asyncio.sleep(step)
         if asyncio.get_event_loop().time() - start > timeout:
-            raise TimeoutError(f"Predicate did not become true within {timeout}s")
+            raise AssertionError(f"Predicate did not become true within {timeout}s")
 
 
 @pytest.mark.asyncio
@@ -84,12 +84,12 @@ async def test_subscriber_fires_on_model_list_change():
     await catalog.start()
     try:
         # Initial
-        await asyncio.sleep(0.02)
+        await _wait_until(lambda: fired_models == [1])
         assert fired_models == [1]
 
         # Load a second model — next poll should fire a change event
         model_state["models"] = [{"name": "m1"}, {"name": "m2"}]
-        await asyncio.sleep(0.1)
+        await _wait_until(lambda: 2 in fired_models)
         assert 2 in fired_models
     finally:
         await catalog.stop()
@@ -121,10 +121,10 @@ async def test_subscriber_not_fired_when_signature_stable():
         await catalog.wait_initial_probe()
 
         # Wait for the subscriber to have fired once
-        await _until(lambda: fire_count["n"] >= 1)
+        await _wait_until(lambda: fire_count["n"] >= 1)
 
         # Wait for at least 3 probes to have completed (initial + 2 more)
-        await _until(lambda: probe_count["n"] >= 3)
+        await _wait_until(lambda: probe_count["n"] >= 3)
 
         # Only then assert - identical probe results should not re-fire subscribers
         assert fire_count["n"] == 1
@@ -154,7 +154,7 @@ async def test_failing_subscriber_does_not_crash_poll_loop():
     await catalog.start()
     try:
         # Let the initial probe run — good subscriber should still fire
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: good_fires["n"] >= 1)
         assert good_fires["n"] >= 1
     finally:
         await catalog.stop()
@@ -179,7 +179,7 @@ async def test_multiple_subscribers_all_fire():
     catalog.subscribe(sub_b)
     await catalog.start()
     try:
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: fires["a"] >= 1 and fires["b"] >= 1)
         assert fires["a"] >= 1
         assert fires["b"] >= 1
     finally:

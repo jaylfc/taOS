@@ -1,5 +1,7 @@
 import * as icons from "lucide-react";
 import { prefetchApp, type AppManifest } from "@/registry/app-registry";
+import { appRuntime } from "@/lib/app-runtime";
+import { AppTypeBadge } from "./AppTypeBadge";
 
 interface Props {
   app: AppManifest;
@@ -20,8 +22,9 @@ export function LaunchpadIcon({ app, onClick }: Props) {
       className="flex flex-col items-center gap-2 p-3 rounded-xl hover:bg-white/5 transition-colors"
       aria-label={`Open ${app.name}`}
     >
-      <div className="w-14 h-14 rounded-2xl bg-shell-surface-hover flex items-center justify-center">
+      <div className="relative w-14 h-14 rounded-2xl bg-shell-surface-hover flex items-center justify-center">
         <IconComponent size={28} className="text-shell-text" />
+        <AppTypeBadge runtime={appRuntime(app)} size="lg" />
       </div>
       <span className="text-xs text-shell-text-secondary">{app.name}</span>
     </button>
