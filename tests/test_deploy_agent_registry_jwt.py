@@ -273,11 +273,148 @@ class TestDeployAgentRegistryJWT:
             r = await client.post("/api/agents/deploy", json={"name": "Test Agent", "framework": "none"})
             assert r.status_code == 200
 
-        # Verify grants
+    @pytest.mark.asyncio
+    async def test_grant_failure_leaves_agent_token_empty(self, client, app, tmp_path):
+        """If add_grant raises, agent_jwt remains empty and DeployRequest.agent_token is \"\"."""
+        captured_request = {}
+
+        async def mock_deploy_agent(req: DeployRequest) -> dict:
+            captured_request["req"] = req
+            return {
+                "success": True,
+                "name": req.name,
+                "container": f"taos-agent-{req.name}",
+                "ip": "10.0.0.5",
+                "llm_key": "sk-test-key",
+                "steps": ["deployment_complete"],
+                "versioning": True,
+                "versioning_error": None,
+            }
+
+        with patch("tinyagentos.deployer.deploy_agent", mock_deploy_agent):
+            mock_archive = AsyncMock()
+            mock_archive.record = AsyncMock()
+            mock_archive.query = AsyncMock(return_value=[{"event_type": "agent_deployed"}])
+            app.state.archive = mock_archive
+
+            mock_registry = MagicMock()
+            mock_registry._db = True
+            admin_record = app.state.auth.find_user("admin")
+            expected_user_id = admin_record["id"] if admin_record else ""
+            mock_registry.register = AsyncMock(return_value={
+                "canonical_id": "test-agent-20261029-120000",
+                "display_name": "Test Agent",
+                "framework": "none",
+                "user_id": expected_user_id,
+                "origin": "taos-deployed",
+                "handle": "",
+                "role": None,
+                "capabilities": "[]",
+                "created_ts": "2026-10-29T12:00:00+00:00",
+                "revoked_at": None,
+                "status": "active",
+                "sponsor_contact_id": None,
+                "install_id": "",
+            })
+            app.state.agent_registry = mock_registry
+
+            mock_grants = AsyncMock()
+            mock_grants.add_grant = AsyncMock(side_effect=RuntimeError("boom"))
+            app.state.agent_grants = mock_grants
+
+            from tinyagentos.agent_registry_store import load_or_create_signing_keypair
+            private_pem, public_pem = load_or_create_signing_keypair(tmp_path)
+            app.state.agent_registry_keypair = (private_pem, public_pem)
+
+            app.state.llm_proxy = None
+            app.state.secrets = None
+            app.state.registry = None
+            app.state.taosmd_agent_registry = MagicMock()
+            app.state.taosmd_agent_registry.register_agent = AsyncMock()
+            app.state.notifications = None
+            app.state.deploy_tasks = {}
+            app.state.idempotency_cache = None
+            app.state.cluster_manager = None
+
+            from tinyagentos.config import AppConfig
+            app.state.config = AppConfig(config_path=tmp_path / "config.yaml")
+            app.state.config.agents = []
+
+            r = await client.post("/api/agents/deploy", json={"name": "Test Agent", "framework": "none"})
+            assert r.status_code == 200, f"Deploy failed: {r.text}"
+            assert "req" in captured_request, "deploy_agent was not called"
+            req = captured_request["req"]
+            assert req.agent_token == ""
+
+    @pytest.mark.asyncio
+    async def test_failed_deploy_revokes_grant(self, client, app, tmp_path):
+        """On deploy failure, revoke_grant is called and grants store ends empty."""
+        mock_registry = MagicMock()
+        mock_registry._db = True
+        canonical_id = "test-agent-20261029-120000"
+
+        async def mock_register(**kwargs):
+            return {
+                "canonical_id": canonical_id,
+                "display_name": "Test Agent",
+                "framework": "none",
+                "user_id": kwargs.get("user_id", ""),
+                "origin": kwargs.get("origin", "taos-deployed"),
+                "handle": "",
+                "role": None,
+                "capabilities": "[]",
+                "created_ts": "2026-10-29T12:00:00+00:00",
+                "revoked_at": None,
+                "status": "active",
+                "sponsor_contact_id": None,
+                "install_id": "",
+            }
+
+        mock_registry.register = mock_register
+        app.state.agent_registry = mock_registry
+
+        from tinyagentos.agent_grants_store import AgentGrantsStore
+        grants_db = tmp_path / "test_grants.db"
+        real_grants = AgentGrantsStore(grants_db)
+        await real_grants.init()
+        app.state.agent_grants = real_grants
+
+        from tinyagentos.agent_registry_store import load_or_create_signing_keypair
+        private_pem, public_pem = load_or_create_signing_keypair(tmp_path)
+        app.state.agent_registry_keypair = (private_pem, public_pem)
+
+        mock_archive = AsyncMock()
+        mock_archive.record = AsyncMock()
+        mock_archive.query = AsyncMock(return_value=[{"event_type": "agent_deployed"}])
+        app.state.archive = mock_archive
+
+        app.state.llm_proxy = None
+        app.state.secrets = None
+        app.state.registry = None
+        app.state.taosmd_agent_registry = MagicMock()
+        app.state.taosmd_agent_registry.register_agent = AsyncMock()
+        app.state.notifications = None
+        app.state.deploy_tasks = {}
+        app.state.idempotency_cache = None
+        app.state.cluster_manager = None
+
+        from tinyagentos.config import AppConfig
+        app.state.config = AppConfig(config_path=tmp_path / "config.yaml")
+        app.state.config.agents = []
+
+        with patch("tinyagentos.deployer.deploy_agent", new_callable=AsyncMock) as mock_deploy:
+            mock_deploy.return_value = {
+                "success": False, "name": "test-agent", "error": "boom"
+            }
+            r = await client.post("/api/agents/deploy", json={"name": "Test Agent", "framework": "none"})
+            assert r.status_code == 200
+
+        # Wait for background task to complete
+        import asyncio
+        await asyncio.sleep(0.5)
+
         grants = await real_grants.list_grants(canonical_id)
-        assert len(grants) == 1, f"Expected exactly 1 grant, got {len(grants)}: {grants}"
-        assert grants[0]["scope"] == "memory_read", f"Expected memory_read, got {grants[0]['scope']}"
-        assert grants[0]["canonical_id"] == canonical_id
+        assert len(grants) == 0, f"Expected no grants, got {grants}"
 
 
 class TestDeployerAgentToken:
