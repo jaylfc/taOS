@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, fireEvent, act, within } from "@testing-library/react";
 import { MessageList } from "../MessageList";
 import type { MessageRow, MessageListProps } from "../MessageList";
 import type { Channel, LiveAgent, ArchivedAgentEntry } from "../types";
@@ -718,6 +718,140 @@ describe("MessageList", () => {
       expect(scrollArea).toBeTruthy();
       const style = scrollArea?.getAttribute("style") ?? "";
       expect(style).toContain("padding-bottom");
+    });
+  });
+
+  /* ---- mobile long-press selection ---- */
+
+  describe("mobile message actions (long-press)", () => {
+    const three = [
+      msg({ id: "m1", content: "one" }),
+      msg({ id: "m2", content: "two" }),
+      msg({ id: "m3", content: "three" }),
+    ];
+    function renderMobile(isMobile = true, extra: Partial<MessageListProps> = {}) {
+      return render(
+        <MessageList
+          {...defaults({
+            selectedChannel: "ch1",
+            channel: channel(),
+            messages: three,
+            isMobile,
+            ...extra,
+          })}
+        />,
+      );
+    }
+    const row = (c: HTMLElement, id: string) =>
+      c.querySelector(`[data-message-id="${id}"]`) as HTMLElement;
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("shows no toolbar on any message initially", () => {
+      renderMobile();
+      expect(screen.queryAllByRole("toolbar")).toHaveLength(0);
+    });
+
+    it("long-press selects exactly that message", () => {
+      const { container } = renderMobile();
+      fireEvent.pointerDown(row(container, "m2"), { clientX: 10, clientY: 10 });
+      act(() => {
+        vi.advanceTimersByTime(460);
+      });
+      const bars = screen.getAllByRole("toolbar");
+      expect(bars).toHaveLength(1);
+      expect(within(row(container, "m2")).getByRole("toolbar")).toBe(bars[0]);
+      expect(screen.queryByLabelText("Drag message")).toBeNull();
+    });
+
+    it("pointerdown outside any message clears the selection", () => {
+      const { container } = renderMobile();
+      fireEvent.pointerDown(row(container, "m2"), { clientX: 10, clientY: 10 });
+      act(() => {
+        vi.advanceTimersByTime(460);
+      });
+      expect(screen.getAllByRole("toolbar")).toHaveLength(1);
+      fireEvent.pointerDown(document.body);
+      expect(screen.queryAllByRole("toolbar")).toHaveLength(0);
+    });
+
+    it("pointerdown on a different message clears the selection", () => {
+      const { container } = renderMobile();
+      fireEvent.pointerDown(row(container, "m2"), { clientX: 10, clientY: 10 });
+      act(() => {
+        vi.advanceTimersByTime(460);
+      });
+      fireEvent.pointerDown(row(container, "m3"), { clientX: 10, clientY: 10 });
+      fireEvent.pointerUp(row(container, "m3"));
+      expect(screen.queryAllByRole("toolbar")).toHaveLength(0);
+    });
+
+    it("long-pressing the selected message again clears it", () => {
+      const { container } = renderMobile();
+      for (let n = 0; n < 2; n++) {
+        fireEvent.pointerDown(row(container, "m2"), { clientX: 10, clientY: 10 });
+        act(() => {
+          vi.advanceTimersByTime(460);
+        });
+        fireEvent.pointerUp(row(container, "m2"));
+      }
+      expect(screen.queryAllByRole("toolbar")).toHaveLength(0);
+    });
+
+    it("a short tap does not select", () => {
+      const { container } = renderMobile();
+      fireEvent.pointerDown(row(container, "m2"), { clientX: 10, clientY: 10 });
+      act(() => {
+        vi.advanceTimersByTime(200);
+      });
+      fireEvent.pointerUp(row(container, "m2"));
+      act(() => {
+        vi.advanceTimersByTime(600);
+      });
+      expect(screen.queryAllByRole("toolbar")).toHaveLength(0);
+    });
+
+    it("moving past the slop cancels the long-press", () => {
+      const { container } = renderMobile();
+      fireEvent.pointerDown(row(container, "m2"), { clientX: 10, clientY: 10 });
+      fireEvent.pointerMove(row(container, "m2"), { clientX: 10, clientY: 40 });
+      act(() => {
+        vi.advanceTimersByTime(600);
+      });
+      expect(screen.queryAllByRole("toolbar")).toHaveLength(0);
+    });
+
+    it("contextmenu selects, and Enter selects via keyboard", () => {
+      const { container } = renderMobile();
+      fireEvent.contextMenu(row(container, "m1"));
+      expect(within(row(container, "m1")).getByRole("toolbar")).toBeInTheDocument();
+      fireEvent.pointerDown(document.body);
+      expect(screen.queryAllByRole("toolbar")).toHaveLength(0);
+      expect(row(container, "m3").getAttribute("tabindex")).toBe("0");
+      fireEvent.keyDown(row(container, "m3"), { key: "Enter" });
+      expect(within(row(container, "m3")).getByRole("toolbar")).toBeInTheDocument();
+    });
+
+    it("does not select when the press starts on a button", () => {
+      const { container } = renderMobile(true, {
+        messages: [msg({ id: "m1", reactions: { "👍": ["bob"] } })],
+      });
+      const btn = within(row(container, "m1")).getByRole("button", { name: /👍/ });
+      fireEvent.pointerDown(btn, { clientX: 1, clientY: 1 });
+      act(() => {
+        vi.advanceTimersByTime(600);
+      });
+      expect(screen.queryAllByRole("toolbar")).toHaveLength(0);
+    });
+
+    it("desktop hover still shows the toolbar", () => {
+      renderMobile(false, { hoveredMessageId: "m2" });
+      expect(screen.getAllByRole("toolbar")).toHaveLength(1);
     });
   });
 

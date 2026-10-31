@@ -1,4 +1,4 @@
-import React, { forwardRef, useImperativeHandle, useRef } from "react";
+import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   Hash,
@@ -14,6 +14,8 @@ import {
   CheckCheck,
   Globe,
   Pencil,
+  Copy,
+  X,
 } from "lucide-react";
 import Picker, { Theme } from "emoji-picker-react";
 import { Button } from "@/components/ui";
@@ -35,7 +37,7 @@ import type { ContentBlock } from "../MessagesApp";
 import { copyText } from "@/lib/clipboard";
 import type { AttachmentRecord } from "@/lib/chat-attachments-api";
 import type { Receipt } from "@/lib/a2a-receipts-api";
-import { displayAuthor } from "./format-author";
+import { displayAuthor, isOwnMessage } from "./format-author";
 import type { LiveAgent, ArchivedAgentEntry, Channel } from "./types";
 
 const EMOJI_PICKER = ["👍", "❤️", "😂", "🎉", "🤔", "👀", "🚀", "✅"];
@@ -43,13 +45,13 @@ const EMOJI_PICKER = ["👍", "❤️", "😂", "🎉", "🤔", "👀", "🚀", 
 type ReceiptTickState = "sent" | "delivered" | "seen";
 
 function computeReceiptTick(
-  msgAuthorId: string,
+  isOwn: boolean,
   currentUserId: string | null,
   channelMembers: string[] | undefined,
   receipts: Receipt[],
 ): ReceiptTickState {
-  if (msgAuthorId !== currentUserId || !currentUserId) return "sent";
-  const addressees = (channelMembers ?? []).filter((m) => m !== currentUserId);
+  if (!isOwn) return "sent";
+  const addressees = (channelMembers ?? []).filter((m) => m !== currentUserId && m !== "user");
   if (addressees.length === 0) return "sent";
   const receiptMap = new Map(receipts.map((r) => [r.agent_id, r]));
   const allHaveRow = addressees.every((a) => receiptMap.has(a));
@@ -250,6 +252,95 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
 }: MessageListProps, ref: React.Ref<MessageListHandle>) {
   const messageListRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  /* ---- mobile selection (long-press / context menu / keyboard) ---- */
+  const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
+  const pressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pressStartRef = useRef<{ x: number; y: number } | null>(null);
+  const lastLongPressAtRef = useRef(0);
+
+  const clearPressTimer = () => {
+    if (pressTimerRef.current) {
+      clearTimeout(pressTimerRef.current);
+      pressTimerRef.current = null;
+    }
+    pressStartRef.current = null;
+  };
+
+  useEffect(() => clearPressTimer, []);
+
+  // Selection only exists on mobile; drop it when the mode or channel changes.
+  useEffect(() => {
+    if (!isMobile) setSelectedMessageId(null);
+  }, [isMobile]);
+  useEffect(() => {
+    setSelectedMessageId(null);
+  }, [selectedChannel]);
+
+  // Tapping anywhere outside the selected row (and outside the emoji popover)
+  // clears the selection. Registered only while something is selected.
+  useEffect(() => {
+    if (!selectedMessageId) return;
+    const onDocPointerDown = (e: Event) => {
+      const target = e.target as Element | null;
+      if (target?.closest?.("[data-emoji-popover]")) return;
+      const row = document.querySelector(
+        `[data-message-id="${selectedMessageId}"]`,
+      );
+      if (row && target && row.contains(target)) return;
+      setSelectedMessageId(null);
+    };
+    document.addEventListener("pointerdown", onDocPointerDown);
+    return () => document.removeEventListener("pointerdown", onDocPointerDown);
+  }, [selectedMessageId]);
+
+  const toggleSelected = (id: string) =>
+    setSelectedMessageId((prev) => (prev === id ? null : id));
+
+  const LONG_PRESS_MS = 450;
+  const PRESS_SLOP_PX = 8;
+  const INTERACTIVE = "a, button, [role=button], img, video";
+
+  /** Pointer / keyboard handlers that implement mobile selection for one row. */
+  const mobileRowHandlers = (id: string) => ({
+    tabIndex: 0,
+    onPointerDown: (e: React.PointerEvent) => {
+      if ((e.target as Element).closest?.(INTERACTIVE)) return;
+      clearPressTimer();
+      pressStartRef.current = { x: e.clientX ?? 0, y: e.clientY ?? 0 };
+      pressTimerRef.current = setTimeout(() => {
+        pressTimerRef.current = null;
+        lastLongPressAtRef.current = Date.now();
+        toggleSelected(id);
+      }, LONG_PRESS_MS);
+    },
+    onPointerMove: (e: React.PointerEvent) => {
+      const start = pressStartRef.current;
+      if (!start) return;
+      if (Math.hypot((e.clientX ?? 0) - start.x, (e.clientY ?? 0) - start.y) > PRESS_SLOP_PX) {
+        clearPressTimer();
+      }
+    },
+    onPointerUp: clearPressTimer,
+    onPointerCancel: clearPressTimer,
+    onContextMenu: (e: React.MouseEvent) => {
+      if ((e.target as Element).closest?.(INTERACTIVE)) return;
+      e.preventDefault();
+      // Android fires contextmenu right after our own long-press; do not toggle twice.
+      if (Date.now() - lastLongPressAtRef.current < 800) return;
+      clearPressTimer();
+      toggleSelected(id);
+    },
+    onKeyDown: (e: React.KeyboardEvent) => {
+      if (e.target !== e.currentTarget) return;
+      if (e.key === "Enter" || e.key === "ContextMenu") {
+        e.preventDefault();
+        toggleSelected(id);
+      } else if (e.key === "Escape") {
+        setSelectedMessageId(null);
+      }
+    },
+  });
 
   useImperativeHandle(ref, () => ({
     scrollToBottom: () => {
@@ -462,6 +553,172 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                 ? "Agent removed"
                 : undefined;
 
+          const own = isOwnMessage(msg, currentUserId);
+          const showActions = isMobile
+            ? selectedMessageId === msg.id
+            : hoveredMessageId === msg.id;
+          const canvasBlock = msg.content_type === "canvas" &&
+                    (msg.metadata?.canvas_url || msg.metadata?.canvas_id) && (
+                      <div className="mt-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            const url =
+                              msg.metadata?.canvas_url ??
+                              `/canvas/${msg.metadata?.canvas_id}`;
+                            onViewCanvas({
+                              url,
+                              title: msg.metadata
+                                ?.canvas_title as string | undefined,
+                            });
+                          }}
+                          className="h-7 px-2.5 text-[12px] gap-1.5 bg-shell-surface border-shell-border-strong hover:bg-shell-surface-hover"
+                          aria-label="View canvas"
+                        >
+                          <PanelRight size={13} />
+                          View Canvas
+                          {msg.metadata?.canvas_title
+                            ? `: ${msg.metadata.canvas_title}`
+                            : ""}
+                        </Button>
+                      </div>
+                    );
+          const hoverActions = showActions &&
+                    (() => {
+                      const excerpt = (msg.content || "").slice(0, 80);
+                      const msgChannelId =
+                        msg.channel_id ?? selectedChannel ?? "";
+                      return (
+                        <div className="absolute -top-3 right-2 z-10">
+                          <MessageHoverActions
+                            onReact={() => {
+                              if (
+                                showEmoji &&
+                                showEmoji.messageId === msg.id
+                              ) {
+                                onShowEmoji(null);
+                                return;
+                              }
+                              const row = document.querySelector(
+                                `[data-message-id="${msg.id}"]`,
+                              ) as HTMLElement | null;
+                              const rect = row?.getBoundingClientRect();
+                              if (!rect) return;
+                              onShowEmoji({
+                                messageId: msg.id,
+                                rect,
+                              });
+                            }}
+                            onReplyInThread={() => {
+                              setSelectedMessageId(null);
+                              onReplyInThread(
+                                msg.channel_id ?? selectedChannel ?? "",
+                                msg.id,
+                              );
+                            }}
+                            onOverflow={(e) => {
+                              e.preventDefault();
+                              onOverflow(e, msg.id);
+                            }}
+                            dragHandle={
+                              msgChannelId && !isMobile ? (
+                                <span
+                                  draggable
+                                  onDragStart={(e) => {
+                                    e.stopPropagation();
+                                    e.dataTransfer.effectAllowed =
+                                      "copy";
+                                    try {
+                                      e.dataTransfer.setData(
+                                        "text/plain",
+                                        `@${msg.author_id}: ${excerpt}`,
+                                      );
+                                      e.dataTransfer.setData(
+                                        "text/uri-list",
+                                        `${window.location.origin}/chat/${msgChannelId}?msg=${msg.id}`,
+                                      );
+                                    } catch {
+                                      /* best-effort */
+                                    }
+                                    startDrag({
+                                      kind: "message",
+                                      channel_id: msgChannelId,
+                                      message_id: msg.id,
+                                      author_id: msg.author_id,
+                                      excerpt,
+                                    });
+                                  }}
+                                  onDragEnd={() => endDrag()}
+                                  className="p-1 opacity-40 hover:opacity-100 cursor-grab select-none"
+                                  aria-label="Drag message"
+                                  title="Drag this message"
+                                >
+                                  &#8942;&#8942;
+                                </span>
+                              ) : undefined
+                            }
+                          />
+                        </div>
+                      );
+                    })();
+          const emojiPortal = showEmoji &&
+                    showEmoji.messageId === msg.id &&
+                    createPortal(
+                      (() => {
+                        const POPOVER_W = 300;
+                        const POPOVER_H = 360;
+                        const vw = window.innerWidth;
+                        const vh = window.innerHeight;
+                        const r = showEmoji.rect;
+                        const top = Math.max(
+                          8,
+                          Math.min(r.top, Math.max(8, vh - POPOVER_H - 8)),
+                        );
+                        const left = Math.max(
+                          8,
+                          Math.min(
+                            r.right - POPOVER_W,
+                            Math.max(8, vw - POPOVER_W - 8),
+                          ),
+                        );
+                        return (
+                          <div
+                            data-emoji-popover="1"
+                            role="dialog"
+                            aria-label="Emoji reactions"
+                            className="fixed z-50 bg-shell-bg border border-shell-border-strong rounded-lg shadow-xl p-2 w-[300px] h-[360px] flex flex-col gap-2 backdrop-blur-xl"
+                            style={{ top, left }}
+                          >
+                            <div className="flex gap-1 shrink-0">
+                              {EMOJI_PICKER.map((em) => (
+                                <button
+                                  key={em}
+                                  onClick={() =>
+                                    onToggleReaction(msg.id, em)
+                                  }
+                                  className="text-lg hover:bg-shell-border-strong rounded p-0.5 transition-colors"
+                                >
+                                  {em}
+                                </button>
+                              ))}
+                            </div>
+                            <div className="flex-1 min-h-0">
+                              <Picker
+                                theme={Theme.DARK}
+                                width="100%"
+                                height="100%"
+                                onEmojiClick={(d) => {
+                                  onToggleReaction(msg.id, d.emoji);
+                                }}
+                              />
+                            </div>
+                          </div>
+                        );
+                      })(),
+                      document.body,
+                    );
+
           return (
             <React.Fragment key={msg.id}>
               {showDaySeparator && (
@@ -493,6 +750,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                 }`}
                 onMouseEnter={() => onHoverMessage(msg.id)}
                 onMouseLeave={() => onHoverMessage(null)}
+                {...(isMobile ? mobileRowHandlers(msg.id) : {})}
               >
                 {/* avatar gutter */}
                 <div
@@ -643,7 +901,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                           </span>
                         )}
                         {channel?.type === "dm-remote" &&
-                          msg.author_id === currentUserId &&
+                          own &&
                           !["pending", "streaming"].includes(msg.state ?? "") && (
                             <span className="ml-1 text-shell-text-tertiary inline-flex items-center">
                               {msg.delivered_at ? (
@@ -653,20 +911,20 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                               )}
                             </span>
                           )}
-                        {msg.author_id === currentUserId &&
+                        {own &&
                           channel?.type !== "dm-remote" &&
                           msg.state !== "pending" &&
                           msg.state !== "streaming" &&
                           (() => {
                             const tickState = computeReceiptTick(
-                              msg.author_id,
+                              own,
                               currentUserId,
                               channel?.members,
                               msg.receipts ?? receipts[msg.id] ?? [],
                             );
                             const seenAt = tickState === "seen"
                               ? (msg.receipts ?? receipts[msg.id] ?? []).find(
-                                  (r) => (channel?.members ?? []).includes(r.agent_id) && r.agent_id !== currentUserId,
+                                  (r) => (channel?.members ?? []).includes(r.agent_id) && r.agent_id !== currentUserId && r.agent_id !== "user",
                                 )?.seen_at ?? undefined
                               : undefined;
                             return (
@@ -686,34 +944,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                       />
                     )}
 
-                  {/* canvas attachment */}
-                  {msg.content_type === "canvas" &&
-                    (msg.metadata?.canvas_url || msg.metadata?.canvas_id) && (
-                      <div className="mt-2">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => {
-                            const url =
-                              msg.metadata?.canvas_url ??
-                              `/canvas/${msg.metadata?.canvas_id}`;
-                            onViewCanvas({
-                              url,
-                              title: msg.metadata
-                                ?.canvas_title as string | undefined,
-                            });
-                          }}
-                          className="h-7 px-2.5 text-[12px] gap-1.5 bg-shell-surface border-shell-border-strong hover:bg-shell-surface-hover"
-                          aria-label="View canvas"
-                        >
-                          <PanelRight size={13} />
-                          View Canvas
-                          {msg.metadata?.canvas_title
-                            ? `: ${msg.metadata.canvas_title}`
-                            : ""}
-                        </Button>
-                      </div>
-                    )}
+                  {canvasBlock}
 
                   {/* reactions */}
                   {msg.reactions &&
@@ -726,84 +957,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                       />
                     )}
 
-                  {/* hover actions */}
-                  {(isMobile || hoveredMessageId === msg.id) &&
-                    (() => {
-                      const excerpt = (msg.content || "").slice(0, 80);
-                      const msgChannelId =
-                        msg.channel_id ?? selectedChannel ?? "";
-                      return (
-                        <div className="absolute -top-3 right-2 z-10">
-                          <MessageHoverActions
-                            onReact={() => {
-                              if (
-                                showEmoji &&
-                                showEmoji.messageId === msg.id
-                              ) {
-                                onShowEmoji(null);
-                                return;
-                              }
-                              const row = document.querySelector(
-                                `[data-message-id="${msg.id}"]`,
-                              ) as HTMLElement | null;
-                              const rect = row?.getBoundingClientRect();
-                              if (!rect) return;
-                              onShowEmoji({
-                                messageId: msg.id,
-                                rect,
-                              });
-                            }}
-                            onReplyInThread={() =>
-                              onReplyInThread(
-                                msg.channel_id ?? selectedChannel ?? "",
-                                msg.id,
-                              )
-                            }
-                            onOverflow={(e) => {
-                              e.preventDefault();
-                              onOverflow(e, msg.id);
-                            }}
-                            dragHandle={
-                              msgChannelId ? (
-                                <span
-                                  draggable
-                                  onDragStart={(e) => {
-                                    e.stopPropagation();
-                                    e.dataTransfer.effectAllowed =
-                                      "copy";
-                                    try {
-                                      e.dataTransfer.setData(
-                                        "text/plain",
-                                        `@${msg.author_id}: ${excerpt}`,
-                                      );
-                                      e.dataTransfer.setData(
-                                        "text/uri-list",
-                                        `${window.location.origin}/chat/${msgChannelId}?msg=${msg.id}`,
-                                      );
-                                    } catch {
-                                      /* best-effort */
-                                    }
-                                    startDrag({
-                                      kind: "message",
-                                      channel_id: msgChannelId,
-                                      message_id: msg.id,
-                                      author_id: msg.author_id,
-                                      excerpt,
-                                    });
-                                  }}
-                                  onDragEnd={() => endDrag()}
-                                  className="p-1 opacity-40 hover:opacity-100 cursor-grab select-none"
-                                  aria-label="Drag message"
-                                  title="Drag this message"
-                                >
-                                  &#8942;&#8942;
-                                </span>
-                              ) : undefined
-                            }
-                          />
-                        </div>
-                      );
-                    })()}
+                  {hoverActions}
                   <AttachmentGallery attachments={msg.attachments || []} />
                   {typeof msg.reply_count === "number" &&
                     msg.reply_count > 0 && (
@@ -819,63 +973,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                       />
                     )}
 
-                  {/* emoji picker portal */}
-                  {showEmoji &&
-                    showEmoji.messageId === msg.id &&
-                    createPortal(
-                      (() => {
-                        const POPOVER_W = 300;
-                        const POPOVER_H = 360;
-                        const vw = window.innerWidth;
-                        const vh = window.innerHeight;
-                        const r = showEmoji.rect;
-                        const top = Math.max(
-                          8,
-                          Math.min(r.top, Math.max(8, vh - POPOVER_H - 8)),
-                        );
-                        const left = Math.max(
-                          8,
-                          Math.min(
-                            r.right - POPOVER_W,
-                            Math.max(8, vw - POPOVER_W - 8),
-                          ),
-                        );
-                        return (
-                          <div
-                            data-emoji-popover="1"
-                            role="dialog"
-                            aria-label="Emoji reactions"
-                            className="fixed z-50 bg-shell-bg border border-shell-border-strong rounded-lg shadow-xl p-2 w-[300px] h-[360px] flex flex-col gap-2 backdrop-blur-xl"
-                            style={{ top, left }}
-                          >
-                            <div className="flex gap-1 shrink-0">
-                              {EMOJI_PICKER.map((em) => (
-                                <button
-                                  key={em}
-                                  onClick={() =>
-                                    onToggleReaction(msg.id, em)
-                                  }
-                                  className="text-lg hover:bg-shell-border-strong rounded p-0.5 transition-colors"
-                                >
-                                  {em}
-                                </button>
-                              ))}
-                            </div>
-                            <div className="flex-1 min-h-0">
-                              <Picker
-                                theme={Theme.DARK}
-                                width="100%"
-                                height="100%"
-                                onEmojiClick={(d) => {
-                                  onToggleReaction(msg.id, d.emoji);
-                                }}
-                              />
-                            </div>
-                          </div>
-                        );
-                      })(),
-                      document.body,
-                    )}
+                  {emojiPortal}
                 </div>
               </div>
             </React.Fragment>
