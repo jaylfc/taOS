@@ -71,10 +71,15 @@ async def test_create_refuses_url_off_allowlist(client, app, url):
 
 @pytest.mark.asyncio
 async def test_create_accepts_allowlisted_hosts(client, app):
-    for url in (SIGNIN_URL, "https://console.anthropic.com/oauth/authorize?x=1"):
-        resp = await _create(client, app, url=url)
-        assert resp.status_code == 200, resp.text
-        assert resp.json()["id"]
+    # First request succeeds
+    resp1 = await _create(client, app, url=SIGNIN_URL)
+    assert resp1.status_code == 200, resp1.text
+    assert resp1.json()["id"]
+
+    # Second request with different allowlisted host but same kind, different agent is accepted
+    resp2 = await _create(client, app, "other-agent", url="https://console.anthropic.com/oauth/authorize?x=1")
+    assert resp2.status_code == 200, resp2.text
+    assert resp2.json()["id"]
 
 
 @pytest.mark.asyncio
@@ -376,30 +381,32 @@ async def test_secret_grant_preserves_existing_agents(client, app, monkeypatch, 
 
 @pytest.mark.asyncio
 async def test_create_request_cap_per_agent(client, app):
-    """An agent can have at most MAX_OPEN_PER_AGENT open requests."""
+    """An agent can have at most one open request per kind."""
     from tinyagentos.auth_broker import MAX_OPEN_PER_AGENT
 
     hdr = _bearer(app, "haiku-agent")
     other_hdr = _bearer(app, "other-agent")
 
-    # Create MAX_OPEN_PER_AGENT requests for haiku-agent
-    for _ in range(MAX_OPEN_PER_AGENT):
-        resp = await _create(client, app, "haiku-agent")
-        assert resp.status_code == 200, resp.text
-
-    # The (MAX_OPEN_PER_AGENT + 1)th request should be rejected with 429
+    # First request succeeds
     resp = await _create(client, app, "haiku-agent")
-    assert resp.status_code == 429, resp.text
-    assert "too many open sign-in requests" in resp.text
+    assert resp.status_code == 200, resp.text
 
-    # No 4th notification was added for haiku-agent
+    # Second request for same agent and kind is rejected with 409
+    resp = await _create(client, app, "haiku-agent")
+    assert resp.status_code == 409, resp.text
+    assert "a sign-in request is already open for this agent" in resp.text
+
+    # Only one notification for haiku-agent
     rows = await app.state.notifications.list(limit=50)
     haiku_notifs = [r for r in rows if r.get("source") == "auth_broker" and r["data"]["agent"] == "haiku-agent"]
-    assert len(haiku_notifs) == MAX_OPEN_PER_AGENT
+    assert len(haiku_notifs) == 1
 
     # A different agent can still create
     resp = await _create(client, app, "other-agent")
     assert resp.status_code == 200, resp.text
+
+    # The store-level MAX_OPEN_PER_AGENT cap still applies as a fallback
+    # (tested separately in test_store_create_enforces_cap_under_lock)
 
 
 @pytest.mark.asyncio
@@ -437,6 +444,35 @@ async def test_expired_code_ready_cleared_on_create(client, app, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_store_create_refuses_second_open_same_kind(tmp_data_dir):
+    """AuthBrokerStore.create refuses a second open request for the same requester and kind.
+
+    This test demonstrates the race condition that was fixed by making the one-open-request-per-kind
+    check atomic inside AuthBrokerStore.create().
+    """
+    from tinyagentos.auth_broker import KIND_CLAUDE_SUBSCRIPTION, AuthBrokerStore, OpenRequestExists
+
+    store = AuthBrokerStore(tmp_data_dir / "auth_broker_test.db")
+    await store.init()
+    try:
+        url = "https://claude.ai/oauth/authorize?code=true&client_id=abc&state=xyz"
+
+        # First create succeeds
+        rec1 = await store.create(
+            requester="agent-y", kind=KIND_CLAUDE_SUBSCRIPTION, url=url
+        )
+        assert rec1["status"] == "pending"
+
+        # Second create for same requester and kind should raise OpenRequestExists
+        with pytest.raises(OpenRequestExists):
+            await store.create(
+                requester="agent-y", kind=KIND_CLAUDE_SUBSCRIPTION, url=url
+            )
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
 async def test_store_create_enforces_cap_under_lock(tmp_data_dir):
     """AuthBrokerStore.create enforces MAX_OPEN_PER_AGENT inside its lock.
 
@@ -452,11 +488,14 @@ async def test_store_create_enforces_cap_under_lock(tmp_data_dir):
         url = "https://claude.ai/oauth/authorize?code=true&client_id=abc&state=xyz"
 
         # Create MAX_OPEN_PER_AGENT requests for "agent-x"
-        for _ in range(MAX_OPEN_PER_AGENT):
+        for i in range(MAX_OPEN_PER_AGENT):
             rec = await store.create(
                 requester="agent-x", kind=KIND_CLAUDE_SUBSCRIPTION, url=url
             )
             assert rec["status"] == "pending"
+            # Move this request to code_read so the next create can succeed
+            await store.set_code(rec["id"], "c")
+            await store.take_code(rec["id"])
 
         # The (MAX_OPEN_PER_AGENT + 1)th create for "agent-x" must raise
         with pytest.raises(PendingCapExceeded) as exc_info:
@@ -490,6 +529,9 @@ async def test_cap_reject_leaves_no_open_transaction(app):
             requester="cap-test-agent", kind=KIND_CLAUDE_SUBSCRIPTION, url=url
         )
         assert rec["status"] == "pending"
+        # Move this request to code_read so the next create can succeed
+        await store.set_code(rec["id"], "c")
+        await store.take_code(rec["id"])
 
     # The next create must raise PendingCapExceeded
     with pytest.raises(PendingCapExceeded):
@@ -499,3 +541,108 @@ async def test_cap_reject_leaves_no_open_transaction(app):
 
     # No transaction should remain open on the connection
     assert store._db.in_transaction is False
+
+
+@pytest.mark.asyncio
+async def test_rollback_exception_does_not_mask_pending_capexceeded(app):
+    """A failing rollback must not mask PendingCapExceeded (must keep the 429)."""
+    from tinyagentos.auth_broker import KIND_CLAUDE_SUBSCRIPTION
+
+    store = app.state.auth_broker
+    url = "https://claude.ai/oauth/authorize?code=true&client_id=abc&state=xyz"
+
+    # Create MAX_OPEN_PER_AGENT requests for one requester
+    for _ in range(MAX_OPEN_PER_AGENT):
+        rec = await store.create(
+            requester="rollback-test-agent", kind=KIND_CLAUDE_SUBSCRIPTION, url=url
+        )
+        assert rec["status"] == "pending"
+        # Move this request to code_read so the next create can succeed
+        await store.set_code(rec["id"], "c")
+        await store.take_code(rec["id"])
+
+    # Monkeypatch rollback to raise an exception
+    async def failing_rollback():
+        raise RuntimeError("boom")
+
+    store._db.rollback = failing_rollback
+
+    # The next create must raise PendingCapExceeded, not RuntimeError
+    with pytest.raises(PendingCapExceeded) as exc_info:
+        await store.create(
+            requester="rollback-test-agent", kind=KIND_CLAUDE_SUBSCRIPTION, url=url
+        )
+    assert exc_info.value.key == "rollback-test-agent"
+    assert exc_info.value.cap == MAX_OPEN_PER_AGENT
+    assert exc_info.value.pending == MAX_OPEN_PER_AGENT
+
+
+
+@pytest.mark.asyncio
+async def test_create_second_request_same_agent_same_kind_returns_409(client, app):
+    """A second create by the same agent for the same kind while the first is pending
+    returns 409 and adds no second auth_broker notification."""
+    hdr = _bearer(app, "haiku-agent")
+
+    # First create succeeds
+    resp1 = await _create(client, app, "haiku-agent")
+    assert resp1.status_code == 200, resp1.text
+    rid1 = resp1.json()["id"]
+
+    # Second create for same agent and kind should be 409
+    resp2 = await _create(client, app, "haiku-agent")
+    assert resp2.status_code == 409, resp2.text
+    assert "a sign-in request is already open for this agent" in resp2.text
+
+    # Only one notification should exist
+    rows = await app.state.notifications.list(limit=50)
+    hits = [r for r in rows if r.get("source") == "auth_broker" and r["data"]["agent"] == "haiku-agent"]
+    assert len(hits) == 1, f"Expected 1 notification, got {len(hits)}"
+
+
+@pytest.mark.asyncio
+async def test_create_after_expiry_succeeds(client, app, monkeypatch):
+    """After the first request expires, a new create for the same agent and kind succeeds."""
+    import tinyagentos.auth_broker as broker
+
+    t0 = 1_800_000_000.0
+    monkeypatch.setattr(broker, "_now", lambda: t0)
+    hdr = _bearer(app, "haiku-agent")
+
+    # Create first request
+    resp1 = await _create(client, app, "haiku-agent")
+    assert resp1.status_code == 200, resp1.text
+    rid1 = resp1.json()["id"]
+
+    # Advance time past expiry
+    monkeypatch.setattr(broker, "_now", lambda: t0 + broker.EXPIRY_SECONDS + 1)
+
+    # New create should succeed
+    resp2 = await _create(client, app, "haiku-agent")
+    assert resp2.status_code == 200, resp2.text
+    rid2 = resp2.json()["id"]
+    assert rid2 != rid1
+
+    # Two notifications should exist (one for each request)
+    rows = await app.state.notifications.list(limit=50)
+    hits = [r for r in rows if r.get("source") == "auth_broker" and r["data"]["agent"] == "haiku-agent"]
+    assert len(hits) == 2, f"Expected 2 notifications, got {len(hits)}"
+
+
+@pytest.mark.asyncio
+async def test_different_agent_not_blocked(client, app):
+    """A different agent can create a request even when another agent has one open."""
+    # First agent creates a request
+    resp1 = await _create(client, app, "haiku-agent")
+    assert resp1.status_code == 200, resp1.text
+
+    # Different agent creates a request - should succeed
+    resp2 = await _create(client, app, "other-agent")
+    assert resp2.status_code == 200, resp2.text
+
+    # Both should have notifications
+    rows = await app.state.notifications.list(limit=50)
+    haiku_hits = [r for r in rows if r.get("source") == "auth_broker" and r["data"]["agent"] == "haiku-agent"]
+    other_hits = [r for r in rows if r.get("source") == "auth_broker" and r["data"]["agent"] == "other-agent"]
+    assert len(haiku_hits) == 1
+    assert len(other_hits) == 1

@@ -20,6 +20,8 @@ import {
   Bell,
   Lock,
   Presentation,
+  Wifi,
+  Bluetooth,
 } from "lucide-react";
 import {
   Button,
@@ -42,13 +44,15 @@ import { LogsSection } from "@/apps/SettingsApp/LogsPanel";
 import { NotificationsPanel } from "@/apps/SettingsApp/NotificationsPanel";
 import { LockScreenPanel } from "@/apps/SettingsApp/LockScreenPanel";
 import { DemoModePanel } from "@/apps/SettingsApp/DemoModePanel";
+import { WifiPanel } from "@/apps/SettingsApp/WifiPanel";
+import { BluetoothPanel } from "@/apps/SettingsApp/BluetoothPanel";
 import { copyText } from "@/lib/clipboard";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
-type Section = "account" | "system" | "storage" | "memory" | "backup" | "updates" | "advanced" | "shortcuts" | "accessibility" | "desktop" | "users" | "themes" | "logs" | "notifications" | "lock" | "demo";
+type Section = "account" | "system" | "storage" | "memory" | "backup" | "updates" | "advanced" | "shortcuts" | "accessibility" | "desktop" | "users" | "themes" | "logs" | "notifications" | "lock" | "demo" | "wifi" | "bluetooth";
 
 interface SectionDef {
   id: Section;
@@ -72,6 +76,13 @@ interface StorageItem {
   maxBytes: number;
 }
 
+interface StorageApiItem {
+  label: string;
+  size: string;
+  bytes: number;
+  total_bytes?: number;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Constants                                                          */
 /* ------------------------------------------------------------------ */
@@ -79,6 +90,8 @@ interface StorageItem {
 const SECTIONS: SectionDef[] = [
   { id: "account", label: "Account", icon: UserCircle },
   { id: "system", label: "System Info", icon: Info },
+  { id: "wifi", label: "Wi-Fi", icon: Wifi },
+  { id: "bluetooth", label: "Bluetooth", icon: Bluetooth },
   { id: "storage", label: "Storage", icon: HardDrive },
   { id: "memory", label: "Memory", icon: Brain },
   { id: "backup", label: "Backup & Restore", icon: Download },
@@ -97,7 +110,7 @@ const SECTIONS: SectionDef[] = [
 
 // Sections that require admin privileges to view (GHSA-47g9: backend already
 // 403s these for non-admins, this hides them from the sidebar/content too).
-const ADMIN_ONLY = new Set(["system", "storage", "memory", "backup", "updates", "advanced", "users", "logs", "demo"]);
+const ADMIN_ONLY = new Set(["system", "storage", "memory", "backup", "updates", "advanced", "users", "logs", "demo", "wifi", "bluetooth"]);
 
 const PLACEHOLDER_SYSTEM: SystemInfo = {
   cpu: "Detecting...",
@@ -296,33 +309,62 @@ function SystemInfoSection() {
 
 function StorageSection() {
   const [items, setItems] = useState<StorageItem[]>(PLACEHOLDER_STORAGE);
+  const [unavailable, setUnavailable] = useState(false);
 
   useEffect(() => {
-    safeFetch<StorageItem[] | null>("/api/settings/storage", null).then((data) => {
-      if (data && Array.isArray(data)) setItems(data);
-      else
-        setItems([
-          { label: "Models", size: "4.2 GB", bytes: 4200, maxBytes: 32000 },
-          { label: "Data", size: "1.8 GB", bytes: 1800, maxBytes: 32000 },
-          { label: "App Catalog", size: "320 MB", bytes: 320, maxBytes: 32000 },
-        ]);
+    let active = true;
+    safeFetch<{ storage?: StorageApiItem[] } | null>("/api/settings/storage", null).then((data) => {
+      if (!active) return;
+      const storage = data?.storage;
+      if (Array.isArray(storage)) {
+        setItems(
+          storage.map((s) => ({
+            label: s.label,
+            size: s.size,
+            bytes: s.bytes,
+            // The bar shows the share of the disk holding that folder.
+            maxBytes: s.total_bytes ?? 0,
+          })),
+        );
+        setUnavailable(false);
+      } else {
+        setUnavailable(true);
+      }
     });
+    return () => {
+      active = false;
+    };
   }, []);
 
   return (
     <section aria-label="Storage usage">
       <h2 className="text-lg font-semibold mb-5">Storage Usage</h2>
-      <div className="space-y-3">
-        {items.map((item) => (
-          <Card key={item.label} className="p-4">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-sm font-medium">{item.label}</span>
-              <span className="text-sm text-shell-text-secondary tabular-nums">{item.size}</span>
-            </div>
-            <ProgressBar value={item.bytes} max={item.maxBytes} />
-          </Card>
-        ))}
-      </div>
+      {unavailable ? (
+        <p role="status" className="text-sm text-shell-text-tertiary">
+          Storage usage is unavailable right now.
+        </p>
+      ) : (
+        <div className="space-y-3">
+          {items.map((item) => (
+            <Card key={item.label} className="p-4">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm font-medium">{item.label}</span>
+                <span className="text-sm text-shell-text-secondary tabular-nums">{item.size}</span>
+              </div>
+              {item.maxBytes > 0 ? (
+                <ProgressBar
+                  value={item.bytes}
+                  max={item.maxBytes}
+                  label={`${item.label} disk usage`}
+                  valueText={item.size}
+                />
+              ) : (
+                <p className="text-xs text-shell-text-tertiary">Disk capacity unavailable</p>
+              )}
+            </Card>
+          ))}
+        </div>
+      )}
     </section>
   );
 }
@@ -992,6 +1034,8 @@ export function SettingsApp({ windowId: _windowId, section: initialSection }: { 
     notifications: <NotificationsPanel />,
     lock: <LockScreenPanel />,
     demo: <DemoModePanel />,
+    wifi: <WifiPanel />,
+    bluetooth: <BluetoothPanel />,
   };
 
   const handleSelectSection = (id: Section) => {

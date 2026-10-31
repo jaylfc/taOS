@@ -156,28 +156,49 @@ def _format_size(size_bytes: int) -> str:
         return f"{size_bytes / (1024 ** 3):.2f} GB"
 
 
+def _fs_total_bytes(path: Path) -> int:
+    """Size of the filesystem holding *path* (its nearest existing ancestor)."""
+    probe = path
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    try:
+        return shutil.disk_usage(probe).total
+    except OSError:
+        return 0
+
+
 def _get_storage_stats(app) -> list[dict]:
-    """Compute storage usage for key directories."""
+    """Compute storage usage for key directories.
+
+    Each item carries ``total_bytes``, the size of the filesystem the folder
+    lives on, so the Settings panel can draw a usage bar against the disk.
+    """
     data_dir = app.state.config_path.parent
     items = []
 
-    # Models dir
-    models_dir = data_dir / "models"
+    # Models dir: where the installers put models (TAOS_MODELS_ROOT aware)
+    from tinyagentos.installers.model_paths import models_root
+
+    models_dir = models_root()
     models_bytes = _dir_size(models_dir)
     items.append({
         "label": "Models",
         "path": str(models_dir),
         "size": _format_size(models_bytes),
         "bytes": models_bytes,
+        "total_bytes": _fs_total_bytes(Path(models_dir)),
     })
 
-    # Data dir
+    # Data dir, without the models folder already counted above
     data_bytes = _dir_size(data_dir)
+    if models_dir.is_relative_to(data_dir):
+        data_bytes = max(0, data_bytes - models_bytes)
     items.append({
         "label": "Data",
         "path": str(data_dir),
         "size": _format_size(data_bytes),
         "bytes": data_bytes,
+        "total_bytes": _fs_total_bytes(Path(data_dir)),
     })
 
     # App catalog
@@ -192,6 +213,7 @@ def _get_storage_stats(app) -> list[dict]:
         "path": str(cat_path),
         "size": _format_size(cat_bytes),
         "bytes": cat_bytes,
+        "total_bytes": _fs_total_bytes(Path(cat_path)),
     })
 
     return items

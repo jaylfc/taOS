@@ -17,6 +17,7 @@ read the code it has another ``EXPIRY_SECONDS`` to post the token.
 from __future__ import annotations
 
 import asyncio
+import logging
 import secrets
 import time
 from urllib.parse import urlsplit
@@ -24,6 +25,10 @@ from urllib.parse import urlsplit
 import aiosqlite
 
 from tinyagentos.base_store import BaseStore, PendingCapExceeded
+class OpenRequestExists(Exception):
+    """Raised when a create operation would exceed the one-open-request-per-kind limit."""
+
+logger = logging.getLogger(__name__)
 
 EXPIRY_SECONDS = 600
 MAX_OPEN_PER_AGENT = 3
@@ -123,6 +128,28 @@ class AuthBrokerStore(BaseStore):
                 count += 1
         return count
 
+    async def open_request(self, requester: str, kind: str) -> dict | None:
+        """Return the newest open request for *requester* and *kind*.
+
+        An open request has status 'pending' or 'code_ready' and is not expired.
+        Returns None if no such request exists.
+        """
+        self._require_db()
+        now = _now()
+        async with self._db.execute(
+            "SELECT * FROM auth_broker_requests"
+            " WHERE requester = ? AND kind = ? AND status IN ('pending', 'code_ready')"
+            " ORDER BY created_at DESC LIMIT 1",
+            (requester, kind),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        rec = _row(row)
+        if self.expired(rec, now):
+            return None
+        return rec
+
     async def create(self, *, requester: str, kind: str, url: str, prompt: str = "") -> dict:
         self._require_db()
         if kind not in KINDS:
@@ -146,6 +173,11 @@ class AuthBrokerStore(BaseStore):
                     " WHERE status = 'code_ready' AND created_at < ?",
                     (now - EXPIRY_SECONDS,),
                 )
+                # Check for an existing open request for this requester and kind
+                # This must be inside the lock to prevent the race condition where
+                # two concurrent creates both pass this check and both insert
+                if await self.open_request(requester, kind) is not None:
+                    raise OpenRequestExists(requester)
                 open_count = 0
                 async with self._db.execute(
                     "SELECT * FROM auth_broker_requests WHERE requester = ? AND status != 'completed'",
@@ -165,7 +197,10 @@ class AuthBrokerStore(BaseStore):
                 )
                 await self._db.commit()
             except BaseException:
-                await self._db.rollback()
+                try:
+                    await self._db.rollback()
+                except Exception:
+                    logger.warning("auth_broker: rollback after failed create raised", exc_info=True)
                 raise
         return await self.get(rec["id"])
 

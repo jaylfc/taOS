@@ -1,0 +1,2 @@
+### Fixed
+- POST /api/agents/deploy only mints the registry JWT after memory_read grant succeeds; if the grant fails, TAOS_AGENT_TOKEN is omitted. On all three deploy failure paths, the memory_read grant is revoked when a canonical_id exists.
