@@ -552,6 +552,23 @@ def mint_canonical_id(slug: str, ts: datetime) -> str:
     return f"{slug}-{date_part}-{time_part}"
 
 
+def _slug_globs(slug: str) -> tuple[str, str]:
+    """GLOB patterns for the canonical ids minted from *slug*.
+
+    mint_canonical_id yields ``{slug}-{YYYYMMDD}-{HHMMSS}`` and, on a
+    same-second slug collision, a ``-{2hex}`` suffix. Both shapes are matched
+    exactly (no trailing wildcard), so slug ``alpha`` does not match the id of
+    an agent whose own slug is ``alpha-20260101-120000-x``.
+    """
+    base = (
+        f"{slug}-"
+        "[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]"
+        "-"
+        "[0-9][0-9][0-9][0-9][0-9][0-9]"
+    )
+    return base, base + "-[0-9a-f][0-9a-f]"
+
+
 _RESERVED_PREFIXES = ("user-", "human-", "admin-", "taos-")
 
 
@@ -826,28 +843,42 @@ class AgentRegistryStore(BaseStore):
         # a caller-supplied string must not reach the matcher.
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", slug or ""):
             return None
-        # mint_canonical_id yields {slug}-{YYYYMMDD}-{HHMMSS} (and, on a
-        # same-second slug collision, a -{2hex} suffix). GLOBing the 8-6 digit
-        # tail pins the slug to its own canonical-id boundary.
-        pattern = (
-            f"{slug}-"
-            "[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]"
-            "-"
-            "[0-9][0-9][0-9][0-9][0-9][0-9]"
-            "*"
-        )
+        pattern, suffixed = _slug_globs(slug)
         if status is None:
             cursor = await self._db.execute(
-                "SELECT * FROM agent_registry WHERE canonical_id GLOB ? ORDER BY id LIMIT 1",
-                (pattern,),
+                "SELECT * FROM agent_registry WHERE (canonical_id GLOB ? OR canonical_id GLOB ?)"
+                " ORDER BY id LIMIT 1",
+                (pattern, suffixed),
             )
         else:
             cursor = await self._db.execute(
-                "SELECT * FROM agent_registry WHERE canonical_id GLOB ? AND status = ? ORDER BY id LIMIT 1",
-                (pattern, status),
+                "SELECT * FROM agent_registry WHERE (canonical_id GLOB ? OR canonical_id GLOB ?)"
+                " AND status = ? ORDER BY id LIMIT 1",
+                (pattern, suffixed, status),
             )
         row = await cursor.fetchone()
         return _row_to_dict(row) if row else None
+
+    async def count_by_slug(self, slug: str, *, status: str = "active") -> int:
+        """How many entries with *status* decode to *slug* (same match as get_by_slug).
+
+        A slug is not unique: two users can each register ``alpha`` and get
+        distinct canonical ids. Owner checks that accept a bare slug use this
+        to refuse the ambiguous case instead of silently taking the oldest row.
+        """
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", slug or ""):
+            return 0
+        pattern, suffixed = _slug_globs(slug)
+        row = await (
+            await self._db.execute(
+                "SELECT COUNT(*) FROM agent_registry"
+                " WHERE (canonical_id GLOB ? OR canonical_id GLOB ?) AND status = ?",
+                (pattern, suffixed, status),
+            )
+        ).fetchone()
+        return int(row[0]) if row else 0
 
     async def get_by_handle(self, handle: str, *, status: str = "active") -> Optional[dict]:
         """Return the oldest entry with *handle* and *status*, or ``None``.

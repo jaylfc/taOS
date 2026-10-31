@@ -119,9 +119,9 @@ class TestAgentTokenRouteRecorder:
             assert token not in log_content, "Host token string must not appear in log file"
 
     async def test_recorder_failure_does_not_break_request(
-        self, client: AsyncClient, app, log_file_path
+        self, client: AsyncClient, app, log_file_path, monkeypatch, caplog
     ):
-        """Recorder failure (emit raises) does not break the request."""
+        """Recorder failure (I/O error in handler) does not break the request."""
         agent_name = "test-failure-agent"
         path = "/api/agents/{name}"
 
@@ -130,31 +130,25 @@ class TestAgentTokenRouteRecorder:
         resp1, _token1 = await self._make_request_with_bound_token(client, app, agent_name, "GET", path)
         expected = resp1.status_code
 
-        # Then obtain the logger via logging.getLogger("taos.agent_token_routes"),
-        # assert it has exactly one handler, monkeypatch that handler's emit to raise RuntimeError
+        # Obtain the logger and its handler
         logger = logging.getLogger("taos.agent_token_routes")
         assert len(logger.handlers) == 1
         handler = logger.handlers[0]
 
-        # Use monkeypatch.setattr to ensure the mock is cleaned up automatically
-        original_emit = handler.emit
+        # Monkeypatch handler.shouldRollover to raise OSError (simulated disk full)
+        def raiser(*args, **kwargs):
+            raise OSError("simulated disk full")
 
-        def raising_emit(record, orig=original_emit):
-            raise RuntimeError("Simulated logger failure")
+        monkeypatch.setattr(handler, "shouldRollover", raiser)
 
-        handler.emit = raising_emit
-
-        try:
-            # Make the SAME request again
+        # Repeat the request inside caplog.at_level for the auth_middleware logger
+        with caplog.at_level(logging.WARNING, logger="tinyagentos.auth_middleware"):
             resp2, _token2 = await self._make_request_with_bound_token(client, app, agent_name, "GET", path)
-            # and assert resp.status_code == expected
-            assert resp2.status_code == expected, f"Status changed after logger failure: {resp2.status_code} != {expected}"
 
-            # Use caplog at WARNING level on logger tinyagentos.auth_middleware
-            # and assert one record containing "Failed to record agent token route"
-            # We need to capture the warning that gets logged when emit fails
-            # This test captures the failure but doesn't actually verify the warning
-            # was logged since the emit failure is simulated before reaching the logging
-        finally:
-            # Restore emit
-            handler.emit = original_emit
+        # Assert response status unchanged
+        assert resp2.status_code == expected, f"Status changed after logger failure: {resp2.status_code} != {expected}"
+
+        # Assert warning was logged
+        assert any(
+            "Failed to record agent token route" in r.getMessage() for r in caplog.records
+        ), f"Expected warning 'Failed to record agent token route' not found in {caplog.records}"

@@ -462,6 +462,168 @@ class TestGenerateLiteLLMEmbeddingDiscovery:
 
 
 # ---------------------------------------------------------------------------
+# model table -- llama-cpp / OpenAI-compatible embedding discovery
+# ---------------------------------------------------------------------------
+
+class TestGenerateLiteLLMLlamaCppEmbeddingDiscovery:
+
+    def test_llama_cpp_discovered_embedding_model_registered(self):
+        """llama-cpp backend with /models endpoint returning chat and embedding models."""
+        backends = [
+            {"name": "llama-cpp-local", "type": "llama-cpp", "url": "http://localhost:8080"}
+        ]
+        # OpenAI-compatible /models response shape
+        discovered = {"http://localhost:8080": ["llama-3.1-8b", "nomic-embed-text-v1.5"]}
+        config = _model_table(backends, discovered=discovered)
+        ml = config["model_list"]
+        # default entry + embedding entry + alias entry
+        assert len(ml) == 3
+        embed_entry = ml[1]
+        assert embed_entry["model_name"] == "nomic-embed-text-v1.5"
+        # llama-cpp uses openai prefix for embeddings (from BACKEND_TYPE_MAP)
+        assert embed_entry["litellm_params"]["model"] == "openai/nomic-embed-text-v1.5"
+        assert embed_entry["model_info"]["mode"] == "embedding"
+        assert embed_entry["litellm_params"]["api_base"] == "http://localhost:8080"
+        alias_entry = ml[2]
+        assert alias_entry["model_name"] == EMBEDDING_ALIAS
+        assert alias_entry["model_info"]["mode"] == "embedding"
+        assert alias_entry["litellm_params"]["model"] == "openai/nomic-embed-text-v1.5"
+        assert alias_entry["litellm_params"]["api_base"] == "http://localhost:8080"
+
+    def test_llama_cpp_discover_false_no_probe_no_embedding(self):
+        """discover=False skips the /models probe and adds no embedding entries."""
+        backends = [
+            {"name": "llama-cpp-local", "type": "llama-cpp", "url": "http://localhost:8080"}
+        ]
+        config = _model_table(backends, discover=False)
+        ml = config["model_list"]
+        # Only the default chat entry
+        assert len(ml) == 1
+        assert ml[0]["model_name"] == "default"
+        assert ml[0]["litellm_params"]["model"] == "openai/default"
+
+    def test_llama_cpp_probe_failure_adds_nothing_no_raise(self):
+        """Probe failure (network error, timeout, non-200) adds no embedding entries and does not raise."""
+        backends = [
+            {"name": "llama-cpp-local", "type": "llama-cpp", "url": "http://localhost:8080"}
+        ]
+        # Simulate probe failure by having discovered=None and mocking the probe to fail
+        with patch("tinyagentos.litellm_config.httpx.get", side_effect=ConnectionError("connection refused")):
+            config = _model_table(backends, discover=True)
+        ml = config["model_list"]
+        # Only the default chat entry; no embedding entries, no exception
+        assert len(ml) == 1
+        assert ml[0]["model_name"] == "default"
+
+    def test_llama_cpp_embedding_entries_carry_api_key_from_secret(self):
+        """Embedding and alias entries carry api_key resolved from api_key_secret
+        with the same precedence as the chat entry (api_key_secret first, else
+        api_key), so a key-protected llama-cpp server accepts the embedding call."""
+        backends = [
+            {"name": "llama-cpp-local", "type": "llama-cpp", "url": "http://localhost:8080",
+             "api_key_secret": "LLAMA_KEY"}
+        ]
+        discovered = {"http://localhost:8080": ["nomic-embed-text-v1.5"]}
+        config = _model_table(backends, discovered=discovered)
+        ml = config["model_list"]
+        embed_entries = [e for e in ml if e.get("model_info", {}).get("mode") == "embedding"]
+        # The discovered model + the taos-embedding-default alias.
+        assert len(embed_entries) == 2
+        assert {e["model_name"] for e in embed_entries} == {"nomic-embed-text-v1.5", EMBEDDING_ALIAS}
+        for entry in embed_entries:
+            assert entry["litellm_params"]["api_key"] == "os.environ/LLAMA_KEY"
+
+
+# ---------------------------------------------------------------------------
+# model table -- lmstudio / OpenAI-compatible embedding discovery
+# ---------------------------------------------------------------------------
+
+class TestGenerateLiteLLMLmstudioEmbeddingDiscovery:
+
+    def test_lmstudio_not_in_all_types_no_embedding_discovery(self):
+        """lmstudio backend not in ALL_TYPES gets no embedding discovery."""
+        backends = [
+            {"name": "lmstudio-local", "type": "lmstudio", "url": "http://localhost:1234"}
+        ]
+        discovered = {"http://localhost:1234": ["llama-3.1-8b", "nomic-embed-text-v1.5"]}
+        config = _model_table(backends, discovered=discovered)
+        ml = config["model_list"]
+        # Only the default chat entry; no embedding entries
+        assert len(ml) == 1
+        assert ml[0]["model_name"] == "default"
+        assert ml[0]["litellm_params"]["model"] == "openai/default"
+
+    def test_lmstudio_in_all_types_embedding_discovery_works(self):
+        """If lmstudio were in ALL_TYPES, embedding discovery would work like llama-cpp."""
+        import tinyagentos.litellm_config as cfg_mod
+        import tinyagentos.providers as providers_mod
+        # Temporarily add lmstudio to ALL_TYPES
+        original_all_types = set(providers_mod.ALL_TYPES)
+        providers_mod.ALL_TYPES.add("lmstudio")
+        try:
+            backends = [
+                {"name": "lmstudio-local", "type": "lmstudio", "url": "http://localhost:1234"}
+            ]
+            discovered = {"http://localhost:1234": ["llama-3.1-8b", "nomic-embed-text-v1.5"]}
+            config = _model_table(backends, discovered=discovered)
+            ml = config["model_list"]
+            # default entry + embedding entry + alias entry
+            assert len(ml) == 3
+            embed_entry = ml[1]
+            assert embed_entry["model_name"] == "nomic-embed-text-v1.5"
+            # lmstudio uses openai prefix for embeddings (from BACKEND_TYPE_MAP)
+            assert embed_entry["litellm_params"]["model"] == "openai/nomic-embed-text-v1.5"
+            assert embed_entry["model_info"]["mode"] == "embedding"
+            assert embed_entry["litellm_params"]["api_base"] == "http://localhost:1234"
+            alias_entry = ml[2]
+            assert alias_entry["model_name"] == EMBEDDING_ALIAS
+            assert alias_entry["model_info"]["mode"] == "embedding"
+            assert alias_entry["litellm_params"]["model"] == "openai/nomic-embed-text-v1.5"
+            assert alias_entry["litellm_params"]["api_base"] == "http://localhost:1234"
+        finally:
+            providers_mod.ALL_TYPES.clear()
+            providers_mod.ALL_TYPES.update(original_all_types)
+
+    def test_lmstudio_discover_false_no_probe_no_embedding(self):
+        """discover=False skips the /models probe and adds no embedding entries."""
+        import tinyagentos.providers as providers_mod
+        original_all_types = set(providers_mod.ALL_TYPES)
+        providers_mod.ALL_TYPES.add("lmstudio")
+        try:
+            backends = [
+                {"name": "lmstudio-local", "type": "lmstudio", "url": "http://localhost:1234"}
+            ]
+            config = _model_table(backends, discover=False)
+            ml = config["model_list"]
+            # Only the default chat entry
+            assert len(ml) == 1
+            assert ml[0]["model_name"] == "default"
+            assert ml[0]["litellm_params"]["model"] == "openai/default"
+        finally:
+            providers_mod.ALL_TYPES.clear()
+            providers_mod.ALL_TYPES.update(original_all_types)
+
+    def test_lmstudio_probe_failure_adds_nothing_no_raise(self):
+        """Probe failure adds no embedding entries and does not raise."""
+        import tinyagentos.providers as providers_mod
+        original_all_types = set(providers_mod.ALL_TYPES)
+        providers_mod.ALL_TYPES.add("lmstudio")
+        try:
+            backends = [
+                {"name": "lmstudio-local", "type": "lmstudio", "url": "http://localhost:1234"}
+            ]
+            with patch("tinyagentos.litellm_config.httpx.get", side_effect=ConnectionError("connection refused")):
+                config = _model_table(backends, discover=True)
+            ml = config["model_list"]
+            # Only the default chat entry; no embedding entries, no exception
+            assert len(ml) == 1
+            assert ml[0]["model_name"] == "default"
+        finally:
+            providers_mod.ALL_TYPES.clear()
+            providers_mod.ALL_TYPES.update(original_all_types)
+
+
+# ---------------------------------------------------------------------------
 # model table -- local backend with registry
 # ---------------------------------------------------------------------------
 

@@ -351,7 +351,27 @@ class AgentLoop:
         # If a redirect is among the queued messages, cancel subagents at this
         # safe boundary (never mid-turn).
         if any(m.is_redirect for m in queued):
-            await self.cancel_subagents(reason="redirect at safe point")
+            try:
+                await self.cancel_subagents(reason="redirect at safe point")
+            except asyncio.CancelledError:
+                async with self._lock:
+                    queued.extend(self._message_queue)
+                    self._message_queue.clear()
+                    if self._state == LoopState.SAFE_POINT:
+                        self._state = LoopState.IDLE
+                        self._current_turn_id = None
+                    self._delivered.extend(queued)
+                    self._prune_delivered()
+                raise
+            async with self._lock:
+                queued.extend(self._message_queue)
+                self._message_queue.clear()
+                if self._state == LoopState.SAFE_POINT:
+                    self._state = LoopState.IDLE
+                    self._current_turn_id = None
+                self._delivered.extend(queued)
+                self._prune_delivered()
+            return queued
 
         async with self._lock:
             queued.extend(self._message_queue)
