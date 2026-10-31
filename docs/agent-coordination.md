@@ -216,6 +216,13 @@ cannot delegate as it or read its memory index.
 agent's owner, an admin, or that agent's own bound token, and a project `slug`
 is authorized before any file is copied.
 
+**Path segments from requests are contained.** `POST /api/memory/catalog/index`
+accepts only real `YYYY-MM-DD` values for `date`, `start_date` and `end_date`
+(the pipeline joins the date's parts into archive and session paths); an empty
+or omitted `date` still indexes yesterday. The
+legacy `GET /api/agents/{name}/files` refuses a `name` that resolves outside
+`workspaces/`.
+
 **Agent workspaces are owner-only.** Every `/api/agents/{agent_name}/workspace/*`
 route (`tinyagentos/routes/agent_workspace.py`) runs `require_agent_owner_or_admin`
 router-wide, and a per-agent local token may only reach its own agent's

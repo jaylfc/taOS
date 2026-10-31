@@ -132,7 +132,12 @@ async def api_agent_usage(request: Request, name: str):
 async def api_agent_files(request: Request, name: str):
     """List files in agent's workspace directory (legacy endpoint)."""
     data_dir = request.app.state.config_path.parent
-    workspace_dir = data_dir / "workspaces" / name
+    base = (data_dir / "workspaces").resolve()
+    workspace_dir = (base / name).resolve()
+    # ``name`` comes from the URL: "..", or an encoded slash, must not turn the
+    # listing into one of the data dir or anything above it.
+    if workspace_dir == base or not workspace_dir.is_relative_to(base):
+        return JSONResponse({"error": "invalid agent name"}, status_code=400)
     if not workspace_dir.exists():
         return []
     files = []
