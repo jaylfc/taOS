@@ -11,7 +11,12 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from tinyagentos.auth_context import CurrentUser, current_user, require_owner_or_admin
+from tinyagentos.auth_context import (
+    CurrentUser,
+    current_user,
+    require_owner_or_admin,
+    resolve_agent_owner,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -80,25 +85,18 @@ async def _authorize(request: Request, user: CurrentUser, agent_name: str) -> No
     user could install packages in, start, stop, or read the VNC password of
     somebody else's agent.
     """
-    registry = getattr(request.app.state, "agent_registry", None)
-    agent = None
-    if registry is not None:
-        try:
-            agent = await registry.get_by_handle(agent_name)
-        except RuntimeError as exc:
-            # The store is uninitialised or its connection dropped, so no row
-            # can be read. The outcome is deliberately the same as for a name
-            # with no row: administrators are already authorised for every
-            # agent whatever the registry says, and everyone else is refused.
-            # The degraded mode is therefore a strict subset of the healthy
-            # one -- it can only take access away, never grant it.
-            logger.warning("agent registry unreadable for desktop authz: %s", exc)
-            agent = None
-    if agent is None:
+    # resolve_agent_owner compares unique ids only: a config agent through its
+    # registry_canonical_id, a registry-only agent by canonical id or handle.
+    # A name the registry cannot attribute (unknown, config-only, or the store
+    # is unreadable) is refused for everyone but an administrator, so the
+    # degraded mode is a strict subset of the healthy one -- it can only take
+    # access away, never grant it.
+    owner = await resolve_agent_owner(request, agent_name)
+    if owner is None:
         if not user.is_admin:
             raise HTTPException(status_code=403, detail="forbidden")
         return
-    require_owner_or_admin(user, agent.get("user_id") or "")
+    require_owner_or_admin(user, owner)
 
 
 @router.post("/api/agents/{agent_name}/desktop/install")

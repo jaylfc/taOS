@@ -193,6 +193,23 @@ member row goes with it. `expires_at` is still never populated - a grant is
 revoked, not time-boxed - though an expired value is already refused at check
 time.
 
+**Agent owner checks compare unique ids, not names.** `resolve_agent_owner`
+(`tinyagentos/auth_context.py`) attributes a config agent through its
+`registry_canonical_id` only; a config agent without one is nobody's, so only an
+admin may act on it. A config agent's name is a slug any user can also mint as a
+registry display name or handle, so a name match never grants ownership. A
+registry-only agent resolves by canonical id, then handle, then a slug only when
+exactly one active row carries it. The agent desktop, agent versions and
+`GET /api/secrets/agent/{name}/github` routes use this helper instead of their
+own handle lookups.
+
+**A registry identity maps to a config agent by canonical id only.**
+`_resolve_agent_name` (`tinyagentos/routes/delegation.py`), used by delegation
+and by the memory read routes for registry-JWT callers, maps a canonical id to
+the config agent whose `registry_canonical_id` equals it. A display name or
+handle match no longer counts, so an identity named like another user's agent
+cannot delegate as it or read its memory index.
+
 **`POST /api/chat/attachments/from-path` is contained and owner-checked.** The
 `/workspaces/<owner>/...` owner segment must be a plain name under
 `agent-workspaces/` (no `.` or `..`), an `agent-workspace` source needs the
