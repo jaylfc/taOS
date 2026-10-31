@@ -208,3 +208,111 @@ class TestAppRegistry:
 
         assert all(n == 3 for n in results)
         assert len(r._catalog) == 3
+
+
+class TestContainerSpec:
+    def test_no_container_key(self):
+        m = AppManifest.from_dict({"id": "x", "name": "X", "type": "service", "version": "1.0.0"})
+        assert m.container_spec() is None
+
+    def test_container_empty(self):
+        m = AppManifest.from_dict(
+            {"id": "x", "name": "X", "type": "service", "version": "1.0.0", "install": {"container": {}}}
+        )
+        spec = m.container_spec()
+        assert spec.runtimes == ["lxc", "docker"]
+        assert spec.sharing == "shareable"
+        assert spec.base_image == "images:debian/bookworm"
+        assert spec.gpu == "none"
+        assert spec.serve is None
+
+    def test_full_spec_example(self):
+        m = AppManifest.from_dict(
+            {
+                "id": "x",
+                "name": "X",
+                "type": "service",
+                "version": "1.0.0",
+                "install": {
+                    "container": {
+                        "runtimes": ["lxc"],
+                        "sharing": "own",
+                        "limits": {"memory": "256MiB", "cpu": 1},
+                        "state_paths": ["/var/lib/x"],
+                        "serve": {
+                            "port": 8080,
+                            "path_prefix": "/paint/",
+                            "web": {"wasm": True, "downloads": False},
+                        },
+                    }
+                },
+            }
+        )
+        spec = m.container_spec()
+        assert spec.runtimes == ["lxc"]
+        assert spec.sharing == "own"
+        assert spec.limits == {"memory": "256MiB", "cpu": 1}
+        assert spec.state_paths == ["/var/lib/x"]
+        assert spec.serve.port == 8080
+        assert spec.serve.path_prefix == "/paint/"
+        assert spec.serve.web.wasm is True
+        assert spec.serve.web.downloads is False
+
+    def test_validation_errors(self):
+        from pydantic import ValidationError
+
+        # unknown key in container
+        m = AppManifest.from_dict(
+            {"id": "x", "name": "X", "type": "service", "version": "1.0.0", "install": {"container": {"bogus": 1}}}
+        )
+        with pytest.raises(ValidationError):
+            m.container_spec()
+
+        # runtimes [podman]
+        m = AppManifest.from_dict(
+            {"id": "x", "name": "X", "type": "service", "version": "1.0.0", "install": {"container": {"runtimes": ["podman"]}}}
+        )
+        with pytest.raises(ValidationError):
+            m.container_spec()
+
+        # runtimes []
+        m = AppManifest.from_dict(
+            {"id": "x", "name": "X", "type": "service", "version": "1.0.0", "install": {"container": {"runtimes": []}}}
+        )
+        with pytest.raises(ValidationError):
+            m.container_spec()
+
+        # sharing public
+        m = AppManifest.from_dict(
+            {"id": "x", "name": "X", "type": "service", "version": "1.0.0", "install": {"container": {"sharing": "public"}}}
+        )
+        with pytest.raises(ValidationError):
+            m.container_spec()
+
+        # serve.port 0
+        m = AppManifest.from_dict(
+            {"id": "x", "name": "X", "type": "service", "version": "1.0.0", "install": {"container": {"serve": {"port": 0}}}}
+        )
+        with pytest.raises(ValidationError):
+            m.container_spec()
+
+        # serve.path_prefix paint (no leading slash)
+        m = AppManifest.from_dict(
+            {"id": "x", "name": "X", "type": "service", "version": "1.0.0", "install": {"container": {"serve": {"port": 80, "path_prefix": "paint"}}}}
+        )
+        with pytest.raises(ValidationError):
+            m.container_spec()
+
+        # serve.path_prefix /a/../b/
+        m = AppManifest.from_dict(
+            {"id": "x", "name": "X", "type": "service", "version": "1.0.0", "install": {"container": {"serve": {"port": 80, "path_prefix": "/a/../b/"}}}}
+        )
+        with pytest.raises(ValidationError):
+            m.container_spec()
+
+        # serve.web {"wasm": "yes please"}
+        m = AppManifest.from_dict(
+            {"id": "x", "name": "X", "type": "service", "version": "1.0.0", "install": {"container": {"serve": {"port": 80, "web": {"wasm": "yes please"}}}}}
+        )
+        with pytest.raises(ValidationError):
+            m.container_spec()
