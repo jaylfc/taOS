@@ -18,7 +18,11 @@ never against anything the payload claims about itself:
   never stored with a body; a later copy of a deleted post is recorded as an
   index row only, so deleted content is never re-served;
 - a tombstone only drops a post by its own author, and only blobs no other
-  stored post still references.
+  stored post still references; every held tombstone is re-applied on each
+  run, so a drop interrupted earlier is retried;
+- a body-less entry (dropped at the origin) is indexed only when a held
+  tombstone targets its hash *and* held neighbours on both sides vouch for its
+  ``seq`` and ``prev``: the tombstone's signature covers the hash alone.
 
 Cache-set gating, quotas and eviction are phase 2 and are not enforced here.
 """
@@ -30,6 +34,10 @@ from tinyagentos.hub import identity, posts
 from tinyagentos.hub import store as hub_store
 
 CHAIN_TYPES = ("post", "tombstone")
+# SQLite stores INTEGER as a signed 64-bit value.
+MAX_SEQ = 2**63 - 1
+# One signed entry at a far seq must not make gap reporting walk every number.
+MAX_REPORTED_GAPS = 1000
 
 
 @dataclass
@@ -55,6 +63,8 @@ def _check_object(obj: dict, author: str, signing_pubkey: str) -> str | None:
     seq = obj.get("seq")
     if not isinstance(seq, int) or isinstance(seq, bool) or seq < 1:
         return "seq must be a positive integer"
+    if seq > MAX_SEQ:
+        return "seq is out of range"
     prev = obj.get("prev")
     if seq == 1 and prev is not None:
         return "seq 1 must have no prev"
@@ -62,6 +72,9 @@ def _check_object(obj: dict, author: str, signing_pubkey: str) -> str | None:
         return "prev missing"
     if obj["type"] == "tombstone" and not isinstance(obj.get("target"), str):
         return "tombstone has no target"
+    attachments = obj.get("attachments")
+    if obj["type"] == "post" and attachments is not None and not isinstance(attachments, list):
+        return "attachments must be a list"
     if not hub_store.verify_object(obj, signing_pubkey):
         return "signature does not verify against the pinned key"
     return None
@@ -88,7 +101,8 @@ async def _apply_tombstone(store: hub_store.HubStore, author: str, target: str) 
         held = await store.get_object(target)
         if held is None or held.get("type") != "post" or held.get("author") != author:
             return False
-        for att in held.get("attachments") or []:
+        attachments = held.get("attachments")
+        for att in attachments if isinstance(attachments, list) else []:
             blob = att.get("blob") if isinstance(att, dict) else None
             if blob and not await store.blob_referenced(blob, exclude=target):
                 await store.drop_blob(blob)
@@ -96,12 +110,37 @@ async def _apply_tombstone(store: hub_store.HubStore, author: str, target: str) 
     return True
 
 
-async def chain_gaps(store: hub_store.HubStore, author: str) -> list[int]:
-    """Sequence numbers missing below the highest held entry for ``author``."""
-    held = {e["seq"] for e in await store.list_chain_entries(author)}
-    if not held:
-        return []
-    return [s for s in range(1, max(held) + 1) if s not in held]
+async def chain_gaps(
+    store: hub_store.HubStore, author: str, limit: int = MAX_REPORTED_GAPS
+) -> list[int]:
+    """The first ``limit`` sequence numbers missing below the highest held entry."""
+    gaps: list[int] = []
+    expected = 1
+    for seq in sorted(e["seq"] for e in await store.list_chain_entries(author)):
+        while expected < seq and len(gaps) < limit:
+            gaps.append(expected)
+            expected += 1
+        if len(gaps) >= limit:
+            break
+        expected = seq + 1
+    return gaps
+
+
+async def _anchored(
+    store: hub_store.HubStore, author: str, seq: int, h: str, prev
+) -> bool:
+    """True when held neighbours vouch for a body-less entry's ``seq`` and ``prev``.
+
+    The next entry's signed ``prev`` pins ``h`` to ``seq``; the previous entry's
+    hash (or ``seq`` 1 with no ``prev``) pins ``prev``.
+    """
+    after = await store.get_chain_entry(author, seq + 1)
+    if after is None or after["prev_hash"] != h:
+        return False
+    if seq == 1:
+        return prev is None
+    before = await store.get_chain_entry(author, seq - 1)
+    return before is not None and isinstance(prev, str) and before["hash"] == prev
 
 
 async def ingest_chain_range(
@@ -122,9 +161,19 @@ async def ingest_chain_range(
         report.rejected.append((None, "author has no pinned signing key"))
         return report
 
-    entries = [e for e in (payload or {}).get("entries") or [] if isinstance(e, dict)]
+    payload = {} if payload is None else payload
+    if not isinstance(payload, dict):
+        report.rejected.append((None, "payload is not an object"))
+        return report
+    raw_entries = payload.get("entries") or []
+    raw_tombstones = payload.get("tombstones") or []
+    if not isinstance(raw_entries, list) or not isinstance(raw_tombstones, list):
+        report.rejected.append((None, "entries and tombstones must be lists"))
+        return report
+
+    entries = [e for e in raw_entries if isinstance(e, dict)]
     candidates: dict[str, dict] = {}
-    for t in (payload or {}).get("tombstones") or []:
+    for t in raw_tombstones:
         if isinstance(t, dict):
             candidates.setdefault(hub_store.object_hash(t), t)
     for e in entries:
@@ -149,38 +198,53 @@ async def ingest_chain_range(
 
     for h, obj in valid:
         seq = obj["seq"]
-        held = await store.get_chain_entry(author, seq)
-        if held is not None:
-            if held["hash"] != h:
-                report.forks.append(seq)
-            continue
-        reason = await _links(store, author, seq, h, obj.get("prev"))
-        if reason:
-            report.rejected.append((seq, reason))
-            continue
-        if obj["type"] == "post" and h in await _tombstoned(store, author):
-            await store.put_chain_index(author, seq, h, obj.get("prev"), "post")
-            report.index_only.append(seq)
-            continue
-        await store.put_chain_object(obj)
-        report.stored.append(seq)
-        if obj["type"] == "tombstone" and await _apply_tombstone(store, author, obj["target"]):
-            report.tombstones_applied.append(obj["target"])
+        # Check-then-write under the chain lock, so a concurrent writer cannot
+        # take this seq between the check and the insert.
+        async with posts._append_lock(store):
+            held = await store.get_chain_entry(author, seq)
+            if held is not None:
+                if held["hash"] != h:
+                    report.forks.append(seq)
+                continue
+            reason = await _links(store, author, seq, h, obj.get("prev"))
+            if reason:
+                report.rejected.append((seq, reason))
+                continue
+            if obj["type"] == "post" and h in await _tombstoned(store, author):
+                await store.put_chain_index(author, seq, h, obj.get("prev"), "post")
+                report.index_only.append(seq)
+                continue
+            await store.put_chain_object(obj)
+            report.stored.append(seq)
+
+    # Every held tombstone, not just this run's: retries a drop that an earlier
+    # run stored the tombstone for but did not finish.
+    targets = await _tombstoned(store, author)
+    for target in sorted(targets):
+        if await _apply_tombstone(store, author, target):
+            report.tombstones_applied.append(target)
 
     # A body-less entry (dropped at the origin) is kept as an index row only
-    # when a held, verified tombstone of this author targets its hash.
-    targets = await _tombstoned(store, author)
+    # when a held tombstone targets its hash and held neighbours anchor it.
     for e in entries:
         seq, h = e.get("seq"), e.get("hash")
-        if e.get("object") is not None or h not in targets or not isinstance(seq, int):
+        if e.get("object") is not None or h not in targets:
             continue
-        if await store.get_chain_entry(author, seq) is not None:
+        if not isinstance(seq, int) or isinstance(seq, bool) or not 1 <= seq <= MAX_SEQ:
             continue
         prev = e.get("prev_hash")
-        if (seq == 1) != (prev is None) or await _links(store, author, seq, h, prev):
-            continue
-        await store.put_chain_index(author, seq, h, prev, "post")
-        report.index_only.append(seq)
+        async with posts._append_lock(store):
+            held = await store.get_chain_entry(author, seq)
+            if held is not None:
+                if held["hash"] != h:
+                    report.forks.append(seq)
+                continue
+            if not await _anchored(store, author, seq, h, prev):
+                report.rejected.append((seq, "body-less entry is not anchored by held neighbours"))
+                continue
+            await store.put_chain_index(author, seq, h, prev, "post")
+            if (await store.get_chain_entry(author, seq) or {}).get("hash") == h:
+                report.index_only.append(seq)
 
     report.gaps = await chain_gaps(store, author)
     return report

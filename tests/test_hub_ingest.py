@@ -245,3 +245,123 @@ async def test_a_shared_blob_survives_while_another_post_uses_it(stores):
 
     assert await receiver.get_object(hub_store.object_hash(gone)) is None
     assert await receiver.has_blob(blob)
+
+
+def _signed_at(author: Author, seq: int, prev, **fields) -> dict:
+    """A post by ``author`` signed at an arbitrary chain position."""
+    obj = posts.build_post(visibility="public", text="x", author=author.fp)
+    obj.update(fields, seq=seq, prev=prev)
+    return author.sign(obj)
+
+
+def _entry(obj: dict) -> dict:
+    return {"seq": obj["seq"], "hash": hub_store.object_hash(obj), "object": obj}
+
+
+@pytest.mark.asyncio
+async def test_a_seq_beyond_sqlite_range_is_rejected_not_raised(stores):
+    _origin, receiver = stores
+    alice = Author()
+    await _pin(receiver, alice)
+    huge = _signed_at(alice, 2**63, "a" * 64)
+
+    report = await ingest.ingest_chain_range(receiver, alice.fp, {"entries": [_entry(huge)]})
+
+    assert report.rejected == [(2**63, "seq is out of range")]
+    assert await _object_count(receiver) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_far_seq_does_not_make_gap_reporting_unbounded(stores):
+    _origin, receiver = stores
+    alice = Author()
+    await _pin(receiver, alice)
+    far = _signed_at(alice, 5000, "a" * 64)
+
+    report = await ingest.ingest_chain_range(receiver, alice.fp, {"entries": [_entry(far)]})
+
+    assert report.stored == [5000]
+    assert report.gaps[0] == 1 and len(report.gaps) == 1000
+
+
+@pytest.mark.asyncio
+async def test_non_list_attachments_are_rejected(stores):
+    _origin, receiver = stores
+    alice = Author()
+    await _pin(receiver, alice)
+    bad = alice.post("bad", attachments=5)
+
+    report = await ingest.ingest_chain_range(receiver, alice.fp, {"entries": [_entry(bad)]})
+
+    assert report.rejected == [(1, "attachments must be a list")]
+    assert await _object_count(receiver) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [["not", "an", "object"], {"entries": 5}, {"tombstones": "x"}])
+async def test_a_malformed_payload_is_rejected_not_raised(stores, payload):
+    _origin, receiver = stores
+    alice = Author()
+    await _pin(receiver, alice)
+
+    report = await ingest.ingest_chain_range(receiver, alice.fp, payload)
+
+    assert report.rejected and report.rejected[0][0] is None
+    assert report.stored == []
+
+
+@pytest.mark.asyncio
+async def test_an_interrupted_tombstone_is_applied_on_the_next_run(stores):
+    _origin, receiver = stores
+    alice = Author()
+    gone = alice.post("gone")
+    # A run that stored the tombstone but stopped before dropping the body.
+    await receiver.put_chain_object(gone)
+    await receiver.put_chain_object(alice.tombstone(hub_store.object_hash(gone)))
+    await _pin(receiver, alice)
+
+    report = await ingest.ingest_chain_range(receiver, alice.fp, {"entries": []})
+
+    assert report.tombstones_applied == [hub_store.object_hash(gone)]
+    assert await receiver.get_object(hub_store.object_hash(gone)) is None
+
+
+@pytest.mark.asyncio
+async def test_a_body_less_entry_is_indexed_only_between_held_neighbours(stores):
+    origin, receiver = stores
+    alice = Author()
+    gone = alice.post("gone")
+    gone_hash = hub_store.object_hash(gone)
+    await _publish(origin, gone, alice.post("kept"), alice.tombstone(gone_hash))
+    await _pin(receiver, alice)
+
+    # The real range: seq 1 arrives body-less, anchored by the held seq 2.
+    report = await ingest.ingest_chain_range(receiver, alice.fp, await _payload(origin, alice.fp))
+    assert report.index_only == [1] and report.gaps == []
+    assert await posts.verify_chain(receiver, alice.fp) == (True, None)
+
+    # A peer cannot plant the tombstoned hash at a free seq: the signature
+    # covers the hash, not the seq or prev the peer claims for it.
+    planted = {"entries": [{"seq": 9, "hash": gone_hash, "prev_hash": "f" * 64, "object": None}]}
+    report = await ingest.ingest_chain_range(receiver, alice.fp, planted)
+    assert report.index_only == []
+    assert report.rejected == [(9, "body-less entry is not anchored by held neighbours")]
+    assert await receiver.get_chain_entry(alice.fp, 9) is None
+
+
+@pytest.mark.asyncio
+async def test_a_body_less_entry_over_a_different_held_row_is_a_fork(stores):
+    _origin, receiver = stores
+    alice = Author()
+    held = alice.post("held")
+    alice.seq, alice.head = 0, None
+    other = alice.post("another seq 1")
+    await receiver.put_chain_object(held)
+    alice.seq, alice.head = 1, hub_store.object_hash(held)
+    await receiver.put_chain_object(alice.tombstone(hub_store.object_hash(other)))
+    await _pin(receiver, alice)
+
+    entry = {"seq": 1, "hash": hub_store.object_hash(other), "prev_hash": None, "object": None}
+    report = await ingest.ingest_chain_range(receiver, alice.fp, {"entries": [entry]})
+
+    assert report.forks == [1] and report.index_only == []
