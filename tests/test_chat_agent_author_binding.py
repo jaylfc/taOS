@@ -141,53 +141,20 @@ class TestChatAgentAuthorBinding:
             )
         assert resp.status_code == 403
 
-    async def test_host_local_token_restricted_like_session_user(self, client, app):
-        """Host local token (no bound agent) is restricted like a session user:
-        author_type forced to 'user', author_id must be 'user' or the caller's user_id."""
+    async def test_host_local_token_keeps_body_author(self, client, app):
+        """No binding (host local token): body author_id is preserved, no regression."""
         ch = await _create_channel_dm(app)
-        # Get the primary user's ID (what the host token authenticates as)
-        primary = app.state.auth.get_primary_user()
-        primary_id = primary["id"] if primary else None
-        
         async with _host_token_client(app) as c:
-            # Foreign author_id should be rejected
             resp = await c.post("/api/chat/messages", json={
                 "channel_id": ch["id"],
                 "author_id": "human-author",
                 "author_type": "user",
                 "content": "host token message",
             })
-        assert resp.status_code == 403
-        body = resp.json()
-        detail = body.get("detail") or body.get("error")
-        assert detail == "author_id must be the caller" or (isinstance(detail, dict) and detail.get("error") == "author_id must be the caller")
-        
-        # Valid author_id "user" should work
-        async with _host_token_client(app) as c:
-            resp = await c.post("/api/chat/messages", json={
-                "channel_id": ch["id"],
-                "author_id": "user",
-                "author_type": "user",
-                "content": "valid message",
-            })
         assert resp.status_code == 200
         body = resp.json()
-        assert body["author_id"] == "user"
+        assert body["author_id"] == "human-author"
         assert body["author_type"] == "user"
-        
-        # Valid author_id = primary user_id should work
-        if primary_id:
-            async with _host_token_client(app) as c:
-                resp = await c.post("/api/chat/messages", json={
-                    "channel_id": ch["id"],
-                    "author_id": primary_id,
-                    "author_type": "user",
-                    "content": "valid message 2",
-                })
-            assert resp.status_code == 200
-            body = resp.json()
-            assert body["author_id"] == primary_id
-            assert body["author_type"] == "user"
 
     async def test_bound_agent_reaction_type_is_agent(self, client, app):
         """Bound agent reaction ignores body author_type=\"user\" and forwards as agent."""

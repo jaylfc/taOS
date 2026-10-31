@@ -408,3 +408,34 @@ async def test_post_message_session_user_missing_author_id_defaults_to_user(clie
     assert body["author_id"] == "user"
     assert body["author_type"] == "user"
     assert body["content"] == "hello"
+
+
+@pytest.mark.asyncio
+async def test_post_message_host_local_token_keeps_body_author(client):
+    """Host local token (not a browser session) posting author_id='juniper',
+    author_type='agent' => 200 and stored as sent.
+
+    Proves the author check is scoped to browser sessions only: every other
+    caller (host local token, loopback, registry JWT variants) keeps today's
+    dev behaviour of storing the body author as sent.
+    """
+    from httpx import ASGITransport, AsyncClient
+
+    ch = await _create_channel_http(client)
+    token = client._transport.app.state.auth.get_local_token()
+    async with AsyncClient(
+        transport=ASGITransport(app=client._transport.app),
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {token}"},
+    ) as c:
+        resp = await c.post("/api/chat/messages", json={
+            "channel_id": ch["id"],
+            "author_id": "juniper",
+            "author_type": "agent",
+            "content": "host token agent message",
+        })
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["author_id"] == "juniper"
+    assert body["author_type"] == "agent"
+    assert body["content"] == "host token agent message"
