@@ -1,0 +1,2 @@
+### Fixed
+- Desktop standalone entries (app.html, chat.html) now import polyfills first, fixing Chromium 87 compatibility. app-standalone-main.tsx top-level await wrapped in async boot() function to avoid parse error on old Chrome.

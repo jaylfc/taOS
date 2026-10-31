@@ -1,0 +1,3 @@
+### Fixed
+
+- `ProjectInviteStore.mint` no longer counts expired-but-never-touched invites against the pending cap. The cap COUNT queries now filter `AND expires_ts > ?`, so an invite nobody ever opened (and that never flipped to `status='expired'` because expiry is lazy) no longer blocks minting forever after 10 abandoned invites. The single `now = _now()` clock read is now taken before the cap check and reused for both queries and the new row's `expires_ts`. No background sweeper, no status-flip path touched.

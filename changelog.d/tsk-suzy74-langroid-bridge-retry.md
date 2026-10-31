@@ -1,0 +1,2 @@
+### Fixed
+- Langroid bridge (`install_langroid.sh`) no longer crashes at boot or drops final replies when the controller is restarting: `fetch_boot` and `post_reply` now retry with the same async retry-with-backoff helper pattern as the Hermes bridge (retry on exceptions and HTTP 5xx, give up after 3 attempts, then log the error) instead of raising on the first failure and silently dropping the answer (#209).

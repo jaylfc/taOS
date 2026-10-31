@@ -1,0 +1,2 @@
+### Fixed
+- Program-level output-file handlers (sort -o, uniq, git --output, tee, time -o) no longer tag `/dev/null` as `output-redirect`, matching the shell redirection behavior. Only the exact string `/dev/null` is exempt; `/dev/null/x`, `./dev/null`, `/dev/nul` and `$NULL` remain tagged.

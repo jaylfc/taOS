@@ -1,0 +1,2 @@
+### Fixed
+- BLE taOSusb pairing controller now accepts `label_pin` on `POST /api/cluster/ble/pair/confirm`, binding it to the session key so a board that advertises `pin-bound` only pairs when the admin supplies the matching PIN. Whether the PIN binds is decided by the admin's input, never the board's claim. `POST /api/cluster/ble/pair/start` returns `pin_required` for pin-bound boards, and "pin-bound" never reaches registered device capabilities.

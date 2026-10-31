@@ -127,6 +127,36 @@ async function openFirstSocket() {
   await act(async () => {});
 }
 
+function makeFetchMock() {
+  const calls: string[] = [];
+  const mock = vi.fn(async (url: string | URL | Request) => {
+    const u = typeof url === "string" ? url : url.toString();
+    calls.push(u);
+    if (u.includes("/api/agents")) {
+      return new Response(JSON.stringify([]), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (u.includes("/api/chat/channels")) {
+      return new Response(JSON.stringify({ channels: [] }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (u.includes("/api/chat/unread")) {
+      return new Response(JSON.stringify({ unread: {} }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (u.includes("/auth/me")) {
+      return new Response(JSON.stringify({ user: { id: "user-1", full_name: "Test User" } }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify({}), { headers: { "content-type": "application/json" } });
+  });
+  return { mock, calls };
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 describe("MessagesApp WebSocket reconnect (tsk-qg7evy)", () => {
@@ -208,5 +238,86 @@ describe("MessagesApp WebSocket reconnect (tsk-qg7evy)", () => {
 
     expect(MockWebSocket.instances).toHaveLength(2);
     expect(MockWebSocket.instances[1].url).toContain("/ws/chat");
+  });
+});
+
+describe("MessagesApp agent list refresh on focus (tsk-sh4djp)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    reset();
+    vi.stubGlobal("WebSocket", MockWebSocket);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    cleanup();
+  });
+
+  it("refetches agent lists when window regains focus after 10s throttle", async () => {
+    const { mock: fetchMock, calls } = makeFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<MessagesApp windowId="test" />);
+    await openFirstSocket();
+    await act(async () => {});
+
+    // Initial mount fetches agent lists twice (live + archived)
+    const initialAgentCalls = calls.filter((u) => u.includes("/api/agents")).length;
+    expect(initialAgentCalls).toBe(2);
+
+    // Advance time by 11s (past the 10s throttle)
+    const nowSpy = vi.spyOn(Date, "now");
+    const baseTime = Date.now();
+    nowSpy.mockImplementation(() => baseTime + 11000);
+
+    // Dispatch focus event
+    window.dispatchEvent(new Event("focus"));
+    await act(async () => {});
+
+    // Flush the setTimeout(0) scheduled by the effect
+    await act(async () => {
+      vi.advanceTimersByTime(10);
+    });
+
+    // Should have fetched agent lists once more (2 more calls: live + archived)
+    const afterFocusAgentCalls = calls.filter((u) => u.includes("/api/agents")).length;
+    expect(afterFocusAgentCalls).toBe(initialAgentCalls + 2);
+
+    nowSpy.mockRestore();
+  });
+
+  it("refetches agent lists when document becomes visible after 10s throttle", async () => {
+    const { mock: fetchMock, calls } = makeFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<MessagesApp windowId="test" />);
+    await openFirstSocket();
+    await act(async () => {});
+
+    // Initial mount fetches agent lists twice (live + archived)
+    const initialAgentCalls = calls.filter((u) => u.includes("/api/agents")).length;
+    expect(initialAgentCalls).toBe(2);
+
+    // Advance time by 11s (past the 10s throttle)
+    const nowSpy = vi.spyOn(Date, "now");
+    const baseTime = Date.now();
+    nowSpy.mockImplementation(() => baseTime + 11000);
+
+    // Dispatch visibilitychange event (document becomes visible)
+    Object.defineProperty(document, "hidden", { value: false, configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await act(async () => {});
+
+    // Flush the setTimeout(0) scheduled by the effect
+    await act(async () => {
+      vi.advanceTimersByTime(10);
+    });
+
+    // Should have fetched agent lists once more (2 more calls: live + archived)
+    const afterVisibilityAgentCalls = calls.filter((u) => u.includes("/api/agents")).length;
+    expect(afterVisibilityAgentCalls).toBe(initialAgentCalls + 2);
+
+    nowSpy.mockRestore();
   });
 });

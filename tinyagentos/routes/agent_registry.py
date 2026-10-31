@@ -93,6 +93,7 @@ _ALLOWED_SCOPES = frozenset({
     "a2a_send", "a2a_receive",
     "files_read", "files_write",
     "registry_feeds_read",
+    "chat_session",
     "project_tasks",
     "project_tasks_create",
     "project_tasks_update",
@@ -104,6 +105,8 @@ _ALLOWED_SCOPES = frozenset({
     "observatory_control",
     "notifications_write",
     "memory_read",
+    # Memory access: write to an agent's own memory namespace.
+    "memory_write",
 })
 
 

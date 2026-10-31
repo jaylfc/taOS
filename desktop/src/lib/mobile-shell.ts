@@ -136,6 +136,8 @@ export interface ShellWindow {
   label: string;
   workspace: string;
   focused: boolean;
+  /** mtime (seconds) of the window's last snapshot; null or absent when it has none. */
+  snapshot?: number | null;
 }
 
 /**
@@ -187,6 +189,40 @@ async function shellPostOk(path: string, body: unknown): Promise<boolean> {
 export async function listShellWindows(): Promise<ShellWindow[]> {
   const res = await shellRequest("/windows");
   return Array.isArray(res) ? (res as ShellWindow[]) : [];
+}
+
+/**
+ * Fetch a window's last snapshot as an object URL (blob:). The desktop CSP
+ * img-src does not allow the shell origin, so an <img> must never point at it
+ * directly. The caller owns the URL and must revoke it. null on a non-2xx, a
+ * network error or no answer within SHELL_LAUNCH_TIMEOUT_MS. Never rejects.
+ */
+export async function fetchShellSnapshot(conId: number): Promise<string | null> {
+  const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => {
+      ctrl?.abort();
+      resolve(null);
+    }, SHELL_LAUNCH_TIMEOUT_MS);
+  });
+  const attempt = (async () => {
+    try {
+      const res = await fetch(`${SHELL_BASE_URL}/snapshot/${conId}`, { signal: ctrl?.signal });
+      if (!res.ok) return null;
+      const blob = await res.blob();
+      // Lost the race to the timeout: nobody would revoke this URL.
+      if (ctrl?.signal.aborted) return null;
+      return URL.createObjectURL(blob);
+    } catch {
+      return null;
+    }
+  })();
+  try {
+    return await Promise.race([attempt, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export function focusShellWindow(conId: number): Promise<boolean> {

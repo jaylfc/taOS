@@ -308,3 +308,129 @@ async def test_pair_cancel_unknown_session_still_204s(client, app):
     resp = await client.post("/api/cluster/ble/pair/cancel", json={"session": "ghost"})
     assert resp.status_code == 204
     await app.state.cluster_pairing.close()
+
+
+# ---------------------------------------------------------------------------
+# BLE label PIN (admin-typed, never board-decided)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_pin_bound_board_right_pin_pairs(client, app):
+    """A board advertising pin-bound pairs when the admin supplies the PIN it
+    typed; the PIN never appears in any response and "pin-bound" never reaches
+    the registered device capabilities."""
+    await app.state.cluster_pairing.init()
+    board = FakeBoard(board_id="PINOK", label_pin="123456")
+    _wire_fake_manager(app, {"addr1": board})
+
+    start_resp = await client.post("/api/cluster/ble/pair/start", json={"address": "addr1"})
+    assert start_resp.status_code == 200
+    start_body = start_resp.json()
+    assert start_body["pin_required"] is True
+    assert "123456" not in start_resp.text
+
+    confirm_resp = await client.post(
+        "/api/cluster/ble/pair/confirm",
+        json={"session": start_body["session"], "label_pin": "123456"},
+    )
+    assert confirm_resp.status_code == 200
+    assert "123456" not in confirm_resp.text
+    node = confirm_resp.json()["node"]
+    assert node["board_id"] == "PINOK"
+
+    workers = (await client.get("/api/cluster/workers")).json()
+    me = next(w for w in workers if w["name"] == board.name)
+    assert "pin-bound" not in me["capabilities"]
+    await app.state.cluster_pairing.close()
+
+
+@pytest.mark.asyncio
+async def test_pin_bound_board_wrong_pin_rolls_back(client, app):
+    """A wrong PIN derives a different session key; the board rejects the
+    provision and the minted credential is rolled back."""
+    await app.state.cluster_pairing.init()
+    board = FakeBoard(board_id="PINWRONG", label_pin="123456")
+    _wire_fake_manager(app, {"addr1": board})
+
+    started = await client.post("/api/cluster/ble/pair/start", json={"address": "addr1"})
+    assert started.status_code == 200
+    session = started.json()["session"]
+
+    resp = await client.post(
+        "/api/cluster/ble/pair/confirm",
+        json={"session": session, "label_pin": "654321"},
+    )
+    assert resp.status_code in (502, 504)
+
+    workers = (await client.get("/api/cluster/workers")).json()
+    assert not any(w["name"] == board.name for w in workers)
+    assert await app.state.cluster_pairing.get_signing_key(board.name) is None
+    await app.state.cluster_pairing.close()
+
+
+@pytest.mark.asyncio
+async def test_pin_bound_board_missing_pin_is_400_and_session_survives(client, app):
+    """A pin-bound board asked to confirm without a PIN returns 400 and keeps
+    the session alive so the admin can retry with the PIN."""
+    await app.state.cluster_pairing.init()
+    board = FakeBoard(board_id="PINREQ", label_pin="123456")
+    _wire_fake_manager(app, {"addr1": board})
+
+    started = await client.post("/api/cluster/ble/pair/start", json={"address": "addr1"})
+    assert started.status_code == 200
+    session = started.json()["session"]
+
+    resp = await client.post("/api/cluster/ble/pair/confirm", json={"session": session})
+    assert resp.status_code == 400
+    assert resp.json() == {"error": "label_pin_required"}
+
+    resp2 = await client.post(
+        "/api/cluster/ble/pair/confirm",
+        json={"session": session, "label_pin": "123456"},
+    )
+    assert resp2.status_code == 200
+    await app.state.cluster_pairing.close()
+
+
+@pytest.mark.asyncio
+async def test_admin_pin_binds_even_when_board_omits_cap(client, app):
+    """Binding is decided by the admin's input, not the board's claim: a board
+    with no pin-bound cap is still bound when the admin types a PIN, and since it
+    does not expect one the provision is rejected and rolled back."""
+    await app.state.cluster_pairing.init()
+    board = FakeBoard(board_id="ADMINBIN")
+    _wire_fake_manager(app, {"addr1": board})
+
+    started = await client.post("/api/cluster/ble/pair/start", json={"address": "addr1"})
+    assert started.status_code == 200
+    session = started.json()["session"]
+
+    resp = await client.post(
+        "/api/cluster/ble/pair/confirm",
+        json={"session": session, "label_pin": "123456"},
+    )
+    assert resp.status_code != 200
+
+    workers = (await client.get("/api/cluster/workers")).json()
+    assert not any(w["name"] == board.name for w in workers)
+    await app.state.cluster_pairing.close()
+
+
+@pytest.mark.asyncio
+async def test_invalid_label_pin_is_400(client, app):
+    """A PIN with non-digit characters is rejected at the route layer."""
+    await app.state.cluster_pairing.init()
+    board = FakeBoard(board_id="BADPIN")
+    _wire_fake_manager(app, {"addr1": board})
+
+    started = await client.post("/api/cluster/ble/pair/start", json={"address": "addr1"})
+    assert started.status_code == 200
+    session = started.json()["session"]
+
+    resp = await client.post(
+        "/api/cluster/ble/pair/confirm",
+        json={"session": session, "label_pin": "12ab"},
+    )
+    assert resp.status_code == 400
+    assert resp.json() == {"error": "invalid_label_pin"}
+    await app.state.cluster_pairing.close()

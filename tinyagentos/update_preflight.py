@@ -94,22 +94,25 @@ def _covers_ref(ref: str, refspecs: List[str]) -> bool:
 def _find_foreign_owned_files(project_dir: Path) -> tuple[int, List[str]]:
     """Find files not writable by the current effective user.
 
-    Excludes files under .venv, venv, node_modules, data, __pycache__,
-    and .git trees. When running as root, returns (0, []) because root
-    can write any file.
+    Excludes files under .venv, venv, node_modules, data, backups, __pycache__,
+    and .git trees. Symlinks are skipped: git replaces symlinks itself during
+    an update, so a stale or dangling symlink must not be judged foreign-owned.
+    When running as root, returns (0, []) because root can write any file.
     """
     if os.geteuid() == 0:
         return 0, []
 
     count = 0
     paths = []
-    prune_dirs = {".venv", "venv", "node_modules", "data", "__pycache__", ".git"}
+    prune_dirs = {".venv", "venv", "node_modules", "data", "backups", "__pycache__", ".git"}
 
     for root, dirs, files in os.walk(project_dir):
         dirs[:] = [d for d in dirs if d not in prune_dirs]
         for fname in files:
             path = Path(root) / fname
             if path.name.startswith(".") or path.name.endswith(".tmp") or path.name.endswith(".temp"):
+                continue
+            if path.is_symlink():
                 continue
             try:
                 if not os.access(path, os.W_OK):

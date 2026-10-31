@@ -1,0 +1,31 @@
+id: mcp-community-memory
+name: Memory
+description: >-
+  A knowledge-graph memory server: store entities, relations and observations
+  and recall them in later sessions.
+version: 2025.8.4
+author: modelcontextprotocol
+homepage: https://github.com/modelcontextprotocol/servers
+license: MIT
+categories:
+  - memory
+  - ai
+transport: stdio
+permissions:
+  - filesystem:read
+  - filesystem:write
+verified: true
+
+install:
+  method: npm
+  package: "@modelcontextprotocol/server-memory"
+
+run:
+  command:
+    - npx
+    - "-y"
+    - "@modelcontextprotocol/server-memory@2025.8.4"
+  # Without this the server writes its knowledge graph into the npx cache;
+  # point it at the provisioned workspace instead.
+  env:
+    MEMORY_FILE_PATH: "{workspace}/memory.jsonl"
