@@ -93,6 +93,10 @@ VALID_KINDS = frozenset({
     "external_write",
     # taOS Agent reversible local fix with its registered undo.
     "local_fix",
+    # External task report (taOS #3233). External schedulers report job
+    # outcomes via POST /api/cluster/tasks/report so the Observatory and
+    # benchmark layers can see external GPU work.
+    "task_report",
 })
 
 # Kinds whose payload is an audit record: every listed field is required and
@@ -164,6 +168,13 @@ ENVELOPE_V1_SCHEMA = {
             "latency_ms": "int", "state": "pending|confirmed|executed|declined|failed",
         },
         "local_fix": {"tool": "str", "target": "str", "undo": "str", "user_id": "str"},
+        # External task report (taOS #3233). worker/resource_id/lease_id/
+        # caller ride the payload; model/duration_ms ride first-class columns.
+        "task_report": {
+            "worker": "str", "resource_id": "str", "lease_id": "str?",
+            "caller": "str", "status": "success|failure|cancelled",
+            "tokens": "dict?",
+        },
     },
 }
 
