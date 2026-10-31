@@ -83,6 +83,7 @@ def test_validate_relative_url_accepted():
     "x?y",
     "x#y",
     "",
+    "//[",
 ])
 def test_validate_relative_url_refused(bad_url):
     """Various bad relative URLs raise DesktopManifestInvalid."""

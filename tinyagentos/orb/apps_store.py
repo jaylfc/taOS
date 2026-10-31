@@ -57,7 +57,10 @@ def validate_relative_url(url) -> str:
     if not isinstance(url, str) or not url:
         raise DesktopManifestInvalid("url must be a non-empty string")
 
-    parts = urllib.parse.urlsplit(url)
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError as exc:
+        raise DesktopManifestInvalid(f"url is malformed: {exc}") from exc
     if parts.scheme or parts.netloc:
         raise DesktopManifestInvalid("url must not have scheme or netloc")
 
