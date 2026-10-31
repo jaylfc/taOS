@@ -348,6 +348,17 @@ async def post_message(request: Request, user: CurrentUser = Depends(current_use
         body["author_id"] = agent
         body["author_type"] = "agent"
     
+    # Session user (neither device bearer nor bound agent): force author_type="user"
+    # and validate author_id. Accept only missing, "user", or the caller's user_id.
+    else:
+        allowed_author_ids = {"user", str(user.user_id)}
+        author_id = body.get("author_id")
+        if author_id is not None and author_id not in allowed_author_ids:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=403, detail={"error": "author_id must be the caller"})
+        body["author_id"] = author_id if author_id is not None else "user"
+        body["author_type"] = "user"
+    
     msg_store = request.app.state.chat_messages
     ch_store = request.app.state.chat_channels
     hub = request.app.state.chat_hub

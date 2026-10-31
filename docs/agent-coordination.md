@@ -2499,9 +2499,13 @@ author field. `POST /api/chat/channels/{id}/thinking` REJECTS a mismatched slug
 (it does not override it). The auth middleware sets `request.state.agent_name`
 for bound tokens (`AuthManager.get_local_token_agent`); the routes use a
 `_bound_agent(request)` helper and override `author_id`/`slug` with that name.
-The host local token, admin sessions, session cookies, and device bearers are
-not bound, so their caller-supplied values are preserved (byte-for-byte
-compatibility with taosctl and the SPA).
+Device bearers: the author is forced to the device's user (author_id=user_id,
+author_type="user") and the body values are ignored. Bound agents (per-agent
+local token): author_id/author_type are forced to the bound agent's name and
+"agent". Session users (cookie auth, no bound agent): author_type is forced to
+"user"; author_id is accepted only if missing (defaults to "user"), equal to
+"user", or equal to the caller's user_id; any other value returns 403. The host
+local token and admin sessions follow the session user rules.
 
 ## Self-only chat session routes (`chat_session` scope)
 
