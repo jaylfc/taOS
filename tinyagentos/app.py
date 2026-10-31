@@ -74,6 +74,7 @@ from tinyagentos.notifications import NotificationStore
 from tinyagentos.notifications_push import NotificationPushStore
 from tinyagentos.coding_workspaces import CodingWorkspaceStore
 from tinyagentos.install_registry import InstallRegistryStore
+from tinyagentos.app_containers import AppContainersStore
 from tinyagentos.store_submissions import StoreSubmissionStore
 from tinyagentos.qmd_client import QmdClient
 from tinyagentos.backend_adapters import check_backend_health
@@ -359,6 +360,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     user_shares_store = UserSharesStore(data_dir / "user_shares.db")
     from tinyagentos.sharing_grants import SharingGrantStore
     sharing_grants_store = SharingGrantStore(data_dir / "sharing_grants.db")
+    from tinyagentos.auth_broker import AuthBrokerStore
+    auth_broker_store = AuthBrokerStore(data_dir / "auth_broker.db")
     from tinyagentos.app_grants_store import AppGrantsStore
     app_grants_store = AppGrantsStore(data_dir / "app_grants.db")
     from tinyagentos.knowledge_fetchers.x import XWatchStore
@@ -471,6 +474,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     chat_messages = ChatMessageStore(data_dir / "chat.db")
     chat_channels = ChatChannelStore(data_dir / "chat.db")
     peer_outbox_store = PeerOutboxStore(data_dir / "peer_outbox.db")
+    from tinyagentos.chat.guest_outbox import GuestOutbox, prune_loop
+    guest_outbox = GuestOutbox(data_dir / "guest_outbox.db")
     from tinyagentos.projects.project_store import ProjectStore
     from tinyagentos.projects.task_store import ProjectTaskStore
     from tinyagentos.projects.element_store import ProjectElementStore
@@ -560,6 +565,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     install_registry_store = InstallRegistryStore(
         data_dir / "install_registry.db",
     )
+    app_containers_store = AppContainersStore(
+        data_dir / "app_containers.db",
+    )
     store_submissions = StoreSubmissionStore(
         data_dir / "store_submissions.db",
     )
@@ -641,6 +649,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.user_shares = user_shares_store
         await sharing_grants_store.init()
         app.state.sharing_grants = sharing_grants_store
+        await auth_broker_store.init()
+        app.state.auth_broker = auth_broker_store
         await app_grants_store.init()
         await license_acceptances_store.init()
         await agent_model_key_store.init()
@@ -717,6 +727,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await chat_messages.init()
         await chat_channels.init()
         await peer_outbox_store.init()
+        await guest_outbox.init()
+        await guest_outbox.prune()
         await project_store.init()
         await dispatcher_store.init()
         await project_invite_store.init()
@@ -759,6 +771,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await contacts_store.init()
         await coding_workspaces_store.init()
         await install_registry_store.init()
+        await app_containers_store.init()
         await store_submissions.init()
         try:
             from tinyagentos.userspace.seed import seed_bundled_apps
@@ -972,6 +985,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                 await _asyncio.sleep(300)
 
         _create_supervised_task(_browser_reap_loop(app), app.state._background_tasks)
+
+        _create_supervised_task(prune_loop(app.state.guest_outbox), app.state._background_tasks)
 
         # Per-agent state lives on the host and is mounted into containers.
         # See docs/design/framework-agnostic-runtime.md.
@@ -1252,6 +1267,12 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             archive=getattr(app.state, "archive", None),
         )
         app.state.bridge_sessions._router = app.state.agent_chat_router
+        app.state.bridge_sessions._guest_outbox = guest_outbox
+        # A guest is any slug without a config agent of that name.
+        app.state.bridge_sessions._is_guest = lambda slug: not any(
+            str(a.get("name") or "").strip().lower() == str(slug).lower()
+            for a in (getattr(app.state.config, "agents", None) or [])
+        )
 
         # Joined view of the registry cache + live catalog probes.
         # Used by the Store / Dashboard / Models routes instead of
@@ -1392,6 +1413,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         from tinyagentos.agent_heartbeat import agent_heartbeat_loop
         _create_supervised_task(agent_heartbeat_loop(app.state), app.state._background_tasks)
 
+        from tinyagentos.projects.dispatcher import DispatcherService, dispatcher_tick_loop
+        app.state.dispatcher_service = DispatcherService(app.state)
+        _create_supervised_task(dispatcher_tick_loop(app.state), app.state._background_tasks)
+
         try:
             canvas_snapshotter = CanvasSnapshotter(
                 project_store=project_store,
@@ -1406,17 +1431,27 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             logger.exception("canvas snapshotter failed to start")
             app.state.canvas_snapshotter = None
 
-        # mDNS publisher — advertises http://taos.local:<port>/ on the LAN.
+        # mDNS publisher -- advertises http://taos.local:<port>/ on the LAN.
         # Failure must never break startup; the publisher swallows its own
         # errors but wrap it again here for belt-and-braces.
-        try:
-            from tinyagentos.services.mdns_publisher import MdnsPublisher
-            mdns_publisher = MdnsPublisher(port=config.server.get("port", 6969))
-            await mdns_publisher.start()
-            app.state.mdns_publisher = mdns_publisher
-        except Exception:
-            logger.exception("mdns publisher failed to start — continuing without")
+        mdns_enabled = config.mdns.get("enabled", True)
+        if isinstance(mdns_enabled, str):
+            mdns_enabled = mdns_enabled.strip().lower() not in {"0", "false", "no", "off"}
+        if not mdns_enabled or (
+            os.environ.get("TAOS_MDNS", "") == "0"
+        ):
             app.state.mdns_publisher = None
+        else:
+            try:
+                from tinyagentos.services.mdns_publisher import MdnsPublisher
+                mdns_publisher = MdnsPublisher(
+                    data_dir=data_dir, port=config.server.get("port", 6969),
+                )
+                await mdns_publisher.start()
+                app.state.mdns_publisher = mdns_publisher
+            except Exception:
+                logger.exception("mdns publisher failed to start — continuing without")
+                app.state.mdns_publisher = None
 
         # Bundled mDNS reflector for cast discovery across a container
         # bridge. Opt-in via config.yaml ``mdns_reflector.enabled``; when on,
@@ -1627,6 +1662,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await contacts_store.close()
         await coding_workspaces_store.close()
         await install_registry_store.close()
+        await app_containers_store.close()
         await user_memory.close()
         await desktop_settings.close()
         await taos_agent_actions.close()
@@ -1674,6 +1710,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await chat_channels.close()
         await chat_messages.close()
         await peer_outbox_store.close()
+        await guest_outbox.close()
         await expert_agents.close()
         await streaming_sessions.close()
         await shared_folders.close()
@@ -1933,8 +1970,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.design_docs = design_docs
     app.state.contacts_store = contacts_store
     app.state.peer_outbox = peer_outbox_store
+    app.state.guest_outbox = guest_outbox
     app.state.coding_workspaces = coding_workspaces_store
     app.state.install_registry = install_registry_store
+    app.state.app_containers = app_containers_store
     app.state.store_submissions = store_submissions
     app.state.skills = skills
     app.state.themes = themes
@@ -2138,6 +2177,11 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == "reset":
         from tinyagentos.reset_cli import reset_cli
         raise SystemExit(reset_cli(sys.argv[2:]))
+
+    # `taos desktop enable|disable|run|status` -- manage local desktop session.
+    if len(sys.argv) > 1 and sys.argv[1] == "desktop":
+        from tinyagentos.desktop_cli import desktop_cli
+        raise SystemExit(desktop_cli(sys.argv[2:]))
 
     import uvicorn
     config = load_config(PROJECT_DIR / "data" / "config.yaml")

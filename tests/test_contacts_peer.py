@@ -285,6 +285,46 @@ class TestContactsStore:
         assert link["revoked_at"] == c["revoked_at"]
         assert before <= link["revoked_at"] <= after
 
+    async def test_set_outbound_token_refuses_stale_inbound_token(self, store):
+        # create a contact
+        await store.add_contact(
+            contact_id="hub:test",
+            hub_username="test",
+            display_name="Test",
+            ed25519_pub="pk",
+            x25519_pub="ek",
+        )
+        # establish_peer_link with inbound token A
+        inbound_a = generate_peer_token()
+        outbound_initial = generate_peer_token()
+        await store.establish_peer_link(
+            contact_id="hub:test",
+            inbound_token=inbound_a,
+            outbound_token=outbound_initial,
+        )
+        # establish_peer_link again with inbound token B (simulating a re-accept)
+        inbound_b = generate_peer_token()
+        outbound_second = generate_peer_token()
+        await store.establish_peer_link(
+            contact_id="hub:test",
+            inbound_token=inbound_b,
+            outbound_token=outbound_second,
+        )
+        # Now, the peer link should have inbound_token_hash of B and outbound_token of outbound_second
+        link = await store.get_peer_link("hub:test")
+        assert link["outbound_token"] == outbound_second
+        # Attempt to set an outbound token with the OLD inbound token A (should fail)
+        result_old = await store.set_outbound_token("hub:test", "old-token", expected_inbound_token=inbound_a)
+        assert result_old is False  # should refuse because inbound_token_hash doesn't match
+        # The outbound token should remain unchanged
+        link = await store.get_peer_link("hub:test")
+        assert link["outbound_token"] == outbound_second
+        # Now set with the NEW inbound token B (should succeed)
+        result_new = await store.set_outbound_token("hub:test", "new-token", expected_inbound_token=inbound_b)
+        assert result_new is True
+        link = await store.get_peer_link("hub:test")
+        assert link["outbound_token"] == "new-token"
+
 
 # ---------------------------------------------------------------------------
 # peer envelope crypto tests

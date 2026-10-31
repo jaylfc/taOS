@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import type { ClusterResource, ClusterResources } from "@/lib/cluster";
 
@@ -93,6 +93,19 @@ export function ClusterResourcesPanel({
     }),
     [resources],
   );
+
+  // A refresh can drop the option a filter is currently pinned to. When that
+  // happens, the selected value is no longer among the derived options, so the
+  // filter would silently match nothing. Reset any such filter to All so the
+  // remaining rows stay visible. Runs whenever the options change.
+  useEffect(() => {
+    const check = (value: string, opts: string[]) =>
+      value !== ALL && !opts.includes(value) ? ALL : value;
+    setTypeFilter((v) => check(v, options.type));
+    setWorkerFilter((v) => check(v, options.worker));
+    setProjectFilter((v) => check(v, options.project));
+    setStateFilter((v) => check(v, options.state));
+  }, [options]);
 
   const rows = useMemo(() => {
     const q = search.trim().toLowerCase();

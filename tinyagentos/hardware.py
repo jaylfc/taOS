@@ -654,19 +654,28 @@ def _detect_os() -> OsInfo:
 def _detect_device_class() -> str | None:
     """Detect if this is a taOSmobile handset.
 
-    A taOSmobile handset is identified by the presence of the taos-kiosk.service
-    systemd unit (which only exists on devices provisioned as taOS handsets).
-    This mirrors the capability probe used by /api/system/session-mode.
+    A taOSmobile handset is identified by the presence of BOTH the
+    taos-kiosk.service AND plasma-mobile.service systemd units. The kiosk unit
+    provides the taOS shell; the plasma unit is the stock KDE phone shell that
+    acts as the fallback. A desk runs the kiosk unit only and is NOT a handset.
     """
     try:
         import subprocess
-        result = subprocess.run(
+        kiosk_result = subprocess.run(
             ["systemctl", "cat", "taos-kiosk.service"],
             capture_output=True,
             text=True,
             timeout=5,
         )
-        if result.returncode == 0:
+        if kiosk_result.returncode != 0:
+            return None
+        plasma_result = subprocess.run(
+            ["systemctl", "cat", "plasma-mobile.service"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if plasma_result.returncode == 0:
             return "mobile"
     except (subprocess.SubprocessError, FileNotFoundError):
         pass

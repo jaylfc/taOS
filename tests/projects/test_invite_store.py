@@ -92,6 +92,69 @@ async def test_mint_enforces_pending_cap(store):
         )
 
 
+@pytest.mark.asyncio
+async def test_project_pending_cap_ignores_expired_invites(store):
+    """RED test for tsk-locxod: 10 project invites minted with ttl_secs=60,
+    backdated past expiry with a direct UPDATE (the way existing tests do it,
+    e.g. test_get_sweeps_expired), must NOT block the 11th mint.  Expiry is lazy
+    -- a pending row only flips to status='expired' when read -- so the cap must
+    filter on expires_ts > now rather than status alone."""
+    ids = []
+    for _ in range(10):
+        result = await store.mint(
+            project_id="prj-expire-cap",
+            scopes=[],
+            approval_mode="auto",
+            check_interval_secs=1800,
+            created_by="u",
+            ttl_secs=60,
+        )
+        ids.append(result["record"]["invite_id"])
+    # Backdate every invite past expiry; none of them has been read, so their
+    # status is still 'pending' but their TTL has lapsed.
+    for iid in ids:
+        await store._db.execute(
+            "UPDATE project_invites SET expires_ts = ? WHERE invite_id = ?",
+            (time.time() - 1, iid),
+        )
+    await store._db.commit()
+    # The 11th mint must succeed -- the expired-but-never-touched invites no
+    # longer count against the pending cap.
+    result = await store.mint(
+        project_id="prj-expire-cap",
+        scopes=[],
+        approval_mode="auto",
+        check_interval_secs=1800,
+        created_by="u",
+        ttl_secs=60,
+    )
+    assert result["record"]["project_id"] == "prj-expire-cap"
+
+
+@pytest.mark.asyncio
+async def test_project_pending_cap_still_blocks_unexpired(store):
+    """Control: 10 UNEXPIRED pending invites still make the 11th raise
+    InvitePendingCapError -- the new expires_ts filter must not gut the cap."""
+    for _ in range(10):
+        await store.mint(
+            project_id="prj-live-cap",
+            scopes=[],
+            approval_mode="auto",
+            check_interval_secs=1800,
+            created_by="u",
+            ttl_secs=60,
+        )
+    with pytest.raises(InvitePendingCapError):
+        await store.mint(
+            project_id="prj-live-cap",
+            scopes=[],
+            approval_mode="auto",
+            check_interval_secs=1800,
+            created_by="u",
+            ttl_secs=60,
+        )
+
+
 # ---------------------------------------------------------------------------
 # OS-level (project-less) mint
 # ---------------------------------------------------------------------------
@@ -150,6 +213,39 @@ async def test_os_level_pending_cap_uses_is_null(store):
             check_interval_secs=1800,
             created_by="u",
         )
+
+
+@pytest.mark.asyncio
+async def test_os_level_pending_cap_ignores_expired_invites(store):
+    """RED test for tsk-locxod: 10 OS-level invites minted with ttl_secs=60,
+    backdated past expiry with a direct UPDATE, must NOT block the 11th mint.
+    Same lazy-expiry reasoning as the project-scoped variant."""
+    ids = []
+    for _ in range(10):
+        result = await store.mint(
+            project_id=None,
+            scopes=[],
+            approval_mode="auto",
+            check_interval_secs=1800,
+            created_by="u",
+            ttl_secs=60,
+        )
+        ids.append(result["record"]["invite_id"])
+    for iid in ids:
+        await store._db.execute(
+            "UPDATE project_invites SET expires_ts = ? WHERE invite_id = ?",
+            (time.time() - 1, iid),
+        )
+    await store._db.commit()
+    result = await store.mint(
+        project_id=None,
+        scopes=[],
+        approval_mode="auto",
+        check_interval_secs=1800,
+        created_by="u",
+        ttl_secs=60,
+    )
+    assert result["record"]["project_id"] is None
 
 
 @pytest.mark.asyncio
@@ -602,6 +698,15 @@ async def test_mint_collab_invite(store):
     assert result["record"]["status"] == "pending"
     assert len(result["pin"]) == 4
 
+    # Verify redeem works with correct pin.
+    record = await store.redeem(result["record"]["invite_id"], result["pin"])
+    assert record["status"] == "claimed"
+
+    # mark_accepted should work from claimed for collab invites.
+    await store.mark_accepted(result["record"]["invite_id"], "hub:hogne")
+    row = await store.get(result["record"]["invite_id"])
+    assert row["status"] == "redeemed"
+
 
 @pytest.mark.asyncio
 async def test_mint_collab_invite_no_pin_required(store):
@@ -616,6 +721,14 @@ async def test_mint_collab_invite_no_pin_required(store):
         contact_id="hub:hogne",
     )
     assert result["record"]["pin_required"] == 0
+
+    # pin_required=False: redeem MUST succeed with any pin (A2 fix #2048).
+    record = await store.redeem(result["record"]["invite_id"], "")
+    assert record["status"] == "claimed"
+
+    # Redeem again — already claimed, so InviteAlreadyRedeemedError expected.
+    with pytest.raises(InviteAlreadyRedeemedError):
+        await store.redeem(result["record"]["invite_id"], "9999")
 
 
 @pytest.mark.asyncio
@@ -643,6 +756,10 @@ async def test_default_kind_is_agent(store):
     assert result["record"]["kind"] == "agent"
     assert result["record"]["pin_required"] == 1
     assert result["record"]["contact_id"] is None
+
+    # Agent-kind with pin_required=True: redeem needs correct pin.
+    record = await store.redeem(result["record"]["invite_id"], result["pin"])
+    assert record["status"] == "claimed"
 
 
 @pytest.mark.asyncio
@@ -816,3 +933,37 @@ async def test_boot_migration_adds_kind_pin_required_contact_id(tmp_path):
     assert row.get("pin_required") == 1
     assert row.get("contact_id") is None
     await store.close()
+
+
+# ---------------------------------------------------------------------------
+# A2 e2e: mint + redeem with pin_required=False (issue #2048)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mint_redeem_pin_not_required_e2e(store):
+    """End-to-end: mint an invite with pin_required=False, redeem with any
+    pin, and verify the invite is claimed.  Covers two #2048 regressions in
+    one path: mint returns a ``pin_required=0`` record when the flag is False,
+    and redeem skips PIN verification when ``pin_required=False``."""
+    result = await store.mint(
+        project_id="prj-e2e",
+        scopes=["a2a_send"],
+        approval_mode="auto",
+        check_interval_secs=1800,
+        created_by="u",
+        pin_required=False,
+    )
+    assert result["record"]["pin_required"] == 0
+
+    # Redeem with empty string — must succeed even though PIN was never
+    # communicated to the invitee (pin_required=False skips PIN verification).
+    record = await store.redeem(result["record"]["invite_id"], "")
+    assert record["status"] == "claimed"
+    assert record["project_id"] == "prj-e2e"
+
+    # Redeem again — already claimed, so any further redeem (with any pin)
+    # raises InviteAlreadyRedeemedError, not InvitePinError: the status guard
+    # fires before the PIN check.
+    with pytest.raises(InviteAlreadyRedeemedError):
+        await store.redeem(result["record"]["invite_id"], "0000")

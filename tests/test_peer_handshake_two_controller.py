@@ -113,8 +113,35 @@ def _route_delivery_to(monkeypatch, target, seen: dict):
 
 
 async def _accept(b, rid="rid-1"):
-    async with _signed_in_client(b) as c:
-        return await c.post(f"/api/hub/friends/requests/{rid}/accept", json={})
+    """Accept as node *b*, then run the background network exchange.
+
+    The route starts the exchange as a background task.  Node identity here is
+    selected by the process-global ``TAOS_DATA_DIR``, which the per-request ASGI
+    shim sets and restores, so an exchange overlapping the tail of B's own
+    request would have A's handler run under the wrong environment (the harness
+    requires sequential requests).  Capture the supervised task's coroutine
+    instead of starting it, then run it to completion after the accept has
+    returned, holding *b*'s environment.  In production one process is one
+    node and the environment never changes.
+    """
+    from unittest import mock
+
+    from tinyagentos import task_utils
+    from tinyagentos.routes import hub as hub_routes
+
+    deferred: list = []
+
+    def _defer(coro, task_set):
+        assert task_set is hub_routes._BACKGROUND_TASKS
+        deferred.append(coro)
+
+    with mock.patch.object(task_utils, "_create_supervised_task", _defer):
+        async with _signed_in_client(b) as c:
+            resp = await c.post(f"/api/hub/friends/requests/{rid}/accept", json={})
+    with node_env(b.data_dir):
+        for coro in deferred:
+            await coro
+    return resp
 
 
 def _handshake_envelope(sender, receiver, *, inbound_token="t" * 64, from_id=None,

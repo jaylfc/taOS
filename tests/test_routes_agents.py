@@ -1564,6 +1564,60 @@ class TestOrphanAgentDeletion:
         archived_after = (await client.get("/api/agents/archived")).json()
         assert archived_after == []
 
+    async def test_orphan_hard_delete_unbinds_local_token(
+        self, client, app, tmp_data_dir, monkeypatch
+    ):
+        """Hard-delete orphan (no chat, no trace) revokes the agent's local token."""
+        async def _no_container(name):
+            return False
+        monkeypatch.setattr("tinyagentos.containers.container_exists", _no_container)
+
+        async def fake_stop(name, force=False):
+            raise AssertionError("stop_container should not be called for orphans")
+
+        async def fake_snapshot_create(name, snapshot_name):
+            raise AssertionError("snapshot_create should not be called for orphans")
+
+        monkeypatch.setattr("tinyagentos.containers.stop_container", fake_stop)
+        monkeypatch.setattr("tinyagentos.containers.snapshot_create", fake_snapshot_create)
+
+        token = app.state.auth.mint_agent_local_token("test-agent")
+        assert app.state.auth.validate_local_token(token) is True
+        assert app.state.auth.get_local_token_agent(token) == "test-agent"
+
+        resp = await client.delete("/api/agents/test-agent")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "deleted"
+
+        assert app.state.auth.validate_local_token(token) is False
+        assert app.state.auth.get_local_token_agent(token) is None
+
+    async def test_orphan_tombstone_unbinds_local_token(
+        self, client, app, tmp_data_dir, monkeypatch
+    ):
+        """Tombstone orphan (trace dir exists) revokes the agent's local token."""
+        async def _no_container(name):
+            return False
+        monkeypatch.setattr("tinyagentos.containers.container_exists", _no_container)
+
+        trace_dir = tmp_data_dir / "trace" / "test-agent"
+        trace_dir.mkdir(parents=True, exist_ok=True)
+        (trace_dir / "2026-04-17T13.db").write_text("")
+
+        token = app.state.auth.mint_agent_local_token("test-agent")
+        assert app.state.auth.validate_local_token(token) is True
+        assert app.state.auth.get_local_token_agent(token) == "test-agent"
+
+        resp = await client.delete("/api/agents/test-agent")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "archived"
+        assert data["snapshot_name"] is None
+
+        assert app.state.auth.validate_local_token(token) is False
+        assert app.state.auth.get_local_token_agent(token) is None
+
 
 @pytest.mark.asyncio
 class TestDeleteResolvesOrphanedContainer:

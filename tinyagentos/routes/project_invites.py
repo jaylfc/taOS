@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field, field_validator
 from tinyagentos.agent_registry_store import _slugify, agent_slug_or_fallback
 from tinyagentos.auth_context import CurrentUser, current_user, require_owner_or_admin
 from tinyagentos.auth_middleware import rate_limit_ok, rate_limit_retry_after
+from tinyagentos.notification_labels import project_label
 from tinyagentos.projects.invite_store import (
     InviteAlreadyRedeemedError,
     InviteExpiredError,
@@ -52,6 +53,10 @@ class MintOsInviteIn(BaseModel):
     approval_mode: str = Field(default="auto", pattern="^(auto|manual)$")
     check_interval_secs: int = Field(default=1800, ge=60)
     display_name: str | None = Field(default=None, max_length=64)
+    # How long the invite stays redeemable. Omitted means the store default
+    # (1 hour). Capped at 24 hours: the PIN is the security gate, expiry is
+    # hygiene, but an indefinitely live link is not a state we want.
+    ttl_secs: int | None = Field(default=None, ge=60, le=86400)
 
     @field_validator("display_name")
     @classmethod
@@ -984,6 +989,7 @@ async def mint_os_invite(
             check_interval_secs=payload.check_interval_secs,
             created_by=user.user_id,
             display_name=payload.display_name,
+            ttl_secs=payload.ttl_secs,
         )
     except InvitePendingCapError as exc:
         return JSONResponse({"error": str(exc)}, status_code=429)
@@ -1271,6 +1277,15 @@ async def redeem_invite(request: Request, body: RedeemInviteIn):
     if "project_tasks" not in scopes:
         scopes = ["project_tasks"] + scopes
 
+    # Extract sponsor_contact_id from delegation-sponsored invites (D1).
+    invite_metadata = invite.get("metadata") or {}
+    if isinstance(invite_metadata, str):
+        try:
+            invite_metadata = json.loads(invite_metadata)
+        except (ValueError, TypeError):
+            invite_metadata = {}
+    sponsor_contact_id = invite_metadata.get("sponsor_contact_id") if isinstance(invite_metadata, dict) else None
+
     handle = _derive_handle(project.get("slug") or invite["project_id"], body.harness, body.label)
     handle = await _dedupe_handle(request, handle)
 
@@ -1305,6 +1320,7 @@ async def redeem_invite(request: Request, body: RedeemInviteIn):
                 effective_project=invite["project_id"],
                 decided_by=invite["created_by"],
                 project_id=invite["project_id"],
+                sponsor_contact_id=sponsor_contact_id,
             )
         except Exception as exc:  # noqa: BLE001 - surface as JSON error
             await store.rollback_to_pending(body.invite_id)
@@ -1362,6 +1378,15 @@ async def _redeem_os_level(request: Request, body: RedeemInviteIn, invite: dict,
             raw_scopes = []
     scopes = list(raw_scopes)
 
+    # Extract sponsor_contact_id from delegation-sponsored invites (D1).
+    invite_metadata = invite.get("metadata") or {}
+    if isinstance(invite_metadata, str):
+        try:
+            invite_metadata = json.loads(invite_metadata)
+        except (ValueError, TypeError):
+            invite_metadata = {}
+    sponsor_contact_id = invite_metadata.get("sponsor_contact_id") if isinstance(invite_metadata, dict) else None
+
     display_name = invite.get("display_name")
     handle = _derive_os_handle(display_name, body.harness, body.label)
     handle = await _dedupe_handle(request, handle)
@@ -1389,6 +1414,7 @@ async def _redeem_os_level(request: Request, body: RedeemInviteIn, invite: dict,
                 decided_by=invite["created_by"],
                 project_id=None,
                 display_name=display_name,
+                sponsor_contact_id=sponsor_contact_id,
             )
         except Exception as exc:  # noqa: BLE001 - surface as JSON error
             await store.rollback_to_pending(body.invite_id)
@@ -1432,12 +1458,20 @@ def _notify_pending_invite(request: Request, record: dict) -> None:
         return
     try:
         scopes = record.get("requested_scopes") or []
+        project_id = record.get("project_id")
         import asyncio
 
-        asyncio.create_task(
-            notifs.add(
+        async def _add() -> None:
+            # Name the invite's project and carry its id so the consent
+            # surface can preselect it (tsk-i7ghpa).
+            on_project = (
+                f" on {await project_label(request.app.state, project_id)}"
+                if project_id
+                else ""
+            )
+            await notifs.add(
                 title="Access request",
-                message=f"{record['identity_claim']} is requesting {', '.join(scopes)}",
+                message=f"{record['identity_claim']} is requesting {', '.join(scopes)}{on_project}",
                 level="info",
                 source="auth_requests",
                 data={
@@ -1445,9 +1479,11 @@ def _notify_pending_invite(request: Request, record: dict) -> None:
                     "identity_claim": record["identity_claim"],
                     "framework": record["framework"],
                     "requested_scopes": list(scopes),
+                    "project_id": project_id,
                 },
             )
-        )
+
+        asyncio.create_task(_add())
     except Exception:  # noqa: BLE001
         pass
 
