@@ -1,8 +1,20 @@
-from __future__ import annotations
-
 import asyncio
 import re
 from typing import Any
+
+try:
+    from dbus_fast.annotations import DBusSignature
+    from typing import Annotated
+
+    ObjPath = Annotated[str, DBusSignature("o")]
+    U32 = Annotated[int, DBusSignature("u")]
+    U16 = Annotated[int, DBusSignature("q")]
+    Str = Annotated[str, DBusSignature("s")]
+except ImportError:
+    ObjPath = str
+    U32 = int
+    U16 = int
+    Str = str
 
 _DEVICE_RE = re.compile(r"^/org/bluez/hci[0-9]+/dev_[0-9A-F]{2}(_[0-9A-F]{2}){5}$")
 
@@ -50,12 +62,12 @@ class PairingSession:
         if passkey is not None:
             prompt["passkey"] = passkey
         self._prompt = prompt
-        
+
         # Set up 60-second timeout
         self._timeout_handle = asyncio.get_event_loop().call_later(
             60.0, lambda: self._reject_timeout()
         )
-        
+
         return future
 
     def answer(self, accept: bool, pin: str | None = None) -> None:
@@ -119,101 +131,145 @@ class PairingSession:
 
 def build_agent_interface(session: PairingSession) -> Any:
     """Build a dbus_fast ServiceInterface for org.bluez.Agent1 based on a PairingSession."""
-    import dbus_fast
+    try:
+        import dbus_fast
+        from dbus_fast.service import ServiceInterface, dbus_method
+        from dbus_fast.errors import DBusError
+    except ImportError:
+        class _DummyServiceInterface:
+            pass
+        return _DummyServiceInterface()
 
-    class Agent1Interface(dbus_fast.service.ServiceInterface):
+    class Agent1Interface(ServiceInterface):
         def __init__(self, session: PairingSession):
             super().__init__("org.bluez.Agent1")
             self.session = session
 
-        def Release(self, object_path: str) -> str:
+        @dbus_method()
+        def Release(self) -> None:
             """Release the agent."""
             self.session._clear_state()
-            return ""
 
-        def RequestPinCode(self, object_path: str) -> str:
+        @dbus_method()
+        async def RequestPinCode(self, object_path: ObjPath) -> Str:
             """Request a PIN code for the device."""
             if object_path != self.session.device:
-                raise dbus_fast.errors.DBusError(
-                    "org.bluez.Error.Rejected", 
+                raise DBusError(
+                    "org.bluez.Error.Rejected",
                     f"Request for device {object_path} not allowed"
                 )
             if self.session._prompt is not None:
-                raise dbus_fast.errors.DBusError(
+                raise DBusError(
                     "org.bluez.Error.Rejected",
                     "Already awaiting response for another request"
                 )
             future = self.session.request("pin")
-            result = future.result(timeout=5.0)
+            try:
+                result = await asyncio.wait_for(future, timeout=5.0)
+            except asyncio.TimeoutError:
+                raise DBusError("org.bluez.Error.Rejected", "Request timed out")
+            except asyncio.CancelledError:
+                raise DBusError("org.bluez.Error.Canceled", "Request canceled")
+            except Exception as e:
+                if "org.bluez.Error.Canceled" in str(e):
+                    raise DBusError("org.bluez.Error.Canceled", "Request canceled")
+                raise
+            if not result.get("accepted", False):
+                raise DBusError("org.bluez.Error.Rejected", result.get("reason", "rejected"))
             return result["pin"]
 
-        def DisplayPinCode(self, object_path: str, pin: str) -> None:
+        @dbus_method()
+        def DisplayPinCode(self, object_path: ObjPath, pin: Str) -> None:
             """Display PIN code for user confirmation."""
             if object_path != self.session.device:
-                raise dbus_fast.errors.DBusError(
+                raise DBusError(
                     "org.bluez.Error.Rejected",
                     f"Display for device {object_path} not allowed"
                 )
 
-        def RequestPasskey(self, object_path: str) -> int:
+        @dbus_method()
+        async def RequestPasskey(self, object_path: ObjPath) -> U32:
             """Request a passkey for the device."""
             if object_path != self.session.device:
-                raise dbus_fast.errors.DBusError(
+                raise DBusError(
                     "org.bluez.Error.Rejected",
                     f"Request for device {object_path} not allowed"
                 )
             if self.session._prompt is not None:
-                raise dbus_fast.errors.DBusError(
+                raise DBusError(
                     "org.bluez.Error.Rejected",
                     "Already awaiting response for another request"
                 )
-            future = self.session.request("passkey")
-            result = future.result(timeout=5.0)
+            import random
+            passkey = random.randint(0, 999999)
+            future = self.session.request("passkey", passkey=passkey)
+            try:
+                result = await asyncio.wait_for(future, timeout=5.0)
+            except asyncio.TimeoutError:
+                raise DBusError("org.bluez.Error.Rejected", "Request timed out")
+            except asyncio.CancelledError:
+                raise DBusError("org.bluez.Error.Canceled", "Request canceled")
+            except Exception as e:
+                if "org.bluez.Error.Canceled" in str(e):
+                    raise DBusError("org.bluez.Error.Canceled", "Request canceled")
+                raise
+            if not result.get("accepted", False):
+                raise DBusError("org.bluez.Error.Rejected", result.get("reason", "rejected"))
             return result["passkey"]
 
-        def DisplayPasskey(self, object_path: str, passkey: int, confirm: bool) -> None:
+        @dbus_method()
+        def DisplayPasskey(self, object_path: ObjPath, passkey: U32, entered: U16) -> None:
             """Display passkey for user confirmation."""
             if object_path != self.session.device:
-                raise dbus_fast.errors.DBusError(
+                raise DBusError(
                     "org.bluez.Error.Rejected",
                     f"Display for device {object_path} not allowed"
                 )
 
-        def RequestConfirmation(self, object_path: str, passkey: int) -> None:
+        @dbus_method()
+        async def RequestConfirmation(self, object_path: ObjPath, passkey: U32) -> None:
             """Request confirmation for a passkey."""
             if object_path != self.session.device:
-                raise dbus_fast.errors.DBusError(
+                raise DBusError(
                     "org.bluez.Error.Rejected",
                     f"Request for device {object_path} not allowed"
                 )
             if self.session._prompt is not None:
-                raise dbus_fast.errors.DBusError(
+                raise DBusError(
                     "org.bluez.Error.Rejected",
                     "Already awaiting response for another request"
                 )
-            future = self.session.request("confirm")
+            future = self.session.request("confirm", passkey)
             try:
-                result = future.result(timeout=5.0)
+                result = await asyncio.wait_for(future, timeout=5.0)
+            except asyncio.TimeoutError:
+                raise DBusError("org.bluez.Error.Rejected", "Request timed out")
+            except asyncio.CancelledError:
+                raise DBusError("org.bluez.Error.Canceled", "Request canceled")
             except Exception as e:
-                raise dbus_fast.errors.DBusError(
-                    "org.bluez.Error.Rejected",
-                    f"Request rejected: {e}"
-                )
+                if "org.bluez.Error.Canceled" in str(e):
+                    raise DBusError("org.bluez.Error.Canceled", "Request canceled")
+                raise
+            if not result.get("accepted", False):
+                raise DBusError("org.bluez.Error.Rejected", result.get("reason", "rejected"))
 
-        def RequestAuthorization(self, object_path: str) -> None:
+        @dbus_method()
+        def RequestAuthorization(self, object_path: ObjPath) -> None:
             """Request authorization for a device. Always rejects."""
-            raise dbus_fast.errors.DBusError(
+            raise DBusError(
                 "org.bluez.Error.Rejected",
                 "Authorization not allowed"
             )
 
-        def AuthorizeService(self, object_path: str, service: str) -> None:
+        @dbus_method()
+        def AuthorizeService(self, object_path: ObjPath, service: Str) -> None:
             """Authorize a service. Always rejects."""
-            raise dbus_fast.errors.DBusError(
+            raise DBusError(
                 "org.bluez.Error.Rejected",
                 "Service authorization not allowed"
             )
 
+        @dbus_method()
         def Cancel(self) -> None:
             """Cancel the current request."""
             if self.session._prompt is not None:
@@ -224,23 +280,45 @@ def build_agent_interface(session: PairingSession) -> Any:
 
 async def register(bus: Any, session: PairingSession, path: str = "/org/taos/bluez_agent") -> None:
     """Register the agent with the BlueZ AgentManager1."""
+    try:
+        from dbus_fast import Message, MessageType
+    except ImportError:
+        return
+
     iface = build_agent_interface(session)
     bus.export(path, iface)
-    
-    await bus.call(
-        "org.bluez.AgentManager1",
-        "/org/bluez",
-        "RegisterAgent",
-        [path, "KeyboardDisplay"]
+
+    msg = Message(
+        destination="org.bluez",
+        path="/org/bluez",
+        interface="org.bluez.AgentManager1",
+        member="RegisterAgent",
+        signature="os",
+        body=[path, "KeyboardDisplay"],
+        serial=1,
     )
+    reply = await bus.call(msg)
+    if reply.message_type == MessageType.ERROR:
+        raise RuntimeError(f"RegisterAgent failed: {reply.error_name}")
 
 
 async def unregister(bus: Any, path: str = "/org/taos/bluez_agent") -> None:
     """Unregister the agent from BlueZ AgentManager1."""
-    await bus.call(
-        "org.bluez.AgentManager1",
-        "/org/bluez", 
-        "UnregisterAgent",
-        [path]
+    try:
+        from dbus_fast import Message, MessageType
+    except ImportError:
+        return
+
+    msg = Message(
+        destination="org.bluez",
+        path="/org/bluez",
+        interface="org.bluez.AgentManager1",
+        member="UnregisterAgent",
+        signature="o",
+        body=[path],
+        serial=2,
     )
+    reply = await bus.call(msg)
+    if reply.message_type == MessageType.ERROR:
+        raise RuntimeError(f"UnregisterAgent failed: {reply.error_name}")
     bus.unexport(path)
