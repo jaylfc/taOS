@@ -74,7 +74,11 @@ def _check_object(obj: dict, author: str, signing_pubkey: str) -> str | None:
         return "tombstone has no target"
     attachments = obj.get("attachments")
     if obj["type"] == "post" and attachments is not None and (
-        not isinstance(attachments, list) or not all(isinstance(a, dict) for a in attachments)
+        not isinstance(attachments, list)
+        or not all(
+            isinstance(a, dict) and isinstance(a.get("blob"), (str, type(None)))
+            for a in attachments
+        )
     ):
         return "attachments must be a list of objects"
     if not hub_store.verify_object(obj, signing_pubkey):
@@ -106,7 +110,7 @@ async def _apply_tombstone(store: hub_store.HubStore, author: str, target: str) 
         attachments = held.get("attachments")
         for att in attachments if isinstance(attachments, list) else []:
             blob = att.get("blob") if isinstance(att, dict) else None
-            if blob and not await store.blob_referenced(blob, exclude=target):
+            if isinstance(blob, str) and blob and not await store.blob_referenced(blob, exclude=target):
                 await store.drop_blob(blob)
         await store.drop_object(target)
     return True
@@ -230,7 +234,7 @@ async def ingest_chain_range(
     # when a held tombstone targets its hash and held neighbours anchor it.
     for e in entries:
         seq, h = e.get("seq"), e.get("hash")
-        if e.get("object") is not None or h not in targets:
+        if e.get("object") is not None or not isinstance(h, str) or h not in targets:
             continue
         if not isinstance(seq, int) or isinstance(seq, bool) or not 1 <= seq <= MAX_SEQ:
             continue

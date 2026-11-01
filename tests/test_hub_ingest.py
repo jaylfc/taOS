@@ -285,7 +285,7 @@ async def test_a_far_seq_does_not_make_gap_reporting_unbounded(stores):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("attachments", [5, ["not an object"]])
+@pytest.mark.parametrize("attachments", [5, ["not an object"], [{"blob": {"not": "a hash"}}]])
 async def test_malformed_attachments_are_rejected(stores, attachments):
     _origin, receiver = stores
     alice = Author()
@@ -433,3 +433,33 @@ async def test_two_valid_entries_at_one_seq_keep_the_first_and_report_a_fork(sto
     assert report.stored == [1] and report.forks == [1]
     assert (await receiver.get_chain_entry(alice.fp, 1))["hash"] == hub_store.object_hash(first)
     assert await receiver.get_object(hub_store.object_hash(second)) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_hash", [[], {"a": 1}])
+async def test_a_body_less_entry_with_a_non_string_hash_is_skipped_not_raised(stores, bad_hash):
+    _origin, receiver = stores
+    alice = Author()
+    await _pin(receiver, alice)
+    entry = {"seq": 1, "hash": bad_hash, "prev_hash": None, "object": None}
+
+    report = await ingest.ingest_chain_range(receiver, alice.fp, {"entries": [entry]})
+
+    assert report.index_only == [] and report.stored == []
+    assert await receiver.list_chain_entries(alice.fp) == []
+
+
+@pytest.mark.asyncio
+async def test_a_held_post_with_a_bad_blob_does_not_stop_its_tombstone(stores):
+    _origin, receiver = stores
+    alice = Author()
+    # A row stored before attachment checks existed: its blob is not a string.
+    gone = alice.post("gone", attachments=[{"blob": ["not", "a", "hash"]}])
+    await receiver.put_chain_object(gone)
+    await receiver.put_chain_object(alice.tombstone(hub_store.object_hash(gone)))
+    await _pin(receiver, alice)
+
+    report = await ingest.ingest_chain_range(receiver, alice.fp, {"entries": []})
+
+    assert report.tombstones_applied == [hub_store.object_hash(gone)]
+    assert await receiver.get_object(hub_store.object_hash(gone)) is None
