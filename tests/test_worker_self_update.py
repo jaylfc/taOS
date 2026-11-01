@@ -829,3 +829,216 @@ class TestRunHelperTimeout:
         proc.kill.assert_called_once()
         proc.wait.assert_awaited_once()
 
+
+class TestUpdateTriggerIsRecoverable:
+    """A restart between claiming the trigger and writing the update marker must
+    not lose the requested update and leave the worker drained."""
+
+    @staticmethod
+    def _agent(tmp_path: Path) -> "_RecordingWorkerAgent":
+        return _RecordingWorkerAgent(
+            controller_url="http://controller:9898", name="w", state_dir=tmp_path
+        )
+
+    @staticmethod
+    def _patch_update(monkeypatch, result=None):
+        import tinyagentos.worker.self_update as su
+
+        calls: list[str] = []
+
+        async def fake(target_ref, **kwargs):
+            calls.append(target_ref)
+            return result or {"ok": False, "error": "x"}
+
+        monkeypatch.setattr(su, "run_full_update", fake)
+        return calls
+
+    @pytest.mark.asyncio
+    async def test_trigger_stays_claimed_while_the_update_runs(self, monkeypatch, tmp_path):
+        import tinyagentos.worker.self_update as su
+
+        agent = self._agent(tmp_path)
+        (tmp_path / "update-trigger.json").write_text(json.dumps({"target_ref": "v2"}))
+        seen = {}
+
+        async def fake(target_ref, **kwargs):
+            seen["trigger"] = (tmp_path / "update-trigger.json").exists()
+            seen["claimed"] = (tmp_path / "update-trigger.claimed.json").exists()
+            return {"ok": False, "error": "x"}
+
+        monkeypatch.setattr(su, "run_full_update", fake)
+
+        assert await agent._check_update_trigger() is True
+        assert seen == {"trigger": False, "claimed": True}
+        assert not (tmp_path / "update-trigger.claimed.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_update_keeps_its_claim(self, monkeypatch, tmp_path):
+        import tinyagentos.worker.self_update as su
+
+        agent = self._agent(tmp_path)
+        (tmp_path / "update-trigger.json").write_text(json.dumps({"target_ref": "v2"}))
+
+        async def fake(target_ref, **kwargs):
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(su, "run_full_update", fake)
+
+        with pytest.raises(asyncio.CancelledError):
+            await agent._check_update_trigger()
+        assert (tmp_path / "update-trigger.claimed.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_restart_before_the_marker_resumes_the_update(self, monkeypatch, tmp_path):
+        agent = self._agent(tmp_path)
+        (tmp_path / "update-trigger.claimed.json").write_text(json.dumps({"target_ref": "v2"}))
+        calls = self._patch_update(monkeypatch)
+
+        assert await agent._check_update_trigger() is True
+        assert calls == ["v2"]
+        assert not (tmp_path / "update-trigger.claimed.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_restart_after_the_marker_does_not_rerun_the_update(self, monkeypatch, tmp_path):
+        """Past the marker, post_update_startup owns the outcome."""
+        import tinyagentos.worker.self_update as su
+
+        agent = self._agent(tmp_path)
+        (tmp_path / "update-trigger.claimed.json").write_text(json.dumps({"target_ref": "v2"}))
+        su._write_update_marker(tmp_path, "tag", "from", "to")
+        calls = self._patch_update(monkeypatch)
+
+        assert await agent._check_update_trigger() is False
+        assert calls == []
+        assert not (tmp_path / "update-trigger.claimed.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_a_newer_trigger_wins_over_an_interrupted_one(self, monkeypatch, tmp_path):
+        agent = self._agent(tmp_path)
+        (tmp_path / "update-trigger.claimed.json").write_text(json.dumps({"target_ref": "old"}))
+        (tmp_path / "update-trigger.json").write_text(json.dumps({"target_ref": "new"}))
+        calls = self._patch_update(monkeypatch)
+
+        await agent._check_update_trigger()
+        assert calls == ["new"]
+
+    @pytest.mark.asyncio
+    async def test_resume_is_capped_and_returns_the_worker_to_routing(self, monkeypatch, tmp_path):
+        """An update that kills the worker every time must not loop forever."""
+        from tinyagentos.worker import agent as agent_mod
+
+        agent = self._agent(tmp_path)
+        agent._lifecycle_status = "draining"
+        (tmp_path / "update-trigger.claimed.json").write_text(json.dumps({
+            "target_ref": "v2",
+            "attempts": agent_mod.UPDATE_TRIGGER_MAX_ATTEMPTS - 1,
+        }))
+        calls = self._patch_update(monkeypatch)
+
+        assert await agent._check_update_trigger() is False
+        assert calls == []
+        assert not (tmp_path / "update-trigger.claimed.json").exists()
+        assert agent._lifecycle_status is None
+        assert agent.heartbeats
+
+
+class TestPostUpdateHookTask:
+    """Every successful registration schedules the hook, and a controller 404
+    during the grace period causes another registration."""
+
+    @pytest.mark.asyncio
+    async def test_only_one_hook_runs_at_a_time(self, monkeypatch, tmp_path):
+        from tinyagentos.worker import agent as agent_mod
+
+        started: list[int] = []
+        release = asyncio.Event()
+
+        async def hook(*args):
+            started.append(1)
+            await release.wait()
+
+        monkeypatch.setattr(agent_mod, "_run_post_update_hook", hook)
+        agent = _RecordingWorkerAgent(
+            controller_url="http://controller:9898", name="w", state_dir=tmp_path
+        )
+
+        agent._schedule_post_update_hook()
+        agent._schedule_post_update_hook()
+        await asyncio.sleep(0)
+        assert len(started) == 1
+
+        release.set()
+        await agent._post_update_task
+        agent._schedule_post_update_hook()
+        await agent._post_update_task
+        assert len(started) == 2
+
+    @pytest.mark.asyncio
+    async def test_shutdown_cancels_the_running_hook(self, monkeypatch, tmp_path):
+        from tinyagentos.worker import agent as agent_mod
+
+        async def hook(*args):
+            await asyncio.sleep(3600)
+
+        monkeypatch.setattr(agent_mod, "_run_post_update_hook", hook)
+        agent = _RecordingWorkerAgent(
+            controller_url="http://controller:9898", name="w", state_dir=tmp_path
+        )
+
+        agent._schedule_post_update_hook()
+        task = agent._post_update_task
+        await asyncio.sleep(0)
+        await agent._cancel_post_update_hook()
+        assert task.cancelled()
+
+
+class TestRollbackReportsBeforeRestoring:
+    """The rollback helper restarts the worker, which kills this process. Reporting
+    afterwards never happened: the controller was not told and the marker survived."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stale", [True, False], ids=["stale-marker", "failed-health-check"])
+    async def test_outcome_and_marker_are_settled_before_the_rollback(
+        self, monkeypatch, tmp_path, stale
+    ):
+        import datetime
+
+        import tinyagentos.worker.self_update as su
+
+        su._write_update_marker(tmp_path, "tag-123", "from", "to")
+        if stale:
+            marker = tmp_path / su._UPDATE_IN_PROGRESS_MARKER
+            data = json.loads(marker.read_text())
+            data["started_at"] = (
+                datetime.datetime.now(datetime.timezone.utc)
+                - datetime.timedelta(seconds=su.STALE_UPDATE_MARKER_SECONDS + 60)
+            ).isoformat()
+            marker.write_text(json.dumps(data))
+
+        signals: list[str] = []
+        seen = {}
+
+        async def fake_signal(**kwargs):
+            signals.append(kwargs["outcome"])
+            return 200
+
+        async def fake_health():
+            return {"ok": False, "output": "port closed", "exit_code": 1}
+
+        async def fake_rollback(tag):
+            seen["signals"] = list(signals)
+            seen["marker"] = su.read_update_marker(tmp_path)
+            return {"ok": True, "output": "", "exit_code": 0}
+
+        monkeypatch.setattr(su, "signal_update_outcome", fake_signal)
+        monkeypatch.setattr(su, "run_health_check", fake_health)
+        monkeypatch.setattr(su, "rollback_to_checkpoint", fake_rollback)
+        monkeypatch.setattr(su, "POST_RESTART_GRACE_PERIOD", 0)
+
+        agent = MagicMock(_signing_key=b"k")
+        agent.name = "w"
+        result = await su.post_update_startup("http://c", agent, tmp_path)
+
+        assert result["outcome"] == "rollback"
+        assert seen == {"signals": ["rollback"], "marker": None}
+
