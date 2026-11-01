@@ -33,7 +33,7 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
@@ -811,6 +811,8 @@ async def own_timeline(
     ``no-identity`` before the node has minted a hub identity, else ``ok`` with
     the posts. The timeline works fully offline from the local store.
     """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     if not identity.exists():
         return {"state": "no-identity"}
     store = await _get_store(request)
@@ -833,6 +835,8 @@ async def delete_post_route(
     so the chain stays verifiable. Best-effort: a peer that later pulls will see
     the tombstone and drop its copy too. Returns the tombstone statement.
     """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     identity.load_or_create()
     store = await _get_store(request)
     try:
@@ -863,6 +867,8 @@ async def own_chain(
     ``entries`` is truncated, so deletes travel ahead of content. ``head`` is
     the latest chain entry, so a reader knows how far the chain goes.
     """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     # SQLite integers are signed 64-bit; a larger cursor would raise
     # OverflowError (a 500) when bound into the query.
     if not 0 <= after_seq <= _SQLITE_INT_MAX or not 1 <= limit <= _CHAIN_PAGE_MAX:
@@ -896,6 +902,8 @@ async def get_blob(
     stored as ``image/*`` is served as an opaque download. The response is
     sandboxed and never sniffed, so a blob cannot run as a page on this origin.
     """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     if not _BLOB_HASH_RE.match(blob_hash):
         return JSONResponse({"error": "invalid blob hash"}, status_code=400)
     store = await _get_store(request)
