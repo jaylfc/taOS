@@ -466,7 +466,8 @@ async def _legacy_install(request: Request, body: dict, app_id: str | None, targ
         return JSONResponse({"ok": True, "app_id": app_id, "status": "installed", "rkllama_url": rkllama_url, **result})
 
     if backend == "lxc":
-        admin_password = body.get("admin_password", "")
+        inputs = body.get("inputs") if isinstance(body.get("inputs"), dict) else {}
+        admin_password = body.get("admin_password", "") or inputs.get("admin_password", "")
         if not admin_password:
             return JSONResponse(
                 {"error": "admin_password is required for LXC installs"}, status_code=400
@@ -799,6 +800,16 @@ async def install_app(request: Request):
                 },
                 status_code=400,
             )
+
+    raw_inputs = body.get("inputs")
+    if raw_inputs is not None and not (
+        isinstance(raw_inputs, dict)
+        and all(isinstance(k, str) and isinstance(v, str) for k, v in raw_inputs.items())
+    ):
+        return JSONResponse(
+            {"error": "inputs must be an object of string values", "reason": "invalid_inputs"},
+            status_code=400,
+        )
 
     # Progress store — opened up here so both legacy and v2 paths can
     # tag work-in-flight that the frontend polls for. Importing here
