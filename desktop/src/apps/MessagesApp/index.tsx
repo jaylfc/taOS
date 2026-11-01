@@ -2364,10 +2364,12 @@ export function MessagesApp({
         <div className="flex-1 flex items-center justify-center text-shell-text-tertiary">
           <div className="text-center px-6">
             <MessageCircle size={48} className="mx-auto mb-3 opacity-30" />
-            <p className="text-sm mb-3" role={firstChat.waiting ? "status" : undefined}>
+            <p className="text-sm mb-3" role={firstChat.waiting ? "status" : firstChat.failure ? "alert" : undefined}>
               {firstChat.waiting
                 ? "Setting up your assistant. Your first chat opens here when it's ready."
-                : "Pick a channel or start a DM"}
+                : firstChat.failure
+                  ? `${firstChat.failure} You can check on it, or try again, in the Agents app.`
+                  : "Pick a channel or start a DM"}
             </p>
             <div className="flex items-center gap-2">
               <Button variant="outline" size="sm" onClick={() => setShowCreate(true)}>
