@@ -384,6 +384,30 @@ async def get_session_mode():
     return await _session_mode_state()
 
 
+@router.get("/api/system/local-desktop", dependencies=[Depends(require_admin)])
+async def get_local_desktop():
+    """Report the local desktop state: available, enabled, and active based on
+    taos-kiosk.service systemd unit state.
+
+    Reads via `systemctl cat`, `systemctl is-enabled`, and `systemctl is-active`.
+    Admin only.  Unit absent => all false (is-enabled/is-active are NOT called).
+    """
+    # availability: unit must exist (cat succeeds)
+    cat_rc, _ = await _systemctl("cat", "taos-kiosk.service")
+    if cat_rc != 0:
+        return {"available": False, "enabled": False, "active": False}
+
+    # enabled: is-enabled output must be exactly "enabled"
+    en_rc, en_out = await _systemctl("is-enabled", "taos-kiosk.service")
+    enabled = en_rc == 0 and en_out.strip() == "enabled"
+
+    # active: is-active output must be exactly "active"
+    ac_rc, ac_out = await _systemctl("is-active", "taos-kiosk.service")
+    active = ac_rc == 0 and ac_out.strip() == "active"
+
+    return {"available": True, "enabled": enabled, "active": active}
+
+
 @router.post("/api/system/session-mode", dependencies=[Depends(require_admin)])
 async def set_session_mode(request: Request):
     """Switch the device between the taOS kiosk and Plasma Mobile.
