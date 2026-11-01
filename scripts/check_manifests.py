@@ -133,6 +133,69 @@ def lint_managed(root: Path) -> list[str]:
     return errors
 
 
+def lint_model_fields(root: Path) -> tuple[list[str], list[str]]:
+    """Return ``(warnings, errors)`` for model manifests.
+
+    Missing capability fields are warnings, not errors: the 119 existing
+    model manifests have not been backfilled yet, so a hard error would go
+    red immediately. Once the backfill lands (Phase 2), promote the
+    missing-``family`` warning to an error.
+
+    A manifest this lint cannot read at all is an *error*: ``lint_managed``
+    scans only ``services/``, so nothing else would report it and the gate
+    would print "clean" over a broken model manifest. A gate that skips bad
+    input cannot fail on it.
+
+    Checked fields (taOS #146/#148 Phase 0):
+    - ``family`` -- model family grouping (e.g. "qwen3").
+    - ``min_context`` / ``max_context`` -- context window range (0 = unknown).
+    - Per-variant ``vram_floor_mb`` and ``approx_tok_s_by_profile`` -- the
+      capability envelope pick_variant() reads. Only warned when the variant
+      has no envelope keys at all.
+    """
+    warnings: list[str] = []
+    errors: list[str] = []
+    models_dir = root / "models"
+    if not models_dir.is_dir():
+        return warnings, errors
+    for manifest in sorted(models_dir.glob("*/manifest.yaml")):
+        mid_dir = manifest.parent.name
+        try:
+            data = yaml.safe_load(manifest.read_text())
+        except yaml.YAMLError as exc:
+            first = str(exc).splitlines()[0] if str(exc) else "parse error"
+            errors.append(f"{mid_dir}: manifest.yaml is not valid YAML ({first[:120]})")
+            continue
+        if not isinstance(data, dict):
+            errors.append(f"{mid_dir}: manifest.yaml top-level is not a mapping")
+            continue
+        if data.get("type") != "model":
+            continue
+        mid = str(data.get("id") or mid_dir)
+        if not data.get("family"):
+            warnings.append(
+                f"{mid}: missing 'family' (capability registry groups variants "
+                f"by family; backfill in taOS #148 Phase 2)"
+            )
+        if not data.get("min_context") and not data.get("max_context"):
+            warnings.append(
+                f"{mid}: missing 'min_context'/'max_context' (context window "
+                f"range; 0 = unknown)"
+            )
+        variants = data.get("variants") or []
+        if isinstance(variants, list):
+            for v in variants:
+                if not isinstance(v, dict):
+                    continue
+                vid = str(v.get("id") or "?")
+                if "vram_floor_mb" not in v and "approx_tok_s_by_profile" not in v:
+                    warnings.append(
+                        f"{mid} variant {vid}: no capability envelope "
+                        f"('vram_floor_mb' / 'approx_tok_s_by_profile')"
+                    )
+    return warnings, errors
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["managed-lint"])
@@ -141,8 +204,12 @@ def main(argv: list[str] | None = None) -> int:
 
     root = Path(args.root)
     errors = lint_managed(root)
+    warnings, model_errors = lint_model_fields(root)
+    errors.extend(model_errors)
+    for w in warnings:
+        print(f"  warn: {w}", file=sys.stderr)
     if errors:
-        print("MANIFEST-LINT FAIL (managed-service contract):", file=sys.stderr)
+        print("MANIFEST-LINT FAIL:", file=sys.stderr)
         for e in errors:
             print(f"  - {e}", file=sys.stderr)
         return 1
