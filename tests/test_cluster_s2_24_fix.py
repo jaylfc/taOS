@@ -384,11 +384,11 @@ def test_collect_resources_feeds_metal_resource_name(monkeypatch):
 
     monkeypatch.delenv("TAOS_WORKER_RESOURCES", raising=False)
 
-    mac = _collect_resources([{"type": "mlx"}], "apple", "darwin")
+    mac = _collect_resources([{"type": "mlx"}], {"gpu": {"type": "apple"}}, "darwin")
     assert METAL_RESOURCE_NAME in mac
     assert "gpu-cuda-0" not in mac
 
-    cuda = _collect_resources([{"type": "vllm"}], "nvidia", "linux")
+    cuda = _collect_resources([{"type": "vllm"}], {"gpu": {"type": "nvidia", "cuda": True}}, "linux")
     assert "gpu-cuda-0" in cuda
     assert METAL_RESOURCE_NAME not in cuda
 
