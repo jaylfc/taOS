@@ -12,6 +12,8 @@ from urllib.parse import urlparse, urlsplit
 import httpx
 import psutil
 
+from tinyagentos.hardware import METAL_RESOURCE_NAME
+
 logger = logging.getLogger(__name__)
 
 # Sentinel returned by register() when the controller rejects the signing key
@@ -107,8 +109,9 @@ def _collect_resources(
     """Return the resource classes this worker advertises.
 
     Mirrors the resource table in docs/design/resource-scheduler.md.
-    ``gpu-metal`` is the Apple Silicon class (MLX / llama.cpp Metal / Core ML
-    on unified memory); CUDA-class accelerators report ``gpu-cuda-0``.
+    ``METAL_RESOURCE_NAME`` (``gpu-metal``, hardware.py) is the Apple Silicon
+    class (MLX / llama.cpp Metal / Core ML on unified memory); CUDA-class
+    accelerators report ``gpu-cuda-0``.
 
     Args:
         backends: live backend probe results, each carrying a ``type``.
@@ -150,8 +153,10 @@ def _collect_resources(
     resources = ["cpu-inference"]
     if any(b.get("type") == "rkllama" for b in live):
         resources.append("npu-rk3588")
+    # Hardware-class based (dev's refactor); the PR's METAL_RESOURCE_NAME
+    # constant is kept instead of the hardcoded "gpu-metal".
     if gpu_type == "apple":
-        resources.append("gpu-metal")
+        resources.append(METAL_RESOURCE_NAME)
     elif platform_name == "darwin":
         # Intel Mac: macOS has no CUDA/ROCm class at all. The backend
         # still serves, as cpu-inference.
