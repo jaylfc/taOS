@@ -14,6 +14,12 @@ def test_hailo_ollama_capability_entry_exists():
     assert BACKEND_CAPABILITIES["hailo-ollama"] == {"llm-chat"}
 
 
+def test_lmstudio_capability_entry_exists():
+    """LM Studio is a local OpenAI-compatible backend: chat + embedding."""
+    assert "lmstudio" in BACKEND_CAPABILITIES
+    assert BACKEND_CAPABILITIES["lmstudio"] == {"llm-chat", "embedding"}
+
+
 @pytest.mark.asyncio
 async def test_disabled_backend_excluded_from_routing():
     """A backend with enabled=False must not appear in backends_with_capability."""
