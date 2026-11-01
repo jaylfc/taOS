@@ -23,6 +23,8 @@ export interface OnboardingProgress {
   model?: OnDeviceChoice;
   /** The taOS Agent's model id, when one was set at the agent step. */
   agent_model?: string;
+  /** The assistant the first chat deployed (its agent slug). */
+  first_chat?: { agent: string };
 }
 
 import { parseAbout, type AboutYou } from "./about";
@@ -45,6 +47,10 @@ export async function loadProgress(): Promise<OnboardingProgress | null> {
       about: parseAbout(data.about),
       model: parseChoice(data.model),
       agent_model: typeof data.agent_model === "string" ? data.agent_model : undefined,
+      first_chat:
+        data.first_chat && typeof data.first_chat.agent === "string" && data.first_chat.agent
+          ? { agent: data.first_chat.agent }
+          : undefined,
     };
   } catch {
     return null;

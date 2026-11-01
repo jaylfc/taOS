@@ -1,10 +1,10 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { OobeShell } from "./OobeShell";
 import { saveProgress, type OnboardingProgress } from "./progress";
 import { HelloStep } from "./steps/HelloStep";
 import { NameStep, deriveUsername } from "./steps/NameStep";
 import { PasswordStep } from "./steps/PasswordStep";
-import { DEFAULT_ABOUT, type AboutYou } from "./about";
+import { DEFAULT_ABOUT, buildSoulMd, suggestedPrompts, type AboutYou } from "./about";
 import { AboutHelpStep, AboutStyleStep } from "./steps/AboutYouStep";
 import { DeviceStep } from "./steps/DeviceStep";
 import { ModelStep } from "./steps/ModelStep";
@@ -13,14 +13,23 @@ import { AgentCloud, AgentIntro, AgentModelPick } from "./steps/AgentStep";
 import { HopError, SETUP_PROVIDERS, addProvider, providerModels, saveKey, setAgentModel } from "./agent";
 import type { AggregatedModel } from "@/lib/models";
 import { PrivacyStep } from "./steps/PrivacyStep";
+import { FirstChatStep } from "./steps/FirstChatStep";
+import {
+  DEFAULT_ASSISTANT_NAME,
+  deployAssistant,
+  deviceFramework,
+  newIdempotencyKey,
+  openFirstChat,
+  ownerName,
+} from "./first-chat";
 import { TaosAccountChoice, TaosAccountForm, type AccountMode } from "./steps/TaosAccountStep";
 
-export type StepId = "hello" | "name" | "password" | "taos-account" | "device" | "about" | "model" | "agent" | "privacy";
+export type StepId = "hello" | "name" | "password" | "taos-account" | "device" | "about" | "model" | "agent" | "privacy" | "first-chat";
 
-const FIRST_RUN: StepId[] = ["hello", "name", "password", "taos-account", "device", "about", "model", "agent", "privacy"];
+const FIRST_RUN: StepId[] = ["hello", "name", "password", "taos-account", "device", "about", "model", "agent", "privacy", "first-chat"];
 const INVITE: StepId[] = ["name", "password"];
 /** Steps the account must exist for; a resume can land on these only. */
-const AFTER_ACCOUNT: StepId[] = ["taos-account", "device", "about", "model", "agent", "privacy"];
+const AFTER_ACCOUNT: StepId[] = ["taos-account", "device", "about", "model", "agent", "privacy", "first-chat"];
 /** Steps that need a taOS account sign-in; without one they are set up later. */
 const NEEDS_TAOS_ACCOUNT: StepId[] = ["device"];
 
@@ -31,7 +40,7 @@ export interface OobeProps {
   inviteCode?: string;
   defaultAutoLogin?: boolean;
   /** Resume first-run setup here (the account was created in an earlier visit). */
-  resume?: Pick<OnboardingProgress, "step" | "completed" | "skipped" | "about" | "model" | "agent_model">;
+  resume?: Pick<OnboardingProgress, "step" | "completed" | "skipped" | "about" | "model" | "agent_model" | "first_chat">;
   /** This is the device's own screen, so first run may set a PIN too. */
   pinOffered?: boolean;
 }
@@ -73,6 +82,10 @@ export function Oobe({
   const [apiKey, setApiKey] = useState("");
   const [providerList, setProviderList] = useState<string[]>([]);
   const [clusterModels, setClusterModels] = useState<AggregatedModel[]>([]);
+  const [assistantName, setAssistantName] = useState(DEFAULT_ASSISTANT_NAME);
+  const firstChat = useRef<{ agent: string } | undefined>(resume?.first_chat);
+  // One per visit: a retry after a lost answer gets the same deploy back.
+  const deployKey = useRef(newIdempotencyKey());
   // Reaching a NEEDS_TAOS_ACCOUNT step on resume means the sign-in happened.
   const [accountLinked, setAccountLinked] = useState(
     resumeAt !== null && NEEDS_TAOS_ACCOUNT.includes(resumeAt),
@@ -121,9 +134,10 @@ export function Oobe({
     };
     mark(step, outcome);
     let i = steps.indexOf(step) + 1;
-    // Without a taOS account these steps have nothing to act on: record them
-    // as set-up-later so the Setup checklist offers them after sign-in.
-    while (!linked && steps[i] && NEEDS_TAOS_ACCOUNT.includes(steps[i]!)) mark(steps[i++]!, "skipped");
+    // Steps with nothing to act on are recorded as set-up-later so the Setup
+    // checklist offers them: device without a taOS account, the first chat
+    // without any model for the assistant to run on.
+    while (steps[i] && unavailable(steps[i]!, linked)) mark(steps[i++]!, "skipped");
     const next = steps[i];
     // Progress is the owner's preference: writable only once /auth/setup has
     // signed this browser in. Earlier, a PUT would 401 and read as an expired
@@ -142,7 +156,51 @@ export function Oobe({
 
   /** Answers that ride along in the progress blob (PUT replaces all of it). */
   function extras(answers: AboutYou) {
-    return { about: answers, model: model.current, agent_model: agentModel.current };
+    return { about: answers, model: model.current, agent_model: agentModel.current, first_chat: firstChat.current };
+  }
+
+  /** The model the assistant runs on: the agent's, else the on-device one. */
+  function assistantModel(): string | undefined {
+    return agentModel.current ?? model.current?.app_id;
+  }
+
+  function unavailable(id: StepId, linked: boolean): boolean {
+    if (!linked && NEEDS_TAOS_ACCOUNT.includes(id)) return true;
+    return id === "first-chat" && !assistantModel();
+  }
+
+  // A resume can land on the first chat after its model went away (a newer
+  // build, or progress written by hand): finish instead of offering a deploy
+  // that has nothing to run on.
+  const autoSkipped = useRef(false);
+  useEffect(() => {
+    if (step !== "first-chat" || assistantModel() || autoSkipped.current) return;
+    autoSkipped.current = true;
+    void advance("skipped");
+  });
+
+  async function startFirstChat() {
+    const modelId = assistantModel();
+    if (!modelId) return;
+    setBusy(true);
+    setError("");
+    let agent: string;
+    try {
+      const framework = await deviceFramework();
+      const who = fullName.trim() || (await ownerName());
+      agent = await deployAssistant(
+        { name: assistantName.trim(), framework, model: modelId, soul_md: buildSoulMd(who, about) },
+        deployKey.current,
+      );
+    } catch (e) {
+      setBusy(false);
+      setError(e instanceof HopError ? e.message : "Couldn't set up your assistant. Try again.");
+      return;
+    }
+    firstChat.current = { agent };
+    setBusy(false);
+    await advance("completed");
+    openFirstChat(agent, suggestedPrompts(about));
   }
 
   function agentGo(page: typeof agentPage, dir: 1 | -1) {
@@ -399,6 +457,20 @@ export function Oobe({
       break;
     case "privacy":
       page = <PrivacyStep onBack={back} onNext={() => void advance("completed")} />;
+      break;
+    case "first-chat":
+      page = (
+        <FirstChatStep
+          name={assistantName}
+          prompts={suggestedPrompts(about)}
+          busy={busy}
+          error={error}
+          onName={setAssistantName}
+          onBack={back}
+          onNext={() => void startFirstChat()}
+          onSkip={() => void advance("skipped")}
+        />
+      );
       break;
     case "model":
       page = (

@@ -73,6 +73,7 @@ import {
 } from "../MessagesApp.stallWatch";
 import { useProcessStore } from "@/stores/process-store";
 import { getApp } from "@/registry/app-registry";
+import { SuggestedPrompts, useFirstChat } from "./first-chat";
 import { CodeBlock } from "@/components/CodeBlock";
 import { ToolCallBlock } from "@/components/ToolCallBlock";
 import { StatusBlock } from "@/components/StatusBlock";
@@ -848,10 +849,16 @@ export function MessagesApp({
   windowId: _windowId,
   title,
   scope,
+  firstChatAgent,
+  suggestedPrompts,
 }: {
   windowId: string;
   title?: string;
   scope?: { projectId?: string };
+  /** First-run setup: the assistant it deployed, opened once its DM exists. */
+  firstChatAgent?: string;
+  /** First-run setup: prompts offered while that DM is empty. */
+  suggestedPrompts?: string[];
 }) {
   const isMobile = useIsMobile();
   const { keyboardInset } = useVisualViewport();
@@ -1024,6 +1031,8 @@ export function MessagesApp({
       setChannelsLoaded(true);
     }
   }, [scope?.projectId]);
+
+  const firstChat = useFirstChat(firstChatAgent, channels, fetchChannels, setSelectedChannel);
 
   /* ---- fetch archived channels ---- */
   const fetchArchivedChannels = useCallback(async () => {
@@ -2355,7 +2364,11 @@ export function MessagesApp({
         <div className="flex-1 flex items-center justify-center text-shell-text-tertiary">
           <div className="text-center px-6">
             <MessageCircle size={48} className="mx-auto mb-3 opacity-30" />
-            <p className="text-sm mb-3">Pick a channel or start a DM</p>
+            <p className="text-sm mb-3" role={firstChat.waiting ? "status" : undefined}>
+              {firstChat.waiting
+                ? "Setting up your assistant. Your first chat opens here when it's ready."
+                : "Pick a channel or start a DM"}
+            </p>
             <div className="flex items-center gap-2">
               <Button variant="outline" size="sm" onClick={() => setShowCreate(true)}>
                 New channel
@@ -2544,6 +2557,20 @@ className="shrink-0 p-0.5 rounded hover:bg-shell-surface-active transition-color
             >
               Agents coordinate here. Mention <code>@&lt;slug&gt;</code> to hand off a task to another agent.
             </div>
+          )}
+
+          {firstChat.channelId !== undefined
+            && selectedChannel === firstChat.channelId
+            && fetchedChannel === selectedChannel
+            && messages.length === 0
+            && !input && (
+            <SuggestedPrompts
+              prompts={suggestedPrompts ?? []}
+              onPick={(p) => {
+                setInput(p);
+                setTimeout(() => inputRef.current?.focus(), 0);
+              }}
+            />
           )}
 
           <MessageInput
