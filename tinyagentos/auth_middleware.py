@@ -68,6 +68,39 @@ def _get_agent_token_routes_logger(data_dir: Path) -> logging.Logger:
     return log_logger
 
 
+async def _call_and_record_bound_agent(
+    request: Request, call_next, auth_mgr, bound_agent: str
+):
+    """Call the next handler and record the bound-agent local-token route.
+
+    Sets request.state.agent_name, calls call_next, writes the same JSON log
+    line as the non-exempt local-token path (inside the same try/except), and
+    returns the response.
+    """
+    request.state.agent_name = bound_agent
+    response = await call_next(request)
+    # Record the bound-agent local-token request (LOG ONLY)
+    try:
+        route_obj = request.scope.get("route")
+        route_template = getattr(route_obj, "path", None) or "<unmatched>"
+        log_entry = {
+            "ts": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "method": request.method,
+            "route": route_template,
+            "agent": bound_agent,
+            "status": response.status_code,
+        }
+        log_logger = _get_agent_token_routes_logger(auth_mgr.data_dir)
+        log_logger.info(json.dumps(log_entry, separators=(",", ":")))
+    except Exception:
+        # Warning must never raise into the request either
+        try:
+            logger.warning("Failed to record agent token route", exc_info=True)
+        except Exception:
+            pass
+    return response
+
+
 # /auth/pin-login is session-exempt for the same reason as /auth/login: it is
 # how a session is obtained, so requiring one would be circular. It is NOT
 # unguarded -- the route refuses any request that is not from the device's own
@@ -945,6 +978,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
                         request.state.user_id = primary["id"] if primary else None
                         request.state.is_admin = primary is not None
                         request.state.via = "local_token"
+                        bound_agent = auth_mgr.get_local_token_agent(presented)
+                        if bound_agent:
+                            return await _call_and_record_bound_agent(
+                                request, call_next, auth_mgr, bound_agent
+                            )
                         return await call_next(request)
                     if presented.startswith(DEVICE_TOKEN_PREFIX):
                         try:
@@ -1012,16 +1050,16 @@ class AuthMiddleware(BaseHTTPMiddleware):
                                         request.state.agent_canonical_id = canonical_id
                                         request.state.via = "registry_jwt"
                                         return await call_next(request)
-                        except Exception:
+                        except Exception as exc:
                             # Keep the anonymous fall-through: an invalid
                             # signature, expired token, rotation failure or
                             # registry lookup error must not 401 an exempt
                             # path. Log it (never the token itself) so the
-                            # failures are diagnosable.
+                            # failures are diagnosable. One line, no traceback.
                             logger.warning(
-                                "exempt-GET bearer: registry JWT validation failed on %s",
+                                "exempt-GET bearer: registry JWT validation failed on %s (%s)",
                                 path,
-                                exc_info=True,
+                                type(exc).__name__,
                             )
             request.state.user_id = None
             request.state.is_admin = False
@@ -1077,28 +1115,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     request.state.via = "local_token"
                 bound_agent = auth_mgr.get_local_token_agent(presented)
                 if bound_agent:
-                    request.state.agent_name = bound_agent
-                    response = await call_next(request)
-                    # Record the bound-agent local-token request (LOG ONLY)
-                    try:
-                        route_obj = request.scope.get("route")
-                        route_template = getattr(route_obj, "path", None) or "<unmatched>"
-                        log_entry = {
-                            "ts": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-                            "method": request.method,
-                            "route": route_template,
-                            "agent": bound_agent,
-                            "status": response.status_code,
-                        }
-                        log_logger = _get_agent_token_routes_logger(auth_mgr.data_dir)
-                        log_logger.info(json.dumps(log_entry, separators=(",", ":")))
-                    except Exception:
-                        # Warning must never raise into the request either
-                        try:
-                            logger.warning("Failed to record agent token route", exc_info=True)
-                        except Exception:
-                            pass
-                    return response
+                    return await _call_and_record_bound_agent(
+                        request, call_next, auth_mgr, bound_agent
+                    )
                 return await call_next(request)
 # Not a valid local token; fall through to registry JWT check below
 

@@ -12,6 +12,8 @@ signing_key is stripped in all cases.
 from __future__ import annotations
 
 import asyncio
+import logging
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -262,6 +264,69 @@ class TestExemptGetBearerTokens:
         out = _run_dispatch(req, mgr)
         assert out.state_flags["is_admin"] is False
         assert out.state_flags["via"] == "exempt"
+
+    def test_malformed_bearer_logs_without_traceback(self, caplog):
+        # A malformed bearer (e.g. "Bearer not-a-jwt") on an exempt GET must
+        # return the anonymous view and log a single WARNING line WITHOUT a
+        # traceback (exc_info=None). The log must include the exception class
+        # name but never the token itself.
+        mgr = _default_auth_mgr()
+        req = _make_request(headers={"authorization": "Bearer not-a-jwt"})
+        with caplog.at_level(logging.WARNING, logger="tinyagentos.auth_middleware"):
+            out = _run_dispatch(req, mgr)
+        assert out.state_flags["is_admin"] is False
+        assert out.state_flags["headless_full_view"] is None
+        assert out.state_flags["via"] == "exempt"
+        # Find the matching log record
+        matching = [
+            r for r in caplog.records
+            if r.name == "tinyagentos.auth_middleware"
+            and "exempt-GET bearer: registry JWT validation failed" in r.getMessage()
+        ]
+        assert len(matching) == 1, f"Expected exactly one matching log record, got {len(matching)}"
+        rec = matching[0]
+        assert rec.exc_info is None, f"Expected exc_info=None (no traceback), got {rec.exc_info}"
+        # Exception class name should be in the message (e.g. ValueError, etc.)
+        msg = rec.getMessage()
+        assert "(" in msg and ")" in msg, f"Expected exception class name in message: {msg}"
+        # Token must never appear in the log
+        assert "not-a-jwt" not in msg, "Token must not appear in log message"
+
+    def test_bound_agent_local_token_writes_route_record(self, tmp_path):
+        # A bound-agent local token on GET /api/cluster/workers must write
+        # exactly one route record to the agent token routes log with
+        # "agent": <bound name> and "method": "GET". Mirrors how
+        # test_agent_token_route_recorder.py reads the log.
+        mgr = _default_auth_mgr()
+        mgr.validate_local_token.return_value = True
+        mgr.get_primary_user.return_value = {"id": "user-1", "is_admin": True}
+        mgr.data_dir = tmp_path
+        bound_agent_name = "test-bound-agent"
+        mgr.get_local_token_agent.return_value = bound_agent_name
+        
+        req = _make_request(headers={"authorization": "Bearer local-secret"})
+        # Add scope attribute for route template lookup
+        req.scope = {"route": type("Route", (), {"path": "/api/cluster/workers"})()}
+        
+        out = _run_dispatch(req, mgr)
+        
+        assert out.state_flags["is_admin"] is True
+        assert out.state_flags["via"] == "local_token"
+        
+        # Read the log file directly (like test_agent_token_route_recorder.py)
+        log_file = tmp_path / "logs" / "agent-token-routes.jsonl"
+        assert log_file.exists(), "Log file should exist"
+        lines = log_file.read_text().strip().splitlines()
+        assert len(lines) == 1, f"Expected exactly one log line, got {len(lines)}: {lines}"
+        import json
+        entry = json.loads(lines[0])
+        assert entry["method"] == "GET", f"Expected method GET, got {entry['method']}"
+        assert entry["agent"] == bound_agent_name, f"Expected agent '{bound_agent_name}', got {entry['agent']}"
+        assert entry["route"] == "/api/cluster/workers", f"Expected route /api/cluster/workers, got {entry['route']}"
+        assert entry["status"] == 200, f"Expected status 200, got {entry['status']}"
+        assert "ts" in entry, "Missing 'ts' field"
+        # Ensure token never appears in the log file
+        assert "local-secret" not in log_file.read_text(), "Token must not appear in log file"
 
 
 # --- Route-level: full vs stripped view -------------------------------------

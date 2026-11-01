@@ -13,3 +13,8 @@
   JWT minted by deploy for a DEPLOYED agent (owner user_id + `memory_read`
   only) does not get `headless_full_view`; without the grant it falls through
   to the anonymous view, never a 403 (#3790, #4027).
+- Auth: exempt-GET bearer log no longer writes a traceback for malformed
+  tokens; it logs one line with the exception class name instead (fixes log
+  flood on unauthenticated exempt GETs). Exempt-GET bound-agent local-token
+  requests now write the same route record as the non-exempt path (fixes route
+  log gap).
