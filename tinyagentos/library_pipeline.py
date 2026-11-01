@@ -36,6 +36,10 @@ _MIME_KIND_MAP: dict[str, str] = {
     "application/zip": "archive",
     "application/gzip": "archive",
     "application/x-tar": "archive",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+    "application/epub+zip": "epub",
 }
 
 _EXT_OVERRIDE_MAP: dict[str, str] = {
@@ -47,6 +51,15 @@ _EXT_OVERRIDE_MAP: dict[str, str] = {
     ".png": "image", ".jpg": "image", ".jpeg": "image",
     ".gif": "image", ".webp": "image", ".svg": "image",
     ".zip": "archive", ".gz": "archive", ".tar": "archive",
+    # OOXML only. The legacy binary formats (.doc/.ppt/.xls) are NOT
+    # readable by python-docx/python-pptx/openpyxl, so they must not be
+    # routed to the OOXML processors: they fall through to kind "file" and
+    # FileProcessor, which records metadata and byte size instead of
+    # returning nothing.
+    ".docx": "docx",
+    ".pptx": "pptx",
+    ".xlsx": "xlsx",
+    ".epub": "epub",
 }
 
 
@@ -265,6 +278,370 @@ class PdfProcessor(Processor):
         artifacts.append({"kind": "metadata", "path": "", "meta": pdf_meta})
 
         return artifacts
+
+
+class DocxProcessor(Processor):
+    """DOCX processor — extracts paragraph + table text via python-docx.
+
+    python-docx is an optional dependency: if it is not installed the
+    processor logs a warning and returns no artifacts rather than failing
+    the whole pipeline (taOS #128 Phase 1).
+    """
+
+    async def process(self, item: dict) -> list[dict]:
+        item_id = item["id"]
+        artifacts: list[dict] = []
+        storage_path = item.get("storage_path", "")
+        if not storage_path:
+            return artifacts
+        p = Path(storage_path)
+        if not p.exists():
+            return artifacts
+        try:
+            from docx import Document
+        except ImportError:
+            logger.warning("DocxProcessor: python-docx not installed, skipping %s", storage_path)
+            return artifacts
+        try:
+            doc = Document(str(p))
+        except Exception:
+            logger.warning("DocxProcessor: could not read %s", storage_path, exc_info=True)
+            return artifacts
+        parts: list[str] = []
+        for para in doc.paragraphs:
+            if para.text.strip():
+                parts.append(para.text)
+        for table in doc.tables:
+            for row in table.rows:
+                cells = [c.text.strip() for c in row.cells if c.text.strip()]
+                if cells:
+                    parts.append(" | ".join(cells))
+        if not parts:
+            return artifacts
+        text_content = "\n".join(parts)
+        text_dir = self.storage_dir / "text"
+        text_dir.mkdir(parents=True, exist_ok=True)
+        text_path = text_dir / f"{item_id}_docx.txt"
+        text_path.write_text(text_content, encoding="utf-8")
+        meta = {"char_count": len(text_content), "paragraph_count": len(doc.paragraphs)}
+        await self.store.add_artifact(item_id, kind="text", path=str(text_path), meta=meta)
+        artifacts.append({"kind": "text", "path": str(text_path), "meta": meta})
+        meta_json = json.loads(item.get("meta_json", "{}"))
+        meta_json["preview"] = text_content[:200]
+        await self.store.update_item(item_id, meta_json=meta_json)
+        return artifacts
+
+
+class PptxProcessor(Processor):
+    """PPTX processor — extracts text from all slides via python-pptx.
+
+    python-pptx is an optional dependency: if it is not installed the
+    processor logs a warning and returns no artifacts (taOS #128 Phase 1).
+    """
+
+    async def process(self, item: dict) -> list[dict]:
+        item_id = item["id"]
+        artifacts: list[dict] = []
+        storage_path = item.get("storage_path", "")
+        if not storage_path:
+            return artifacts
+        p = Path(storage_path)
+        if not p.exists():
+            return artifacts
+        try:
+            from pptx import Presentation
+        except ImportError:
+            logger.warning("PptxProcessor: python-pptx not installed, skipping %s", storage_path)
+            return artifacts
+        try:
+            prs = Presentation(str(p))
+        except Exception:
+            logger.warning("PptxProcessor: could not read %s", storage_path, exc_info=True)
+            return artifacts
+        parts: list[str] = []
+        for slide in prs.slides:
+            for shape in slide.shapes:
+                if shape.has_text_frame:
+                    text = shape.text_frame.text.strip()
+                    if text:
+                        parts.append(text)
+                if shape.has_table:
+                    for row in shape.table.rows:
+                        cells = [c.text.strip() for c in row.cells if c.text.strip()]
+                        if cells:
+                            parts.append(" | ".join(cells))
+        if not parts:
+            return artifacts
+        text_content = "\n".join(parts)
+        text_dir = self.storage_dir / "text"
+        text_dir.mkdir(parents=True, exist_ok=True)
+        text_path = text_dir / f"{item_id}_pptx.txt"
+        text_path.write_text(text_content, encoding="utf-8")
+        meta = {"char_count": len(text_content), "slide_count": len(prs.slides)}
+        await self.store.add_artifact(item_id, kind="text", path=str(text_path), meta=meta)
+        artifacts.append({"kind": "text", "path": str(text_path), "meta": meta})
+        meta_json = json.loads(item.get("meta_json", "{}"))
+        meta_json["preview"] = text_content[:200]
+        await self.store.update_item(item_id, meta_json=meta_json)
+        return artifacts
+
+
+class XlsxProcessor(Processor):
+    """XLSX processor — extracts cell values as tab-separated rows via openpyxl.
+
+    openpyxl is an optional dependency: if it is not installed the
+    processor logs a warning and returns no artifacts (taOS #128 Phase 1).
+    """
+
+    async def process(self, item: dict) -> list[dict]:
+        item_id = item["id"]
+        artifacts: list[dict] = []
+        storage_path = item.get("storage_path", "")
+        if not storage_path:
+            return artifacts
+        p = Path(storage_path)
+        if not p.exists():
+            return artifacts
+        try:
+            from openpyxl import load_workbook
+        except ImportError:
+            logger.warning("XlsxProcessor: openpyxl not installed, skipping %s", storage_path)
+            return artifacts
+        try:
+            wb = load_workbook(str(p), read_only=True, data_only=True)
+        except Exception:
+            logger.warning("XlsxProcessor: could not read %s", storage_path, exc_info=True)
+            return artifacts
+        parts: list[str] = []
+        sheet_count = 0
+        for ws in wb.worksheets:
+            sheet_count += 1
+            parts.append(f"=== Sheet: {ws.title} ===")
+            for row in ws.iter_rows(values_only=True):
+                cells = [str(c) for c in row if c is not None and str(c).strip()]
+                if cells:
+                    parts.append("\t".join(cells))
+        wb.close()
+        if not parts:
+            return artifacts
+        text_content = "\n".join(parts)
+        text_dir = self.storage_dir / "text"
+        text_dir.mkdir(parents=True, exist_ok=True)
+        text_path = text_dir / f"{item_id}_xlsx.txt"
+        text_path.write_text(text_content, encoding="utf-8")
+        meta = {"char_count": len(text_content), "sheet_count": sheet_count}
+        await self.store.add_artifact(item_id, kind="text", path=str(text_path), meta=meta)
+        artifacts.append({"kind": "text", "path": str(text_path), "meta": meta})
+        meta_json = json.loads(item.get("meta_json", "{}"))
+        meta_json["preview"] = text_content[:200]
+        await self.store.update_item(item_id, meta_json=meta_json)
+        return artifacts
+
+
+# EPUB uploads are untrusted, so decompression is bounded in three ways:
+# entry count, per-entry bytes and total bytes read. A zip bomb (a small
+# archive whose metadata declares gigabytes of content) is rejected before
+# anything large is materialised. Real books sit far below these caps.
+EPUB_MAX_ENTRIES = 2000
+EPUB_MAX_ENTRY_BYTES = 16 * 1024 * 1024
+EPUB_MAX_TOTAL_BYTES = 64 * 1024 * 1024
+
+
+class EpubSecurityError(Exception):
+    """An EPUB upload exceeded the decompression safety envelope or carried
+    XML that is unsafe to parse (DTD / entity declarations)."""
+
+
+def _parse_epub_xml(raw: bytes):
+    """Parse one untrusted EPUB XML document with no DTD and no entities.
+
+    ``defusedxml`` is used when installed. Without it the document is
+    rejected whenever it declares a DOCTYPE or an entity, which removes the
+    billion-laughs surface entirely, and the stdlib parser is then given
+    input that has no DTD to act on. The stdlib parser performs no network
+    I/O, so an external entity can never be fetched.
+    """
+    lowered = raw.lower()
+    if b"<!doctype" in lowered or b"<!entity" in lowered:
+        raise EpubSecurityError("XML declares a DTD or entity -- rejected")
+    try:
+        from defusedxml.ElementTree import fromstring as _defused_fromstring
+    except ImportError:
+        import xml.etree.ElementTree as ET  # noqa: S314 -- DTD/entities rejected above
+        return ET.fromstring(raw)
+    return _defused_fromstring(raw)
+
+
+def _check_epub_envelope(zf) -> None:
+    """Reject an archive whose entry count or declared size busts the caps."""
+    infos = zf.infolist()
+    if len(infos) > EPUB_MAX_ENTRIES:
+        raise EpubSecurityError(
+            f"{len(infos)} entries exceeds the cap of {EPUB_MAX_ENTRIES}"
+        )
+    declared = sum(info.file_size for info in infos)
+    if declared > EPUB_MAX_TOTAL_BYTES:
+        raise EpubSecurityError(
+            f"declared {declared} uncompressed bytes exceeds the cap of "
+            f"{EPUB_MAX_TOTAL_BYTES}"
+        )
+
+
+def _read_epub_entry(zf, name: str, budget: int) -> bytes:
+    """Read one zip entry, never decompressing more than ``budget`` bytes.
+
+    Reading ``budget + 1`` bytes detects an entry that lies about its
+    declared size in the central directory instead of trusting it.
+    """
+    with zf.open(name) as fh:
+        raw = fh.read(budget + 1)
+    if len(raw) > budget:
+        raise EpubSecurityError(
+            f"entry {name!r} decompresses past the {budget}-byte cap"
+        )
+    return raw
+
+
+class EpubProcessor(Processor):
+    """EPUB processor -- extracts chapter text via stdlib zipfile + XML.
+
+    EPUB is a zip of XHTML files; no third-party dependency is needed.
+    Reads the OPF spine for chapter order, falls back to alphabetical
+    file order when the spine is absent or unreadable (taOS #128 Phase 1).
+    Untrusted input: decompression is bounded and XML is parsed without
+    DTDs or entity expansion.
+    """
+
+    async def process(self, item: dict) -> list[dict]:
+        item_id = item["id"]
+        artifacts: list[dict] = []
+        storage_path = item.get("storage_path", "")
+        if not storage_path:
+            return artifacts
+        p = Path(storage_path)
+        if not p.exists():
+            return artifacts
+        import zipfile
+
+        try:
+            zf = zipfile.ZipFile(str(p))
+        except (zipfile.BadZipFile, OSError):
+            logger.warning("EpubProcessor: could not read %s", storage_path, exc_info=True)
+            return artifacts
+        try:
+            try:
+                parts = self._extract_chapters(zf)
+            except EpubSecurityError as exc:
+                logger.error("EpubProcessor: rejected %s: %s", storage_path, exc)
+                return artifacts
+            if not parts:
+                return artifacts
+            text_content = "\n\n".join(parts)
+            text_dir = self.storage_dir / "text"
+            text_dir.mkdir(parents=True, exist_ok=True)
+            text_path = text_dir / f"{item_id}_epub.txt"
+            text_path.write_text(text_content, encoding="utf-8")
+            meta = {"char_count": len(text_content), "chapter_count": len(parts)}
+            await self.store.add_artifact(item_id, kind="text", path=str(text_path), meta=meta)
+            artifacts.append({"kind": "text", "path": str(text_path), "meta": meta})
+            meta_json = json.loads(item.get("meta_json", "{}"))
+            meta_json["preview"] = text_content[:200]
+            await self.store.update_item(item_id, meta_json=meta_json)
+            return artifacts
+        finally:
+            zf.close()
+
+    @staticmethod
+    def _extract_chapters(zf) -> list[str]:
+        """Return one text blob per chapter, in spine order when available.
+
+        Raises :class:`EpubSecurityError` when the archive busts a
+        decompression cap or any XML document declares a DTD/entity.
+        """
+        import xml.etree.ElementTree as ET  # noqa: S314 -- names the parse-error type only
+
+        # ET.ParseError derives from SyntaxError, defusedxml's errors from
+        # ValueError; both mean "this document is unusable".
+        xml_errors = (ValueError, ET.ParseError)
+
+        _check_epub_envelope(zf)
+
+        # Find the OPF file via container.xml
+        opf_path = None
+        try:
+            container = _parse_epub_xml(
+                _read_epub_entry(zf, "META-INF/container.xml", EPUB_MAX_ENTRY_BYTES)
+            )
+            ns = {"c": "urn:oasis:names:tc:opendocument:xmlns:container"}
+            rootfile = container.find("c:rootfiles/c:rootfile", ns)
+            if rootfile is not None:
+                opf_path = rootfile.get("full-path")
+        except KeyError:
+            logger.debug("EpubProcessor: no META-INF/container.xml")
+        except xml_errors as exc:
+            logger.debug("EpubProcessor: unreadable container.xml: %s", exc)
+
+        # Spine order from OPF, else alphabetical XHTML
+        ordered: list[str] = []
+        if opf_path:
+            try:
+                opf = _parse_epub_xml(
+                    _read_epub_entry(zf, opf_path, EPUB_MAX_ENTRY_BYTES)
+                )
+                opf_ns = {"o": "http://www.idpf.org/2007/opf"}
+                base = str(Path(opf_path).parent)
+                id_to_href: dict[str, str] = {}
+                for item_el in opf.findall(".//o:manifest/o:item", opf_ns):
+                    if item_el.get("media-type") in ("application/xhtml+xml", "text/html"):
+                        href = item_el.get("href", "")
+                        full = f"{base}/{href}" if base not in ("", ".") else href
+                        id_to_href[item_el.get("id", "")] = full
+                for ref in opf.findall(".//o:spine/o:itemref", opf_ns):
+                    href = id_to_href.get(ref.get("idref", ""))
+                    if href:
+                        ordered.append(href)
+            except KeyError:
+                logger.debug("EpubProcessor: OPF %s missing from archive", opf_path)
+            except xml_errors as exc:
+                logger.debug("EpubProcessor: unreadable OPF %s: %s", opf_path, exc)
+        if not ordered:
+            ordered = sorted(
+                n for n in zf.namelist()
+                if n.lower().endswith((".xhtml", ".html", ".htm"))
+            )
+
+        parts: list[str] = []
+        consumed = 0
+        for name in ordered:
+            remaining = EPUB_MAX_TOTAL_BYTES - consumed
+            if remaining <= 0:
+                raise EpubSecurityError(
+                    f"decompressed content exceeds the cap of {EPUB_MAX_TOTAL_BYTES} bytes"
+                )
+            try:
+                raw = _read_epub_entry(
+                    zf, name, min(EPUB_MAX_ENTRY_BYTES, remaining)
+                )
+            except KeyError:
+                continue
+            consumed += len(raw)
+            try:
+                root = _parse_epub_xml(raw)
+            except xml_errors:
+                # One malformed chapter must not abort the whole book; a DTD
+                # or entity declaration is fatal and raised above instead.
+                logger.debug("EpubProcessor: skipping unparseable chapter %s", name)
+                continue
+            # Strip tags, keep text (namespace-agnostic)
+            texts: list[str] = []
+            for el in root.iter():
+                if el.text and el.text.strip():
+                    texts.append(el.text.strip())
+                if el.tail and el.tail.strip():
+                    texts.append(el.tail.strip())
+            if texts:
+                parts.append(" ".join(texts))
+        return parts
 
 
 class ImageProcessor(Processor):
@@ -730,6 +1107,10 @@ _PROCESSORS: dict[str, type[Processor]] = {
     "url:youtube": YouTubeProcessor,
     "url:web": WebProcessor,
     "url:civitai": CivitaiProcessor,
+    "docx": DocxProcessor,
+    "pptx": PptxProcessor,
+    "xlsx": XlsxProcessor,
+    "epub": EpubProcessor,
 }
 
 
