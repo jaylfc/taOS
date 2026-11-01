@@ -1,2 +1,3 @@
 ### Fixed
 - Approving an auth request for a handle that already belongs to a pending agent reuses that agent's canonical_id and returns 200 instead of always returning 409. The proof token is now verified for a non-active identity in this flow (signature, registry row and rotation cutoff still apply), so a legitimate re-approval no longer gets stuck. Reuse stays limited to `pending` external-selfjoin holders; foreign-origin, suspended and revoked holders still mint a fresh identity.
+- An approve that loses its decision race to a deny now undoes what it wrote: the identity goes back to pending (or is removed when this approval minted it) and its new grants are revoked, so a refused request leaves no usable authorization.
