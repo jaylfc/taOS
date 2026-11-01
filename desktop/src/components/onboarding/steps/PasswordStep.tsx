@@ -42,6 +42,7 @@ export function PasswordStep({
   const matches = password.length > 0 && password === confirm;
   const showMismatch =
     confirm.length > 0 && !matches && (confirmTouched || confirm.length >= password.length);
+  const [pinTouched, setPinTouched] = useState(false);
   const pinOk = !pin || PIN_RE.test(pin);
   const valid = longEnough && matches && pinOk;
 
@@ -114,6 +115,7 @@ export function PasswordStep({
                 maxLength={12}
                 value={pin}
                 onChange={(e) => onPin?.(e.target.value.replace(/\D/g, ""))}
+                onBlur={() => setPinTouched(true)}
                 autoComplete="off"
                 placeholder="Optional"
                 aria-describedby="oobe-pin-note"
@@ -121,9 +123,15 @@ export function PasswordStep({
               />
             </div>
           </div>
-          <p className="oobe-note" id="oobe-pin-note">
-            4 to 12 digits to unlock this screen. Other devices always use the password.
-          </p>
+          {!pinOk && pinTouched ? (
+            <p className="oobe-error" id="oobe-pin-note" role="alert">
+              A PIN is 4 to 12 digits, or leave it blank.
+            </p>
+          ) : (
+            <p className="oobe-note" id="oobe-pin-note">
+              4 to 12 digits to unlock this screen. Other devices always use the password.
+            </p>
+          )}
         </section>
       )}
 

@@ -154,6 +154,8 @@ describe("OnboardingScreen first run", () => {
     expect(cont).toBeEnabled();
     fireEvent.change(pin, { target: { value: "12" } });
     expect(cont).toBeDisabled();
+    fireEvent.blur(pin);
+    expect(screen.getByRole("alert")).toHaveTextContent("A PIN is 4 to 12 digits");
     fireEvent.change(pin, { target: { value: "4913" } });
     expect(cont).toBeEnabled();
     fireEvent.click(cont);
