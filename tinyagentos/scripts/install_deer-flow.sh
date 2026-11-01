@@ -179,6 +179,7 @@ RETRY_BACKOFF_BASE = 2.0  # seconds -- 2, 4 between connection retries
 ERROR_COOLDOWN = 5.0      # seconds after a final error before accepting new messages
 # DeerFlow is a long-horizon multi-step agent: a run can take minutes.
 RUN_TIMEOUT = 600
+_DRAIN_TIMEOUT_S = 60
 
 _MAX_INFLIGHT = 4
 _SEMAPHORE = asyncio.Semaphore(_MAX_INFLIGHT)
@@ -191,7 +192,6 @@ _RETRY_ON = (
     httpx.ConnectError,
     httpx.ConnectTimeout,
     httpx.PoolTimeout,
-    httpx.RemoteProtocolError,
 )
 
 
@@ -340,12 +340,20 @@ async def call_deer_flow(client: httpx.AsyncClient, text: str) -> str:
             data = resp.json()
         except Exception as e:
             return f"[deer-flow error: bad JSON: {e}]"
+        if not isinstance(data, dict):
+            return f"[deer-flow error: unexpected response shape: {type(data).__name__}]"
         # The body is the final serialized channel-values. The messages list
         # may sit at the top level or under output/values.
+        output = data.get("output")
+        values = data.get("values")
+        if output is not None and not isinstance(output, dict):
+            output = {}
+        if values is not None and not isinstance(values, dict):
+            values = {}
         messages = (
             data.get("messages")
-            or (data.get("output") or {}).get("messages")
-            or (data.get("values") or {}).get("messages")
+            or (output or {}).get("messages")
+            or (values or {}).get("messages")
             or []
         )
         return _extract_text(messages)
@@ -361,7 +369,7 @@ async def post_reply(client: httpx.AsyncClient, reply_url: str, token: str,
                                   headers={"Content-Type": "application/json",
                                            "Authorization": f"Bearer {token}"},
                                   timeout=30)
-        if resp.status_code >= 400:
+        if not (200 <= resp.status_code < 300):
             log.warning("reply POST %s: %s", resp.status_code, resp.text[:300])
             return False
         return True
@@ -477,7 +485,11 @@ async def sse_loop(client: httpx.AsyncClient, channel: dict, stop: asyncio.Event
         if not stop.is_set():
             await asyncio.sleep(RECONNECT_DELAY)
     if pending_tasks:
-        await asyncio.gather(*pending_tasks, return_exceptions=True)
+        done, still = await asyncio.wait(pending_tasks, timeout=_DRAIN_TIMEOUT_S)
+        for t in still:
+            t.cancel()
+        if still:
+            log.warning("drained %d pending tasks after timeout, cancelled %d", len(pending_tasks), len(still))
 
 
 async def main() -> None:
@@ -528,6 +540,7 @@ After=deer-flow.service network.target
 Wants=deer-flow.service
 [Service]
 Type=simple
+TimeoutStopSec=75
 EnvironmentFile=/opt/taos/deer-flow-bridge.env
 ExecStart=/usr/bin/python3 /opt/taos/taos-deer-flow-bridge.py
 Restart=on-failure

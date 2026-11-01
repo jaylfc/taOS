@@ -182,10 +182,42 @@ class TestCallDeerFlow:
         assert result == "[deer-flow error: refused]"
         assert client.post.call_count == bridge_ns["MAX_RETRIES"]
 
+    def test_remote_protocol_error_makes_one_post(self, bridge_ns):
+        """RemoteProtocolError raised after POST may mean run started; never retry."""
+        call = bridge_ns["call_deer_flow"]
+        client = MagicMock()
+        client.post = AsyncMock(side_effect=httpx.RemoteProtocolError("connection closed"))
+
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            result = asyncio.run(call(client, "hi"))
+
+        assert result.startswith("[deer-flow error:")
+        assert client.post.call_count == 1
+        mock_sleep.assert_not_called()
+
+    def test_list_response_returns_error_string(self, bridge_ns):
+        call = bridge_ns["call_deer_flow"]
+        client = MagicMock()
+        client.post = AsyncMock(return_value=_ok([{"role": "assistant", "content": "hi"}]))
+        # _ok builds a MagicMock where json() returns the arg; but we need resp.json() to return a list
+        resp = MagicMock(status_code=200)
+        resp.json = MagicMock(return_value=[{"role": "assistant", "content": "hi"}])
+        client.post = AsyncMock(return_value=resp)
+        result = asyncio.run(call(client, "hi"))
+        assert result.startswith("[deer-flow error:")
+
 
 # -- handle_user_message dedup + cooldown --------------------------------------
 
-class TestHandleUserMessage:
+class TestPostReply:
+    def test_post_reply_302_returns_false(self, bridge_ns):
+        post_reply = bridge_ns["post_reply"]
+        client = MagicMock()
+        resp = MagicMock(status_code=302)
+        resp.text = "Found"
+        client.post = AsyncMock(return_value=resp)
+        result = asyncio.run(post_reply(client, "http://x/reply", "tok", "m1", "t1", "hi"))
+        assert result is False
     """handle_user_message(client, evt, channel, _seen, _error_until) -> bool"""
 
     def _evt(self, msg_id="msg-1", text="hello", **extra):
