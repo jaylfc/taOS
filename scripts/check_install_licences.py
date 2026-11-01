@@ -77,7 +77,7 @@ _PIP_VALUE_OPTIONS = frozenset([
     "--trusted-host", "--retries", "--timeout", "-t", "--target",
     "--prefix", "--root", "--src", "--cache-dir", "--progress-bar",
     "--python-version", "--platform", "--implementation", "--abi",
-    "--no-binary", "--only-binary",
+    "--no-binary", "--only-binary", "--log", "--upgrade-strategy",
 ])
 
 
