@@ -1,0 +1,29 @@
+{
+  "PasswordManagerEnabled": false,
+  "PasswordLeakDetectionEnabled": false,
+  "ImportSavedPasswords": false,
+  "AutofillAddressEnabled": false,
+  "AutofillCreditCardEnabled": false,
+  "TranslateEnabled": false,
+  "BrowserSignin": 0,
+  "SyncDisabled": true,
+  "PromotionalTabsEnabled": false,
+  "DefaultBrowserSettingEnabled": false,
+  "MetricsReportingEnabled": false,
+  "FeedbackSurveysEnabled": false,
+  "SearchSuggestEnabled": false,
+  "ShoppingListEnabled": false,
+  "PrivacySandboxPromptEnabled": false,
+  "NotificationsAllowedForUrls": [
+    "http://127.0.0.1:6969",
+    "http://localhost:6969"
+  ],
+  "AudioCaptureAllowedUrls": [
+    "http://127.0.0.1:6969",
+    "http://localhost:6969"
+  ],
+  "VideoCaptureAllowedUrls": [
+    "http://127.0.0.1:6969",
+    "http://localhost:6969"
+  ]
+}
