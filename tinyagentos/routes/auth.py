@@ -13366,7 +13366,8 @@ async def complete_invite(request: Request):
 async def auth_status(request: Request):
     """Single endpoint the UI calls to decide what to render.
 
-    Returns ``{configured, authenticated, user, multi_user, needs_onboarding}``.
+    Returns ``{configured, authenticated, user, multi_user, needs_onboarding,
+    store_error, pin_available, pin_offered}``.
     """
     auth_mgr = request.app.state.auth
     configured = auth_mgr.is_configured()
@@ -13418,6 +13419,14 @@ async def auth_status(request: Request):
         except AuthStoreCorruptError:
             pin_available = False
 
+    # Whether first-run setup should offer a PIN field: the same console-only
+    # rule the HTML setup page applies at render time. No PIN exists yet, so
+    # this tells a LAN browser nothing; the setup POST still refuses a PIN
+    # off-console on its own.
+    pin_offered = (
+        not configured and store_error is None and _request_is_console(request)
+    )
+
     return JSONResponse({
         "configured": configured,
         "authenticated": authenticated,
@@ -13426,6 +13435,7 @@ async def auth_status(request: Request):
         "needs_onboarding": needs_onboarding,
         "store_error": store_error,
         "pin_available": pin_available,
+        "pin_offered": pin_offered,
     })
 
 

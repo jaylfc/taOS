@@ -126,6 +126,48 @@ describe("OnboardingScreen first run", () => {
     expect(screen.queryByRole("button", { name: "Back" })).not.toBeInTheDocument();
   });
 
+  it("offers no PIN unless the server says this is the device's own screen", async () => {
+    const calls = routeFetch();
+    render(<OnboardingScreen onDone={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Get started" }));
+    fireEvent.change(await screen.findByLabelText("Full name"), { target: { value: "Ada" } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await screen.findByLabelText("Password");
+    expect(screen.queryByLabelText("Screen PIN")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "12345678" } });
+    fireEvent.change(screen.getByLabelText("Verify password"), { target: { value: "12345678" } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await screen.findByRole("heading", { name: "Your taOS account" });
+    expect(calls.find((c) => c.url === "/auth/setup")!.body).not.toHaveProperty("pin");
+  });
+
+  it("on the console, an optional PIN is sent with the account and a bad one blocks", async () => {
+    const calls = routeFetch();
+    render(<OnboardingScreen onDone={() => {}} pinOffered />);
+    fireEvent.click(screen.getByRole("button", { name: "Get started" }));
+    fireEvent.change(await screen.findByLabelText("Full name"), { target: { value: "Ada" } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.change(await screen.findByLabelText("Password"), { target: { value: "12345678" } });
+    fireEvent.change(screen.getByLabelText("Verify password"), { target: { value: "12345678" } });
+    const pin = screen.getByLabelText("Screen PIN");
+    const cont = screen.getByRole("button", { name: "Continue" });
+    expect(cont).toBeEnabled();
+    fireEvent.change(pin, { target: { value: "12" } });
+    expect(cont).toBeDisabled();
+    fireEvent.change(pin, { target: { value: "4913" } });
+    expect(cont).toBeEnabled();
+    fireEvent.click(cont);
+    await screen.findByRole("heading", { name: "Your taOS account" });
+    expect(calls.find((c) => c.url === "/auth/setup")!.body).toMatchObject({ pin: "4913" });
+  });
+
+  it("on the console, a PIN left blank is not sent", async () => {
+    const calls = routeFetch();
+    render(<OnboardingScreen onDone={() => {}} pinOffered />);
+    await createLocalAccount();
+    expect(calls.find((c) => c.url === "/auth/setup")!.body).not.toHaveProperty("pin");
+  });
+
   it("shows the server's reason when account creation fails, and stays put", async () => {
     routeFetch({ "POST /auth/setup": () => json({ error: "already configured" }, 409) });
     const onDone = vi.fn();

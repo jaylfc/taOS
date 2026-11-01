@@ -210,6 +210,42 @@ class TestSetupOffersAPinAtInstall:
         assert "name=\"pin\"" not in r.text
 
     @pytest.mark.asyncio
+    async def test_console_status_offers_a_pin_before_setup(self, fresh_console):
+        """The SPA setup screens decide from /auth/status, as the HTML page
+        decides at render time."""
+        r = await fresh_console.get("/auth/status")
+        assert r.json()["configured"] is False
+        assert r.json()["pin_offered"] is True
+
+    @pytest.mark.asyncio
+    async def test_lan_status_does_not_offer_a_pin_before_setup(self, fresh_lan):
+        r = await fresh_lan.get("/auth/status")
+        assert r.json()["pin_offered"] is False
+
+    @pytest.mark.asyncio
+    async def test_forwarded_status_does_not_offer_a_pin_before_setup(self, fresh_console):
+        r = await fresh_console.get("/auth/status", headers={"X-Forwarded-For": "192.168.1.10"})
+        assert r.json()["pin_offered"] is False
+
+    @pytest.mark.asyncio
+    async def test_configured_status_does_not_offer_a_setup_pin(self, console):
+        r = await console.get("/auth/status")
+        assert r.json()["configured"] is True
+        assert r.json()["pin_offered"] is False
+
+    @pytest.mark.asyncio
+    async def test_lan_setup_with_a_pin_is_refused_and_creates_no_account(
+        self, fresh_app, fresh_lan,
+    ):
+        """The UI hides the field off-console; the server must refuse anyway."""
+        r = await fresh_lan.post("/auth/setup", json={
+            "username": "tester", "full_name": "T", "password": "correct horse battery",
+            "pin": "4913",
+        })
+        assert r.status_code == 400, r.text
+        assert fresh_app.state.auth.is_configured() is False
+
+    @pytest.mark.asyncio
     async def test_pin_set_at_install_signs_in(self, fresh_app, fresh_console):
         r = await fresh_console.post("/auth/setup", json={
             "username": "tester", "full_name": "T", "password": "correct horse battery",

@@ -12,7 +12,7 @@ interface Props {
 
 type AuthStatus =
   | { phase: "loading" }
-  | { phase: "onboarding" }
+  | { phase: "onboarding"; pinOffered: boolean }
   | { phase: "invite"; username: string; inviteCode: string; multiUser: boolean }
   // No fields: the SPA no longer renders a sign-in form, so it has no use for
   // `legacy` / `multiUser`. The server login page reads both for itself.
@@ -81,7 +81,9 @@ export function LoginGate({ children }: Props) {
       }
       const data = await res.json();
       if (!data.configured) {
-        setStatus({ phase: "onboarding" });
+        // The server answers true only on the console (as the HTML setup
+        // page does), and the setup POST refuses a PIN anywhere else.
+        setStatus({ phase: "onboarding", pinOffered: data.pin_offered === true });
       } else if (data.authenticated) {
         if (data.needs_onboarding && data.user?.username) {
           // Pending invited user — collect their profile and password
@@ -179,7 +181,13 @@ export function LoginGate({ children }: Props) {
   }
 
   if (status.phase === "onboarding") {
-    return <OnboardingScreen onDone={refreshStatus} defaultAutoLogin={true} />;
+    return (
+      <OnboardingScreen
+        onDone={refreshStatus}
+        defaultAutoLogin={true}
+        pinOffered={status.pinOffered}
+      />
+    );
   }
 
   if (status.phase === "oobe") {

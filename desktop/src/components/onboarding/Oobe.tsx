@@ -21,9 +21,18 @@ export interface OobeProps {
   defaultAutoLogin?: boolean;
   /** Resume first-run setup here (the account was created in an earlier visit). */
   resume?: Pick<OnboardingProgress, "step" | "completed" | "skipped">;
+  /** This is the device's own screen, so first run may set a PIN too. */
+  pinOffered?: boolean;
 }
 
-export function Oobe({ onDone, invitedUsername, inviteCode, defaultAutoLogin, resume }: OobeProps) {
+export function Oobe({
+  onDone,
+  invitedUsername,
+  inviteCode,
+  defaultAutoLogin,
+  resume,
+  pinOffered,
+}: OobeProps) {
   // /auth/status never returns the invite code, so the username alone marks
   // invite mode; the server accepts the invitee's pending session instead.
   const invite = Boolean(invitedUsername);
@@ -45,6 +54,8 @@ export function Oobe({ onDone, invitedUsername, inviteCode, defaultAutoLogin, re
   const usernameEdited = useRef(invite);
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
+  const [pin, setPin] = useState("");
+  const offerPin = Boolean(pinOffered) && !invite;
   const [autoLogin, setAutoLogin] = useState(defaultAutoLogin ?? !invite);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -106,6 +117,7 @@ export function Oobe({ onDone, invitedUsername, inviteCode, defaultAutoLogin, re
         auto_login: autoLogin,
       };
       if (invite && inviteCode) body.invite_code = inviteCode;
+      if (offerPin && pin) body.pin = pin;
       const res = await fetch(invite ? "/auth/complete" : "/auth/setup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -155,12 +167,14 @@ export function Oobe({ onDone, invitedUsername, inviteCode, defaultAutoLogin, re
           password={password}
           confirm={confirm}
           autoLogin={autoLogin}
+          pin={offerPin ? pin : undefined}
           invite={invite}
           busy={busy}
           error={error}
           onPassword={setPassword}
           onConfirm={setConfirm}
           onAutoLogin={setAutoLogin}
+          onPin={setPin}
           onBack={back}
           onSubmit={() => void createAccount()}
         />
