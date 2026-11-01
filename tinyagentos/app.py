@@ -1485,6 +1485,16 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         from tinyagentos.model_activity import ModelActivityFeed
         app.state.model_activity = ModelActivityFeed()
 
+        # Idle TTL eviction (taOS #62): the model scheduler holds the
+        # resident registry, and the catalog poll loop -- already ticking
+        # every 30s -- drives its idle sweep. The scheduler keeps no
+        # background task of its own, so shutdown needs no extra handling.
+        from tinyagentos.scheduler.core_aware_scheduler import CoreAwareModelScheduler
+        app.state.model_scheduler = CoreAwareModelScheduler(
+            activity_feed=app.state.model_activity,
+        )
+        backend_catalog.attach_idle_sweeper(app.state.model_scheduler.sweep_idle)
+
         # Wire NotificationStore → EventBus so SSE clients get instant push.
         # The emitter is best-effort: failures are logged and never break add().
         async def _notify_emitter(row: dict) -> None:
