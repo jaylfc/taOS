@@ -1,0 +1,2 @@
+### Fixed
+- Fixed BlueZ Agent1 D-Bus interface: added `@dbus_method()` decorators with proper Annotated type signatures, fixed `asyncio.wait_for` usage for prompt timeouts, corrected `Release` method signature, and rewrote `register`/`unregister` to use `Message` objects with proper error handling.
