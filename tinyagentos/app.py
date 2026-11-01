@@ -74,6 +74,7 @@ from tinyagentos.notifications import NotificationStore
 from tinyagentos.notifications_push import NotificationPushStore
 from tinyagentos.coding_workspaces import CodingWorkspaceStore
 from tinyagentos.install_registry import InstallRegistryStore
+from tinyagentos.app_containers import AppContainersStore
 from tinyagentos.store_submissions import StoreSubmissionStore
 from tinyagentos.qmd_client import QmdClient
 from tinyagentos.backend_adapters import check_backend_health
@@ -129,6 +130,7 @@ from tinyagentos.knowledge_store import KnowledgeStore
 from tinyagentos.knowledge_ingest import IngestPipeline
 from tinyagentos.knowledge_categories import CategoryEngine
 from tinyagentos.knowledge_monitor import MonitorService
+from tinyagentos.bluez_bus import close_system_bus
 from tinyagentos.mcp import MCPServerStore, MCPSupervisor
 from tinyagentos.mcp.marketplace import (
     MCPMarketplace,
@@ -564,6 +566,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     install_registry_store = InstallRegistryStore(
         data_dir / "install_registry.db",
     )
+    app_containers_store = AppContainersStore(
+        data_dir / "app_containers.db",
+    )
     store_submissions = StoreSubmissionStore(
         data_dir / "store_submissions.db",
     )
@@ -767,6 +772,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await contacts_store.init()
         await coding_workspaces_store.init()
         await install_registry_store.init()
+        await app_containers_store.init()
         await store_submissions.init()
         try:
             from tinyagentos.userspace.seed import seed_bundled_apps
@@ -1644,6 +1650,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await browsing_history.close()
         await knowledge_graph.close()
         await archive.close()
+        await close_system_bus()
         await installed_apps.close()
         await feedback_store.close()
         await client_log_store.close()
@@ -1657,6 +1664,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await contacts_store.close()
         await coding_workspaces_store.close()
         await install_registry_store.close()
+        await app_containers_store.close()
         await user_memory.close()
         await desktop_settings.close()
         await taos_agent_actions.close()
@@ -1967,6 +1975,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.guest_outbox = guest_outbox
     app.state.coding_workspaces = coding_workspaces_store
     app.state.install_registry = install_registry_store
+    app.state.app_containers = app_containers_store
     app.state.store_submissions = store_submissions
     app.state.skills = skills
     app.state.themes = themes
