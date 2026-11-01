@@ -1,0 +1,2 @@
+### Added
+- `store_install._legacy_install` now writes a row to `install_registry` (location_kind `host`/`local` for docker/pip/script installs, `legacy_lxc` + container ref for LXC installs) on every successful install, so the container-first programme has a complete legacy backfill.
