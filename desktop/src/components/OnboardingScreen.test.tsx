@@ -571,3 +571,169 @@ describe("OnboardingScreen on-device model", () => {
     expect(await screen.findByRole("heading", { name: "How should it work with you?" })).toBeInTheDocument();
   });
 });
+
+describe("OnboardingScreen taOS Agent model", () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  const atAgentStep = {
+    step: "agent",
+    completed: ["hello", "name", "password", "about"],
+    skipped: ["taos-account", "device", "model"],
+  };
+  const onDevice = { app_id: "qwen3-1.7b", variant_id: "q4", name: "Qwen3 1.7B", size_mb: 1100, downloaded: true };
+  const providers = (models: unknown[]) => () => json([{ name: "openai", type: "openai", models }]);
+  const chainUrls = ["/api/secrets", "/api/secrets/provider-openai-key", "/api/providers", "/api/taos-agent/settings"];
+  const chain = (calls: Call[]) =>
+    calls.filter((c) => chainUrls.includes(c.url)).map((c) => `${c.method} ${c.url}`);
+
+  async function connect(key = "sk-test") {
+    fireEvent.click(await screen.findByRole("button", { name: /Use a cloud model/ }));
+    fireEvent.change(await screen.findByLabelText("API key"), { target: { value: key } });
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+  }
+
+  it("saves the key, adds the provider, reads its models, then sets the one picked", async () => {
+    const calls = routeFetch({ "GET /api/providers": providers(["gpt-4o", { id: "gpt-4o-mini" }]) });
+    const onDone = vi.fn();
+    render(<OnboardingScreen onDone={onDone} resume={atAgentStep} />);
+    await connect("  sk-test  ");
+    await screen.findByRole("heading", { name: "Pick a model" });
+    fireEvent.click(screen.getByRole("radio", { name: "gpt-4o-mini" }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
+    expect(chain(calls)).toEqual([
+      "POST /api/secrets",
+      "POST /api/providers",
+      "GET /api/providers",
+      "PATCH /api/taos-agent/settings",
+    ]);
+    const body = (method: string, url: string) => calls.find((c) => c.method === method && c.url === url)?.body;
+    expect(body("POST", "/api/secrets")).toMatchObject({ name: "provider-openai-key", value: "sk-test", category: "api-key" });
+    expect(body("POST", "/api/providers")).toEqual({ name: "openai", type: "openai", api_key_secret: "provider-openai-key" });
+    expect(body("PATCH", "/api/taos-agent/settings")).toEqual({ model: "gpt-4o-mini" });
+    expect(progressPuts(calls).at(-1)?.body).toMatchObject({
+      in_progress: false,
+      completed: expect.arrayContaining(["agent"]),
+      agent_model: "gpt-4o-mini",
+    });
+  });
+
+  it("a key saved on an earlier try is replaced, and an existing provider is used as it is", async () => {
+    const calls = routeFetch({
+      "POST /api/secrets": () => json({ error: "exists" }, 409),
+      "POST /api/providers": () => json({ error: "exists" }, 409),
+      "GET /api/providers": providers(["gpt-4o"]),
+    });
+    render(<OnboardingScreen onDone={() => {}} resume={atAgentStep} />);
+    await connect("sk-new");
+    await screen.findByRole("heading", { name: "Pick a model" });
+    expect(chain(calls)).toEqual([
+      "POST /api/secrets",
+      "PUT /api/secrets/provider-openai-key",
+      "POST /api/providers",
+      "GET /api/providers",
+    ]);
+    expect(calls.find((c) => c.method === "PUT")?.body).toEqual({ value: "sk-new" });
+  });
+
+  it.each([
+    ["saving the key", { "POST /api/secrets": () => json({ error: "vault locked" }, 500) }, "Couldn't save the API key: vault locked."],
+    ["adding the provider", { "POST /api/providers": () => json({ detail: "bad type" }, 400) }, "Couldn't add OpenAI: bad type."],
+    ["reading its models", { "GET /api/providers": () => json({}, 503) }, "Couldn't read OpenAI's models: error 503."],
+    ["a provider with no models", { "GET /api/providers": providers([]) }, "OpenAI didn't list any models."],
+  ])("a failure %s names that hop and stays on the key screen", async (_hop, routes, message) => {
+    routeFetch(routes as Record<string, () => Response>);
+    render(<OnboardingScreen onDone={() => {}} resume={atAgentStep} />);
+    await connect();
+    expect(await screen.findByRole("alert")).toHaveTextContent(message);
+    expect(screen.getByRole("heading", { name: "Add a cloud model" })).toBeInTheDocument();
+  });
+
+  it("a failure setting the model names that hop and stays on the list", async () => {
+    const calls = routeFetch({
+      "GET /api/providers": providers(["gpt-4o"]),
+      "PATCH /api/taos-agent/settings": () => json({ error: "agent offline" }, 502),
+    });
+    const onDone = vi.fn();
+    render(<OnboardingScreen onDone={onDone} resume={atAgentStep} />);
+    await connect();
+    await screen.findByRole("heading", { name: "Pick a model" });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't give the taOS Agent this model: agent offline.");
+    expect(onDone).not.toHaveBeenCalled();
+    expect(progressPuts(calls)).toHaveLength(0);
+  });
+
+  it("Back from the model list returns to the key screen with the key cleared", async () => {
+    routeFetch({ "GET /api/providers": providers(["gpt-4o"]) });
+    render(<OnboardingScreen onDone={() => {}} resume={atAgentStep} />);
+    await connect("sk-wrong");
+    await screen.findByRole("heading", { name: "Pick a model" });
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    await screen.findByRole("heading", { name: "Add a cloud model" });
+    expect(screen.getByLabelText("API key")).toHaveValue("");
+    expect(screen.getByRole("button", { name: "Connect" })).toBeDisabled();
+  });
+
+  it("a long model list can be filtered and says how much it shows", async () => {
+    const ids = Array.from({ length: 50 }, (_, i) => `model-${String(i).padStart(2, "0")}`);
+    routeFetch({ "GET /api/providers": providers(ids) });
+    render(<OnboardingScreen onDone={() => {}} resume={atAgentStep} />);
+    await connect();
+    await screen.findByRole("heading", { name: "Pick a model" });
+    expect(screen.getAllByRole("radio")).toHaveLength(40);
+    expect(screen.getByText("Showing 40 of 50. Type to narrow the list.")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Filter models"), { target: { value: "model-4" } });
+    expect(screen.getAllByRole("radio").map((r) => r.textContent)).toEqual(ids.slice(40));
+    fireEvent.change(screen.getByLabelText("Filter models"), { target: { value: "nope" } });
+    expect(screen.getByText('No model matches "nope".')).toBeInTheDocument();
+  });
+
+  it("Set Up Later gives the agent the on-device model, still recorded as skipped", async () => {
+    const calls = routeFetch();
+    const onDone = vi.fn();
+    render(<OnboardingScreen onDone={onDone} resume={{ ...atAgentStep, model: onDevice }} />);
+    await screen.findByText("Until then it uses the model on this device, which can do less.");
+    await passAgentStep();
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
+    expect(calls.find((c) => c.url === "/api/taos-agent/settings")?.body).toEqual({ model: "qwen3-1.7b" });
+    expect(progressPuts(calls).at(-1)?.body).toMatchObject({
+      skipped: expect.arrayContaining(["agent"]),
+      agent_model: "qwen3-1.7b",
+    });
+  });
+
+  it("Set Up Later with no on-device model sets nothing", async () => {
+    const calls = routeFetch();
+    const onDone = vi.fn();
+    render(<OnboardingScreen onDone={onDone} resume={atAgentStep} />);
+    await screen.findByText("Until then the taOS Agent has no model. Add one any time in Settings.");
+    await passAgentStep();
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
+    expect(calls.some((c) => c.url === "/api/taos-agent/settings")).toBe(false);
+    const last = progressPuts(calls).at(-1)?.body as Record<string, unknown>;
+    expect(last).toMatchObject({ skipped: expect.arrayContaining(["agent"]) });
+    expect(last.agent_model).toBeUndefined();
+  });
+
+  it("a model on another taOS device is offered once the cluster answers", async () => {
+    const calls = routeFetch({
+      "GET /api/cluster/workers": () =>
+        json([{ name: "studio", status: "online", models: ["llama-3.1-8b"], backends: [] }]),
+    });
+    const onDone = vi.fn();
+    render(<OnboardingScreen onDone={onDone} resume={atAgentStep} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Use a model on another taOS device/ }));
+    await screen.findByRole("heading", { name: "Pick a model" });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
+    expect(calls.find((c) => c.url === "/api/taos-agent/settings")?.body).toEqual({ model: "llama-3.1-8b" });
+  });
+
+  it("resumes at the agent step", async () => {
+    routeFetch();
+    render(<OnboardingScreen onDone={() => {}} resume={atAgentStep} />);
+    expect(await screen.findByRole("heading", { name: "Choose the taOS Agent's model" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Free taOS models/ })).toBeDisabled();
+  });
+});
