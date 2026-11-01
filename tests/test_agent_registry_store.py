@@ -1813,3 +1813,138 @@ class TestBumpTokenMinIat:
         """bump_token_min_iat on an unknown canonical_id returns None."""
         result = await store.bump_token_min_iat("no-such-agent-20260101-000000", 1700000000)
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# AgentRegistryStore: adopt (account-device-sync S1)
+# ---------------------------------------------------------------------------
+
+
+class TestAdopt:
+    @pytest.mark.asyncio
+    async def test_adopt_keeps_canonical_id_byte_for_byte(self, store):
+        row = await store.adopt(
+            canonical_id="alpha-20260101-120000-0a",
+            framework="openclaw",
+            created_ts="2026-01-01T12:00:00+00:00",
+            display_name="Alpha",
+            user_id="user-1",
+        )
+        assert row["canonical_id"] == "alpha-20260101-120000-0a"
+        assert row["created_ts"] == "2026-01-01T12:00:00+00:00"
+        fetched = await store.get("alpha-20260101-120000-0a")
+        assert fetched is not None
+        assert fetched["canonical_id"] == "alpha-20260101-120000-0a"
+        assert fetched["created_ts"] == "2026-01-01T12:00:00+00:00"
+
+    @pytest.mark.asyncio
+    async def test_adopt_is_idempotent_for_same_agent(self, store):
+        first = await store.adopt(
+            canonical_id="alpha-20260101-120000-0a",
+            framework="openclaw",
+            created_ts="2026-01-01T12:00:00+00:00",
+            handle="@alpha",
+        )
+        second = await store.adopt(
+            canonical_id="alpha-20260101-120000-0a",
+            framework="openclaw",
+            created_ts="2026-01-01T12:00:00+00:00",
+            handle="@alpha",
+        )
+        assert first["canonical_id"] == second["canonical_id"]
+        rows = await store.list_all()
+        assert len(rows) == 1
+
+    @pytest.mark.asyncio
+    async def test_adopt_refuses_collision_with_different_agent(self, store):
+        original = await store.register(
+            framework="openclaw",
+            display_name="Original",
+            handle="@original",
+        )
+        cid = original["canonical_id"]
+        with pytest.raises(ValueError, match="already belongs to a different agent"):
+            await store.adopt(
+                canonical_id=cid,
+                framework="openclaw",
+                created_ts="2026-01-01T12:00:00+00:00",
+                handle="@different",
+            )
+        unchanged = await store.get(cid)
+        assert unchanged is not None
+        assert unchanged["handle"] == "@original"
+        assert unchanged["framework"] == "openclaw"
+        assert len(await store.list_all()) == 1
+
+    @pytest.mark.asyncio
+    async def test_adopt_refuses_handle_held_by_other_active_agent(self, store):
+        await store.register(
+            framework="openclaw",
+            display_name="Owner",
+            handle="@shared",
+        )
+        with pytest.raises(ValueError, match="handle.*@shared.*already owned"):
+            await store.adopt(
+                canonical_id="beta-20260101-120000-0b",
+                framework="openclaw",
+                created_ts="2026-01-01T12:00:00+00:00",
+                handle="@shared",
+            )
+
+    @pytest.mark.asyncio
+    async def test_adopt_refuses_malformed_id(self, store):
+        for bad in ("alpha", "Alpha-20260101-120000", "alpha-2026-120000"):
+            with pytest.raises(ValueError, match="malformed canonical_id"):
+                await store.adopt(
+                    canonical_id=bad,
+                    framework="openclaw",
+                    created_ts="2026-01-01T12:00:00+00:00",
+                )
+
+    @pytest.mark.asyncio
+    async def test_adopt_reserved_prefix_refused_unless_allowed(self, store):
+        with pytest.raises(ValueError, match="reserved prefix"):
+            await store.adopt(
+                canonical_id="taos-agent-20260101-120000",
+                framework="taos-internal",
+                created_ts="2026-01-01T12:00:00+00:00",
+            )
+        row = await store.adopt(
+            canonical_id="taos-agent-20260101-120000",
+            framework="taos-internal",
+            created_ts="2026-01-01T12:00:00+00:00",
+            allow_reserved=True,
+        )
+        assert row["canonical_id"] == "taos-agent-20260101-120000"
+
+    @pytest.mark.asyncio
+    async def test_register_mint_path_unchanged_after_adopt(self, store):
+        await store.adopt(
+            canonical_id="alpha-20260101-120000-0a",
+            framework="openclaw",
+            created_ts="2026-01-01T12:00:00+00:00",
+        )
+        row = await store.register(framework="openclaw", display_name="Minted")
+        assert row["canonical_id"].startswith("minted-")
+        assert len(row["canonical_id"].rsplit("-", 2)[-2]) == 8
+        assert len(row["canonical_id"].rsplit("-", 2)[-1]) == 6
+
+    @pytest.mark.asyncio
+    async def test_adopt_not_initialized_raises(self, tmp_path):
+        s = AgentRegistryStore(tmp_path / "not_init.db")
+        with pytest.raises(RuntimeError, match="not initialised"):
+            await s.adopt(
+                canonical_id="alpha-20260101-120000-0a",
+                framework="openclaw",
+                created_ts="2026-01-01T12:00:00+00:00",
+            )
+
+    @pytest.mark.asyncio
+    async def test_adopt_invalid_status_raises(self, store):
+        with pytest.raises(ValueError, match="unknown status"):
+            await store.adopt(
+                canonical_id="alpha-20260101-120000-0a",
+                framework="openclaw",
+                created_ts="2026-01-01T12:00:00+00:00",
+                status="bogus",
+            )

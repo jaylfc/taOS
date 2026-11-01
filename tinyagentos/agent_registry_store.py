@@ -783,6 +783,132 @@ class AgentRegistryStore(BaseStore):
             ).fetchone()
             return _row_to_dict(row)
 
+    async def adopt(
+        self,
+        *,
+        canonical_id: str,
+        framework: str,
+        created_ts: str,
+        display_name: str = "",
+        user_id: str = "",
+        origin: str = "taos-deployed",
+        handle: str = "",
+        role: Optional[str] = None,
+        title: Optional[str] = None,
+        reports_to: Optional[str] = None,
+        capabilities: Optional[list[str]] = None,
+        status: str = "active",
+        allow_reserved: bool = False,
+    ) -> dict:
+        """Adopt an existing canonical_id byte-for-byte on this device.
+
+        Account-device-sync S1: a canonical_id is minted ONCE by the first
+        device and ADOPTED byte-for-byte by every device that joins the
+        account, with no migration of the id format. This path persists the
+        given id verbatim -- it never mints, never appends a collision
+        suffix, and never rewrites ``created_ts``.
+
+        Idempotent re-adopt: if a row with this canonical_id already exists
+        and its ``framework`` and ``handle`` match the arguments, that row is
+        returned unchanged and NO write occurs. If the id already belongs to
+        a different agent (different framework or handle) this raises
+        ``ValueError`` -- the existing row is never updated.
+
+        ``allow_reserved`` bypasses the reserved-prefix guard. It exists for
+        the internal taOS Agent adopt path, which legitimately names agents
+        under the reserved ``taos-`` prefix; it is deliberately a keyword the
+        HTTP layer never populates from a request body, so external callers
+        cannot reach it.
+
+        Raises ``RuntimeError`` if the store is not initialised, ``ValueError``
+        on a malformed id, a reserved prefix, an unknown status, a collision
+        with a different agent, or a handle already held by another active
+        agent.
+        """
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised - call init() first")
+
+        if not re.fullmatch(
+            r"[a-z0-9][a-z0-9-]*-[0-9]{8}-[0-9]{6}(-[0-9a-f]{2})?",
+            canonical_id,
+        ):
+            raise ValueError(f"adopt: malformed canonical_id {canonical_id!r}")
+
+        if not allow_reserved:
+            slug = re.sub(
+                r"-[0-9]{8}-[0-9]{6}(-[0-9a-f]{2})?$", "", canonical_id
+            )
+            _check_reserved_prefix(slug, display_name)
+
+        if status not in VALID_STATUSES:
+            raise ValueError(
+                f"unknown status {status!r}; valid: {sorted(VALID_STATUSES)}"
+            )
+
+        async with self._write_lock:
+            capabilities = capabilities or []
+            caps_json = json.dumps(capabilities)
+
+            existing = await (
+                await self._db.execute(
+                    "SELECT * FROM agent_registry WHERE canonical_id = ?",
+                    (canonical_id,),
+                )
+            ).fetchone()
+            if existing is not None:
+                rec = _row_to_dict(existing)
+                if (
+                    rec.get("framework") == framework
+                    and rec.get("handle") == handle
+                ):
+                    return rec
+                raise ValueError(
+                    f"adopt: canonical_id {canonical_id!r} already belongs to a "
+                    f"different agent"
+                )
+
+            if handle:
+                holder = await (
+                    await self._db.execute(
+                        "SELECT canonical_id FROM agent_registry "
+                        "WHERE handle = ? AND status = 'active' AND handle != ''",
+                        (handle,),
+                    )
+                ).fetchone()
+                if holder is not None:
+                    raise ValueError(
+                        f"adopt: handle {handle!r} is already owned by another "
+                        f"active agent ({holder[0]})"
+                    )
+
+            try:
+                await self._db.execute(
+                    """
+                    INSERT INTO agent_registry
+                        (canonical_id, display_name, framework, user_id, origin,
+                         handle, role, title, reports_to, capabilities, created_ts, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        canonical_id, display_name, framework, user_id, origin,
+                        handle, role, title, reports_to, caps_json, created_ts, status,
+                    ),
+                )
+                await self._db.commit()
+            except aiosqlite.IntegrityError as exc:
+                await self._db.rollback()
+                raise ValueError(
+                    f"adopt: could not persist canonical_id {canonical_id!r}"
+                ) from exc
+
+            row = await (
+                await self._db.execute(
+                    "SELECT * FROM agent_registry WHERE canonical_id = ?",
+                    (canonical_id,),
+                )
+            ).fetchone()
+            return _row_to_dict(row)
+
     # ------------------------------------------------------------------
     # Read
     # ------------------------------------------------------------------
