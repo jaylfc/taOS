@@ -10,3 +10,4 @@
 - After signing in to a taOS account, setup says this is your first taOS device. Without an account that screen is left for later, in the Setup checklist.
 - Setup asks what you'd like help with (tap any number of topics) and how your personal assistant should work with you: its tone, and whether it asks before acting. The answers shape the assistant and its first suggested prompts. Set Up Later keeps friendly, ask-first defaults.
 - Setup offers one small AI model sized to the device's memory and downloads it with a progress bar. You can continue while it downloads, set it up later, or skip it when nothing in the catalog fits comfortably.
+- Setup asks which model the taOS Agent should use. It recommends a cloud model: pick a provider, paste its API key, then choose one of the models that key can use. A model served by another taOS device is offered too when there is one. Set Up Later leaves the agent on the model downloaded in the previous step.

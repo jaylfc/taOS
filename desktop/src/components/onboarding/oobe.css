@@ -560,6 +560,47 @@
   color: var(--oobe-text-2);
 }
 
+/* A row that is shown but not offered yet ("Coming soon"). */
+.oobe-choice:disabled {
+  cursor: default;
+}
+
+.oobe-choice:disabled:active {
+  background: none;
+}
+
+.oobe-choice:disabled .oobe-choice-title {
+  color: var(--oobe-text-2);
+}
+
+/* Model ids are long and unbroken ("vendor/model-name-version"). */
+.oobe-choice-id {
+  overflow-wrap: anywhere;
+}
+
+/* A field with no label column (a filter). */
+.oobe-row-bare {
+  grid-template-columns: 1fr;
+}
+
+/* Field + show/hide button. */
+.oobe-row:has(.oobe-reveal) {
+  grid-template-columns: 116px 1fr 44px;
+}
+
+.oobe-reveal {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin-right: -10px;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  color: var(--oobe-text-2);
+  cursor: pointer;
+}
+
 .oobe-choice-chevron {
   flex: none;
   color: var(--oobe-text-3);

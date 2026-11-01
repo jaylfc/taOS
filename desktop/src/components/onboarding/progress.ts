@@ -21,6 +21,8 @@ export interface OnboardingProgress {
   about?: AboutYou;
   /** The on-device model taken at the model step; absent when set up later. */
   model?: OnDeviceChoice;
+  /** The taOS Agent's model id, when one was set at the agent step. */
+  agent_model?: string;
 }
 
 import { parseAbout, type AboutYou } from "./about";
@@ -42,6 +44,7 @@ export async function loadProgress(): Promise<OnboardingProgress | null> {
       skipped: Array.isArray(data.skipped) ? data.skipped : [],
       about: parseAbout(data.about),
       model: parseChoice(data.model),
+      agent_model: typeof data.agent_model === "string" ? data.agent_model : undefined,
     };
   } catch {
     return null;

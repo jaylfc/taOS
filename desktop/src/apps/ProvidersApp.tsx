@@ -12,6 +12,7 @@ import { getApp } from "@/registry/app-registry";
 import { MobileSplitView } from "@/components/mobile/MobileSplitView";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import { copyText } from "@/lib/clipboard";
+import { CLOUD_PROVIDER_META } from "@/lib/cloud-providers";
 
 /* ------------------------------------------------------------------ */
 /*  Provider types — fetched from /api/providers/types at boot.       */
@@ -45,58 +46,6 @@ const DEFAULT_URLS: Partial<Record<ProviderType, string>> = {
   rkllama: "http://localhost:7833",
   "llama-cpp": "http://localhost:8080",
   vllm: "http://localhost:8000",
-};
-
-interface CloudProviderMeta {
-  label: string;
-  description: string;
-  url: string;
-  keyPlaceholder: string;
-}
-
-const CLOUD_PROVIDER_META: Record<string, CloudProviderMeta> = {
-  openai: {
-    label: "OpenAI",
-    description: "GPT-4o, o1, and more",
-    url: "https://api.openai.com/v1",
-    keyPlaceholder: "sk-...",
-  },
-  anthropic: {
-    label: "Anthropic",
-    description: "Claude Sonnet, Opus, Haiku",
-    url: "https://api.anthropic.com/v1",
-    keyPlaceholder: "sk-ant-...",
-  },
-  openrouter: {
-    label: "OpenRouter",
-    description: "300+ models via one API",
-    url: "https://openrouter.ai/api/v1",
-    keyPlaceholder: "sk-or-...",
-  },
-  kilocode: {
-    label: "Kilo",
-    description: "500+ models, smart routing",
-    url: "https://api.kilo.ai/api/gateway",
-    keyPlaceholder: "kilo-...",
-  },
-  deepseek: {
-    label: "DeepSeek",
-    description: "DeepSeek V4 Pro, Flash, Reasoner",
-    url: "https://api.deepseek.com",
-    keyPlaceholder: "sk-...",
-  },
-  nous: {
-    label: "Nous Portal",
-    description: "Hermes 4 and frontier models via Nous Research",
-    url: "https://inference-api.nousresearch.com/v1",
-    keyPlaceholder: "your Portal token",
-  },
-  "openai-compatible": {
-    label: "OpenAI-Compatible",
-    description: "LiteLLM, llama.cpp server, vLLM, or any service exposing the OpenAI API",
-    url: "",
-    keyPlaceholder: "your-api-key",
-  },
 };
 
 const STATUS_PILL: Record<string, string> = {

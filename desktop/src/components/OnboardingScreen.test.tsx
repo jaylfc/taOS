@@ -57,6 +57,12 @@ async function passModelStep() {
   fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
 }
 
+/** The taOS Agent step: Set Up Later. */
+async function passAgentStep() {
+  await screen.findByRole("heading", { name: "Choose the taOS Agent's model" });
+  fireEvent.click(screen.getByRole("button", { name: "Set Up Later" }));
+}
+
 /** About you: pick a topic, then accept the default style. */
 async function answerAboutYou(topic = "Research") {
   await screen.findByRole("heading", { name: "What would you like help with?" });
@@ -216,10 +222,11 @@ describe("OnboardingScreen first run", () => {
     fireEvent.click(screen.getByRole("button", { name: /Use offline only/ }));
     await answerAboutYou();
     await passModelStep();
+    await passAgentStep();
     await waitFor(() =>
       expect(progressPuts(calls).at(-1)?.body).toMatchObject({
         in_progress: false,
-        skipped: ["taos-account", "device", "model"],
+        skipped: ["taos-account", "device", "model", "agent"],
       }),
     );
     expect(onDone).not.toHaveBeenCalled();
@@ -246,11 +253,12 @@ describe("OnboardingScreen first run", () => {
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     await answerAboutYou();
     await passModelStep();
+    await passAgentStep();
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     expect(progressPuts(calls).at(-1)?.body).toMatchObject({
       in_progress: false,
       completed: expect.arrayContaining(["taos-account", "device", "about"]),
-      skipped: ["model"],
+      skipped: ["model", "agent"],
     });
   });
 
@@ -284,6 +292,7 @@ describe("OnboardingScreen first run", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Use offline only/ }));
     await answerAboutYou();
     await passModelStep();
+    await passAgentStep();
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
   });
 
@@ -299,10 +308,11 @@ describe("OnboardingScreen first run", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Continue offline" }));
     await answerAboutYou();
     await passModelStep();
+    await passAgentStep();
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     expect(progressPuts(calls).at(-1)?.body).toMatchObject({
       in_progress: false,
-      skipped: ["taos-account", "device", "model"],
+      skipped: ["taos-account", "device", "model", "agent"],
     });
   });
 
@@ -465,6 +475,7 @@ describe("OnboardingScreen on-device model", () => {
     });
     expect(await screen.findByText("Downloaded and ready", {}, { timeout: 3000 })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await passAgentStep();
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     expect(progressPuts(calls).at(-1)?.body).toMatchObject({
       in_progress: false,
@@ -485,6 +496,7 @@ describe("OnboardingScreen on-device model", () => {
     await screen.findByRole("progressbar");
     expect(screen.getByText("It keeps downloading if you continue.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await passAgentStep();
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     expect(progressPuts(calls).at(-1)?.body).toMatchObject({
       model: { app_id: "qwen3-1.7b", downloaded: false },
@@ -543,6 +555,7 @@ describe("OnboardingScreen on-device model", () => {
     );
     await screen.findByText("Qwen3 1.7B");
     fireEvent.click(screen.getByRole("button", { name: "Set Up Later" }));
+    await passAgentStep();
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     const last = progressPuts(calls).at(-1)?.body as Record<string, unknown>;
     expect(last).toMatchObject({ skipped: expect.arrayContaining(["model"]) });

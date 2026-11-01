@@ -9,14 +9,17 @@ import { AboutHelpStep, AboutStyleStep } from "./steps/AboutYouStep";
 import { DeviceStep } from "./steps/DeviceStep";
 import { ModelStep } from "./steps/ModelStep";
 import type { OnDeviceChoice } from "./model";
+import { AgentCloud, AgentIntro, AgentModelPick } from "./steps/AgentStep";
+import { HopError, SETUP_PROVIDERS, addProvider, providerModels, saveKey, setAgentModel } from "./agent";
+import type { AggregatedModel } from "@/lib/models";
 import { TaosAccountChoice, TaosAccountForm, type AccountMode } from "./steps/TaosAccountStep";
 
-export type StepId = "hello" | "name" | "password" | "taos-account" | "device" | "about" | "model";
+export type StepId = "hello" | "name" | "password" | "taos-account" | "device" | "about" | "model" | "agent";
 
-const FIRST_RUN: StepId[] = ["hello", "name", "password", "taos-account", "device", "about", "model"];
+const FIRST_RUN: StepId[] = ["hello", "name", "password", "taos-account", "device", "about", "model", "agent"];
 const INVITE: StepId[] = ["name", "password"];
 /** Steps the account must exist for; a resume can land on these only. */
-const AFTER_ACCOUNT: StepId[] = ["taos-account", "device", "about", "model"];
+const AFTER_ACCOUNT: StepId[] = ["taos-account", "device", "about", "model", "agent"];
 /** Steps that need a taOS account sign-in; without one they are set up later. */
 const NEEDS_TAOS_ACCOUNT: StepId[] = ["device"];
 
@@ -27,7 +30,7 @@ export interface OobeProps {
   inviteCode?: string;
   defaultAutoLogin?: boolean;
   /** Resume first-run setup here (the account was created in an earlier visit). */
-  resume?: Pick<OnboardingProgress, "step" | "completed" | "skipped" | "about" | "model">;
+  resume?: Pick<OnboardingProgress, "step" | "completed" | "skipped" | "about" | "model" | "agent_model">;
   /** This is the device's own screen, so first run may set a PIN too. */
   pinOffered?: boolean;
 }
@@ -63,6 +66,12 @@ export function Oobe({
   // Read when progress is written, so a ref: the choice is set in the same
   // handler that advances.
   const model = useRef<OnDeviceChoice | undefined>(resume?.model);
+  const agentModel = useRef<string | undefined>(resume?.agent_model);
+  const [agentPage, setAgentPage] = useState<"intro" | "cloud" | "models" | "cluster">("intro");
+  const [providerType, setProviderType] = useState(SETUP_PROVIDERS[0]?.type ?? "openai");
+  const [apiKey, setApiKey] = useState("");
+  const [providerList, setProviderList] = useState<string[]>([]);
+  const [clusterModels, setClusterModels] = useState<AggregatedModel[]>([]);
   // Reaching a NEEDS_TAOS_ACCOUNT step on resume means the sign-in happened.
   const [accountLinked, setAccountLinked] = useState(
     resumeAt !== null && NEEDS_TAOS_ACCOUNT.includes(resumeAt),
@@ -120,14 +129,75 @@ export function Oobe({
     // session.
     const signedIn = !invite && steps.indexOf(step) >= steps.indexOf("password");
     if (next) {
-      if (signedIn) void saveProgress({ in_progress: true, step: next, ...log, about: answers, model: model.current });
+      if (signedIn) void saveProgress({ in_progress: true, step: next, ...log, ...extras(answers) });
       go(next, 1);
       return;
     }
     // Awaited: LoginGate re-reads progress in onDone and must not see
     // in_progress still true, or it would send the user straight back here.
-    await saveProgress({ in_progress: false, step: "done", ...log, about: answers, model: model.current });
+    await saveProgress({ in_progress: false, step: "done", ...log, ...extras(answers) });
     onDone();
+  }
+
+  /** Answers that ride along in the progress blob (PUT replaces all of it). */
+  function extras(answers: AboutYou) {
+    return { about: answers, model: model.current, agent_model: agentModel.current };
+  }
+
+  function agentGo(page: typeof agentPage, dir: 1 | -1) {
+    setError("");
+    setDirection(dir);
+    setAgentPage(page);
+  }
+
+  async function connectCloud() {
+    setBusy(true);
+    setError("");
+    try {
+      await saveKey(providerType, apiKey.trim());
+      await addProvider(providerType);
+      setProviderList(await providerModels(providerType));
+      setBusy(false);
+      agentGo("models", 1);
+    } catch (e) {
+      setBusy(false);
+      setError(e instanceof HopError ? e.message : "Couldn't connect. Try again.");
+    }
+  }
+
+  async function chooseAgentModel(id: string) {
+    setBusy(true);
+    setError("");
+    try {
+      await setAgentModel(id);
+    } catch (e) {
+      setBusy(false);
+      setError(e instanceof HopError ? e.message : "Couldn't save the model. Try again.");
+      return;
+    }
+    agentModel.current = id;
+    setBusy(false);
+    await advance("completed");
+  }
+
+  /**
+   * Set up later: the agent falls back to the on-device model when step 6
+   * took one. The step stays "skipped" either way, so the Setup checklist
+   * still offers a capable model; a failed fallback is left to it too.
+   */
+  async function skipAgent() {
+    agentModel.current = undefined;
+    if (model.current) {
+      setBusy(true);
+      try {
+        await setAgentModel(model.current.app_id);
+        agentModel.current = model.current.app_id;
+      } catch {
+        /* recorded as skipped below; the checklist offers it again */
+      }
+      setBusy(false);
+    }
+    await advance("skipped");
   }
 
   function onFullName(v: string) {
@@ -273,6 +343,59 @@ export function Oobe({
           />
         );
       break;
+    case "agent":
+      if (agentPage === "cloud") {
+        page = (
+          <AgentCloud
+            type={providerType}
+            apiKey={apiKey}
+            busy={busy}
+            error={error}
+            onType={setProviderType}
+            onKey={setApiKey}
+            onBack={() => agentGo("intro", -1)}
+            onConnect={() => void connectCloud()}
+          />
+        );
+      } else if (agentPage === "models" || agentPage === "cluster") {
+        const cloud = agentPage === "models";
+        const providerLabel = SETUP_PROVIDERS.find((p) => p.type === providerType)?.label ?? providerType;
+        page = (
+          <AgentModelPick
+            title="Pick a model"
+            subtitle={
+              cloud
+                ? `The models your ${providerLabel} key can use. You can change this any time in Settings.`
+                : "Models your other taOS devices serve. You can change this any time in Settings."
+            }
+            models={cloud ? providerList.map((id) => ({ id })) : clusterModels.map((m) => ({ id: m.id, detail: m.host }))}
+            busy={busy}
+            error={error}
+            onBack={() => {
+              // The key is cleared on the way back: the screen it returns to
+              // is where a different key goes.
+              if (cloud) setApiKey("");
+              agentGo(cloud ? "cloud" : "intro", -1);
+            }}
+            onPick={(id) => void chooseAgentModel(id)}
+          />
+        );
+      } else {
+        page = (
+          <AgentIntro
+            onCloud={() => agentGo("cloud", 1)}
+            onCluster={(models) => {
+              setClusterModels(models);
+              agentGo("cluster", 1);
+            }}
+            onSkip={() => void skipAgent()}
+            onBack={back}
+            hasOnDeviceModel={Boolean(model.current)}
+            busy={busy}
+          />
+        );
+      }
+      break;
     case "model":
       page = (
         <ModelStep
@@ -296,7 +419,9 @@ export function Oobe({
           ? `${step}:${accountMode}`
           : step === "about"
             ? `${step}:${aboutPage}`
-            : step
+            : step === "agent"
+              ? `${step}:${agentPage}`
+              : step
       } direction={direction}>
       {page}
     </OobeShell>
