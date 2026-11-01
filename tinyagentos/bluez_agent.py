@@ -18,6 +18,8 @@ except ImportError:
 
 _DEVICE_RE = re.compile(r"^/org/bluez/hci[0-9]+/dev_[0-9A-F]{2}(_[0-9A-F]{2}){5}$")
 
+PROMPT_TIMEOUT_S = 60.0
+
 
 class PairingSession:
     """Pure PairingSession state machine for Bluetooth pairing (taOS S4b)"""
@@ -63,14 +65,14 @@ class PairingSession:
             prompt["passkey"] = passkey
         self._prompt = prompt
 
-        # Set up 60-second timeout
+        # Set up timeout
         self._timeout_handle = asyncio.get_event_loop().call_later(
-            60.0, lambda: self._reject_timeout()
+            PROMPT_TIMEOUT_S, lambda: self._reject_timeout()
         )
 
         return future
 
-    def answer(self, accept: bool, pin: str | None = None) -> None:
+    def answer(self, accept: bool, pin: str | None = None, passkey: int | None = None) -> None:
         """Answer a pending prompt. Required for PIN / passkey flows."""
         if self._prompt is None:
             raise RuntimeError("No pending prompt")
@@ -86,8 +88,8 @@ class PairingSession:
         if kind == "pin":
             if pin is None:
                 raise ValueError("PIN required for PIN kind")
-            if not re.fullmatch(r"[0-9]{4,16}", pin):
-                raise ValueError("PIN must match regex ^[0-9]{4,16}$")
+            if not re.fullmatch(r"[\x21-\x7e]{1,16}", pin):
+                raise ValueError("PIN must be 1 to 16 printable ASCII characters")
             future = self._future
             self._clear_state()
             if future and not future.done():
@@ -95,9 +97,10 @@ class PairingSession:
             return
 
         if kind == "passkey":
-            passkey = self._prompt.get("passkey")
             if passkey is None:
                 raise ValueError("Passkey required for passkey kind")
+            if not (0 <= passkey <= 999999):
+                raise ValueError(f"Passkey must be in range 0..999999, got {passkey}")
             future = self._future
             self._clear_state()
             if future and not future.done():
@@ -148,7 +151,7 @@ def build_agent_interface(session: PairingSession) -> Any:
         @dbus_method()
         def Release(self) -> None:
             """Release the agent."""
-            self.session._clear_state()
+            self.session.cancel()
 
         @dbus_method()
         async def RequestPinCode(self, object_path: ObjPath) -> Str:
@@ -165,13 +168,16 @@ def build_agent_interface(session: PairingSession) -> Any:
                 )
             future = self.session.request("pin")
             try:
-                result = await asyncio.wait_for(future, timeout=5.0)
+                result = await asyncio.wait_for(future, timeout=PROMPT_TIMEOUT_S)
             except asyncio.TimeoutError:
+                self.session._clear_state()
                 raise DBusError("org.bluez.Error.Rejected", "Request timed out")
             except asyncio.CancelledError:
+                self.session._clear_state()
                 raise DBusError("org.bluez.Error.Canceled", "Request canceled")
             except Exception as e:
                 if "org.bluez.Error.Canceled" in str(e):
+                    self.session._clear_state()
                     raise DBusError("org.bluez.Error.Canceled", "Request canceled")
                 raise
             if not result.get("accepted", False):
@@ -200,17 +206,18 @@ def build_agent_interface(session: PairingSession) -> Any:
                     "org.bluez.Error.Rejected",
                     "Already awaiting response for another request"
                 )
-            import random
-            passkey = random.randint(0, 999999)
-            future = self.session.request("passkey", passkey=passkey)
+            future = self.session.request("passkey")
             try:
-                result = await asyncio.wait_for(future, timeout=5.0)
+                result = await asyncio.wait_for(future, timeout=PROMPT_TIMEOUT_S)
             except asyncio.TimeoutError:
+                self.session._clear_state()
                 raise DBusError("org.bluez.Error.Rejected", "Request timed out")
             except asyncio.CancelledError:
+                self.session._clear_state()
                 raise DBusError("org.bluez.Error.Canceled", "Request canceled")
             except Exception as e:
                 if "org.bluez.Error.Canceled" in str(e):
+                    self.session._clear_state()
                     raise DBusError("org.bluez.Error.Canceled", "Request canceled")
                 raise
             if not result.get("accepted", False):
@@ -241,13 +248,16 @@ def build_agent_interface(session: PairingSession) -> Any:
                 )
             future = self.session.request("confirm", passkey)
             try:
-                result = await asyncio.wait_for(future, timeout=5.0)
+                result = await asyncio.wait_for(future, timeout=PROMPT_TIMEOUT_S)
             except asyncio.TimeoutError:
+                self.session._clear_state()
                 raise DBusError("org.bluez.Error.Rejected", "Request timed out")
             except asyncio.CancelledError:
+                self.session._clear_state()
                 raise DBusError("org.bluez.Error.Canceled", "Request canceled")
             except Exception as e:
                 if "org.bluez.Error.Canceled" in str(e):
+                    self.session._clear_state()
                     raise DBusError("org.bluez.Error.Canceled", "Request canceled")
                 raise
             if not result.get("accepted", False):
@@ -295,10 +305,10 @@ async def register(bus: Any, session: PairingSession, path: str = "/org/taos/blu
         member="RegisterAgent",
         signature="os",
         body=[path, "KeyboardDisplay"],
-        serial=1,
     )
     reply = await bus.call(msg)
     if reply.message_type == MessageType.ERROR:
+        bus.unexport(path)
         raise RuntimeError(f"RegisterAgent failed: {reply.error_name}")
 
 
@@ -316,7 +326,6 @@ async def unregister(bus: Any, path: str = "/org/taos/bluez_agent") -> None:
         member="UnregisterAgent",
         signature="o",
         body=[path],
-        serial=2,
     )
     reply = await bus.call(msg)
     if reply.message_type == MessageType.ERROR:
