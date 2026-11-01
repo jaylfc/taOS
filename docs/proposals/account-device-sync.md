@@ -75,7 +75,7 @@ later.
 | Class | Syncs? | Conflict rule | Notes |
 |---|---|---|---|
 | Identity (account, OS username, display name, avatar) | yes | taos.my is authoritative | Set once in onboarding step 3. |
-| Device roster | yes | taos.my is authoritative | Adding a device needs approval from an existing one. |
+| Device roster | yes | taos.my is authoritative | Adding a device needs approval from an existing one, or the recovery key. |
 | Agents (config, persona, model and gateway assignment) | yes | last writer wins per record | `canonical_id` is minted once and adopted by other devices (see below). |
 | Memory (taOSmd episodes and facts) | yes | union-merge by record id; the rule for two edits to the same fact is **taosmd-dev to define**, using taOSmd's own temporal and supersede model | Memory is mostly appended, so a union loses nothing. |
 | Secrets | yes, end-to-end encrypted | last writer wins per secret | Per-device-only flag, see below. |
@@ -138,6 +138,14 @@ removal must:
    should be treated as exposed, and Settings should offer to rotate the
    underlying credentials (API keys).
 
+The cutoff is step 1. From then on:
+
+- remaining devices do not write Secrets under the old key until step 2
+  completes,
+- peers do not replicate to or from a device that is absent from the roster,
+- if any step fails, the removal stays incomplete and Secrets writes stay
+  blocked until it completes.
+
 ### Onboarding flows
 
 **First device** (step 3 "taOS account", step 4 "this device"):
@@ -152,9 +160,12 @@ and settings, and onboarding skips the steps that data already answers
 (account, about you, the personal assistant, taOS Agent setup). It goes
 straight to a "Welcome back" screen and then the user's existing chat.
 
-**No second device to approve from**: sign-in still works. Agents, memory and
-settings sync. Secrets stay locked until the recovery key is entered or
-another device approves.
+**No second device to approve from**: sign-in alone adds the device to the
+roster as *pending*, and a pending device receives no data class. It is
+admitted, and sync starts, when another device approves it or the recovery key
+is entered. Until then it runs like a first device with its own local data.
+The account password alone never releases agents, memory, Secrets or settings
+to a new device.
 
 ## Decisions for Jay
 
