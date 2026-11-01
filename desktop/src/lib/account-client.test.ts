@@ -183,6 +183,60 @@ describe("login", () => {
   });
 });
 
+describe("login and register against taos.my's real response shapes", () => {
+  const account = { user_id: "u-9", email: "a@b.test", taosgo: { status: "none" } };
+  const res = (status: number, body: unknown) => ({
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => body,
+  });
+
+  it("login: taos.my answers {user_id}, the account comes from /me", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(res(200, { user_id: "u-9" }))
+      .mockResolvedValueOnce(res(200, account));
+    global.fetch = fetchMock;
+    expect(await login("a@b.test", "pw")).toEqual(account);
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/account/me");
+  });
+
+  it("login: a 2fa_required answer is an error, not a sign-in", async () => {
+    global.fetch = vi.fn().mockResolvedValue(res(200, { status: "2fa_required", pending: "p" }));
+    const result = await login("a@b.test", "pw");
+    expect(isAuthError(result) && result.code).toBe("2fa_required");
+  });
+
+  it("login: invalid_credentials gets readable text and keeps the code", async () => {
+    global.fetch = vi.fn().mockResolvedValue(res(401, { detail: "invalid_credentials" }));
+    const result = await login("a@b.test", "pw");
+    expect(isAuthError(result)).toBe(true);
+    if (isAuthError(result)) {
+      expect(result.code).toBe("invalid_credentials");
+      expect(result.message).toBe("That email and password don't match a taOS account.");
+    }
+  });
+
+  it("register: taos.my answers {user_id} with no session, so it signs in next", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(res(200, { user_id: "u-9" }))
+      .mockResolvedValueOnce(res(200, { user_id: "u-9" }))
+      .mockResolvedValueOnce(res(200, account));
+    global.fetch = fetchMock;
+    expect(await register("a@b.test", "pw")).toEqual(account);
+    expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([
+      "/api/account/register",
+      "/api/account/login",
+      "/api/account/me",
+    ]);
+  });
+
+  it("register: signups_closed keeps its code for the caller to show", async () => {
+    global.fetch = vi.fn().mockResolvedValue(res(403, { detail: "signups_closed" }));
+    const result = await register("a@b.test", "pw");
+    expect(isAuthError(result) && result.code).toBe("signups_closed");
+  });
+});
+
 describe("register", () => {
   it("returns account on 200", async () => {
     const account = {
