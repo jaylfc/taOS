@@ -1283,23 +1283,47 @@ async def test_forget_happy_path_deletes_matching_wifi_profile_only(monkeypatch)
                 "/org/freedesktop/NetworkManager/Settings/2",
                 "/org/freedesktop/NetworkManager/Settings/3",
             ]
-        # Profile 1: matching wifi
+        # Profile 1: matching wifi - REAL busctl format with typed leaves
         if args[0] == "call" and args[2] == "/org/freedesktop/NetworkManager/Settings/1" and args[3] == "org.freedesktop.NetworkManager.Settings.Connection" and args[4] == "GetSettings":
             return 0, {
-                "connection": {"type": ("s", "802-11-wireless"), "id": ("s", "MyWiFi")},
-                "802-11-wireless": {"ssid": ("ay", b"MyWiFi"), "mode": ("s", "infrastructure")},
+                "type": "a{sa{sv}}",
+                "data": [{
+                    "connection": {
+                        "type": {"type": "s", "data": "802-11-wireless"},
+                        "id": {"type": "s", "data": "MyWiFi"}
+                    },
+                    "802-11-wireless": {
+                        "ssid": {"type": "ay", "data": [77, 121, 87, 105, 70, 105]},  # 'MyWiFi' as bytes
+                        "mode": {"type": "s", "data": "infrastructure"}
+                    }
+                }]
             }
         # Profile 2: same SSID bytes but type 802-3-ethernet (should NOT be deleted)
         if args[0] == "call" and args[2] == "/org/freedesktop/NetworkManager/Settings/2" and args[3] == "org.freedesktop.NetworkManager.Settings.Connection" and args[4] == "GetSettings":
             return 0, {
-                "connection": {"type": ("s", "802-3-ethernet"), "id": ("s", "MyWiFi")},
-                "802-3-ethernet": {},
+                "type": "a{sa{sv}}",
+                "data": [{
+                    "connection": {
+                        "type": {"type": "s", "data": "802-3-ethernet"},
+                        "id": {"type": "s", "data": "MyWiFi"}
+                    },
+                    "802-3-ethernet": {}
+                }]
             }
         # Profile 3: different SSID (should NOT be deleted)
         if args[0] == "call" and args[2] == "/org/freedesktop/NetworkManager/Settings/3" and args[3] == "org.freedesktop.NetworkManager.Settings.Connection" and args[4] == "GetSettings":
             return 0, {
-                "connection": {"type": ("s", "802-11-wireless"), "id": ("s", "OtherWiFi")},
-                "802-11-wireless": {"ssid": ("ay", b"OtherWiFi"), "mode": ("s", "infrastructure")},
+                "type": "a{sa{sv}}",
+                "data": [{
+                    "connection": {
+                        "type": {"type": "s", "data": "802-11-wireless"},
+                        "id": {"type": "s", "data": "OtherWiFi"}
+                    },
+                    "802-11-wireless": {
+                        "ssid": {"type": "ay", "data": [79, 116, 104, 101, 114, 87, 105, 70, 105]},  # 'OtherWiFi' as bytes
+                        "mode": {"type": "s", "data": "infrastructure"}
+                    }
+                }]
             }
         # Delete called only on profile 1
         if args[0] == "call" and args[2] == "/org/freedesktop/NetworkManager/Settings/1" and args[3] == "org.freedesktop.NetworkManager.Settings.Connection" and args[4] == "Delete":
@@ -1342,8 +1366,17 @@ async def test_forget_no_matching_profile_returns_404(monkeypatch):
             ]
         if args[0] == "call" and args[2] == "/org/freedesktop/NetworkManager/Settings/1" and args[3] == "org.freedesktop.NetworkManager.Settings.Connection" and args[4] == "GetSettings":
             return 0, {
-                "connection": {"type": ("s", "802-11-wireless"), "id": ("s", "OtherWiFi")},
-                "802-11-wireless": {"ssid": ("ay", b"OtherWiFi"), "mode": ("s", "infrastructure")},
+                "type": "a{sa{sv}}",
+                "data": [{
+                    "connection": {
+                        "type": {"type": "s", "data": "802-11-wireless"},
+                        "id": {"type": "s", "data": "OtherWiFi"}
+                    },
+                    "802-11-wireless": {
+                        "ssid": {"type": "ay", "data": [79, 116, 104, 101, 114, 87, 105, 70, 105]},  # 'OtherWiFi' as bytes
+                        "mode": {"type": "s", "data": "infrastructure"}
+                    }
+                }]
             }
         raise AssertionError(f"unexpected busctl call: {args}")
 
@@ -1409,8 +1442,17 @@ async def test_forget_delete_fails_returns_502_write_failed(monkeypatch):
             return 0, ["/org/freedesktop/NetworkManager/Settings/1"]
         if args[0] == "call" and args[2] == "/org/freedesktop/NetworkManager/Settings/1" and args[3] == "org.freedesktop.NetworkManager.Settings.Connection" and args[4] == "GetSettings":
             return 0, {
-                "connection": {"type": ("s", "802-11-wireless"), "id": ("s", "MyWiFi")},
-                "802-11-wireless": {"ssid": ("ay", b"MyWiFi"), "mode": ("s", "infrastructure")},
+                "type": "a{sa{sv}}",
+                "data": [{
+                    "connection": {
+                        "type": {"type": "s", "data": "802-11-wireless"},
+                        "id": {"type": "s", "data": "MyWiFi"}
+                    },
+                    "802-11-wireless": {
+                        "ssid": {"type": "ay", "data": [77, 121, 87, 105, 70, 105]},  # 'MyWiFi' as bytes
+                        "mode": {"type": "s", "data": "infrastructure"}
+                    }
+                }]
             }
         if args[0] == "call" and args[2] == "/org/freedesktop/NetworkManager/Settings/1" and args[3] == "org.freedesktop.NetworkManager.Settings.Connection" and args[4] == "Delete":
             return 1, None

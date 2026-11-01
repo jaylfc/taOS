@@ -42,8 +42,17 @@ def _get_data(val: object | None) -> object | None:
     return val
 
 
-async def _wifi_devices() -> list[tuple[str, str]]:
-    """Return (device_path, iface) for every Wi-Fi device (DeviceType == 2)."""
+def _unwrap_variant(v: object) -> object:
+    """Unwrap a busctl typed variant leaf {"type": "...", "data": ...} to its data value."""
+    if isinstance(v, dict) and set(v.keys()) == {"type", "data"}:
+        return v["data"]
+    return v
+
+
+async def _wifi_devices() -> list[tuple[str, str]] | None:
+    """Return (device_path, iface) for every Wi-Fi device (DeviceType == 2).
+    Returns None if GetDevices call fails (NetworkManager unavailable).
+    """
     rc, devices_data = await busctl(
         "call",
         "org.freedesktop.NetworkManager",
@@ -52,7 +61,7 @@ async def _wifi_devices() -> list[tuple[str, str]]:
         "GetDevices",
     )
     if rc != 0 or devices_data is None:
-        return []
+        return None
     d = _get_data(devices_data)
     if isinstance(d, list) and len(d) > 0 and isinstance(d[0], list):
         device_paths = [p for p in d[0] if isinstance(p, str)]
@@ -344,6 +353,8 @@ async def wifi_disconnect(body: WifiDisconnectBody):
         return _nm_unavailable_response()
 
     devices = await _wifi_devices()
+    if devices is None:
+        return _nm_unavailable_response()
     device_path = None
     for path, iface in devices:
         if iface == body.iface:
@@ -386,6 +397,8 @@ async def wifi_connect(body: WifiConnectBody):
         return _nm_unavailable_response()
 
     devices = await _wifi_devices()
+    if devices is None:
+        return _nm_unavailable_response()
     device_path = None
     chosen_iface = None
     if body.iface:
@@ -447,8 +460,10 @@ async def wifi_scan(body: WifiScanBody):
         return _nm_unavailable_response()
 
     devices = await _wifi_devices()
+    if devices is None:
+        return _nm_unavailable_response()
     target_devices: list[tuple[str, str]] = []
-    if body.iface:
+    if body.iface is not None:
         for path, iface in devices:
             if iface == body.iface:
                 target_devices.append((path, iface))
@@ -501,6 +516,7 @@ async def wifi_forget(body: WifiForgetBody):
         paths = []
 
     removed = 0
+    any_read_failed = False
     for path in paths:
         if not isinstance(path, str):
             continue
@@ -512,6 +528,7 @@ async def wifi_forget(body: WifiForgetBody):
             "GetSettings",
         )
         if rc_gs != 0 or gs_data is None:
+            any_read_failed = True
             continue
         settings = _get_data(gs_data)
         if isinstance(settings, list) and len(settings) > 0 and isinstance(settings[0], dict):
@@ -521,17 +538,13 @@ async def wifi_forget(body: WifiForgetBody):
 
         conn_section = settings.get("connection")
         conn_type = conn_section.get("type") if isinstance(conn_section, dict) else None
-        if isinstance(conn_type, tuple) and conn_type[0] == "s":
-            conn_type = conn_type[1]
+        conn_type = _unwrap_variant(conn_type)
         if conn_type != "802-11-wireless":
             continue
 
         wireless_section = settings.get("802-11-wireless")
         ssid_variant = wireless_section.get("ssid") if isinstance(wireless_section, dict) else None
-        if isinstance(ssid_variant, tuple) and ssid_variant[0] == "ay":
-            ssid_val = ssid_variant[1]
-        else:
-            ssid_val = ssid_variant
+        ssid_val = _unwrap_variant(ssid_variant)
         if not isinstance(ssid_val, (bytes, bytearray, list)):
             continue
         if isinstance(ssid_val, list):
@@ -554,6 +567,8 @@ async def wifi_forget(body: WifiForgetBody):
         removed += 1
 
     if removed == 0:
+        if any_read_failed:
+            return _write_failed_response()
         return JSONResponse({"error": "unknown_ssid"}, status_code=404)
 
     return {"ok": True, "removed": removed}
