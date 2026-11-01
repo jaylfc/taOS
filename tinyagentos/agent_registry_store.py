@@ -1237,6 +1237,24 @@ class AgentRegistryStore(BaseStore):
                 )
             return await self.get(canonical_id)  # type: ignore[return-value]
 
+    async def revert_activation(self, canonical_id: str) -> bool:
+        """Put an identity a consent approve just activated back to ``pending``.
+
+        Only for the approve that lost its decision race: nothing should
+        ordinarily walk active -> pending, so this is not in
+        ``_VALID_TRANSITIONS``. Returns False when the row is no longer active.
+        """
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised")
+        async with self._write_lock:
+            cur = await self._db.execute(
+                "UPDATE agent_registry SET status = 'pending' "
+                "WHERE canonical_id = ? AND status = 'active'",
+                (canonical_id,),
+            )
+            await self._db.commit()
+            return cur.rowcount > 0
+
     # ------------------------------------------------------------------
     # Revoke
     # ------------------------------------------------------------------

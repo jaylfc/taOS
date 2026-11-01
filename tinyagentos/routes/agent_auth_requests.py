@@ -1173,6 +1173,14 @@ async def approve_request_record(
             await registry.set_sponsorship(
                 canonical_id, project_id, sponsor_contact_id
             )
+    except ValueError:
+        # Only a reused identity can get here: a concurrent approve picked the
+        # same pending row and activated it first. That approval owns the
+        # identity now, so nothing is rolled back or deleted.
+        raise HTTPException(
+            status_code=409,
+            detail="request was decided concurrently; check current status",
+        )
     except IntegrityError:
         # A concurrent approve already took this active handle (the partial
         # unique index fired). Roll back the failed write and remove the
@@ -1206,6 +1214,14 @@ async def approve_request_record(
         project_id=binding_project,
     )
 
+    # What this identity already held, so losing the decision race below undoes
+    # only what this approval wrote.
+    prior_grants = {
+        (g["scope"], g.get("project_id"))
+        for g in await grants_store.list_grants(canonical_id)
+    }
+    added_member = False
+
     # Record grants for each approved scope. When deferring, grants are written
     # unbound (project_id=None); assign-agent later writes the project-bound
     # grant that makes project-scoped calls succeed.
@@ -1236,6 +1252,9 @@ async def approve_request_record(
                 # Only flags that were explicitly granted are set, mirroring
                 # how the consent card scopes are narrowed.
                 if "project_tasks" in granted_scopes or granted_canvas:
+                    added_member = (
+                        await pstore.get_member(binding_project, canonical_id) is None
+                    )
                     await pstore.add_member(
                         project_id=binding_project,
                         member_id=canonical_id,
@@ -1281,7 +1300,19 @@ async def approve_request_record(
         decided_by=decided_by,
     )
     if result is None:
-        # Another concurrent approve beat us — 409.
+        # Another decision beat us — 409. If it was a deny, what this approval
+        # already wrote would otherwise stay as usable authorization on a
+        # refused request.
+        await _undo_lost_approval(
+            request,
+            record_id=record["id"],
+            canonical_id=canonical_id,
+            created_here=created_here,
+            granted_scopes=granted_scopes,
+            binding_project=binding_project,
+            prior_grants=prior_grants,
+            added_member=added_member,
+        )
         raise HTTPException(
             status_code=409,
             detail="request was decided concurrently; check current status",
@@ -1289,6 +1320,66 @@ async def approve_request_record(
 
     await _retire_request_notification(request, record["id"])
     return {"status": "accepted", "canonical_id": canonical_id}
+
+
+async def _undo_lost_approval(
+    request: Request,
+    *,
+    record_id: str,
+    canonical_id: str,
+    created_here: bool,
+    granted_scopes: list[str],
+    binding_project: Optional[str],
+    prior_grants: set[tuple[str, Optional[str]]],
+    added_member: bool,
+) -> None:
+    """Undo an approve's writes after it lost the decision race.
+
+    Left alone when the winner approved this same identity: it holds a token
+    for it. Every step is best-effort so the caller's 409 is never masked.
+    """
+    auth_store = _get_auth_requests_store(request)
+    final = await auth_store.get(record_id)
+    if (
+        final is not None
+        and final.get("status") == "accepted"
+        and final.get("canonical_id") == canonical_id
+    ):
+        return
+
+    registry = _get_registry_store(request)
+    grants_store = _get_grants_store(request)
+    rel_mgr = _get_relationships(request)
+    try:
+        prior_scopes = {scope for scope, _project in prior_grants}
+        for scope in granted_scopes:
+            if (scope, binding_project) not in prior_grants:
+                await grants_store.revoke_grant(
+                    canonical_id, scope, project_id=binding_project
+                )
+            if scope not in prior_scopes:
+                await rel_mgr.revoke_permission(canonical_id, "taos-instance", scope)
+        pstore = getattr(request.app.state, "project_store", None)
+        if added_member and binding_project and pstore is not None:
+            await pstore.remove_member(binding_project, canonical_id)
+            from tinyagentos.projects.a2a import ensure_a2a_channel
+
+            await ensure_a2a_channel(
+                request.app.state.chat_channels,
+                pstore,
+                binding_project,
+                config=getattr(request.app.state, "config", None),
+            )
+        if created_here:
+            await registry.delete(canonical_id)
+        else:
+            await registry.revert_activation(canonical_id)
+    except Exception:  # noqa: BLE001 - never mask the caller's 409
+        logger.warning(
+            "auth-approve: could not fully undo lost approval for %s",
+            canonical_id,
+            exc_info=True,
+        )
 
 
 async def add_agent_to_project(
