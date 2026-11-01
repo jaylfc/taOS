@@ -1,3 +1,5 @@
 ### Added
 
 - Speech backends: `whisper`, `kokoro`, and `moss` backend types are now registered in the backend catalog. A `whisper` server (faster-whisper / whisper.cpp) advertises the `asr` capability; `kokoro` (Kokoro TTS server) and `moss` (MOSS TTS via SGLang/vLLM-Omni) advertise `tts`. Workers running a `kokoro` server are probed by default (:8880); `whisper` (:9000) and `moss` (:30000) are probed only when the worker-models manifest or `TAOS_EXTRA_BACKENDS` configures them, because those ports collide with MinIO/php-fpm and SGLang. Configured speech backends can be selected via `TaskRouter.route_request("asr")` / `("tts")`. The worker-models manifest maps `whisper`, `kokoro`, and `moss` software entries to their backend types (#3231).
+
+- Speech backends (`whisper`, `kokoro`, `moss`) are now included in `_OPENAI_MODELS_TYPES`, preventing them from being double-reported when they share a port with a llama-swap server. This fixes the issue where speech backends were reported twice (once as speech backend, once as generic OpenAI-compatible backend) when a llama-swap server was configured on the same endpoint.

@@ -194,7 +194,7 @@ _PROBEABLE_TYPES = frozenset({
     "sd-cpp", "whisper", "kokoro", "moss",
 })
 # Types detected by /v1/models alone, which a llama-swap server also answers.
-_OPENAI_MODELS_TYPES = frozenset({"llama-cpp", "vllm", "exo", "mlx"})
+_OPENAI_MODELS_TYPES = frozenset({"llama-cpp", "vllm", "exo", "mlx", "whisper", "kokoro", "moss"})
 _MAX_EXTRA_BACKENDS = 16
 # Total time one candidate may take. httpx timeouts are per read, so a server
 # trickling bytes could otherwise hold the probe (and the heartbeat, which the
