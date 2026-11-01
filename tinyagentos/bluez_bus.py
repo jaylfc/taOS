@@ -34,9 +34,15 @@ async def get_system_bus() -> "MessageBus":
             raise BusUnavailable("dbus_fast_missing") from e
 
         try:
-            bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+            bus = await asyncio.wait_for(
+                MessageBus(bus_type=BusType.SYSTEM).connect(),
+                timeout=5.0,
+            )
             _bus = bus
             return bus
+        except asyncio.TimeoutError as e:
+            logger.exception("Timed out connecting to system bus")
+            raise BusUnavailable("bluez_unavailable") from e
         except Exception as e:
             logger.exception("Failed to connect to system bus")
             raise BusUnavailable("bluez_unavailable") from e

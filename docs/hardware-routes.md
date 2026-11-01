@@ -44,11 +44,7 @@
 - On `on=false`: cancels timer, calls `Adapter1.StopDiscovery`, returns `{"ok": true, "discovering": false}`
 - `org.bluez.Error.InProgress` on start counts as success
 - 422 `invalid_path`; 503 `bluez_unavailable` / `dbus_fast_missing`; 502 `write_failed` (other D-Bus error)
-
-### POST /api/hardware/bluetooth/device
-
-- Body: `{adapter, powered}`; success: `{"ok": true}`
-- 422 `invalid_path`; 503 `bluez_unavailable`; 504 `timeout`; 502 `write_failed`
+- 504 `bluez_timeout` on D-Bus call timeout; 502 `bluez_error` on StopDiscovery D-Bus error
 
 ### POST /api/hardware/bluetooth/device
 

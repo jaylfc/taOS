@@ -1529,7 +1529,7 @@ Route module `tinyagentos/routes/hardware_bluetooth.py`:
 
 - `GET /api/hardware/bluetooth` reads Bluetooth adapters and devices via BlueZ D-Bus. Each adapter includes `path`, `address`, `powered`, and `discovering`.
 - `POST /api/hardware/bluetooth/power` powers a Bluetooth adapter on or off.
-- `POST /api/hardware/bluetooth/discovery` starts or stops discovery on an adapter (`{adapter, on: bool}`). On `on=true`, calls `Adapter1.StartDiscovery` and schedules `StopDiscovery` after 60 s. On `on=false`, cancels the timer and calls `StopDiscovery`. `org.bluez.Error.InProgress` on start counts as success.
+- `POST /api/hardware/bluetooth/discovery` starts or stops discovery on an adapter (`{adapter, on: bool}`). On `on=true`, calls `Adapter1.StartDiscovery` and schedules `StopDiscovery` after 60 s. On `on=false`, cancels the timer and calls `StopDiscovery`. `org.bluez.Error.InProgress` on start counts as success. D-Bus call timeouts return 504 `bluez_timeout`. StopDiscovery D-Bus errors (except `NotReady` or `Failed` with "No discovery started") return 502 `bluez_error`.
 - `POST /api/hardware/bluetooth/device` performs connect, disconnect, pair, trust, untrust, or remove on a device.
 
 All routes are admin-only via `Depends(require_admin)`. See [docs/hardware-routes.md](hardware-routes.md) for detail.

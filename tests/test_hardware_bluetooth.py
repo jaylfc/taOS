@@ -843,3 +843,356 @@ async def test_discovery_auto_stop_timer_fires(monkeypatch):
 
     # Timer should be cleaned up
     assert "/org/bluez/hci0" not in bt_routes._discovery_timers
+
+
+@pytest.mark.asyncio
+async def test_stop_discovery_after_delay_error_reply_logs_warning(monkeypatch, caplog):
+    """_stop_discovery_after_delay with ERROR reply logs warning, no AttributeError."""
+    from tinyagentos import bluez_bus
+    from tinyagentos.routes import hardware_bluetooth as bt_routes
+    from dbus_fast import MessageType
+
+    class MockMessage:
+        def __init__(self, destination, path, interface, member, signature="", body=None):
+            self.destination = destination
+            self.path = path
+            self.interface = interface
+            self.member = member
+            self.signature = signature
+            self.body = body or []
+
+    class MockReply:
+        def __init__(self, error_name):
+            self.error_name = error_name
+            self.message_type = MessageType.ERROR
+
+    class MockBus:
+        def __init__(self):
+            self.calls = []
+
+        async def call(self, message):
+            self.calls.append(message)
+            return MockReply("org.bluez.Error.Failed")
+
+        def disconnect(self):
+            pass
+
+    mock_bus = MockBus()
+
+    async def fake_get_bus():
+        return mock_bus
+
+    monkeypatch.setattr(bluez_bus, "get_system_bus", fake_get_bus)
+    monkeypatch.setattr(bt_routes, "get_system_bus", fake_get_bus)
+
+    # Create a dummy timer task
+    async def dummy():
+        await asyncio.sleep(100)
+
+    timer = asyncio.create_task(dummy())
+
+    # Should not raise AttributeError
+    await bt_routes._stop_discovery_after_delay("/org/bluez/hci0", timer, delay=0.0)
+
+    # Should log warning
+    assert any("StopDiscovery error on /org/bluez/hci0" in record.message for record in caplog.records)
+    assert any("org.bluez.Error.Failed" in record.message for record in caplog.records)
+
+    timer.cancel()
+    try:
+        await timer
+    except asyncio.CancelledError:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_get_system_bus_connect_timeout_raises_busunavailable(monkeypatch):
+    """get_system_bus with never-finishing connect raises BusUnavailable."""
+    from tinyagentos import bluez_bus
+
+    # Patch the internal timeout to a very small value for the test
+    original_timeout = 5.0
+    # We can't easily patch the literal in the function, so we'll patch the whole module's wait_for
+    # or use a different approach: make connect hang and verify the internal timeout fires
+
+    async def slow_connect():
+        await asyncio.sleep(10)  # Never finishes in test time
+
+    class SlowMessageBus:
+        def __init__(self, bus_type=None):
+            pass
+
+        async def connect(self):
+            await slow_connect()
+
+    # Patch where MessageBus is imported from
+    monkeypatch.setattr("dbus_fast.aio.MessageBus", SlowMessageBus)
+
+    # Need to clear the cached _bus to force reconnection
+    bluez_bus._bus = None
+
+    # The internal timeout is 5.0s, but we can't wait that long in tests.
+    # Instead, verify that the code path raises BusUnavailable by mocking
+    # the wait_for to use a shorter timeout. We'll temporarily replace
+    # asyncio.wait_for in the bluez_bus module.
+    original_wait_for = asyncio.wait_for
+
+    async def short_wait_for(coro, timeout=None):
+        return await original_wait_for(coro, timeout=0.05)
+
+    monkeypatch.setattr(bluez_bus.asyncio, "wait_for", short_wait_for)
+
+    with pytest.raises(bluez_bus.BusUnavailable) as exc_info:
+        await bluez_bus.get_system_bus()
+
+    assert exc_info.value.code == "bluez_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_discovery_stop_with_error_reply_returns_502(monkeypatch):
+    """Stop discovery with ERROR reply returns 502 bluez_error."""
+    from tinyagentos import bluez_bus
+    from tinyagentos.routes import hardware_bluetooth as bt_routes
+    from dbus_fast import MessageType
+
+    class MockMessage:
+        def __init__(self, destination, path, interface, member, signature="", body=None):
+            self.destination = destination
+            self.path = path
+            self.interface = interface
+            self.member = member
+            self.signature = signature
+            self.body = body or []
+
+    class MockReply:
+        def __init__(self, error_name, body=None):
+            self.error_name = error_name
+            self.message_type = MessageType.ERROR
+            self.body = body or []
+
+    class MockBus:
+        def __init__(self):
+            self.calls = []
+
+        async def call(self, message):
+            self.calls.append(message)
+            if message.member == "StopDiscovery":
+                return MockReply("org.bluez.Error.Failed", body=["Some error"])
+            return MockReply(message_type=MessageType.METHOD_RETURN)
+
+        def disconnect(self):
+            pass
+
+    mock_bus = MockBus()
+
+    async def fake_get_bus():
+        return mock_bus
+
+    monkeypatch.setattr(bluez_bus, "get_system_bus", fake_get_bus)
+    monkeypatch.setattr(bt_routes, "get_system_bus", fake_get_bus)
+
+    body = bt_routes.BtDiscoveryBody(adapter="/org/bluez/hci0", on=False)
+    resp = await bt_routes.discovery_bluetooth(body)
+
+    assert isinstance(resp, JSONResponse)
+    assert resp.status_code == 502
+    import json
+    data = json.loads(resp.body.decode())
+    assert data["error"] == "bluez_error"
+    assert data["detail"] == "org.bluez.Error.Failed"
+
+
+@pytest.mark.asyncio
+async def test_discovery_stop_notready_error_returns_ok(monkeypatch):
+    """Stop discovery with NotReady error returns ok."""
+    from tinyagentos import bluez_bus
+    from tinyagentos.routes import hardware_bluetooth as bt_routes
+    from dbus_fast import MessageType
+
+    class MockMessage:
+        def __init__(self, destination, path, interface, member, signature="", body=None):
+            self.destination = destination
+            self.path = path
+            self.interface = interface
+            self.member = member
+            self.signature = signature
+            self.body = body or []
+
+    class MockReply:
+        def __init__(self, error_name):
+            self.error_name = error_name
+            self.message_type = MessageType.ERROR
+
+    class MockBus:
+        def __init__(self):
+            self.calls = []
+
+        async def call(self, message):
+            self.calls.append(message)
+            if message.member == "StopDiscovery":
+                return MockReply("org.bluez.Error.NotReady")
+            return MockReply(message_type=MessageType.METHOD_RETURN)
+
+        def disconnect(self):
+            pass
+
+    mock_bus = MockBus()
+
+    async def fake_get_bus():
+        return mock_bus
+
+    monkeypatch.setattr(bluez_bus, "get_system_bus", fake_get_bus)
+    monkeypatch.setattr(bt_routes, "get_system_bus", fake_get_bus)
+
+    body = bt_routes.BtDiscoveryBody(adapter="/org/bluez/hci0", on=False)
+    resp = await bt_routes.discovery_bluetooth(body)
+
+    if isinstance(resp, JSONResponse):
+        assert resp.status_code == 200
+    assert resp == {"ok": True, "discovering": False}
+
+
+@pytest.mark.asyncio
+async def test_discovery_stop_failed_no_discovery_started_returns_ok(monkeypatch):
+    """Stop discovery with Failed 'No discovery started' returns ok."""
+    from tinyagentos import bluez_bus
+    from tinyagentos.routes import hardware_bluetooth as bt_routes
+    from dbus_fast import MessageType
+
+    class MockMessage:
+        def __init__(self, destination, path, interface, member, signature="", body=None):
+            self.destination = destination
+            self.path = path
+            self.interface = interface
+            self.member = member
+            self.signature = signature
+            self.body = body or []
+
+    class MockReply:
+        def __init__(self, error_name, body=None):
+            self.error_name = error_name
+            self.message_type = MessageType.ERROR
+            self.body = body or []
+
+    class MockBus:
+        def __init__(self):
+            self.calls = []
+
+        async def call(self, message):
+            self.calls.append(message)
+            if message.member == "StopDiscovery":
+                return MockReply("org.bluez.Error.Failed", body=["No discovery started"])
+            return MockReply(message_type=MessageType.METHOD_RETURN)
+
+        def disconnect(self):
+            pass
+
+    mock_bus = MockBus()
+
+    async def fake_get_bus():
+        return mock_bus
+
+    monkeypatch.setattr(bluez_bus, "get_system_bus", fake_get_bus)
+    monkeypatch.setattr(bt_routes, "get_system_bus", fake_get_bus)
+
+    body = bt_routes.BtDiscoveryBody(adapter="/org/bluez/hci0", on=False)
+    resp = await bt_routes.discovery_bluetooth(body)
+
+    if isinstance(resp, JSONResponse):
+        assert resp.status_code == 200
+    assert resp == {"ok": True, "discovering": False}
+
+
+@pytest.mark.asyncio
+async def test_discovery_start_error_keeps_old_timer(monkeypatch):
+    """StartDiscovery error keeps the old timer in place."""
+    from tinyagentos import bluez_bus
+    from tinyagentos.routes import hardware_bluetooth as bt_routes
+    from dbus_fast import MessageType
+
+    # First, set up a successful start to create a timer
+    mock_bus = await fake_get_system_bus_success()
+
+    async def fake_get_bus():
+        return mock_bus
+
+    monkeypatch.setattr(bluez_bus, "get_system_bus", fake_get_bus)
+    monkeypatch.setattr(bt_routes, "get_system_bus", fake_get_bus)
+
+    body_start = make_discovery_body("/org/bluez/hci0", True)
+    resp = await bt_routes.discovery_bluetooth(body_start)
+    if isinstance(resp, JSONResponse):
+        assert resp.status_code == 200
+    assert resp == {"ok": True, "discovering": True}
+
+    # Verify timer exists
+    assert "/org/bluez/hci0" in bt_routes._discovery_timers
+    old_timer = bt_routes._discovery_timers["/org/bluez/hci0"]
+
+    # Now simulate a StartDiscovery error on second start
+    class FailingMockBus:
+        def __init__(self):
+            self.calls = []
+
+        async def call(self, message):
+            self.calls.append(message)
+            if message.member == "StartDiscovery":
+                class ErrorReply:
+                    error_name = "org.bluez.Error.Failed"
+                    message_type = MessageType.ERROR
+                return ErrorReply()
+            return MockReply(message_type=MessageType.METHOD_RETURN)
+
+        def disconnect(self):
+            pass
+
+    failing_bus = FailingMockBus()
+
+    async def failing_get_bus():
+        return failing_bus
+
+    monkeypatch.setattr(bluez_bus, "get_system_bus", failing_get_bus)
+    monkeypatch.setattr(bt_routes, "get_system_bus", failing_get_bus)
+
+    body_start2 = make_discovery_body("/org/bluez/hci0", True)
+    resp2 = await bt_routes.discovery_bluetooth(body_start2)
+
+    assert isinstance(resp2, JSONResponse)
+    assert resp2.status_code == 502
+
+    # Old timer should still be in place (not replaced by new one)
+    assert "/org/bluez/hci0" in bt_routes._discovery_timers
+    assert bt_routes._discovery_timers["/org/bluez/hci0"] is old_timer
+
+    # Clean up
+    old_timer.cancel()
+    try:
+        await old_timer
+    except asyncio.CancelledError:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_get_bluetooth_decodes_variant_value(monkeypatch):
+    """GET /api/hardware/bluetooth decodes Variant (.value) before reading Discovering."""
+    from tinyagentos.routes import hardware_bluetooth as bt_routes
+
+    async def fake_busctl(*args):
+        if args[0] == "call" and args[1] == "org.bluez" and args[2] == "/" and args[3] == "org.freedesktop.DBus.ObjectManager" and args[4] == "GetManagedObjects":
+            return 0, [{
+                "/org/bluez/hci0": {
+                    "org.bluez.Adapter1": {
+                        "Address": {"type": "s", "data": "AA:BB:CC:DD:EE:FF"},
+                        "Powered": {"type": "b", "data": True},
+                        "Discovering": {"type": "b", "data": True},  # Raw variant with .value
+                    }
+                },
+            }]
+        raise AssertionError(f"unexpected busctl call: {args}")
+
+    monkeypatch.setattr(bt_routes, "busctl", fake_busctl)
+    resp = await bt_routes.get_bluetooth()
+
+    assert resp["available"] is True
+    assert len(resp["adapters"]) == 1
+    assert resp["adapters"][0]["discovering"] is True

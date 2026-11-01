@@ -21,6 +21,11 @@ _ADAPTER_RE = re.compile(r"^/org/bluez/hci[0-9]+$")
 _DEVICE_RE = re.compile(r"^/org/bluez/hci[0-9]+/dev_[0-9A-F]{2}(_[0-9A-F]{2}){5}$")
 
 
+_DISCOVERY_TIMEOUT = 10.0
+_BUS_CONNECT_TIMEOUT = 5.0
+_AUTO_STOP_DELAY = 60.0
+
+
 class BtPowerBody(BaseModel):
     adapter: str = Field(..., description="BlueZ adapter path (e.g., /org/bluez/hci0)")
     powered: bool = Field(..., description="Power state to set")
@@ -225,17 +230,22 @@ async def _stop_discovery_after_delay(adapter: str, timer: asyncio.Task, delay: 
         return
     try:
         bus = await get_system_bus()
-        from dbus_fast import Message
-        reply = await bus.call(
-            Message(
-                destination="org.bluez",
-                path=adapter,
-                interface="org.bluez.Adapter1",
-                member="StopDiscovery",
-            )
+        from dbus_fast import Message, MessageType
+        reply = await asyncio.wait_for(
+            bus.call(
+                Message(
+                    destination="org.bluez",
+                    path=adapter,
+                    interface="org.bluez.Adapter1",
+                    member="StopDiscovery",
+                )
+            ),
+            timeout=_DISCOVERY_TIMEOUT,
         )
-        if reply.message_type == Message.MessageType.ERROR:
+        if reply.message_type == MessageType.ERROR:
             logger.warning("StopDiscovery error on %s: %s", adapter, reply.error_name)
+    except asyncio.TimeoutError:
+        logger.warning("StopDiscovery timed out on %s after delay", adapter)
     except Exception:
         logger.exception("Failed to stop discovery on %s after delay", adapter)
     finally:
@@ -259,11 +269,6 @@ async def discovery_bluetooth(body: BtDiscoveryBody):
     adapter = body.adapter
 
     if body.on:
-        # Cancel any existing timer for this adapter
-        existing_timer = _discovery_timers.pop(adapter, None)
-        if existing_timer is not None:
-            existing_timer.cancel()
-
         try:
             bus = await get_system_bus()
         except BusUnavailable as e:
@@ -277,13 +282,16 @@ async def discovery_bluetooth(body: BtDiscoveryBody):
 
         try:
             from dbus_fast import Message, MessageType
-            reply = await bus.call(
-                Message(
-                    destination="org.bluez",
-                    path=adapter,
-                    interface="org.bluez.Adapter1",
-                    member="StartDiscovery",
-                )
+            reply = await asyncio.wait_for(
+                bus.call(
+                    Message(
+                        destination="org.bluez",
+                        path=adapter,
+                        interface="org.bluez.Adapter1",
+                        member="StartDiscovery",
+                    )
+                ),
+                timeout=_DISCOVERY_TIMEOUT,
             )
             if reply.message_type == MessageType.ERROR:
                 if reply.error_name != "org.bluez.Error.InProgress":
@@ -291,13 +299,21 @@ async def discovery_bluetooth(body: BtDiscoveryBody):
                         {"error": "write_failed", "dbus_error": reply.error_name},
                         status_code=502,
                     )
+        except asyncio.TimeoutError:
+            logger.exception("StartDiscovery timed out")
+            return JSONResponse({"error": "bluez_timeout"}, status_code=504)
         except Exception:
             logger.exception("StartDiscovery call failed")
             return JSONResponse({"error": "write_failed"}, status_code=502)
 
+        # Cancel any existing timer for this adapter ONLY after StartDiscovery succeeded
+        existing_timer = _discovery_timers.pop(adapter, None)
+        if existing_timer is not None:
+            existing_timer.cancel()
+
         # Schedule stop after 60 seconds
         async def _stop_wrapper():
-            await _stop_discovery_after_delay(adapter, timer, 60.0)
+            await _stop_discovery_after_delay(adapter, timer, _AUTO_STOP_DELAY)
 
         timer = asyncio.create_task(_stop_wrapper())
         _discovery_timers[adapter] = timer
@@ -305,19 +321,25 @@ async def discovery_bluetooth(body: BtDiscoveryBody):
         # Read back Discovering property
         try:
             from dbus_fast import Message as Message2, MessageType as MessageType2
-            reply = await bus.call(
-                Message2(
-                    destination="org.bluez",
-                    path=adapter,
-                    interface="org.freedesktop.DBus.Properties",
-                    member="Get",
-                    signature="ss",
-                    body=["org.bluez.Adapter1", "Discovering"],
-                )
+            reply = await asyncio.wait_for(
+                bus.call(
+                    Message2(
+                        destination="org.bluez",
+                        path=adapter,
+                        interface="org.freedesktop.DBus.Properties",
+                        member="Get",
+                        signature="ss",
+                        body=["org.bluez.Adapter1", "Discovering"],
+                    )
+                ),
+                timeout=_DISCOVERY_TIMEOUT,
             )
             discovering = False
             if reply.message_type == MessageType2.METHOD_RETURN and reply.body:
                 discovering = bool(reply.body[0])
+        except asyncio.TimeoutError:
+            logger.exception("Read Discovering property timed out")
+            discovering = True
         except Exception:
             logger.exception("Failed to read Discovering property")
             discovering = True
@@ -342,15 +364,33 @@ async def discovery_bluetooth(body: BtDiscoveryBody):
             return JSONResponse({"error": "bluez_unavailable"}, status_code=503)
 
         try:
-            from dbus_fast import Message
-            await bus.call(
-                Message(
-                    destination="org.bluez",
-                    path=adapter,
-                    interface="org.bluez.Adapter1",
-                    member="StopDiscovery",
-                )
+            from dbus_fast import Message, MessageType
+            reply = await asyncio.wait_for(
+                bus.call(
+                    Message(
+                        destination="org.bluez",
+                        path=adapter,
+                        interface="org.bluez.Adapter1",
+                        member="StopDiscovery",
+                    )
+                ),
+                timeout=_DISCOVERY_TIMEOUT,
             )
+            if reply.message_type == MessageType.ERROR:
+                if reply.error_name not in (
+                    "org.bluez.Error.NotReady",
+                    "org.bluez.Error.Failed",
+                ) or (
+                    reply.error_name == "org.bluez.Error.Failed"
+                    and "No discovery started" not in (reply.body[0] if reply.body else "")
+                ):
+                    return JSONResponse(
+                        {"error": "bluez_error", "detail": reply.error_name},
+                        status_code=502,
+                    )
+        except asyncio.TimeoutError:
+            logger.exception("StopDiscovery timed out")
+            return JSONResponse({"error": "bluez_timeout"}, status_code=504)
         except Exception:
             logger.exception("StopDiscovery call failed")
             return JSONResponse({"error": "write_failed"}, status_code=502)
