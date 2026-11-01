@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { OnboardingScreen } from "./OnboardingScreen";
+import { useProcessStore } from "@/stores/process-store";
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -8,7 +9,7 @@ const json = (body: unknown, status = 200) =>
     headers: { "Content-Type": "application/json" },
   });
 
-type Call = { url: string; method: string; body: unknown };
+type Call = { url: string; method: string; body: unknown; headers: Record<string, string> };
 
 /**
  * Routes fetch by "METHOD url". Unrouted calls answer 200 {}. Every call is
@@ -20,7 +21,8 @@ function routeFetch(routes: Record<string, (body: unknown) => Response | Promise
     const url = String(input);
     const method = (init?.method ?? "GET").toUpperCase();
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
-    calls.push({ url, method, body });
+    const headers = Object.fromEntries(new Headers(init?.headers).entries());
+    calls.push({ url, method, body, headers });
     const route = routes[`${method} ${url}`];
     return route ? route(body) : json({ ok: true });
   });
@@ -68,6 +70,12 @@ async function passPrivacyStep() {
   await screen.findByRole("heading", { name: "Privacy" });
   await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
   fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+}
+
+/** First chat: Set Up Later (offered only when the assistant has a model). */
+async function passFirstChatStep() {
+  await screen.findByRole("heading", { name: "Meet your assistant" });
+  fireEvent.click(screen.getByRole("button", { name: "Set Up Later" }));
 }
 
 /** About you: pick a topic, then accept the default style. */
@@ -234,9 +242,11 @@ describe("OnboardingScreen first run", () => {
     await waitFor(() =>
       expect(progressPuts(calls).at(-1)?.body).toMatchObject({
         in_progress: false,
-        skipped: ["taos-account", "device", "model", "agent"],
+        skipped: ["taos-account", "device", "model", "agent", "first-chat"],
       }),
     );
+    // Nothing to run an assistant on: the first chat is never offered.
+    expect(calls.some((c) => c.url === "/api/agents/deploy" || c.url === "/api/hardware")).toBe(false);
     expect(onDone).not.toHaveBeenCalled();
     releaseFinal();
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
@@ -267,7 +277,7 @@ describe("OnboardingScreen first run", () => {
     expect(progressPuts(calls).at(-1)?.body).toMatchObject({
       in_progress: false,
       completed: expect.arrayContaining(["taos-account", "device", "about"]),
-      skipped: ["model", "agent"],
+      skipped: ["model", "agent", "first-chat"],
     });
   });
 
@@ -323,7 +333,7 @@ describe("OnboardingScreen first run", () => {
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     expect(progressPuts(calls).at(-1)?.body).toMatchObject({
       in_progress: false,
-      skipped: ["taos-account", "device", "model", "agent"],
+      skipped: ["taos-account", "device", "model", "agent", "first-chat"],
     });
   });
 
@@ -488,6 +498,7 @@ describe("OnboardingScreen on-device model", () => {
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     await passAgentStep();
     await passPrivacyStep();
+    await passFirstChatStep();
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     expect(progressPuts(calls).at(-1)?.body).toMatchObject({
       in_progress: false,
@@ -510,6 +521,7 @@ describe("OnboardingScreen on-device model", () => {
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     await passAgentStep();
     await passPrivacyStep();
+    await passFirstChatStep();
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     expect(progressPuts(calls).at(-1)?.body).toMatchObject({
       model: { app_id: "qwen3-1.7b", downloaded: false },
@@ -615,6 +627,7 @@ describe("OnboardingScreen taOS Agent model", () => {
     fireEvent.click(screen.getByRole("radio", { name: "gpt-4o-mini" }));
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     await passPrivacyStep();
+    await passFirstChatStep();
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     expect(chain(calls)).toEqual([
       "POST /api/secrets",
@@ -729,6 +742,7 @@ describe("OnboardingScreen taOS Agent model", () => {
     await screen.findByText("Until then it uses the model on this device, which can do less.");
     await passAgentStep();
     await passPrivacyStep();
+    await passFirstChatStep();
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     expect(calls.find((c) => c.url === "/api/taos-agent/settings")?.body).toEqual({ model: "qwen3-1.7b" });
     expect(progressPuts(calls).at(-1)?.body).toMatchObject({
@@ -762,6 +776,7 @@ describe("OnboardingScreen taOS Agent model", () => {
     await screen.findByRole("heading", { name: "Pick a model" });
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     await passPrivacyStep();
+    await passFirstChatStep();
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     expect(calls.find((c) => c.url === "/api/taos-agent/settings")?.body).toEqual({ model: "llama-3.1-8b" });
   });
@@ -915,5 +930,173 @@ describe("OnboardingScreen privacy", () => {
     await open({ [`GET ${PING}`]: savedPing });
     fireEvent.click(screen.getByRole("button", { name: "Back" }));
     expect(await screen.findByRole("heading", { name: "Choose the taOS Agent's model" })).toBeInTheDocument();
+  });
+});
+
+describe("OnboardingScreen first chat", () => {
+  beforeEach(() => { useProcessStore.setState({ windows: [] }); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  const about = { help: ["coding"], tone: "warm" as const, autonomy: "ask" as const };
+  const atFirstChat = {
+    step: "first-chat",
+    completed: ["hello", "name", "password", "about", "agent"],
+    skipped: ["taos-account", "device", "model"],
+    about,
+    agent_model: "gpt-4o-mini",
+  };
+  const onDevice = { app_id: "qwen3-1.7b", variant_id: "q4", name: "Qwen3 1.7B", size_mb: 1100, downloaded: true };
+  const PROMPTS = [
+    "Explain what a piece of code does.",
+    "Help me plan my week.",
+    "Find the latest news on a topic I care about.",
+  ];
+  const hardware = () => json({ recommended_framework: "picoclaw" });
+  const me = () => json({ user: { full_name: "Ada Lovelace" } });
+  const deploys = (calls: Call[]) => calls.filter((c) => c.url === "/api/agents/deploy");
+  const messagesWindows = () => useProcessStore.getState().windows.filter((w) => w.appId === "messages");
+
+  it("deploys the assistant for this device, records it, then opens Messages on it", async () => {
+    const calls = routeFetch({
+      "GET /api/hardware": hardware,
+      "GET /auth/me": me,
+      "POST /api/agents/deploy": () => json({ name: "assistant-2", status: "deploying" }),
+    });
+    const onDone = vi.fn();
+    render(<OnboardingScreen onDone={onDone} resume={atFirstChat} />);
+    expect(await screen.findByRole("heading", { name: "Meet your assistant" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Name")).toHaveValue("Assistant");
+    for (const p of PROMPTS) expect(screen.getByText(p)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "  Sage  " } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
+
+    const hw = calls.findIndex((c) => c.url === "/api/hardware");
+    const dep = calls.findIndex((c) => c.url === "/api/agents/deploy");
+    expect(hw).toBeGreaterThanOrEqual(0);
+    expect(dep).toBeGreaterThan(hw);
+    expect(calls[dep]!.body).toEqual({
+      name: "Sage",
+      framework: "picoclaw",
+      model: "gpt-4o-mini",
+      soul_md: expect.stringMatching(/^You are Ada Lovelace's personal assistant[^]*help with: coding\./),
+    });
+    expect(calls[dep]!.headers["idempotency-key"]).toMatch(/\S{8,}/);
+    // Setup never makes the DM itself: the deploy does.
+    expect(calls.some((c) => c.method === "POST" && c.url === "/api/chat/channels")).toBe(false);
+    expect(progressPuts(calls).at(-1)?.body).toMatchObject({
+      in_progress: false,
+      completed: expect.arrayContaining(["first-chat"]),
+      first_chat: { agent: "assistant-2" },
+    });
+    expect(messagesWindows()).toHaveLength(1);
+    expect(messagesWindows()[0]!.props).toEqual({ firstChatAgent: "assistant-2", suggestedPrompts: PROMPTS });
+  });
+
+  it("a failed deploy says why and stays, and Continue retries with the same key", async () => {
+    let tries = 0;
+    const calls = routeFetch({
+      "GET /api/hardware": hardware,
+      "GET /auth/me": me,
+      "POST /api/agents/deploy": () =>
+        ++tries === 1 ? json({ error: "No room for another agent" }, 409) : json({ name: "assistant" }),
+    });
+    const onDone = vi.fn();
+    render(<OnboardingScreen onDone={onDone} resume={atFirstChat} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Couldn't set up your assistant: No room for another agent.",
+    );
+    expect(screen.getByRole("heading", { name: "Meet your assistant" })).toBeInTheDocument();
+    expect(onDone).not.toHaveBeenCalled();
+    expect(messagesWindows()).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
+    const [first, second] = deploys(calls);
+    expect(second).toBeDefined();
+    expect(second!.headers["idempotency-key"]).toBe(first!.headers["idempotency-key"]);
+  });
+
+  it("an unreadable hardware profile names that hop and deploys nothing", async () => {
+    const calls = routeFetch({ "GET /api/hardware": () => json({ error: "boom" }, 500) });
+    const onDone = vi.fn();
+    render(<OnboardingScreen onDone={onDone} resume={atFirstChat} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't read this device's hardware: boom.");
+    expect(deploys(calls)).toHaveLength(0);
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
+  it("with only the on-device model, the assistant runs on that", async () => {
+    const calls = routeFetch({
+      "GET /api/hardware": hardware,
+      "POST /api/agents/deploy": () => json({ name: "assistant" }),
+    });
+    const onDone = vi.fn();
+    const { agent_model: _unused, ...rest } = atFirstChat;
+    render(<OnboardingScreen onDone={onDone} resume={{ ...rest, model: onDevice }} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
+    expect(deploys(calls)[0]!.body).toMatchObject({ model: "qwen3-1.7b" });
+  });
+
+  it("asks for a usable name before it will continue", async () => {
+    routeFetch();
+    render(<OnboardingScreen onDone={() => {}} resume={atFirstChat} />);
+    const name = await screen.findByLabelText("Name");
+    const cont = screen.getByRole("button", { name: "Continue" });
+    fireEvent.change(name, { target: { value: "   " } });
+    expect(cont).toBeDisabled();
+    expect(screen.queryByText("Give your assistant a name.")).not.toBeInTheDocument();
+    fireEvent.change(name, { target: { value: "!!!" } });
+    expect(cont).toBeDisabled();
+    expect(screen.getByText("Use at least one letter or number.")).toBeInTheDocument();
+    fireEvent.change(name, { target: { value: "R2" } });
+    expect(cont).toBeEnabled();
+  });
+
+  it("Set Up Later finishes with the first chat skipped and deploys nothing", async () => {
+    const calls = routeFetch();
+    const onDone = vi.fn();
+    render(<OnboardingScreen onDone={onDone} resume={atFirstChat} />);
+    await passFirstChatStep();
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
+    expect(progressPuts(calls).at(-1)?.body).toMatchObject({
+      in_progress: false,
+      skipped: expect.arrayContaining(["first-chat"]),
+    });
+    expect(deploys(calls)).toHaveLength(0);
+    expect(messagesWindows()).toHaveLength(0);
+  });
+
+  it("with no model at all after the agent step, setup ends without offering it", async () => {
+    const calls = routeFetch();
+    const onDone = vi.fn();
+    render(
+      <OnboardingScreen
+        onDone={onDone}
+        resume={{ step: "privacy", completed: ["hello", "name", "password"], skipped: ["taos-account", "device", "model", "agent"] }}
+      />,
+    );
+    await passPrivacyStep();
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
+    expect(screen.queryByRole("heading", { name: "Meet your assistant" })).not.toBeInTheDocument();
+    // Never landed on, not landed on and left: no progress ever points at it.
+    expect(progressPuts(calls).map((c) => (c.body as { step: string }).step)).not.toContain("first-chat");
+    expect(progressPuts(calls).at(-1)?.body).toMatchObject({ skipped: expect.arrayContaining(["first-chat"]) });
+    expect(calls.some((c) => c.url === "/api/hardware" || c.url === "/api/agents/deploy")).toBe(false);
+  });
+
+  it("a resume on the first chat with its model gone finishes instead", async () => {
+    const calls = routeFetch();
+    const onDone = vi.fn();
+    const { agent_model: _unused, ...noModel } = atFirstChat;
+    render(<OnboardingScreen onDone={onDone} resume={noModel} />);
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
+    expect(progressPuts(calls).at(-1)?.body).toMatchObject({
+      in_progress: false,
+      skipped: expect.arrayContaining(["first-chat"]),
+    });
+    expect(deploys(calls)).toHaveLength(0);
   });
 });
