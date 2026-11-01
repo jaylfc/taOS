@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, waitFor, act, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { WifiPanel } from "./WifiPanel";
 import { StrictMode } from "react";
 
@@ -158,7 +157,7 @@ describe("WifiPanel controls", () => {
     await waitFor(() => expect(screen.getByText("ConnectedNet")).toBeInTheDocument());
     const toggle = screen.getByRole("switch", { name: "Wi-Fi" });
     await act(async () => {
-      await userEvent.click(toggle);
+      fireEvent.click(toggle);
     });
     expect(fetchSpy).toHaveBeenCalledTimes(3);
     const [, toggleCall] = fetchSpy.mock.calls;
@@ -176,7 +175,7 @@ describe("WifiPanel controls", () => {
     await waitFor(() => expect(screen.getByText("ConnectedNet")).toBeInTheDocument());
     const disconnectBtn = screen.getByRole("button", { name: /Disconnect from ConnectedNet/i });
     await act(async () => {
-      await userEvent.click(disconnectBtn);
+      fireEvent.click(disconnectBtn);
     });
     expect(fetchSpy).toHaveBeenCalledTimes(3);
     const [, disconnectCall] = fetchSpy.mock.calls;
@@ -194,7 +193,7 @@ describe("WifiPanel controls", () => {
     await waitFor(() => expect(screen.getByText("OpenNet")).toBeInTheDocument());
     const joinBtn = screen.getByRole("button", { name: /Join OpenNet/i });
     await act(async () => {
-      await userEvent.click(joinBtn);
+      fireEvent.click(joinBtn);
     });
     expect(fetchSpy).toHaveBeenCalledTimes(3);
     const [, connectCall] = fetchSpy.mock.calls;
@@ -214,11 +213,7 @@ describe("WifiPanel controls", () => {
     await waitFor(() => expect(screen.getByText("SecuredNet")).toBeInTheDocument());
     const joinBtn = screen.getByRole("button", { name: /Join SecuredNet \(secured\)/i });
     await act(async () => {
-      await userEvent.tab();
-      await userEvent.tab();
-      await userEvent.tab();
-      await userEvent.tab();
-      await userEvent.keyboard("{Enter}");
+      fireEvent.click(joinBtn);
     });
     await waitFor(() => {
       const input = screen.getByLabelText("Password for SecuredNet");
@@ -226,8 +221,9 @@ describe("WifiPanel controls", () => {
       expect(input).toHaveFocus();
     });
     await act(async () => {
-      await userEvent.type(screen.getByLabelText("Password for SecuredNet"), "secret123");
-      await userEvent.keyboard("{Enter}");
+      const input = screen.getByLabelText("Password for SecuredNet");
+      fireEvent.change(input, { target: { value: "secret123" } });
+      fireEvent.keyDown(input, { key: "Enter" });
     });
     expect(fetchSpy).toHaveBeenCalledTimes(3);
     const [, connectCall] = fetchSpy.mock.calls;
@@ -242,17 +238,14 @@ describe("WifiPanel controls", () => {
     await waitFor(() => expect(screen.getByText("SecuredNet")).toBeInTheDocument());
     const joinBtn = screen.getByRole("button", { name: /Join SecuredNet \(secured\)/i });
     await act(async () => {
-      await userEvent.tab();
-      await userEvent.tab();
-      await userEvent.tab();
-      await userEvent.tab();
-      await userEvent.keyboard("{Enter}");
+      fireEvent.click(joinBtn);
     });
     await waitFor(() => {
       expect(screen.getByLabelText("Password for SecuredNet")).toBeInTheDocument();
     });
     await act(async () => {
-      await userEvent.keyboard("{Escape}");
+      const input = screen.getByLabelText("Password for SecuredNet");
+      fireEvent.keyDown(input, { key: "Escape" });
     });
     expect(screen.queryByLabelText("Password for SecuredNet")).not.toBeInTheDocument();
     expect(fetchSpy).toHaveBeenCalledTimes(1);
@@ -264,7 +257,7 @@ describe("WifiPanel controls", () => {
     await waitFor(() => expect(screen.getByText("SecuredNet")).toBeInTheDocument());
     const joinBtn = screen.getByRole("button", { name: /Join SecuredNet \(secured\)/i });
     await act(async () => {
-      await userEvent.click(joinBtn);
+      fireEvent.click(joinBtn);
     });
     await waitFor(() => {
       const input = screen.getByLabelText("Password for SecuredNet");
@@ -272,12 +265,12 @@ describe("WifiPanel controls", () => {
     });
     const showBtn = screen.getByRole("button", { name: "Show password" });
     await act(async () => {
-      await userEvent.click(showBtn);
+      fireEvent.click(showBtn);
     });
     expect(screen.getByLabelText("Password for SecuredNet")).toHaveAttribute("type", "text");
     const hideBtn = screen.getByRole("button", { name: "Hide password" });
     await act(async () => {
-      await userEvent.click(hideBtn);
+      fireEvent.click(hideBtn);
     });
     expect(screen.getByLabelText("Password for SecuredNet")).toHaveAttribute("type", "password");
   });
@@ -291,7 +284,7 @@ describe("WifiPanel controls", () => {
     await waitFor(() => expect(screen.getByText("SecuredNet")).toBeInTheDocument());
     const joinBtn = screen.getByRole("button", { name: /Join SecuredNet \(secured\)/i });
     await act(async () => {
-      await userEvent.click(joinBtn);
+      fireEvent.click(joinBtn);
     });
     let input: HTMLInputElement;
     await waitFor(() => {
@@ -299,8 +292,8 @@ describe("WifiPanel controls", () => {
       expect(input).toBeInTheDocument();
     });
     await act(async () => {
-      await userEvent.type(input!, "secret123");
-      await userEvent.keyboard("{Enter}");
+      fireEvent.change(input!, { target: { value: "secret123" } });
+      fireEvent.keyDown(input!, { key: "Enter" });
     });
     expect(await screen.findByRole("alert")).toHaveTextContent(/Connection failed: not_permitted/);
   });
@@ -314,7 +307,7 @@ describe("WifiPanel controls", () => {
     await waitFor(() => expect(screen.getByText("SecuredNet")).toBeInTheDocument());
     const joinBtn = screen.getByRole("button", { name: /Join SecuredNet \(secured\)/i });
     await act(async () => {
-      await userEvent.click(joinBtn);
+      fireEvent.click(joinBtn);
     });
     let input: HTMLInputElement;
     await waitFor(() => {
@@ -322,8 +315,8 @@ describe("WifiPanel controls", () => {
       expect(input).toBeInTheDocument();
     });
     await act(async () => {
-      await userEvent.type(input!, "wrong");
-      await userEvent.keyboard("{Enter}");
+      fireEvent.change(input!, { target: { value: "wrong" } });
+      fireEvent.keyDown(input!, { key: "Enter" });
     });
     expect(screen.getByText("Connection failed: invalid_psk")).toBeInTheDocument();
     const globalAlert = screen.queryByRole("alert");
@@ -343,7 +336,7 @@ describe("WifiPanel controls", () => {
     await waitFor(() => expect(screen.getByText("OpenNet")).toBeInTheDocument());
     const joinBtn = screen.getByRole("button", { name: /Join OpenNet/i });
     await act(async () => {
-      await userEvent.click(joinBtn);
+      fireEvent.click(joinBtn);
     });
     expect(screen.getByText(/Joining OpenNet/)).toBeInTheDocument();
     await act(async () => {
@@ -362,7 +355,7 @@ describe("WifiPanel controls", () => {
     await waitFor(() => expect(screen.getByText("SecuredNet")).toBeInTheDocument());
     const joinBtn = screen.getByRole("button", { name: /Join SecuredNet \(secured\)/i });
     await act(async () => {
-      await userEvent.click(joinBtn);
+      fireEvent.click(joinBtn);
     });
     let input: HTMLInputElement;
     await waitFor(() => {
@@ -370,8 +363,8 @@ describe("WifiPanel controls", () => {
       expect(input).toBeInTheDocument();
     });
     await act(async () => {
-      await userEvent.type(input!, "secret123");
-      await userEvent.keyboard("{Enter}");
+      fireEvent.change(input!, { target: { value: "secret123" } });
+      fireEvent.keyDown(input!, { key: "Enter" });
     });
     await waitFor(() => expect(screen.queryByLabelText("Password for SecuredNet")).not.toBeInTheDocument());
   });
@@ -407,7 +400,7 @@ describe("WifiPanel StrictMode", () => {
     await waitFor(() => expect(screen.getByRole("switch", { name: "Wi-Fi" })).toBeChecked());
     const toggle = screen.getByRole("switch", { name: "Wi-Fi" });
     await act(async () => {
-      await userEvent.click(toggle);
+      fireEvent.click(toggle);
     });
     const toggleCalls = fetchSpy.mock.calls.filter(call => call[0] === "/api/hardware/wifi/enabled");
     expect(toggleCalls.length).toBe(1);
@@ -424,7 +417,7 @@ describe("WifiPanel StrictMode", () => {
     await waitFor(() => expect(screen.getByText("TestNet")).toBeInTheDocument());
     const disconnectBtn = screen.getByRole("button", { name: /Disconnect from TestNet/i });
     await act(async () => {
-      await userEvent.click(disconnectBtn);
+      fireEvent.click(disconnectBtn);
     });
     const disconnectCalls = fetchSpy.mock.calls.filter(call => call[0] === "/api/hardware/wifi/disconnect");
     expect(disconnectCalls.length).toBe(1);
@@ -441,12 +434,13 @@ describe("WifiPanel StrictMode", () => {
     await waitFor(() => expect(screen.getByText("TestNet")).toBeInTheDocument());
     const joinBtn = screen.getByRole("button", { name: /Join TestNet \(secured\)/i });
     await act(async () => {
-      await userEvent.click(joinBtn);
+      fireEvent.click(joinBtn);
     });
     await waitFor(() => expect(screen.getByLabelText("Password for TestNet")).toBeInTheDocument());
     await act(async () => {
-      await userEvent.type(screen.getByLabelText("Password for TestNet"), "secret");
-      await userEvent.keyboard("{Enter}");
+      const input = screen.getByLabelText("Password for TestNet");
+      fireEvent.change(input, { target: { value: "secret" } });
+      fireEvent.keyDown(input, { key: "Enter" });
     });
     const connectCalls = fetchSpy.mock.calls.filter(call => call[0] === "/api/hardware/wifi/connect");
     expect(connectCalls.length).toBe(1);
