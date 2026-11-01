@@ -20,6 +20,18 @@ import pytest
 from tinyagentos.worker.agent import _collect_resources
 
 
+def _hw(gpu_type: str | None) -> dict | None:
+    """Build a minimal hardware dict for _collect_resources tests."""
+    if gpu_type is None:
+        return None
+    flags = {}
+    if gpu_type in ("nvidia", "cuda"):
+        flags = {"cuda": True}
+    elif gpu_type in ("amd", "rocm"):
+        flags = {"rocm": True}
+    return {"gpu": {"type": gpu_type, **flags}}
+
+
 # ---------------------------------------------------------------------------
 # _collect_resources unit tests (taOS #3228)
 # ---------------------------------------------------------------------------
@@ -33,7 +45,7 @@ def test_llama_cpp_only_nvidia_reports_gpu_cuda(monkeypatch: pytest.MonkeyPatch)
     could never be leased (#3228).
     """
     monkeypatch.delenv("TAOS_WORKER_RESOURCES", raising=False)
-    resources = _collect_resources([], "nvidia")
+    resources = _collect_resources([], _hw("nvidia"))
     assert "gpu-cuda-0" in resources
     assert "gpu-rocm-0" not in resources
     assert "gpu-metal" not in resources
@@ -43,7 +55,7 @@ def test_llama_cpp_only_nvidia_reports_gpu_cuda(monkeypatch: pytest.MonkeyPatch)
 def test_rocm_worker_reports_gpu_rocm(monkeypatch: pytest.MonkeyPatch) -> None:
     """An AMD/ROCm worker must advertise gpu-rocm-0, not gpu-cuda-0."""
     monkeypatch.delenv("TAOS_WORKER_RESOURCES", raising=False)
-    resources = _collect_resources([], "amd")
+    resources = _collect_resources([], _hw("amd"))
     assert "gpu-rocm-0" in resources
     assert "gpu-cuda-0" not in resources
     assert "gpu-metal" not in resources
@@ -53,30 +65,30 @@ def test_rocm_worker_reports_gpu_rocm(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_nvidia_via_cuda_alias(monkeypatch: pytest.MonkeyPatch) -> None:
     """``gpu_type`` may be ``cuda`` (alias) instead of ``nvidia``."""
     monkeypatch.delenv("TAOS_WORKER_RESOURCES", raising=False)
-    assert _collect_resources([], "cuda") == ["cpu-inference", "gpu-cuda-0"]
+    assert _collect_resources([], _hw("cuda")) == ["cpu-inference", "gpu-cuda-0"]
 
 
 def test_amd_via_rocm_alias(monkeypatch: pytest.MonkeyPatch) -> None:
     """``gpu_type`` may be ``rocm`` (alias) instead of ``amd``."""
     monkeypatch.delenv("TAOS_WORKER_RESOURCES", raising=False)
-    assert _collect_resources([], "rocm") == ["cpu-inference", "gpu-rocm-0"]
+    assert _collect_resources([], _hw("rocm")) == ["cpu-inference", "gpu-rocm-0"]
 
 
 def test_no_gpu_hardware_no_gpu_resource(monkeypatch: pytest.MonkeyPatch) -> None:
     """A GPU-less worker must not advertise any gpu-* resource, even when
     a GPU-capable backend is not running (#3228 regression guard)."""
     monkeypatch.delenv("TAOS_WORKER_RESOURCES", raising=False)
-    assert _collect_resources([{"type": "ollama"}], "none") == ["cpu-inference"]
+    assert _collect_resources([{"type": "ollama"}], _hw("none")) == ["cpu-inference"]
     assert _collect_resources([{"type": "vllm"}], None) == ["cpu-inference"]
 
 
 def test_ollama_on_nvidia_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
     """Existing ollama/vllm workers on NVIDIA must still report gpu-cuda-0."""
     monkeypatch.delenv("TAOS_WORKER_RESOURCES", raising=False)
-    assert _collect_resources([{"type": "ollama"}], "nvidia") == [
+    assert _collect_resources([{"type": "ollama"}], _hw("nvidia")) == [
         "cpu-inference", "gpu-cuda-0",
     ]
-    assert _collect_resources([{"type": "vllm"}], "nvidia") == [
+    assert _collect_resources([{"type": "vllm"}], _hw("nvidia")) == [
         "cpu-inference", "gpu-cuda-0",
     ]
 
@@ -84,7 +96,7 @@ def test_ollama_on_nvidia_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_apple_silicon_still_gpu_metal(monkeypatch: pytest.MonkeyPatch) -> None:
     """Apple Silicon workers still report gpu-metal."""
     monkeypatch.delenv("TAOS_WORKER_RESOURCES", raising=False)
-    assert _collect_resources([{"type": "mlx"}], "apple") == [
+    assert _collect_resources([{"type": "mlx"}], _hw("apple")) == [
         "cpu-inference", "gpu-metal",
     ]
 
@@ -92,7 +104,7 @@ def test_apple_silicon_still_gpu_metal(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_intel_mac_no_gpu_resource(monkeypatch: pytest.MonkeyPatch) -> None:
     """An Intel Mac with no Apple GPU must not advertise any gpu-* class."""
     monkeypatch.delenv("TAOS_WORKER_RESOURCES", raising=False)
-    assert _collect_resources([{"type": "ollama"}], "", "darwin") == [
+    assert _collect_resources([{"type": "ollama"}], _hw(""), "darwin") == [
         "cpu-inference",
     ]
 
