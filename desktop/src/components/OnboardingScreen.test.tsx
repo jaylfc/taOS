@@ -42,14 +42,97 @@ describe("OnboardingScreen", () => {
     expect(screen.getByRole("button", { name: "Get started" })).toBeInTheDocument();
   });
 
-  it("finishes onboarding after account creation (username step gated off, #141)", async () => {
+  it("advances to the optional taOS account step after account creation", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(okJson({ ok: true }));
     const onDone = vi.fn();
     render(<OnboardingScreen onDone={onDone} />);
     await completeAccountStep();
-    // The taos.my username-claim step is gated off until its backend exists, so
-    // account creation completes onboarding directly rather than advancing.
+    await waitFor(() => expect(screen.getByText("Your taOS account")).toBeInTheDocument());
+    expect(onDone).not.toHaveBeenCalled();
+    // The email from the local step is carried over.
+    expect(screen.getByLabelText(/^Email/)).toHaveValue("jay@example.com");
+  });
+
+  it("skipping the taOS account step finishes onboarding with no account call", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(okJson({ ok: true }));
+    const onDone = vi.fn();
+    render(<OnboardingScreen onDone={onDone} />);
+    await completeAccountStep();
+    fireEvent.click(await screen.findByRole("button", { name: "Skip for now" }));
+    expect(onDone).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls.map((c) => String(c[0]))).toEqual(["/auth/setup"]);
+  });
+
+  it("signing in to taos.my finishes onboarding", async () => {
+    const account = { user_id: "u-1", email: "jay@example.com", taosgo: { status: "none" } };
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(okJson({ ok: true }))          // /auth/setup
+      .mockResolvedValueOnce(okJson({ user_id: "u-1" }))    // /api/account/login
+      .mockResolvedValueOnce(okJson(account));              // /api/account/me
+    const onDone = vi.fn();
+    render(<OnboardingScreen onDone={onDone} />);
+    await completeAccountStep();
+    fireEvent.change(await screen.findByLabelText(/taOS account password/), {
+      target: { value: "longenough" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in to taOS" }));
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
-    expect(screen.queryByText("Claim your free taOS username")).not.toBeInTheDocument();
+  });
+
+  it("a wrong taos.my password shows an error and stays on the step", async () => {
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(okJson({ ok: true }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ detail: "invalid_credentials" }), { status: 401 }),
+      );
+    const onDone = vi.fn();
+    render(<OnboardingScreen onDone={onDone} />);
+    await completeAccountStep();
+    fireEvent.change(await screen.findByLabelText(/taOS account password/), {
+      target: { value: "longenough" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in to taOS" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "That email and password don't match a taOS account.",
+    );
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
+  it("closed sign-ups show a plain notice, not an error, and Skip still works", async () => {
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(okJson({ ok: true }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ detail: "signups_closed" }), { status: 403 }),
+      );
+    const onDone = vi.fn();
+    render(<OnboardingScreen onDone={onDone} />);
+    await completeAccountStep();
+    fireEvent.click(await screen.findByRole("button", { name: "Create account" }));
+    fireEvent.change(screen.getByLabelText(/taOS account password/), {
+      target: { value: "longenough" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create taOS account" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("aren't open yet");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Skip for now" }));
+    expect(onDone).toHaveBeenCalledOnce();
+  });
+
+  it("taos.my unreachable shows an error and Skip still works", async () => {
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(okJson({ ok: true }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: "account service unreachable" }), { status: 503 }),
+      );
+    const onDone = vi.fn();
+    render(<OnboardingScreen onDone={onDone} />);
+    await completeAccountStep();
+    fireEvent.change(await screen.findByLabelText(/taOS account password/), {
+      target: { value: "longenough" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in to taOS" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("not available yet");
+    fireEvent.click(screen.getByRole("button", { name: "Skip for now" }));
+    expect(onDone).toHaveBeenCalledOnce();
   });
 });

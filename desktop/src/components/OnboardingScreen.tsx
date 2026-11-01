@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { Sparkles } from "lucide-react";
+import { TaosAccountStep } from "./TaosAccountStep";
 
 interface Props {
   onDone: () => void;
@@ -19,9 +20,9 @@ interface Props {
  * - Submit POSTs to /auth/complete instead of /auth/setup
  * - auto-login defaults to false
  *
- * After the local account is created the flow finishes onboarding directly.
- * The free taOS username-claim step is deferred until its backend route
- * (/api/account/username) lands (tracked in #141).
+ * First-run: after the local account is created (which signs this browser
+ * in), the optional taOS account step follows. Invite completion finishes
+ * directly.
  */
 export function OnboardingScreen({
   onDone,
@@ -39,6 +40,7 @@ export function OnboardingScreen({
   const [autoLogin, setAutoLogin] = useState(defaultAutoLogin ?? !isInvite);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [step, setStep] = useState<"local" | "taos-account">("local");
 
   const passwordOk = password.length >= 4;
   const matches = password.length > 0 && password === confirm;
@@ -77,10 +79,12 @@ export function OnboardingScreen({
         setLoading(false);
         return;
       }
-      // Account created: finish onboarding. The taos.my username-claim step
-      // is deferred until its backend route (/api/account/username) lands
-      // (#141); it would POST to an unimplemented endpoint.
-      onDone();
+      if (isInvite) {
+        onDone();
+        return;
+      }
+      setLoading(false);
+      setStep("taos-account");
     } catch {
       setError("Network error — please try again");
       setLoading(false);
@@ -98,6 +102,9 @@ export function OnboardingScreen({
         paddingRight: "calc(env(safe-area-inset-right, 0px) + 16px)",
       }}
     >
+      {step === "taos-account" ? (
+        <TaosAccountStep onDone={onDone} defaultEmail={email.trim()} />
+      ) : (
       <form
         onSubmit={handleSubmit}
         className="w-full max-w-md p-6 rounded-2xl border border-white/10"
@@ -235,24 +242,24 @@ export function OnboardingScreen({
             ? isInvite ? "Activating..." : "Setting up..."
             : isInvite ? "Activate account" : "Get started"}
         </button>
-
-        <style>{`
-          .onb-input {
-            width: 100%;
-            padding: 10px 14px;
-            border-radius: 8px;
-            background: var(--color-shell-bg-deep);
-            border: 1px solid rgba(255, 255, 255, 0.10);
-            color: var(--color-shell-text);
-            font-size: 13px;
-            outline: none;
-            transition: border-color 0.15s;
-          }
-          .onb-input:focus {
-            border-color: rgba(139, 146, 163, 0.45);
-          }
-        `}</style>
       </form>
+      )}
+      <style>{`
+        .onb-input {
+          width: 100%;
+          padding: 10px 14px;
+          border-radius: 8px;
+          background: var(--color-shell-bg-deep);
+          border: 1px solid rgba(255, 255, 255, 0.10);
+          color: var(--color-shell-text);
+          font-size: 13px;
+          outline: none;
+          transition: border-color 0.15s;
+        }
+        .onb-input:focus {
+          border-color: rgba(139, 146, 163, 0.45);
+        }
+      `}</style>
     </div>
   );
 }
