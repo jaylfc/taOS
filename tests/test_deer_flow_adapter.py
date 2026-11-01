@@ -14,6 +14,14 @@ from tinyagentos.adapters import deer_flow_adapter
 from tinyagentos.adapters.deer_flow_adapter import _extract_text
 
 
+def test_adapter_retry_excludes_remote_protocol_error():
+    import httpx
+    assert httpx.RemoteProtocolError not in deer_flow_adapter._RETRY_ON
+    assert httpx.ConnectError in deer_flow_adapter._RETRY_ON
+    assert httpx.ConnectTimeout in deer_flow_adapter._RETRY_ON
+    assert httpx.PoolTimeout in deer_flow_adapter._RETRY_ON
+
+
 def test_extract_text_string_content():
     messages = [
         {"role": "user", "content": "hi"},
