@@ -323,6 +323,49 @@ describe("WifiPanel controls", () => {
     expect(globalAlert).toBeNull();
   });
 
+  it("open network connect failure shows error and re-enables Join button", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy
+      .mockResolvedValueOnce(json(baseResponse))
+      .mockResolvedValueOnce(json({ error: "nm_failed" }, 500));
+    render(<WifiPanel />);
+    await waitFor(() => expect(screen.getByText("OpenNet")).toBeInTheDocument());
+    const joinBtn = screen.getByRole("button", { name: /Join OpenNet/i });
+    await act(async () => {
+      fireEvent.click(joinBtn);
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/nm_failed/)).toBeInTheDocument();
+    });
+    expect(screen.getByRole("button", { name: /Join OpenNet/i })).not.toBeDisabled();
+  });
+
+  it("secured connect failure clears Connecting status text", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy
+      .mockResolvedValueOnce(json(baseResponse))
+      .mockResolvedValueOnce(json({ error: "invalid_psk" }, 400));
+    render(<WifiPanel />);
+    await waitFor(() => expect(screen.getByText("SecuredNet")).toBeInTheDocument());
+    const joinBtn = screen.getByRole("button", { name: /Join SecuredNet \(secured\)/i });
+    await act(async () => {
+      fireEvent.click(joinBtn);
+    });
+    let input: HTMLInputElement;
+    await waitFor(() => {
+      input = screen.getByLabelText("Password for SecuredNet");
+      expect(input).toBeInTheDocument();
+    });
+    await act(async () => {
+      fireEvent.change(input!, { target: { value: "wrong" } });
+      fireEvent.keyDown(input!, { key: "Enter" });
+    });
+    await waitFor(() => {
+      expect(screen.queryByText(/Connecting to/)).not.toBeInTheDocument();
+    });
+    expect(screen.getByText("Connection failed: invalid_psk")).toBeInTheDocument();
+  });
+
   it("in-flight status announced via aria-live polite", async () => {
     let resolveConnect: (value: Response) => void;
     const connectPromise = new Promise<Response>((resolve) => {

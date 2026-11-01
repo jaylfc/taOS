@@ -119,11 +119,11 @@ export function WifiPanel() {
       setTimeout(() => passwordInputRef.current?.focus(), 0);
     } else {
       setStatus(`Joining ${ssid}...`);
-      handleConnect(ssid, "");
+      handleConnect(ssid, "", false);
     }
   };
 
-  const handleConnect = async (ssid: string, psk: string) => {
+  const handleConnect = async (ssid: string, psk: string, secured: boolean) => {
     setConnectingSsid(ssid);
     if (psk) {
       setStatus(`Connecting to ${ssid}...`);
@@ -148,8 +148,14 @@ export function WifiPanel() {
           setPassword("");
           setStatus(null);
           setSubmitting(false);
+        } else if (!secured) {
+          setError(msg);
+          setConnectingSsid(null);
+          setStatus(null);
+          setSubmitting(false);
         } else {
           setPasswordError(msg);
+          setStatus(null);
           setSubmitting(false);
         }
         return;
@@ -173,7 +179,7 @@ export function WifiPanel() {
   const handlePasswordKeyDown = (e: React.KeyboardEvent, ssid: string) => {
     if (e.key === "Enter") {
       e.preventDefault();
-      handleConnect(ssid, password);
+      handleConnect(ssid, password, true);
     } else if (e.key === "Escape") {
       e.preventDefault();
       setConnectingSsid(null);
