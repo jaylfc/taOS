@@ -200,14 +200,15 @@ export async function login(email: string, password: string): Promise<Account | 
   return me.kind === "signed-in" ? me.account : UNEXPECTED;
 }
 
-/** taos.my's register creates the account without a session, so sign in
- *  straight after it. */
+/** taos.my's register mints a session too (the proxy relays its cookie) and
+ *  answers with only `{user_id}`, so the account comes from /me, as for login. */
 export async function register(email: string, password: string): Promise<Account | AuthError> {
   const res = await authAction("/register", email, password);
   if (isAuthError(res)) return res;
   if (isAccount(res.data)) return res.data;
   if (typeof (res.data as Record<string, unknown> | null)?.user_id !== "string") return UNEXPECTED;
-  return login(email, password);
+  const me = await fetchAccount();
+  return me.kind === "signed-in" ? me.account : UNEXPECTED;
 }
 
 export async function logout(): Promise<void> {

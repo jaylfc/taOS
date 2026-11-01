@@ -216,16 +216,15 @@ describe("login and register against taos.my's real response shapes", () => {
     }
   });
 
-  it("register: taos.my answers {user_id} with no session, so it signs in next", async () => {
+  it("register: taos.my answers {user_id} with a session, the account comes from /me", async () => {
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(res(200, { user_id: "u-9" }))
       .mockResolvedValueOnce(res(200, { user_id: "u-9" }))
       .mockResolvedValueOnce(res(200, account));
     global.fetch = fetchMock;
     expect(await register("a@b.test", "pw")).toEqual(account);
+    // No second POST to /login: the password is sent once.
     expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([
       "/api/account/register",
-      "/api/account/login",
       "/api/account/me",
     ]);
   });
