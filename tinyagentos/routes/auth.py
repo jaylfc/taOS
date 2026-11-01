@@ -12367,46 +12367,34 @@ def _read_volume() -> dict | None:
     reported rather than hidden, because a volume slider that silently drives
     nothing is worse than one that says so.
     """
-    import subprocess
+    from tinyagentos.audio_cli import parse_get_volume, run_sync_with_process
 
     env = dict(os.environ, XDG_RUNTIME_DIR="/run/user/%d" % os.getuid())
-    try:
-        got = subprocess.run(
-            ["wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"],
-            capture_output=True, text=True, timeout=4, env=env,
-        )
-    except Exception:
+    rc, stdout = run_sync_with_process(["wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"], env["XDG_RUNTIME_DIR"])
+    if rc != 0 or stdout is None:
         return None
-    if got.returncode != 0:
+
+    parsed = parse_get_volume(stdout)
+    if parsed is None:
         return None
-    # "Volume: 0.75" or "Volume: 0.75 [MUTED]"
-    parts = got.stdout.split()
-    level = None
-    for index, token in enumerate(parts):
-        if token.rstrip(":").lower() == "volume" and index + 1 < len(parts):
-            try:
-                level = float(parts[index + 1])
-            except ValueError:
-                level = None
-            break
-    if level is None:
-        return None
+
+    # Check for sinks using wpctl status
     sinks = False
     try:
-        status = subprocess.run(
-            ["wpctl", "status"], capture_output=True, text=True, timeout=4, env=env
-        ).stdout
-        after = status.split("Sinks:", 1)
-        # A populated list has an id line under the heading; an empty one goes
-        # straight to the next section.
-        sinks = bool(after[1:] and any(
-            ch.isdigit() for ch in after[1].split("Sources:", 1)[0]
-        ))
+        status_rc, status_stdout = run_sync_with_process(["wpctl", "status"], env["XDG_RUNTIME_DIR"])
+        if status_rc == 0 and status_stdout:
+            after = status_stdout.split("Sinks:", 1)
+            # A populated list has an id line under the heading; an empty one goes
+            # straight to the next section.
+            sinks = bool(after[1:] and any(
+                ch.isdigit() for ch in after[1].split("Sources:", 1)[0]
+            ))
     except Exception:
         sinks = False
+
     return {
-        "percent": round(level * 100, 1),
-        "muted": "MUTED" in got.stdout.upper(),
+        "percent": round(parsed["volume"] * 100, 1),
+        "muted": parsed["muted"],
         "no_sink": not sinks,
     }
 
@@ -12437,16 +12425,10 @@ async def set_lock_volume(request: Request):
     except (TypeError, ValueError):
         return JSONResponse({"error": "percent required"}, status_code=400)
 
-    import subprocess
+    from tinyagentos.audio_cli import set_volume_argv, run_sync_with_process
 
     env = dict(os.environ, XDG_RUNTIME_DIR="/run/user/%d" % os.getuid())
-    try:
-        subprocess.run(
-            ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "%.2f" % (percent / 100.0)],
-            capture_output=True, text=True, timeout=4, env=env,
-        )
-    except Exception:
-        pass
+    run_sync_with_process(set_volume_argv("@DEFAULT_AUDIO_SINK@", percent / 100.0), env["XDG_RUNTIME_DIR"])
     after = _read_volume()
     if after is None:
         return JSONResponse({"error": "no audio"}, status_code=404)
