@@ -63,6 +63,13 @@ async function passAgentStep() {
   fireEvent.click(screen.getByRole("button", { name: "Set Up Later" }));
 }
 
+/** Privacy: leave both switches as they load. */
+async function passPrivacyStep() {
+  await screen.findByRole("heading", { name: "Privacy" });
+  await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+}
+
 /** About you: pick a topic, then accept the default style. */
 async function answerAboutYou(topic = "Research") {
   await screen.findByRole("heading", { name: "What would you like help with?" });
@@ -223,6 +230,7 @@ describe("OnboardingScreen first run", () => {
     await answerAboutYou();
     await passModelStep();
     await passAgentStep();
+    await passPrivacyStep();
     await waitFor(() =>
       expect(progressPuts(calls).at(-1)?.body).toMatchObject({
         in_progress: false,
@@ -254,6 +262,7 @@ describe("OnboardingScreen first run", () => {
     await answerAboutYou();
     await passModelStep();
     await passAgentStep();
+    await passPrivacyStep();
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     expect(progressPuts(calls).at(-1)?.body).toMatchObject({
       in_progress: false,
@@ -293,6 +302,7 @@ describe("OnboardingScreen first run", () => {
     await answerAboutYou();
     await passModelStep();
     await passAgentStep();
+    await passPrivacyStep();
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
   });
 
@@ -309,6 +319,7 @@ describe("OnboardingScreen first run", () => {
     await answerAboutYou();
     await passModelStep();
     await passAgentStep();
+    await passPrivacyStep();
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     expect(progressPuts(calls).at(-1)?.body).toMatchObject({
       in_progress: false,
@@ -476,6 +487,7 @@ describe("OnboardingScreen on-device model", () => {
     expect(await screen.findByText("Downloaded and ready", {}, { timeout: 3000 })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     await passAgentStep();
+    await passPrivacyStep();
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     expect(progressPuts(calls).at(-1)?.body).toMatchObject({
       in_progress: false,
@@ -497,6 +509,7 @@ describe("OnboardingScreen on-device model", () => {
     expect(screen.getByText("It keeps downloading if you continue.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     await passAgentStep();
+    await passPrivacyStep();
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     expect(progressPuts(calls).at(-1)?.body).toMatchObject({
       model: { app_id: "qwen3-1.7b", downloaded: false },
@@ -556,6 +569,7 @@ describe("OnboardingScreen on-device model", () => {
     await screen.findByText("Qwen3 1.7B");
     fireEvent.click(screen.getByRole("button", { name: "Set Up Later" }));
     await passAgentStep();
+    await passPrivacyStep();
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     const last = progressPuts(calls).at(-1)?.body as Record<string, unknown>;
     expect(last).toMatchObject({ skipped: expect.arrayContaining(["model"]) });
@@ -600,12 +614,15 @@ describe("OnboardingScreen taOS Agent model", () => {
     await screen.findByRole("heading", { name: "Pick a model" });
     fireEvent.click(screen.getByRole("radio", { name: "gpt-4o-mini" }));
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await passPrivacyStep();
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     expect(chain(calls)).toEqual([
       "POST /api/secrets",
       "POST /api/providers",
       "GET /api/providers",
       "PATCH /api/taos-agent/settings",
+      // The privacy summary names the providers that are set up.
+      "GET /api/providers",
     ]);
     const body = (method: string, url: string) => calls.find((c) => c.method === method && c.url === url)?.body;
     expect(body("POST", "/api/secrets")).toMatchObject({ name: "provider-openai-key", value: "sk-test", category: "api-key" });
@@ -711,6 +728,7 @@ describe("OnboardingScreen taOS Agent model", () => {
     render(<OnboardingScreen onDone={onDone} resume={{ ...atAgentStep, model: onDevice }} />);
     await screen.findByText("Until then it uses the model on this device, which can do less.");
     await passAgentStep();
+    await passPrivacyStep();
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     expect(calls.find((c) => c.url === "/api/taos-agent/settings")?.body).toEqual({ model: "qwen3-1.7b" });
     expect(progressPuts(calls).at(-1)?.body).toMatchObject({
@@ -725,6 +743,7 @@ describe("OnboardingScreen taOS Agent model", () => {
     render(<OnboardingScreen onDone={onDone} resume={atAgentStep} />);
     await screen.findByText("Until then the taOS Agent has no model. Add one any time in Settings.");
     await passAgentStep();
+    await passPrivacyStep();
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     expect(calls.some((c) => c.url === "/api/taos-agent/settings")).toBe(false);
     const last = progressPuts(calls).at(-1)?.body as Record<string, unknown>;
@@ -742,6 +761,7 @@ describe("OnboardingScreen taOS Agent model", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Use a model on another taOS device/ }));
     await screen.findByRole("heading", { name: "Pick a model" });
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await passPrivacyStep();
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     expect(calls.find((c) => c.url === "/api/taos-agent/settings")?.body).toEqual({ model: "llama-3.1-8b" });
   });
@@ -751,5 +771,139 @@ describe("OnboardingScreen taOS Agent model", () => {
     render(<OnboardingScreen onDone={() => {}} resume={atAgentStep} />);
     expect(await screen.findByRole("heading", { name: "Choose the taOS Agent's model" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Free taOS models/ })).toBeDisabled();
+  });
+});
+
+describe("OnboardingScreen privacy", () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  const atPrivacy = {
+    step: "privacy",
+    completed: ["hello", "name", "password", "about"],
+    skipped: ["taos-account", "device", "model", "agent"],
+  };
+  const PING = "/api/preferences/auto-update";
+  const SHARING = "/api/torrent/settings";
+  const savedPing = () => json({ check_enabled: true, update_ping_enabled: true, last_notified_commit: "abc1234" });
+  const savedSharing = (available = true) => () =>
+    json({ libtorrent_available: available, seed_enabled: true, upload_rate_limit_kbps: 2500, max_active_seeds: 7 });
+  const puts = (calls: Call[], url: string) => calls.filter((c) => c.method === "PUT" && c.url === url);
+
+  async function open(routes: Parameters<typeof routeFetch>[0]) {
+    const calls = routeFetch(routes);
+    const onDone = vi.fn();
+    render(<OnboardingScreen onDone={onDone} resume={atPrivacy} />);
+    await screen.findByRole("heading", { name: "Privacy" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
+    return { calls, onDone };
+  }
+
+  it("shows both settings as the server has them and writes nothing when neither moves", async () => {
+    const { calls, onDone } = await open({ [`GET ${PING}`]: savedPing, [`GET ${SHARING}`]: savedSharing() });
+    expect(screen.getByRole("switch", { name: "Anonymous update ping" })).toBeChecked();
+    expect(screen.getByRole("switch", { name: "Share models you download" })).toBeChecked();
+    expect(screen.getByText(/up to 2\.5 MB\/s/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
+    expect(puts(calls, PING)).toEqual([]);
+    expect(puts(calls, SHARING)).toEqual([]);
+    expect(progressPuts(calls).at(-1)?.body).toMatchObject({
+      in_progress: false,
+      completed: expect.arrayContaining(["privacy"]),
+    });
+  });
+
+  it("a setting already off on the server loads off", async () => {
+    await open({
+      [`GET ${PING}`]: () => json({ update_ping_enabled: false }),
+      [`GET ${SHARING}`]: () => json({ libtorrent_available: true, seed_enabled: false, upload_rate_limit_kbps: 0, max_active_seeds: 20 }),
+    });
+    expect(screen.getByRole("switch", { name: "Anonymous update ping" })).not.toBeChecked();
+    expect(screen.getByRole("switch", { name: "Share models you download" })).not.toBeChecked();
+    expect(screen.queryByText(/up to/)).not.toBeInTheDocument();
+  });
+
+  it("turning the ping off sends back every saved field with only the switch changed", async () => {
+    const { calls, onDone } = await open({ [`GET ${PING}`]: savedPing, [`GET ${SHARING}`]: savedSharing() });
+    fireEvent.click(screen.getByRole("switch", { name: "Anonymous update ping" }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
+    expect(puts(calls, PING).map((c) => c.body)).toEqual([
+      { check_enabled: true, update_ping_enabled: false, last_notified_commit: "abc1234" },
+    ]);
+    expect(puts(calls, SHARING)).toEqual([]);
+  });
+
+  it("turning sharing off keeps the upload cap and seed count", async () => {
+    const { calls, onDone } = await open({ [`GET ${PING}`]: savedPing, [`GET ${SHARING}`]: savedSharing() });
+    fireEvent.click(screen.getByRole("switch", { name: "Share models you download" }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
+    expect(puts(calls, SHARING).map((c) => c.body)).toEqual([
+      { seed_enabled: false, upload_rate_limit_kbps: 2500, max_active_seeds: 7 },
+    ]);
+    expect(puts(calls, PING)).toEqual([]);
+  });
+
+  it("a fresh install with nothing saved reads as on, and turning it off writes just the switch", async () => {
+    const { calls, onDone } = await open({ [`GET ${PING}`]: () => json(null), [`GET ${SHARING}`]: savedSharing() });
+    const ping = screen.getByRole("switch", { name: "Anonymous update ping" });
+    expect(ping).toBeChecked();
+    expect(ping).toBeEnabled();
+    fireEvent.click(ping);
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
+    expect(puts(calls, PING).map((c) => c.body)).toEqual([{ update_ping_enabled: false }]);
+  });
+
+  it("a ping setting that cannot be read is left to Settings, and setup still goes on", async () => {
+    const { calls, onDone } = await open({ [`GET ${PING}`]: () => json({ error: "boom" }, 500), [`GET ${SHARING}`]: savedSharing() });
+    expect(screen.getByRole("switch", { name: "Anonymous update ping" })).toBeDisabled();
+    expect(screen.getByText(/Couldn't read this setting/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
+    expect(puts(calls, PING)).toEqual([]);
+  });
+
+  it("no sharing switch when this install cannot share models", async () => {
+    await open({ [`GET ${PING}`]: savedPing, [`GET ${SHARING}`]: savedSharing(false) });
+    expect(screen.queryByRole("switch", { name: "Share models you download" })).not.toBeInTheDocument();
+  });
+
+  it("no sharing switch when the torrent settings store is missing", async () => {
+    await open({ [`GET ${PING}`]: savedPing, [`GET ${SHARING}`]: () => json({ error: "not initialised" }, 503) });
+    expect(screen.queryByRole("switch", { name: "Share models you download" })).not.toBeInTheDocument();
+  });
+
+  it("a switch that fails to save stops setup with an error, and Continue tries again", async () => {
+    let fail = true;
+    const { calls, onDone } = await open({
+      [`GET ${PING}`]: savedPing,
+      [`GET ${SHARING}`]: savedSharing(),
+      [`PUT ${SHARING}`]: () => (fail ? json({ error: "disk" }, 500) : json({ status: "saved" })),
+    });
+    fireEvent.click(screen.getByRole("switch", { name: "Share models you download" }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't save the model sharing setting");
+    expect(onDone).not.toHaveBeenCalled();
+    expect(progressPuts(calls).some((c) => (c.body as { in_progress: boolean }).in_progress === false)).toBe(false);
+    fail = false;
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
+    expect(puts(calls, SHARING)).toHaveLength(2);
+  });
+
+  it("names the cloud providers that are set up, and only cloud ones", async () => {
+    await open({
+      [`GET ${PING}`]: savedPing,
+      "GET /api/providers": () => json([{ name: "openai", type: "openai" }, { name: "local", type: "llama-cpp" }]),
+    });
+    expect(screen.getByText("Cloud models get what you ask them. You've added OpenAI.")).toBeInTheDocument();
+  });
+
+  it("Back goes to the taOS Agent step", async () => {
+    await open({ [`GET ${PING}`]: savedPing });
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(await screen.findByRole("heading", { name: "Choose the taOS Agent's model" })).toBeInTheDocument();
   });
 });

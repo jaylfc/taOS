@@ -12,14 +12,15 @@ import type { OnDeviceChoice } from "./model";
 import { AgentCloud, AgentIntro, AgentModelPick } from "./steps/AgentStep";
 import { HopError, SETUP_PROVIDERS, addProvider, providerModels, saveKey, setAgentModel } from "./agent";
 import type { AggregatedModel } from "@/lib/models";
+import { PrivacyStep } from "./steps/PrivacyStep";
 import { TaosAccountChoice, TaosAccountForm, type AccountMode } from "./steps/TaosAccountStep";
 
-export type StepId = "hello" | "name" | "password" | "taos-account" | "device" | "about" | "model" | "agent";
+export type StepId = "hello" | "name" | "password" | "taos-account" | "device" | "about" | "model" | "agent" | "privacy";
 
-const FIRST_RUN: StepId[] = ["hello", "name", "password", "taos-account", "device", "about", "model", "agent"];
+const FIRST_RUN: StepId[] = ["hello", "name", "password", "taos-account", "device", "about", "model", "agent", "privacy"];
 const INVITE: StepId[] = ["name", "password"];
 /** Steps the account must exist for; a resume can land on these only. */
-const AFTER_ACCOUNT: StepId[] = ["taos-account", "device", "about", "model", "agent"];
+const AFTER_ACCOUNT: StepId[] = ["taos-account", "device", "about", "model", "agent", "privacy"];
 /** Steps that need a taOS account sign-in; without one they are set up later. */
 const NEEDS_TAOS_ACCOUNT: StepId[] = ["device"];
 
@@ -395,6 +396,9 @@ export function Oobe({
           />
         );
       }
+      break;
+    case "privacy":
+      page = <PrivacyStep onBack={back} onNext={() => void advance("completed")} />;
       break;
     case "model":
       page = (

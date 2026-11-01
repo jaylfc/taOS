@@ -607,3 +607,31 @@
   flex: none;
   color: var(--oobe-text-3);
 }
+
+.oobe-switch:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Plain statements in a group, one per row (the privacy summary). */
+.oobe-facts {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--oobe-line);
+  border-radius: 14px;
+  background: var(--oobe-fill);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+}
+
+.oobe-facts li {
+  padding: 12px 16px;
+  font-size: 15px;
+  line-height: 1.4;
+  color: var(--oobe-text-2);
+}
+
+.oobe-facts li + li {
+  border-top: 1px solid var(--oobe-line);
+}
