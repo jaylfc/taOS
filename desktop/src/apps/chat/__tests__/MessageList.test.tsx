@@ -520,6 +520,25 @@ describe("MessageList", () => {
   /* ---- channel header ---- */
 
   describe("channel header", () => {
+    it("renders the header by default and omits it with hideHeader", () => {
+      const { unmount } = renderWithMsg({ channel: channel({ type: "group" }) });
+      expect(screen.getByRole("button", { name: /search messages/i })).toBeInTheDocument();
+      unmount();
+      renderWithMsg({ channel: channel({ type: "group" }), hideHeader: true });
+      expect(screen.queryByRole("button", { name: /search messages/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: /chat guide/i })).not.toBeInTheDocument();
+    });
+
+    it("keeps the pinned popover reachable when the header is hidden", () => {
+      renderWithMsg({
+        channel: channel({ type: "group" }),
+        hideHeader: true,
+        pinnedPopoverOpen: true,
+        pinnedMessages: [],
+      });
+      expect(screen.getByText(/No pinned messages yet/)).toBeInTheDocument();
+    });
+
     it("shows Hash icon for topic channels", () => {
       renderWithMsg({
         channel: channel({ type: "topic" }),

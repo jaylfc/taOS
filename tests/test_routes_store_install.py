@@ -1567,3 +1567,91 @@ class TestListInstalled:
         assert item["runtime_host"] is None
         assert item["runtime_port"] is None
         assert item["runtime_backend"] is None
+
+
+# ---------------------------------------------------------------------------
+# Install inputs via inputs object / top-level (legacy LXC path)
+# ---------------------------------------------------------------------------
+
+
+class TestInstallInputs:
+    @pytest.mark.asyncio
+    async def test_inputs_object_used_for_admin_password(self, client):
+        svc = _make_service_manifest("lxc-app", method="lxc")
+        reg = _make_registry(svc)
+        client._transport.app.state.registry = reg
+        client._transport.app.state.installed_apps = _make_installed_apps()
+
+        mock_lxc = MagicMock()
+        mock_lxc.install = AsyncMock(
+            return_value={"success": True, "host_port": 31000, "container": "taos-svc-lxc-app"},
+        )
+
+        with patch("tinyagentos.routes.store_install.LXCInstaller", return_value=mock_lxc):
+            resp = await client.post("/api/store/install-v2", json={
+                "app_id": "lxc-app",
+                "inputs": {"admin_password": "pw-from-inputs"},
+            })
+        assert resp.status_code == 200
+        assert mock_lxc.install.call_args.kwargs["admin_password"] == "pw-from-inputs"
+
+    @pytest.mark.asyncio
+    async def test_top_level_admin_password_still_works(self, client):
+        svc = _make_service_manifest("lxc-app", method="lxc")
+        reg = _make_registry(svc)
+        client._transport.app.state.registry = reg
+        client._transport.app.state.installed_apps = _make_installed_apps()
+
+        mock_lxc = MagicMock()
+        mock_lxc.install = AsyncMock(
+            return_value={"success": True, "host_port": 31000, "container": "taos-svc-lxc-app"},
+        )
+
+        with patch("tinyagentos.routes.store_install.LXCInstaller", return_value=mock_lxc):
+            resp = await client.post("/api/store/install-v2", json={
+                "app_id": "lxc-app",
+                "admin_password": "pw-top",
+            })
+        assert resp.status_code == 200
+        assert mock_lxc.install.call_args.kwargs["admin_password"] == "pw-top"
+
+    @pytest.mark.asyncio
+    async def test_inputs_array_rejected(self, client):
+        svc = _make_service_manifest("lxc-app", method="lxc")
+        reg = _make_registry(svc)
+        client._transport.app.state.registry = reg
+        client._transport.app.state.installed_apps = _make_installed_apps()
+
+        mock_lxc = MagicMock()
+        mock_lxc.install = AsyncMock(
+            return_value={"success": True, "host_port": 31000, "container": "taos-svc-lxc-app"},
+        )
+
+        with patch("tinyagentos.routes.store_install.LXCInstaller", return_value=mock_lxc):
+            resp = await client.post("/api/store/install-v2", json={
+                "app_id": "lxc-app",
+                "inputs": ["pw"],
+            })
+        assert resp.status_code == 400
+        assert resp.json().get("reason") == "invalid_inputs"
+        mock_lxc.install.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_inputs_non_string_value_rejected(self, client):
+        svc = _make_service_manifest("lxc-app", method="lxc")
+        reg = _make_registry(svc)
+        client._transport.app.state.registry = reg
+        client._transport.app.state.installed_apps = _make_installed_apps()
+
+        mock_lxc = MagicMock()
+        mock_lxc.install = AsyncMock(
+            return_value={"success": True, "host_port": 31000, "container": "taos-svc-lxc-app"},
+        )
+
+        with patch("tinyagentos.routes.store_install.LXCInstaller", return_value=mock_lxc):
+            resp = await client.post("/api/store/install-v2", json={
+                "app_id": "lxc-app",
+                "inputs": {"admin_password": 5},
+            })
+        assert resp.status_code == 400
+        assert resp.json().get("reason") == "invalid_inputs"
