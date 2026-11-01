@@ -4,14 +4,17 @@ import { saveProgress, type OnboardingProgress } from "./progress";
 import { HelloStep } from "./steps/HelloStep";
 import { NameStep, deriveUsername } from "./steps/NameStep";
 import { PasswordStep } from "./steps/PasswordStep";
+import { DeviceStep } from "./steps/DeviceStep";
 import { TaosAccountChoice, TaosAccountForm, type AccountMode } from "./steps/TaosAccountStep";
 
-export type StepId = "hello" | "name" | "password" | "taos-account";
+export type StepId = "hello" | "name" | "password" | "taos-account" | "device";
 
-const FIRST_RUN: StepId[] = ["hello", "name", "password", "taos-account"];
+const FIRST_RUN: StepId[] = ["hello", "name", "password", "taos-account", "device"];
 const INVITE: StepId[] = ["name", "password"];
 /** Steps the account must exist for; a resume can land on these only. */
-const AFTER_ACCOUNT: StepId[] = ["taos-account"];
+const AFTER_ACCOUNT: StepId[] = ["taos-account", "device"];
+/** Steps that need a taOS account sign-in; without one they are set up later. */
+const NEEDS_TAOS_ACCOUNT: StepId[] = ["device"];
 
 export interface OobeProps {
   onDone: () => void;
@@ -48,6 +51,10 @@ export function Oobe({
   const [step, setStep] = useState<StepId>(resumeAt ?? steps[0]!);
   const [direction, setDirection] = useState<1 | -1>(1);
   const [accountMode, setAccountMode] = useState<AccountMode | null>(null);
+  // Reaching a NEEDS_TAOS_ACCOUNT step on resume means the sign-in happened.
+  const [accountLinked, setAccountLinked] = useState(
+    resumeAt !== null && NEEDS_TAOS_ACCOUNT.includes(resumeAt),
+  );
 
   const [fullName, setFullName] = useState("");
   const [username, setUsername] = useState(invitedUsername ?? "");
@@ -75,11 +82,22 @@ export function Oobe({
     if (i > 0) go(steps[i - 1]!, -1);
   }
 
-  /** Leave `step` (completed or skipped) for the next one, or finish. */
-  async function advance(outcome: "completed" | "skipped") {
+  /**
+   * Leave `step` (completed or skipped) for the next one, or finish. `linked`
+   * is the taOS account state as of this call (state set just before may not
+   * have rendered yet).
+   */
+  async function advance(outcome: "completed" | "skipped", linked = accountLinked) {
     const log = done.current;
-    if (!log[outcome].includes(step)) log[outcome] = [...log[outcome], step];
-    const next = steps[steps.indexOf(step) + 1];
+    const mark = (id: StepId, how: "completed" | "skipped") => {
+      if (!log[how].includes(id)) log[how] = [...log[how], id];
+    };
+    mark(step, outcome);
+    let i = steps.indexOf(step) + 1;
+    // Without a taOS account these steps have nothing to act on: record them
+    // as set-up-later so the Setup checklist offers them after sign-in.
+    while (!linked && steps[i] && NEEDS_TAOS_ACCOUNT.includes(steps[i]!)) mark(steps[i++]!, "skipped");
+    const next = steps[i];
     // Progress is the owner's preference: writable only once /auth/setup has
     // signed this browser in. Earlier, a PUT would 401 and read as an expired
     // session.
@@ -186,7 +204,10 @@ export function Oobe({
       page = accountMode ? (
         <TaosAccountForm
           mode={accountMode}
-          onDone={() => void advance("completed")}
+          onDone={() => {
+            setAccountLinked(true);
+            void advance("completed", true);
+          }}
           onOffline={() => void advance("skipped")}
           onBack={() => {
             setDirection(-1);
@@ -202,6 +223,9 @@ export function Oobe({
           onOffline={() => void advance("skipped")}
         />
       );
+      break;
+    case "device":
+      page = <DeviceStep onNext={() => void advance("completed")} onSkip={() => void advance("skipped")} />;
       break;
   }
 

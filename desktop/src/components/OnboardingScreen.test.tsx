@@ -202,7 +202,7 @@ describe("OnboardingScreen first run", () => {
     await waitFor(() =>
       expect(progressPuts(calls).at(-1)?.body).toMatchObject({
         in_progress: false,
-        skipped: ["taos-account"],
+        skipped: ["taos-account", "device"],
       }),
     );
     expect(onDone).not.toHaveBeenCalled();
@@ -210,7 +210,7 @@ describe("OnboardingScreen first run", () => {
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
   });
 
-  it("signing in with an existing taOS account finishes setup", async () => {
+  it("signing in with a taOS account leads to the first-device screen, then on", async () => {
     const account = { user_id: "u-1", email: "ada@example.com", taosgo: { status: "none" } };
     const calls = routeFetch({
       "POST /api/account/login": () => json({ user_id: "u-1" }),
@@ -221,10 +221,16 @@ describe("OnboardingScreen first run", () => {
     await createLocalAccount();
     await chooseAccount(/Sign in with your taOS account/);
     fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    expect(
+      await screen.findByRole("heading", { name: "This is your first taOS device" }),
+    ).toBeInTheDocument();
+    expect(progressPuts(calls).at(-1)?.body).toMatchObject({ in_progress: true, step: "device" });
+    expect(onDone).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     expect(progressPuts(calls).at(-1)?.body).toMatchObject({
       in_progress: false,
-      completed: expect.arrayContaining(["taos-account"]),
+      completed: expect.arrayContaining(["taos-account", "device"]),
       skipped: [],
     });
   });
@@ -273,7 +279,7 @@ describe("OnboardingScreen first run", () => {
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     expect(progressPuts(calls).at(-1)?.body).toMatchObject({
       in_progress: false,
-      skipped: ["taos-account"],
+      skipped: ["taos-account", "device"],
     });
   });
 
@@ -302,6 +308,19 @@ describe("OnboardingScreen resume", () => {
     );
     expect(await screen.findByRole("heading", { name: "Your taOS account" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Back" })).not.toBeInTheDocument();
+  });
+
+  it("resumes on the first-device screen when the sign-in happened before the reload", async () => {
+    routeFetch();
+    render(
+      <OnboardingScreen
+        onDone={() => {}}
+        resume={{ step: "device", completed: ["hello", "name", "password", "taos-account"], skipped: [] }}
+      />,
+    );
+    expect(
+      await screen.findByRole("heading", { name: "This is your first taOS device" }),
+    ).toBeInTheDocument();
   });
 
   it("an unknown saved step resumes after account creation, never at the start", async () => {
