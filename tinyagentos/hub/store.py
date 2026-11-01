@@ -466,6 +466,41 @@ class HubStore(BaseStore):
         await self._db.commit()
         return h
 
+    async def get_chain_entry(self, author: str, seq: int) -> dict | None:
+        """The chain index row for ``author`` at ``seq`` (None if not held)."""
+        cur = await self._db.execute(
+            "SELECT author, seq, hash, prev_hash, type, target FROM hub_chain "
+            "WHERE author = ? AND seq = ?",
+            (author, seq),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        return _row(cur.description, row)
+
+    async def put_chain_index(
+        self,
+        author: str,
+        seq: int,
+        obj_hash: str,
+        prev_hash: str | None,
+        type_: str,
+        target: str | None = None,
+    ) -> None:
+        """Record a chain index row with no object body.
+
+        Used by peer ingest for a post whose body this node must never hold
+        because a verified tombstone already targets it: the row keeps the
+        chain linkage verifiable without storing deleted content.
+        """
+        await self._db.execute(
+            "INSERT OR IGNORE INTO hub_chain "
+            "(author, seq, hash, prev_hash, type, target, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (author, seq, obj_hash, prev_hash, type_, target, time.time()),
+        )
+        await self._db.commit()
+
     async def get_chain_head(self, author: str) -> dict | None:
         """The last chain entry for ``author`` by seq (None if the chain is empty)."""
         cur = await self._db.execute(
