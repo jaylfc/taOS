@@ -177,10 +177,7 @@ async def list_installed_apps(request: Request):
             category = ""
 
         backend: str = loc.get("backend") or ""
-        ui_path: str = str(loc.get("ui_path") or "/")
-        if not ui_path.startswith("/"):
-            ui_path = f"/{ui_path}"
-        url = f"/apps/{app_id}{ui_path}"
+        url = f"/apps/{app_id}/"
 
         result.append({
             "app_id": app_id,

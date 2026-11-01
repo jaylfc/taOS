@@ -1458,6 +1458,10 @@ These rules are deliberately lightweight. The goal is not process for its own
 sake; it is to let many hands move quickly on the same codebase without undoing
 each other's work.
 
+## Project creation and A2A channels
+
+Every project gets a matching A2A channel at creation time, on all three creation paths: `POST /api/projects`, the agent `create_project` skill, and `project_create` decision approval. The channel lets project members coordinate on the bus. Channel creation is idempotent (`ensure_a2a_channel`), so later membership syncs are safe.
+
 ## Agent project-creation requests (auth-request kind=project_create)
 
 An external agent that is already registered in the agent registry can request to
@@ -1524,11 +1528,14 @@ Route module `tinyagentos/routes/hardware_wifi.py`:
 - `POST /api/hardware/wifi/enabled` enables or disables the Wi-Fi radio.
 - `POST /api/hardware/wifi/disconnect` disconnects a Wi-Fi interface.
 - `POST /api/hardware/wifi/connect` connects to a Wi-Fi network; the PSK travels to NetworkManager over dbus-fast in-process and never on a busctl argv.
+- `POST /api/hardware/wifi/scan` triggers a Wi-Fi scan on one or all interfaces; returns 202 with the list of scanning interfaces.
+- `POST /api/hardware/wifi/forget` deletes saved 802-11-wireless profiles matching an exact SSID byte string; never calls GetSecrets.
 
 Route module `tinyagentos/routes/hardware_bluetooth.py`:
 
-- `GET /api/hardware/bluetooth` reads Bluetooth adapters and devices via BlueZ D-Bus.
+- `GET /api/hardware/bluetooth` reads Bluetooth adapters and devices via BlueZ D-Bus. Each adapter includes `path`, `address`, `powered`, and `discovering`.
 - `POST /api/hardware/bluetooth/power` powers a Bluetooth adapter on or off.
+- `POST /api/hardware/bluetooth/discovery` starts or stops discovery on an adapter (`{adapter, on: bool}`). On `on=true`, calls `Adapter1.StartDiscovery` and schedules `StopDiscovery` after 60 s. On `on=false`, cancels the timer and calls `StopDiscovery`. `org.bluez.Error.InProgress` on start counts as success. D-Bus call timeouts return 504 `bluez_timeout`. StopDiscovery D-Bus errors (except `NotReady` or `Failed` with "No discovery started") return 502 `bluez_error`.
 - `POST /api/hardware/bluetooth/device` performs connect, disconnect, pair, trust, untrust, or remove on a device.
 
 All routes are admin-only via `Depends(require_admin)`. See [docs/hardware-routes.md](hardware-routes.md) for detail.
@@ -2241,6 +2248,19 @@ registrations and heartbeats.
   `WorkerInfo.resources` and uses it for lease allowlist validation
   instead of the legacy backend-name grammar. Workers that omit the
   field fall back to the grammar; a warning is logged once per mismatch.
+- A worker advertises a GPU class from the hardware probe, with no backend
+  needed (taOS #3228): `gpu.type` plus the probe's usability flag --
+  `nvidia`/`cuda` with `GpuInfo.cuda` -> `gpu-cuda-0`, `amd`/`rocm` with
+  `GpuInfo.rocm` -> `gpu-rocm-0`, Apple Silicon -> `gpu-metal`. A running
+  backend is not evidence of a GPU: Ollama, vLLM, exo and mlx all serve in CPU
+  mode, and a PCI-visible NVIDIA card whose driver did not load reports no
+  CUDA runtime, so both fall back to `cpu-inference`. The live-backend filter
+  applies to `npu-rk3588` only: `detect_backends()` also emits
+  manifest-synthetic `status: "stopped"` entries for declared software that is
+  not answering, and a stopped rkllama does not advertise the NPU class -- so
+  a Pi advertises only `cpu-inference` while rkllama restarts. Without the
+  hardware check a host that cannot run a CUDA task would publish a CUDA class
+  and the `<worker>:gpu-cuda-0` lease id derived from it.
 - `POST /api/cluster/workers` (register) and `POST /api/cluster/heartbeat`
   both **echo the controller's current generation** in their response
   (`"generation"` key alongside the existing `status` field), so a worker
@@ -2704,6 +2724,8 @@ the choice is made, from two config.yaml keys:
 - `taos_agent.framework`: `auto` (default; picoclaw on mobile, opencode
   elsewhere), `opencode`, `picoclaw` or `claude_code` (operator overrides;
   `auto` never picks `claude_code`).
+- **Local desktop state**: `GET /api/system/local-desktop` reports `available`,
+  `enabled`, and `active` based on `taos-kiosk.service` systemd unit state.
 
 PicoClaw needs the LLM gateway (on unless `TAOS_LLM_GATEWAY=0`) and a `picoclaw` binary
 (`TAOS_PICOCLAW_BIN`, PATH, `/usr/local/bin`, `/usr/bin`). Without either,
