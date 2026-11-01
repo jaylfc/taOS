@@ -75,6 +75,35 @@ class TestDetectCapabilities:
         assert "image-generation" in caps
         assert "embedding" not in caps
 
+    def test_whisper_backend(self):
+        """A whisper backend advertises asr only (taOS #3231)."""
+        agent = WorkerAgent("http://localhost:6969")
+        backends = [{"type": "whisper", "url": "http://localhost:9000"}]
+        with patch("shutil.which", return_value=None):
+            caps = agent.detect_capabilities(backends)
+        assert "asr" in caps
+        assert "llm-chat" not in caps
+        assert "tts" not in caps
+
+    def test_kokoro_backend(self):
+        """A kokoro backend advertises tts only (taOS #3231)."""
+        agent = WorkerAgent("http://localhost:6969")
+        backends = [{"type": "kokoro", "url": "http://localhost:8880"}]
+        with patch("shutil.which", return_value=None):
+            caps = agent.detect_capabilities(backends)
+        assert "tts" in caps
+        assert "llm-chat" not in caps
+        assert "asr" not in caps
+
+    def test_moss_backend(self):
+        """A moss backend advertises tts only (taOS #3231)."""
+        agent = WorkerAgent("http://localhost:6969")
+        backends = [{"type": "moss", "url": "http://localhost:30000"}]
+        with patch("shutil.which", return_value=None):
+            caps = agent.detect_capabilities(backends)
+        assert "tts" in caps
+        assert "asr" not in caps
+
     def test_respects_preattached_capabilities(self):
         """If the caller attaches a per-backend capabilities field (modern
         detect_backends shape from live probing), detect_capabilities uses
@@ -733,6 +762,62 @@ class TestDetectBackends:
         port2 = urlparse("http://localhost:11434").port
         name2 = f"{backend_type}:{port2}" if port2 is not None else backend_type
         assert name2 == "ollama:11434"
+
+    async def test_llama_swap_on_kokoro_port_is_not_double_reported(self):
+        """Test that a llama-swap on kokoro's default port (8880) is not
+        double-reported as a kokoro backend, because kokoro is in
+        _OPENAI_MODELS_TYPES after this fix."""
+        agent = WorkerAgent("http://localhost:6969")
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        # kokoro's /v1/models response (as it would appear when llama-swap is there)
+        mock_response.json.return_value = {
+            "data": [
+                {"id": "kokoro-model", "object": "model", "created": 1234567890}
+            ],
+            "object": "list"
+        }
+        
+        # llama-swap's /running response
+        mock_running_response = MagicMock()
+        mock_running_response.status_code = 200
+        mock_running_response.json.return_value = {
+            "running": [{"model": "kokoro-model", "state": "ready"}]
+        }
+        
+        # Mock httpx.AsyncClient
+        with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            
+            async def mock_get(url):
+                if "8880" in url:
+                    # For kokoro's /v1/models endpoint
+                    if "/v1/models" in url:
+                        return mock_response
+                    # For llama-swap's /running endpoint  
+                    if "/running" in url:
+                        return mock_running_response
+                raise Exception("not running")
+            
+            mock_client.get = AsyncMock(side_effect=mock_get)
+            mock_client_cls.return_value = mock_client
+            
+            # Set TAOS_EXTRA_BACKENDS to include llama-swap on kokoro's port
+            with patch("os.environ.get", return_value="llama-swap=http://localhost:8880"):
+                backends = await agent.detect_backends()
+        
+        # Only llama-swap should be reported, not kokoro
+        # Because kokoro is now in _OPENAI_MODELS_TYPES, it gets filtered out
+        # when there's a llama-swap on the same endpoint
+        assert len(backends) == 1
+        assert backends[0]["type"] == "llama-swap"
+        assert backends[0]["url"] == "http://localhost:8880"
+        assert backends[0]["name"] == "llama-swap:8880"
+        # The llama-swap should have the kokoro model from /v1/models
+        assert len(backends[0]["models"]) == 1
+        assert backends[0]["models"][0]["name"] == "kokoro-model"
 
 
 # ---------------------------------------------------------------------------
