@@ -42,6 +42,14 @@ So cross-device sync is new work; there is nothing to retrofit.
 
 ## Proposal
 
+### The sync unit
+
+The unit that syncs is **(host, OS user)**, not the host. A self-hosted taOS
+box can have several OS users, each linked to their own taos.my account. The
+roster, replication and Secrets key wrapping are all per OS user on a host, so
+two people sharing one family machine never end up in the same account's
+roster. "Device" below means one OS user on one host.
+
 ### Where the data lives
 
 The source of truth is **the user's own instances**. They replicate to each
@@ -55,14 +63,21 @@ provisions). taos.my does three jobs and no more:
 The relay only forwards traffic; it does not store data. An optional
 encrypted backup blob on taos.my is a later add-on that Jay must approve.
 
+**The cost of this choice:** a relay that stores nothing can only connect
+devices that are online at the same time. A phone and a desktop that are never
+on together never sync. That is the real case for the alternative in Decision
+1: taos.my keeps an encrypted copy, or a store-and-forward queue of
+ciphertext, so one device can drop changes off and the other can collect them
+later.
+
 ### Data classes
 
 | Class | Syncs? | Conflict rule | Notes |
 |---|---|---|---|
 | Identity (account, OS username, display name, avatar) | yes | taos.my is authoritative | Set once in onboarding step 3. |
 | Device roster | yes | taos.my is authoritative | Adding a device needs approval from an existing one. |
-| Agents (config, persona, model and gateway assignment) | yes | last writer wins per record | `canonical_id` becomes account-scoped (see below). |
-| Memory (taOSmd episodes and facts) | yes | union-merge by record id; an edit to the same fact is last writer wins, keeping the prior version | Memory is mostly appended, so a union loses nothing. |
+| Agents (config, persona, model and gateway assignment) | yes | last writer wins per record | `canonical_id` is minted once and adopted by other devices (see below). |
+| Memory (taOSmd episodes and facts) | yes | union-merge by record id; the rule for two edits to the same fact is **taosmd-dev to define**, using taOSmd's own temporal and supersede model | Memory is mostly appended, so a union loses nothing. |
 | Secrets | yes, end-to-end encrypted | last writer wins per secret | Per-device-only flag, see below. |
 | Settings (appearance, notifications, layout) | yes, per class | last writer wins per key | Some keys stay per device: display scale, kiosk, hardware. |
 | Files, models, app data | no | none | Too large, and already reachable through the cluster. |
@@ -72,18 +87,28 @@ encrypted backup blob on taos.my is a later add-on that Jay must approve.
 
 Every synced record carries a hybrid logical clock (HLC) timestamp and an
 origin device id. A delete writes a tombstone instead of removing the row, so
-a device that was offline cannot bring a deleted record back. Tombstones are
-removed only once every device in the roster has acknowledged them.
+a device that was offline cannot bring a deleted record back. A tombstone is
+removed once every device in the roster has acknowledged it. Removing a device
+from the roster counts as its acknowledgement, so a lost or retired device
+cannot hold tombstones forever. A TTL bound applies as well. A device that
+comes back after the TTL must re-sync in full; it cannot replay its old
+changes.
 
 ### Agent identity
 
-An agent's `canonical_id` must be scoped to the account, not to the host, or
-every device mints its own copy of the same agent. Proposal: mint it once on
-the device that creates the agent, from the account id plus a random suffix,
-and replicate it to the other devices. The system agent "taOS Agent" gets one
-fixed id per account. Changing its harness or model on any device keeps its
-name, memory namespace and history. This touches `agent_registry_store` and
-taOSmd namespacing, so taosmd-dev must review it.
+The defect is minting twice, not the id format. The `canonical_id` format
+stays `{slug}-{YYYYMMDD}-{HHMMSS}[-{2hex}]`. An id is minted **once**, on the
+device that creates the agent, and replicated. A joining device **adopts** the
+account's ids during approval and never mints its own copy. That needs no id
+migration. It also keeps `_slug_globs` and every consumer of the current
+shape working, and it keeps the account id out of handles, A2A `from` and
+memory namespaces.
+
+"taOS Agent" works the same way: the first device mints its id, and every
+later device adopts it. Changing its harness or model on any device keeps its
+name, memory namespace and history. taosmd-dev must confirm that taOSmd
+namespacing holds when the same `canonical_id` writes memory from two hosts
+at once.
 
 ### Secrets key model (Keychain style)
 
@@ -93,12 +118,25 @@ taOSmd namespacing, so taosmd-dev must review it.
   (encrypted) once for each device in the roster.
 - A new device is approved from a device the user already has, with the same
   approval shape as cluster join (a code shown on both screens). Approval
-  wraps the account key for the new device.
+  wraps the account key for the new device. The code has the cluster-join
+  protections: single use, a short TTL and an attempt cap (as in
+  `pairing_store.py` `_EXPIRY_SECS` and `_MAX_ATTEMPTS`).
 - The relay and any backup only ever hold ciphertext.
 - A secret can be marked **this device only**: hardware credentials, or a
   local API key that only makes sense on one machine. Those never sync.
 - Losing every device loses the Secrets unless a recovery key was saved. The
   onboarding should offer one, and must say plainly what happens without it.
+
+**Remove a device.** A removed or lost device still holds the account key, so
+removal must:
+
+1. drop the device from the roster (which also counts as its tombstone
+   acknowledgement),
+2. rotate the account Secrets key and re-wrap it for the remaining devices,
+3. re-encrypt the existing secrets under the new key, so the removed device
+   cannot read anything synced after it was removed. Secrets it already held
+   should be treated as exposed, and Settings should offer to rotate the
+   underlying credentials (API keys).
 
 ### Onboarding flows
 
@@ -121,8 +159,11 @@ another device approves.
 ## Decisions for Jay
 
 1. **Where sync data lives.** Recommended: on the user's own devices,
-   peer-to-peer, with taos.my as identity, roster and relay only. Alternative:
-   taos.my stores an encrypted copy as the hub.
+   peer-to-peer, with taos.my as identity, roster and relay only. Cost: two
+   devices that are never online at the same time never sync. Alternative:
+   taos.my keeps an encrypted copy, or a store-and-forward queue of
+   ciphertext, so offline devices still catch up; taos.my then holds the
+   user's data, encrypted.
 2. **Secrets.** Recommended: end-to-end encrypted sync with a per-device-only
    flag and an optional recovery key. Alternatives: Secrets never sync, or sync
    with no recovery path.
@@ -135,8 +176,9 @@ taOS-dev will put these to Jay as one multiple-choice question after review.
 
 ## Build order once ruled
 
-1. Account-scoped `canonical_id`, with a migration for existing agents.
-2. HLC + tombstone columns on the synced stores.
+1. Adopt-on-join for `canonical_id`: a joining device takes the account's
+   ids instead of minting. No id migration.
+2. HLC + tombstone columns on the synced stores, keyed per (host, OS user).
 3. Device roster and the approve-this-device flow (taos.my + core).
 4. Replication over the mesh, then the relay path.
 5. Secrets key wrapping.
