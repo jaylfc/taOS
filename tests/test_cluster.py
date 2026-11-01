@@ -11,7 +11,7 @@ import pytest
 
 from tinyagentos.cluster.manager import ClusterManager, HEARTBEAT_TIMEOUT
 from tinyagentos.cluster.router import TaskRouter
-from tinyagentos.cluster.worker_protocol import WorkerInfo
+from tinyagentos.cluster.worker_protocol import GpuLease, WorkerInfo
 
 
 def _make_worker(name: str, capabilities: list[str] | None = None,
@@ -1156,6 +1156,43 @@ class TestUpdateOutcomeEndpoint:
                 json=payload,
             )
             assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+class TestHeartbeatDrainComplete:
+    """The heartbeat's drain_complete tells a self-updating worker it can stop
+    waiting for in-flight work."""
+
+    @staticmethod
+    def _lease(lease_id: str, resource_id: str, expires_at: float):
+        return GpuLease(
+            lease_id=lease_id,
+            resource_id=resource_id,
+            caller="agent",
+            required_vram_mb=0,
+            expires_at=expires_at,
+            epoch=1,
+        )
+
+    @pytest.mark.parametrize(
+        "lease_ttl, expected", [(-60, True), (60, False)], ids=["expired", "live"]
+    )
+    async def test_only_unexpired_leases_hold_the_drain(self, client, app, lease_ttl, expected):
+        mgr = app.state.cluster_manager
+        await mgr.register_worker(_make_worker("gpu-box"))
+        mgr.get_worker("gpu-box").status = "draining"
+        mgr._leases["l1"] = self._lease("l1", "gpu-box:gpu-cuda-0", time.time() + lease_ttl)
+
+        with patch(
+            "tinyagentos.routes.cluster.require_worker_hmac",
+            side_effect=lambda r: setattr(r.state, "hmac_worker_name", "gpu-box"),
+        ):
+            resp = await client.post(
+                "/api/cluster/heartbeat", json={"name": "gpu-box", "status": "draining"}
+            )
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["drain_complete"] is expected
 
 
 @pytest.mark.asyncio

@@ -9,3 +9,4 @@
   A rollback puts the checkpointed branch back on the tag instead of detaching
   HEAD, the health check finds the worker port on macOS, and a helper call that
   times out is killed instead of left running.
+- Worker self-update: a restart partway through an update resumes it instead of leaving the worker drained (up to three attempts), the rollback outcome is reported before the rollback restarts the worker, repeated registrations no longer start duplicate post-update checks, and expired leases no longer hold up a drain (#1910).

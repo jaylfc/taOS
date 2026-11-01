@@ -119,6 +119,12 @@ async def _run_post_update_hook(
         )
 
 
+# How many times one update request may be started before giving up. A restart
+# between claiming the trigger and writing the update marker resumes the update,
+# so one that kills the worker every time must not loop forever.
+UPDATE_TRIGGER_MAX_ATTEMPTS = 3
+
+
 # Backend types that mean "this host has a GPU-class accelerator". Mirrors the
 # GPU backend set in tinyagentos/scheduler/discovery.py.
 _GPU_BACKEND_TYPES = {"vllm", "ollama", "exo", "mlx"}
@@ -441,6 +447,7 @@ class WorkerAgent:
         # silently revert a draining/updating worker back to "online".
         self._lifecycle_status: str | None = None
         self._lifecycle_reason: str | None = None
+        self._post_update_task: asyncio.Task | None = None
         self._generation: int | None = None
 
         from tinyagentos.worker.pairing import default_state_dir, load_signing_key
@@ -1169,6 +1176,11 @@ class WorkerAgent:
         Returns True if a trigger was found and processed; False otherwise.
         """
         trigger_path = self._state_dir / "update-trigger.json"
+        claimed_path = self._state_dir / "update-trigger.claimed.json"
+        # This method awaits the whole update, so a claim seen here was left by
+        # an earlier process.
+        if claimed_path.exists():
+            await self._recover_claimed_trigger(trigger_path, claimed_path)
         if not trigger_path.exists():
             return False
 
@@ -1192,9 +1204,12 @@ class WorkerAgent:
             target_ref, graceful,
         )
 
-        # Remove the trigger file BEFORE running the update so a
-        # duplicate run is never launched.
-        trigger_path.unlink(missing_ok=True)
+        # Claim the trigger BEFORE running the update so a duplicate run is
+        # never launched, while keeping it recoverable: the update marker that
+        # post_update_startup relies on is only written late in the update, and
+        # a restart before that point would otherwise leave the worker drained
+        # with nothing left to finish the update.
+        os.replace(trigger_path, claimed_path)
 
         try:
             from tinyagentos.worker.self_update import run_full_update
@@ -1212,7 +1227,68 @@ class WorkerAgent:
         except Exception:
             logger.error("self-update: update threw exception", exc_info=True)
 
+        # The update reached a terminal state. A cancellation skips this on
+        # purpose, so shutting down mid-update resumes it on the next start.
+        claimed_path.unlink(missing_ok=True)
         return True
+
+    async def _recover_claimed_trigger(self, trigger_path: Path, claimed_path: Path) -> None:
+        """Handle a trigger claimed by a process that did not finish its update.
+
+        Past the update marker post_update_startup owns the outcome, and a newer
+        request replaces the interrupted one; otherwise the claim goes back to
+        being a trigger, up to UPDATE_TRIGGER_MAX_ATTEMPTS starts in all.
+        """
+        from tinyagentos.worker.self_update import read_update_marker
+
+        if trigger_path.exists() or read_update_marker(self._state_dir) is not None:
+            claimed_path.unlink(missing_ok=True)
+            return
+        try:
+            trigger = json.loads(claimed_path.read_text())
+            attempts = int(trigger.get("attempts", 0)) + 1
+        except (json.JSONDecodeError, OSError, AttributeError, TypeError, ValueError):
+            logger.warning("claimed update trigger unreadable — removing")
+            claimed_path.unlink(missing_ok=True)
+            return
+        if attempts >= UPDATE_TRIGGER_MAX_ATTEMPTS:
+            logger.error(
+                "self-update: giving up on %s after %d interrupted attempts",
+                trigger.get("target_ref", "?"), attempts,
+            )
+            claimed_path.unlink(missing_ok=True)
+            await self.notify_drain_complete()
+            return
+        logger.warning(
+            "self-update: resuming interrupted update to %s (attempt %d)",
+            trigger.get("target_ref", "?"), attempts + 1,
+        )
+        trigger["attempts"] = attempts
+        claimed_path.write_text(json.dumps(trigger))
+        os.replace(claimed_path, trigger_path)
+
+    def _schedule_post_update_hook(self) -> None:
+        """Start the post-update hook unless one is already running.
+
+        Every successful registration lands here, and a controller 404 during
+        the hook's grace period causes another one. Two hooks would read the
+        same marker, signal twice and could start concurrent rollbacks.
+        """
+        if self._post_update_task is not None and not self._post_update_task.done():
+            return
+        self._post_update_task = asyncio.ensure_future(_run_post_update_hook(
+            self.controller_url, self, self._state_dir,
+        ))
+
+    async def _cancel_post_update_hook(self) -> None:
+        task = self._post_update_task
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
     def _log_repair_instruction(self) -> None:
         logger.error(
@@ -1274,9 +1350,7 @@ class WorkerAgent:
                         # hook's grace period + health check would otherwise
                         # block the loop long enough for the controller to
                         # mark the worker offline (CodeRabbit, Jul 31).
-                        asyncio.ensure_future(_run_post_update_hook(
-                            self.controller_url, self, self._state_dir,
-                        ))
+                        self._schedule_post_update_hook()
                         continue
                     if result == _NEEDS_REPAIR:
                         # Controller rejected our key -- enter needs-re-pair state.
@@ -1325,11 +1399,12 @@ class WorkerAgent:
 
                 # Check for pending self-update trigger on each heartbeat
                 # cycle. The check is cheap (a file stat) and the trigger
-                # file is removed atomically before the update runs.
+                # file is claimed atomically before the update runs.
                 await self._check_update_trigger()
 
                 await asyncio.sleep(5)
         finally:
+            await self._cancel_post_update_hook()
             if self._update_service is not None:
                 await self._update_service.stop()
 

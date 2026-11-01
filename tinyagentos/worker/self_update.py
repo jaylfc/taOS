@@ -797,7 +797,10 @@ async def post_update_startup(
             "not come up; rolling back to %s",
             marker_age, checkpoint_tag,
         )
-        rollback_result = await rollback_to_checkpoint(checkpoint_tag)
+        # Report and clear first: the rollback helper restarts the worker, which
+        # ends this process. Afterwards the controller would never hear of it and
+        # the surviving marker would roll back again on the next boot. Clearing
+        # it here also limits a failed update to one rollback attempt.
         await signal_update_outcome(
             controller_url=controller_url,
             worker_name=agent.name,
@@ -811,6 +814,7 @@ async def post_update_startup(
             signing_key=agent._signing_key,
         )
         clear_update_marker(state_dir)
+        rollback_result = await rollback_to_checkpoint(checkpoint_tag)
         return {
             "ok": False,
             "outcome": "rollback",
@@ -834,11 +838,9 @@ async def post_update_startup(
             "self-update: health check FAILED — rolling back to %s",
             checkpoint_tag,
         )
-        # Attempt rollback
-        rollback_result = await rollback_to_checkpoint(checkpoint_tag)
-
         # Signal rollback outcome (best-effort — we may not reach the
-        # controller if networking is the problem).
+        # controller if networking is the problem). Before the rollback, for
+        # the same reason as the stale-marker path above.
         await signal_update_outcome(
             controller_url=controller_url,
             worker_name=agent.name,
@@ -851,6 +853,7 @@ async def post_update_startup(
         )
 
         clear_update_marker(state_dir)
+        rollback_result = await rollback_to_checkpoint(checkpoint_tag)
         return {
             "ok": False,
             "outcome": "rollback",

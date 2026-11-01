@@ -673,8 +673,10 @@ async def worker_heartbeat(request: Request, body: HeartbeatBody):
     worker_obj = cluster.get_worker(body.name)
     drain_complete = False
     if worker_obj is not None and worker_obj.status == "draining":
+        # get_leases() filters expired leases the monitor loop has not swept
+        # yet: they would hold the worker for the full drain timeout.
         active = [
-            lid for lid, lease in cluster._leases.items()
+            lease.lease_id for lease in cluster.get_leases()
             if (parsed := cluster._parse_resource_id(lease.resource_id))
             and parsed[0] == body.name
         ]
