@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { LoginGate } from "./LoginGate";
 
 function signedOut() {
@@ -95,6 +95,46 @@ describe("LoginGate hands sign-in to the server page", () => {
     await waitFor(() =>
       expect(sessionStorage.getItem("taos.login-redirected")).toBeNull(),
     );
+  });
+
+  it("renders invite completion for an invited user and posts /auth/complete", async () => {
+    // /auth/status never carries the invite code, so the screen must not need
+    // one to enter invite mode; the server takes the pending session instead.
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      if (String(input) === "/auth/complete") {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200, headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(
+        JSON.stringify({
+          configured: true,
+          authenticated: true,
+          needs_onboarding: true,
+          multi_user: true,
+          user: { username: "invitee" },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    render(<LoginGate><div>the desktop shell</div></LoginGate>);
+
+    expect(await screen.findByRole("heading", { name: "Complete your account" })).toBeInTheDocument();
+    expect(screen.getByText("invitee")).toHaveAttribute("aria-readonly", "true");
+
+    fireEvent.change(screen.getByLabelText(/^Full name/), { target: { value: "In Vitee" } });
+    fireEvent.change(screen.getByLabelText(/^Password/), { target: { value: "invitepass" } });
+    fireEvent.change(screen.getByLabelText(/Confirm password/), { target: { value: "invitepass" } });
+    fireEvent.click(screen.getByRole("button", { name: "Activate account" }));
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([u]) => String(u) === "/auth/complete")).toBe(true),
+    );
+    const [, init] = fetchMock.mock.calls.find(([u]) => String(u) === "/auth/complete")!;
+    const body = JSON.parse(String(init?.body));
+    expect(body.username).toBe("invitee");
+    expect(body).not.toHaveProperty("invite_code");
+    expect(fetchMock.mock.calls.some(([u]) => String(u) === "/auth/setup")).toBe(false);
   });
 
   it("clears the loop guard once a session exists", async () => {

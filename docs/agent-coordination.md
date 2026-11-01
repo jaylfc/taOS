@@ -992,6 +992,11 @@ Every exempt path is also in `EXEMPT_PATHS`; a test asserts that containment, so
 the exemption list cannot grow past the surface that is reachable without a
 credential. Adding a route here is a security decision — anything that acts on
 an already-valid session must stay protected.
+`/auth/complete` has one such branch: an invitee may omit `invite_code` when the
+request carries their own pending session (the SPA never sees the code). That
+branch runs `session_csrf_ok()` itself, since the path exemption skips
+`verify_csrf`; reuse that helper for any future exempt-path branch that acts on
+the caller's session.
 
 Note for anyone writing tests against these routes: **`verify_csrf` runs for
 real.** It used to be no-op'd by an autouse fixture for every test file whose
