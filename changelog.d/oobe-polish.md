@@ -8,3 +8,4 @@
 - A fresh install now opens straight into the new setup screens instead of the older plain setup form, which stays available for browsers without JavaScript.
 - On the device's own screen, setup's password step also offers an optional 4 to 12 digit PIN for unlocking that screen, as the older setup form did. A PIN that is too short says so instead of just greying out Continue. Other devices are never offered it, and the server still refuses a PIN from them.
 - After signing in to a taOS account, setup says this is your first taOS device. Without an account that screen is left for later, in the Setup checklist.
+- Setup asks what you'd like help with (tap any number of topics) and how your personal assistant should work with you: its tone, and whether it asks before acting. The answers shape the assistant and its first suggested prompts. Set Up Later keeps friendly, ask-first defaults.

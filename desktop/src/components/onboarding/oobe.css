@@ -364,6 +364,61 @@
   color: var(--oobe-text);
 }
 
+/* Section heading above a grouped list, as in iOS Settings. */
+.oobe-section-label {
+  margin: 0 16px 6px;
+  font-size: 13px;
+  color: var(--oobe-text-3);
+}
+
+/* Multi-select chips: 44px targets, a check and a filled tint when on. */
+.oobe-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.oobe-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid var(--oobe-line);
+  border-radius: 22px;
+  background: var(--oobe-fill);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  color: var(--oobe-text);
+  font: inherit;
+  font-size: 15px;
+  cursor: pointer;
+  transition: background-color 0.15s, border-color 0.15s, transform 0.1s var(--oobe-ease);
+}
+
+.oobe-chip:active {
+  transform: scale(0.97);
+}
+
+.oobe-chip[aria-pressed="true"] {
+  border-color: transparent;
+  background: rgba(243, 244, 247, 0.94);
+  color: #111216;
+}
+
+/* A step's glyph above its title, where the screen has no other content. */
+.oobe-icon {
+  display: block;
+  margin: 0 auto 20px;
+  color: var(--oobe-text-2);
+}
+
+.oobe-choice-check {
+  flex: none;
+  color: var(--oobe-text);
+}
+
 .oobe-status {
   padding: 20px 16px;
   font-size: 15px;

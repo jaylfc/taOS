@@ -51,6 +51,15 @@ async function chooseAccount(option: RegExp, password = "longenough") {
   });
 }
 
+/** About you: pick a topic, then accept the default style. */
+async function answerAboutYou(topic = "Research") {
+  await screen.findByRole("heading", { name: "What would you like help with?" });
+  fireEvent.click(screen.getByRole("button", { name: topic }));
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  await screen.findByRole("heading", { name: "How should it work with you?" });
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+}
+
 describe("OnboardingScreen first run", () => {
   beforeEach(() => { vi.restoreAllMocks(); });
   afterEach(() => { vi.restoreAllMocks(); });
@@ -199,6 +208,7 @@ describe("OnboardingScreen first run", () => {
     render(<OnboardingScreen onDone={onDone} />);
     await createLocalAccount();
     fireEvent.click(screen.getByRole("button", { name: /Use offline only/ }));
+    await answerAboutYou();
     await waitFor(() =>
       expect(progressPuts(calls).at(-1)?.body).toMatchObject({
         in_progress: false,
@@ -227,10 +237,11 @@ describe("OnboardingScreen first run", () => {
     expect(progressPuts(calls).at(-1)?.body).toMatchObject({ in_progress: true, step: "device" });
     expect(onDone).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await answerAboutYou();
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     expect(progressPuts(calls).at(-1)?.body).toMatchObject({
       in_progress: false,
-      completed: expect.arrayContaining(["taos-account", "device"]),
+      completed: expect.arrayContaining(["taos-account", "device", "about"]),
       skipped: [],
     });
   });
@@ -263,6 +274,7 @@ describe("OnboardingScreen first run", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Back" }));
     fireEvent.click(await screen.findByRole("button", { name: /Use offline only/ }));
+    await answerAboutYou();
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
   });
 
@@ -276,6 +288,7 @@ describe("OnboardingScreen first run", () => {
     await chooseAccount(/Create a taOS account/);
     fireEvent.click(screen.getByRole("button", { name: "Create account" }));
     fireEvent.click(await screen.findByRole("button", { name: "Continue offline" }));
+    await answerAboutYou();
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     expect(progressPuts(calls).at(-1)?.body).toMatchObject({
       in_progress: false,
@@ -292,6 +305,57 @@ describe("OnboardingScreen first run", () => {
     await chooseAccount(/Sign in with your taOS account/);
     fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("not available yet");
+  });
+
+  it("about you: picked topics and style are saved with progress", async () => {
+    const calls = routeFetch();
+    render(<OnboardingScreen onDone={() => {}} />);
+    await createLocalAccount();
+    fireEvent.click(screen.getByRole("button", { name: /Use offline only/ }));
+    await screen.findByRole("heading", { name: "What would you like help with?" });
+    const writing = screen.getByRole("button", { name: "Writing" });
+    fireEvent.click(writing);
+    fireEvent.click(screen.getByRole("button", { name: "Email and calendar" }));
+    expect(writing).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(writing);
+    expect(writing).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.click(await screen.findByRole("radio", { name: /Brief/ }));
+    fireEvent.click(screen.getByRole("radio", { name: /Just do it/ }));
+    expect(screen.getByRole("radio", { name: /Friendly/ })).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() =>
+      expect(progressPuts(calls).at(-1)?.body).toMatchObject({
+        completed: expect.arrayContaining(["about"]),
+        about: { help: ["email"], tone: "brief", autonomy: "act" },
+      }),
+    );
+  });
+
+  it("about you: Back from the first page skips the first-device screen when offline", async () => {
+    routeFetch();
+    render(<OnboardingScreen onDone={() => {}} />);
+    await createLocalAccount();
+    fireEvent.click(screen.getByRole("button", { name: /Use offline only/ }));
+    await screen.findByRole("heading", { name: "What would you like help with?" });
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(await screen.findByRole("heading", { name: "Your taOS account" })).toBeInTheDocument();
+  });
+
+  it("about you: Set Up Later records the step as skipped with default answers", async () => {
+    const calls = routeFetch();
+    render(<OnboardingScreen onDone={() => {}} />);
+    await createLocalAccount();
+    fireEvent.click(screen.getByRole("button", { name: /Use offline only/ }));
+    await screen.findByRole("heading", { name: "What would you like help with?" });
+    fireEvent.click(screen.getByRole("button", { name: "Research" }));
+    fireEvent.click(screen.getByRole("button", { name: "Set Up Later" }));
+    await waitFor(() =>
+      expect(progressPuts(calls).at(-1)?.body).toMatchObject({
+        skipped: expect.arrayContaining(["about"]),
+        about: { help: [], tone: "warm", autonomy: "ask" },
+      }),
+    );
   });
 });
 
@@ -321,6 +385,22 @@ describe("OnboardingScreen resume", () => {
     expect(
       await screen.findByRole("heading", { name: "This is your first taOS device" }),
     ).toBeInTheDocument();
+  });
+
+  it("resumes about you with the answers saved before the reload", async () => {
+    routeFetch();
+    render(
+      <OnboardingScreen
+        onDone={() => {}}
+        resume={{
+          step: "about",
+          completed: ["hello", "name", "password"],
+          skipped: ["taos-account", "device"],
+          about: { help: ["coding"], tone: "formal", autonomy: "ask" },
+        }}
+      />,
+    );
+    expect(await screen.findByRole("button", { name: "Coding" })).toHaveAttribute("aria-pressed", "true");
   });
 
   it("an unknown saved step resumes after account creation, never at the start", async () => {

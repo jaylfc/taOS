@@ -17,7 +17,11 @@ export interface OnboardingProgress {
   completed: string[];
   /** Steps the user chose to set up later; Setup checklist offers them. */
   skipped: string[];
+  /** "About you" answers, kept here so one writer owns the whole blob (PUT replaces it). */
+  about?: AboutYou;
 }
+
+import { parseAbout, type AboutYou } from "./about";
 
 const ENDPOINT = "/api/preferences/onboarding";
 
@@ -33,6 +37,7 @@ export async function loadProgress(): Promise<OnboardingProgress | null> {
       step: data.step,
       completed: Array.isArray(data.completed) ? data.completed : [],
       skipped: Array.isArray(data.skipped) ? data.skipped : [],
+      about: parseAbout(data.about),
     };
   } catch {
     return null;

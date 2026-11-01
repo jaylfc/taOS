@@ -4,15 +4,17 @@ import { saveProgress, type OnboardingProgress } from "./progress";
 import { HelloStep } from "./steps/HelloStep";
 import { NameStep, deriveUsername } from "./steps/NameStep";
 import { PasswordStep } from "./steps/PasswordStep";
+import { DEFAULT_ABOUT, type AboutYou } from "./about";
+import { AboutHelpStep, AboutStyleStep } from "./steps/AboutYouStep";
 import { DeviceStep } from "./steps/DeviceStep";
 import { TaosAccountChoice, TaosAccountForm, type AccountMode } from "./steps/TaosAccountStep";
 
-export type StepId = "hello" | "name" | "password" | "taos-account" | "device";
+export type StepId = "hello" | "name" | "password" | "taos-account" | "device" | "about";
 
-const FIRST_RUN: StepId[] = ["hello", "name", "password", "taos-account", "device"];
+const FIRST_RUN: StepId[] = ["hello", "name", "password", "taos-account", "device", "about"];
 const INVITE: StepId[] = ["name", "password"];
 /** Steps the account must exist for; a resume can land on these only. */
-const AFTER_ACCOUNT: StepId[] = ["taos-account", "device"];
+const AFTER_ACCOUNT: StepId[] = ["taos-account", "device", "about"];
 /** Steps that need a taOS account sign-in; without one they are set up later. */
 const NEEDS_TAOS_ACCOUNT: StepId[] = ["device"];
 
@@ -23,7 +25,7 @@ export interface OobeProps {
   inviteCode?: string;
   defaultAutoLogin?: boolean;
   /** Resume first-run setup here (the account was created in an earlier visit). */
-  resume?: Pick<OnboardingProgress, "step" | "completed" | "skipped">;
+  resume?: Pick<OnboardingProgress, "step" | "completed" | "skipped" | "about">;
   /** This is the device's own screen, so first run may set a PIN too. */
   pinOffered?: boolean;
 }
@@ -51,6 +53,8 @@ export function Oobe({
   const [step, setStep] = useState<StepId>(resumeAt ?? steps[0]!);
   const [direction, setDirection] = useState<1 | -1>(1);
   const [accountMode, setAccountMode] = useState<AccountMode | null>(null);
+  const [aboutPage, setAboutPage] = useState<"help" | "style">("help");
+  const [about, setAbout] = useState<AboutYou>(resume?.about ?? DEFAULT_ABOUT);
   // Reaching a NEEDS_TAOS_ACCOUNT step on resume means the sign-in happened.
   const [accountLinked, setAccountLinked] = useState(
     resumeAt !== null && NEEDS_TAOS_ACCOUNT.includes(resumeAt),
@@ -78,8 +82,9 @@ export function Oobe({
   }
 
   function back() {
-    const i = steps.indexOf(step);
-    if (i > 0) go(steps[i - 1]!, -1);
+    let i = steps.indexOf(step) - 1;
+    while (i > 0 && !accountLinked && NEEDS_TAOS_ACCOUNT.includes(steps[i]!)) i--;
+    if (i >= 0) go(steps[i]!, -1);
   }
 
   /**
@@ -87,7 +92,11 @@ export function Oobe({
    * is the taOS account state as of this call (state set just before may not
    * have rendered yet).
    */
-  async function advance(outcome: "completed" | "skipped", linked = accountLinked) {
+  async function advance(
+    outcome: "completed" | "skipped",
+    linked = accountLinked,
+    answers: AboutYou = about,
+  ) {
     const log = done.current;
     const mark = (id: StepId, how: "completed" | "skipped") => {
       if (!log[how].includes(id)) log[how] = [...log[how], id];
@@ -103,13 +112,13 @@ export function Oobe({
     // session.
     const signedIn = !invite && steps.indexOf(step) >= steps.indexOf("password");
     if (next) {
-      if (signedIn) void saveProgress({ in_progress: true, step: next, ...log });
+      if (signedIn) void saveProgress({ in_progress: true, step: next, ...log, about: answers });
       go(next, 1);
       return;
     }
     // Awaited: LoginGate re-reads progress in onDone and must not see
     // in_progress still true, or it would send the user straight back here.
-    await saveProgress({ in_progress: false, step: "done", ...log });
+    await saveProgress({ in_progress: false, step: "done", ...log, about: answers });
     onDone();
   }
 
@@ -227,10 +236,45 @@ export function Oobe({
     case "device":
       page = <DeviceStep onNext={() => void advance("completed")} onSkip={() => void advance("skipped")} />;
       break;
+    case "about":
+      page =
+        aboutPage === "help" ? (
+          <AboutHelpStep
+            about={about}
+            onChange={setAbout}
+            onBack={back}
+            onNext={() => {
+              setDirection(1);
+              setAboutPage("style");
+            }}
+            // Set up later keeps the defaults: no topics, friendly, ask first.
+            onSkip={() => {
+              setAbout(DEFAULT_ABOUT);
+              void advance("skipped", accountLinked, DEFAULT_ABOUT);
+            }}
+          />
+        ) : (
+          <AboutStyleStep
+            about={about}
+            onChange={setAbout}
+            onBack={() => {
+              setDirection(-1);
+              setAboutPage("help");
+            }}
+            onNext={() => void advance("completed")}
+          />
+        );
+      break;
   }
 
   return (
-    <OobeShell stepKey={accountMode && step === "taos-account" ? `${step}:${accountMode}` : step} direction={direction}>
+    <OobeShell stepKey={
+        step === "taos-account" && accountMode
+          ? `${step}:${accountMode}`
+          : step === "about"
+            ? `${step}:${aboutPage}`
+            : step
+      } direction={direction}>
       {page}
     </OobeShell>
   );

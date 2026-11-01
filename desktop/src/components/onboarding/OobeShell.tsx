@@ -48,6 +48,7 @@ export function OobePage({
   title,
   subtitle,
   mark,
+  icon,
   onBack,
   onSubmit,
   footer,
@@ -58,6 +59,8 @@ export function OobePage({
   title: string;
   subtitle?: ReactNode;
   mark?: boolean;
+  /** A glyph above the title, for screens with no other content. */
+  icon?: ReactNode;
   onBack?: () => void;
   onSubmit: () => void;
   footer: ReactNode;
@@ -79,6 +82,7 @@ export function OobePage({
       </div>
       <header className="oobe-header">
         {mark && <img className="oobe-mark" src="/static/taos-logo.png" alt="" />}
+        {icon}
         <h1 className="oobe-title">{title}</h1>
         {subtitle && <p className="oobe-subtitle">{subtitle}</p>}
       </header>

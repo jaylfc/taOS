@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { MonitorSmartphone } from "lucide-react";
 import { registerThisDevice } from "@/lib/device-roster";
 import { OobePage } from "../OobeShell";
 
@@ -26,6 +27,7 @@ export function DeviceStep({ onNext, onSkip }: { onNext: () => void; onSkip: () 
 
   return (
     <OobePage
+      icon={<MonitorSmartphone size={56} strokeWidth={1.5} aria-hidden="true" className="oobe-icon" />}
       title="This is your first taOS device"
       subtitle="Other devices you sign in to with this account will ask you to approve them here, so they share your agents, memory and settings."
       onSubmit={() => void submit()}
