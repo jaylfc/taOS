@@ -460,6 +460,8 @@ export function App() {
               <MobileAppWindow
                 appId={activeWindow.appId}
                 windowId={activeWindowId}
+                props={activeWindow.props}
+                launchNonce={activeWindow.launchNonce}
                 onClose={handleMobileClose}
                 onMinimise={handleMobileMinimise}
               />

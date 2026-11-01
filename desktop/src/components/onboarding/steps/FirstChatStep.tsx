@@ -44,24 +44,26 @@ export function FirstChatStep({
         </>
       }
     >
-      <div className="oobe-group">
-        <div className="oobe-row">
-          <label htmlFor="oobe-assistant-name">Name</label>
-          <input
-            id="oobe-assistant-name"
-            className="oobe-input"
-            type="text"
-            value={name}
-            onChange={(e) => onName(e.target.value)}
-            autoCapitalize="words"
-            autoComplete="off"
-            maxLength={64}
-            disabled={busy}
-            aria-invalid={Boolean(invalid)}
-          />
+      <section className="oobe-section">
+        <div className="oobe-group">
+          <div className="oobe-row">
+            <label htmlFor="oobe-assistant-name">Name</label>
+            <input
+              id="oobe-assistant-name"
+              className="oobe-input"
+              type="text"
+              value={name}
+              onChange={(e) => onName(e.target.value)}
+              autoCapitalize="words"
+              autoComplete="off"
+              maxLength={64}
+              disabled={busy}
+              aria-invalid={Boolean(invalid)}
+            />
+          </div>
         </div>
-      </div>
-      {invalid && name.trim() !== "" && <p className="oobe-note">{invalid}</p>}
+        {invalid && name.trim() !== "" && <p className="oobe-note">{invalid}</p>}
+      </section>
 
       <section className="oobe-section">
         <p className="oobe-section-label">Try asking</p>
