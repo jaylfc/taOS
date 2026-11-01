@@ -45,13 +45,12 @@ class TestPairingSession:
 
     @pytest.mark.asyncio
     async def test_request_with_passkey_sets_prompt(self):
-        """Request for passkey sets prompt with passkey value."""
+        """Request for passkey sets prompt without passkey value (passkey provided via answer)."""
         session = PairingSession("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF")
-        future = session.request("passkey", 123456)
+        future = session.request("passkey")
         assert session._prompt == {
             "device": "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF",
             "kind": "passkey",
-            "passkey": 123456,
         }
 
     @pytest.mark.asyncio
@@ -63,11 +62,13 @@ class TestPairingSession:
 
     @pytest.mark.asyncio
     async def test_request_validates_passkey_range(self):
-        """Request validates passkey is within range."""
+        """Request rejects passkey for passkey kind (must be provided via answer)."""
         session = PairingSession("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF")
-        with pytest.raises(ValueError, match="range 0..999999"):
+        with pytest.raises(ValueError, match="passkey must be provided via answer"):
+            session.request("passkey", 123456)
+        with pytest.raises(ValueError, match="passkey must be provided via answer"):
             session.request("passkey", -1)
-        with pytest.raises(ValueError, match="range 0..999999"):
+        with pytest.raises(ValueError, match="passkey must be provided via answer"):
             session.request("passkey", 1000000)
 
     @pytest.mark.asyncio
@@ -110,8 +111,8 @@ class TestPairingSession:
     async def test_answer_accepts_passkey(self):
         """Answer with passkey completes future."""
         session = PairingSession("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF")
-        future = session.request("passkey", 123456)
-        session.answer(True)
+        future = session.request("passkey")
+        session.answer(True, passkey=123456)
         assert future.result() == {"accepted": True, "passkey": 123456}
         assert session._prompt is None
 
@@ -119,7 +120,7 @@ class TestPairingSession:
     async def test_answer_rejects_passkey(self):
         """Answer with reject for passkey completes future with rejection."""
         session = PairingSession("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF")
-        future = session.request("passkey", 123456)
+        future = session.request("passkey")
         session.answer(False)
         assert future.result() == {"accepted": False, "reason": "rejected"}
         assert session._prompt is None
@@ -134,21 +135,21 @@ class TestPairingSession:
 
     @pytest.mark.asyncio
     async def test_answer_requires_pin_validation(self):
-        """Answer validates PIN format."""
+        """Answer validates PIN format (1-16 printable ASCII)."""
         session = PairingSession("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF")
         future = session.request("pin")
-        with pytest.raises(ValueError, match="PIN must match regex"):
-            session.answer(True, "abc")
-        with pytest.raises(ValueError, match="PIN must match regex"):
-            session.answer(True, "1")
-        session.answer(True, "1234")
-        assert future.result() == {"accepted": True, "pin": "1234"}
+        with pytest.raises(ValueError, match="1 to 16 printable ASCII"):
+            session.answer(True, "")
+        with pytest.raises(ValueError, match="1 to 16 printable ASCII"):
+            session.answer(True, "a" * 17)
+        # Valid PINs: 1-16 printable ASCII
+        session.answer(True, "1")
+        assert future.result() == {"accepted": True, "pin": "1"}
 
     @pytest.mark.asyncio
     async def test_answer_requires_passkey_in_prompt(self):
-        """Answer requires passkey to be in prompt for passkey kind."""
+        """Answer requires passkey to be provided for passkey kind."""
         session = PairingSession("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF")
-        # Request without passkey
         future = session.request("passkey")
         with pytest.raises(ValueError, match="Passkey required"):
             session.answer(True)
@@ -192,6 +193,22 @@ class TestPairingSession:
         future1 = session.request("confirm")
         with pytest.raises(RuntimeError, match="Prompt already pending"):
             session.request("pin")
+
+    @pytest.mark.asyncio
+    async def test_answer_accepts_alphanumeric_pin(self):
+        """PIN 'abc1' (alphanumeric) is accepted."""
+        session = PairingSession("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF")
+        future = session.request("pin")
+        session.answer(True, "abc1")
+        assert future.result() == {"accepted": True, "pin": "abc1"}
+
+    @pytest.mark.asyncio
+    async def test_answer_rejects_17_char_pin(self):
+        """17-character PIN is refused."""
+        session = PairingSession("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF")
+        future = session.request("pin")
+        with pytest.raises(ValueError, match="1 to 16 printable ASCII"):
+            session.answer(True, "a" * 17)
 
 
 class TestAgentInterface:
@@ -318,11 +335,10 @@ class TestAgentInterface:
         task = asyncio.create_task(request_passkey(iface, "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF"))
         await asyncio.sleep(0.01)
 
-        session.answer(True)
+        session.answer(True, passkey=123456)
 
         passkey = await task
-        assert isinstance(passkey, int)
-        assert 0 <= passkey <= 999999
+        assert passkey == 123456
 
     @pytest.mark.asyncio
     async def test_request_confirmation_accepted_returns_none(self):
@@ -417,6 +433,29 @@ class TestAgentInterface:
             await task
         assert exc_info.value.type == "org.bluez.Error.Canceled"
 
+    @pytest.mark.asyncio
+    async def test_release_resolves_pending_prompt_future(self):
+        """Release resolves a pending prompt's future with Canceled error."""
+        dbus_fast = pytest.importorskip("dbus_fast")
+        from dbus_fast.service import ServiceInterface
+        from dbus_fast.errors import DBusError
+
+        session = PairingSession("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF")
+        iface = build_agent_interface(session)
+
+        request_confirmation = self._get_async_method(iface, "RequestConfirmation")
+        release = self._get_async_method(iface, "Release")
+
+        task = asyncio.create_task(request_confirmation(iface, "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF", 123456))
+        await asyncio.sleep(0.01)
+
+        release(iface)
+
+        assert session._prompt is None
+        with pytest.raises(DBusError) as exc_info:
+            await task
+        assert exc_info.value.type == "org.bluez.Error.Canceled"
+
 
 class TestPairingSessionTimeout:
     """Tests for PairingSession timeout functionality."""
@@ -434,6 +473,43 @@ class TestPairingSessionTimeout:
         """Timeout rejects the future after 60 seconds."""
         pass
 
+    @pytest.mark.asyncio
+    async def test_timeout_clears_prompt_allows_next_request(self):
+        """Timed-out prompt clears _prompt so next RequestPinCode is accepted."""
+        import tinyagentos.bluez_agent as ba
+
+        original_timeout = ba.PROMPT_TIMEOUT_S
+        try:
+            ba.PROMPT_TIMEOUT_S = 0.05
+
+            dbus_fast = pytest.importorskip("dbus_fast")
+            from dbus_fast.errors import DBusError
+            from dbus_fast.service import ServiceInterface
+
+            session = PairingSession("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF")
+            iface = build_agent_interface(session)
+
+            request_pin_code = iface.__wrapped__ if hasattr(iface, '__wrapped__') else getattr(iface, 'RequestPinCode')
+            request_pin_code = request_pin_code.__wrapped__ if hasattr(request_pin_code, '__wrapped__') else request_pin_code
+
+            # First request times out
+            task = asyncio.create_task(request_pin_code(iface, "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF"))
+            with pytest.raises(DBusError) as exc_info:
+                await task
+            assert exc_info.value.type == "org.bluez.Error.Rejected"
+
+            # Prompt should be cleared
+            assert session._prompt is None
+
+            # Next request should be accepted (not rejected with "Already awaiting response")
+            task2 = asyncio.create_task(request_pin_code(iface, "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF"))
+            await asyncio.sleep(0.01)
+            session.answer(True, "1234")
+            pin = await task2
+            assert pin == "1234"
+        finally:
+            ba.PROMPT_TIMEOUT_S = original_timeout
+
 
 class TestRegisterUnregister:
     """Tests for register and unregister functions."""
@@ -448,6 +524,7 @@ class TestRegisterUnregister:
                 self.exports = {}
                 self.called_messages = []
                 self._serial = 1
+                self.original_serials = []  # Track original serials
 
             def export(self, path, iface):
                 self.exports[path] = iface
@@ -457,6 +534,11 @@ class TestRegisterUnregister:
                     del self.exports[path]
 
             async def call(self, msg: Message):
+                # Record original serial before any assignment
+                self.original_serials.append(msg.serial)
+                # Assign a serial for this call (simulating bus behavior)
+                self._serial += 1
+                assigned_serial = self._serial
                 self.called_messages.append(msg)
                 # Return success reply with valid fields
                 self._serial += 1
@@ -469,7 +551,7 @@ class TestRegisterUnregister:
                     body=[],
                     message_type=MessageType.METHOD_RETURN,
                     serial=self._serial,
-                    reply_serial=msg.serial,
+                    reply_serial=assigned_serial,
                 )
                 return reply
 
@@ -484,6 +566,7 @@ class TestRegisterUnregister:
             def __init__(self):
                 self.exports = {}
                 self._serial = 1
+                self.original_serials = []
 
             def export(self, path, iface):
                 self.exports[path] = iface
@@ -493,6 +576,11 @@ class TestRegisterUnregister:
                     del self.exports[path]
 
             async def call(self, msg: Message):
+                # Record original serial before any assignment
+                self.original_serials.append(msg.serial)
+                # Assign a serial for this call (simulating bus behavior)
+                self._serial += 1
+                assigned_serial = self._serial
                 # Return error reply with valid fields
                 self._serial += 1
                 reply = Message(
@@ -504,7 +592,7 @@ class TestRegisterUnregister:
                     body=[error_name],
                     message_type=MessageType.ERROR,
                     serial=self._serial,
-                    reply_serial=msg.serial,
+                    reply_serial=assigned_serial,
                     error_name=error_name,
                 )
                 return reply
@@ -549,6 +637,24 @@ class TestRegisterUnregister:
 
         with pytest.raises(RuntimeError, match="RegisterAgent failed: org.bluez.Error.AlreadyExists"):
             await register(bus, session)
+
+        # Verify unexport was called
+        assert "/org/taos/bluez_agent" not in bus.exports
+
+    @pytest.mark.asyncio
+    async def test_register_message_has_no_explicit_serial(self):
+        """Message passed to bus has no explicit serial (serial == 0)."""
+        dbus_fast = pytest.importorskip("dbus_fast")
+        from dbus_fast import Message, MessageType
+
+        session = PairingSession("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF")
+
+        MockBus = self._make_mock_bus()
+        bus = MockBus()
+        await register(bus, session)
+
+        # Check original serial before mock bus assigned one
+        assert bus.original_serials[0] == 0
 
     @pytest.mark.asyncio
     async def test_unregister_with_mock_bus(self):
@@ -600,6 +706,9 @@ class TestRegisterUnregister:
         serial_counter = [2]  # Start after register's serial=1
 
         async def error_call(msg: Message):
+            # Assign a serial for this call
+            serial_counter[0] += 1
+            assigned_serial = serial_counter[0]
             serial_counter[0] += 1
             reply = Message(
                 destination="org.bluez",
@@ -610,7 +719,7 @@ class TestRegisterUnregister:
                 body=["org.bluez.Error.DoesNotExist"],
                 message_type=MessageType.ERROR,
                 serial=serial_counter[0],
-                reply_serial=msg.serial,
+                reply_serial=assigned_serial,
                 error_name="org.bluez.Error.DoesNotExist",
             )
             return reply

@@ -1,0 +1,8 @@
+- Fix BlueZ agent pairing defects (fix-forward of #4082)
+  - RequestPasskey no longer generates random passkey; prompts user for passkey shown on remote device
+  - Prompt timeout increased to 60s (PROMPT_TIMEOUT_S) for both session timer and wait_for; state cleared on timeout
+  - Removed explicit serial= from D-Bus Message in register/unregister
+  - RegisterAgent error reply now unexports agent path before raising
+  - Release() cancels pending prompt via session.cancel()
+  - PIN codes now accept 1-16 printable ASCII characters (was 4-16 digits)
+  - Added tests for all fixed behaviors

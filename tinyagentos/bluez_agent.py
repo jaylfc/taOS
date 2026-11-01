@@ -54,8 +54,7 @@ class PairingSession:
         if kind not in valid_kinds:
             raise ValueError(f"Invalid kind: {kind}")
         if kind == "passkey" and passkey is not None:
-            if not (0 <= passkey <= 999999):
-                raise ValueError(f"Passkey must be in range 0..999999, got {passkey}")
+            raise ValueError("passkey must be provided via answer() for passkey kind")
 
         future = asyncio.get_event_loop().create_future()
         self._future = future
