@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# taOS llama.cpp server installer — the default local LLM backend on
-# NVIDIA CUDA, AMD ROCm, Apple Silicon (Metal), and x86 CPU-only.
+# taOS llama.cpp server installer -- the default local LLM backend on
+# NVIDIA CUDA, AMD ROCm, Apple Silicon (Metal), x86 CPU-only, and musl-arm64.
 #
 # llama.cpp (MIT) ships a built-in "router mode" (llama-server
 # --models-dir <dir>) that serves chat, /v1/embeddings and /v1/rerank
@@ -34,7 +34,7 @@
 #     TAOS_LLAMACPP_MODELS_DIR   models dir router mode scans (default: <project_dir>/data/llama-cpp/models)
 #     TAOS_LLAMACPP_PORT         HTTP port (default: 7835 — see port_allocator.py)
 #     TAOS_LLAMACPP_HOST         bind address (default: 127.0.0.1 — loopback only)
-#     TAOS_LLAMACPP_VARIANT      override auto-detected variant: cuda|rocm|apple-silicon|cpu
+#     TAOS_LLAMACPP_VARIANT      override auto-detected variant: cuda|rocm|apple-silicon|cpu|musl-arm64
 #
 # Safety:
 #   - No models are downloaded here — models go through the per-model
@@ -67,6 +67,10 @@ PROJECT_DIR="${1:-$(pwd)}"
 # directory) before being pinned here. Bump LLAMACPP_VERSION (and the
 # per-variant sha256 below) deliberately, not automatically.
 LLAMACPP_VERSION="b9867"
+# musl (postmarketOS/Alpine) has no upstream release asset: build this tag on the
+# device. The commit is the integrity pin (verified via git ls-remote).
+LLAMACPP_MUSL_TAG="b12020"
+LLAMACPP_MUSL_COMMIT="0ec4027a2a0183de87c007069adddc06e665f7de"
 BASE_URL="https://github.com/ggml-org/llama.cpp/releases/download/${LLAMACPP_VERSION}"
 
 PORT="${TAOS_LLAMACPP_PORT:-7835}"
@@ -96,6 +100,10 @@ verify_sha256() {
 #
 # nvidia -> CUDA build, amd -> ROCm/HIP build, apple-silicon -> Metal,
 # else -> CPU. TAOS_LLAMACPP_VARIANT overrides detection entirely.
+is_musl() {
+    [[ -e /lib/ld-musl-aarch64.so.1 ]]
+}
+
 detect_variant() {
     if [[ -n "${TAOS_LLAMACPP_VARIANT:-}" ]]; then
         VARIANT="$TAOS_LLAMACPP_VARIANT"
@@ -115,7 +123,12 @@ detect_variant() {
     fi
 
     [[ "$os" == "Linux" ]] || die "unsupported OS: $os (install-llama-cpp.sh supports Linux and macOS only)"
-    [[ "$arch" == "x86_64" ]] || die "install-llama-cpp.sh only supports x86_64 Linux — got $arch. Rockchip ARM boards use install-rknpu.sh / install-rk-llama-cpp.sh instead."
+    if [[ "$arch" == "aarch64" ]] && is_musl; then
+        VARIANT="musl-arm64"
+        log "detected platform: Linux aarch64 musl -> pinned source build (${LLAMACPP_MUSL_TAG})"
+        return
+    fi
+    [[ "$arch" == "x86_64" ]] || die "install-llama-cpp.sh only supports x86_64 Linux -- got $arch. Rockchip ARM boards use install-rknpu.sh / install-rk-llama-cpp.sh instead."
 
     if [[ -d /opt/rocm ]]; then
         VARIANT="rocm"
@@ -158,6 +171,10 @@ resolve_asset() {
         cpu)
             ASSET="llama-${LLAMACPP_VERSION}-bin-ubuntu-x64.tar.gz"
             ASSET_SHA256="a2dc4404fb43f2bb7818fd3a0602b0e59dfe67ab972ce79b3479ad764249fbd4"
+            ;;
+        musl-arm64)
+            ASSET=""
+            ASSET_SHA256=""
             ;;
         *)
             die "unknown variant: $VARIANT (expected cuda|rocm|apple-silicon|cpu)"
@@ -218,6 +235,29 @@ download_and_extract() {
     # strip it so the binary + shared libs land directly under INSTALL_DIR.
     run_as_user tar -xzf "$tmp" -C "$INSTALL_DIR" --strip-components=1
     chmod +x "$INSTALL_DIR/llama-server" 2>/dev/null || true
+}
+
+# -------- (4b) build from source for musl arm64 ----------------------------
+build_from_source_musl() {
+    sudo apk add --no-cache build-base cmake samurai git linux-headers openssl-dev || die "apk add failed"
+    local src
+    src="$(run_as_user mktemp -d -t llamacpp-src.XXXXXX)"
+    run_as_user git clone --depth 1 --branch "$LLAMACPP_MUSL_TAG" https://github.com/ggml-org/llama.cpp "$src" || die "git clone failed"
+    local head
+    head="$(git -C "$src" rev-parse HEAD)"
+    if [[ "$head" != "$LLAMACPP_MUSL_COMMIT" ]]; then
+        die "llama.cpp $LLAMACPP_MUSL_TAG resolved to $head, expected $LLAMACPP_MUSL_COMMIT -- refusing to build"
+    fi
+    run_as_user cmake -S "$src" -B "$src/build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON -DGGML_VULKAN=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_OPENSSL=ON
+    local jobs
+    jobs="$(nproc)"
+    (( jobs > 6 )) && jobs=6
+    run_as_user nice -n 15 ninja -C "$src/build" -j"$jobs" llama-server
+    run_as_user mkdir -p "$INSTALL_DIR"
+    run_as_user cp "$src/build/bin/llama-server" "$INSTALL_DIR/llama-server"
+    run_as_user find "$src/build" -name 'lib*.so*' -exec cp -P {} "$INSTALL_DIR"/ \;
+    chmod +x "$INSTALL_DIR/llama-server"
+    run_as_user rm -rf "$src"
 }
 
 # -------- (5) service unit (systemd on Linux, launchd on macOS) ------------
@@ -322,9 +362,13 @@ main() {
     run_as_user mkdir -p "$MODELS_DIR"
 
     if [[ -x "$INSTALL_DIR/llama-server" ]]; then
-        log "llama-server binary already present at $INSTALL_DIR — skipping download"
+        log "llama-server binary already present at $INSTALL_DIR -- skipping download"
     else
-        download_and_extract
+        if [[ "$VARIANT" == "musl-arm64" ]]; then
+            build_from_source_musl
+        else
+            download_and_extract
+        fi
     fi
 
     # Always (re)write + (re)enable the service — this is the self-heal
@@ -343,9 +387,9 @@ main() {
   =================================================================
     variant:       $VARIANT
     binary dir:    $INSTALL_DIR
-    models dir:    $MODELS_DIR (drop GGUF files here — no models installed by this script)
+    models dir:    $MODELS_DIR (drop GGUF files here -- no models installed by this script)
     HTTP endpoint: http://${HOST}:${PORT}
-    pinned build:  $LLAMACPP_VERSION
+    pinned build:  ${LLAMACPP_MUSL_TAG:-$LLAMACPP_VERSION}
 
 EOF
 }
