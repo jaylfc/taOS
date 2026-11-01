@@ -57,9 +57,29 @@ def test_all_exceptions_are_orb_error_subclasses():
         "CatalogSignatureInvalid",
         "CatalogSerialRegression",
         "CatalogStateCorrupt",
+        "CatalogKindInvalid",
+        "CatalogInvalid",
     ]:
         exc_cls = getattr(catalog_sig, exc_name)
         assert issubclass(exc_cls, OrbError), f"{exc_name} must be OrbError subclass"
+
+
+def test_verify_catalog_not_json_object_raises_catalog_invalid(keys_dict, test_key):
+    """Catalog not a JSON object -> CatalogInvalid (still OrbError subclass)."""
+    private_key, _, _ = test_key
+    catalog_bytes = b'[1, 2, 3]'
+    sig_bytes = sign_catalog(private_key, catalog_bytes)
+    with pytest.raises(catalog_sig.CatalogInvalid, match="catalog is not a JSON object"):
+        catalog_sig.verify_catalog(catalog_bytes, sig_bytes, keys_dict)
+
+
+def test_verify_catalog_expires_invalid_type_raises_catalog_invalid(keys_dict, test_key):
+    """expires as number -> CatalogInvalid."""
+    private_key, _, _ = test_key
+    catalog_bytes = b'{"serial": 1, "expires": 123}'
+    sig_bytes = sign_catalog(private_key, catalog_bytes)
+    with pytest.raises(catalog_sig.CatalogInvalid, match="catalog expires is not ISO 8601"):
+        catalog_sig.verify_catalog(catalog_bytes, sig_bytes, keys_dict)
 
 
 # key_id_for tests
