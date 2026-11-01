@@ -858,11 +858,21 @@ describe("OnboardingScreen privacy", () => {
 
   it("a ping setting that cannot be read is left to Settings, and setup still goes on", async () => {
     const { calls, onDone } = await open({ [`GET ${PING}`]: () => json({ error: "boom" }, 500), [`GET ${SHARING}`]: savedSharing() });
-    expect(screen.getByRole("switch", { name: "Anonymous update ping" })).toBeDisabled();
+    // No switch at all: one drawn on or off would claim a state nobody read.
+    expect(screen.queryByRole("switch", { name: "Anonymous update ping" })).not.toBeInTheDocument();
+    expect(screen.getByText("Anonymous update ping")).toBeInTheDocument();
     expect(screen.getByText(/Couldn't read this setting/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     expect(puts(calls, PING)).toEqual([]);
+  });
+
+  it("draws no switch until the settings are read", async () => {
+    routeFetch({ [`GET ${PING}`]: () => new Promise<Response>(() => {}) });
+    render(<OnboardingScreen onDone={() => {}} resume={atPrivacy} />);
+    await screen.findByRole("heading", { name: "Privacy" });
+    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+    expect(screen.queryByRole("switch")).not.toBeInTheDocument();
   });
 
   it("no sharing switch when this install cannot share models", async () => {
