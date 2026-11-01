@@ -9,11 +9,14 @@ the agent opens Projects, then builds in it visibly.
 """
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from uuid import uuid4
 
 from fastapi import Request
+
+logger = logging.getLogger(__name__)
 
 
 def _user_id(request: Request) -> str | None:
@@ -60,6 +63,21 @@ async def execute_create_project(args: dict, request: Request) -> dict:
         description=(args or {}).get("description", "") or "",
         user_id=user_id,
     )
+    # taOS #2115: every project creation path must ensure the A2A channel.
+    # Best-effort; ensure is idempotent.
+    try:
+        from tinyagentos.projects.a2a import ensure_a2a_channel
+
+        await ensure_a2a_channel(
+            request.app.state.chat_channels,
+            store,
+            project["id"],
+            config=getattr(request.app.state, "config", None),
+        )
+    except Exception:
+        logger.warning(
+            "a2a ensure failed for skill-created project %s", project.get("id"), exc_info=True
+        )
     return {"ok": True, "project_id": project["id"], "name": project["name"]}
 
 
