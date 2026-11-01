@@ -25,6 +25,7 @@ export function OobeShell({
       <AnimatePresence mode="wait" initial={false} custom={direction}>
         <motion.div
           key={stepKey}
+          className="oobe-stage"
           initial={{ opacity: 0, x: offset, filter: reduce ? "none" : "blur(4px)" }}
           animate={{ opacity: 1, x: 0, filter: "none" }}
           exit={{ opacity: 0, x: -offset, filter: reduce ? "none" : "blur(4px)" }}

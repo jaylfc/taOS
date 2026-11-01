@@ -216,6 +216,23 @@ describe("OnboardingScreen first run", () => {
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
   });
 
+  it("closed sign-ups offer Continue offline, which skips the account step", async () => {
+    const calls = routeFetch({
+      "POST /api/account/register": () => json({ detail: "signups_closed" }, 403),
+    });
+    const onDone = vi.fn();
+    render(<OnboardingScreen onDone={onDone} />);
+    await createLocalAccount();
+    await chooseAccount(/Create a taOS account/);
+    fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Continue offline" }));
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
+    expect(progressPuts(calls).at(-1)?.body).toMatchObject({
+      in_progress: false,
+      skipped: ["taos-account"],
+    });
+  });
+
   it("an unreachable account service shows an error", async () => {
     routeFetch({
       "POST /api/account/login": () => json({ error: "account service unreachable" }, 503),

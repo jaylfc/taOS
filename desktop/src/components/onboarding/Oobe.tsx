@@ -173,6 +173,7 @@ export function Oobe({ onDone, invitedUsername, inviteCode, defaultAutoLogin, re
         <TaosAccountForm
           mode={accountMode}
           onDone={() => void advance("completed")}
+          onOffline={() => void advance("skipped")}
           onBack={() => {
             setDirection(-1);
             setAccountMode(null);

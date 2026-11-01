@@ -126,13 +126,21 @@
   flex: 1;
 }
 
+/* Pinned above the keyboard; content that scrolls under it fades out
+   instead of colliding with the button. Full-bleed across the page gutter. */
 .oobe-footer {
   position: sticky;
   bottom: 0;
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 16px 0 calc(env(safe-area-inset-bottom, 0px) + 20px);
+  margin: 0 -20px;
+  padding: 24px 20px calc(env(safe-area-inset-bottom, 0px) + 20px);
+  background: linear-gradient(180deg, rgba(10, 11, 14, 0), rgba(10, 11, 14, 0.9) 24px);
+}
+
+.oobe-footer:empty {
+  display: none;
 }
 
 .oobe-primary,
@@ -160,6 +168,32 @@
 .oobe-primary:disabled {
   opacity: 0.35;
   cursor: default;
+}
+
+/* Working, not unavailable: stays bright and shows a spinner. */
+.oobe-primary[aria-busy="true"] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  opacity: 0.8;
+  cursor: progress;
+}
+
+.oobe-primary[aria-busy="true"]::before {
+  content: "";
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(18, 19, 23, 0.25);
+  border-top-color: #121317;
+  border-radius: 50%;
+  animation: oobe-spin 0.8s linear infinite;
+}
+
+@keyframes oobe-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .oobe-secondary {
@@ -338,9 +372,51 @@
   text-align: center;
 }
 
-@media (min-width: 720px) {
+/* Wide screens: the page becomes a centred glass card with its action
+   inside, instead of a column over the wallpaper with the button pinned to
+   the bottom edge of a large display. */
+@media (min-width: 720px) and (min-height: 560px) {
+  .oobe-root {
+    display: flex;
+    flex-direction: column;
+    padding: 32px;
+  }
+
+  .oobe-stage {
+    width: 100%;
+    margin: auto;
+  }
+
+  .oobe-page {
+    max-width: 520px;
+    min-height: 0;
+    padding: 12px 40px 0;
+    border: 1px solid var(--oobe-line);
+    border-radius: 28px;
+    background: rgba(16, 17, 21, 0.62);
+    backdrop-filter: blur(40px) saturate(140%);
+    -webkit-backdrop-filter: blur(40px) saturate(140%);
+    box-shadow: 0 30px 80px rgba(0, 0, 0, 0.45);
+  }
+
   .oobe-header {
-    padding-top: clamp(48px, 12vh, 120px);
+    padding-top: 20px;
+  }
+
+  /* No Back on this screen: balance the card's top against its bottom. */
+  .oobe-topbar:empty {
+    display: none;
+  }
+
+  .oobe-topbar:empty + .oobe-header {
+    padding-top: 36px;
+  }
+
+  .oobe-footer {
+    position: static;
+    margin: 0;
+    padding: 28px 0 36px;
+    background: none;
   }
 }
 

@@ -70,10 +70,13 @@ export function TaosAccountForm({
   mode,
   onDone,
   onBack,
+  onOffline,
 }: {
   mode: AccountMode;
   onDone: () => void;
   onBack: () => void;
+  /** Leave the step without an account, as the choice screen's offline row does. */
+  onOffline: () => void;
 }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -112,8 +115,12 @@ export function TaosAccountForm({
       onBack={busy ? undefined : onBack}
       onSubmit={submit}
       footer={
-        !signupsClosed && (
-          <button type="submit" className="oobe-primary" disabled={!valid || busy}>
+        signupsClosed ? (
+          <button type="button" className="oobe-primary" onClick={onOffline}>
+            Continue offline
+          </button>
+        ) : (
+          <button type="submit" className="oobe-primary" disabled={!valid || busy} aria-busy={busy}>
             {busy ? "Please wait..." : signin ? "Sign in" : "Create account"}
           </button>
         )
@@ -121,8 +128,8 @@ export function TaosAccountForm({
     >
       {signupsClosed ? (
         <p className="oobe-status" role="status">
-          New taOS accounts aren't open yet. Go back and choose offline for now: you can
-          create one later in Settings, Account.
+          New taOS accounts aren't open yet. Continue offline for now: you can create one
+          later in Settings, Account.
         </p>
       ) : (
         <>

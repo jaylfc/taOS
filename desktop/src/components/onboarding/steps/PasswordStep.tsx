@@ -44,7 +44,7 @@ export function PasswordStep({
       onBack={busy ? undefined : onBack}
       onSubmit={() => valid && !busy && onSubmit()}
       footer={
-        <button type="submit" className="oobe-primary" disabled={!valid || busy}>
+        <button type="submit" className="oobe-primary" disabled={!valid || busy} aria-busy={busy}>
           {busy
             ? invite ? "Activating..." : "Setting up..."
             : invite ? "Activate account" : "Continue"}

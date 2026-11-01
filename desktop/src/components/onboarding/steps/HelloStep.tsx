@@ -8,7 +8,7 @@ export function HelloStep({ onNext }: { onNext: () => void }) {
       subtitle="Your own AI, running on hardware you own. Setup takes about five minutes."
       onSubmit={onNext}
       footer={
-        <button type="submit" className="oobe-primary" autoFocus>
+        <button type="submit" className="oobe-primary">
           Get started
         </button>
       }
