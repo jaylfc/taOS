@@ -51,6 +51,12 @@ async function chooseAccount(option: RegExp, password = "longenough") {
   });
 }
 
+/** The model step with nothing in the catalog that fits: Continue sets it up later. */
+async function passModelStep() {
+  await screen.findByRole("heading", { name: "A model on this device" });
+  fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+}
+
 /** About you: pick a topic, then accept the default style. */
 async function answerAboutYou(topic = "Research") {
   await screen.findByRole("heading", { name: "What would you like help with?" });
@@ -209,10 +215,11 @@ describe("OnboardingScreen first run", () => {
     await createLocalAccount();
     fireEvent.click(screen.getByRole("button", { name: /Use offline only/ }));
     await answerAboutYou();
+    await passModelStep();
     await waitFor(() =>
       expect(progressPuts(calls).at(-1)?.body).toMatchObject({
         in_progress: false,
-        skipped: ["taos-account", "device"],
+        skipped: ["taos-account", "device", "model"],
       }),
     );
     expect(onDone).not.toHaveBeenCalled();
@@ -238,11 +245,12 @@ describe("OnboardingScreen first run", () => {
     expect(onDone).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     await answerAboutYou();
+    await passModelStep();
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     expect(progressPuts(calls).at(-1)?.body).toMatchObject({
       in_progress: false,
       completed: expect.arrayContaining(["taos-account", "device", "about"]),
-      skipped: [],
+      skipped: ["model"],
     });
   });
 
@@ -275,6 +283,7 @@ describe("OnboardingScreen first run", () => {
     fireEvent.click(screen.getByRole("button", { name: "Back" }));
     fireEvent.click(await screen.findByRole("button", { name: /Use offline only/ }));
     await answerAboutYou();
+    await passModelStep();
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
   });
 
@@ -289,10 +298,11 @@ describe("OnboardingScreen first run", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create account" }));
     fireEvent.click(await screen.findByRole("button", { name: "Continue offline" }));
     await answerAboutYou();
+    await passModelStep();
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     expect(progressPuts(calls).at(-1)?.body).toMatchObject({
       in_progress: false,
-      skipped: ["taos-account", "device"],
+      skipped: ["taos-account", "device", "model"],
     });
   });
 
@@ -410,5 +420,141 @@ describe("OnboardingScreen resume", () => {
     );
     expect(await screen.findByRole("heading", { name: "Your taOS account" })).toBeInTheDocument();
     expect(calls.some((c) => c.url === "/auth/setup")).toBe(false);
+  });
+});
+
+describe("OnboardingScreen on-device model", () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  const catalog = (downloaded = false) =>
+    json({
+      hardware_profile_id: "arm-8gb",
+      models: [
+        {
+          id: "qwen3-1.7b",
+          name: "Qwen3 1.7B",
+          capabilities: ["chat"],
+          hardware_tiers: { "arm-8gb": { recommended: "q4" } },
+          variants: [
+            { id: "q8", format: "gguf", size_mb: 1900, compatibility: "green", downloaded: false },
+            { id: "q4", format: "gguf", size_mb: 1100, compatibility: "green", downloaded },
+          ],
+        },
+      ],
+    });
+
+  const atModelStep = { step: "model", completed: ["hello", "name", "password", "about"], skipped: ["taos-account", "device"] };
+
+  it("offers the model sized to this device and downloads it with progress", async () => {
+    let polls = 0;
+    const calls = routeFetch({
+      "GET /api/models": () => catalog(),
+      "POST /api/models/download": () => json({ status: "started", download_id: "qwen3-1.7b-q4" }),
+      "GET /api/models/downloads/qwen3-1.7b-q4": () =>
+        json(++polls < 2 ? { status: "downloading", percent: 40 } : { status: "complete", percent: 100 }),
+    });
+    const onDone = vi.fn();
+    render(<OnboardingScreen onDone={onDone} resume={atModelStep} />);
+    expect(await screen.findByText("Qwen3 1.7B")).toBeInTheDocument();
+    expect(screen.getByText("1.1 GB download")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Download" }));
+    expect(await screen.findByRole("progressbar")).toHaveAttribute("aria-valuenow", "40");
+    expect(calls.find((c) => c.url === "/api/models/download")?.body).toEqual({
+      app_id: "qwen3-1.7b",
+      variant_id: "q4",
+    });
+    expect(await screen.findByText("Downloaded and ready", {}, { timeout: 3000 })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
+    expect(progressPuts(calls).at(-1)?.body).toMatchObject({
+      in_progress: false,
+      completed: expect.arrayContaining(["model"]),
+      model: { app_id: "qwen3-1.7b", variant_id: "q4", downloaded: true },
+    });
+  });
+
+  it("continuing while it downloads records the model as not yet downloaded", async () => {
+    const calls = routeFetch({
+      "GET /api/models": () => catalog(),
+      "POST /api/models/download": () => json({ download_id: "qwen3-1.7b-q4" }),
+      "GET /api/models/downloads/qwen3-1.7b-q4": () => json({ status: "downloading", percent: 5 }),
+    });
+    const onDone = vi.fn();
+    render(<OnboardingScreen onDone={onDone} resume={atModelStep} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Download" }));
+    await screen.findByRole("progressbar");
+    expect(screen.getByText("It keeps downloading if you continue.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
+    expect(progressPuts(calls).at(-1)?.body).toMatchObject({
+      model: { app_id: "qwen3-1.7b", downloaded: false },
+    });
+  });
+
+  it("a model already on the device needs no download", async () => {
+    const calls = routeFetch({ "GET /api/models": () => catalog(true) });
+    render(<OnboardingScreen onDone={() => {}} resume={atModelStep} />);
+    expect(await screen.findByText("Downloaded and ready")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Download" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() =>
+      expect(progressPuts(calls).at(-1)?.body).toMatchObject({ model: { variant_id: "q4", downloaded: true } }),
+    );
+    expect(calls.some((c) => c.url === "/api/models/download")).toBe(false);
+  });
+
+  it("a download that fails says why and offers to try again or set up later", async () => {
+    routeFetch({
+      "GET /api/models": () => catalog(),
+      "POST /api/models/download": () => json({ download_id: "qwen3-1.7b-q4" }),
+      "GET /api/models/downloads/qwen3-1.7b-q4": () => json({ status: "error", error: "Checksum mismatch" }),
+    });
+    render(<OnboardingScreen onDone={() => {}} resume={atModelStep} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Download" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Checksum mismatch");
+    expect(screen.getByRole("button", { name: "Try Again" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Set Up Later" })).toBeInTheDocument();
+  });
+
+  it("a download the server refuses shows its reason", async () => {
+    routeFetch({
+      "GET /api/models": () => catalog(),
+      "POST /api/models/download": () => json({ error: "No download URL for variant" }, 400),
+    });
+    render(<OnboardingScreen onDone={() => {}} resume={atModelStep} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Download" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("No download URL for variant");
+  });
+
+  it("an unreadable model list says so", async () => {
+    routeFetch({ "GET /api/models": () => json({ error: "boom" }, 500) });
+    render(<OnboardingScreen onDone={() => {}} resume={atModelStep} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't read the model list");
+  });
+
+  it("Set Up Later records the step as skipped with no model", async () => {
+    const calls = routeFetch({ "GET /api/models": () => catalog() });
+    const onDone = vi.fn();
+    render(
+      <OnboardingScreen
+        onDone={onDone}
+        resume={{ ...atModelStep, model: { app_id: "x", variant_id: "y", name: "X", size_mb: 1, downloaded: false } }}
+      />,
+    );
+    await screen.findByText("Qwen3 1.7B");
+    fireEvent.click(screen.getByRole("button", { name: "Set Up Later" }));
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
+    const last = progressPuts(calls).at(-1)?.body as Record<string, unknown>;
+    expect(last).toMatchObject({ skipped: expect.arrayContaining(["model"]) });
+    expect(last.model).toBeUndefined();
+    expect(calls.some((c) => c.url === "/api/models/download")).toBe(false);
+  });
+
+  it("Back from the model step lands on the last about-you page", async () => {
+    routeFetch({ "GET /api/models": () => catalog() });
+    render(<OnboardingScreen onDone={() => {}} resume={atModelStep} />);
+    await screen.findByText("Qwen3 1.7B");
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(await screen.findByRole("heading", { name: "How should it work with you?" })).toBeInTheDocument();
   });
 });

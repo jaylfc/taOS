@@ -7,14 +7,16 @@ import { PasswordStep } from "./steps/PasswordStep";
 import { DEFAULT_ABOUT, type AboutYou } from "./about";
 import { AboutHelpStep, AboutStyleStep } from "./steps/AboutYouStep";
 import { DeviceStep } from "./steps/DeviceStep";
+import { ModelStep } from "./steps/ModelStep";
+import type { OnDeviceChoice } from "./model";
 import { TaosAccountChoice, TaosAccountForm, type AccountMode } from "./steps/TaosAccountStep";
 
-export type StepId = "hello" | "name" | "password" | "taos-account" | "device" | "about";
+export type StepId = "hello" | "name" | "password" | "taos-account" | "device" | "about" | "model";
 
-const FIRST_RUN: StepId[] = ["hello", "name", "password", "taos-account", "device", "about"];
+const FIRST_RUN: StepId[] = ["hello", "name", "password", "taos-account", "device", "about", "model"];
 const INVITE: StepId[] = ["name", "password"];
 /** Steps the account must exist for; a resume can land on these only. */
-const AFTER_ACCOUNT: StepId[] = ["taos-account", "device", "about"];
+const AFTER_ACCOUNT: StepId[] = ["taos-account", "device", "about", "model"];
 /** Steps that need a taOS account sign-in; without one they are set up later. */
 const NEEDS_TAOS_ACCOUNT: StepId[] = ["device"];
 
@@ -25,7 +27,7 @@ export interface OobeProps {
   inviteCode?: string;
   defaultAutoLogin?: boolean;
   /** Resume first-run setup here (the account was created in an earlier visit). */
-  resume?: Pick<OnboardingProgress, "step" | "completed" | "skipped" | "about">;
+  resume?: Pick<OnboardingProgress, "step" | "completed" | "skipped" | "about" | "model">;
   /** This is the device's own screen, so first run may set a PIN too. */
   pinOffered?: boolean;
 }
@@ -53,8 +55,14 @@ export function Oobe({
   const [step, setStep] = useState<StepId>(resumeAt ?? steps[0]!);
   const [direction, setDirection] = useState<1 | -1>(1);
   const [accountMode, setAccountMode] = useState<AccountMode | null>(null);
-  const [aboutPage, setAboutPage] = useState<"help" | "style">("help");
+  // Back into about you from a later step lands on its last page.
+  const [aboutPage, setAboutPage] = useState<"help" | "style">(
+    resumeAt && steps.indexOf(resumeAt) > steps.indexOf("about") ? "style" : "help",
+  );
   const [about, setAbout] = useState<AboutYou>(resume?.about ?? DEFAULT_ABOUT);
+  // Read when progress is written, so a ref: the choice is set in the same
+  // handler that advances.
+  const model = useRef<OnDeviceChoice | undefined>(resume?.model);
   // Reaching a NEEDS_TAOS_ACCOUNT step on resume means the sign-in happened.
   const [accountLinked, setAccountLinked] = useState(
     resumeAt !== null && NEEDS_TAOS_ACCOUNT.includes(resumeAt),
@@ -112,13 +120,13 @@ export function Oobe({
     // session.
     const signedIn = !invite && steps.indexOf(step) >= steps.indexOf("password");
     if (next) {
-      if (signedIn) void saveProgress({ in_progress: true, step: next, ...log, about: answers });
+      if (signedIn) void saveProgress({ in_progress: true, step: next, ...log, about: answers, model: model.current });
       go(next, 1);
       return;
     }
     // Awaited: LoginGate re-reads progress in onDone and must not see
     // in_progress still true, or it would send the user straight back here.
-    await saveProgress({ in_progress: false, step: "done", ...log, about: answers });
+    await saveProgress({ in_progress: false, step: "done", ...log, about: answers, model: model.current });
     onDone();
   }
 
@@ -264,6 +272,21 @@ export function Oobe({
             onNext={() => void advance("completed")}
           />
         );
+      break;
+    case "model":
+      page = (
+        <ModelStep
+          onBack={back}
+          onDone={(choice) => {
+            model.current = choice;
+            void advance("completed");
+          }}
+          onSkip={() => {
+            model.current = undefined;
+            void advance("skipped");
+          }}
+        />
+      );
       break;
   }
 

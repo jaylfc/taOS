@@ -19,9 +19,12 @@ export interface OnboardingProgress {
   skipped: string[];
   /** "About you" answers, kept here so one writer owns the whole blob (PUT replaces it). */
   about?: AboutYou;
+  /** The on-device model taken at the model step; absent when set up later. */
+  model?: OnDeviceChoice;
 }
 
 import { parseAbout, type AboutYou } from "./about";
+import { parseChoice, type OnDeviceChoice } from "./model";
 
 const ENDPOINT = "/api/preferences/onboarding";
 
@@ -38,6 +41,7 @@ export async function loadProgress(): Promise<OnboardingProgress | null> {
       completed: Array.isArray(data.completed) ? data.completed : [],
       skipped: Array.isArray(data.skipped) ? data.skipped : [],
       about: parseAbout(data.about),
+      model: parseChoice(data.model),
     };
   } catch {
     return null;
