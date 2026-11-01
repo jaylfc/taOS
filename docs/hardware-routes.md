@@ -30,11 +30,21 @@
 
 - Response: `available`, `adapters[]`, `devices[]`
 - `available=false` = BlueZ could not be queried (HTTP 200; only the write routes return 503)
+- Each adapter includes `path`, `address`, `powered`, `discovering`
 
 ### POST /api/hardware/bluetooth/power
 
 - Body: `{adapter, powered}`; success: `{"ok": true}`
 - 422 `invalid_path`; 503 `bluez_unavailable`; 504 `timeout`; 502 `write_failed`
+
+### POST /api/hardware/bluetooth/discovery
+
+- Body: `{adapter, on: bool}`; starts or stops discovery on the adapter
+- On `on=true`: calls `Adapter1.StartDiscovery`, schedules `StopDiscovery` after 60 s, returns `{"ok": true, "discovering": bool}`
+- On `on=false`: cancels timer, calls `Adapter1.StopDiscovery`, returns `{"ok": true, "discovering": false}`
+- `org.bluez.Error.InProgress` on start counts as success
+- 422 `invalid_path`; 503 `bluez_unavailable` / `dbus_fast_missing`; 502 `write_failed` (other D-Bus error)
+- 504 `bluez_timeout` on D-Bus call timeout; 502 `bluez_error` on StopDiscovery D-Bus error
 
 ### POST /api/hardware/bluetooth/device
 
