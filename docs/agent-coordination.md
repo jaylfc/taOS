@@ -1524,6 +1524,8 @@ Route module `tinyagentos/routes/hardware_wifi.py`:
 - `POST /api/hardware/wifi/enabled` enables or disables the Wi-Fi radio.
 - `POST /api/hardware/wifi/disconnect` disconnects a Wi-Fi interface.
 - `POST /api/hardware/wifi/connect` connects to a Wi-Fi network; the PSK travels to NetworkManager over dbus-fast in-process and never on a busctl argv.
+- `POST /api/hardware/wifi/scan` triggers a Wi-Fi scan on one or all interfaces; returns 202 with the list of scanning interfaces.
+- `POST /api/hardware/wifi/forget` deletes saved 802-11-wireless profiles matching an exact SSID byte string; never calls GetSecrets.
 
 Route module `tinyagentos/routes/hardware_bluetooth.py`:
 
