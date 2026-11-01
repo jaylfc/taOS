@@ -2261,6 +2261,13 @@ export function MessagesApp({
       isMobile={isMobile}
       wsStatus={wsStatus}
       allEmpty={allEmpty}
+      emptyNote={
+        firstChat.waiting
+          ? { title: "Setting up your assistant", detail: "Your first chat opens here when it's ready.", tone: "busy" }
+          : firstChat.failure
+            ? { title: "Your assistant isn't ready", detail: `${firstChat.failure} You can check on it, or try again, in the Agents app.`, tone: "error" }
+            : undefined
+      }
       sections={SECTIONS}
       collapsedSections={collapsedSections}
       onToggleSection={toggleSection}

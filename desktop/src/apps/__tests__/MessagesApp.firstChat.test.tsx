@@ -39,7 +39,9 @@ vi.mock("@/registry/app-registry", () => ({
   getApp: () => undefined,
 }));
 vi.mock("../chat/ChannelSidebar", () => ({
-  ChannelSidebar: () => <div data-testid="channel-sidebar" />,
+  ChannelSidebar: ({ emptyNote }: { emptyNote?: { title: string; detail: string; tone: string } }) => (
+    <div data-testid="channel-sidebar" data-tone={emptyNote?.tone ?? ""}>{emptyNote ? `${emptyNote.title}|${emptyNote.detail}` : ""}</div>
+  ),
 }));
 // vi.mock("../chat/MessageList", () => ({
 //   MessageList: () => <div data-testid="message-list" />,
@@ -150,13 +152,15 @@ const PROMPTS = ["Explain what a piece of code does.", "Help me plan my week."];
 const DM = { id: "dm1", name: "Assistant", type: "dm", members: ["user", "assistant-2"] };
 
 /** Channels and the DM's messages as given; everything else answers empty. */
-function serve(channels: unknown[], messages: unknown[] = []) {
+function serve(channels: unknown[], messages: unknown[] = [], deployStatus: unknown = { status: "deploying" }) {
   globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
     const u = String(url);
     const body = u.includes("/api/chat/channels/dm1/messages")
       ? { messages }
       : u.startsWith("/api/chat/channels")
         ? { channels }
+        : u.endsWith("/deploy-status")
+          ? deployStatus
         : u.startsWith("/api/agents")
           ? []
           : {};
@@ -183,6 +187,31 @@ describe("MessagesApp first chat from setup", () => {
     serve([{ id: "ch9", name: "general", type: "topic", members: ["user", "peer"] }]);
     render(<MessagesApp windowId="w" firstChatAgent="assistant-2" suggestedPrompts={PROMPTS} />);
     expect(await screen.findByRole("status")).toHaveTextContent("Setting up your assistant.");
+  });
+
+  it("hands the channel list a setup note while the DM does not exist yet", async () => {
+    serve([]);
+    render(<MessagesApp windowId="w" firstChatAgent="assistant-2" suggestedPrompts={PROMPTS} />);
+    const sidebar = await screen.findByTestId("channel-sidebar");
+    await waitFor(() => expect(sidebar).toHaveAttribute("data-tone", "busy"));
+    expect(sidebar).toHaveTextContent("Setting up your assistant|Your first chat opens here when it's ready.");
+  });
+
+  it("hands the channel list the deploy's error once it failed", async () => {
+    (useIsMobile as ReturnType<typeof vi.fn>).mockReturnValue(true);
+    serve([], [], { status: "failed", error: "No room for another agent" });
+    render(<MessagesApp windowId="w" firstChatAgent="assistant-2" suggestedPrompts={PROMPTS} />);
+    const sidebar = await screen.findByTestId("channel-sidebar");
+    await waitFor(() => expect(sidebar).toHaveAttribute("data-tone", "error"), { timeout: 6000 });
+    expect(sidebar).toHaveTextContent("No room for another agent. You can check on it, or try again, in the Agents app.");
+  }, 10000);
+
+  it("an ordinary open hands the channel list no note", async () => {
+    serve([]);
+    render(<MessagesApp windowId="w" />);
+    const sidebar = await screen.findByTestId("channel-sidebar");
+    await screen.findByText("Pick a channel or start a DM");
+    expect(sidebar).toHaveAttribute("data-tone", "");
   });
 
   it("opens the assistant's DM and offers the prompts while it is empty", async () => {
