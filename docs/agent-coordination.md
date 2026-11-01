@@ -2718,6 +2718,8 @@ the choice is made, from two config.yaml keys:
 - `taos_agent.framework`: `auto` (default; picoclaw on mobile, opencode
   elsewhere), `opencode`, `picoclaw` or `claude_code` (operator overrides;
   `auto` never picks `claude_code`).
+- **Local desktop state**: `GET /api/system/local-desktop` reports `available`,
+  `enabled`, and `active` based on `taos-kiosk.service` systemd unit state.
 
 PicoClaw needs the LLM gateway (on unless `TAOS_LLM_GATEWAY=0`) and a `picoclaw` binary
 (`TAOS_PICOCLAW_BIN`, PATH, `/usr/local/bin`, `/usr/bin`). Without either,
