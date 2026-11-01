@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import subprocess
 import time
 import uuid
@@ -9,11 +10,8 @@ from dataclasses import asdict
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
-
-logger = logging.getLogger(__name__)
-
-import re
+from pydantic import BaseModel, Field, field_validator
+from pydantic.types import StrictInt
 
 from tinyagentos.cluster.capabilities import hardware_to_targets, potential_capabilities as _potential_capabilities
 from tinyagentos.cluster.optimiser import ClusterOptimiser
@@ -27,6 +25,8 @@ from tinyagentos.rate_limit import MovingWindowLimiter, rate_limited_response
 from tinyagentos.routes.auth import _require_admin
 from tinyagentos.task_utils import _create_supervised_task
 from tinyagentos.trace_store import TraceWriteError
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -1464,9 +1464,6 @@ async def list_leases(request: Request):
     }
 
 
-from pydantic import BaseModel, Field, field_validator
-
-
 # ── taOS #3233: external task report / load-feedback ──────────────────────
 
 _TASK_REPORT_SLUG = "taos-cluster-tasks"
@@ -1484,13 +1481,13 @@ class TaskReportRequest(BaseModel):
     lease_id: str | None = Field(default=None, max_length=128)
     caller: str = Field(default="", max_length=256)
     model: str = Field(default="", max_length=256)
-    duration_s: float = Field(..., ge=0, le=86_400 * 30)
+    duration_s: float = Field(..., ge=0, le=86_400 * 30, allow_inf_nan=False)
     status: str = Field(..., pattern="^(success|failure|cancelled)$")
-    tokens: dict[str, int] | None = None
+    tokens: dict[str, StrictInt] | None = None
 
     @field_validator("tokens")
     @classmethod
-    def _validate_tokens(cls, v: dict[str, int] | None) -> dict[str, int] | None:
+    def _validate_tokens(cls, v: dict[str, StrictInt] | None) -> dict[str, StrictInt] | None:
         if v is None:
             return None
         if len(v) > 16:
@@ -1498,7 +1495,7 @@ class TaskReportRequest(BaseModel):
         for k, val in v.items():
             if not isinstance(k, str) or not (1 <= len(k) <= 64):
                 raise ValueError("each token key must be a string of length 1..64")
-            if not isinstance(val, int) or not (0 <= val <= 10**9):
+            if not (0 <= val <= 10**9):
                 raise ValueError("each token value must be an integer 0..1_000_000_000")
         return v
 

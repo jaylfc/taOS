@@ -8,7 +8,9 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from pydantic import ValidationError
 
+from tinyagentos.routes.cluster import TaskReportRequest
 from tinyagentos.trace_store import TraceStoreRegistry, VALID_KINDS, TraceWriteError
 
 
@@ -318,3 +320,127 @@ async def test_trace_store_record_non_strict_returns_envelope_on_failure(tmp_dat
         assert env["payload"]["text"] == "hello"
         assert "id" in env
         assert "created_at" in env
+
+
+@pytest.mark.asyncio
+async def test_trace_store_record_sealed_bucket_strict_raises(tmp_data_dir):
+    """record() with strict=True on sealed bucket raises TraceWriteError when _append_late fails."""
+    from tinyagentos.trace_store import AgentTraceStore
+    store = AgentTraceStore(tmp_data_dir, "test-agent")
+
+    with patch.object(store, "_is_sealed_bucket", return_value=True), \
+         patch.object(store, "_append_late", return_value=False):
+        # strict=True should raise TraceWriteError
+        with pytest.raises(TraceWriteError, match="late sidecar write failed"):
+            await store.record("message_in", strict=True, payload={"from": "user", "text": "hello"})
+
+        # strict=False should still return envelope (current behavior unchanged)
+        env = await store.record("message_in", strict=False, payload={"from": "user", "text": "hello"})
+        assert env["kind"] == "message_in"
+        assert env["payload"]["text"] == "hello"
+        assert "id" in env
+        assert "created_at" in env
+
+
+@pytest.mark.asyncio
+async def test_trace_store_record_rollback_on_commit_failure(tmp_data_dir):
+    """Failed commit triggers rollback before JSONL fallback."""
+    from tinyagentos.trace_store import AgentTraceStore
+    store = AgentTraceStore(tmp_data_dir, "test-agent")
+
+    # Track if rollback was called
+    rollback_called = False
+    original_open_bucket = store._open_bucket
+
+    async def mock_open_bucket(bucket):
+        conn = await original_open_bucket(bucket)
+        original_commit = conn.commit
+        original_rollback = conn.rollback
+
+        async def failing_commit():
+            raise RuntimeError("commit failed")
+
+        async def tracked_rollback():
+            nonlocal rollback_called
+            rollback_called = True
+            await original_rollback()
+
+        conn.commit = failing_commit
+        conn.rollback = tracked_rollback
+        return conn
+
+    def fail_fallback(*args, **kwargs):
+        return False
+
+    with patch.object(store, "_open_bucket", side_effect=mock_open_bucket), \
+         patch.object(store, "_append_fallback", side_effect=fail_fallback):
+        # strict=True should raise TraceWriteError after rollback
+        with pytest.raises(TraceWriteError, match="both SQLite and JSONL writes failed"):
+            await store.record("message_in", strict=True, payload={"from": "user", "text": "hello"})
+
+    assert rollback_called, "rollback should have been called on commit failure"
+
+
+@pytest.mark.asyncio
+async def test_report_task_tokens_strict_int_rejects_strings(client, app, tmp_data_dir):
+    """tokens with string numeric values like '5' should be 422, not coerced."""
+    app.state.trace_registry = TraceStoreRegistry(tmp_data_dir)
+
+    with patch("tinyagentos.routes.cluster._require_lease_access", side_effect=_allow_all):
+        # String "5" should be rejected (StrictInt)
+        resp = await client.post(
+            "/api/cluster/tasks/report",
+            json={
+                "worker": "w1",
+                "resource_id": "gpu-cuda-0",
+                "caller": "ext-scheduler",
+                "duration_s": 1.0,
+                "status": "success",
+                "tokens": {"in": "5"},
+            },
+        )
+        assert resp.status_code == 422, resp.text
+
+    await app.state.trace_registry.close_all()
+
+
+@pytest.mark.asyncio
+async def test_report_task_duration_s_rejects_nan_inf():
+    """duration_s with nan/inf should raise ValidationError when model constructed directly."""
+    # JSON cannot represent nan/inf, so test model directly
+    with pytest.raises(ValidationError):
+        TaskReportRequest(
+            worker="w1",
+            resource_id="gpu-cuda-0",
+            caller="ext-scheduler",
+            duration_s=float("nan"),
+            status="success",
+        )
+
+    with pytest.raises(ValidationError):
+        TaskReportRequest(
+            worker="w1",
+            resource_id="gpu-cuda-0",
+            caller="ext-scheduler",
+            duration_s=float("inf"),
+            status="success",
+        )
+
+    with pytest.raises(ValidationError):
+        TaskReportRequest(
+            worker="w1",
+            resource_id="gpu-cuda-0",
+            caller="ext-scheduler",
+            duration_s=float("-inf"),
+            status="success",
+        )
+
+    # Valid finite values should work
+    req = TaskReportRequest(
+        worker="w1",
+        resource_id="gpu-cuda-0",
+        caller="ext-scheduler",
+        duration_s=1.5,
+        status="success",
+    )
+    assert req.duration_s == 1.5

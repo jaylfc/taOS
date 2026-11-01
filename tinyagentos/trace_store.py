@@ -429,15 +429,24 @@ class AgentTraceStore:
             # Route sealed buckets straight to the late sidecar -- attempting
             # SQLite on a read-only file would raise "readonly database".
             if self._is_sealed_bucket(bucket):
-                self._append_late(bucket, envelope)
+                late_ok = self._append_late(bucket, envelope)
+                if strict and not late_ok:
+                    raise TraceWriteError("late sidecar write failed")
                 now_bucket = _bucket_key(time.time())
                 await self._evict_old_buckets(now_bucket)
                 return envelope
+            conn = None
             try:
                 conn = await self._open_bucket(bucket)
                 await self._insert_envelope(conn, envelope)
                 await conn.commit()
             except Exception as exc:  # noqa: BLE001
+                # Roll back the failed transaction so a retry doesn't duplicate the row.
+                if conn is not None:
+                    try:
+                        await conn.rollback()
+                    except Exception:
+                        pass
                 logger.warning(
                     "trace_store: DB write failed for %s/%s -- appending to JSONL (%s)",
                     self._slug, bucket, exc,
@@ -716,9 +725,11 @@ class AgentTraceStore:
             return False
         return not os.access(str(db_path), os.W_OK)
 
-    def _append_late(self, bucket: str, envelope: dict) -> None:
+    def _append_late(self, bucket: str, envelope: dict) -> bool:
         """Write an envelope to the late-arrival sidecar ({bucket}.late.jsonl).
-        This file is always writable and never sealed."""
+        This file is always writable and never sealed.
+
+        Returns True on success, False on failure."""
         try:
             path = _bucket_late_jsonl_path(self._data_dir, self._slug, bucket)
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -728,11 +739,13 @@ class AgentTraceStore:
                 pass
             with open(path, "a") as f:
                 f.write(json.dumps(envelope, default=str) + "\n")
+            return True
         except Exception as exc:  # noqa: BLE001
             logger.error(
                 "trace_store: LATE WRITE FAILED for %s/%s: %s -- EVENT LOST",
                 self._slug, bucket, exc,
             )
+            return False
 
     def _append_fallback(self, bucket: str, envelope: dict) -> bool:
         try:
