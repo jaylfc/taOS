@@ -17,6 +17,8 @@
   inset: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
+  /* A focused field scrolls clear of the pinned footer, not under it. */
+  scroll-padding-bottom: 150px;
   color: var(--oobe-text);
   font-family: var(--font-sans);
   background: #0c0d10 url("/static/wallpaper-graphite.png") center / cover no-repeat;

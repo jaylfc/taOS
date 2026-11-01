@@ -689,6 +689,22 @@ describe("OnboardingScreen taOS Agent model", () => {
     expect(screen.getByText('No model matches "nope".')).toBeInTheDocument();
   });
 
+  it("a pick the filter hides cannot be sent, until one in view is picked", async () => {
+    const ids = Array.from({ length: 12 }, (_, i) => `model-${String(i).padStart(2, "0")}`);
+    const calls = routeFetch({ "GET /api/providers": providers(ids) });
+    render(<OnboardingScreen onDone={() => {}} resume={atAgentStep} />);
+    await connect();
+    await screen.findByRole("heading", { name: "Pick a model" });
+    expect(screen.getByRole("radio", { name: "model-00" })).toBeChecked();
+    fireEvent.change(screen.getByLabelText("Filter models"), { target: { value: "model-1" } });
+    const cont = screen.getByRole("button", { name: "Continue" });
+    expect(cont).toBeDisabled();
+    fireEvent.submit(cont.closest("form")!);
+    expect(calls.some((c) => c.url === "/api/taos-agent/settings")).toBe(false);
+    fireEvent.click(screen.getByRole("radio", { name: "model-11" }));
+    expect(cont).toBeEnabled();
+  });
+
   it("Set Up Later gives the agent the on-device model, still recorded as skipped", async () => {
     const calls = routeFetch();
     const onDone = vi.fn();

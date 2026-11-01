@@ -207,14 +207,17 @@ export function AgentModelPick({
   const q = query.trim().toLowerCase();
   const matches = q ? models.filter((m) => m.id.toLowerCase().includes(q)) : models;
   const shown = matches.slice(0, SHOW_AT_MOST);
+  // A pick the filter has hidden is not sent: Continue would save a model
+  // the user can no longer see.
+  const ready = shown.some((m) => m.id === picked);
   return (
     <OobePage
       title={title}
       subtitle={subtitle}
       onBack={busy ? undefined : onBack}
-      onSubmit={() => picked && !busy && onPick(picked)}
+      onSubmit={() => ready && !busy && onPick(picked)}
       footer={
-        <button type="submit" className="oobe-primary" disabled={!picked || busy} aria-busy={busy || undefined}>
+        <button type="submit" className="oobe-primary" disabled={!ready || busy} aria-busy={busy || undefined}>
           {busy ? "Saving..." : "Continue"}
         </button>
       }
