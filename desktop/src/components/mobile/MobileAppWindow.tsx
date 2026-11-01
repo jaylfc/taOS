@@ -6,11 +6,14 @@ import { InstallHelperPanel } from "../InstallHelperPanel";
 interface Props {
   appId: string;
   windowId: string;
+  /** The window's props, as WindowContent passes them on the desktop. */
+  props?: Record<string, unknown>;
+  launchNonce?: number;
   onClose: () => void;
   onMinimise: () => void;
 }
 
-export function MobileAppWindow({ appId, windowId, onClose, onMinimise }: Props) {
+export function MobileAppWindow({ appId, windowId, props, launchNonce = 0, onClose, onMinimise }: Props) {
   const app = getApp(appId);
   const [installOpen, setInstallOpen] = useState(false);
   const LazyComponent = useMemo(() => {
@@ -120,7 +123,7 @@ export function MobileAppWindow({ appId, windowId, onClose, onMinimise }: Props)
             </div>
           }
         >
-          <LazyComponent windowId={windowId} />
+          <LazyComponent key={`${windowId}:${launchNonce}`} windowId={windowId} {...(props ?? {})} />
         </Suspense>
       </div>
     </div>

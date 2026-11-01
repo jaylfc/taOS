@@ -63,7 +63,19 @@ export type AccountState =
 
 export interface AuthError {
   message: string;
+  /** The taos.my error code (e.g. "signups_closed"), when it sent one. */
+  code?: string;
 }
+
+/** Readable text for the error codes taos.my's /api/auth/* routes raise. */
+const AUTH_MESSAGES: Record<string, string> = {
+  invalid_credentials: "That email and password don't match a taOS account.",
+  signups_closed: "New taOS accounts aren't open yet.",
+  account_suspended: "This taOS account is suspended.",
+  too_many_attempts: "Too many attempts. Wait a minute and try again.",
+  registration_failed:
+    "Couldn't create that account. Check the email and use a password of at least 8 characters.",
+};
 
 const BASE = "/api/account";
 
@@ -136,7 +148,7 @@ async function authAction(
   path: string,
   email: string,
   password: string,
-): Promise<Account | AuthError> {
+): Promise<{ data: unknown } | AuthError> {
   let r: Response;
   try {
     r = await call(path, { email, password });
@@ -148,29 +160,56 @@ async function authAction(
   }
   if (!r.ok) {
     let msg = `Request failed (${r.status}).`;
+    let code: string | undefined;
     try {
       const d = (await r.json()) as { error?: string; detail?: string };
-      if (d?.error || d?.detail) msg = String(d.error || d.detail);
+      if (d?.error || d?.detail) {
+        code = String(d.error || d.detail);
+        msg = AUTH_MESSAGES[code] ?? code;
+      }
     } catch {
       /* keep the status-code default */
     }
-    return { message: msg };
+    return code ? { message: msg, code } : { message: msg };
   }
   try {
-    const data: unknown = await r.json();
-    return isAccount(data)
-      ? data
-      : { message: "Unexpected response from the account service." };
+    return { data: (await r.json()) as unknown };
   } catch {
     return { message: "Unexpected response from the account service." };
   }
 }
 
-export const login = (email: string, password: string) =>
-  authAction("/login", email, password);
+const UNEXPECTED: AuthError = { message: "Unexpected response from the account service." };
 
-export const register = (email: string, password: string) =>
-  authAction("/register", email, password);
+/** taos.my answers login with only `{user_id}` (the session rides on the
+ *  cookie), so the account itself comes from a follow-up /me. A full Account
+ *  in the body is still accepted. */
+export async function login(email: string, password: string): Promise<Account | AuthError> {
+  const res = await authAction("/login", email, password);
+  if (isAuthError(res)) return res;
+  if (isAccount(res.data)) return res.data;
+  const d = res.data as Record<string, unknown> | null;
+  if (d?.status === "2fa_required") {
+    return {
+      message: "This account uses a sign-in code, which taOS can't take yet.",
+      code: "2fa_required",
+    };
+  }
+  if (typeof d?.user_id !== "string") return UNEXPECTED;
+  const me = await fetchAccount();
+  return me.kind === "signed-in" ? me.account : UNEXPECTED;
+}
+
+/** taos.my's register mints a session too (the proxy relays its cookie) and
+ *  answers with only `{user_id}`, so the account comes from /me, as for login. */
+export async function register(email: string, password: string): Promise<Account | AuthError> {
+  const res = await authAction("/register", email, password);
+  if (isAuthError(res)) return res;
+  if (isAccount(res.data)) return res.data;
+  if (typeof (res.data as Record<string, unknown> | null)?.user_id !== "string") return UNEXPECTED;
+  const me = await fetchAccount();
+  return me.kind === "signed-in" ? me.account : UNEXPECTED;
+}
 
 export async function logout(): Promise<void> {
   try {

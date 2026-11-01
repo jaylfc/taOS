@@ -1,0 +1,637 @@
+/* First-run setup (OOBE). Scoped to .oobe-root and always dark: it sits on
+   the graphite wallpaper, so it does not follow data-scheme (the light layer
+   in tokens.css inverts the shell's bg-white/N classes, which would wash the
+   glass out here). */
+
+.oobe-root {
+  --oobe-text: #f3f4f7;
+  --oobe-text-2: rgba(236, 238, 243, 0.74);
+  --oobe-text-3: rgba(236, 238, 243, 0.6);
+  --oobe-fill: rgba(255, 255, 255, 0.08);
+  --oobe-fill-hover: rgba(255, 255, 255, 0.12);
+  --oobe-line: rgba(255, 255, 255, 0.1);
+  --oobe-error: #ff9a8f;
+  --oobe-ease: cubic-bezier(0.32, 0.72, 0, 1);
+
+  position: fixed;
+  inset: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* A focused field scrolls clear of the pinned footer, not under it. */
+  scroll-padding-bottom: 150px;
+  color: var(--oobe-text);
+  font-family: var(--font-sans);
+  background: #0c0d10 url("/static/wallpaper-graphite.png") center / cover no-repeat;
+  caret-color: var(--oobe-text);
+  -webkit-font-smoothing: antialiased;
+}
+
+@media (orientation: portrait) {
+  .oobe-root {
+    background-image: url("/static/wallpaper-graphite-mobile.png");
+  }
+}
+
+.oobe-root::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(10, 11, 14, 0.62), rgba(10, 11, 14, 0.78));
+  pointer-events: none;
+}
+
+.oobe-root ::selection {
+  background: rgba(255, 255, 255, 0.28);
+  color: inherit;
+}
+
+.oobe-root :focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.9);
+  outline-offset: 2px;
+}
+
+.oobe-page {
+  position: relative;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 480px;
+  min-height: 100dvh;
+  margin: 0 auto;
+  padding: calc(env(safe-area-inset-top, 0px) + 8px)
+    calc(env(safe-area-inset-right, 0px) + 20px) 0
+    calc(env(safe-area-inset-left, 0px) + 20px);
+}
+
+.oobe-topbar {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+}
+
+.oobe-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 44px;
+  margin-left: -8px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  color: var(--oobe-text);
+  font: inherit;
+  font-size: 17px;
+  cursor: pointer;
+}
+
+/* Hover only where there is a pointer: a touchscreen keeps :hover on the
+   last tap, which would light up whatever the next screen puts there. */
+@media (hover: hover) {
+  .oobe-back:hover {
+    background: var(--oobe-fill);
+  }
+}
+
+.oobe-header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding-top: clamp(16px, 7vh, 72px);
+  margin-bottom: 28px;
+}
+
+.oobe-mark {
+  width: 84px;
+  height: 84px;
+  margin-bottom: 24px;
+  object-fit: contain;
+}
+
+.oobe-title {
+  margin: 0;
+  font-size: clamp(28px, 7.4vw, 34px);
+  line-height: 1.15;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+
+.oobe-subtitle {
+  margin: 10px 0 0;
+  max-width: 400px;
+  font-size: 16px;
+  line-height: 1.45;
+  color: var(--oobe-text-2);
+  text-wrap: pretty;
+}
+
+.oobe-content {
+  flex: 1;
+}
+
+/* Pinned above the keyboard; content that scrolls under it fades out
+   instead of colliding with the button. Full-bleed across the page gutter. */
+.oobe-footer {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 -20px;
+  padding: 24px 20px calc(env(safe-area-inset-bottom, 0px) + 20px);
+  background: linear-gradient(180deg, rgba(10, 11, 14, 0), rgba(10, 11, 14, 0.9) 24px);
+}
+
+.oobe-footer:empty {
+  display: none;
+}
+
+.oobe-primary,
+.oobe-secondary {
+  width: 100%;
+  min-height: 50px;
+  border: 0;
+  border-radius: 14px;
+  font: inherit;
+  font-size: 17px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s, background-color 0.15s, transform 0.1s var(--oobe-ease);
+}
+
+.oobe-primary {
+  background: var(--oobe-text);
+  color: #121317;
+}
+
+.oobe-primary:active:not(:disabled) {
+  transform: scale(0.985);
+}
+
+.oobe-primary:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* Working, not unavailable: stays bright and shows a spinner. */
+.oobe-primary[aria-busy="true"] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  opacity: 0.8;
+  cursor: progress;
+}
+
+.oobe-primary[aria-busy="true"]::before {
+  content: "";
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(18, 19, 23, 0.25);
+  border-top-color: #121317;
+  border-radius: 50%;
+  animation: oobe-spin 0.8s linear infinite;
+}
+
+@keyframes oobe-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.oobe-secondary {
+  background: none;
+  color: var(--oobe-text);
+  font-weight: 500;
+}
+
+@media (hover: hover) {
+  .oobe-secondary:hover:not(:disabled) {
+    background: var(--oobe-fill);
+  }
+}
+
+.oobe-secondary:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Inset grouped rows: a label column and the field, separated by hairlines. */
+.oobe-group {
+  overflow: hidden;
+  border: 1px solid var(--oobe-line);
+  border-radius: 14px;
+  background: var(--oobe-fill);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+}
+
+.oobe-row {
+  display: grid;
+  grid-template-columns: 116px 1fr;
+  align-items: center;
+  min-height: 52px;
+  padding: 0 16px;
+}
+
+.oobe-row + .oobe-row {
+  border-top: 1px solid var(--oobe-line);
+}
+
+.oobe-row label,
+.oobe-row .oobe-row-label {
+  font-size: 17px;
+  color: var(--oobe-text);
+}
+
+.oobe-input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 50px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--oobe-text);
+  font: inherit;
+  font-size: 17px;
+  outline: none;
+}
+
+.oobe-input::placeholder {
+  color: var(--oobe-text-3);
+}
+
+.oobe-row:focus-within {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+/* The row carries the focus cue, so the bare input does not need a ring. */
+.oobe-root .oobe-input:focus-visible {
+  outline: none;
+}
+
+.oobe-readonly {
+  color: var(--oobe-text-2);
+  font-size: 17px;
+}
+
+.oobe-note {
+  margin: 8px 16px 0;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--oobe-text-3);
+}
+
+.oobe-error {
+  margin: 10px 16px 0;
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--oobe-error);
+}
+
+.oobe-section + .oobe-section {
+  margin-top: 24px;
+}
+
+/* Switch row. The native checkbox stays in the tree (focusable, labelled)
+   and is drawn as a switch. */
+.oobe-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 52px;
+  padding: 0 16px;
+  font-size: 17px;
+  cursor: pointer;
+}
+
+.oobe-switch {
+  position: relative;
+  flex: none;
+  width: 51px;
+  height: 31px;
+  margin: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.22);
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  transition: background-color 0.2s var(--oobe-ease);
+}
+
+.oobe-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 27px;
+  height: 27px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+  transition: transform 0.2s var(--oobe-ease);
+}
+
+.oobe-switch:checked {
+  background: #34c759;
+}
+
+.oobe-switch:checked::after {
+  transform: translateX(20px);
+}
+
+/* Two-option segmented control. */
+.oobe-segmented {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  padding: 2px;
+  margin-bottom: 16px;
+  border-radius: 12px;
+  background: var(--oobe-fill);
+}
+
+.oobe-segment {
+  min-height: 40px;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  color: var(--oobe-text-2);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.oobe-segment[aria-pressed="true"] {
+  background: rgba(255, 255, 255, 0.18);
+  color: var(--oobe-text);
+}
+
+/* Section heading above a grouped list, as in iOS Settings. */
+.oobe-section-label {
+  margin: 0 16px 6px;
+  font-size: 13px;
+  color: var(--oobe-text-3);
+}
+
+/* Multi-select chips: 44px targets, a check and a filled tint when on. */
+.oobe-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.oobe-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid var(--oobe-line);
+  border-radius: 22px;
+  background: var(--oobe-fill);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  color: var(--oobe-text);
+  font: inherit;
+  font-size: 15px;
+  cursor: pointer;
+  transition: background-color 0.15s, border-color 0.15s, transform 0.1s var(--oobe-ease);
+}
+
+.oobe-chip:active {
+  transform: scale(0.97);
+}
+
+.oobe-chip[aria-pressed="true"] {
+  border-color: transparent;
+  background: rgba(243, 244, 247, 0.94);
+  color: #111216;
+}
+
+/* A step's glyph above its title, where the screen has no other content. */
+.oobe-icon {
+  display: block;
+  margin: 0 auto 20px;
+  color: var(--oobe-text-2);
+}
+
+.oobe-choice-check {
+  flex: none;
+  color: var(--oobe-text);
+}
+
+.oobe-model {
+  display: flex;
+  align-items: center;
+  min-height: 68px;
+  padding: 12px 16px;
+}
+
+/* Download progress, under the model row inside its group. */
+.oobe-meter {
+  height: 4px;
+  margin: 0 16px 14px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.14);
+  overflow: hidden;
+}
+
+.oobe-meter > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--oobe-text);
+  transition: width 0.4s var(--oobe-ease);
+}
+
+.oobe-status {
+  padding: 20px 16px;
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--oobe-text-2);
+  text-align: center;
+}
+
+/* Wide screens: the page becomes a centred glass card with its action
+   inside, instead of a column over the wallpaper with the button pinned to
+   the bottom edge of a large display. */
+@media (min-width: 720px) and (min-height: 560px) {
+  .oobe-root {
+    display: flex;
+    flex-direction: column;
+    padding: 32px;
+  }
+
+  .oobe-stage {
+    width: 100%;
+    margin: auto;
+  }
+
+  .oobe-page {
+    max-width: 520px;
+    min-height: 0;
+    padding: 12px 40px 0;
+    border: 1px solid var(--oobe-line);
+    border-radius: 28px;
+    background: rgba(16, 17, 21, 0.62);
+    backdrop-filter: blur(40px) saturate(140%);
+    -webkit-backdrop-filter: blur(40px) saturate(140%);
+    box-shadow: 0 30px 80px rgba(0, 0, 0, 0.45);
+  }
+
+  .oobe-header {
+    padding-top: 20px;
+  }
+
+  /* No Back on this screen: balance the card's top against its bottom. */
+  .oobe-topbar:empty {
+    display: none;
+  }
+
+  .oobe-topbar:empty + .oobe-header {
+    padding-top: 36px;
+  }
+
+  .oobe-footer {
+    position: static;
+    margin: 0;
+    padding: 28px 0 36px;
+    background: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .oobe-root *,
+  .oobe-root *::after {
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* A list of choices, each a full-width row with a chevron. */
+.oobe-choice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 68px;
+  padding: 12px 16px;
+  border: 0;
+  background: none;
+  color: var(--oobe-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.oobe-choice + .oobe-choice {
+  border-top: 1px solid var(--oobe-line);
+}
+
+@media (hover: hover) {
+  .oobe-choice:hover {
+    background: rgba(255, 255, 255, 0.05);
+  }
+}
+
+.oobe-choice:active {
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.oobe-choice-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.oobe-choice-title {
+  font-size: 17px;
+  font-weight: 500;
+}
+
+.oobe-choice-detail {
+  font-size: 14px;
+  line-height: 1.35;
+  color: var(--oobe-text-2);
+}
+
+/* A row that is shown but not offered yet ("Coming soon"). */
+.oobe-choice:disabled {
+  cursor: default;
+}
+
+.oobe-choice:disabled:active {
+  background: none;
+}
+
+.oobe-choice:disabled .oobe-choice-title {
+  color: var(--oobe-text-2);
+}
+
+/* Model ids are long and unbroken ("vendor/model-name-version"). */
+.oobe-choice-id {
+  overflow-wrap: anywhere;
+}
+
+/* A field with no label column (a filter). */
+.oobe-row-bare {
+  grid-template-columns: 1fr;
+}
+
+/* Field + show/hide button. */
+.oobe-row:has(.oobe-reveal) {
+  grid-template-columns: 116px 1fr 44px;
+}
+
+.oobe-reveal {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin-right: -10px;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  color: var(--oobe-text-2);
+  cursor: pointer;
+}
+
+.oobe-choice-chevron {
+  flex: none;
+  color: var(--oobe-text-3);
+}
+
+.oobe-switch:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Plain statements in a group, one per row (the privacy summary). */
+.oobe-facts {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--oobe-line);
+  border-radius: 14px;
+  background: var(--oobe-fill);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+}
+
+.oobe-facts li {
+  padding: 12px 16px;
+  font-size: 15px;
+  line-height: 1.4;
+  color: var(--oobe-text-2);
+}
+
+.oobe-facts li + li {
+  border-top: 1px solid var(--oobe-line);
+}

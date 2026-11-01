@@ -1186,12 +1186,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 request.state.via = "session"
                 return await call_next(request)
 
-        # First boot: no user yet. Browsers go to the setup page; APIs
+        # First boot: no user yet. Browsers go to the desktop, whose OOBE
+        # runs the setup (/auth/setup stays as the no-JS fallback); APIs
         # hard-fail so a stale cached client knows to refresh.
         if not auth_mgr.is_configured():
             accept = request.headers.get("accept", "")
             if "text/html" in accept:
-                return RedirectResponse("/auth/setup", status_code=303)
+                return RedirectResponse("/desktop", status_code=303)
             return _unauthenticated(
                 path, {"error": "onboarding_required", "needs_onboarding": True},
             )

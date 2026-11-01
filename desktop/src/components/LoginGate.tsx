@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { Lock } from "lucide-react";
 import { OnboardingScreen } from "./OnboardingScreen";
 import { OffNetworkScreen } from "./OffNetworkScreen";
+import { loadProgress, type OnboardingProgress } from "./onboarding/progress";
 import { SESSION_EXPIRED_EVENT } from "@/lib/auth-guard";
 import { useAuthReadyStore } from "@/stores/auth-ready-store";
 
@@ -11,12 +12,14 @@ interface Props {
 
 type AuthStatus =
   | { phase: "loading" }
-  | { phase: "onboarding" }
+  | { phase: "onboarding"; pinOffered: boolean }
   | { phase: "invite"; username: string; inviteCode: string; multiUser: boolean }
   // No fields: the SPA no longer renders a sign-in form, so it has no use for
   // `legacy` / `multiUser`. The server login page reads both for itself.
   | { phase: "login" }
   | { phase: "unreachable" }
+  // Signed in, but first-run setup was left part-way (reload, reboot).
+  | { phase: "oobe"; resume: OnboardingProgress }
   | { phase: "ready" };
 
 // One login surface. The SPA does NOT render its own password form: it hands
@@ -78,7 +81,9 @@ export function LoginGate({ children }: Props) {
       }
       const data = await res.json();
       if (!data.configured) {
-        setStatus({ phase: "onboarding" });
+        // The server answers true only on the console (as the HTML setup
+        // page does), and the setup POST refuses a PIN anywhere else.
+        setStatus({ phase: "onboarding", pinOffered: data.pin_offered === true });
       } else if (data.authenticated) {
         if (data.needs_onboarding && data.user?.username) {
           // Pending invited user — collect their profile and password
@@ -88,6 +93,13 @@ export function LoginGate({ children }: Props) {
             inviteCode: "",   // invite code was accepted at login; the session holds it
             multiUser: !!data.multi_user,
           });
+        } else if (data.user?.is_admin) {
+          // Only the owner has setup progress. An absent or unreadable record
+          // means ready: an existing install must never be pushed into setup.
+          const progress = await loadProgress();
+          setStatus(
+            progress?.in_progress ? { phase: "oobe", resume: progress } : { phase: "ready" },
+          );
         } else {
           setStatus({ phase: "ready" });
         }
@@ -153,7 +165,7 @@ export function LoginGate({ children }: Props) {
   // would strand an invited user on the manual link if their session expired
   // part-way through completing their profile.
   useEffect(() => {
-    if (status.phase === "ready" || status.phase === "invite") writeGuard(false);
+    if (status.phase === "ready" || status.phase === "invite" || status.phase === "oobe") writeGuard(false);
   }, [status.phase]);
 
   if (status.phase === "loading") {
@@ -169,7 +181,17 @@ export function LoginGate({ children }: Props) {
   }
 
   if (status.phase === "onboarding") {
-    return <OnboardingScreen onDone={refreshStatus} defaultAutoLogin={true} />;
+    return (
+      <OnboardingScreen
+        onDone={refreshStatus}
+        defaultAutoLogin={true}
+        pinOffered={status.pinOffered}
+      />
+    );
+  }
+
+  if (status.phase === "oobe") {
+    return <OnboardingScreen onDone={refreshStatus} resume={status.resume} />;
   }
 
   if (status.phase === "invite") {
