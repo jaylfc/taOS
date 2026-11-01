@@ -30,7 +30,9 @@ export function OnboardingScreen({
   inviteCode,
   defaultAutoLogin,
 }: Props) {
-  const isInvite = Boolean(invitedUsername && inviteCode);
+  // /auth/status never returns the invite code, so the username alone marks
+  // invite mode; the server accepts the invitee's pending session instead.
+  const isInvite = Boolean(invitedUsername);
 
   const [username, setUsername] = useState(invitedUsername ?? "");
   const [fullName, setFullName] = useState("");
@@ -42,7 +44,7 @@ export function OnboardingScreen({
   const [loading, setLoading] = useState(false);
   const [step, setStep] = useState<"local" | "taos-account">("local");
 
-  const passwordOk = password.length >= 4;
+  const passwordOk = password.length >= 8;
   const matches = password.length > 0 && password === confirm;
   const valid =
     username.trim().length > 0 &&
@@ -64,7 +66,7 @@ export function OnboardingScreen({
         password,
         auto_login: autoLogin,
       };
-      if (isInvite) {
+      if (isInvite && inviteCode) {
         body.invite_code = inviteCode;
       }
       const res = await fetch(endpoint, {
@@ -86,7 +88,7 @@ export function OnboardingScreen({
       setLoading(false);
       setStep("taos-account");
     } catch {
-      setError("Network error — please try again");
+      setError("Network error, please try again");
       setLoading(false);
     }
   }
@@ -181,7 +183,7 @@ export function OnboardingScreen({
             />
           </Field>
 
-          <Field label="Password" id="onb-password" required hint="At least 4 characters.">
+          <Field label="Password" id="onb-password" required hint="At least 8 characters.">
             <input
               id="onb-password"
               type="password"

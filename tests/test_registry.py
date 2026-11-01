@@ -70,6 +70,38 @@ class TestAppManifest:
         assert m.type == "model"
         assert len(m.variants) == 1
 
+    def test_model_capability_fields_default_empty(self, catalog_dir):
+        # #146/#148 Phase 0: new schema fields default to empty/unknown
+        # so un-backfilled manifests still validate.
+        m = AppManifest.from_file(catalog_dir / "models" / "qwen3-8b" / "manifest.yaml")
+        assert m.family == ""
+        assert m.min_context == 0
+        assert m.max_context == 0
+
+    def test_model_capability_fields_parse(self):
+        # #146/#148 Phase 0: family + context range + variant envelope parse.
+        m = AppManifest.model_validate({
+            "id": "qwen3-8b",
+            "name": "Qwen3 8B",
+            "type": "model",
+            "version": "1.0.0",
+            "family": "qwen3",
+            "min_context": 4096,
+            "max_context": 131072,
+            "variants": [{
+                "id": "q4",
+                "format": "gguf",
+                "size_mb": 5000,
+                "vram_floor_mb": 6000,
+                "approx_tok_s_by_profile": {"gaming-pc-nvidia": 45.0},
+            }],
+        })
+        assert m.family == "qwen3"
+        assert m.min_context == 4096
+        assert m.max_context == 131072
+        assert m.variants[0]["vram_floor_mb"] == 6000
+        assert m.variants[0]["approx_tok_s_by_profile"]["gaming-pc-nvidia"] == 45.0
+
     def test_load_service_manifest(self, catalog_dir):
         m = AppManifest.from_file(catalog_dir / "services" / "gitea" / "manifest.yaml")
         assert m.id == "gitea"
