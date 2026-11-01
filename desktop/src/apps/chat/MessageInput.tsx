@@ -1,9 +1,27 @@
-import { useRef, useCallback } from "react";
-import { Send, Paperclip, AtSign } from "lucide-react";
+import { useRef, useCallback, useEffect, useState } from "react";
+import {
+  Send,
+  Paperclip,
+  AtSign,
+  Plus,
+  Smile,
+  ArrowUp,
+  MoreHorizontal,
+  MessagesSquare,
+  Search,
+  Users,
+  Info,
+  Pin,
+  BookOpen,
+} from "lucide-react";
+import Picker, { Theme } from "emoji-picker-react";
 import { Button, Textarea } from "@/components/ui";
+import { resolveAgentEmoji } from "@/lib/agent-emoji";
+import { MessageAvatar } from "./MessageAvatar";
 import { SlashMenu, type SlashCommandsBySlug } from "./SlashMenu";
 import { AttachmentsBar, type PendingAttachment } from "./AttachmentsBar";
-import type { Channel } from "./types";
+import type { Channel, LiveAgent } from "./types";
+import { describeChannelParty } from "./channel-party";
 
 export interface MessageInputProps {
   /** Current input text. */
@@ -47,7 +65,17 @@ export interface MessageInputProps {
   onSlashClose: () => void;
   /** Optional paste handler (e.g. image upload from clipboard). */
   onPaste?: (e: React.ClipboardEvent) => void;
+
+  /* ---- mobile context row (all optional; only used when isMobile) ---- */
+  liveAgents?: LiveAgent[];
+  onOpenSettings?: () => void;
+  onToggleAllThreads?: () => void;
+  onToggleSearch?: () => void;
+  pinnedCount?: number;
+  onTogglePinned?: () => void;
 }
+
+const CHAT_GUIDE_URL = "https://github.com/jaylfc/tinyagentos/blob/master/docs/chat-guide.md";
 
 export function MessageInput({
   value,
@@ -74,8 +102,55 @@ export function MessageInput({
   onSlashPick,
   onSlashClose,
   onPaste,
+  liveAgents,
+  onOpenSettings,
+  onToggleAllThreads,
+  onToggleSearch,
+  pinnedCount = 0,
+  onTogglePinned,
 }: MessageInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [emojiOpen, setEmojiOpen] = useState(false);
+  const menuWrapRef = useRef<HTMLDivElement>(null);
+  const emojiWrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!menuOpen && !emojiOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setMenuOpen(false);
+        setEmojiOpen(false);
+      }
+    };
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (menuOpen && !menuWrapRef.current?.contains(t)) setMenuOpen(false);
+      if (emojiOpen && !emojiWrapRef.current?.contains(t)) setEmojiOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("mousedown", onDown);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("mousedown", onDown);
+    };
+  }, [menuOpen, emojiOpen]);
+
+  const insertEmoji = useCallback(
+    (emoji: string) => {
+      const el = textareaRef.current;
+      const start = el?.selectionStart ?? value.length;
+      const end = el?.selectionEnd ?? value.length;
+      onChange(value.slice(0, start) + emoji + value.slice(end));
+      setEmojiOpen(false);
+      const caret = start + emoji.length;
+      requestAnimationFrame(() => {
+        el?.focus();
+        el?.setSelectionRange(caret, caret);
+      });
+    },
+    [value, onChange],
+  );
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -87,25 +162,8 @@ export function MessageInput({
     [onSend],
   );
 
-  return (
+  const overlays = (
     <>
-      {/* pending attachments bar */}
-      <AttachmentsBar
-        items={pendingAttachments}
-        onRemove={onRemoveAttachment}
-        onRetry={onRetryAttachment}
-      />
-
-      {/* input area */}
-      <div
-        className="px-4 py-3 border-t border-white/[0.06] shrink-0"
-        style={
-          isMobile
-            ? { paddingBottom: `max(env(safe-area-inset-bottom), ${keyboardInset}px)` }
-            : undefined
-        }
-      >
-        <div className="relative">
           {showSlash && (
             <SlashMenu
               commands={slashCommands}
@@ -142,6 +200,245 @@ export function MessageInput({
               ))}
             </div>
           )}
+    </>
+  );
+
+  if (isMobile) {
+    const party = describeChannelParty(channel, liveAgents, "runtime");
+    const hasContent = value.trim().length > 0 || pendingAttachments.length > 0;
+    const canSend = !isArchived && hasContent && !pendingAttachments.some((a) => a.uploading);
+    const placeholder = isArchived
+      ? "This chat is archived"
+      : `Message ${party.title || channel?.name || ""}`.trimEnd();
+    const members = (channel?.members ?? []).filter((m) => m !== "user");
+    const menuItems: { label: string; icon: React.ReactNode; run: () => void; badge?: string }[] = [];
+    if (channel && channel.type !== "dm" && onOpenSettings) {
+      menuItems.push({ label: "Channel info", icon: <Info size={15} aria-hidden="true" />, run: onOpenSettings });
+    }
+    if (onToggleAllThreads) {
+      menuItems.push({ label: "Threads", icon: <MessagesSquare size={15} aria-hidden="true" />, run: onToggleAllThreads });
+    }
+    if (onTogglePinned) {
+      menuItems.push({
+        label: "Pinned messages",
+        icon: <Pin size={15} aria-hidden="true" />,
+        run: onTogglePinned,
+        badge: pinnedCount > 0 ? String(pinnedCount) : undefined,
+      });
+    }
+    if (onToggleSearch) {
+      menuItems.push({ label: "Search", icon: <Search size={15} aria-hidden="true" />, run: onToggleSearch });
+    }
+    if (channel && channel.type !== "dm" && onOpenSettings) {
+      // The channel settings panel is where the member list lives.
+      menuItems.push({ label: "Members", icon: <Users size={15} aria-hidden="true" />, run: onOpenSettings });
+    }
+    return (
+      <>
+        <AttachmentsBar
+          items={pendingAttachments}
+          onRemove={onRemoveAttachment}
+          onRetry={onRetryAttachment}
+        />
+        <div
+          className="px-[10px] pt-1 shrink-0"
+          style={{ paddingBottom: `max(env(safe-area-inset-bottom), ${keyboardInset}px, 8px)` }}
+        >
+          <div
+            data-testid="mobile-composer"
+            className={`relative rounded-[22px] border border-shell-border bg-shell-surface backdrop-blur-xl shadow-lg ${
+              isArchived ? "opacity-50" : ""
+            }`}
+          >
+            {overlays}
+            {/* context row */}
+            <div className="flex items-center gap-3 px-3.5 py-2.5 border-b border-shell-border">
+              {party.kind === "group" ? (
+                <div className="flex -space-x-2 shrink-0" aria-hidden="true">
+                  {members.slice(0, 3).map((m) => {
+                    const ag = liveAgents?.find((a) => a.name === m);
+                    return (
+                      <div key={m} className="rounded-[11px] ring-2 ring-shell-bg">
+                        <MessageAvatar
+                          size={22}
+                          authorId={m}
+                          displayName={ag?.display_name || m}
+                          kind={ag ? "agent" : "user"}
+                          emoji={ag ? resolveAgentEmoji(ag.emoji, ag.framework) : undefined}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : party.kind === "agent" && party.agent ? (
+                <div className="shrink-0">
+                  <MessageAvatar
+                    size={22}
+                    authorId={party.agent.name}
+                    displayName={party.title}
+                    kind="agent"
+                    emoji={resolveAgentEmoji(party.agent.emoji, party.agent.framework)}
+                  />
+                </div>
+              ) : null}
+              <div className="min-w-0 flex-1">
+                <div className="text-[15px] font-semibold leading-tight truncate text-shell-text">
+                  {party.title}
+                </div>
+                {party.subtitle && (
+                  <div className="text-[12px] leading-tight truncate text-shell-text-tertiary">
+                    {party.subtitle}
+                  </div>
+                )}
+              </div>
+              {(
+                <div className="relative shrink-0" ref={menuWrapRef}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEmojiOpen(false);
+                      setMenuOpen((o) => !o);
+                    }}
+                    aria-label="More options"
+                    aria-haspopup="menu"
+                    aria-expanded={menuOpen}
+                    className="h-9 w-9 rounded-full flex items-center justify-center text-shell-text-secondary hover:bg-shell-surface-hover"
+                  >
+                    <MoreHorizontal size={18} aria-hidden="true" />
+                  </button>
+                  {menuOpen && (
+                    <div
+                      role="menu"
+                      aria-label="Chat options"
+                      className="absolute right-0 bottom-full mb-2 min-w-[180px] rounded-xl border border-shell-border-strong bg-shell-bg shadow-xl py-1 z-30"
+                    >
+                      {menuItems.map((it) => (
+                        <button
+                          key={it.label}
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            setMenuOpen(false);
+                            it.run();
+                          }}
+                          className="w-full flex items-center gap-2.5 px-3 py-2.5 text-[14px] text-left text-shell-text hover:bg-shell-surface-hover"
+                        >
+                          {it.icon}
+                          <span className="flex-1">{it.label}</span>
+                          {it.badge && <span className="text-[12px] text-shell-text-tertiary">{it.badge}</span>}
+                        </button>
+                      ))}
+                      <a
+                        role="menuitem"
+                        href={CHAT_GUIDE_URL}
+                        target="_blank"
+                        rel="noreferrer"
+                        onClick={() => setMenuOpen(false)}
+                        className="w-full flex items-center gap-2.5 px-3 py-2.5 text-[14px] text-left text-shell-text hover:bg-shell-surface-hover"
+                      >
+                        <BookOpen size={15} aria-hidden="true" />
+                        <span className="flex-1">Guide</span>
+                      </a>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+            {/* input row */}
+            <div className="flex items-end gap-2 px-2.5 py-2.5">
+              <button
+                type="button"
+                onClick={onFileUpload}
+                disabled={isArchived}
+                aria-label="Add attachment"
+                className="h-10 w-10 shrink-0 rounded-full flex items-center justify-center bg-shell-bg text-shell-text-secondary disabled:opacity-50"
+              >
+                <Plus size={20} aria-hidden="true" />
+              </button>
+              <div className="flex-1 min-w-0 flex items-end rounded-[22px] bg-shell-bg pl-4 pr-1.5 min-h-10">
+                <Textarea
+                  ref={textareaRef}
+                  value={value}
+                  onChange={(e) => !isArchived && onChange(e.target.value)}
+                  onKeyDown={(e) => !isArchived && handleKeyDown(e)}
+                  onBlur={() => onDismissMention()}
+                  onPaste={onPaste}
+                  placeholder={placeholder}
+                  rows={1}
+                  disabled={isArchived}
+                  className="flex-1 bg-transparent border-0 px-0 py-2.5 min-h-0 text-[15px] focus-visible:ring-0 focus-visible:border-0 max-h-[120px] disabled:cursor-not-allowed"
+                  aria-label="Message input"
+                />
+                <div className="relative shrink-0" ref={emojiWrapRef}>
+                  <button
+                    type="button"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => {
+                      setMenuOpen(false);
+                      setEmojiOpen((o) => !o);
+                    }}
+                    disabled={isArchived}
+                    aria-label="Insert emoji"
+                    aria-haspopup="dialog"
+                    aria-expanded={emojiOpen}
+                    className="h-10 w-9 flex items-center justify-center text-shell-text-secondary disabled:opacity-50"
+                  >
+                    <Smile size={19} aria-hidden="true" />
+                  </button>
+                  {emojiOpen && (
+                    <div
+                      role="dialog"
+                      aria-label="Emoji picker"
+                      className="absolute right-0 bottom-full mb-2 z-30"
+                    >
+                      <Picker
+                        theme={Theme.DARK}
+                        width={300}
+                        height={360}
+                        onEmojiClick={(d) => insertEmoji(d.emoji)}
+                      />
+                    </div>
+                  )}
+                </div>
+              </div>
+              {hasContent && (
+                <button
+                  type="button"
+                  onClick={onSend}
+                  disabled={!canSend}
+                  aria-label="Send message"
+                  className="h-10 w-10 shrink-0 rounded-full flex items-center justify-center bg-accent text-white disabled:opacity-50"
+                >
+                  <ArrowUp size={20} strokeWidth={2.5} aria-hidden="true" />
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <>
+      {/* pending attachments bar */}
+      <AttachmentsBar
+        items={pendingAttachments}
+        onRemove={onRemoveAttachment}
+        onRetry={onRetryAttachment}
+      />
+
+      {/* input area */}
+      <div
+        className="px-4 py-3 border-t border-white/[0.06] shrink-0"
+        style={
+          isMobile
+            ? { paddingBottom: `max(env(safe-area-inset-bottom), ${keyboardInset}px)` }
+            : undefined
+        }
+      >
+        <div className="relative">
+          {overlays}
           <div
             className={`flex items-end gap-2 rounded-2xl border px-2 py-1.5 ${
               isArchived

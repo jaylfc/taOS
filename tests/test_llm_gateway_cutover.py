@@ -238,7 +238,7 @@ async def _deploy(tmp_path, monkeypatch, extra):
     proxy.port = LITELLM_PORT
     proxy.create_agent_key = AsyncMock(side_effect=lambda name, models=None: store.mint(name, models or ["default"]))
     req = DeployRequest(name="fresh", framework="smolagents", model="gpt-a", data_dir=tmp_path,
-                        extra_config={"llm_proxy": proxy, **extra})
+                        extra_config={"llm_proxy": proxy, "agent_controller_port": 6972, **extra})
 
     async def mock_exec(name, cmd, **kwargs):
         return (0, "10.0.0.5") if "hostname -I" in " ".join(cmd) else (0, "ok")

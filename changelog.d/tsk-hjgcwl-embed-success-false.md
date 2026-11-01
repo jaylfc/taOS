@@ -1,0 +1,3 @@
+### Fixed
+- Library: the embed-into-agent handler in the Library app no longer reports success when POST /api/import/embed returns HTTP 200 with `{"embedded": false}`. It now parses the JSON body and only shows "Embedded N files into <agent>" and closes the picker when `embedded` is `true`; otherwise it shows "Embed failed for: <filenames>" (or "Embed failed" when the `files` list is missing) and leaves the picker open with the staged files intact
+- Docs: README and getting-started no longer reference the removed "Embed now" button; they now say "Embed files into an agent" (pick files, then pick the agent)

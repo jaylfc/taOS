@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import React from "react";
 
 // Stub the heavy data hooks / stores MessagesApp transitively imports so the
@@ -51,32 +51,27 @@ vi.mock("@/registry/app-registry", () => ({
   getApp: () => undefined,
 }));
 
-import { useIsMobile } from "@/hooks/use-is-mobile";
-import { MessagesApp } from "../MessagesApp";
-
-vi.mock("../chat/ChannelSidebar", () => ({
-  ChannelSidebar: () => <div data-testid="channel-sidebar" />,
-}));
-
 vi.mock("../chat/MessageList", () => ({
-  MessageList: () => <div data-testid="message-list" />,
+  MessageList: ({ hideHeader, pinnedPopoverOpen }: { hideHeader?: boolean; pinnedPopoverOpen?: boolean }) => (
+    <div data-testid="message-list" data-hide-header={String(!!hideHeader)} data-pin-open={String(!!pinnedPopoverOpen)} />
+  ),
 }));
 
 vi.mock("../chat/MessageInput", () => ({
-  MessageInput: () => <div data-testid="message-input" />,
-}));
-
-vi.mock("../chat/A2aBusPanel", () => ({
-  A2aBusMessageView: () => <div data-testid="a2a-bus-view" />,
-  useBusChannels: () => ({ channels: [], loading: false }),
+  MessageInput: ({ onToggleSearch, onTogglePinned }: { onToggleSearch?: () => void; onTogglePinned?: () => void }) => (
+    <div data-testid="message-input">
+      <button type="button" onClick={onToggleSearch}>mock-search</button>
+      <button type="button" onClick={onTogglePinned}>mock-pinned</button>
+    </div>
+  ),
 }));
 
 // Surface the listTitle so the test can verify the production code actually
 // routed through this component (vs a desktop-branch element wearing the
 // same testid).
 vi.mock("@/components/mobile/MobileSplitView", () => ({
-  MobileSplitView: ({ listTitle, list, detail }: { listTitle?: string; list?: React.ReactNode; detail?: React.ReactNode }) => (
-    <div data-testid="mobile-split-view" data-list-title={listTitle}>
+  MobileSplitView: ({ listTitle, list, detail, hideDetailNav }: { listTitle?: string; list?: React.ReactNode; detail?: React.ReactNode; hideDetailNav?: boolean }) => (
+    <div data-testid="mobile-split-view" data-list-title={listTitle} data-hide-detail-nav={String(!!hideDetailNav)}>
       <div data-testid="msv-list">{list}</div>
       <div data-testid="msv-detail">{detail}</div>
     </div>
@@ -99,6 +94,34 @@ vi.mock("../MessagesApp.a2aSelection", () => ({
   selectFirstBoundChannel: vi.fn(),
 }));
 
+vi.mock("../chat/ChannelSidebar", () => ({
+  ChannelSidebar: ({
+    liveAgents,
+    agentRosterReady,
+    onSelectChannel,
+  }: {
+    liveAgents: unknown;
+    agentRosterReady: unknown;
+    onSelectChannel?: (id: string) => void;
+  }) => (
+    <div
+      data-testid="channel-sidebar"
+      data-live-agents={JSON.stringify(liveAgents)}
+      data-agent-roster-ready={String(agentRosterReady)}
+    >
+      <button type="button" onClick={() => onSelectChannel?.("ch-g")}>open-group</button>
+    </div>
+  ),
+}));
+
+vi.mock("../chat/A2aBusPanel", () => ({
+  A2aBusMessageView: () => <div data-testid="a2a-bus-view" />,
+  useBusChannels: () => ({ channels: [], loading: false }),
+}));
+
+import { useIsMobile } from "@/hooks/use-is-mobile";
+import { MessagesApp } from "../MessagesApp";
+
 describe("MessagesApp mobile shell", () => {
   beforeEach(() => {
     (useIsMobile as ReturnType<typeof vi.fn>).mockReset();
@@ -120,5 +143,256 @@ describe("MessagesApp mobile shell", () => {
     // The channel sidebar still renders in the desktop side-by-side layout
     // (it is the same list, just inside a different split-view variant).
     expect(screen.getByTestId("channel-sidebar")).toBeInTheDocument();
+  });
+});
+
+describe("MessagesApp mobile thread header", () => {
+  let originalFetch: typeof global.fetch;
+
+  beforeEach(() => {
+    (useIsMobile as ReturnType<typeof vi.fn>).mockReset();
+    (useIsMobile as ReturnType<typeof vi.fn>).mockReturnValue(true);
+    originalFetch = global.fetch;
+    global.fetch = vi.fn().mockImplementation((url: string) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      const ok = (body: unknown) =>
+        Promise.resolve({
+          ok: true,
+          headers: { get: () => "application/json" },
+          json: () => Promise.resolve(body),
+        } as unknown as Response);
+      if (urlStr.includes("/api/chat/channels") && !urlStr.includes("/messages")) {
+        return ok({
+          channels: [
+            { id: "ch-g", name: "design", type: "group", members: ["user", "tom", "lin"] },
+          ],
+          unread: {},
+        });
+      }
+      if (urlStr.includes("/api/chat/unread")) return ok({ unread: {} });
+      if (urlStr.includes("/api/agents")) return ok([]);
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        headers: { get: () => "application/json" },
+        json: () => Promise.resolve({}),
+      } as unknown as Response);
+    });
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  async function openGroup() {
+    render(<MessagesApp windowId="test" />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "open-group" })).toBeInTheDocument());
+    expect(screen.getByTestId("mobile-split-view")).toHaveAttribute("data-hide-detail-nav", "false");
+    fireEvent.click(screen.getByRole("button", { name: "open-group" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Back to chats" })).toBeInTheDocument());
+  }
+
+  it("shows one header row: a Back to chats button, the title and the member count", async () => {
+    await openGroup();
+    const header = screen.getByRole("banner");
+    expect(header).toHaveTextContent("design");
+    expect(header).toHaveTextContent("3 people");
+    // The old text-link back row ("< Messages") is not rendered.
+    expect(screen.queryByRole("button", { name: /^Back to Messages$/ })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("banner")).toHaveLength(1);
+    // The split view's own detail nav bar (the "< Messages" row) is suppressed.
+    expect(screen.getByTestId("mobile-split-view")).toHaveAttribute("data-hide-detail-nav", "true");
+  });
+
+  it("wires the composer search action to the search panel", async () => {
+    await openGroup();
+    fireEvent.click(screen.getByRole("button", { name: "mock-search" }));
+    await waitFor(() => expect(document.getElementById("search-panel")).toBeInTheDocument());
+  });
+
+  it("hides the list header on mobile and the Pinned messages action opens the pinned popover", async () => {
+    await openGroup();
+    const list = screen.getByTestId("message-list");
+    expect(list).toHaveAttribute("data-hide-header", "true");
+    expect(list).toHaveAttribute("data-pin-open", "false");
+    fireEvent.click(screen.getByRole("button", { name: "mock-pinned" }));
+    await waitFor(() => expect(screen.getByTestId("message-list")).toHaveAttribute("data-pin-open", "true"));
+  });
+
+  it("Back to chats returns to the list", async () => {
+    await openGroup();
+    fireEvent.click(screen.getByRole("button", { name: "Back to chats" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Back to chats" })).not.toBeInTheDocument());
+  });
+});
+
+describe("MessagesApp fetchAgentLists - archived fetch failure", () => {
+  let originalFetch: typeof global.fetch;
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  function setupFetchMock(archivedBehavior: "500" | "reject" | "bad-json" | "neverSettle") {
+    (useIsMobile as ReturnType<typeof vi.fn>).mockReturnValue(true);
+    originalFetch = global.fetch;
+    global.fetch = vi.fn().mockImplementation((url: string) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/api/agents") && urlStr.includes("include_guests=1")) {
+        return Promise.resolve({
+          ok: true,
+          headers: { get: () => "application/json" },
+          json: () => Promise.resolve([{ name: "some-agent", display_name: "Some Agent", status: "running" }]),
+        } as unknown as Response);
+      }
+      if (urlStr.includes("/api/agents/archived")) {
+        if (archivedBehavior === "500") {
+          return Promise.resolve({
+            ok: false,
+            status: 500,
+            headers: { get: () => "application/json" },
+            json: () => Promise.resolve({ error: "internal error" }),
+          } as unknown as Response);
+        }
+        if (archivedBehavior === "reject") {
+          return Promise.reject(new TypeError("network"));
+        }
+        if (archivedBehavior === "bad-json") {
+          return Promise.resolve({
+            ok: true,
+            headers: { get: () => "application/json" },
+            json: () => Promise.reject(new SyntaxError("bad json")),
+          } as unknown as Response);
+        }
+        if (archivedBehavior === "neverSettle") {
+          return new Promise(() => {}); // Never resolves
+        }
+      }
+      if (urlStr.includes("/api/chat/channels") && !urlStr.includes("/messages")) {
+        return Promise.resolve({
+          ok: true,
+          headers: { get: () => "application/json" },
+          json: () => Promise.resolve({ channels: [], unread: {} }),
+        } as unknown as Response);
+      }
+      if (urlStr.includes("/api/chat/unread")) {
+        return Promise.resolve({
+          ok: true,
+          headers: { get: () => "application/json" },
+          json: () => Promise.resolve({ unread: {} }),
+        } as unknown as Response);
+      }
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        headers: { get: () => "application/json" },
+        json: () => Promise.resolve({ error: "not found" }),
+      } as unknown as Response);
+    });
+  }
+
+  async function runCommonAssertions() {
+    await waitFor(() => {
+      expect(screen.getByTestId("mobile-split-view")).toBeInTheDocument();
+      expect(screen.getByTestId("channel-sidebar")).toBeInTheDocument();
+    });
+
+    await waitFor(() => {
+      const sidebar = screen.getByTestId("channel-sidebar");
+      const liveAgents = JSON.parse(sidebar.getAttribute("data-live-agents") || "[]");
+      expect(liveAgents).toHaveLength(1);
+      expect(liveAgents[0].name).toBe("some-agent");
+    });
+
+    await waitFor(() => {
+      const sidebar = screen.getByTestId("channel-sidebar");
+      expect(sidebar.getAttribute("data-agent-roster-ready")).toBe("false");
+    });
+  }
+
+  it("renders without error when archived fetch fails (500) and live agent fetch succeeds", async () => {
+    setupFetchMock("500");
+    render(<MessagesApp windowId="test" />);
+    await runCommonAssertions();
+  });
+
+  it("populates liveAgents when archived fetch rejects with network error", async () => {
+    setupFetchMock("reject");
+    render(<MessagesApp windowId="test" />);
+    await runCommonAssertions();
+  });
+
+  it("populates liveAgents when archived fetch returns ok but json() throws", async () => {
+    setupFetchMock("bad-json");
+    render(<MessagesApp windowId="test" />);
+    await runCommonAssertions();
+  });
+
+  it("populates liveAgents when archived fetch never settles", async () => {
+    setupFetchMock("neverSettle");
+    render(<MessagesApp windowId="test" />);
+    await waitFor(() => {
+      const sidebar = screen.getByTestId("channel-sidebar");
+      const liveAgents = JSON.parse(sidebar.getAttribute("data-live-agents") || "[]");
+      expect(liveAgents).toHaveLength(1);
+      expect(liveAgents[0].name).toBe("some-agent");
+      expect(sidebar.getAttribute("data-agent-roster-ready")).toBe("false");
+    });
+  });
+
+  it("populates liveAgents and archivedAgents when both endpoints return ok without content-type header", async () => {
+    (useIsMobile as ReturnType<typeof vi.fn>).mockReturnValue(true);
+    originalFetch = global.fetch;
+    global.fetch = vi.fn().mockImplementation((url: string) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/api/agents") && urlStr.includes("include_guests=1")) {
+        return Promise.resolve({
+          ok: true,
+          headers: { get: () => null },
+          json: () => Promise.resolve([{ name: "live-agent", display_name: "Live Agent", status: "running" }]),
+        } as unknown as Response);
+      }
+      if (urlStr.includes("/api/agents/archived")) {
+        return Promise.resolve({
+          ok: true,
+          headers: { get: () => null },
+          json: () => Promise.resolve([]),
+        } as unknown as Response);
+      }
+      if (urlStr.includes("/api/chat/channels") && !urlStr.includes("/messages")) {
+        return Promise.resolve({
+          ok: true,
+          headers: { get: () => "application/json" },
+          json: () => Promise.resolve({ channels: [], unread: {} }),
+        } as unknown as Response);
+      }
+      if (urlStr.includes("/api/chat/unread")) {
+        return Promise.resolve({
+          ok: true,
+          headers: { get: () => "application/json" },
+          json: () => Promise.resolve({ unread: {} }),
+        } as unknown as Response);
+      }
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        headers: { get: () => "application/json" },
+        json: () => Promise.resolve({ error: "not found" }),
+      } as unknown as Response);
+    });
+
+    render(<MessagesApp windowId="test" />);
+
+    await waitFor(() => {
+      const sidebar = screen.getByTestId("channel-sidebar");
+      const liveAgents = JSON.parse(sidebar.getAttribute("data-live-agents") || "[]");
+      expect(liveAgents).toHaveLength(1);
+      expect(liveAgents[0].name).toBe("live-agent");
+    });
+
+    await waitFor(() => {
+      const sidebar = screen.getByTestId("channel-sidebar");
+      expect(sidebar.getAttribute("data-agent-roster-ready")).toBe("true");
+    });
   });
 });

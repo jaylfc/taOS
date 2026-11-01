@@ -229,6 +229,71 @@ class TestFriendRequestFlow:
         assert decl == ["peerFP"]
 
 
+
+    @pytest.mark.asyncio
+    async def test_accept_returns_fast_with_contact_when_exchange_is_slow(
+        self, client, app, upstream, monkeypatch
+    ):
+        """A slow network exchange never delays the accept, and the contact
+        (local work) already exists when the response returns."""
+        import asyncio
+        import time
+
+        from tinyagentos import peer as peer_channel
+        from tinyagentos.routes import hub as hub_routes
+
+        peer_fp = "9a2db2e23f1504cd056606553ac049c5e718e8f9ce9233876df1a7a1821af885"
+        contacts_store = app.state.contacts_store
+        if contacts_store._db is None:
+            await contacts_store.init()
+
+        async def accept_handler(method, url, **kw):
+            return _FakeResp(content=json.dumps({
+                "peer": peer_fp,
+                "username": "slowpeer",
+                "signing_pubkey": "ab" * 32,
+                "encryption_pubkey": "cd" * 32,
+                "endpoints": ["https://peer.example.com:6969"],
+            }).encode())
+
+        _set(upstream, accept_handler)
+
+        async def slow_exchange(*args, **kwargs):
+            await asyncio.sleep(5)
+            return {}
+
+        monkeypatch.setattr(peer_channel, "exchange_handshake", slow_exchange)
+
+        # The local contact write takes a little real time. If the route
+        # backgrounded it, the response would return before it finished and
+        # the contact check below would fail deterministically.
+        real_add_contact = contacts_store.add_contact
+
+        async def slow_add_contact(*args, **kwargs):
+            await asyncio.sleep(0.3)
+            return await real_add_contact(*args, **kwargs)
+
+        monkeypatch.setattr(contacts_store, "add_contact", slow_add_contact)
+
+        start = time.perf_counter()
+        resp = await client.post(
+            "/api/hub/friends/requests/rid-9/accept",
+            json={"peer_fingerprint": peer_fp},
+        )
+        elapsed = time.perf_counter() - start
+        try:
+            assert resp.status_code == 200
+            assert resp.json()["state"] == "accepted"
+            assert elapsed < 1.0
+            contact = await contacts_store.get_contact(f"hub:{peer_fp}")
+            assert contact is not None, "contact must exist when accept returns"
+            assert await contacts_store.get_peer_link(f"hub:{peer_fp}") is not None
+        finally:
+            for t in list(hub_routes._BACKGROUND_TASKS):
+                t.cancel()
+            await asyncio.gather(*hub_routes._BACKGROUND_TASKS, return_exceptions=True)
+
+
 class TestPresenceGate:
     @pytest.mark.asyncio
     async def test_presence_denied_without_accepted_edge(self, client, upstream):

@@ -70,6 +70,16 @@ _PIP_FLAG = re.compile(r"^-")
 # Everything after one of these on the line belongs to the shell, not to pip.
 _SHELL_OPERATORS = {"||", "&&", ";", "|", ">", ">>", "2>", "2>&1", "&"}
 
+# pip install options that take a separate value after them (skip the option and its value)
+_PIP_VALUE_OPTIONS = frozenset([
+    "-c", "--constraint", "-r", "--requirement", "-e", "--editable",
+    "-i", "--index-url", "--extra-index-url", "-f", "--find-links",
+    "--trusted-host", "--retries", "--timeout", "-t", "--target",
+    "--prefix", "--root", "--src", "--cache-dir", "--progress-bar",
+    "--python-version", "--platform", "--implementation", "--abi",
+    "--no-binary", "--only-binary",
+])
+
 
 def load_lock(lock_path: Path | None = None) -> dict:
     lock_path = lock_path or REPO_ROOT / "uv.lock"
@@ -153,24 +163,42 @@ def undeclared_pip_installs(installer_path: Path | None = None) -> list[str]:
         match = re.search(r"pip(?:3)?\s+install\s+(.*)$", stripped)
         if not match:
             continue
-        for token in match.group(1).split():
+        tokens = match.group(1).split()
+        i = 0
+        while i < len(tokens):
+            token = tokens[i]
             # The rest of the shell line (`|| log "..."`, `&& …`, `# …`) is not
             # an argument to pip — stop reading at the first operator.
             if token in _SHELL_OPERATORS or token.startswith("#"):
                 break
             token = token.strip("\"'")
-            if not token or _PIP_FLAG.match(token):
+            if not token:
+                i += 1
+                continue
+            # Skip flags first, including value options
+            if _PIP_FLAG.match(token):
+                if token in _PIP_VALUE_OPTIONS:
+                    nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
+                    if nxt and not nxt.startswith("-"):
+                        i += 2
+                    else:
+                        i += 1
+                    continue
+                i += 1
                 continue
             # Editable/local installs and requirement files are the lockfile
             # path, not an ad-hoc addition.
             if token.startswith((".", "/", "$")) or token.endswith((".txt", ".whl")):
+                i += 1
                 continue
             name = canonical(re.split(r"[<>=!~\[;]", token, maxsplit=1)[0])
             # `pip install --upgrade pip` bootstraps the installer itself.
             if not name or name == "pip":
+                i += 1
                 continue
             if name not in declared and name not in findings:
                 findings.append(name)
+            i += 1
     return findings
 
 
