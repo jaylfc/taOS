@@ -167,23 +167,20 @@ is entered. Until then it runs like a first device with its own local data.
 The account password alone never releases agents, memory, Secrets or settings
 to a new device.
 
-## Decisions for Jay
+## Decisions (Jay ruled 2026-11-01)
 
-1. **Where sync data lives.** Recommended: on the user's own devices,
-   peer-to-peer, with taos.my as identity, roster and relay only. Cost: two
-   devices that are never online at the same time never sync. Alternative:
-   taos.my keeps an encrypted copy, or a store-and-forward queue of
-   ciphertext, so offline devices still catch up; taos.my then holds the
-   user's data, encrypted.
-2. **Secrets.** Recommended: end-to-end encrypted sync with a per-device-only
-   flag and an optional recovery key. Alternatives: Secrets never sync, or sync
-   with no recovery path.
-3. **Conflicts.** Recommended: HLC timestamps with tombstones; last writer wins
-   for config and settings; union-merge for memory. Alternative: last writer
-   wins everywhere, which is simpler but can drop memory written on two
-   devices at once.
-
-taOS-dev will put these to Jay as one multiple-choice question after review.
+1. **Where sync data lives: on the user's own devices.** Sync runs
+   device-to-device over the mesh in v1, with taos.my as identity, roster and
+   relay only. Accepted cost for v1: two devices that are never online at the
+   same time do not sync. Phase 2, opt-in: taos.my keeps an encrypted catch-up
+   copy (ciphertext only) so an offline device can catch up. It is deferred,
+   not rejected.
+2. **Secrets: end-to-end encrypted sync**, with a per-secret device-only flag,
+   an optional recovery key offered at onboarding, and key rotation on device
+   removal (see "Remove a device").
+3. **Conflicts: per-record HLC timestamps and tombstones.** Newest wins for
+   settings and agent config; memory is union-merged, with the exact rule
+   owed by taosmd-dev.
 
 ## Build order once ruled
 
