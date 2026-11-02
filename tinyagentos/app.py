@@ -130,6 +130,7 @@ from tinyagentos.knowledge_store import KnowledgeStore
 from tinyagentos.knowledge_ingest import IngestPipeline
 from tinyagentos.knowledge_categories import CategoryEngine
 from tinyagentos.knowledge_monitor import MonitorService
+from tinyagentos.bluez_bus import close_system_bus
 from tinyagentos.mcp import MCPServerStore, MCPSupervisor
 from tinyagentos.mcp.marketplace import (
     MCPMarketplace,
@@ -1649,6 +1650,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await browsing_history.close()
         await knowledge_graph.close()
         await archive.close()
+        await close_system_bus()
         await installed_apps.close()
         await feedback_store.close()
         await client_log_store.close()

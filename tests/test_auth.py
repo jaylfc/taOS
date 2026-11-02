@@ -829,6 +829,102 @@ class TestMultiUser:
         assert resp.status_code == 401
 
 
+class TestCompleteInviteFromSession:
+    """The SPA completes an invite from the session the invite code opened.
+
+    LoginGate never sees the code (/auth/status does not return it), so it
+    posts /auth/complete without one. The invitee's own pending session
+    stands in for the code; no other session does.
+    """
+
+    async def _invite(self, auth_client, *usernames):
+        await auth_client.post(
+            "/auth/setup",
+            json={"username": "admin", "full_name": "Admin", "email": "", "password": "adminpass", "auto_login": False},
+        )
+        admin = await auth_client.post(
+            "/auth/login",
+            json={"username": "admin", "password": "adminpass", "auto_login": False},
+        )
+        codes = {}
+        for name in usernames:
+            add = await auth_client.post("/auth/users", json={"username": name}, cookies=admin.cookies)
+            codes[name] = add.json()["invite_code"]
+        return admin.cookies, codes
+
+    async def _pending_session(self, auth_client, username, code):
+        login = await auth_client.post(
+            "/auth/login",
+            json={"username": username, "password": code, "auto_login": False},
+        )
+        assert login.json()["needs_onboarding"] is True
+        return login.cookies
+
+    def _body(self, username):
+        return {"username": username, "full_name": "Ivy", "email": "", "password": "ivypass1", "auto_login": False}
+
+    @pytest.mark.asyncio
+    async def test_pending_session_completes_without_the_code(self, app, auth_client):
+        _, codes = await self._invite(auth_client, "ivy")
+        cookies = await self._pending_session(auth_client, "ivy", codes["ivy"])
+        resp = await auth_client.post("/auth/complete", json=self._body("ivy"), cookies=cookies)
+        assert resp.status_code == 200, resp.text
+        relogin = await auth_client.post(
+            "/auth/login",
+            json={"username": "ivy", "password": "ivypass1", "auto_login": False},
+        )
+        assert relogin.status_code == 200, relogin.text
+        assert relogin.json()["ok"] is True
+
+    @pytest.mark.asyncio
+    async def test_no_code_and_no_session_is_refused(self, app, auth_client):
+        await self._invite(auth_client, "ivy")
+        # The client jar kept the admin login's cookie; this case sends none.
+        auth_client.cookies.clear()
+        resp = await auth_client.post("/auth/complete", json=self._body("ivy"))
+        assert resp.status_code == 400, resp.text
+
+    @pytest.mark.asyncio
+    async def test_another_invitees_session_is_refused(self, app, auth_client):
+        _, codes = await self._invite(auth_client, "ivy", "jack")
+        jack = await self._pending_session(auth_client, "jack", codes["jack"])
+        resp = await auth_client.post("/auth/complete", json=self._body("ivy"), cookies=jack)
+        assert resp.status_code == 400, resp.text
+        # ivy's invite is untouched: her code still opens a pending session
+        await self._pending_session(auth_client, "ivy", codes["ivy"])
+
+    @pytest.mark.asyncio
+    async def test_admin_session_is_refused(self, app, auth_client):
+        admin, codes = await self._invite(auth_client, "ivy")
+        resp = await auth_client.post("/auth/complete", json=self._body("ivy"), cookies=admin)
+        assert resp.status_code == 400, resp.text
+        await self._pending_session(auth_client, "ivy", codes["ivy"])
+
+    @pytest.mark.asyncio
+    async def test_pending_session_without_the_csrf_token_is_refused(self, app, auth_client):
+        # /auth/complete is CSRF-exempt by path, so the session branch checks
+        # the double-submit token itself: a cross-site form carrying the
+        # pending cookie must not set the invitee's password.
+        _, codes = await self._invite(auth_client, "ivy")
+        cookies = await self._pending_session(auth_client, "ivy", codes["ivy"])
+        resp = await auth_client.post(
+            "/auth/complete",
+            json=self._body("ivy"),
+            cookies=cookies,
+            headers={"X-CSRF-Token": "forged"},
+        )
+        assert resp.status_code == 400, resp.text
+        await self._pending_session(auth_client, "ivy", codes["ivy"])
+
+    @pytest.mark.asyncio
+    async def test_wrong_code_is_still_refused_with_a_pending_session(self, app, auth_client):
+        _, codes = await self._invite(auth_client, "ivy")
+        cookies = await self._pending_session(auth_client, "ivy", codes["ivy"])
+        body = {**self._body("ivy"), "invite_code": "not-the-code"}
+        resp = await auth_client.post("/auth/complete", json=body, cookies=cookies)
+        assert resp.status_code == 400, resp.text
+
+
 class TestLocalToken:
     def test_token_created_on_first_access(self, tmp_path):
         mgr = AuthManager(tmp_path)
