@@ -1948,3 +1948,83 @@ class TestAdopt:
                 created_ts="2026-01-01T12:00:00+00:00",
                 status="bogus",
             )
+
+    @pytest.mark.asyncio
+    async def test_adopt_accepts_three_digit_collision_suffix(self, store):
+        row = await store.adopt(
+            canonical_id="x-20261102-120000-100",
+            framework="openclaw",
+            created_ts="2026-11-02T12:00:00+00:00",
+            display_name="X",
+        )
+        assert row["canonical_id"] == "x-20261102-120000-100"
+        fetched = await store.get("x-20261102-120000-100")
+        assert fetched is not None
+        assert fetched["canonical_id"] == "x-20261102-120000-100"
+
+    @pytest.mark.asyncio
+    async def test_adopt_refuses_normalised_handle_held_by_other(self, store):
+        await store.register(
+            framework="openclaw",
+            display_name="Owner",
+            handle="@taOSmd-dev",
+        )
+        with pytest.raises(ValueError, match="handle.*taosmd-dev.*already owned"):
+            await store.adopt(
+                canonical_id="beta-20261102-120000-01",
+                framework="openclaw",
+                created_ts="2026-11-02T12:00:00+00:00",
+                handle="taosmd-dev",
+            )
+
+    @pytest.mark.asyncio
+    async def test_adopt_revoked_stamps_revoked_at(self, store):
+        stamped = 1730553600.0
+        row = await store.adopt(
+            canonical_id="revoked-agent-20261102-120000-01",
+            framework="openclaw",
+            created_ts="2026-11-02T12:00:00+00:00",
+            status="revoked",
+            revoked_at=stamped,
+        )
+        assert row["status"] == "revoked"
+        assert float(row["revoked_at"]) == stamped
+        revoked = await store.list_revoked()
+        assert any(r["canonical_id"] == row["canonical_id"] for r in revoked)
+        assert any(float(r["revoked_at"]) == stamped for r in revoked)
+
+    @pytest.mark.asyncio
+    async def test_adopt_revoked_without_revoked_at_stamps_now(self, store):
+        row = await store.adopt(
+            canonical_id="revoked-agent-20261102-120000-02",
+            framework="openclaw",
+            created_ts="2026-11-02T12:00:00+00:00",
+            status="revoked",
+        )
+        assert row["status"] == "revoked"
+        assert row["revoked_at"] is not None
+        revoked = await store.list_revoked()
+        assert any(r["canonical_id"] == row["canonical_id"] for r in revoked)
+
+    @pytest.mark.asyncio
+    async def test_adopt_revoked_at_with_non_revoked_status_raises(self, store):
+        with pytest.raises(ValueError, match="revoked_at"):
+            await store.adopt(
+                canonical_id="alpha-20261102-120000-0b",
+                framework="openclaw",
+                created_ts="2026-11-02T12:00:00+00:00",
+                status="active",
+                revoked_at=1730553600.0,
+            )
+
+    @pytest.mark.asyncio
+    async def test_adopt_refuses_reports_to_self(self, store):
+        with pytest.raises(
+            ValueError, match="an agent cannot report to itself"
+        ):
+            await store.adopt(
+                canonical_id="alpha-20261102-120000-0a",
+                framework="openclaw",
+                created_ts="2026-11-02T12:00:00+00:00",
+                reports_to="alpha-20261102-120000-0a",
+            )
