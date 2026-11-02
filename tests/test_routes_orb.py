@@ -7,9 +7,13 @@ Happy path: admin returns list of orb dicts.
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import json
 import pytest
 import pytest_asyncio
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+import httpx
 from httpx import ASGITransport, AsyncClient
 from pathlib import Path
 
@@ -460,6 +464,188 @@ async def test_catalog_config_round_trip(client, app, monkeypatch, tmp_data_dir)
     # to_dict should NOT include orb when it's the default
     d2 = cfg2.to_dict()
     assert "orb" not in d2
+
+
+# ---------------------------------------------------------------------------
+# GET /api/orb/catalog — kind / shape refusals map to named 503s,
+# no cache fallback from a remote refusal
+# ---------------------------------------------------------------------------
+
+def _make_orb_key():
+    """Generate a test Ed25519 keypair; return (private_key, key_id, pub_b64)."""
+    private_key = Ed25519PrivateKey.generate()
+    public_key_raw = private_key.public_key().public_bytes_raw()
+    key_id = hashlib.sha256(public_key_raw).hexdigest()[:16]
+    pub_b64 = base64.b64encode(public_key_raw).decode("ascii")
+    return private_key, key_id, pub_b64
+
+
+def _sign_bytes(private_key, key_id, data: bytes) -> bytes:
+    """Sign `data` and return signature JSON bytes."""
+    sig = private_key.sign(data)
+    return json.dumps({"key_id": key_id, "sig": base64.b64encode(sig).decode("ascii")}).encode("utf-8")
+
+
+def _write_cached_catalog(data_dir, catalog_bytes, sig_bytes, serial: int):
+    """Write a signed catalog + sig to the cache dir and record its serial."""
+    cache_dir = data_dir / "orb" / "catalog"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "catalog.json").write_bytes(catalog_bytes)
+    (cache_dir / "catalog.json.sig").write_bytes(sig_bytes)
+    state_path = data_dir / "orb" / "catalog_state.json"
+    from tinyagentos.orb import catalog_sig
+
+    catalog_sig.record_serial(state_path, serial, hashlib.sha256(catalog_bytes).hexdigest())
+
+
+def _remote_fetch_monkeypatch(monkeypatch, handler):
+    """Monkeypatch routes.orb.fetch_catalog to call the real fetch through a MockTransport."""
+    from tinyagentos.orb import catalog_fetch
+
+    real = catalog_fetch.fetch_catalog
+    import httpx
+
+    monkeypatch.setattr(
+        "tinyagentos.routes.orb.fetch_catalog",
+        lambda base, cache_dir, state_path: real(
+            base, cache_dir, state_path, transport=httpx.MockTransport(handler)
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_catalog_admin_remote_bad_kind_503_no_cache_fallback(client, app, monkeypatch, tmp_data_dir):
+    """Remote serves a signed bad-kind catalog -> 503 orb_catalog_kind_invalid,
+    and a good signed cached catalog written beforehand is NOT served."""
+    from tinyagentos.orb import catalog_sig
+
+    private_key, key_id, pub_b64 = _make_orb_key()
+    monkeypatch.setitem(catalog_sig.CATALOG_KEYS, key_id, pub_b64)
+
+    # Bad-kind catalog served by the remote.
+    bad_catalog = {"serial": 5, "kind": "orb-desktop-apps", "apps": []}
+    bad_catalog_bytes = json.dumps(bad_catalog).encode("utf-8")
+    bad_sig_bytes = _sign_bytes(private_key, key_id, bad_catalog_bytes)
+
+    # Good signed cached catalog present beforehand.
+    good_catalog = {"serial": 4, "apps": [{"id": "cached-app", "versions": []}]}
+    good_catalog_bytes = json.dumps(good_catalog).encode("utf-8")
+    good_sig_bytes = _sign_bytes(private_key, key_id, good_catalog_bytes)
+    _write_cached_catalog(tmp_data_dir, good_catalog_bytes, good_sig_bytes, 4)
+
+    def handler(request):
+        if request.url.path.endswith("/catalog.json.sig"):
+            return httpx.Response(200, content=bad_sig_bytes)
+        if request.url.path.endswith("/catalog.json"):
+            return httpx.Response(200, content=bad_catalog_bytes)
+        return httpx.Response(404)
+
+    _remote_fetch_monkeypatch(monkeypatch, handler)
+    app.state.config.orb = {"catalog_url": "https://example.com/catalog"}
+
+    resp = await client.get("/api/orb/catalog")
+    assert resp.status_code == 503
+    assert resp.json() == {"error": "orb_catalog_kind_invalid"}
+
+
+@pytest.mark.asyncio
+async def test_catalog_admin_cache_only_bad_kind_503(client, app, monkeypatch, tmp_data_dir):
+    """Cache-only mode (no catalog_url) with a signed bad-kind doc cached ->
+    503 orb_catalog_kind_invalid."""
+    from tinyagentos.orb import catalog_sig
+
+    private_key, key_id, pub_b64 = _make_orb_key()
+    monkeypatch.setitem(catalog_sig.CATALOG_KEYS, key_id, pub_b64)
+
+    catalog = {"serial": 5, "kind": "orb-desktop-apps", "apps": []}
+    catalog_bytes = json.dumps(catalog).encode("utf-8")
+    sig_bytes = _sign_bytes(private_key, key_id, catalog_bytes)
+    _write_cached_catalog(tmp_data_dir, catalog_bytes, sig_bytes, 5)
+
+    app.state.config.orb = {"catalog_url": ""}
+
+    resp = await client.get("/api/orb/catalog")
+    assert resp.status_code == 503
+    assert resp.json() == {"error": "orb_catalog_kind_invalid"}
+
+
+@pytest.mark.asyncio
+async def test_catalog_admin_remote_fetch_error_cache_bad_kind_503(client, app, monkeypatch, tmp_data_dir):
+    """Remote returns 500 (CatalogFetchError) and the cache holds the signed
+    bad-kind doc -> 503 orb_catalog_kind_invalid via the inner except tuple."""
+    from tinyagentos.orb import catalog_sig
+
+    private_key, key_id, pub_b64 = _make_orb_key()
+    monkeypatch.setitem(catalog_sig.CATALOG_KEYS, key_id, pub_b64)
+
+    catalog = {"serial": 5, "kind": "orb-desktop-apps", "apps": []}
+    catalog_bytes = json.dumps(catalog).encode("utf-8")
+    sig_bytes = _sign_bytes(private_key, key_id, catalog_bytes)
+    _write_cached_catalog(tmp_data_dir, catalog_bytes, sig_bytes, 5)
+
+    def handler(request):
+        return httpx.Response(500)
+
+    _remote_fetch_monkeypatch(monkeypatch, handler)
+    app.state.config.orb = {"catalog_url": "https://example.com/catalog"}
+
+    resp = await client.get("/api/orb/catalog")
+    assert resp.status_code == 503
+    assert resp.json() == {"error": "orb_catalog_kind_invalid"}
+
+
+@pytest.mark.asyncio
+async def test_catalog_admin_remote_bad_expires_503(client, app, monkeypatch, tmp_data_dir):
+    """Remote serves a signed catalog with expires not ISO 8601 ->
+    503 orb_catalog_invalid."""
+    from tinyagentos.orb import catalog_sig
+
+    private_key, key_id, pub_b64 = _make_orb_key()
+    monkeypatch.setitem(catalog_sig.CATALOG_KEYS, key_id, pub_b64)
+
+    catalog = {"serial": 5, "expires": "not-a-date", "apps": []}
+    catalog_bytes = json.dumps(catalog).encode("utf-8")
+    sig_bytes = _sign_bytes(private_key, key_id, catalog_bytes)
+
+    def handler(request):
+        if request.url.path.endswith("/catalog.json.sig"):
+            return httpx.Response(200, content=sig_bytes)
+        if request.url.path.endswith("/catalog.json"):
+            return httpx.Response(200, content=catalog_bytes)
+        return httpx.Response(404)
+
+    _remote_fetch_monkeypatch(monkeypatch, handler)
+    app.state.config.orb = {"catalog_url": "https://example.com/catalog"}
+
+    resp = await client.get("/api/orb/catalog")
+    assert resp.status_code == 503
+    assert resp.json() == {"error": "orb_catalog_invalid"}
+
+
+@pytest.mark.asyncio
+async def test_catalog_admin_remote_json_array_503(client, app, monkeypatch, tmp_data_dir):
+    """Remote serves a signed JSON array [] -> 503 orb_catalog_invalid."""
+    from tinyagentos.orb import catalog_sig
+
+    private_key, key_id, pub_b64 = _make_orb_key()
+    monkeypatch.setitem(catalog_sig.CATALOG_KEYS, key_id, pub_b64)
+
+    catalog_bytes = b"[]"
+    sig_bytes = _sign_bytes(private_key, key_id, catalog_bytes)
+
+    def handler(request):
+        if request.url.path.endswith("/catalog.json.sig"):
+            return httpx.Response(200, content=sig_bytes)
+        if request.url.path.endswith("/catalog.json"):
+            return httpx.Response(200, content=catalog_bytes)
+        return httpx.Response(404)
+
+    _remote_fetch_monkeypatch(monkeypatch, handler)
+    app.state.config.orb = {"catalog_url": "https://example.com/catalog"}
+
+    resp = await client.get("/api/orb/catalog")
+    assert resp.status_code == 503
+    assert resp.json() == {"error": "orb_catalog_invalid"}
 
 
 # ---------------------------------------------------------------------------
