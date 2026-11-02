@@ -723,7 +723,8 @@ async def apply_framework(app_state) -> FrameworkDecision:
     controller does not. Leaving PicoClaw revokes its key; entering it stops
     opencode and provisions PicoClaw (a fresh key, a fresh config). Claude
     Code needs no provisioning here: its harness is built per chat request
-    from the token in Secrets."""
+    from the token in Secrets. Hermes likewise: the probes are run here and
+    the decision is applied; the harness is built per chat request."""
     from tinyagentos.claude_code_runtime import claude_code_token_present
     from tinyagentos.hermes_runtime import hermes_key_present, hermes_api_up
 
@@ -744,6 +745,13 @@ async def apply_framework(app_state) -> FrameworkDecision:
         hermes_key_present=key_present,
     )
     if decision.framework == FRAMEWORK_CLAUDE_CODE:
+        await stop_taos_opencode_server(app_state)
+        async with _picoclaw_lock(app_state):
+            retire_picoclaw(app_state)
+        app_state.taos_claude_code_harness = None
+        app_state.taos_claude_code_session_id = None
+        return decision
+    if decision.framework == FRAMEWORK_HERMES:
         await stop_taos_opencode_server(app_state)
         async with _picoclaw_lock(app_state):
             retire_picoclaw(app_state)

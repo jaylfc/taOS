@@ -175,7 +175,7 @@ class PersonaUpdate(BaseModel):
 
 class FrameworkUpdate(BaseModel):
     framework: str | None = None
-    """taos_agent.framework: "auto" | "opencode" | "picoclaw" | "claude_code"."""
+    """taos_agent.framework: "auto" | "opencode" | "picoclaw" | "claude_code" | "hermes"."""
     device_class: str | None = None
     """device.class: "auto" | "mobile" | "desktop"."""
 
