@@ -250,6 +250,7 @@ build_from_source_musl() {
     sudo apk add --no-cache build-base cmake samurai git linux-headers openssl-dev || die "apk add failed"
     local src
     src="$(run_as_user mktemp -d -t llamacpp-src.XXXXXX)"
+    trap 'run_as_user rm -rf "$src"' EXIT ERR
     run_as_user git clone --depth 1 --branch "$LLAMACPP_MUSL_TAG" https://github.com/ggml-org/llama.cpp "$src" || die "git clone failed"
     local head
     head="$(run_as_user git -C "$src" rev-parse HEAD)" || die "git rev-parse failed in $src"
@@ -266,6 +267,7 @@ build_from_source_musl() {
     run_as_user find "$src/build" -name 'lib*.so*' -exec cp -P {} "$INSTALL_DIR"/ \;
     run_as_user chmod +x "$INSTALL_DIR/llama-server"
     run_as_user rm -rf "$src"
+    trap - EXIT ERR
 }
 
 # -------- (5) service unit (systemd on Linux, launchd on macOS) ------------
@@ -341,11 +343,37 @@ EOF
     log "${label} loaded + started via launchd"
 }
 
+install_openrc_service() {
+    local init_d="${INIT_D_DIR:-/etc/init.d}"
+    local script="$init_d/llama-cpp"
+    log "writing $script (port $PORT)"
+    sudo tee "$script" >/dev/null <<EOF
+#!/sbin/openrc-run
+name="llama.cpp server (router mode) -- taOS default local LLM backend"
+command="$INSTALL_DIR/llama-server"
+command_args="--models-dir $MODELS_DIR --host $HOST --port $PORT"
+command_user="$TARGET_USER"
+command_background=true
+pidfile="/run/llama-cpp.pid"
+depend() {
+    need net
+}
+EOF
+    sudo chmod 755 "$script"
+    sudo rc-update add llama-cpp default
+    sudo rc-service llama-cpp restart
+    log "llama-cpp OpenRC service enabled + started"
+}
+
 install_service() {
     if [[ "$(uname -s)" == "Darwin" ]]; then
         install_macos_service
-    else
+    elif command -v systemctl >/dev/null 2>&1; then
         install_linux_service
+    elif command -v openrc-run >/dev/null 2>&1 || command -v rc-service >/dev/null 2>&1; then
+        install_openrc_service
+    else
+        die "no supported service manager found (need systemd, OpenRC, or macOS launchd)"
     fi
 }
 
