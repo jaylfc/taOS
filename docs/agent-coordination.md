@@ -2163,6 +2163,10 @@ too. A device token without `agents:read`, a registry JWT without
 owner user_id + `memory_read` only), and any invalid token, stay anonymous.
 `signing_key` is stripped for everyone.
 
+## Task report endpoint (`POST /api/cluster/tasks/report`)
+
+External GPU schedulers report job outcomes here to the trace store. Rows are written under slug taos-cluster-tasks and readable via GET /api/trace. Authenticated like lease endpoints (admin session, local token, or worker HMAC). Payload: `worker`, `resource_id`, `lease_id` (optional), `caller` (optional, default ""), `model` (optional, default ""), `duration_s`, `status` (`success`|`failure`|`cancelled`), `tokens` (optional). Stored in the trace store under the `taos-cluster-tasks` slug with kind `task_report`.
+
 ## Cluster capability + placement map (`GET /api/cluster/map`, admin-only)
 
 Route module `tinyagentos/routes/cluster_map.py`. **Admin session only**: the
