@@ -5,6 +5,10 @@ must name things the way the reader knows them: the project's name, the agent's
 registered handle, the user's name, the task's title. These helpers resolve an
 id to that name and fall back to the id itself when no name exists (or a
 lookup fails), so building a notification can never fail on a lookup.
+
+Because that text names things, it must not be a broadcast (every user reads a
+broadcast row). ``admin_user_ids`` and ``project_audience`` name the users a
+named notification is addressed to instead (tsk-g7w4yu).
 """
 from __future__ import annotations
 
@@ -63,3 +67,33 @@ def task_label(task: Optional[dict], task_id: str) -> str:
     """The task's title in quotes, or *task_id* when the task has no title."""
     title = (task or {}).get("title")
     return f'"{title}"' if title else task_id
+
+
+def admin_user_ids(app_state: Any) -> list[str]:
+    """Ids of every admin user, or an empty list when users cannot be read."""
+    auth = getattr(app_state, "auth", None)
+    if auth is None:
+        return []
+    try:
+        users = auth.list_users()
+    except Exception:
+        return []
+    return [u["id"] for u in users if u.get("is_admin") and u.get("id")]
+
+
+async def project_audience(app_state: Any, project_id: Optional[str]) -> list[str]:
+    """Ids of the users who may see *project_id*: its owner, then every admin."""
+    ids: list[str] = []
+    store = getattr(app_state, "project_store", None)
+    if project_id and store is not None:
+        try:
+            project = await store.get_project(project_id)
+        except Exception:
+            project = None
+        owner = (project or {}).get("user_id")
+        if owner:
+            ids.append(owner)
+    for admin_id in admin_user_ids(app_state):
+        if admin_id not in ids:
+            ids.append(admin_id)
+    return ids
