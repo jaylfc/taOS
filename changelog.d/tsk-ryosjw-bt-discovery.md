@@ -1,0 +1,2 @@
+### Added
+- Bluetooth discovery route `POST /api/hardware/bluetooth/discovery` with persistent dbus-fast system bus connection, 60-second auto-stop timer, and `discovering` field in `GET /api/hardware/bluetooth` adapters.
