@@ -3,3 +3,4 @@
 - Added trap cleanup in build_from_source_musl to remove the llama.cpp source directory on EXIT/ERR
 - Added test isolation: unset TAOS_LLAMACPP_VARIANT at top of test file, added OpenRC test case with mocked service manager detection
 - Updated README.md with one-line note that musl-arm64 builds from source and OpenRC is supported
+- Hardened the OpenRC test so it exercises the real install_service dispatch instead of a copied install_openrc_service, stubbing every host-touching command and asserting the calls file records rc-update add / rc-service restart with no systemd-path leak
