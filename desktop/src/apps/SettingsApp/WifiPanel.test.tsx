@@ -319,7 +319,7 @@ describe("WifiPanel controls", () => {
       fireEvent.keyDown(input!, { key: "Enter" });
     });
     expect(screen.getByText("Connection failed: invalid_psk")).toBeInTheDocument();
-    const globalAlert = screen.queryByRole("alert");
+    const globalAlert = screen.queryByRole("alert", { name: /Could not load|Wi-Fi toggle failed|Disconnect failed|Could not reach taOS/i });
     expect(globalAlert).toBeNull();
   });
 
@@ -410,6 +410,54 @@ describe("WifiPanel controls", () => {
       fireEvent.keyDown(input!, { key: "Enter" });
     });
     await waitFor(() => expect(screen.queryByLabelText("Password for SecuredNet")).not.toBeInTheDocument());
+  });
+
+  it("touch-only join secured network: click Join row, type password, click Join submit button posts {ssid, psk}", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy
+      .mockResolvedValueOnce(json(baseResponse))
+      .mockResolvedValueOnce(json({ ok: true }))
+      .mockResolvedValueOnce(json({ ...baseResponse, access_points: baseResponse.access_points.map(ap => ({ ...ap, active: ap.ssid === "SecuredNet" })) }));
+    render(<WifiPanel />);
+    await waitFor(() => expect(screen.getByText("SecuredNet")).toBeInTheDocument());
+    const joinBtn = screen.getByRole("button", { name: /Join SecuredNet \(secured\)/i });
+    await act(async () => {
+      fireEvent.click(joinBtn);
+    });
+    await waitFor(() => {
+      const input = screen.getByLabelText("Password for SecuredNet");
+      expect(input).toBeInTheDocument();
+    });
+    await act(async () => {
+      const input = screen.getByLabelText("Password for SecuredNet");
+      fireEvent.change(input, { target: { value: "secret123" } });
+    });
+    const submitBtn = screen.getByRole("button", { name: /Join SecuredNet$/i });
+    await act(async () => {
+      fireEvent.click(submitBtn);
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    const [, connectCall] = fetchSpy.mock.calls;
+    expect(connectCall[0]).toBe("/api/hardware/wifi/connect");
+    expect(JSON.parse(connectCall[1]?.body as string)).toEqual({ ssid: "SecuredNet", psk: "secret123" });
+  });
+
+  it("toggle Wi-Fi 503 shows error and clears Turning Wi-Fi status", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy
+      .mockResolvedValueOnce(json(baseResponse))
+      .mockResolvedValueOnce(json({ error: "service_unavailable" }, 503))
+      .mockResolvedValueOnce(json(baseResponse));
+    render(<WifiPanel />);
+    await waitFor(() => expect(screen.getByText("ConnectedNet")).toBeInTheDocument());
+    const toggle = screen.getByRole("switch", { name: "Wi-Fi" });
+    await act(async () => {
+      fireEvent.click(toggle);
+    });
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(/Wi-Fi toggle failed/);
+    });
+    expect(screen.queryByText(/Turning Wi-Fi/)).not.toBeInTheDocument();
   });
 });
 

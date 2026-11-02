@@ -14,6 +14,8 @@ export function WifiPanel() {
   const [password, setPassword] = useState("");
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [toggling, setToggling] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
   const passwordInputRef = useRef<HTMLInputElement>(null);
   const joinButtonRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
   const seq = useRef(0);
@@ -53,7 +55,6 @@ export function WifiPanel() {
 
   useEffect(() => {
     active.current = true;
-    seq.current = 0;
     load();
     const id = setInterval(load, 10_000);
     return () => {
@@ -63,6 +64,7 @@ export function WifiPanel() {
   }, [load]);
 
   const handleToggleWifi = async (enabled: boolean) => {
+    setToggling(true);
     setStatus(enabled ? "Turning Wi-Fi on..." : "Turning Wi-Fi off...");
     setError(null);
     try {
@@ -76,6 +78,7 @@ export function WifiPanel() {
       if (!res.ok) {
         const msg = body?.error ? `Wi-Fi toggle failed: ${body.error}` : `Wi-Fi toggle failed (${res.status})`;
         setError(msg);
+        setStatus(null);
         return;
       }
       setStatus(null);
@@ -83,10 +86,13 @@ export function WifiPanel() {
     } catch {
       setError("Could not reach taOS.");
       setStatus(null);
+    } finally {
+      setToggling(false);
     }
   };
 
   const handleDisconnect = async (iface: string) => {
+    setDisconnecting(true);
     setStatus("Disconnecting...");
     setError(null);
     try {
@@ -100,6 +106,7 @@ export function WifiPanel() {
       if (!res.ok) {
         const msg = body?.error ? `Disconnect failed: ${body.error}` : `Disconnect failed (${res.status})`;
         setError(msg);
+        setStatus(null);
         return;
       }
       setStatus(null);
@@ -107,6 +114,8 @@ export function WifiPanel() {
     } catch {
       setError("Could not reach taOS.");
       setStatus(null);
+    } finally {
+      setDisconnecting(false);
     }
   };
 
@@ -208,7 +217,7 @@ export function WifiPanel() {
           id="wifi-toggle"
           checked={wifiEnabled === true}
           onCheckedChange={handleToggleWifi}
-          disabled={available !== true || wifiEnabled === null}
+          disabled={available !== true || wifiEnabled === null || toggling}
           aria-label="Wi-Fi"
         />
         <Label htmlFor="wifi-toggle" className="text-sm font-medium text-shell-text">
@@ -234,10 +243,11 @@ export function WifiPanel() {
           {accessPoints.length === 0 ? (
             <li className="text-sm text-shell-text-tertiary">No networks found.</li>
           ) : (
-            accessPoints.map((ap) => {
+            accessPoints.map((ap, index) => {
               const isConnecting = connectingSsid === ap.ssid;
               const isPasswordVisible = showPassword === ap.ssid;
               const key = ap.ssid || `hidden-${ap.frequency}`;
+              const passwordErrorId = `wifi-pw-err-${index}`;
               return (
                 <li key={key} className="flex items-center gap-2 text-sm">
                   <WifiIcon size={14} className="text-shell-text-secondary" />
@@ -251,7 +261,7 @@ export function WifiPanel() {
                         variant="destructive"
                         size="sm"
                         onClick={() => handleDisconnect(getIface())}
-                        disabled={isConnecting}
+                        disabled={isConnecting || disconnecting}
                         aria-label={`Disconnect from ${ap.ssid || "this network"}`}
                       >
                         Disconnect
@@ -307,6 +317,7 @@ export function WifiPanel() {
                           placeholder="Password"
                           className="w-48"
                           aria-label={`Password for ${ap.ssid}`}
+                          aria-describedby={passwordError ? passwordErrorId : undefined}
                           disabled={submitting}
                         />
                         <Button
@@ -321,8 +332,18 @@ export function WifiPanel() {
                           {isPasswordVisible ? <EyeOff size={14} /> : <Eye size={14} />}
                         </Button>
                       </div>
+                      <Button
+                        type="button"
+                        variant="default"
+                        size="sm"
+                        onClick={() => handleConnect(ap.ssid, password, true)}
+                        disabled={submitting || password.trim() === ""}
+                        aria-label={`Join ${ap.ssid}`}
+                      >
+                        Join
+                      </Button>
                       {passwordError && (
-                        <p className="text-xs text-amber-400">{passwordError}</p>
+                        <p role="alert" id={passwordErrorId} className="text-xs text-amber-400">{passwordError}</p>
                       )}
                       <Button
                         type="button"
@@ -339,6 +360,7 @@ export function WifiPanel() {
                         }}
                         aria-label="Cancel"
                         tabIndex={-1}
+                        disabled={submitting}
                       >
                         <X size={14} />
                       </Button>
