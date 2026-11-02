@@ -143,6 +143,8 @@ export interface MessageListProps {
   selectedChannel: string | null;
   /** Whether mobile layout is active. */
   isMobile: boolean;
+  /** Skip the channel header block (the parent supplies its own, e.g. mobile). Default false. */
+  hideHeader?: boolean;
   /** Keyboard inset for mobile safe-area handling. */
   keyboardInset: number;
   /** Current time for relative timestamps. */
@@ -233,6 +235,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
   channel,
   selectedChannel,
   isMobile,
+  hideHeader = false,
   keyboardInset,
   nowMs,
   liveAgents,
@@ -301,7 +304,9 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
 
   // Editing replaces the message actions; drop any selection when editing starts.
   useEffect(() => {
-    if (editingMessageId) setSelectedMessageId(null);
+    if (!editingMessageId) return;
+    clearPressTimer();
+    setSelectedMessageId(null);
   }, [editingMessageId]);
 
   // Tapping anywhere outside the selected row (and outside the emoji popover)
@@ -428,9 +433,33 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
     );
   }
 
+  const pinnedPopover = (
+    <PinnedMessagesPopover
+      pins={pinnedMessages}
+      authorCtx={{ currentUserId, currentUserDisplayName }}
+      onJumpTo={(id) => {
+        onTogglePinnedPopover();
+        const el = document.querySelector(
+          `[data-message-id="${id}"]`,
+        ) as HTMLElement | null;
+        if (el) {
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+          el.classList.add("data-highlight");
+          setTimeout(() => el.classList.remove("data-highlight"), 2000);
+        }
+      }}
+      onClose={onTogglePinnedPopover}
+    />
+  );
+
   return (
     <>
+      {/* With hideHeader the parent owns the header; keep the pinned popover reachable. */}
+      {hideHeader && pinnedPopoverOpen && (
+        <div className="relative h-0 shrink-0 self-end mr-2 z-40">{pinnedPopover}</div>
+      )}
       {/* channel header */}
+      {!hideHeader && (
       <div className="px-4 py-2.5 border-b border-shell-border flex items-center gap-3 shrink-0">
         {channel?.type === "topic" ? (
           <Hash size={16} className="text-shell-text-tertiary" />
@@ -480,24 +509,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                 count={pinnedMessages.length}
                 onClick={onTogglePinnedPopover}
               />
-              {pinnedPopoverOpen && (
-                <PinnedMessagesPopover
-                  pins={pinnedMessages}
-                  authorCtx={{ currentUserId, currentUserDisplayName }}
-                  onJumpTo={(id) => {
-                    onTogglePinnedPopover();
-                    const el = document.querySelector(
-                      `[data-message-id="${id}"]`,
-                    ) as HTMLElement | null;
-                    if (el) {
-                      el.scrollIntoView({ behavior: "smooth", block: "center" });
-                      el.classList.add("data-highlight");
-                      setTimeout(() => el.classList.remove("data-highlight"), 2000);
-                    }
-                  }}
-                  onClose={onTogglePinnedPopover}
-                />
-              )}
+              {pinnedPopoverOpen && pinnedPopover}
             </div>
             <button
               type="button"
@@ -534,6 +546,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
           </div>
         )}
       </div>
+      )}
 
       {/* message list */}
       <div
@@ -878,7 +891,9 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                 >
                   {editingMessageId !== msg.id && (
                     <span id={`msg-actions-hint-${msg.id}`} className="sr-only">
-                      Press Enter to open message actions
+                      {selectedMessageId === msg.id
+                        ? "Press Enter to close message actions"
+                        : "Press Enter to open message actions"}
                     </span>
                   )}
                   {!own && (

@@ -18,7 +18,6 @@ _RETRY_ON = (
     httpx.ConnectError,
     httpx.ConnectTimeout,
     httpx.PoolTimeout,
-    httpx.RemoteProtocolError,
 )
 # DeerFlow gets its own budget rather than retry_policy's: its call timeout is
 # 600s, far past the router's. 60s is still a safe deadline because a
