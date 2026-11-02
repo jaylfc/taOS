@@ -5,3 +5,4 @@
 ### Fixed
 
 - `AgentRegistryStore.adopt()`: accept collision suffixes of two or more hex digits (register() has no upper bound), guard the active-holder check against normalised handles so @taOSmd-dev and taosmd-dev collide, stamp revoked_at when status="revoked" so list_revoked() sees it, and reject reports_to equal to the adopting canonical_id ("an agent cannot report to itself").
+- `AgentRegistryStore.adopt()`: run the normalised active-handle holder check before the write lock instead of inside async with self._write_lock:, per review feedback on tsk-lkgxq2.

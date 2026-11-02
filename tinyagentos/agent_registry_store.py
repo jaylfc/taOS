@@ -854,6 +854,14 @@ class AgentRegistryStore(BaseStore):
                 "adopt: revoked_at may only be set when status is 'revoked'"
             )
 
+        if handle:
+            holder = await self.get_by_handle_normalised(handle, status="active")
+            if holder is not None and holder.get("canonical_id") != canonical_id:
+                raise ValueError(
+                    f"adopt: handle {handle!r} is already owned by another "
+                    f"active agent ({holder.get('canonical_id')})"
+                )
+
         async with self._write_lock:
             capabilities = capabilities or []
             caps_json = json.dumps(capabilities)
@@ -875,14 +883,6 @@ class AgentRegistryStore(BaseStore):
                     f"adopt: canonical_id {canonical_id!r} already belongs to a "
                     f"different agent"
                 )
-
-            if handle:
-                holder = await self.get_by_handle_normalised(handle, status="active")
-                if holder is not None and holder.get("canonical_id") != canonical_id:
-                    raise ValueError(
-                        f"adopt: handle {handle!r} is already owned by another "
-                        f"active agent ({holder.get('canonical_id')})"
-                    )
 
             try:
                 revoked_value = None
