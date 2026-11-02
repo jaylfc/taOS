@@ -46,10 +46,12 @@ if ! command -v uv >/dev/null 2>&1 && [ ! -x /root/.local/bin/uv ]; then
   # Immutable, version-pinned installer (same pin as the catalog install.sh):
   #   url: https://github.com/astral-sh/uv/releases/download/0.12.10/uv-installer.sh
   #   sha256sum: a3196b75f697a1adaa5e4af34ffba7629c710931ab1dac33bab59ecf228080bb
+  UV_INSTALLER="$(mktemp)"
   _fetch_and_verify "https://github.com/astral-sh/uv/releases/download/0.12.10/uv-installer.sh" \
     "a3196b75f697a1adaa5e4af34ffba7629c710931ab1dac33bab59ecf228080bb" \
-    /tmp/uv-install.sh
-  UV_VERSION="${UV_VERSION}" sh /tmp/uv-install.sh
+    "$UV_INSTALLER"
+  UV_VERSION="${UV_VERSION}" sh "$UV_INSTALLER"
+  rm -f "$UV_INSTALLER"
 fi
 export PATH="$HOME/.local/bin:/root/.local/bin:$PATH"
 if ! command -v uv >/dev/null 2>&1; then
@@ -524,13 +526,15 @@ BRIDGE_EOF
 chmod +x /opt/taos/taos-deer-flow-bridge.py
 
 # Bridge env (carries TAOS_LOCAL_TOKEN) lives in a mode-600 file, not in the
-# world-readable unit file.
-cat > /opt/taos/deer-flow-bridge.env <<ENVFILE
+# world-readable unit file. Written under umask 077 in a subshell so it is
+# never world-readable, even briefly between creation and chmod.
+( umask 077; cat > /opt/taos/deer-flow-bridge.env <<ENVFILE
 TAOS_BRIDGE_URL=$BRIDGE_URL
 TAOS_AGENT_NAME=$AGENT_NAME
 TAOS_LOCAL_TOKEN=$LOCAL_TOKEN
 DEER_FLOW_URL=http://127.0.0.1:8001
 ENVFILE
+)
 chmod 600 /opt/taos/deer-flow-bridge.env
 
 cat > /etc/systemd/system/taos-deer-flow-bridge.service <<UNIT
