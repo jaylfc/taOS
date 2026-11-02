@@ -12,7 +12,10 @@ named notification is addressed to instead (tsk-g7w4yu).
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 
 async def project_label(app_state: Any, project_id: Optional[str]) -> str:
@@ -77,6 +80,8 @@ def admin_user_ids(app_state: Any) -> list[str]:
     try:
         users = auth.list_users()
     except Exception:
+        # No broadcast fallback: that would leak the named text to every user.
+        logger.warning("could not list users to address admin notifications", exc_info=True)
         return []
     return [u["id"] for u in users if u.get("is_admin") and u.get("id")]
 

@@ -324,3 +324,52 @@ async def test_failed_task_notification_does_not_fail_the_committed_change(clien
         json={"closed_by": _admin_id(client), "reason": "done"},
     )
     assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_access_request_reaches_each_admin_but_webhooks_once(client, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    from tinyagentos.routes.project_invites import _notify_pending_invite
+
+    app_state = client._transport.app.state
+    store = app_state.notifications
+    posted = []
+
+    class _Webhook:
+        async def notify(self, title, message, level):
+            posted.append(message)
+
+    monkeypatch.setattr(store, "_webhook_notifier", _Webhook())
+
+    class _Auth:
+        def list_users(self):
+            return [{"id": "admin-a", "is_admin": True}, {"id": "admin-b", "is_admin": True}]
+
+    pid, _task = await _project_and_task(client)
+    state = SimpleNamespace(
+        notifications=store, project_store=app_state.project_store, auth=_Auth()
+    )
+    _notify_pending_invite(
+        SimpleNamespace(app=SimpleNamespace(state=state)),
+        {
+            "id": "ar-3",
+            "identity_claim": "taos-dev",
+            "framework": "claude-code",
+            "requested_scopes": ["project_tasks"],
+            "project_id": pid,
+        },
+    )
+    for _ in range(50):
+        if await _visible_to(client, "admin-b", "auth_requests"):
+            break
+        await asyncio.sleep(0.01)
+
+    assert await _visible_to(client, "admin-a", "auth_requests") == [
+        "taos-dev is requesting project_tasks on taOS"
+    ]
+    assert await _visible_to(client, "admin-b", "auth_requests") == [
+        "taos-dev is requesting project_tasks on taOS"
+    ]
+    assert posted == ["taos-dev is requesting project_tasks on taOS"]

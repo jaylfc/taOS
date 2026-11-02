@@ -643,8 +643,9 @@ async def create_auth_request(request: Request, body: CreateAuthRequest):
             )
             # Only an admin may approve, and the text names the project, so it
             # goes to each admin rather than to every user (tsk-g7w4yu). One
-            # failed write must not skip the remaining admins.
-            for admin_id in admin_user_ids(request.app.state):
+            # failed write must not skip the remaining admins, and only the
+            # first row posts to webhooks so a webhook sees the request once.
+            for i, admin_id in enumerate(admin_user_ids(request.app.state)):
                 try:
                     await notifs.add(
                         title="Access request",
@@ -652,6 +653,7 @@ async def create_auth_request(request: Request, body: CreateAuthRequest):
                         level="info",
                         source="auth_requests",
                         user_id=admin_id,
+                        webhook=i == 0,
                         data={
                             "request_id": record["id"],
                             "identity_claim": record["identity_claim"],
