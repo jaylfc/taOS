@@ -729,7 +729,7 @@ async def apply_framework(app_state) -> FrameworkDecision:
     from tinyagentos.hermes_runtime import hermes_key_present, hermes_api_up
 
     framework = (getattr(getattr(app_state, "config", None), "taos_agent", None) or {}).get("framework")
-    hermes_enabled = framework == FRAMEWORK_HERMES
+    hermes_enabled = isinstance(framework, str) and framework.strip().lower() == FRAMEWORK_HERMES
 
     if hermes_enabled:
         key_present = await hermes_key_present(app_state)
