@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import re
 import subprocess
@@ -1472,8 +1473,8 @@ _TASK_REPORT_SLUG = "taos-cluster-tasks"
 class TaskReportRequest(BaseModel):
     """Job outcome reported by an external scheduler.
 
-    Lets external GPU schedulers feed job outcomes into the trace store
-    so the Observatory and benchmark layers can see external GPU work.
+    External GPU schedulers report job outcomes here to the trace store.
+    Rows are written under slug taos-cluster-tasks and readable via GET /api/trace.
     """
 
     worker: str = Field(..., min_length=1, max_length=128)
@@ -1517,6 +1518,9 @@ async def report_task(request: Request, body: TaskReportRequest):
 
     # Bind worker HMAC callers to their identity
     principal = await _identify_principal(request)
+    if principal is None:
+        return JSONResponse({"error": "unidentified caller"}, status_code=403)
+    # Identity binding for worker HMAC callers: must match body.worker
     if principal == "worker":
         hmac_worker = getattr(request.state, "hmac_worker_name", None)
         if hmac_worker != body.worker:
@@ -1537,7 +1541,13 @@ async def report_task(request: Request, body: TaskReportRequest):
         "status": body.status,
     }
     if body.lease_id:
-        payload["lease_id"] = body.lease_id
+        # Store lease_id hash as lease_ref (first 16 hex chars of sha256)
+        lease_ref = hashlib.sha256(body.lease_id.encode()).hexdigest()[:16]
+        payload["lease_ref"] = lease_ref
+    elif body.lease_id is not None:
+        # lease_id is explicitly set to None (distinct from not provided)
+        # Don't store lease_ref in this case
+        pass
     if body.tokens is not None:
         payload["tokens"] = body.tokens
     try:

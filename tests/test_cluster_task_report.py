@@ -75,7 +75,7 @@ async def test_report_task_records_trace(client, app, tmp_data_dir):
     payload = env["payload"]
     assert payload["worker"] == "w1"
     assert payload["resource_id"] == "gpu-cuda-0"
-    assert payload["lease_id"] == "l_abc123"
+    assert payload["lease_ref"] == "baa03db3f3f84c0b"
     assert payload["caller"] == "ext-scheduler"
     assert payload["status"] == "success"
     assert payload["tokens"] == {"in": 100, "out": 250}
@@ -444,3 +444,112 @@ async def test_report_task_duration_s_rejects_nan_inf():
         status="success",
     )
     assert req.duration_s == 1.5
+
+
+@pytest.mark.asyncio
+async def test_report_task_kind_refused_from_trace_write(client, app, tmp_data_dir):
+    """POST /api/trace with kind='task_report' must return 400 (not accepted from client)."""
+    app.state.trace_registry = TraceStoreRegistry(tmp_data_dir)
+    
+    resp = await client.post(
+        "/api/trace",
+        json={
+            "agent_name": "taos-cluster-tasks",
+            "kind": "task_report",
+            "payload": {
+                "worker": "w1",
+                "resource_id": "gpu-cuda-0",
+                "caller": "ext-scheduler",
+                "duration_s": 1.0,
+                "status": "success",
+            },
+        },
+    )
+    assert resp.status_code == 400, f"Expected 400 for kind=\"task_report\", but got {resp.status_code}: {resp.text}"
+    assert resp.json()["error"] == "kind 'task_report' is written by taOS only"
+    
+    # Verify nothing was written to the trace store
+    store = await app.state.trace_registry.get("taos-cluster-tasks")
+    events = await store.list(kind="task_report", limit=10)
+    assert len(events) == 0, "No task_report rows should be written via POST /api/trace"
+
+
+@pytest.mark.asyncio
+async def test_report_task_unidentified_caller_returns_403(client, app, tmp_data_dir):
+    """report_task with unidentified caller must return 403, no row written."""
+    app.state.trace_registry = TraceStoreRegistry(tmp_data_dir)
+    
+    # Mock _identify_principal to return None (unidentified caller)
+    # but _require_lease_access should still allow the call (return None)
+    # because it checks principal = await _identify_principal(request) itself
+    from unittest.mock import patch
+    
+    # We need to patch BOTH _require_lease_access AND _identify_principal
+    # so that _require_lease_access doesn't block, but _identify_principal
+    # returns None so report_task can check it
+    
+    async def mock_identify_principal_none(request):
+        return None
+    
+    async def mock_require_lease_access_none(request):
+        # This mock allows the call (returns None) even if _identify_principal returns None
+        # because report_task needs to do its own check
+        return None
+    
+    with patch("tinyagentos.routes.cluster._identify_principal", side_effect=mock_identify_principal_none), \
+         patch("tinyagentos.routes.cluster._require_lease_access", side_effect=mock_require_lease_access_none):
+        resp = await client.post(
+            "/api/cluster/tasks/report",
+            json={
+                "worker": "w1",
+                "resource_id": "gpu-cuda-0",
+                "caller": "ext-scheduler",
+                "duration_s": 1.0,
+                "status": "success",
+            },
+        )
+    
+    assert resp.status_code == 403, f"Expected 403 for unidentified caller, but got {resp.status_code}: {resp.text}"
+    assert resp.json()["error"] == "unidentified caller"
+    
+    # Verify no row was written
+    store = await app.state.trace_registry.get("taos-cluster-tasks")
+    events = await store.list(kind="task_report", limit=10)
+    assert len(events) == 0, "No task_report rows should be written for unidentified caller"
+
+
+@pytest.mark.asyncio
+async def test_report_task_lease_id_not_stored(client, app, tmp_data_dir):
+    """POST /api/cluster/tasks/report must store lease_ref (hash) not raw lease_id."""
+    app.state.trace_registry = TraceStoreRegistry(tmp_data_dir)
+    
+    with _mock_auth():
+        resp = await client.post(
+            "/api/cluster/tasks/report",
+            json={
+                "worker": "w1",
+                "resource_id": "gpu-cuda-0",
+                "lease_id": "l_abc123",
+                "caller": "ext-scheduler",
+                "duration_s": 1.0,
+                "status": "success",
+            },
+        )
+    
+    assert resp.status_code == 200, resp.text
+    store = await app.state.trace_registry.get("taos-cluster-tasks")
+    events = await store.list(kind="task_report", limit=10)
+    assert len(events) == 1
+    env = events[0]
+    payload = env["payload"]
+    
+    # Verify lease_ref exists (hashed lease_id, first 16 hex chars of sha256)
+    assert "lease_ref" in payload, f"Expected lease_ref in payload, got {list(payload.keys())}"
+    assert "lease_id" not in payload, f"Raw lease_id should not be stored, got lease_id: {payload.get('lease_id')}"
+    
+    # Verify lease_ref is correct hash (first 16 hex chars of sha256('l_abc123'))
+    import hashlib
+    expected_lease_ref = hashlib.sha256("l_abc123".encode()).hexdigest()[:16]
+    assert payload["lease_ref"] == expected_lease_ref, f"Expected lease_ref {expected_lease_ref}, got {payload['lease_ref']}"
+    
+    await app.state.trace_registry.close_all()
