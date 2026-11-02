@@ -9,13 +9,23 @@ import { OobePage } from "../OobeShell";
  * saved before setup moves on, or the screen would promise an opt-out that
  * did not happen.
  */
-export function PrivacyStep({ onBack, onNext }: { onBack: () => void; onNext: () => void }) {
+export function PrivacyStep({
+  error: finishError = "",
+  onBack,
+  onNext,
+}: {
+  /** Setup's own error, from finishing after this step. */
+  error?: string;
+  onBack: () => void;
+  onNext: () => unknown;
+}) {
   const [loaded, setLoaded] = useState<Privacy | null>(null);
   const [ping, setPing] = useState(true);
   const [sharing, setSharing] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const errorRef = useRef<HTMLParagraphElement>(null);
+  const shown = error || finishError;
 
   useEffect(() => {
     let live = true;
@@ -32,8 +42,8 @@ export function PrivacyStep({ onBack, onNext }: { onBack: () => void; onNext: ()
 
   // The error renders below a long list: bring it above the pinned footer.
   useEffect(() => {
-    if (error) errorRef.current?.scrollIntoView?.({ block: "nearest" });
-  }, [error]);
+    if (shown) errorRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [shown]);
 
   async function submit() {
     if (!loaded || busy) return;
@@ -46,8 +56,8 @@ export function PrivacyStep({ onBack, onNext }: { onBack: () => void; onNext: ()
       setError(e instanceof Error ? e.message : "Couldn't save. Try again.");
       return;
     }
+    await onNext();
     setBusy(false);
-    onNext();
   }
 
   const rate = loaded ? formatRate(loaded.uploadKbps) : null;
@@ -132,9 +142,9 @@ export function PrivacyStep({ onBack, onNext }: { onBack: () => void; onNext: ()
         </>
       )}
 
-      {error && (
+      {shown && (
         <p ref={errorRef} className="oobe-error" role="alert">
-          {error}
+          {shown}
         </p>
       )}
     </OobePage>

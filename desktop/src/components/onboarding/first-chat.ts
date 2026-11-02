@@ -44,9 +44,16 @@ export async function deviceFramework(): Promise<string> {
 }
 
 /**
+ * Thrown when the deploy got no answer. Only then may a retry reuse the key:
+ * the first deploy may have landed. The route caches a refusal under its key,
+ * so a retry after one needs a new key or it gets the same refusal back.
+ */
+export class DeployUnanswered extends HopError {}
+
+/**
  * Hop 2. Returns the agent's slug: the route renames it to a unique slug and
- * answers with that. The Idempotency-Key is one per visit to the step, so a
- * retry after a lost answer gets the first deploy back instead of a second agent.
+ * answers with that. A retry after a lost answer (DeployUnanswered) reuses the
+ * key, so it gets the first deploy back instead of a second agent.
  */
 export async function deployAssistant(
   body: { name: string; framework: string; model: string; soul_md: string },
@@ -61,7 +68,7 @@ export async function deployAssistant(
       body: JSON.stringify(body),
     });
   } catch {
-    throw new HopError("Couldn't reach taOS to set up your assistant. Try again.");
+    throw new DeployUnanswered("Couldn't reach taOS to set up your assistant. Try again.");
   }
   if (!res.ok) throw new HopError(`Couldn't set up your assistant: ${await reason(res)}.`);
   const data = await res.json().catch(() => ({}));

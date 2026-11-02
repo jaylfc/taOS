@@ -62,7 +62,10 @@ export async function saveKey(type: string, key: string): Promise<void> {
   }
 }
 
-/** Hop 2. A provider that already exists is used as it is. */
+/**
+ * Hop 2. A provider that already exists is used as it is, but only when it
+ * reads the key hop 1 saved: otherwise the key the user typed would go unused.
+ */
 export async function addProvider(type: string): Promise<void> {
   try {
     const res = await fetch("/api/providers", {
@@ -71,13 +74,30 @@ export async function addProvider(type: string): Promise<void> {
       credentials: "include",
       body: JSON.stringify({ name: type, type, api_key_secret: secretName(type) }),
     });
-    if (!res.ok && res.status !== 409) {
-      throw new HopError(`Couldn't add ${label(type)}: ${await reason(res)}.`);
+    if (res.status === 409) {
+      if (!(await usesSavedKey(type))) {
+        throw new HopError(
+          `Couldn't add ${label(type)}: an ${label(type)} provider already exists without the key you just saved. Change it in Providers, or set this up later.`,
+        );
+      }
+      return;
     }
+    if (!res.ok) throw new HopError(`Couldn't add ${label(type)}: ${await reason(res)}.`);
   } catch (e) {
     if (e instanceof HopError) throw e;
     throw new HopError(`Couldn't add ${label(type)}: taOS didn't answer.`);
   }
+}
+
+/** The existing entry named `type` reads its key from the secret hop 1 saved. */
+async function usesSavedKey(type: string): Promise<boolean> {
+  const res = await fetch("/api/providers", { credentials: "include", headers: { Accept: "application/json" } });
+  if (!res.ok) throw new HopError(`Couldn't add ${label(type)}: ${await reason(res)}.`);
+  const providers = await res.json().catch(() => null);
+  const entry = Array.isArray(providers)
+    ? (providers as { name?: string; api_key_secret?: string }[]).find((p) => p?.name === type)
+    : undefined;
+  return entry?.api_key_secret === secretName(type);
 }
 
 /** Hop 3. The models the provider entry lists (found when it was added). */

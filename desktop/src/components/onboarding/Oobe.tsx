@@ -16,6 +16,7 @@ import { PrivacyStep } from "./steps/PrivacyStep";
 import { FirstChatStep } from "./steps/FirstChatStep";
 import {
   DEFAULT_ASSISTANT_NAME,
+  DeployUnanswered,
   deployAssistant,
   deviceFramework,
   newIdempotencyKey,
@@ -146,12 +147,17 @@ export function Oobe({
     if (next) {
       if (signedIn) void saveProgress({ in_progress: true, step: next, ...log, ...extras(answers) });
       go(next, 1);
-      return;
+      return true;
     }
     // Awaited: LoginGate re-reads progress in onDone and must not see
     // in_progress still true, or it would send the user straight back here.
-    await saveProgress({ in_progress: false, step: "done", ...log, ...extras(answers) });
+    setError("");
+    if (!(await saveProgress({ in_progress: false, step: "done", ...log, ...extras(answers) }))) {
+      setError("Couldn't finish setup. Check the connection and try again.");
+      return false;
+    }
     onDone();
+    return true;
   }
 
   /** Answers that ride along in the progress blob (PUT replaces all of it). */
@@ -193,13 +199,15 @@ export function Oobe({
         deployKey.current,
       );
     } catch (e) {
+      // A refusal is cached under the key: only a lost answer may reuse it.
+      if (!(e instanceof DeployUnanswered)) deployKey.current = newIdempotencyKey();
       setBusy(false);
       setError(e instanceof HopError ? e.message : "Couldn't set up your assistant. Try again.");
       return;
     }
     firstChat.current = { agent };
     setBusy(false);
-    await advance("completed");
+    if (!(await advance("completed"))) return;
     openFirstChat(agent, suggestedPrompts(about));
   }
 
@@ -456,7 +464,7 @@ export function Oobe({
       }
       break;
     case "privacy":
-      page = <PrivacyStep onBack={back} onNext={() => void advance("completed")} />;
+      page = <PrivacyStep error={error} onBack={back} onNext={() => advance("completed")} />;
       break;
     case "first-chat":
       page = (

@@ -57,19 +57,29 @@ export async function loadProgress(): Promise<OnboardingProgress | null> {
   }
 }
 
+/** Writes go one at a time, in call order: PUT replaces the blob, so the last sent must land last. */
+let queue: Promise<unknown> = Promise.resolve();
+
 /**
- * Resolves whether or not the write succeeded. Await it only where a later
- * read depends on it (finishing setup, before LoginGate re-reads progress).
+ * True when the server took the write. Await it only where a later read
+ * depends on it (finishing setup, before LoginGate re-reads progress).
  */
-export async function saveProgress(progress: OnboardingProgress): Promise<void> {
-  try {
-    await fetch(ENDPOINT, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify(progress),
-    });
-  } catch {
-    /* resume is a convenience; setup itself must not fail on it */
-  }
+export function saveProgress(progress: OnboardingProgress): Promise<boolean> {
+  const body = JSON.stringify(progress);
+  const write = queue.then(async () => {
+    try {
+      const res = await fetch(ENDPOINT, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body,
+      });
+      return res.ok;
+    } catch {
+      /* resume is a convenience; setup itself must not fail on it */
+      return false;
+    }
+  });
+  queue = write;
+  return write;
 }

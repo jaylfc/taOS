@@ -607,7 +607,8 @@ describe("OnboardingScreen taOS Agent model", () => {
     skipped: ["taos-account", "device", "model"],
   };
   const onDevice = { app_id: "qwen3-1.7b", variant_id: "q4", name: "Qwen3 1.7B", size_mb: 1100, downloaded: true };
-  const providers = (models: unknown[]) => () => json([{ name: "openai", type: "openai", models }]);
+  const providers = (models: unknown[]) => () =>
+    json([{ name: "openai", type: "openai", api_key_secret: "provider-openai-key", models }]);
   const chainUrls = ["/api/secrets", "/api/secrets/provider-openai-key", "/api/providers", "/api/taos-agent/settings"];
   const chain = (calls: Call[]) =>
     calls.filter((c) => chainUrls.includes(c.url)).map((c) => `${c.method} ${c.url}`);
@@ -661,9 +662,30 @@ describe("OnboardingScreen taOS Agent model", () => {
       "POST /api/secrets",
       "PUT /api/secrets/provider-openai-key",
       "POST /api/providers",
+      // The existing entry is read to check it uses the key just saved.
+      "GET /api/providers",
       "GET /api/providers",
     ]);
     expect(calls.find((c) => c.method === "PUT")?.body).toEqual({ value: "sk-new" });
+  });
+
+  it.each([
+    ["uses another key", [{ name: "openai", type: "openai", api_key_secret: "my-key", models: ["gpt-4o"] }]],
+    ["has its key inline", [{ name: "openai", type: "openai", models: ["gpt-4o"] }]],
+    // A same type+url provider under another name is refused 409 too.
+    ["is named differently", [{ name: "work-openai", type: "openai", api_key_secret: "provider-openai-key", models: ["gpt-4o"] }]],
+  ])("an existing provider that %s is not used, and says where to fix it", async (_case, existing) => {
+    const calls = routeFetch({
+      "POST /api/providers": () => json({ error: "exists" }, 409),
+      "GET /api/providers": () => json(existing),
+    });
+    render(<OnboardingScreen onDone={() => {}} resume={atAgentStep} />);
+    await connect();
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Couldn't add OpenAI: an OpenAI provider already exists without the key you just saved. Change it in Providers, or set this up later.",
+    );
+    expect(screen.getByRole("heading", { name: "Add a cloud model" })).toBeInTheDocument();
+    expect(calls.some((c) => c.url === "/api/taos-agent/settings")).toBe(false);
   });
 
   it.each([
@@ -993,7 +1015,9 @@ describe("OnboardingScreen first chat", () => {
     expect(messagesWindows()[0]!.props).toEqual({ firstChatAgent: "assistant-2", suggestedPrompts: PROMPTS });
   });
 
-  it("a failed deploy says why and stays, and Continue retries with the same key", async () => {
+  it("a refused deploy says why and stays, and Continue retries with a new key", async () => {
+    // The route caches a refusal under its key for an hour: the same key
+    // would replay it, so Try again could never succeed.
     let tries = 0;
     const calls = routeFetch({
       "GET /api/hardware": hardware,
@@ -1010,6 +1034,29 @@ describe("OnboardingScreen first chat", () => {
     expect(screen.getByRole("heading", { name: "Meet your assistant" })).toBeInTheDocument();
     expect(onDone).not.toHaveBeenCalled();
     expect(messagesWindows()).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
+    const [first, second] = deploys(calls);
+    expect(second).toBeDefined();
+    expect(second!.headers["idempotency-key"]).toMatch(/\S{8,}/);
+    expect(second!.headers["idempotency-key"]).not.toBe(first!.headers["idempotency-key"]);
+  });
+
+  it("a deploy whose answer was lost retries with the same key", async () => {
+    // The key exists for this case: the first deploy may have landed.
+    let tries = 0;
+    const calls = routeFetch({
+      "GET /api/hardware": hardware,
+      "GET /auth/me": me,
+      "POST /api/agents/deploy": () => {
+        if (++tries === 1) throw new TypeError("Failed to fetch");
+        return json({ name: "assistant" });
+      },
+    });
+    const onDone = vi.fn();
+    render(<OnboardingScreen onDone={onDone} resume={atFirstChat} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't reach taOS to set up your assistant.");
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
     const [first, second] = deploys(calls);
@@ -1098,5 +1145,61 @@ describe("OnboardingScreen first chat", () => {
       skipped: expect.arrayContaining(["first-chat"]),
     });
     expect(deploys(calls)).toHaveLength(0);
+  });
+});
+
+describe("OnboardingScreen finishing setup", () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  const atAgentStep = {
+    step: "agent",
+    completed: ["hello", "name", "password", "about"],
+    skipped: ["taos-account", "device", "model"],
+  };
+
+  it("the final write goes after the progress writes still in flight", async () => {
+    // A mid-setup write landing after the final one would put in_progress back
+    // to true, and LoginGate would send the owner back into setup.
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => { release = r; });
+    const calls = routeFetch({
+      "PUT /api/preferences/onboarding": async (body) => {
+        if ((body as { step: string }).step === "privacy") await held;
+        return json({ ok: true });
+      },
+    });
+    const onDone = vi.fn();
+    render(<OnboardingScreen onDone={onDone} resume={atAgentStep} />);
+    await screen.findByRole("heading", { name: "Choose the taOS Agent's model" });
+    fireEvent.click(screen.getByRole("button", { name: "Set Up Later" }));
+    await passPrivacyStep();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(progressPuts(calls).some((c) => (c.body as { in_progress: boolean }).in_progress === false)).toBe(false);
+    expect(onDone).not.toHaveBeenCalled();
+    release();
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
+    expect(progressPuts(calls).at(-1)?.body).toMatchObject({ in_progress: false, step: "done" });
+  });
+
+  it("a final write the server refuses says so and stays, and Continue tries again", async () => {
+    let refuse = true;
+    const calls = routeFetch({
+      "PUT /api/preferences/onboarding": (body) =>
+        refuse && (body as { in_progress: boolean }).in_progress === false
+          ? json({ error: "disk full" }, 500)
+          : json({ ok: true }),
+    });
+    const onDone = vi.fn();
+    render(<OnboardingScreen onDone={onDone} resume={atAgentStep} />);
+    await screen.findByRole("heading", { name: "Choose the taOS Agent's model" });
+    fireEvent.click(screen.getByRole("button", { name: "Set Up Later" }));
+    await passPrivacyStep();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't finish setup. Check the connection and try again.");
+    expect(screen.getByRole("heading", { name: "Privacy" })).toBeInTheDocument();
+    expect(onDone).not.toHaveBeenCalled();
+    refuse = false;
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
+    expect(progressPuts(calls).at(-1)?.body).toMatchObject({ in_progress: false, step: "done" });
   });
 });
