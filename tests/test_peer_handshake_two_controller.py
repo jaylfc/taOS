@@ -435,3 +435,92 @@ async def test_deliver_to_peer_skips_link_without_outbound_token(nodes):
         await client.aclose()
     assert ok is False
     assert seen.get("urls", []) == []
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for tsk-gevaej: repeat handshake must not rewrite endpoints
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_repeat_handshake_keeps_recorded_endpoints(nodes):
+    """A repeat handshake with new endpoints must not overwrite the stored ones."""
+    a, b = nodes
+    await _record_request_out(a, b)
+
+    # First handshake with legitimate CGNAT endpoint
+    env1 = _handshake_envelope(b, a, endpoints=["http://100.64.0.9:6969"])
+    resp1 = await _post_handshake(a, env1)
+    assert resp1.status_code == 200, resp1.text
+
+    link1 = await a.app.state.contacts_store.get_peer_link(b.contact_id)
+    assert link1 is not None
+    urls1 = [e.get("url") if isinstance(e, dict) else e for e in link1["endpoints"]]
+    assert urls1 == ["http://100.64.0.9:6969"], f"first handshake: {urls1}"
+
+    # Second handshake (fresh nonce) with different endpoint — must be ignored
+    env2 = _handshake_envelope(b, a, endpoints=["http://10.0.0.5:22"])
+    resp2 = await _post_handshake(a, env2)
+    assert resp2.status_code == 200, resp2.text
+
+    link2 = await a.app.state.contacts_store.get_peer_link(b.contact_id)
+    assert link2 is not None
+    urls2 = [e.get("url") if isinstance(e, dict) else e for e in link2["endpoints"]]
+    assert urls2 == ["http://100.64.0.9:6969"], f"second handshake overwrote: {urls2}"
+
+
+@pytest.mark.asyncio
+async def test_handshake_drops_malformed_endpoints(nodes):
+    """Malformed endpoint entries must be dropped; only valid http/https dicts kept."""
+    a, b = nodes
+    await _record_request_out(a, b)
+
+    # Mix of invalid entries and one valid endpoint
+    bad_endpoints = [
+        5,
+        {"kind": "hub"},
+        {"url": 7},
+        "ftp://x.example/",
+        "file:///etc/passwd",
+        "http://100.64.0.9:6969",
+    ]
+    env = _handshake_envelope(b, a, endpoints=bad_endpoints)
+    resp = await _post_handshake(a, env)
+    assert resp.status_code == 200, resp.text
+
+    link = await a.app.state.contacts_store.get_peer_link(b.contact_id)
+    assert link is not None
+    urls = [e.get("url") if isinstance(e, dict) else e for e in link["endpoints"]]
+    # Only the valid http/https dict entry should be kept
+    assert urls == ["http://100.64.0.9:6969"], f"malformed not filtered: {urls}"
+
+
+@pytest.mark.asyncio
+async def test_rehandshake_after_revoke_keeps_recorded_endpoints(nodes):
+    """After revocation, a fresh handshake must not overwrite the original endpoints."""
+    a, b = nodes
+    await _record_request_out(a, b)
+
+    # First handshake
+    env1 = _handshake_envelope(b, a, endpoints=["http://100.64.0.9:6969"])
+    resp1 = await _post_handshake(a, env1)
+    assert resp1.status_code == 200, resp1.text
+
+    link1 = await a.app.state.contacts_store.get_peer_link(b.contact_id)
+    assert link1 is not None
+    urls1 = [e.get("url") if isinstance(e, dict) else e for e in link1["endpoints"]]
+    assert urls1 == ["http://100.64.0.9:6969"], f"first handshake: {urls1}"
+
+    # Revoke the peer link (but friend edge stays)
+    await a.app.state.contacts_store.revoke_peer_link(b.contact_id)
+
+    # Second handshake after revoke with different endpoint — must be ignored
+    env2 = _handshake_envelope(b, a, endpoints=["http://10.0.0.5:22"])
+    resp2 = await _post_handshake(a, env2)
+    # 200 if re-handshake allowed, 403 if blocked — either way endpoints unchanged
+    assert resp2.status_code in (200, 403), resp2.text
+
+    link2 = await a.app.state.contacts_store.get_peer_link(b.contact_id)
+    assert link2 is not None
+    urls2 = [e.get("url") if isinstance(e, dict) else e for e in link2["endpoints"]]
+    assert urls2 == ["http://100.64.0.9:6969"], f"rehandshake after revoke overwrote: {urls2}"

@@ -8,6 +8,25 @@ import pytest
 from tinyagentos.chat.hub import ChatHub
 
 
+def _host_token_client(app):
+    """Return a client presenting the host local token (no agent binding).
+
+    Mirrors the same helper in tests/test_chat_agent_author_binding.py. It is
+    copied here rather than imported across test files: the session `client`
+    fixture used to post agent-authored messages, and with the author check
+    scoped to browser sessions those are now test conveniences, not product
+    flows, so each file keeps its own copy.
+    """
+    from httpx import ASGITransport, AsyncClient
+
+    token = app.state.auth.get_local_token()
+    return AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+
 async def _create_channel(client, name="general"):
     """Helper: create a chat channel via the channel store directly."""
     app = client._transport.app
@@ -22,12 +41,14 @@ async def _create_channel(client, name="general"):
 @pytest.mark.asyncio
 async def test_post_message(client):
     ch = await _create_channel(client)
-    resp = await client.post("/api/chat/messages", json={
-        "channel_id": ch["id"],
-        "author_id": "agent-1",
-        "author_type": "agent",
-        "content": "Hello from agent",
-    })
+    app = client._transport.app
+    async with _host_token_client(app) as c:
+        resp = await c.post("/api/chat/messages", json={
+            "channel_id": ch["id"],
+            "author_id": "agent-1",
+            "author_type": "agent",
+            "content": "Hello from agent",
+        })
     assert resp.status_code == 200
     body = resp.json()
     assert body["id"]
@@ -39,13 +60,15 @@ async def test_post_message(client):
 @pytest.mark.asyncio
 async def test_post_message_with_embeds(client):
     ch = await _create_channel(client)
+    app = client._transport.app
     embeds = [{"title": "Test Embed", "description": "Some description"}]
-    resp = await client.post("/api/chat/messages", json={
-        "channel_id": ch["id"],
-        "author_id": "agent-1",
-        "content": "Message with embed",
-        "embeds": embeds,
-    })
+    async with _host_token_client(app) as c:
+        resp = await c.post("/api/chat/messages", json={
+            "channel_id": ch["id"],
+            "author_id": "agent-1",
+            "content": "Message with embed",
+            "embeds": embeds,
+        })
     assert resp.status_code == 200
     body = resp.json()
     assert body["embeds"] == embeds
@@ -54,11 +77,13 @@ async def test_post_message_with_embeds(client):
 @pytest.mark.asyncio
 async def test_post_message_state_defaults_to_complete(client):
     ch = await _create_channel(client)
-    resp = await client.post("/api/chat/messages", json={
-        "channel_id": ch["id"],
-        "author_id": "agent-1",
-        "content": "Done",
-    })
+    app = client._transport.app
+    async with _host_token_client(app) as c:
+        resp = await c.post("/api/chat/messages", json={
+            "channel_id": ch["id"],
+            "author_id": "agent-1",
+            "content": "Done",
+        })
     assert resp.status_code == 200
     assert resp.json()["state"] == "complete"
 
@@ -66,12 +91,14 @@ async def test_post_message_state_defaults_to_complete(client):
 @pytest.mark.asyncio
 async def test_post_message_explicit_state(client):
     ch = await _create_channel(client)
-    resp = await client.post("/api/chat/messages", json={
-        "channel_id": ch["id"],
-        "author_id": "agent-1",
-        "content": "",
-        "state": "streaming",
-    })
+    app = client._transport.app
+    async with _host_token_client(app) as c:
+        resp = await c.post("/api/chat/messages", json={
+            "channel_id": ch["id"],
+            "author_id": "agent-1",
+            "content": "",
+            "state": "streaming",
+        })
     assert resp.status_code == 200
     assert resp.json()["state"] == "streaming"
 
@@ -81,18 +108,20 @@ async def test_post_message_explicit_state(client):
 @pytest.mark.asyncio
 async def test_post_delta(client):
     ch = await _create_channel(client)
-    create_resp = await client.post("/api/chat/messages", json={
-        "channel_id": ch["id"],
-        "author_id": "agent-1",
-        "content": "",
-        "state": "streaming",
-    })
-    msg_id = create_resp.json()["id"]
+    app = client._transport.app
+    async with _host_token_client(app) as c:
+        create_resp = await c.post("/api/chat/messages", json={
+            "channel_id": ch["id"],
+            "author_id": "agent-1",
+            "content": "",
+            "state": "streaming",
+        })
+        msg_id = create_resp.json()["id"]
 
-    resp = await client.post(f"/api/chat/messages/{msg_id}/delta", json={
-        "channel_id": ch["id"],
-        "delta": " world",
-    })
+        resp = await c.post(f"/api/chat/messages/{msg_id}/delta", json={
+            "channel_id": ch["id"],
+            "delta": " world",
+        })
     assert resp.status_code == 200
     assert resp.json()["status"] == "sent"
 
@@ -112,17 +141,19 @@ async def test_post_delta_unknown_message(client):
 @pytest.mark.asyncio
 async def test_update_state(client):
     ch = await _create_channel(client)
-    create_resp = await client.post("/api/chat/messages", json={
-        "channel_id": ch["id"],
-        "author_id": "agent-1",
-        "content": "",
-        "state": "streaming",
-    })
-    msg_id = create_resp.json()["id"]
+    app = client._transport.app
+    async with _host_token_client(app) as c:
+        create_resp = await c.post("/api/chat/messages", json={
+            "channel_id": ch["id"],
+            "author_id": "agent-1",
+            "content": "",
+            "state": "streaming",
+        })
+        msg_id = create_resp.json()["id"]
 
-    resp = await client.post(f"/api/chat/messages/{msg_id}/state", json={
-        "state": "complete",
-    })
+        resp = await c.post(f"/api/chat/messages/{msg_id}/state", json={
+            "state": "complete",
+        })
     assert resp.status_code == 200
     assert resp.json()["status"] == "updated"
 
