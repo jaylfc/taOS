@@ -347,6 +347,26 @@ async def post_message(request: Request, user: CurrentUser = Depends(current_use
     if agent:
         body["author_id"] = agent
         body["author_type"] = "agent"
+
+    # Session user (neither device bearer nor bound agent) via a browser session:
+    # force author_type="user" and validate author_id. Accept only missing,
+    # "user", or the caller's user_id. Every other caller (host local token,
+    # loopback, registry JWT variants) keeps today's dev behaviour: the body
+    # author is stored as sent.
+    elif getattr(request.state, "via", None) == "session":
+        allowed_author_ids = {"user", str(user.user_id)}
+        author_id = body.get("author_id")
+        if author_id is not None and not isinstance(author_id, str):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=403, detail={"error": "author_id must be the caller"})
+        if author_id is not None and author_id not in allowed_author_ids:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=403, detail={"error": "author_id must be the caller"})
+        # Store the caller's user id for both a missing author_id and the literal
+        # "user" (the desktop SPA sends "user"), so edit/delete ownership checks,
+        # which compare against the session user's id, match the sender.
+        body["author_id"] = str(user.user_id)
+        body["author_type"] = "user"
     
     msg_store = request.app.state.chat_messages
     ch_store = request.app.state.chat_channels
