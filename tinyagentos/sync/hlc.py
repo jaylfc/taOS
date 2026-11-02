@@ -88,7 +88,7 @@ class HLC:
 
     def __init__(self, node: str, clock: Callable[[], int] | None = None) -> None:
         self._node = node
-        self._clock = clock if clock is not None else int(time.time() * 1000)
+        self._clock = clock if clock is not None else (lambda: int(time.time() * 1000))
         self._last = Timestamp(0, 0, node)
 
     def now(self) -> Timestamp:
