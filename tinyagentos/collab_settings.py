@@ -18,6 +18,7 @@ traffic, so a damaged switch must not silently turn traffic back on.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -31,6 +32,10 @@ logger = logging.getLogger(__name__)
 COLLAB_SETTINGS_FILE = "collaboration.json"
 
 _CONTACT_ID_RE = re.compile(r"^hub:[0-9a-f]+$")
+
+# Held across the settings PUT's read-merge-write so two concurrent updates
+# cannot drop each other (same single-process model as config._config_lock).
+collab_write_lock = asyncio.Lock()
 
 
 @dataclass(frozen=True)
@@ -87,6 +92,7 @@ def read_collab_settings(data_dir: Path | str | None) -> CollabSettings:
         logger.warning("collaboration switch %s has a malformed paused list; treating as disabled", path)
         return _disabled()
     paused: list[str] = []
+    seen: set[str] = set()
     for p in paused_raw:
         try:
             cid = normalise_contact_id(p)
@@ -95,7 +101,8 @@ def read_collab_settings(data_dir: Path | str | None) -> CollabSettings:
                 "collaboration switch %s has an invalid paused id %r; treating as disabled", path, p,
             )
             return _disabled()
-        if cid not in paused:
+        if cid not in seen:
+            seen.add(cid)
             paused.append(cid)
     return CollabSettings(enabled=data["enabled"], paused_contacts=paused)
 

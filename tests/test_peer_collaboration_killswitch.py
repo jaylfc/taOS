@@ -206,6 +206,29 @@ class TestSettingsRoute:
         got = await _get_collab(b)
         assert got.json() == {"enabled": False, "paused_contacts": ["hub:ab"]}
 
+    async def test_concurrent_puts_do_not_lose_an_update(self, nodes, monkeypatch):
+        import asyncio
+        import time
+
+        import tinyagentos.collab_settings as cs
+
+        _, b, _ = nodes
+        real_write = cs.write_collab_settings
+
+        def slow_write(data_dir, settings):
+            # Widen the read-modify-write window so an unserialised PUT races.
+            time.sleep(0.2)
+            real_write(data_dir, settings)
+
+        monkeypatch.setattr(cs, "write_collab_settings", slow_write)
+        r1, r2 = await asyncio.gather(
+            _put_collab(b, {"enabled": False}),
+            _put_collab(b, {"paused_contacts": ["hub:ab"]}),
+        )
+        assert r1.status_code == 200 and r2.status_code == 200
+        got = await _get_collab(b)
+        assert got.json() == {"enabled": False, "paused_contacts": ["hub:ab"]}
+
     @pytest.mark.parametrize("body", [
         {"enabled": "no"},
         {"paused_contacts": "hub:ab"},
