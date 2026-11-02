@@ -227,6 +227,20 @@ class TestSettingsRoute:
         assert (await _inbox(a, b, token)).status_code == 503
 
 
+@pytest.mark.parametrize("raw", [
+    b"{}",
+    b'{"paused_contacts": []}',
+    b'{"enabled": true, "paused_contacts": ["alice"]}',
+    b"\xff\xfe\x00not utf-8",
+])
+def test_damaged_file_reads_disabled(tmp_path, raw):
+    """A present file must carry a boolean ``enabled``, valid ids and UTF-8 text, else disabled."""
+    from tinyagentos.collab_settings import read_collab_settings
+
+    (tmp_path / "collaboration.json").write_bytes(raw)
+    assert read_collab_settings(tmp_path).enabled is False
+
+
 @pytest.mark.asyncio
 async def test_non_admin_session_cannot_put(client, app):
     auth_mgr = app.state.auth

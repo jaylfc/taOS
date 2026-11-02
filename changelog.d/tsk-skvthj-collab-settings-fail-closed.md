@@ -1,0 +1,1 @@
+- Collaboration settings file: a present `collaboration.json` with no boolean `enabled`, an invalid paused id or non-UTF-8 text now reads as disabled instead of enabling collaboration or erroring, and the settings PUT writes off the event loop.

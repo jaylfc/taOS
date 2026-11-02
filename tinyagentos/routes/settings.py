@@ -1623,7 +1623,7 @@ async def put_collaboration(request: Request):
         if cid not in paused:
             paused.append(cid)
     settings = CollabSettings(enabled=enabled, paused_contacts=paused)
-    write_collab_settings(request.app.state.data_dir, settings)
+    await asyncio.to_thread(write_collab_settings, request.app.state.data_dir, settings)
     return settings.to_dict()
 
 

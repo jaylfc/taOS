@@ -13,7 +13,7 @@ on the very next peer call.
   service.
 
 No file yet reads as the default (enabled, nothing paused).  A file that exists
-but cannot be read or parsed reads as DISABLED: the switch exists to stop
+but cannot be read, parsed or validated reads as DISABLED: the switch exists to stop
 traffic, so a damaged switch must not silently turn traffic back on.
 """
 from __future__ import annotations
@@ -67,10 +67,10 @@ def read_collab_settings(data_dir: Path | str | None) -> CollabSettings:
         return CollabSettings()
     path = _path(data_dir)
     try:
-        raw = path.read_text()
+        raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return CollabSettings()
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         logger.warning("collaboration switch %s unreadable (%s); treating as disabled", path, exc)
         return _disabled()
     try:
@@ -78,7 +78,8 @@ def read_collab_settings(data_dir: Path | str | None) -> CollabSettings:
     except json.JSONDecodeError:
         logger.warning("collaboration switch %s is not valid JSON; treating as disabled", path)
         return _disabled()
-    if not isinstance(data, dict) or not isinstance(data.get("enabled", True), bool):
+    # Only a missing file defaults to enabled; a present file must say so.
+    if not isinstance(data, dict) or not isinstance(data.get("enabled"), bool):
         logger.warning("collaboration switch %s has no boolean 'enabled'; treating as disabled", path)
         return _disabled()
     paused_raw = data.get("paused_contacts", [])
@@ -90,11 +91,13 @@ def read_collab_settings(data_dir: Path | str | None) -> CollabSettings:
         try:
             cid = normalise_contact_id(p)
         except ValueError:
-            logger.warning("collaboration switch %s: ignoring bad paused id %r", path, p)
-            continue
+            logger.warning(
+                "collaboration switch %s has an invalid paused id %r; treating as disabled", path, p,
+            )
+            return _disabled()
         if cid not in paused:
             paused.append(cid)
-    return CollabSettings(enabled=data.get("enabled", True), paused_contacts=paused)
+    return CollabSettings(enabled=data["enabled"], paused_contacts=paused)
 
 
 def write_collab_settings(data_dir: Path | str, settings: CollabSettings) -> None:
