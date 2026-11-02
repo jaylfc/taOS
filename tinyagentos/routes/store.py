@@ -17,7 +17,7 @@ from tinyagentos.catalog.resolver import (
     resolve,
 )
 from tinyagentos.installers.base import get_installer
-from tinyagentos.routes.store_install import get_device_capability
+from tinyagentos.routes.store_install import get_device_capability, _forget_install_location
 from tinyagentos.store_popularity import (
     parse_repo,
     popularity_for_homepage_cached,
@@ -565,6 +565,11 @@ async def uninstall_app(request: Request, body: UninstallRequest):
                 if existing is not None:
                     await mcp_supervisor.uninstall(body.app_id)
     registry.mark_uninstalled(body.app_id)
+    # Remove the install_registry row for local host installs (docker/pip/script).
+    # LXC installs use location_kind="legacy_lxc" and are not removed here.
+    # This route has no runtime location info, so we assume local for non-LXC.
+    if method != "lxc":
+        await _forget_install_location(request, body.app_id, "host", "local")
     return {"status": "uninstalled", "app_id": body.app_id}
 
 
