@@ -2150,6 +2150,19 @@ where `revoked=0 OR blocked=1`, so a blocked device counts against
 and the slot frees. Deliberate: a blocked device is a retained safety valve the
 owner can still see and act on.
 
+## Cluster worker list (`GET /api/cluster/workers`)
+
+Auth-exempt. Anonymous callers get a stripped view (`name`, `status`,
+`tier_id`, `kind`). A valid bearer token on this exempt GET upgrades the
+caller to the full view: a local token authenticates as the primary user
+(admin only once a primary user exists), a device token holding
+`agents:read` gets the full worker objects without admin, and a registry
+JWT from an active agent holding an active `agents:read` grant gets them
+too. A device token without `agents:read`, a registry JWT without
+`agents:read` (e.g. one minted by deploy for a DEPLOYED agent, which carries
+owner user_id + `memory_read` only), and any invalid token, stay anonymous.
+`signing_key` is stripped for everyone.
+
 ## Cluster capability + placement map (`GET /api/cluster/map`, admin-only)
 
 Route module `tinyagentos/routes/cluster_map.py`. **Admin session only**: the
@@ -2528,9 +2541,18 @@ author field. `POST /api/chat/channels/{id}/thinking` REJECTS a mismatched slug
 (it does not override it). The auth middleware sets `request.state.agent_name`
 for bound tokens (`AuthManager.get_local_token_agent`); the routes use a
 `_bound_agent(request)` helper and override `author_id`/`slug` with that name.
-The host local token, admin sessions, session cookies, and device bearers are
-not bound, so their caller-supplied values are preserved (byte-for-byte
-compatibility with taosctl and the SPA).
+Device bearers: the author is forced to the device's user (author_id=user_id,
+    author_type="user") and the body values are ignored. Bound agents (per-agent
+    local token): author_id/author_type are forced to the bound agent's name and
+    "agent". Browser sessions (cookie auth, no bound agent, and the middleware
+    sets `request.state.via == "session"`): author_type is forced to "user";
+    author_id is accepted only if missing, equal to "user", or equal to the
+    caller's user_id (missing and "user" are both stored as the caller's
+    user_id, so edit/delete ownership matches); any other value
+    (including a non-string) returns 403
+    `{"detail": {"error": "author_id must be the caller"}}`. Every other caller (the host
+    local token with `via == "local_token"`, loopback, registry JWT variants)
+    keeps today's dev behaviour: the body author is stored as sent.
 
 ## Self-only chat session routes (`chat_session` scope)
 
@@ -2802,6 +2824,10 @@ credential and mints a fresh one.
 ## Peer handshake (friend-accept)
 
 The private/CGNAT endpoint allowance comes from endpoints the OTHER side supplies (directory response or handshake body), so a friend can make this node POST to a private host:port on the fixed handshake/inbox paths; loopback, link-local and metadata addresses stay blocked.
+
+## Collaboration kill switch (`/api/settings/collaboration`, admin-only)
+
+`GET` returns `{enabled, paused_contacts}`; `PUT` takes either field (an omitted one keeps its value) and answers 400 on a wrong type or a contact id that is not `hub:<hex>`. The state lives in `<data_dir>/collaboration.json` and is re-read on every request. While `enabled` is false, every `/api/peer` route (handshake included) answers 503 `collaboration disabled` before any bearer or signature work, the collab invite mint refuses, and neither `deliver_to_peer` nor friend-accept's outbound handshake sends anything. A paused contact gets 403 `contact paused` before its nonce is recorded and is never sent to, handshake included. A missing file means enabled; a present file that is unreadable, not UTF-8, not JSON, lacks a boolean `enabled`, or holds an invalid paused id reads as disabled. Do not flip it from an agent to get traffic through: it is the owner's stop button.
 
 ## taOS Agent action gate (pending, confirm, execute)
 
