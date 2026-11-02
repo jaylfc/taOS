@@ -2798,6 +2798,10 @@ credential and mints a fresh one.
 
 The private/CGNAT endpoint allowance comes from endpoints the OTHER side supplies (directory response or handshake body), so a friend can make this node POST to a private host:port on the fixed handshake/inbox paths; loopback, link-local and metadata addresses stay blocked.
 
+## Collaboration kill switch (`/api/settings/collaboration`, admin-only)
+
+`GET` returns `{enabled, paused_contacts}`; `PUT` takes either field (an omitted one keeps its value) and answers 400 on a wrong type or a contact id that is not `hub:<hex>`. The state lives in `<data_dir>/collaboration.json` and is re-read on every request. While `enabled` is false, every `/api/peer` route (handshake included) answers 503 `collaboration disabled` before any bearer or signature work, the collab invite mint refuses, and `deliver_to_peer` sends nothing. A paused contact gets 403 `contact paused` before its nonce is recorded and is never sent to. A missing file means enabled; a present file that is unreadable, not UTF-8, not JSON, lacks a boolean `enabled`, or holds an invalid paused id reads as disabled. Do not flip it from an agent to get traffic through: it is the owner's stop button.
+
 ## taOS Agent action gate (pending, confirm, execute)
 
 Every tier-B operation the taOS Agent wants to perform (an external write such

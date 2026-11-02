@@ -1105,6 +1105,16 @@ async def mint_collab_invite(
         return JSONResponse({"error": "project not found"}, status_code=404)
     require_owner_or_admin(user, project["user_id"])
 
+    # ---- collaboration kill switch: nothing goes out while off or paused ----
+    from tinyagentos.collab_settings import outbound_refusal
+
+    refusal = outbound_refusal(request.app.state.data_dir, payload.contact_id)
+    if refusal is not None:
+        return JSONResponse(
+            {"error": refusal},
+            status_code=503 if refusal == "collaboration disabled" else 403,
+        )
+
     # ---- validate contact exists and is active ----
     if contacts_store is None:
         return JSONResponse(
@@ -1187,6 +1197,7 @@ async def mint_collab_invite(
                 delivery_error = "peer handshake incomplete: no token for contact"
             elif not await deliver_to_peer(
                 contacts_store, payload.contact_id, "/api/peer/inbox", envelope,
+                data_dir=request.app.state.data_dir,
             ):
                 delivery_error = (
                     "failed to deliver invite envelope to any peer endpoint"
