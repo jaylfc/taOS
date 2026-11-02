@@ -16,9 +16,13 @@ import pytest_asyncio
 
 from helpers.two_nodes import close_node, make_node, node_env
 from test_peer_handshake_two_controller import (
+    _accept,
     _handshake_envelope,
+    _hub_store,
+    _patch_directory,
     _post_handshake,
     _record_request_out,
+    _route_delivery_to,
 )
 
 
@@ -151,3 +155,51 @@ class TestDeliverToPeer:
         seen: dict = {}
         assert await _deliver(a, b, seen) is False
         assert seen.get("urls", []) == []
+
+
+@pytest.mark.asyncio
+class TestFriendAcceptHandshake:
+    """Friend-accept's outbound handshake honours the switch on the accepting node."""
+
+    async def _accept_with_switch(self, nodes, monkeypatch, switch):
+        a, b = nodes
+        await _record_request_out(a, b)
+        await _hub_store(b)
+        _patch_directory(monkeypatch, a)
+        seen: dict = {}
+        _route_delivery_to(monkeypatch, a, seen)
+        _write_switch(b, switch)
+        resp = await _accept(b)
+        assert resp.status_code == 200, resp.text
+        return a, b, seen
+
+    async def test_accept_sends_no_handshake_while_disabled(self, nodes, monkeypatch):
+        a, b, seen = await self._accept_with_switch(nodes, monkeypatch, {"enabled": False})
+        assert "allow_hostports" not in seen, "a handshake client was opened"
+        assert await a.app.state.contacts_store.get_contact(b.contact_id) is None
+
+    async def test_accept_sends_no_handshake_to_paused_contact(self, nodes, monkeypatch):
+        a, b = nodes
+        a, b, seen = await self._accept_with_switch(
+            nodes, monkeypatch, {"enabled": True, "paused_contacts": [a.contact_id]},
+        )
+        assert "allow_hostports" not in seen, "a handshake client was opened"
+        assert await a.app.state.contacts_store.get_contact(b.contact_id) is None
+
+
+@pytest.mark.asyncio
+async def test_deliver_handshake_sends_nothing_while_disabled(nodes):
+    from tinyagentos.peer import deliver_handshake
+
+    a, b = nodes
+    _write_switch(a, {"enabled": False})
+    seen: dict = {}
+    client = _recording_client(seen)
+    env = a.sign_envelope(to=b.contact_id, kind="handshake", body={})
+    try:
+        with node_env(a.data_dir):
+            ok = await deliver_handshake(env, ["http://93.184.216.34"], http_client=client)
+    finally:
+        await client.aclose()
+    assert ok is False
+    assert seen.get("urls", []) == []

@@ -314,12 +314,24 @@ async def _post_to_endpoints(
             await http_client.aclose()
 
 
+def _handshake_refused(envelope: dict, data_dir: str | Path | None) -> bool:
+    """True when the kill switch is off or the handshake's addressee is paused."""
+    from tinyagentos.collab_settings import outbound_refusal
+
+    if data_dir is None:
+        from tinyagentos.app import resolve_data_dir
+        data_dir = resolve_data_dir()
+    to = envelope.get("to") if isinstance(envelope, dict) else None
+    return outbound_refusal(data_dir, to if isinstance(to, str) else None) is not None
+
+
 async def deliver_handshake(
     envelope: dict,
     peer_endpoints: list[str | dict],
     *,
     http_client=None,
     known_endpoints: frozenset[tuple[str, int]] = frozenset(),
+    data_dir: str | Path | None = None,
 ) -> bool:
     """Deliver a handshake envelope to the peer's ``POST /api/peer/handshake``.
 
@@ -329,8 +341,11 @@ async def deliver_handshake(
     ``known_endpoints`` comes from :func:`known_hostports` over the contact's
     stored peer link; only those exact ``(host, port)`` pairs may be private
     or CGNAT.  ``http_client`` should be an ``httpx.AsyncClient``.  If None,
-    a guarded client is created and torn down.
+    a guarded client is created and torn down.  Nothing is sent while the
+    collaboration kill switch is off or the addressee is paused.
     """
+    if _handshake_refused(envelope, data_dir):
+        return False
     resp = await _post_to_endpoints(
         peer_endpoints, HANDSHAKE_PATH, {"envelope": envelope},
         known_endpoints=known_endpoints, http_client=http_client,
@@ -344,6 +359,7 @@ async def exchange_handshake(
     *,
     http_client=None,
     known_endpoints: frozenset[tuple[str, int]] = frozenset(),
+    data_dir: str | Path | None = None,
 ) -> dict | None:
     """Deliver a handshake like :func:`deliver_handshake`; return the reply envelope.
 
@@ -351,6 +367,8 @@ async def exchange_handshake(
     Returns None when nothing accepted the handshake or the body has no
     envelope.
     """
+    if _handshake_refused(envelope, data_dir):
+        return None
     resp = await _post_to_endpoints(
         peer_endpoints, HANDSHAKE_PATH, {"envelope": envelope},
         known_endpoints=known_endpoints, http_client=http_client,
