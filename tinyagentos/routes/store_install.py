@@ -225,7 +225,7 @@ async def _record_install_location(request: Request, app_id: str, manifest, vers
         logger.warning("install_registry write failed for %s", app_id, exc_info=True)
 
 
-async def _forget_install_location(request: Request, app_id: str, location_kind: str,
+async def forget_install_location(request: Request, app_id: str, location_kind: str,
                                    location_ref: str) -> None:
     """Remove install_registry rows for a local host uninstall.
 
@@ -1298,7 +1298,7 @@ async def uninstall_app(request: Request):
     # tell which one was removed.
     is_local = (_runtime_loc is None) or (_runtime_loc.get("runtime_host") in (None, "", "127.0.0.1"))
     if backend != "lxc" and is_local:
-        await _forget_install_location(request, app_id, "host", "local")
+        await forget_install_location(request, app_id, "host", "local")
     resp: dict = {"ok": removed, "app_id": app_id, "status": "uninstalled" if removed else "not_installed"}
     return JSONResponse(resp)
 
