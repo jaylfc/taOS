@@ -3609,6 +3609,81 @@ class TestProjectCreateRequest:
         await pstore.close()
 
     @pytest.mark.asyncio
+    async def test_project_create_notification_reaches_only_admins(
+        self, client, monkeypatch, tmp_path
+    ):
+        """The bell row names the requested project (name, slug, purpose), and
+        only an admin can decide it, so it must be addressed to each admin and
+        never broadcast to every user on the instance."""
+        from tinyagentos.agent_registry_store import (
+            AgentRegistryStore,
+            load_or_create_signing_keypair,
+            mint_registry_token,
+        )
+        from tinyagentos.auth_requests_store import AuthRequestsStore
+        from tinyagentos.projects.project_store import ProjectStore
+
+        app = client._transport.app
+        code = app.state.auth.add_user_invite("carol", "admin")
+        app.state.auth.complete_invite("carol", code, "Carol", "", "carolpass123")
+        carol = app.state.auth.find_user("carol")
+        admin = app.state.auth.find_user("admin")
+
+        registry = AgentRegistryStore(tmp_path / "reg-pcnotif.db")
+        await registry.init()
+        auth_store = AuthRequestsStore(tmp_path / "auth-pcnotif.db")
+        await auth_store.init()
+        pstore = ProjectStore(tmp_path / "projects-pcnotif.db")
+        await pstore.init()
+        priv, pub = load_or_create_signing_keypair(tmp_path / "keys-pcnotif")
+
+        reg = await registry.register(
+            framework="openclaw",
+            display_name="agent-alice",
+            user_id="u",
+            origin="external-selfjoin",
+            handle="agent-alice",
+        )
+        await registry.set_status(reg["canonical_id"], "active")
+        token = mint_registry_token(
+            reg["canonical_id"], priv, user_id="u", framework="openclaw"
+        )
+
+        monkeypatch.setattr(app.state, "agent_registry", registry)
+        monkeypatch.setattr(app.state, "auth_requests", auth_store)
+        monkeypatch.setattr(app.state, "project_store", pstore)
+        monkeypatch.setattr(app.state, "agent_registry_keypair", (priv, pub))
+
+        try:
+            resp = await client.post(
+                "/api/agents/auth-requests",
+                json={
+                    "identity_claim": "agent-alice",
+                    "framework": "openclaw",
+                    "kind": "project_create",
+                    "requested_name": "Secret Board",
+                    "requested_slug": "secret-board",
+                    "purpose": "need a board",
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert resp.status_code == 200, resp.text
+            request_id = resp.json()["request_id"]
+
+            async def rows_for(user_id):
+                rows = await app.state.notifications.list(limit=100, user_id=user_id)
+                return [n for n in rows if n["title"] == "Project creation request"]
+
+            assert await rows_for(carol["id"]) == []
+            admin_rows = await rows_for(admin["id"])
+            assert [n["data"]["request_id"] for n in admin_rows] == [request_id]
+            assert admin_rows[0]["user_id"] == admin["id"]
+        finally:
+            await registry.close()
+            await auth_store.close()
+            await pstore.close()
+
+    @pytest.mark.asyncio
     async def test_approve_creates_project_and_lead(
         self, client, monkeypatch, tmp_path
     ):

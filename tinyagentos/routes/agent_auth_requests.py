@@ -495,28 +495,38 @@ async def _handle_project_create_request(
         await store._db.commit()
         raise
 
+    # The row names the requested project, and only an admin can decide it,
+    # so address it to each admin instead of broadcasting it to every user.
     notifs = getattr(request.app.state, "notifications", None)
     if notifs is not None:
-        try:
-            await notifs.add(
-                title="Project creation request",
-                message=(
-                    f"{from_agent} requests to create project "
-                    f"'{body.requested_name}' ({body.requested_slug})"
-                ),
-                level="info",
-                source="auth_requests",
-                data={
-                    "request_id": record["id"],
-                    "identity_claim": from_agent,
-                    "framework": body.framework,
-                    "requested_name": body.requested_name,
-                    "requested_slug": body.requested_slug,
-                    "purpose": body.purpose or body.reason,
-                },
-            )
-        except Exception:
-            pass
+        webhook_sent = False
+        for admin_id in _admin_user_ids(request.app.state):
+            try:
+                await notifs.add(
+                    title="Project creation request",
+                    message=(
+                        f"{from_agent} requests to create project "
+                        f"'{body.requested_name}' ({body.requested_slug})"
+                    ),
+                    level="info",
+                    source="auth_requests",
+                    data={
+                        "request_id": record["id"],
+                        "identity_claim": from_agent,
+                        "framework": body.framework,
+                        "requested_name": body.requested_name,
+                        "requested_slug": body.requested_slug,
+                        "purpose": body.purpose or body.reason,
+                    },
+                    user_id=admin_id,
+                    webhook=not webhook_sent,
+                )
+                webhook_sent = True
+            except Exception:
+                logger.warning(
+                    "project create notification for %s failed", admin_id,
+                    exc_info=True,
+                )
 
     return JSONResponse(
         {"request_id": record["id"], "status": "pending", "decision_id": decision["id"], "proof_status": proof_status}
@@ -1859,6 +1869,18 @@ _SCOPE_FILES_SCOPES = _FILES_SCOPES
 _SCOPE_PROJECT_SCOPES = _PROJECT_SCOPES
 
 
+def _admin_user_ids(app_state) -> list[str]:
+    """Ids of every admin user; empty (and logged) when users cannot be read,
+    so a notification addressed with it is never broadcast."""
+    auth = getattr(app_state, "auth", None)
+    try:
+        users = auth.list_users() if auth is not None else []
+    except Exception:
+        logger.warning("could not list users to address an admin notification", exc_info=True)
+        users = []
+    return [u["id"] for u in users if u.get("is_admin") and u.get("id")]
+
+
 def _scope_request_audience(app_state, record: dict) -> list[str]:
     """Ids of the users who may decide a scope request for *record*: the
     agent's owner, then every admin (the approve/deny routes allow exactly
@@ -1867,18 +1889,8 @@ def _scope_request_audience(app_state, record: dict) -> list[str]:
     owner = record.get("user_id")
     if owner:
         ids.append(owner)
-    auth = getattr(app_state, "auth", None)
-    try:
-        users = auth.list_users() if auth is not None else []
-    except Exception:
-        logger.warning(
-            "scope request audience: could not list users, notifying the owner only",
-            exc_info=True,
-        )
-        users = []
-    for u in users:
-        uid = u.get("id")
-        if u.get("is_admin") and uid and uid not in ids:
+    for uid in _admin_user_ids(app_state):
+        if uid not in ids:
             ids.append(uid)
     return ids
 
