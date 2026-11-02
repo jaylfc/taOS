@@ -203,3 +203,48 @@ async def test_deliver_handshake_sends_nothing_while_disabled(nodes):
         await client.aclose()
     assert ok is False
     assert seen.get("urls", []) == []
+
+
+@pytest.mark.asyncio
+class TestFriendAcceptOutbound:
+    """Friend-accept creates no peer link and starts no outbound handshake when refused."""
+
+    async def _accept_with_switch(self, nodes, monkeypatch, switch):
+        a, b = nodes
+        await _record_request_out(a, b)
+        await _hub_store(b)
+        _patch_directory(monkeypatch, a)
+        seen: dict = {}
+        _route_delivery_to(monkeypatch, a, seen)
+        _write_switch(b, switch)
+        resp = await _accept(b)
+        assert resp.status_code == 200, resp.text
+        return a, b, seen
+
+    async def test_accept_creates_no_link_while_disabled(self, nodes, monkeypatch):
+        a, b, seen = await self._accept_with_switch(
+            nodes, monkeypatch, {"enabled": False, "paused_contacts": []}
+        )
+        assert await b.app.state.contacts_store.get_peer_link(a.contact_id) is None
+        assert "allow_hostports" not in seen, "a handshake client was opened"
+
+    async def test_accept_creates_no_link_to_paused_contact(self, nodes, monkeypatch):
+        a, b = nodes
+        a, b, seen = await self._accept_with_switch(
+            nodes,
+            monkeypatch,
+            {"enabled": True, "paused_contacts": [a.contact_id]},
+        )
+        assert await b.app.state.contacts_store.get_peer_link(a.contact_id) is None
+        assert "allow_hostports" not in seen, "a handshake client was opened"
+
+    async def test_accept_creates_link_by_default(self, nodes, monkeypatch):
+        a, b = nodes
+        await _record_request_out(a, b)
+        await _hub_store(b)
+        _patch_directory(monkeypatch, a)
+        seen: dict = {}
+        _route_delivery_to(monkeypatch, a, seen)
+        resp = await _accept(b)
+        assert resp.status_code == 200, resp.text
+        assert await b.app.state.contacts_store.get_peer_link(a.contact_id) is not None
