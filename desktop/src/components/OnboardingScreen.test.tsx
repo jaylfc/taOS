@@ -20,10 +20,10 @@ async function completeAccountStep() {
     target: { value: "jay@example.com" },
   });
   fireEvent.change(screen.getByLabelText(/^Password/), {
-    target: { value: "1234" },
+    target: { value: "12345678" },
   });
   fireEvent.change(screen.getByLabelText(/Confirm password/), {
-    target: { value: "1234" },
+    target: { value: "12345678" },
   });
   fireEvent.click(screen.getByRole("button", { name: "Get started" }));
 }
