@@ -185,6 +185,7 @@ class NotificationStore(BaseStore):
         source: str = "system",
         data: dict | None = None,
         user_id: str | None = None,
+        webhook: bool = True,
     ) -> None:
         """Create a notification row and fan out to emitters + push.
 
@@ -194,6 +195,9 @@ class NotificationStore(BaseStore):
                 subscribed device (genuinely system-wide notices). When set to a
                 user id, web-push delivery fans out only to that user's
                 subscriptions.
+            webhook: Post to the configured external webhooks (default). A
+                caller writing one row per recipient for the same event passes
+                False on all but one, since the webhook payload names no user.
         """
         if await self._is_event_muted(source):
             return
@@ -205,7 +209,7 @@ class NotificationStore(BaseStore):
         )
         await self._db.commit()
         # Fire webhook notifications in the background
-        if self._webhook_notifier:
+        if webhook and self._webhook_notifier:
             try:
                 await self._webhook_notifier.notify(title, message, level)
             except Exception as e:

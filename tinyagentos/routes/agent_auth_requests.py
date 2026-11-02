@@ -2002,6 +2002,8 @@ async def create_scope_request(
             # The row names the agent and the project, so address it to the
             # users who can decide it (approve is owner/admin only) instead of
             # broadcasting it to every user on the instance.
+            # One row per recipient, but one external webhook post per request.
+            webhook_sent = False
             for recipient in _scope_request_audience(request.app.state, record):
                 try:
                     await notifs.add(
@@ -2016,7 +2018,9 @@ async def create_scope_request(
                             "project_id": rec.get("project_id"),
                         },
                         user_id=recipient,
+                        webhook=not webhook_sent,
                     )
+                    webhook_sent = True
                 except Exception:
                     # One failed write must not skip the remaining recipients.
                     logger.warning(

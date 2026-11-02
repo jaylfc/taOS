@@ -1848,6 +1848,16 @@ async def test_scope_request_notification_reaches_only_owner_and_admins(
         lambda: real_list_users() + [{"id": "second-admin", "is_admin": True}],
     )
 
+    # The external webhook payload names no user, so one request must post
+    # once, not once per addressed row.
+    webhook_posts = []
+
+    class _CountingWebhook:
+        async def notify(self, title, message, level):
+            webhook_posts.append(title)
+
+    monkeypatch.setattr(app.state.notifications, "_webhook_notifier", _CountingWebhook())
+
     # Bob (not an admin) owns the agent; carol is an unrelated user.
     env = await _wire(client, monkeypatch, tmp_path, owner_uid=bob["id"])
     try:
@@ -1869,6 +1879,7 @@ async def test_scope_request_notification_reaches_only_owner_and_admins(
         assert admin_rows[0]["user_id"] == env.admin_uid
         second_rows = await _scope_notifications_for(app, "second-admin")
         assert [n["user_id"] for n in second_rows] == ["second-admin"]
+        assert webhook_posts == ["Scope request"]
 
         # Deciding the request retires every addressed copy of the row.
         resp = await client.post(
