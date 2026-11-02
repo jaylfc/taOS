@@ -2,29 +2,9 @@ import { build, defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
-import { writeFileSync, readFileSync, cpSync, existsSync, readdirSync, statSync, rmSync } from "node:fs";
+import { readFileSync, cpSync, existsSync, readdirSync, statSync, rmSync } from "node:fs";
 import { readBackendVersion } from "./scripts/read-version.mjs";
-
-/** Writes version.json to the build output so the running SPA can poll it and
- *  detect when a new build has been deployed. */
-function spaVersionPlugin() {
-  let outDir = "";
-  return {
-    name: "taos-spa-version",
-    configResolved(config: import("vite").ResolvedConfig) {
-      outDir = path.resolve(config.root, config.build.outDir);
-    },
-    writeBundle() {
-      // The id baked into the bundle, not a fresh one: readBackendVersion()
-      // stamps the current time, so a second call never matches and every
-      // page offered a reload to a "new build" that was itself.
-      writeFileSync(
-        path.join(outDir, "version.json"),
-        JSON.stringify({ version: TAOS_VERSION }) + "\n",
-      );
-    },
-  };
-}
+import { spaVersionPlugin } from "./scripts/spa-version-plugin.mjs";
 
 /** One build id for the whole build, shared by the SPA and the worker. */
 const TAOS_VERSION = readBackendVersion();
@@ -263,7 +243,7 @@ export default defineConfig({
   define: {
     __TAOS_VERSION__: JSON.stringify(TAOS_VERSION),
   },
-  plugins: [react(), tailwindcss(), spaVersionPlugin(), serviceWorkerPlugin(), excalidrawAssetsPlugin()],
+  plugins: [react(), tailwindcss(), spaVersionPlugin(TAOS_VERSION), serviceWorkerPlugin(), excalidrawAssetsPlugin()],
   base: "/desktop/",
   resolve: {
     alias: { "@": path.resolve(__dirname, "src") },
