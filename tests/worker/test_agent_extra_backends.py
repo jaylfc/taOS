@@ -138,6 +138,32 @@ def test_probeable_types_are_local_catalog_types():
     assert not _PROBEABLE_TYPES & CLOUD_TYPES
 
 
+def test_no_default_probe_on_ports_owned_by_other_servers():
+    """PR #3786 review: :30000 is SGLang's stock port and :9000 is shared with
+    MinIO/php-fpm. Both types fall through to the generic /v1/models probe, so
+    a default candidate there would advertise an ordinary SGLang LLM (or any
+    other /v1/models server) as a tts/asr backend."""
+    types = {backend_type for backend_type, _ in _DEFAULT_PROBE_CANDIDATES}
+    ports = {urlsplit(url).port for _, url in _DEFAULT_PROBE_CANDIDATES}
+    assert "moss" not in types
+    assert 30000 not in ports
+    assert "whisper" not in types
+    assert 9000 not in ports
+
+
+def test_configured_moss_and_whisper_still_probeable():
+    """Dropping the default candidates must not break a configured backend:
+    both types stay probeable and keep their catalog label and manifest map."""
+    from tinyagentos.scheduler.backend_catalog import BACKEND_CAPABILITIES
+    from tinyagentos.worker.worker_manifest import SOFTWARE_TO_BACKEND_TYPE
+
+    assert {"moss", "whisper"} <= _PROBEABLE_TYPES
+    assert BACKEND_CAPABILITIES["moss"] == {"tts"}
+    assert BACKEND_CAPABILITIES["whisper"] == {"asr"}
+    assert SOFTWARE_TO_BACKEND_TYPE["moss"] == "moss"
+    assert SOFTWARE_TO_BACKEND_TYPE["whisper"] == "whisper"
+
+
 def test_extra_entries_capped(caplog):
     caplog.set_level(logging.WARNING)
     raw = ",".join(f"ollama=http://10.0.0.{i}:11434" for i in range(1, 21))

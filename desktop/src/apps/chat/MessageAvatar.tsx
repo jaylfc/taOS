@@ -45,6 +45,11 @@ export interface MessageAvatarProps {
   dead?: boolean;
   /** Resolved agent emoji (already passed through resolveAgentEmoji upstream). */
   emoji?: string;
+  /**
+   * "tile" renders an active agent as a rounded tile with a gradient derived
+   * from its id (mobile chat bubbles). Default keeps the tinted square.
+   */
+  variant?: "default" | "tile";
 }
 
 export function MessageAvatar({
@@ -54,6 +59,7 @@ export function MessageAvatar({
   kind,
   dead = false,
   emoji,
+  variant = "default",
 }: MessageAvatarProps) {
   const dim = { width: size, height: size };
   const fontPx = Math.round(size * 0.46);
@@ -68,6 +74,23 @@ export function MessageAvatar({
         >
           <span style={{ fontSize: fontPx, lineHeight: 1, opacity: 0.6 }}>
             {emoji ?? resolveAgentEmoji(undefined, undefined)}
+          </span>
+        </div>
+      );
+    }
+    if (variant === "tile") {
+      const hue = hueFromString(authorId);
+      return (
+        <div
+          aria-hidden="true"
+          style={{
+            ...dim,
+            backgroundImage: `linear-gradient(135deg, hsl(${hue} 62% 52%), hsl(${(hue + 40) % 360} 62% 38%))`,
+          }}
+          className="rounded-[8px] flex items-center justify-center"
+        >
+          <span style={{ fontSize: fontPx, lineHeight: 1 }}>
+            {emoji || initialsFor(displayName || authorId).slice(0, 1)}
           </span>
         </div>
       );

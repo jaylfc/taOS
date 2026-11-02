@@ -17,8 +17,9 @@ install:
   script: scripts/install.sh
   note: |
     Clones bytedance/deer-flow into /opt/deer-flow and provisions the backend
-    with uv (Python 3.12). The bridge adapter (deer_flow_adapter.py) lives in
-    the taOS controller.
+    with uv (Python 3.12). On deploy, taOS runs the in-repo
+    tinyagentos/scripts/install_deer-flow.sh instead, which does the same
+    provisioning and also installs the taOS chat bridge.
 
 config_schema:
   - name: model
@@ -39,8 +40,9 @@ compliance:
     The adapter translates taOS /message calls into POST /api/runs/wait and
     extracts the final assistant reply from the serialized channel-values.
     DeerFlow itself calls the taOS LiteLLM proxy (OpenAI-compatible) for LLM
-    inference via its config.yaml. No fork required — the bridge adapter
-    (deer_flow_adapter.py) lives in the taOS controller, not in a fork.
+    inference via its config.yaml. No fork required: the bridge is the
+    taos-deer-flow-bridge service that tinyagentos/scripts/install_deer-flow.sh
+    installs in the agent container.
 
 hardware_tiers:
   arm-npu-16gb: full

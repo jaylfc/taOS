@@ -7,6 +7,10 @@ set -euo pipefail
 
 log() { echo "[$(date -u +%H:%M:%S)] hermes-install: $*"; }
 
+# Pin Hermes to a known tag; bumps go via a card + smoke test
+HERMES_TAG="${HERMES_TAG:-v2026.8.31}"
+HERMES_COMMIT="${HERMES_COMMIT:-29112bef099274229cadff79cdff7bf7b99c4b77}"
+
 AGENT_NAME="${TAOS_AGENT_NAME:?TAOS_AGENT_NAME required}"
 LLM_KEY="${LITELLM_API_KEY:?LITELLM_API_KEY required}"
 BRIDGE_URL="${TAOS_BRIDGE_URL:?TAOS_BRIDGE_URL required}"
@@ -39,7 +43,7 @@ find_hermes() {
 HERMES_BIN="$(find_hermes || true)"
 if [ -z "$HERMES_BIN" ]; then
     log "hermes not present -- running Hermes installer (--skip-setup)"
-    curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --skip-setup
+    curl -fsSL "https://raw.githubusercontent.com/NousResearch/hermes-agent/${HERMES_TAG}/scripts/install.sh" | bash -s -- --skip-setup --commit "$HERMES_COMMIT"
     HERMES_BIN="$(find_hermes || true)"
 else
     log "hermes already installed (base image) -- skipping installer"
@@ -464,5 +468,5 @@ done
 
 systemctl enable --now taos-hermes-bridge.service
 mkdir -p /opt/taos
-echo "hermes-0.1" > /opt/taos/framework.version
+echo "hermes-${HERMES_TAG}" > /opt/taos/framework.version
 log "done"

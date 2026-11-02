@@ -152,6 +152,7 @@ _AGENT_CONTAINER_QUOTA_ROUTE = ("GET", re.compile(r"^/api/agents/containers/quot
 _MEMORY_ROUTES = (
     ("GET", re.compile(r"^/api/memory/browse$")),
     ("POST", re.compile(r"^/api/memory/search$")),
+    ("POST", re.compile(r"^/api/memory/remember$")),
     ("GET", re.compile(r"^/api/memory/collections/[^/]+$")),
     ("DELETE", re.compile(r"^/api/memory/chunk/[^/]+$")),
 )
