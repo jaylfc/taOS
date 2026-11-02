@@ -884,7 +884,12 @@ async def _notify_task_event(
         return
     message = await _task_event_message(request, task, task_id, verb, actor_id)
     for user_id in await project_audience(request.app.state, task.get("project_id")):
-        await notifs.emit_event(event_type, title, message, user_id=user_id)
+        # The task change is already committed: a failed write for one
+        # recipient must neither fail the request nor skip the others.
+        try:
+            await notifs.emit_event(event_type, title, message, user_id=user_id)
+        except Exception:
+            logger.warning("task notification to %s failed", user_id, exc_info=True)
 
 
 def _resolve_actor(

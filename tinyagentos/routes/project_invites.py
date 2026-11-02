@@ -1470,22 +1470,26 @@ def _notify_pending_invite(request: Request, record: dict) -> None:
                 else ""
             )
             # Only an admin may approve, and the text names the project, so it
-            # goes to each admin rather than to every user (tsk-g7w4yu).
+            # goes to each admin rather than to every user (tsk-g7w4yu). One
+            # failed write must not skip the remaining admins.
             for admin_id in admin_user_ids(request.app.state):
-                await notifs.add(
-                    title="Access request",
-                    message=f"{record['identity_claim']} is requesting {', '.join(scopes)}{on_project}",
-                    level="info",
-                    source="auth_requests",
-                    user_id=admin_id,
-                    data={
-                        "request_id": record["id"],
-                        "identity_claim": record["identity_claim"],
-                        "framework": record["framework"],
-                        "requested_scopes": list(scopes),
-                        "project_id": project_id,
-                    },
-                )
+                try:
+                    await notifs.add(
+                        title="Access request",
+                        message=f"{record['identity_claim']} is requesting {', '.join(scopes)}{on_project}",
+                        level="info",
+                        source="auth_requests",
+                        user_id=admin_id,
+                        data={
+                            "request_id": record["id"],
+                            "identity_claim": record["identity_claim"],
+                            "framework": record["framework"],
+                            "requested_scopes": list(scopes),
+                            "project_id": project_id,
+                        },
+                    )
+                except Exception:
+                    logger.warning("invite access-request notification to %s failed", admin_id, exc_info=True)
 
         asyncio.create_task(_add())
     except Exception:  # noqa: BLE001

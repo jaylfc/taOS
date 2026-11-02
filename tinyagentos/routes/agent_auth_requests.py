@@ -642,30 +642,34 @@ async def create_auth_request(request: Request, body: CreateAuthRequest):
                 else ""
             )
             # Only an admin may approve, and the text names the project, so it
-            # goes to each admin rather than to every user (tsk-g7w4yu).
+            # goes to each admin rather than to every user (tsk-g7w4yu). One
+            # failed write must not skip the remaining admins.
             for admin_id in admin_user_ids(request.app.state):
-                await notifs.add(
-                    title="Access request",
-                    message=f"{record['identity_claim']} is requesting {', '.join(scopes)}{on_project}{' ' + _human_duration(record.get('duration_secs')) if record.get('duration_secs') else ''}",
-                    level="info",
-                    source="auth_requests",
-                    user_id=admin_id,
-                    data={
-                        "request_id": record["id"],
-                        "identity_claim": record["identity_claim"],
-                        "framework": record["framework"],
-                        "requested_scopes": list(scopes),
-                        # Carry the requested project_id to the consent UI so the
-                        # approve screen can preselect and label it. The id is NOT
-                        # trusted as a binding here -- the operator still picks from
-                        # the projects they can see -- but without it the dropdown is
-                        # blank and the approver cannot tell what they are consenting
-                        # to (#tsk-flc5sp).
-                        "project_id": record.get("project_id"),
-                        "duration_secs": record.get("duration_secs"),
-                        "human_duration": _human_duration(record.get("duration_secs")),
-                    },
-                )
+                try:
+                    await notifs.add(
+                        title="Access request",
+                        message=f"{record['identity_claim']} is requesting {', '.join(scopes)}{on_project}{' ' + _human_duration(record.get('duration_secs')) if record.get('duration_secs') else ''}",
+                        level="info",
+                        source="auth_requests",
+                        user_id=admin_id,
+                        data={
+                            "request_id": record["id"],
+                            "identity_claim": record["identity_claim"],
+                            "framework": record["framework"],
+                            "requested_scopes": list(scopes),
+                            # Carry the requested project_id to the consent UI so the
+                            # approve screen can preselect and label it. The id is NOT
+                            # trusted as a binding here -- the operator still picks from
+                            # the projects they can see -- but without it the dropdown is
+                            # blank and the approver cannot tell what they are consenting
+                            # to (#tsk-flc5sp).
+                            "project_id": record.get("project_id"),
+                            "duration_secs": record.get("duration_secs"),
+                            "human_duration": _human_duration(record.get("duration_secs")),
+                        },
+                    )
+                except Exception:
+                    logger.warning("access-request notification to %s failed", admin_id, exc_info=True)
         except Exception:
             pass
 

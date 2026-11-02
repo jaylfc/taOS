@@ -307,3 +307,20 @@ async def test_invite_access_request_project_name_reaches_only_admins(client):
         "taos-dev is requesting project_tasks on taOS"
     ]
     assert await _visible_to(client, "someone-else", "auth_requests") == []
+
+
+@pytest.mark.asyncio
+async def test_failed_task_notification_does_not_fail_the_committed_change(client, monkeypatch):
+    pid, task = await _project_and_task(client)
+    store = client._transport.app.state.notifications
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("notification db unavailable")
+
+    monkeypatch.setattr(store, "emit_event", _boom)
+
+    resp = await client.post(
+        f"/api/projects/{pid}/tasks/{task['id']}/close",
+        json={"closed_by": _admin_id(client), "reason": "done"},
+    )
+    assert resp.status_code == 200, resp.text
