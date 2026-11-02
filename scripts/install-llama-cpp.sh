@@ -104,6 +104,14 @@ is_musl() {
     [[ -e /lib/ld-musl-aarch64.so.1 ]]
 }
 
+has_rocm() {
+    [[ -d /opt/rocm ]]
+}
+
+has_nvidia() {
+    command -v nvidia-smi >/dev/null 2>&1 || [[ -d /proc/driver/nvidia/gpus ]]
+}
+
 detect_variant() {
     if [[ -n "${TAOS_LLAMACPP_VARIANT:-}" ]]; then
         VARIANT="$TAOS_LLAMACPP_VARIANT"
@@ -116,7 +124,7 @@ detect_variant() {
     arch="$(uname -m)"
 
     if [[ "$os" == "Darwin" ]]; then
-        [[ "$arch" == "arm64" ]] || die "install-llama-cpp.sh on macOS only supports Apple Silicon (arm64) — got $arch"
+        [[ "$arch" == "arm64" ]] || die "install-llama-cpp.sh on macOS only supports Apple Silicon (arm64) -- got $arch"
         VARIANT="apple-silicon"
         log "detected platform: macOS Apple Silicon -> Metal build"
         return
@@ -130,10 +138,10 @@ detect_variant() {
     fi
     [[ "$arch" == "x86_64" ]] || die "install-llama-cpp.sh only supports x86_64 Linux -- got $arch. Rockchip ARM boards use install-rknpu.sh / install-rk-llama-cpp.sh instead."
 
-    if [[ -d /opt/rocm ]]; then
+    if has_rocm; then
         VARIANT="rocm"
         log "detected platform: Linux x86_64, /opt/rocm present -> ROCm build"
-    elif command -v nvidia-smi >/dev/null 2>&1 || [[ -d /proc/driver/nvidia/gpus ]]; then
+    elif has_nvidia; then
         VARIANT="cuda"
         log "detected platform: Linux x86_64, NVIDIA driver present -> CUDA-target build"
     else
@@ -244,7 +252,7 @@ build_from_source_musl() {
     src="$(run_as_user mktemp -d -t llamacpp-src.XXXXXX)"
     run_as_user git clone --depth 1 --branch "$LLAMACPP_MUSL_TAG" https://github.com/ggml-org/llama.cpp "$src" || die "git clone failed"
     local head
-    head="$(git -C "$src" rev-parse HEAD)"
+    head="$(run_as_user git -C "$src" rev-parse HEAD)" || die "git rev-parse failed in $src"
     if [[ "$head" != "$LLAMACPP_MUSL_COMMIT" ]]; then
         die "llama.cpp $LLAMACPP_MUSL_TAG resolved to $head, expected $LLAMACPP_MUSL_COMMIT -- refusing to build"
     fi
@@ -256,7 +264,7 @@ build_from_source_musl() {
     run_as_user mkdir -p "$INSTALL_DIR"
     run_as_user cp "$src/build/bin/llama-server" "$INSTALL_DIR/llama-server"
     run_as_user find "$src/build" -name 'lib*.so*' -exec cp -P {} "$INSTALL_DIR"/ \;
-    chmod +x "$INSTALL_DIR/llama-server"
+    run_as_user chmod +x "$INSTALL_DIR/llama-server"
     run_as_user rm -rf "$src"
 }
 
@@ -371,14 +379,17 @@ main() {
         fi
     fi
 
-    # Always (re)write + (re)enable the service — this is the self-heal
+    # Always (re)write + (re)enable the service -- this is the self-heal
     # path: a binary present but a missing/dead unit gets recreated and
     # started, exactly like re-clicking Install in the Store.
     install_service
 
     if ! wait_for_health; then
-        die "llama-server did not answer http://${HOST}:${PORT}/health within 60s — check the service logs (journalctl -u llama-cpp on Linux, $INSTALL_DIR/llama-cpp.err.log on macOS)"
+        die "llama-server did not answer http://${HOST}:${PORT}/health within 60s -- check the service logs (journalctl -u llama-cpp on Linux, $INSTALL_DIR/llama-cpp.err.log on macOS)"
     fi
+
+    local pinned="$LLAMACPP_VERSION"
+    [[ "$VARIANT" == "musl-arm64" ]] && pinned="$LLAMACPP_MUSL_TAG"
 
     cat <<EOF
 
@@ -389,7 +400,7 @@ main() {
     binary dir:    $INSTALL_DIR
     models dir:    $MODELS_DIR (drop GGUF files here -- no models installed by this script)
     HTTP endpoint: http://${HOST}:${PORT}
-    pinned build:  ${LLAMACPP_MUSL_TAG:-$LLAMACPP_VERSION}
+    pinned build:  $pinned
 
 EOF
 }
