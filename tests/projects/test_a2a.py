@@ -501,3 +501,63 @@ async def test_ensure_lead_follows_backfilled_column(stores):
 
     ch = await ensure_a2a_channel(channel_store, project_store, p["id"], config=config)
     assert ch["settings"]["leads"] == ["coord"]
+
+
+@pytest.mark.asyncio
+async def test_skill_create_project_auto_creates_a2a_channel(stores, tmp_path):
+    """taOS #2115: the agent skill path (execute_create_project) must create
+    the project's A2A channel, not just the project row."""
+    import types
+
+    from tinyagentos.tools.project_tools import execute_create_project
+
+    project_store, channel_store = stores
+    state = types.SimpleNamespace(
+        project_store=project_store,
+        chat_channels=channel_store,
+        config=None,
+    )
+    app = types.SimpleNamespace(state=state)
+    req = types.SimpleNamespace(
+        app=app, state=types.SimpleNamespace(user_id="user-1")
+    )
+
+    res = await execute_create_project({"name": "Skill Project"}, req)
+    assert res["ok"], res
+    project_id = res["project_id"]
+
+    channels = await channel_store.list_channels(project_id=project_id)
+    a2a = [c for c in channels if (c.get("settings") or {}).get("kind") == A2A_KIND]
+    assert len(a2a) == 1, f"expected one A2A channel, got {len(a2a)}"
+    assert a2a[0]["name"] == A2A_NAME
+
+
+@pytest.mark.asyncio
+async def test_skill_create_project_channel_creation_is_best_effort(tmp_path):
+    """taOS #2115: if the channel store is broken, project creation still
+    succeeds (channel creation is best-effort)."""
+    import types
+
+    from tinyagentos.projects.project_store import ProjectStore
+    from tinyagentos.tools.project_tools import execute_create_project
+
+    project_store = ProjectStore(tmp_path / "projects-be.db")
+    await project_store.init()
+
+    class _BrokenChannels:
+        async def create_channel(self, **kw):
+            raise RuntimeError("boom")
+
+    state = types.SimpleNamespace(
+        project_store=project_store,
+        chat_channels=_BrokenChannels(),
+        config=None,
+    )
+    app = types.SimpleNamespace(state=state)
+    req = types.SimpleNamespace(
+        app=app, state=types.SimpleNamespace(user_id="user-1")
+    )
+
+    res = await execute_create_project({"name": "Broken Channel"}, req)
+    assert res["ok"], res
+    await project_store.close()

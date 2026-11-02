@@ -31,6 +31,8 @@ interface Props {
   breakpoint?: number;
   /** Fixed list width on desktop (default 280) */
   listWidth?: number;
+  /** Mobile only: omit the detail nav bar when the detail pane supplies its own header and back control */
+  hideDetailNav?: boolean;
 }
 
 export function MobileSplitView({
@@ -44,6 +46,7 @@ export function MobileSplitView({
   listActions,
   breakpoint = 768,
   listWidth = 280,
+  hideDetailNav = false,
 }: Props) {
   const [isMobile, setIsMobile] = useState(
     () => typeof window !== "undefined" && window.innerWidth < breakpoint,
@@ -125,7 +128,7 @@ export function MobileSplitView({
 
         {/* Detail pane — 50% of track = 100% of viewport */}
         <div style={{ width: "50%", height: "100%", display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden" }}>
-          <MobileNavBar
+          {!hideDetailNav && <MobileNavBar
             title={detailTitle}
             leftAction={
               <button
@@ -141,7 +144,7 @@ export function MobileSplitView({
               </button>
             }
             rightActions={detailActions}
-          />
+          />}
           <div style={{ flex: 1, overflowY: "auto" }}>{detail}</div>
         </div>
       </div>

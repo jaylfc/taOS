@@ -1,0 +1,2 @@
+### Changed
+- Messages on mobile: the thread now has a single header row (a Back to chats button, the channel name and member count) and a floating composer card with a context row, an overflow menu (channel info, threads, search, members), a plus attachment button, an emoji picker, and a send button that appears once there is something to send. The thread background gets a subtle teal-tinted gradient. Desktop is unchanged.
