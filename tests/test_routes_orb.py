@@ -503,7 +503,6 @@ def _remote_fetch_monkeypatch(monkeypatch, handler):
     from tinyagentos.orb import catalog_fetch
 
     real = catalog_fetch.fetch_catalog
-    import httpx
 
     monkeypatch.setattr(
         "tinyagentos.routes.orb.fetch_catalog",
