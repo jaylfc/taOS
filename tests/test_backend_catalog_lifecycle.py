@@ -20,6 +20,13 @@ def test_lmstudio_capability_entry_exists():
     assert BACKEND_CAPABILITIES["lmstudio"] == {"llm-chat", "embedding"}
 
 
+def test_speech_capability_entries_exist():
+    """taOS #3231: whisper advertises asr; kokoro and moss advertise tts."""
+    assert BACKEND_CAPABILITIES["whisper"] == {"asr"}
+    assert BACKEND_CAPABILITIES["kokoro"] == {"tts"}
+    assert BACKEND_CAPABILITIES["moss"] == {"tts"}
+
+
 @pytest.mark.asyncio
 async def test_disabled_backend_excluded_from_routing():
     """A backend with enabled=False must not appear in backends_with_capability."""

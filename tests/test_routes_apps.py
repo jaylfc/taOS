@@ -52,13 +52,14 @@ class TestListInstalledApps:
         assert item["status"] == "running"
 
     @pytest.mark.asyncio
-    async def test_url_uses_ui_path(self, client):
+    async def test_url_does_not_repeat_ui_path(self, client):
         store = client._transport.app.state.installed_apps
         await store.install("svc-sub", "1.0")
         await store.update_runtime_location("svc-sub", host="10.0.0.2", port=9090, backend="lxc", ui_path="/dashboard/")
         resp = await client.get("/api/apps/installed")
         item = next(i for i in resp.json() if i["app_id"] == "svc-sub")
-        assert item["url"] == "/apps/svc-sub/dashboard/"
+        # service_proxy prepends ui_path upstream
+        assert item["url"] == "/apps/svc-sub/"
 
     @pytest.mark.asyncio
     async def test_display_name_falls_back_to_app_id(self, client):

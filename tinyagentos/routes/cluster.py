@@ -320,6 +320,11 @@ class MoveRequest(BaseModel):
 @router.get("/api/cluster/workers")
 async def list_workers(request: Request):
     is_admin = getattr(request.state, "is_admin", False)
+    # taOS #3227: headless callers presenting a valid local token, device
+    # token, or registry JWT on this exempt GET get the full worker view
+    # (the middleware sets headless_full_view). signing_key stays stripped
+    # for everyone -- see below.
+    full_view = is_admin or getattr(request.state, "headless_full_view", False)
     cluster = request.app.state.cluster_manager
     pairing = getattr(request.app.state, "cluster_pairing", None)
     registry = getattr(request.app.state, "registry", None)
@@ -334,7 +339,7 @@ async def list_workers(request: Request):
         # non-utf8 signing key, and (2) even when serialization didn't
         # crash, the secret has no business being on the wire.
         d.pop("signing_key", None)
-        if not is_admin:
+        if not full_view:
             result.append({
                 "name": d["name"],
                 "status": d["status"],

@@ -247,6 +247,22 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         return response
 
 
+def session_csrf_ok(conn: HTTPConnection, session_token: str) -> bool:
+    """The double-submit + session-binding check, for an exempt path's own use.
+
+    A credential path is exempt from ``verify_csrf`` by path, so a branch in
+    one that acts on the caller's already-valid session (``/auth/complete``
+    completing an invite from the pending session) must check this itself.
+    """
+    cookie_token = conn.cookies.get(_COOKIE_NAME, "")
+    header_token = conn.headers.get(_HEADER_NAME, "")
+    if not cookie_token or not header_token or not session_token:
+        return False
+    if not secrets.compare_digest(cookie_token, header_token):
+        return False
+    return verify_bound(get_csrf_secret(conn.app), cookie_token, session_token)
+
+
 def verify_csrf(conn: HTTPConnection) -> None:
     """FastAPI dependency — enforce the double-submit CSRF check.
 

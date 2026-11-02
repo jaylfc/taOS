@@ -39,7 +39,7 @@ from tinyagentos.auth import (
 )
 from tinyagentos.atomic_io import atomic_write_text
 from tinyagentos.demo_mode import demo_env
-from tinyagentos.middleware.csrf import verify_csrf
+from tinyagentos.middleware.csrf import session_csrf_ok, verify_csrf
 from tinyagentos.routes.onscreen_keyboard import OSK_SCRIPT, osk_assets
 from tinyagentos.taos_agent_runtime import system_agent_framework
 
@@ -13292,7 +13292,9 @@ async def auth_setup(request: Request):
 async def complete_invite(request: Request):
     """Invited user completes their account setup.
 
-    Body: ``{username, invite_code, full_name, email, password, auto_login?}``
+    Body: ``{username, invite_code, full_name, email, password, auto_login?}``.
+    ``invite_code`` may be omitted when the request carries the invitee's
+    own pending session (the one ``/auth/login`` opened with the code).
     """
     auth_mgr = request.app.state.auth
     client_ip = request.client.host if request.client else "unknown"
@@ -13313,6 +13315,22 @@ async def complete_invite(request: Request):
     full_name = (body.get("full_name") or "").strip()
     email = (body.get("email") or "").strip()
     password = body.get("password") or ""
+
+    # The SPA never sees the code: the invitee signed in with it, and
+    # /auth/status does not return it. Their own pending session stands in
+    # for it. Any other session (another invitee, an admin) does not, and a
+    # code that IS supplied must still match. This path is CSRF-exempt as a
+    # credential route, so acting on the session needs the CSRF check here.
+    if username and not invite_code:
+        session_user = auth_mgr.session_user_for_request(request)
+        if (
+            session_user
+            and session_user.get("pending")
+            and session_user.get("username") == username
+            and session_csrf_ok(request, request.cookies.get("taos_session", ""))
+        ):
+            record = auth_mgr.find_user(username)
+            invite_code = (record or {}).get("pending_invite") or ""
 
     if not username or not invite_code:
         return JSONResponse({"error": "username and invite_code are required"}, status_code=400)

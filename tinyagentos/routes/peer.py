@@ -19,10 +19,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import urllib.parse
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from tinyagentos.collab_settings import read_collab_settings
 from tinyagentos.contacts_store import generate_peer_token
 from tinyagentos.hub import relationships
 from tinyagentos.hub.identity import fingerprint as _fingerprint
@@ -33,6 +35,7 @@ from tinyagentos.peer import (
     verify_envelope_signature,
 )
 from tinyagentos.rate_limit import MovingWindowLimiter, retry_after_headers
+from tinyagentos.routes.hub import _normalize_endpoints
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +65,33 @@ _limiter = MovingWindowLimiter(_RATE_MAX_PER_WINDOW, _RATE_WINDOW_SECS)
 _rate_hits = _limiter.hits
 # Handshakes are keyed by sender fingerprint, separately from the bearer routes.
 _handshake_limiter = MovingWindowLimiter(_RATE_MAX_PER_WINDOW, _RATE_WINDOW_SECS)
+
+
+def _safe_endpoints(raw) -> list[dict]:
+    """Filter endpoints to only valid http/https dict entries with a hostname.
+
+    Takes the output of _normalize_endpoints and keeps only dict entries whose
+    'url' is a string with scheme 'http' or 'https' and a truthy hostname.
+    Everything else (ints, dicts without url, non-http schemes, etc.) is dropped.
+    """
+    normalized = _normalize_endpoints(raw)
+    kept = []
+    for e in normalized:
+        if not isinstance(e, dict):
+            continue
+        url = e.get("url")
+        if not isinstance(url, str):
+            continue
+        try:
+            parts = urllib.parse.urlsplit(url)
+        except (ValueError, TypeError):
+            continue
+        if parts.scheme not in ("http", "https"):
+            continue
+        if not parts.hostname:
+            continue
+        kept.append(e)
+    return kept
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +152,29 @@ async def _authenticate_peer(request: Request) -> str:
     return contact_id
 
 
+async def _collab_enabled_dep(request: Request) -> None:
+    """Router-level dependency: 503 while the collaboration kill switch is off.
+
+    Runs BEFORE ``_peer_auth_dep``, so a disabled instance does no bearer
+    lookup and no signature work for any caller.  The switch is read from
+    disk on every request so a flip in Settings is immediate.
+
+    Routes outside ``router`` (the handshake route) call this directly.
+    """
+    if not read_collab_settings(request.app.state.data_dir).enabled:
+        raise HTTPException(status_code=503, detail="collaboration disabled")
+
+
+def _raise_if_contact_paused(request: Request, contact_id: str) -> None:
+    """403 when *contact_id* is in the kill switch's paused list.
+
+    Call it once the caller's contact_id is known and before any nonce is
+    recorded, so a paused contact cannot burn nonces.
+    """
+    if read_collab_settings(request.app.state.data_dir).is_paused(contact_id):
+        raise HTTPException(status_code=403, detail="contact paused")
+
+
 async def _peer_auth_dep(request: Request) -> str:
     """Router-level dependency: authenticate EVERY /api/peer route.
 
@@ -131,12 +184,15 @@ async def _peer_auth_dep(request: Request) -> str:
     so route handlers can read it directly.
     """
     contact_id = await _authenticate_peer(request)
+    _raise_if_contact_paused(request, contact_id)
     request.state.peer_contact_id = contact_id
     return contact_id
 
 
-# Apply the dependency to the router now that _peer_auth_dep is defined.
+# Apply the dependencies to the router now that both are defined.  The kill
+# switch goes first so it precedes the bearer lookup.
 router.dependencies.append(Depends(_peer_auth_dep))
+router.dependencies.insert(0, Depends(_collab_enabled_dep))
 
 
 def _reject_legacy_row(contact_id: str, contact_rec: dict) -> None:
@@ -204,8 +260,9 @@ async def peer_handshake(body: PeerEnvelope, request: Request):
     if store is None:
         raise HTTPException(status_code=503, detail="peer channel not available")
 
-    # Kill-switch hook point (card 5): a peer-channel off switch goes here,
-    # before any work is done for an unauthenticated caller.
+    # Collaboration kill switch: before any work is done for an
+    # unauthenticated caller.
+    await _collab_enabled_dep(request)
 
     _enforce_size_cap(request, body.envelope)
     envelope = body.envelope
@@ -230,6 +287,7 @@ async def peer_handshake(body: PeerEnvelope, request: Request):
     except (TypeError, ValueError):
         raise HTTPException(status_code=403, detail="invalid signing key")
     contact_id = f"hub:{fp}"
+    _raise_if_contact_paused(request, contact_id)
     if envelope.get("from") != contact_id:
         raise HTTPException(
             status_code=403, detail="from does not match the signing key fingerprint",
@@ -243,7 +301,7 @@ async def peer_handshake(body: PeerEnvelope, request: Request):
     if not verify_envelope_signature(envelope, signing_pubkey):
         raise HTTPException(status_code=403, detail="invalid signature")
 
-    from tinyagentos.routes.hub import _get_store, _normalize_endpoints
+    from tinyagentos.routes.hub import _get_store
 
     hub = await _get_store(request)
     if await hub.has_edge(fp, relationships.REL_BLOCK) or not (
@@ -273,11 +331,22 @@ async def peer_handshake(body: PeerEnvelope, request: Request):
         peer_fingerprint=fp,
     )
     our_token = generate_peer_token()
+
+    # If a peer link already exists (live or revoked), keep its recorded
+    # endpoints.  A repeat handshake must not allow the sender to rewrite the
+    # SSRF allowance.  Only on first handshake do we accept endpoints from the
+    # envelope, and even then only valid http/https entries with a hostname.
+    existing = await store.get_peer_link(contact_id)
+    if existing is not None:
+        endpoints = existing.get("endpoints") or []
+    else:
+        endpoints = _safe_endpoints(hs.get("endpoints"))
+
     await store.establish_peer_link(
         contact_id=contact_id,
         inbound_token=our_token,
         outbound_token=their_token,
-        endpoints=_normalize_endpoints(hs.get("endpoints")),
+        endpoints=endpoints,
     )
     if not await hub.has_edge(fp, relationships.REL_FRIEND):
         from tinyagentos.hub import identity

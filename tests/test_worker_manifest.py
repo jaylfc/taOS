@@ -27,10 +27,19 @@ class TestSoftwareMapping:
     def test_embed_maps_to_llama_cpp(self):
         assert SOFTWARE_TO_BACKEND_TYPE['embed'] == 'llama-cpp'
 
+    def test_whisper_maps_to_whisper(self):
+        assert SOFTWARE_TO_BACKEND_TYPE['whisper'] == 'whisper'
+
+    def test_kokoro_maps_to_kokoro(self):
+        assert SOFTWARE_TO_BACKEND_TYPE['kokoro'] == 'kokoro'
+
+    def test_moss_maps_to_moss(self):
+        assert SOFTWARE_TO_BACKEND_TYPE['moss'] == 'moss'
+
     def test_unrecognised_software_not_in_mapping(self):
-        """kokoro and whisper are no longer mapped -- no probe candidates exist."""
-        assert 'kokoro' not in SOFTWARE_TO_BACKEND_TYPE
-        assert 'whisper' not in SOFTWARE_TO_BACKEND_TYPE
+        """Software names with no probe candidate stay unmapped."""
+        assert 'bark' not in SOFTWARE_TO_BACKEND_TYPE
+        assert 'piper' not in SOFTWARE_TO_BACKEND_TYPE
 
 
 # ---------------------------------------------------------------------------

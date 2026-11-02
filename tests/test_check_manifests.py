@@ -153,3 +153,107 @@ def test_real_catalog_is_clean() -> None:
     root = Path(__file__).resolve().parent.parent / "app-catalog"
     errors = check_manifests.lint_managed(root)
     assert errors == [], "real catalog failed managed-lint:\n" + "\n".join(errors)
+
+
+# --- #148 Phase 0: model capability-field lint (warn-only) ---
+
+def _model_ok(mid: str = "qwen3-8b") -> dict:
+    return {
+        "id": mid,
+        "name": mid,
+        "type": "model",
+        "version": "1.0.0",
+        "family": "qwen3",
+        "min_context": 4096,
+        "max_context": 131072,
+        "variants": [
+            {
+                "id": "q4",
+                "format": "gguf",
+                "size_mb": 5000,
+                "vram_floor_mb": 6000,
+                "approx_tok_s_by_profile": {"gaming-pc-nvidia": 45.0},
+            }
+        ],
+    }
+
+
+def _write_model(root: Path, mid: str, manifest: dict) -> None:
+    d = root / "models" / mid
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "manifest.yaml").write_text(yaml.safe_dump(manifest))
+
+
+def test_model_fields_complete_passes(tmp_path: Path) -> None:
+    _write_model(tmp_path, "qwen3-8b", _model_ok())
+    warns, errors = check_manifests.lint_model_fields(tmp_path)
+    assert warns == []
+    assert errors == []
+
+
+def test_model_fields_missing_family_warns(tmp_path: Path) -> None:
+    m = _model_ok()
+    del m["family"]
+    _write_model(tmp_path, "qwen3-8b", m)
+    warns, errors = check_manifests.lint_model_fields(tmp_path)
+    assert any("family" in w for w in warns)
+    assert errors == []
+
+
+def test_model_fields_missing_context_warns(tmp_path: Path) -> None:
+    m = _model_ok()
+    del m["min_context"]
+    del m["max_context"]
+    _write_model(tmp_path, "qwen3-8b", m)
+    warns, errors = check_manifests.lint_model_fields(tmp_path)
+    assert any("min_context" in w for w in warns)
+    assert errors == []
+
+
+def test_model_fields_missing_envelope_warns(tmp_path: Path) -> None:
+    m = _model_ok()
+    del m["variants"][0]["vram_floor_mb"]
+    del m["variants"][0]["approx_tok_s_by_profile"]
+    _write_model(tmp_path, "qwen3-8b", m)
+    warns, errors = check_manifests.lint_model_fields(tmp_path)
+    assert any("envelope" in w for w in warns)
+    assert errors == []
+
+
+def test_model_fields_non_model_skipped(tmp_path: Path) -> None:
+    _write(tmp_path, "rkllama", _managed_ok())
+    # lint_model_fields only looks under models/, so the service manifest
+    # is invisible to it.
+    warns, errors = check_manifests.lint_model_fields(tmp_path)
+    assert warns == []
+    assert errors == []
+
+
+def test_malformed_model_yaml_is_an_error(tmp_path: Path) -> None:
+    """Unparseable model YAML must be reported, not silently skipped.
+
+    lint_managed scans only services/, so a ``continue`` here left the gate
+    printing "clean" over a model manifest nothing could read.
+    """
+    d = tmp_path / "models" / "broken"
+    d.mkdir(parents=True)
+    (d / "manifest.yaml").write_text("id: broken\nfamily: {: bad")
+    warns, errors = check_manifests.lint_model_fields(tmp_path)
+    assert any("not valid YAML" in e for e in errors)
+    assert any("broken" in e for e in errors)
+
+
+def test_non_mapping_model_yaml_is_an_error(tmp_path: Path) -> None:
+    d = tmp_path / "models" / "listy"
+    d.mkdir(parents=True)
+    (d / "manifest.yaml").write_text("- id: listy\n")
+    warns, errors = check_manifests.lint_model_fields(tmp_path)
+    assert any("top-level is not a mapping" in e for e in errors)
+
+
+def test_main_fails_the_gate_on_malformed_model(tmp_path: Path) -> None:
+    """The gate must exit non-zero when a model manifest is malformed."""
+    d = tmp_path / "models" / "broken"
+    d.mkdir(parents=True)
+    (d / "manifest.yaml").write_text("id: broken\nfamily: {: bad")
+    assert check_manifests.main(["managed-lint", "--root", str(tmp_path)]) == 1

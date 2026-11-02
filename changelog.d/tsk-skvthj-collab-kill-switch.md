@@ -1,0 +1,1 @@
+- Collaboration kill switch: `GET/PUT /api/settings/collaboration` (admin) sets `enabled` and `paused_contacts`; while disabled every `/api/peer` route answers 503 before any bearer or signature work and collab invites refuse to mint, and a paused contact gets 403 before its nonce is recorded. Pausing deletes nothing.

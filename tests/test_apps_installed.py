@@ -111,7 +111,8 @@ class TestWithRuntimeLocation:
         resp = await client.get("/api/apps/installed")
         assert resp.status_code == 200
         item = next(i for i in resp.json() if i["app_id"] == "svc-subpath")
-        assert item["url"] == "/apps/svc-subpath/app/"
+        # service_proxy prepends ui_path upstream, so the launch URL is the proxy root
+        assert item["url"] == "/apps/svc-subpath/"
 
     @pytest.mark.asyncio
     async def test_display_name_falls_back_to_app_id(self, apps_client):

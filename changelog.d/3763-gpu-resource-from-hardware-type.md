@@ -1,2 +1,3 @@
 ### Fixed
 - Worker: `_collect_resources` now derives the GPU resource class from the hardware `gpu_type` (`nvidia`/`cuda` → `gpu-cuda-0`, `amd`/`rocm` → `gpu-rocm-0`) instead of gating on a live vllm/ollama/exo/mlx backend and hardcoding `gpu-cuda-0` (#3228). A llama.cpp-only NVIDIA worker and any AMD/ROCm worker now advertise their GPU resource, making `POST /api/cluster/leases/claim` succeed against those GPUs.
+- Worker: `npu-rk3588` now requires a live rkllama backend (PR #3242). A declared-but-stopped rkllama no longer counts — same reasoning as CUDA/ROCm. A Pi will advertise only `cpu-inference` while rkllama restarts.
