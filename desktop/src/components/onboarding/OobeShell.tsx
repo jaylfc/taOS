@@ -22,13 +22,15 @@ export function OobeShell({
   const offset = reduce ? 0 : 24 * direction;
   return (
     <div className="oobe-root">
-      <AnimatePresence mode="wait" initial={false} custom={direction}>
+      <AnimatePresence mode="wait" initial={false} custom={offset}>
         <motion.div
           key={stepKey}
           className="oobe-stage"
+          custom={offset}
+          variants={{ exit: (o: number) => ({ opacity: 0, x: -o, filter: reduce ? "none" : "blur(4px)" }) }}
           initial={{ opacity: 0, x: offset, filter: reduce ? "none" : "blur(4px)" }}
           animate={{ opacity: 1, x: 0, filter: "none" }}
-          exit={{ opacity: 0, x: -offset, filter: reduce ? "none" : "blur(4px)" }}
+          exit="exit"
           transition={{ duration: reduce ? 0.15 : 0.28, ease: [0.32, 0.72, 0, 1] }}
         >
           {children}

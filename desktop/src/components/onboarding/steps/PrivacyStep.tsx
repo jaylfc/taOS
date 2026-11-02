@@ -66,7 +66,7 @@ export function PrivacyStep({
     <OobePage
       title="Privacy"
       subtitle="Your chats, files, memory and agents stay on this device. Here is what goes online."
-      onBack={onBack}
+      onBack={busy ? undefined : onBack}
       onSubmit={() => void submit()}
       footer={
         <button type="submit" className="oobe-primary" disabled={!loaded || busy} aria-busy={busy || !loaded}>

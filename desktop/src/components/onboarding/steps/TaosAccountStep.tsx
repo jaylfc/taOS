@@ -84,7 +84,10 @@ export function TaosAccountForm({
   const [error, setError] = useState("");
   const [signupsClosed, setSignupsClosed] = useState(false);
   const mounted = useRef(true);
-  useEffect(() => () => { mounted.current = false; }, []);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   const valid = email.trim().length > 0 && password.length >= 8;
 

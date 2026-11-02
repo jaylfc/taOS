@@ -133,7 +133,10 @@ export function AgentCloud({
               role="radio"
               aria-checked={type === p.type}
               className="oobe-choice"
-              onClick={() => onType(p.type)}
+              onClick={() => {
+                if (p.type !== type) onKey("");
+                onType(p.type);
+              }}
               disabled={busy}
             >
               <span className="oobe-choice-text">
