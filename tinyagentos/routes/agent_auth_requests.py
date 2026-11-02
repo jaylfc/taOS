@@ -1871,6 +1871,10 @@ def _scope_request_audience(app_state, record: dict) -> list[str]:
     try:
         users = auth.list_users() if auth is not None else []
     except Exception:
+        logger.warning(
+            "scope request audience: could not list users, notifying the owner only",
+            exc_info=True,
+        )
         users = []
     for u in users:
         uid = u.get("id")
@@ -1999,19 +2003,26 @@ async def create_scope_request(
             # users who can decide it (approve is owner/admin only) instead of
             # broadcasting it to every user on the instance.
             for recipient in _scope_request_audience(request.app.state, record):
-                await notifs.add(
-                    title="Scope request",
-                    message=f"{handle} is requesting {', '.join(scopes)} on {where}",
-                    level="info",
-                    source="agent_scope_requests",
-                    data={
-                        "request_id": rec["id"],
-                        "canonical_id": canonical_id,
-                        "requested_scopes": list(scopes),
-                        "project_id": rec.get("project_id"),
-                    },
-                    user_id=recipient,
-                )
+                try:
+                    await notifs.add(
+                        title="Scope request",
+                        message=f"{handle} is requesting {', '.join(scopes)} on {where}",
+                        level="info",
+                        source="agent_scope_requests",
+                        data={
+                            "request_id": rec["id"],
+                            "canonical_id": canonical_id,
+                            "requested_scopes": list(scopes),
+                            "project_id": rec.get("project_id"),
+                        },
+                        user_id=recipient,
+                    )
+                except Exception:
+                    # One failed write must not skip the remaining recipients.
+                    logger.warning(
+                        "scope request notification for %s failed", recipient,
+                        exc_info=True,
+                    )
         except Exception:
             pass
 

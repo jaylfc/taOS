@@ -1839,6 +1839,15 @@ async def test_scope_request_notification_reaches_only_owner_and_admins(
     app.state.auth.complete_invite("carol", code, "Carol", "", "carolpass123")
     carol = app.state.auth.find_user("carol")
 
+    # A second admin: AuthManager has no promote call, so add the row to the
+    # user listing the audience reads.
+    real_list_users = app.state.auth.list_users
+    monkeypatch.setattr(
+        app.state.auth,
+        "list_users",
+        lambda: real_list_users() + [{"id": "second-admin", "is_admin": True}],
+    )
+
     # Bob (not an admin) owns the agent; carol is an unrelated user.
     env = await _wire(client, monkeypatch, tmp_path, owner_uid=bob["id"])
     try:
@@ -1858,6 +1867,8 @@ async def test_scope_request_notification_reaches_only_owner_and_admins(
         assert [n["data"]["request_id"] for n in admin_rows] == [req_id]
         assert bob_rows[0]["user_id"] == bob["id"]
         assert admin_rows[0]["user_id"] == env.admin_uid
+        second_rows = await _scope_notifications_for(app, "second-admin")
+        assert [n["user_id"] for n in second_rows] == ["second-admin"]
 
         # Deciding the request retires every addressed copy of the row.
         resp = await client.post(
@@ -1866,5 +1877,6 @@ async def test_scope_request_notification_reaches_only_owner_and_admins(
         assert resp.status_code == 200, resp.text
         assert await _scope_notifications_for(app, bob["id"]) == []
         assert await _scope_notifications_for(app, env.admin_uid) == []
+        assert await _scope_notifications_for(app, "second-admin") == []
     finally:
         await env.close()
