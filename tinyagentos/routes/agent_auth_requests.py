@@ -500,7 +500,9 @@ async def _handle_project_create_request(
     notifs = getattr(request.app.state, "notifications", None)
     if notifs is not None:
         webhook_sent = False
-        for admin_id in _admin_user_ids(request.app.state):
+        # Reuse the admins resolved for the Decision above: a second listing
+        # that failed would leave the request with no alert at all.
+        for admin_id in [u["id"] for u in admins if u.get("id")]:
             try:
                 await notifs.add(
                     title="Project creation request",
