@@ -1859,6 +1859,26 @@ _SCOPE_FILES_SCOPES = _FILES_SCOPES
 _SCOPE_PROJECT_SCOPES = _PROJECT_SCOPES
 
 
+def _scope_request_audience(app_state, record: dict) -> list[str]:
+    """Ids of the users who may decide a scope request for *record*: the
+    agent's owner, then every admin (the approve/deny routes allow exactly
+    these). Empty when nobody can be resolved, so nothing is broadcast."""
+    ids: list[str] = []
+    owner = record.get("user_id")
+    if owner:
+        ids.append(owner)
+    auth = getattr(app_state, "auth", None)
+    try:
+        users = auth.list_users() if auth is not None else []
+    except Exception:
+        users = []
+    for u in users:
+        uid = u.get("id")
+        if u.get("is_admin") and uid and uid not in ids:
+            ids.append(uid)
+    return ids
+
+
 async def _authorize_scope_request_creation(
     request: Request, canonical_id: str, record: dict
 ) -> None:
@@ -1975,18 +1995,23 @@ async def create_scope_request(
                         project = None
                 name = (project or {}).get("name")
                 where = f"project {name or project_id}"
-            await notifs.add(
-                title="Scope request",
-                message=f"{handle} is requesting {', '.join(scopes)} on {where}",
-                level="info",
-                source="agent_scope_requests",
-                data={
-                    "request_id": rec["id"],
-                    "canonical_id": canonical_id,
-                    "requested_scopes": list(scopes),
-                    "project_id": rec.get("project_id"),
-                },
-            )
+            # The row names the agent and the project, so address it to the
+            # users who can decide it (approve is owner/admin only) instead of
+            # broadcasting it to every user on the instance.
+            for recipient in _scope_request_audience(request.app.state, record):
+                await notifs.add(
+                    title="Scope request",
+                    message=f"{handle} is requesting {', '.join(scopes)} on {where}",
+                    level="info",
+                    source="agent_scope_requests",
+                    data={
+                        "request_id": rec["id"],
+                        "canonical_id": canonical_id,
+                        "requested_scopes": list(scopes),
+                        "project_id": rec.get("project_id"),
+                    },
+                    user_id=recipient,
+                )
         except Exception:
             pass
 

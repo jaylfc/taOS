@@ -1816,3 +1816,55 @@ async def test_store_migrates_deny_reason_column_onto_existing_db(tmp_path):
         assert out["deny_reason"] == "not needed"
     finally:
         await store.close()
+
+
+async def _scope_notifications_for(app, user_id: str) -> list[dict]:
+    """Scope-request notification rows *user_id* can read from the bell."""
+    rows = await app.state.notifications.list(limit=100, user_id=user_id)
+    return [n for n in rows if n["source"] == "agent_scope_requests"]
+
+
+@pytest.mark.asyncio
+async def test_scope_request_notification_reaches_only_owner_and_admins(
+    client, monkeypatch, tmp_path
+):
+    """The scope-request bell row names the agent and the project, so it must
+    go only to the users who can act on it (the agent's owner and each admin),
+    never as a broadcast every user on the instance can read."""
+    app = client._transport.app
+    code = app.state.auth.add_user_invite("bob", "admin")
+    app.state.auth.complete_invite("bob", code, "Bob", "", "bobpass123")
+    bob = app.state.auth.find_user("bob")
+    code = app.state.auth.add_user_invite("carol", "admin")
+    app.state.auth.complete_invite("carol", code, "Carol", "", "carolpass123")
+    carol = app.state.auth.find_user("carol")
+
+    # Bob (not an admin) owns the agent; carol is an unrelated user.
+    env = await _wire(client, monkeypatch, tmp_path, owner_uid=bob["id"])
+    try:
+        cid = await _register_active(env)
+        resp = await client.post(
+            f"/api/agents/registry/{cid}/scope-requests",
+            json={"requested_scopes": ["a2a_send"], "reason": "need it"},
+        )
+        assert resp.status_code == 200, resp.text
+        req_id = resp.json()["request_id"]
+
+        assert await _scope_notifications_for(app, carol["id"]) == []
+
+        bob_rows = await _scope_notifications_for(app, bob["id"])
+        admin_rows = await _scope_notifications_for(app, env.admin_uid)
+        assert [n["data"]["request_id"] for n in bob_rows] == [req_id]
+        assert [n["data"]["request_id"] for n in admin_rows] == [req_id]
+        assert bob_rows[0]["user_id"] == bob["id"]
+        assert admin_rows[0]["user_id"] == env.admin_uid
+
+        # Deciding the request retires every addressed copy of the row.
+        resp = await client.post(
+            f"/api/agents/registry/{cid}/scope-requests/{req_id}/deny",
+        )
+        assert resp.status_code == 200, resp.text
+        assert await _scope_notifications_for(app, bob["id"]) == []
+        assert await _scope_notifications_for(app, env.admin_uid) == []
+    finally:
+        await env.close()
