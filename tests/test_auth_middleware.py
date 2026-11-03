@@ -151,7 +151,9 @@ class TestAuthMiddlewareDispatch:
         call_next.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_unconfigured_html_redirects_to_setup(self):
+    async def test_unconfigured_html_redirects_to_desktop_oobe(self):
+        # First boot lands on the SPA, whose OOBE runs the setup; the
+        # server-rendered /auth/setup stays reachable as the no-JS fallback.
         middleware = AuthMiddleware(app=MagicMock())
         req = _request(
             path="/",
@@ -164,7 +166,7 @@ class TestAuthMiddlewareDispatch:
 
         assert isinstance(resp, RedirectResponse)
         assert resp.status_code == 303
-        assert resp.headers["location"] == "/auth/setup"
+        assert resp.headers["location"] == "/desktop"
         call_next.assert_not_awaited()
 
     @pytest.mark.asyncio
