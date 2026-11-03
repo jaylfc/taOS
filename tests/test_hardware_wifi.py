@@ -1277,6 +1277,8 @@ async def test_forget_happy_path_deletes_matching_wifi_profile_only(monkeypatch)
 
     async def fake_busctl(*args):
         busctl_calls.append(args)
+        if args[0] == "get-property" and args[-1] == "WirelessEnabled":
+            return 0, True
         if args[0] == "call" and args[1] == "org.freedesktop.NetworkManager" and args[2] == "/org/freedesktop/NetworkManager/Settings" and args[3] == "org.freedesktop.NetworkManager.Settings" and args[4] == "ListConnections":
             return 0, [
                 "/org/freedesktop/NetworkManager/Settings/1",
@@ -1360,6 +1362,8 @@ async def test_forget_no_matching_profile_returns_404(monkeypatch):
 
     async def fake_busctl(*args):
         busctl_calls.append(args)
+        if args[0] == "get-property" and args[-1] == "WirelessEnabled":
+            return 0, True
         if args[0] == "call" and args[1] == "org.freedesktop.NetworkManager" and args[2] == "/org/freedesktop/NetworkManager/Settings" and args[3] == "org.freedesktop.NetworkManager.Settings" and args[4] == "ListConnections":
             return 0, [
                 "/org/freedesktop/NetworkManager/Settings/1",
@@ -1438,6 +1442,8 @@ async def test_forget_delete_fails_returns_502_write_failed(monkeypatch):
 
     async def fake_busctl(*args):
         busctl_calls.append(args)
+        if args[0] == "get-property" and args[-1] == "WirelessEnabled":
+            return 0, True
         if args[0] == "call" and args[1] == "org.freedesktop.NetworkManager" and args[2] == "/org/freedesktop/NetworkManager/Settings" and args[3] == "org.freedesktop.NetworkManager.Settings" and args[4] == "ListConnections":
             return 0, ["/org/freedesktop/NetworkManager/Settings/1"]
         if args[0] == "call" and args[2] == "/org/freedesktop/NetworkManager/Settings/1" and args[3] == "org.freedesktop.NetworkManager.Settings.Connection" and args[4] == "GetSettings":
