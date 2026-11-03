@@ -570,6 +570,7 @@ async def add_provider(request: Request, body: ProviderCreate):
     # On probe failure we fall back to the per-type seed list (if any)
     # so the entry still registers at least one routable model. The
     # entry is saved either way so the user can refine in Settings.
+    models_source = "supplied"
     if not entry.get("models") and entry.get("type") in CLOUD_TYPES:
         api_key = None
         secret_name = entry.get("api_key_secret")
@@ -588,8 +589,12 @@ async def add_provider(request: Request, body: ProviderCreate):
         discovered = await _discover_provider_models(entry["url"], api_key)
         if discovered:
             entry["models"] = discovered
+            models_source = "discovered"
         elif entry.get("type") in PROVIDER_DEFAULT_MODELS:
             entry["models"] = list(PROVIDER_DEFAULT_MODELS[entry["type"]])
+            models_source = "defaults"
+        else:
+            models_source = "none"
     config.backends.append(entry)
     await save_config_locked(config, config.config_path)
     # Invalidate the models cache so the next dialog open re-reads LiteLLM
@@ -601,7 +606,7 @@ async def add_provider(request: Request, body: ProviderCreate):
         request.app.state.litellm_models_cache_wallclock = 0.0
     except Exception as exc:
         logger.debug("providers: models cache invalidation skipped: %s", exc)
-    return {"status": "added", "name": body.name}
+    return {"status": "added", "name": body.name, "models_source": models_source}
 
 @router.patch("/api/providers/{name}", dependencies=[Depends(require_admin)])
 async def patch_provider(request: Request, name: str, body: ProviderPatch):
