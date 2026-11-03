@@ -43,10 +43,18 @@ class TestPackUnpack:
         ts = Timestamp(1700000000000, 42, "host:user")
         assert unpack(pack(ts)) == ts
 
+    def test_round_trip_hyphen_node(self):
+        ts = Timestamp(1000, 0, node_id("host-a", "my-user"))
+        assert unpack(pack(ts)) == ts
+
     @pytest.mark.parametrize("s", ["", "abc", "000000000000000-000g-node", "000000000000000-0000", "000000000000000-0000-", "00000000000000-0000-node"])
     def test_unpack_refuses(self, s):
         with pytest.raises(ValueError):
             unpack(s)
+
+    def test_unpack_refuses_non_hex_counter(self):
+        with pytest.raises(ValueError):
+            unpack("000000000001000-+0ff-n:u")
 
     def test_sorted_matches_timestamp_order(self):
         timestamps = [
@@ -99,3 +107,11 @@ class TestRecv:
         hlc._last = Timestamp(1000, 0xFFFF, "n")
         with pytest.raises(OverflowError):
             hlc.now()
+
+    def test_wall_tie_uses_larger_counter(self):
+        clock = FakeClock([1000])
+        hlc = HLC("n", clock=clock)
+        hlc._last = Timestamp(1000, 5, "n")
+        remote = Timestamp(1000, 9, "peer")
+        got = hlc.recv(remote)
+        assert got.counter == 10

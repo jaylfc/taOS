@@ -62,21 +62,17 @@ def unpack(s: str) -> Timestamp:
     """
     if not isinstance(s, str):
         raise ValueError("timestamp must be a string")
-    parts = s.split("-")
+    parts = s.split("-", 2)
     if len(parts) != 3:
         raise ValueError(f"malformed timestamp: {s!r}")
     wall_ms_s, counter_s, node = parts
     if len(wall_ms_s) != 15 or not wall_ms_s.isdigit():
         raise ValueError(f"malformed wall_ms: {wall_ms_s!r}")
-    if len(counter_s) != 4:
-        raise ValueError(f"malformed counter: {counter_s!r}")
-    try:
-        counter = int(counter_s, 16)
-    except ValueError:
+    if len(counter_s) != 4 or not all(c in "0123456789abcdef" for c in counter_s):
         raise ValueError(f"malformed counter: {counter_s!r}")
     if not node:
         raise ValueError("empty node id")
-    return Timestamp(int(wall_ms_s), counter, node)
+    return Timestamp(int(wall_ms_s), int(counter_s, 16), node)
 
 
 class HLC:
@@ -113,7 +109,7 @@ class HLC:
         pt = self._clock()
         w = max(self._last.wall_ms, remote.wall_ms, pt)
         if w == self._last.wall_ms == remote.wall_ms:
-            counter = self._last.counter + 1
+            counter = max(self._last.counter, remote.counter) + 1
         elif w == self._last.wall_ms:
             counter = self._last.counter + 1
         elif w == remote.wall_ms:
