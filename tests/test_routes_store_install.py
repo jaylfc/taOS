@@ -9,6 +9,7 @@ import pytest
 
 from tinyagentos.agent_image import base_image_alias
 from tinyagentos.catalog.resolver import DeviceCapability
+from tinyagentos.install_registry import InstallRegistryStore
 from tinyagentos.installers.ollama_installer import OllamaInstaller, resolve_ollama_url
 
 
@@ -1570,6 +1571,8 @@ class TestListInstalled:
 
 
 # ---------------------------------------------------------------------------
+
+
 # Install inputs via inputs object / top-level (legacy LXC path)
 # ---------------------------------------------------------------------------
 
@@ -1655,3 +1658,464 @@ class TestInstallInputs:
             })
         assert resp.status_code == 400
         assert resp.json().get("reason") == "invalid_inputs"
+
+
+# POST /api/store/install-v2 -- install_registry writes (CF-05)
+# ---------------------------------------------------------------------------
+
+
+class TestInstallRegistryWrites:
+    """Every successful legacy install must record a row in install_registry
+    (location_kind + location_ref) so the container-first programme can make
+    that store the single source of "where is this app" truth."""
+
+    async def _setup_ir(self, client, tmp_path):
+        ir = InstallRegistryStore(tmp_path / "ir.db")
+        await ir.init()
+        client._transport.app.state.install_registry = ir
+        return ir
+
+    @pytest.mark.asyncio
+    async def test_docker_legacy_install_writes_host_row(self, client, tmp_path):
+        """A successful docker legacy install records exactly one row:
+        location_kind="host", location_ref="local", item_kind="service",
+        version="1.0.0"."""
+        svc = _make_service_manifest("my-service", method="docker")
+        reg = _make_registry(svc)
+        client._transport.app.state.registry = reg
+        client._transport.app.state.installed_apps = _make_installed_apps()
+
+        ir = await self._setup_ir(client, tmp_path)
+        try:
+            mock_installer = MagicMock()
+            mock_installer.install = AsyncMock(
+                return_value={"success": True, "host_port": 31234},
+            )
+            mock_installer.start = AsyncMock(return_value={"success": True})
+
+            with patch(
+                "tinyagentos.installers.docker_installer.DockerInstaller",
+                return_value=mock_installer,
+            ):
+                resp = await client.post("/api/store/install-v2", json={
+                    "manifest_id": "my-service",
+                })
+            assert resp.status_code == 200
+            assert resp.json()["app_id"] == "my-service"
+
+            rows = await ir.list(item_id="my-service")
+            assert len(rows) == 1
+            assert rows[0]["location_kind"] == "host"
+            assert rows[0]["location_ref"] == "local"
+            assert rows[0]["item_kind"] == "service"
+            assert rows[0]["version"] == "1.0.0"
+        finally:
+            await ir.close()
+
+    @pytest.mark.asyncio
+    async def test_lxc_legacy_install_writes_legacy_lxc_row(self, client, tmp_path):
+        """A successful LXC install records one row with location_kind
+        "legacy_lxc" and location_ref = the installer's container id."""
+        svc = _make_service_manifest("lxc-app", method="lxc")
+        reg = _make_registry(svc)
+        client._transport.app.state.registry = reg
+        client._transport.app.state.installed_apps = _make_installed_apps()
+
+        ir = await self._setup_ir(client, tmp_path)
+        try:
+            mock_lxc = MagicMock()
+            mock_lxc.install = AsyncMock(
+                return_value={
+                    "success": True,
+                    "host_port": 31000,
+                    "container": "taos-svc-lxc-app",
+                },
+            )
+            with patch(
+                "tinyagentos.routes.store_install.LXCInstaller",
+                return_value=mock_lxc,
+            ):
+                resp = await client.post("/api/store/install-v2", json={
+                    "app_id": "lxc-app",
+                    "admin_password": "pw",
+                })
+            assert resp.status_code == 200
+
+            rows = await ir.list(item_id="lxc-app")
+            assert len(rows) == 1
+            assert rows[0]["location_kind"] == "legacy_lxc"
+            assert rows[0]["location_ref"] == "taos-svc-lxc-app"
+        finally:
+            await ir.close()
+
+    @pytest.mark.asyncio
+    async def test_docker_install_succeeds_when_install_registry_is_none(self, client, tmp_path):
+        """install_registry is optional: when it is None the install still
+        returns 200 (the helper no-ops)."""
+        svc = _make_service_manifest("my-service", method="docker")
+        reg = _make_registry(svc)
+        client._transport.app.state.registry = reg
+        client._transport.app.state.installed_apps = _make_installed_apps()
+        client._transport.app.state.install_registry = None
+
+        mock_installer = MagicMock()
+        mock_installer.install = AsyncMock(
+            return_value={"success": True, "host_port": 31234},
+        )
+        mock_installer.start = AsyncMock(return_value={"success": True})
+        with patch(
+            "tinyagentos.installers.docker_installer.DockerInstaller",
+            return_value=mock_installer,
+        ):
+            resp = await client.post("/api/store/install-v2", json={
+                "manifest_id": "my-service",
+            })
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_failed_docker_install_writes_no_row(self, client, tmp_path):
+        """A failed docker install (success=False) writes no install_registry
+        row -- the record call only happens on the success path."""
+        svc = _make_service_manifest("my-service", method="docker")
+        reg = _make_registry(svc)
+        client._transport.app.state.registry = reg
+        client._transport.app.state.installed_apps = _make_installed_apps()
+
+        ir = await self._setup_ir(client, tmp_path)
+        try:
+            mock_installer = MagicMock()
+            mock_installer.install = AsyncMock(
+                return_value={"success": False, "error": "x"},
+            )
+            with patch(
+                "tinyagentos.installers.docker_installer.DockerInstaller",
+                return_value=mock_installer,
+            ):
+                resp = await client.post("/api/store/install-v2", json={
+                    "manifest_id": "my-service",
+                })
+            assert resp.status_code == 500
+
+            rows = await ir.list(item_id="my-service")
+            assert rows == []
+        finally:
+            await ir.close()
+
+    @pytest.mark.asyncio
+    async def test_uninstall_v2_removes_host_row_for_docker(self, client, tmp_path):
+        """After a local docker install and uninstall-v2, the host row is
+        removed from install_registry."""
+        svc = _make_service_manifest("docker-app", method="docker")
+        reg = _make_registry(svc)
+        client._transport.app.state.registry = reg
+        installed_apps = _make_installed_apps()
+        installed_apps.get_runtime_location = AsyncMock(return_value={"runtime_host": "127.0.0.1"})
+        client._transport.app.state.installed_apps = installed_apps
+
+        ir = await self._setup_ir(client, tmp_path)
+        try:
+            mock_installer = MagicMock()
+            mock_installer.install = AsyncMock(
+                return_value={"success": True, "host_port": 31234},
+            )
+            mock_installer.start = AsyncMock(return_value={"success": True})
+            with patch(
+                "tinyagentos.installers.docker_installer.DockerInstaller",
+                return_value=mock_installer,
+            ):
+                resp = await client.post("/api/store/install-v2", json={
+                    "manifest_id": "docker-app",
+                })
+            assert resp.status_code == 200
+
+            rows = await ir.list(item_id="docker-app")
+            assert len(rows) == 1
+            assert rows[0]["location_kind"] == "host"
+            assert rows[0]["location_ref"] == "local"
+
+            # Uninstall via uninstall-v2
+            resp = await client.post("/api/store/uninstall-v2", json={
+                "app_id": "docker-app",
+            })
+            assert resp.status_code == 200
+            assert resp.json()["status"] == "uninstalled"
+
+            rows = await ir.list(item_id="docker-app")
+            assert rows == [], "host row should be removed after uninstall-v2"
+        finally:
+            await ir.close()
+
+    @pytest.mark.asyncio
+    async def test_uninstall_v2_removes_host_row_for_pip(self, client, tmp_path):
+        """After a local pip install and uninstall-v2, the host row is
+        removed from install_registry."""
+        svc = _make_service_manifest("pip-app", method="pip")
+        reg = _make_registry(svc)
+        client._transport.app.state.registry = reg
+        installed_apps = _make_installed_apps()
+        installed_apps.get_runtime_location = AsyncMock(return_value={"runtime_host": "127.0.0.1"})
+        client._transport.app.state.installed_apps = installed_apps
+
+        ir = await self._setup_ir(client, tmp_path)
+        try:
+            mock_installer = MagicMock()
+            mock_installer.install = AsyncMock(
+                return_value={"success": True},
+            )
+            with patch(
+                "tinyagentos.installers.pip_installer.PipInstaller",
+                return_value=mock_installer,
+            ):
+                resp = await client.post("/api/store/install-v2", json={
+                    "manifest_id": "pip-app",
+                })
+            assert resp.status_code == 200
+
+            rows = await ir.list(item_id="pip-app")
+            assert len(rows) == 1
+            assert rows[0]["location_kind"] == "host"
+            assert rows[0]["location_ref"] == "local"
+
+            resp = await client.post("/api/store/uninstall-v2", json={
+                "app_id": "pip-app",
+            })
+            assert resp.status_code == 200
+            assert resp.json()["status"] == "uninstalled"
+
+            rows = await ir.list(item_id="pip-app")
+            assert rows == [], "host row should be removed after uninstall-v2"
+        finally:
+            await ir.close()
+
+    @pytest.mark.asyncio
+    async def test_uninstall_v2_preserves_legacy_lxc_row(self, client, tmp_path):
+        """An LXC install's legacy_lxc row survives uninstall-v2 (only host
+        rows are removed for local uninstalls)."""
+        svc = _make_service_manifest("lxc-app", method="lxc")
+        reg = _make_registry(svc)
+        client._transport.app.state.registry = reg
+        installed_apps = _make_installed_apps()
+        installed_apps.get_runtime_location = AsyncMock(return_value={"runtime_host": "127.0.0.1"})
+        client._transport.app.state.installed_apps = installed_apps
+
+        ir = await self._setup_ir(client, tmp_path)
+        try:
+            mock_lxc = MagicMock()
+            mock_lxc.install = AsyncMock(
+                return_value={
+                    "success": True,
+                    "host_port": 31000,
+                    "container": "taos-svc-lxc-app",
+                },
+            )
+            mock_lxc.uninstall = AsyncMock(return_value={"success": True})
+            with patch(
+                "tinyagentos.routes.store_install.LXCInstaller",
+                return_value=mock_lxc,
+            ):
+                resp = await client.post("/api/store/install-v2", json={
+                    "app_id": "lxc-app",
+                    "admin_password": "pw",
+                })
+                assert resp.status_code == 200
+
+                rows = await ir.list(item_id="lxc-app")
+                assert len(rows) == 1
+                assert rows[0]["location_kind"] == "legacy_lxc"
+
+                resp = await client.post("/api/store/uninstall-v2", json={
+                    "app_id": "lxc-app",
+                })
+                assert resp.status_code == 200
+
+                rows = await ir.list(item_id="lxc-app")
+                assert len(rows) == 1, "legacy_lxc row should survive uninstall-v2"
+                assert rows[0]["location_kind"] == "legacy_lxc"
+        finally:
+            await ir.close()
+
+    @pytest.mark.asyncio
+    async def test_script_install_writes_host_row(self, client, tmp_path):
+        """A successful script-method install records a host row."""
+        svc = _make_service_manifest("script-app", method="script")
+        svc.install = {"method": "script", "script": "scripts/noop.sh"}
+        svc.requires = {"ports": [7833]}
+        reg = _make_registry(svc)
+        client._transport.app.state.registry = reg
+        client._transport.app.state.installed_apps = _make_installed_apps()
+
+        ir = await self._setup_ir(client, tmp_path)
+        try:
+            mock_installer = MagicMock()
+            mock_installer.install = AsyncMock(
+                return_value={"success": True, "app_id": "script-app", "method": "script"},
+            )
+            with patch(
+                "tinyagentos.routes.store_install.get_installer",
+                return_value=mock_installer,
+            ):
+                resp = await client.post("/api/store/install-v2", json={
+                    "manifest_id": "script-app",
+                })
+            assert resp.status_code == 200
+
+            rows = await ir.list(item_id="script-app")
+            assert len(rows) == 1
+            assert rows[0]["location_kind"] == "host"
+            assert rows[0]["location_ref"] == "local"
+        finally:
+            await ir.close()
+
+
+# ---------------------------------------------------------------------------
+# POST /api/store/uninstall (routes/store.py) -- install_registry writes
+# ---------------------------------------------------------------------------
+
+
+class TestUninstallStoreRoute:
+    """Mirror of TestInstallRegistryWrites uninstall tests for the
+    /api/store/uninstall route (routes/store.py)."""
+
+    async def _setup_ir(self, client, tmp_path):
+        ir = InstallRegistryStore(tmp_path / "ir.db")
+        await ir.init()
+        client._transport.app.state.install_registry = ir
+        return ir
+
+    @pytest.mark.asyncio
+    async def test_uninstall_removes_host_row_for_docker(self, client, tmp_path):
+        """After a local docker install and uninstall, the host row is
+        removed from install_registry."""
+        svc = _make_service_manifest("docker-app", method="docker")
+        reg = _make_registry(svc)
+        client._transport.app.state.registry = reg
+        installed_apps = _make_installed_apps()
+        installed_apps.get_runtime_location = AsyncMock(return_value={"runtime_host": "127.0.0.1"})
+        client._transport.app.state.installed_apps = installed_apps
+
+        ir = await self._setup_ir(client, tmp_path)
+        try:
+            mock_installer = MagicMock()
+            mock_installer.install = AsyncMock(
+                return_value={"success": True, "host_port": 31234},
+            )
+            mock_installer.start = AsyncMock(return_value={"success": True})
+            with patch(
+                "tinyagentos.installers.docker_installer.DockerInstaller",
+                return_value=mock_installer,
+            ):
+                resp = await client.post("/api/store/install-v2", json={
+                    "manifest_id": "docker-app",
+                })
+            assert resp.status_code == 200
+
+            rows = await ir.list(item_id="docker-app")
+            assert len(rows) == 1
+            assert rows[0]["location_kind"] == "host"
+            assert rows[0]["location_ref"] == "local"
+
+            # Uninstall via /api/store/uninstall (store.py route)
+            resp = await client.post("/api/store/uninstall", json={
+                "app_id": "docker-app",
+            })
+            assert resp.status_code == 200
+            assert resp.json()["status"] == "uninstalled"
+
+            rows = await ir.list(item_id="docker-app")
+            assert rows == [], "host row should be removed after uninstall"
+        finally:
+            await ir.close()
+
+    @pytest.mark.asyncio
+    async def test_uninstall_removes_host_row_for_pip(self, client, tmp_path):
+        """After a local pip install and uninstall, the host row is
+        removed from install_registry."""
+        svc = _make_service_manifest("pip-app", method="pip")
+        reg = _make_registry(svc)
+        client._transport.app.state.registry = reg
+        installed_apps = _make_installed_apps()
+        installed_apps.get_runtime_location = AsyncMock(return_value={"runtime_host": "127.0.0.1"})
+        client._transport.app.state.installed_apps = installed_apps
+
+        ir = await self._setup_ir(client, tmp_path)
+        try:
+            mock_installer = MagicMock()
+            mock_installer.install = AsyncMock(
+                return_value={"success": True},
+            )
+            with patch(
+                "tinyagentos.installers.pip_installer.PipInstaller",
+                return_value=mock_installer,
+            ):
+                resp = await client.post("/api/store/install-v2", json={
+                    "manifest_id": "pip-app",
+                })
+            assert resp.status_code == 200
+
+            rows = await ir.list(item_id="pip-app")
+            assert len(rows) == 1
+            assert rows[0]["location_kind"] == "host"
+            assert rows[0]["location_ref"] == "local"
+
+            resp = await client.post("/api/store/uninstall", json={
+                "app_id": "pip-app",
+            })
+            assert resp.status_code == 200
+            assert resp.json()["status"] == "uninstalled"
+
+            rows = await ir.list(item_id="pip-app")
+            assert rows == [], "host row should be removed after uninstall"
+        finally:
+            await ir.close()
+
+    @pytest.mark.asyncio
+    async def test_uninstall_preserves_legacy_lxc_row(self, client, tmp_path):
+        """An LXC install's legacy_lxc row survives uninstall (only host
+        rows are removed for local uninstalls)."""
+        svc = _make_service_manifest("lxc-app", method="lxc")
+        reg = _make_registry(svc)
+        client._transport.app.state.registry = reg
+        installed_apps = _make_installed_apps()
+        installed_apps.get_runtime_location = AsyncMock(return_value={"runtime_host": "127.0.0.1"})
+        client._transport.app.state.installed_apps = installed_apps
+
+        ir = await self._setup_ir(client, tmp_path)
+        try:
+            mock_lxc = MagicMock()
+            mock_lxc.install = AsyncMock(
+                return_value={
+                    "success": True,
+                    "host_port": 31000,
+                    "container": "taos-svc-lxc-app",
+                },
+            )
+            mock_lxc.uninstall = AsyncMock(return_value={"success": True})
+            with patch(
+                "tinyagentos.routes.store_install.LXCInstaller",
+                return_value=mock_lxc,
+            ), patch(
+                "tinyagentos.routes.store.get_installer",
+                return_value=mock_lxc,
+            ):
+                resp = await client.post("/api/store/install-v2", json={
+                    "app_id": "lxc-app",
+                    "admin_password": "pw",
+                })
+                assert resp.status_code == 200
+
+                rows = await ir.list(item_id="lxc-app")
+                assert len(rows) == 1
+                assert rows[0]["location_kind"] == "legacy_lxc"
+
+                resp = await client.post("/api/store/uninstall", json={
+                    "app_id": "lxc-app",
+                })
+                assert resp.status_code == 200
+
+                rows = await ir.list(item_id="lxc-app")
+                assert len(rows) == 1, "legacy_lxc row should survive uninstall"
+                assert rows[0]["location_kind"] == "legacy_lxc"
+        finally:
+            await ir.close()
+
+

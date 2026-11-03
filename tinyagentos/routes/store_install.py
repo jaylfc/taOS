@@ -204,6 +204,46 @@ async def _resolve_host(target_remote: str | None) -> str:
     return target_remote
 
 
+async def _record_install_location(request: Request, app_id: str, manifest, version: str,
+                                   location_kind: str, location_ref: str) -> None:
+    """Write a row to install_registry (the container-first source of truth).
+
+    Best-effort: a missing or failing store never breaks the install path.
+    """
+    store = getattr(request.app.state, "install_registry", None)
+    if store is None:
+        return
+    try:
+        await store.record(
+            item_id=app_id,
+            item_kind=str(getattr(manifest, "type", "") or "app"),
+            version=str(version or ""),
+            location_kind=location_kind,
+            location_ref=location_ref,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("install_registry write failed for %s", app_id, exc_info=True)
+
+
+async def forget_install_location(request: Request, app_id: str, location_kind: str,
+                                   location_ref: str) -> None:
+    """Remove install_registry rows for a local host uninstall.
+
+    Best-effort: a missing or failing store never breaks the uninstall path.
+    Only deletes rows matching the given location_kind and location_ref.
+    """
+    store = getattr(request.app.state, "install_registry", None)
+    if store is None:
+        return
+    try:
+        rows = await store.list(item_id=app_id, location_ref=location_ref)
+        for row in rows:
+            if row.get("location_kind") == location_kind:
+                await store.delete(row["id"])
+    except Exception:  # noqa: BLE001
+        logger.warning("install_registry delete failed for %s", app_id, exc_info=True)
+
+
 def _get_current_user(request: Request) -> dict | None:
     """Return the currently authenticated user or None."""
     auth = getattr(request.app.state, "auth", None)
@@ -519,6 +559,13 @@ async def _legacy_install(request: Request, body: dict, app_id: str | None, targ
             version = body.get("version") or (getattr(manifest, "version", "") if manifest else "")
             registry.mark_installed(app_id, version)
         resp_target = _target_remote or "local"
+        await _record_install_location(
+            request, app_id, manifest,
+            body.get("version") or (getattr(manifest, "version", "") if manifest else ""),
+            "legacy_lxc",
+            f"{_target_remote}:{result.get('container') or 'taos-svc-' + app_id}"
+            if _target_remote else result.get("container") or f"taos-svc-{app_id}",
+        )
         return JSONResponse({"ok": True, "app_id": app_id, "status": "installed", "target_remote": resp_target, **result})
 
     # script — host-side backend/plugin manifests (e.g. ollama, rkllama,
@@ -561,6 +608,16 @@ async def _legacy_install(request: Request, body: dict, app_id: str | None, targ
         if registry is not None:
             version = body.get("version") or (getattr(manifest, "version", "") if manifest else "")
             registry.mark_installed(app_id, version)
+        # Record the install location for script installs (host/local) so
+        # they appear in GET /api/installs, matching the docker/pip fall-through.
+        raw_remote = body.get("target_remote") or install_config.get("target_remote") or ""
+        _target_remote = raw_remote if raw_remote and raw_remote != "local" else None
+        await _record_install_location(
+            request, app_id, manifest,
+            body.get("version") or (getattr(manifest, "version", "") if manifest else ""),
+            "host",
+            _target_remote or "local",
+        )
         return JSONResponse({"ok": True, "app_id": app_id, "status": "installed", **inst_result})
 
     # docker / pip — actually run the installer.
@@ -714,6 +771,12 @@ async def _legacy_install(request: Request, body: dict, app_id: str | None, targ
     if registry is not None:
         version = body.get("version") or (getattr(manifest, "version", "") if manifest else "")
         registry.mark_installed(app_id, version)
+    await _record_install_location(
+        request, app_id, manifest,
+        body.get("version") or (getattr(manifest, "version", "") if manifest else ""),
+        "host",
+        _target_remote or "local",
+    )
     return JSONResponse({"ok": True, "app_id": app_id, "status": "installed"})
 
 
@@ -1228,6 +1291,14 @@ async def uninstall_app(request: Request):
     await store.remove_runtime_location(app_id)
     if registry is not None:
         registry.mark_uninstalled(app_id)
+    # Remove the install_registry row for local host installs (docker/pip/script).
+    # LXC installs use location_kind="legacy_lxc" and are not removed here.
+    # Remote installs (runtime_host != 127.0.0.1) are not removed here either,
+    # since one app may be installed on several remotes and we cannot yet
+    # tell which one was removed.
+    is_local = (_runtime_loc is None) or (_runtime_loc.get("runtime_host") in (None, "", "127.0.0.1"))
+    if backend != "lxc" and is_local:
+        await forget_install_location(request, app_id, "host", "local")
     resp: dict = {"ok": removed, "app_id": app_id, "status": "uninstalled" if removed else "not_installed"}
     return JSONResponse(resp)
 
