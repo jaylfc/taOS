@@ -1471,25 +1471,27 @@ async def test_forget_delete_fails_returns_502_write_failed(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_forget_non_admin_returns_403(monkeypatch):
-    """Forget route requires admin (403 when not admin)."""
-    async def fake_busctl(*args):
-        raise AssertionError(f"busctl should not be called for non-admin: {args}")
+    """Forget route requires admin."""
+    from tinyagentos.auth_context import require_admin
 
-    monkeypatch.setattr(hw_routes, "busctl", fake_busctl)
-
-    # Simulate non-admin by calling the handler directly without the Depends
-    # The actual admin check is done by FastAPI's Depends, so we test that the
-    # route function exists and would be gated. We just verify the function is defined.
-    assert hasattr(hw_routes, "wifi_forget")
+    route = None
+    for r in hw_routes.router.routes:
+        if getattr(r, "path", None) == "/api/hardware/wifi/forget":
+            route = r
+            break
+    assert route is not None
+    assert require_admin in [d.dependency for d in route.dependencies]
 
 
 @pytest.mark.asyncio
 async def test_scan_non_admin_returns_403(monkeypatch):
-    """Scan route requires admin (403 when not admin)."""
-    async def fake_busctl(*args):
-        raise AssertionError(f"busctl should not be called for non-admin: {args}")
+    """Scan route requires admin."""
+    from tinyagentos.auth_context import require_admin
 
-    monkeypatch.setattr(hw_routes, "busctl", fake_busctl)
-
-    # Same as above - verify the function exists
-    assert hasattr(hw_routes, "wifi_scan")
+    route = None
+    for r in hw_routes.router.routes:
+        if getattr(r, "path", None) == "/api/hardware/wifi/scan":
+            route = r
+            break
+    assert route is not None
+    assert require_admin in [d.dependency for d in route.dependencies]

@@ -485,8 +485,11 @@ async def wifi_scan(body: WifiScanBody):
             "0",
         )
         if rc != 0:
-            return _scan_failed_response()
+            continue
         scanning_ifaces.append(iface)
+
+    if not scanning_ifaces:
+        return _scan_failed_response()
 
     return JSONResponse({"ok": True, "scanning": scanning_ifaces}, status_code=202)
 
@@ -496,6 +499,16 @@ async def wifi_forget(body: WifiForgetBody):
     ssid_bytes = body.ssid.encode("utf-8")
     if not (1 <= len(ssid_bytes) <= 32):
         return JSONResponse({"error": "invalid_ssid"}, status_code=422)
+
+    rc, _ = await busctl(
+        "get-property",
+        "org.freedesktop.NetworkManager",
+        "/org/freedesktop/NetworkManager",
+        "org.freedesktop.NetworkManager",
+        "WirelessEnabled",
+    )
+    if rc != 0:
+        return _nm_unavailable_response()
 
     rc, connections_data = await busctl(
         "call",
@@ -541,6 +554,12 @@ async def wifi_forget(body: WifiForgetBody):
         conn_type = _unwrap_variant(conn_type)
         if conn_type != "802-11-wireless":
             continue
+
+        if isinstance(conn_section, dict):
+            permissions = conn_section.get("permissions")
+            permissions = _unwrap_variant(permissions)
+            if isinstance(permissions, list) and len(permissions) > 0:
+                continue
 
         wireless_section = settings.get("802-11-wireless")
         ssid_variant = wireless_section.get("ssid") if isinstance(wireless_section, dict) else None
