@@ -31,6 +31,7 @@ export function ModelStep({
 }) {
   const [phase, setPhase] = useState<Phase>({ kind: "loading" });
   const [choice, setChoice] = useState<OnDeviceChoice | null>(null);
+  const downloadId = useRef<string | undefined>(undefined);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
   const mounted = useRef(true);
 
@@ -73,6 +74,7 @@ export function ModelStep({
       if (!mounted.current) return;
       setPhase({ kind: "downloading", percent: 0 });
       const id = String(data.download_id);
+      downloadId.current = id;
       timer.current = setInterval(() => void poll(id), POLL_MS);
       void poll(id);
     } catch (e) {
@@ -99,7 +101,13 @@ export function ModelStep({
     }
   }
 
-  const taken = () => choice && onDone({ ...choice, downloaded: phase.kind === "ready" });
+  const taken = () =>
+    choice &&
+    onDone({
+      ...choice,
+      downloaded: phase.kind === "ready",
+      ...(phase.kind !== "ready" && downloadId.current ? { download_id: downloadId.current } : {}),
+    });
 
   let primary: { label: string; busy?: boolean; disabled?: boolean; act: () => void };
   switch (phase.kind) {

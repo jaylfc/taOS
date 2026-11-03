@@ -8,7 +8,7 @@ import { DEFAULT_ABOUT, buildSoulMd, suggestedPrompts, type AboutYou } from "./a
 import { AboutHelpStep, AboutStyleStep } from "./steps/AboutYouStep";
 import { DeviceStep } from "./steps/DeviceStep";
 import { ModelStep } from "./steps/ModelStep";
-import type { OnDeviceChoice } from "./model";
+import { waitForDownload, type OnDeviceChoice } from "./model";
 import { AgentCloud, AgentIntro, AgentModelPick } from "./steps/AgentStep";
 import { HopError, SETUP_PROVIDERS, addProvider, providerModels, saveKey, setAgentModel } from "./agent";
 import type { AggregatedModel } from "@/lib/models";
@@ -84,6 +84,8 @@ export function Oobe({
   const [providerList, setProviderList] = useState<string[]>([]);
   const [clusterModels, setClusterModels] = useState<AggregatedModel[]>([]);
   const [assistantName, setAssistantName] = useState(DEFAULT_ASSISTANT_NAME);
+  /** Percent of the on-device model still downloading when the first chat starts. */
+  const [downloading, setDownloading] = useState<number | undefined>();
   const firstChat = useRef<{ agent: string } | undefined>(resume?.first_chat);
   // One per visit: a retry after a lost answer gets the same deploy back.
   const deployKey = useRef(newIdempotencyKey());
@@ -192,6 +194,18 @@ export function Oobe({
     setError("");
     let agent: string;
     try {
+      // The model step lets the user continue while it downloads: the deploy
+      // must not start on a model that is not on the device yet.
+      const onDevice = model.current;
+      if (onDevice && onDevice.app_id === modelId && !onDevice.downloaded) {
+        setDownloading(0);
+        try {
+          await waitForDownload(onDevice, setDownloading);
+        } finally {
+          setDownloading(undefined);
+        }
+        model.current = { ...onDevice, downloaded: true, download_id: undefined };
+      }
       const framework = await deviceFramework();
       const who = fullName.trim() || (await ownerName());
       agent = await deployAssistant(
@@ -472,6 +486,7 @@ export function Oobe({
           name={assistantName}
           prompts={suggestedPrompts(about)}
           busy={busy}
+          downloading={downloading}
           error={error}
           onName={setAssistantName}
           onBack={back}

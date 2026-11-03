@@ -6,6 +6,8 @@
  * model x harness tool-calling bench, and its winner goes first here once
  * it is in the catalog. Until then, small models with good tool calling lead.
  */
+import { HopError } from "./agent";
+
 export const PREFERRED = ["qwen3-1.7b", "gemma-3-1b", "llama-3.2-1b", "qwen2.5-1.5b"];
 
 export interface CatalogVariant {
@@ -32,6 +34,8 @@ export interface OnDeviceChoice {
   name: string;
   size_mb: number;
   downloaded: boolean;
+  /** The download setup started, while it is still running. */
+  download_id?: string;
 }
 
 /** A GGUF that fits comfortably; NPU-only builds (rkllama) need their own runtime. */
@@ -89,5 +93,36 @@ export function parseChoice(raw: unknown): OnDeviceChoice | undefined {
     name: typeof r.name === "string" ? r.name : r.app_id,
     size_mb: typeof r.size_mb === "number" ? r.size_mb : 0,
     downloaded: r.downloaded === true,
+    ...(typeof r.download_id === "string" ? { download_id: r.download_id } : {}),
   };
+}
+
+/**
+ * Waits for the on-device model's download to finish, so nothing is set up
+ * to run on a model that is not there yet. Without a recorded id it uses the
+ * one POST /api/models/download derives (app_id-variant_id). No record at all
+ * (a restart dropped it) ends the wait: the deploy then says whether the
+ * model is there.
+ */
+export async function waitForDownload(
+  choice: OnDeviceChoice,
+  onProgress: (percent: number) => void,
+  pollMs = 3000,
+): Promise<void> {
+  if (choice.downloaded) return;
+  const id = choice.download_id ?? `${choice.app_id}-${choice.variant_id}`;
+  for (;;) {
+    let task: { status?: string; percent?: number; error?: string } | undefined;
+    try {
+      const res = await fetch(`/api/models/downloads/${encodeURIComponent(id)}`, { credentials: "include" });
+      if (res.status === 404) return;
+      if (res.ok) task = await res.json();
+    } catch {
+      /* a missed poll is retried on the next tick */
+    }
+    if (task?.status === "complete") return;
+    if (task?.status === "error") throw new HopError(`${choice.name} didn't finish downloading: ${task.error || "the download failed"}.`);
+    if (task) onProgress(Number(task.percent) || 0);
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
 }

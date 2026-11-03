@@ -10,6 +10,7 @@ export function FirstChatStep({
   name,
   prompts,
   busy,
+  downloading,
   error,
   onName,
   onBack,
@@ -19,6 +20,8 @@ export function FirstChatStep({
   name: string;
   prompts: string[];
   busy: boolean;
+  /** Percent, while the on-device model finishes downloading first. */
+  downloading?: number;
   error: string;
   onName: (v: string) => void;
   onBack: () => void;
@@ -36,7 +39,11 @@ export function FirstChatStep({
       footer={
         <>
           <button type="submit" className="oobe-primary" disabled={Boolean(invalid) || busy} aria-busy={busy}>
-            {busy ? "Setting up..." : "Continue"}
+            {downloading !== undefined
+              ? `Downloading the model, ${Math.round(downloading)}%...`
+              : busy
+                ? "Setting up..."
+                : "Continue"}
           </button>
           <button type="button" className="oobe-secondary" onClick={onSkip} disabled={busy}>
             Set Up Later

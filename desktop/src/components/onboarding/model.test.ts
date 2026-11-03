@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { formatSize, parseChoice, pickOnDeviceModel, type CatalogModel } from "./model";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { formatSize, parseChoice, pickOnDeviceModel, waitForDownload, type CatalogModel } from "./model";
 
 const gguf = (id: string, size_mb: number, compatibility = "green", extra = {}) => ({
   id,
@@ -79,5 +79,53 @@ describe("on-device model pick", () => {
     });
     expect(parseChoice({ app_id: "a" })).toBeUndefined();
     expect(parseChoice("a")).toBeUndefined();
+  });
+});
+
+describe("waitForDownload", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const choice = { app_id: "m", variant_id: "q4", name: "M", size_mb: 900, downloaded: false };
+  function tasks(...replies: [number, unknown][]) {
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      urls.push(url);
+      const [status, body] = replies.length > 1 ? replies.shift()! : replies[0];
+      return new Response(JSON.stringify(body), { status });
+    }));
+    return urls;
+  }
+
+  it("resolves only once the download reports complete, with progress on the way", async () => {
+    const urls = tasks([200, { status: "downloading", percent: 40 }], [200, { status: "complete", percent: 100 }]);
+    const seen: number[] = [];
+    await waitForDownload(choice, (p) => seen.push(p), 0);
+    expect(urls).toEqual(["/api/models/downloads/m-q4", "/api/models/downloads/m-q4"]);
+    expect(seen).toContain(40);
+  });
+
+  it("uses the download id the step recorded", async () => {
+    const urls = tasks([200, { status: "complete" }]);
+    await waitForDownload({ ...choice, download_id: "dl-7" }, () => {}, 0);
+    expect(urls).toEqual(["/api/models/downloads/dl-7"]);
+  });
+
+  it("names the download's error when it failed", async () => {
+    tasks([200, { status: "error", error: "Disk full" }]);
+    await expect(waitForDownload(choice, () => {}, 0)).rejects.toThrow(/Disk full/);
+  });
+
+  it("does not wait for a model that is already on the device", async () => {
+    const urls = tasks([200, { status: "downloading" }]);
+    await waitForDownload({ ...choice, downloaded: true }, () => {}, 0);
+    expect(urls).toEqual([]);
+  });
+
+  it("stops waiting when the server has no record, so the deploy itself decides", async () => {
+    tasks([404, { error: "not found" }]);
+    await expect(waitForDownload(choice, () => {}, 0)).resolves.toBeUndefined();
+  });
+
+  it("keeps the download id through a saved-progress round trip", () => {
+    expect(parseChoice({ ...choice, download_id: "dl-7" })?.download_id).toBe("dl-7");
   });
 });
