@@ -1450,6 +1450,7 @@ export function MessagesApp({
   * the remembered/A2A channel for the new project, or clear the selection.
   */
   useEffect(() => {
+    if (backedOutRef.current) return;
     if (!scope?.projectId) return;
     if (channels.length === 0) return;
     const selectedStillVisible =
@@ -1463,6 +1464,13 @@ export function MessagesApp({
     const a2aId = findA2aChannelId(channels);
     setSelectedChannel(a2aId ?? null);
   }, [scope?.projectId, channels, selectedChannel]);
+
+  /* ---- clear the Back-out guard when the project scope changes ----
+  * The guard stops the default-select effect from re-picking a channel
+  * right after the user backed out; it only applies within one project. */
+  useEffect(() => {
+    backedOutRef.current = false;
+  }, [scope?.projectId]);
 
   /* ---- persist last-selected channel per project ----
   * Split from the channel-join effect so we only write when we know the
@@ -2289,7 +2297,8 @@ export function MessagesApp({
   /*  Message area                                                     */
   /* ---------------------------------------------------------------- */
 
-  const mobileParty = describeChannelParty(currentChannel, liveAgents, "kind");
+  const mobileParty = describeChannelParty(currentChannel, liveAgents, "kind", archivedAgents);
+  const backedOutRef = useRef(false);
 
   const messageAreaUI = busSelected ? (
     <A2aBusMessageView channel={busSelected} />
@@ -2315,7 +2324,7 @@ export function MessagesApp({
         >
           <button
             type="button"
-            onClick={() => { setSelectedChannel(null); setBusSelected(null); }}
+            onClick={() => { backedOutRef.current = true; setSelectedChannel(null); setBusSelected(null); }}
             aria-label="Back to chats"
             className="h-10 w-10 shrink-0 rounded-xl flex items-center justify-center border border-shell-border bg-shell-surface backdrop-blur-xl text-shell-text active:opacity-60"
           >
@@ -2629,7 +2638,7 @@ className="shrink-0 p-0.5 rounded hover:bg-shell-surface-active transition-color
       <div className="flex-1 min-h-0 overflow-hidden">
         <MobileSplitView
           selectedId={selectedChannel ?? busSelected}
-          onBack={() => { setSelectedChannel(null); setBusSelected(null); }}
+          onBack={() => { backedOutRef.current = true; setSelectedChannel(null); setBusSelected(null); }}
           listTitle="Messages"
           // On mobile the in-pane channel header already shows the channel name
           // (and its toolbar), so suppressing the nav title removes the doubled
@@ -2776,7 +2785,7 @@ className="shrink-0 p-0.5 rounded hover:bg-shell-surface-active transition-color
       {showSwitcher && (
         <ChannelSwitcher
           channels={channels.map((c) => ({ id: c.id, name: c.name }))}
-          onSelect={(id) => setSelectedChannel(id)}
+          onSelect={(id) => { backedOutRef.current = false; setSelectedChannel(id); }}
           onClose={() => setShowSwitcher(false)}
         />
       )}

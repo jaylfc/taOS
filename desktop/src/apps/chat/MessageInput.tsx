@@ -206,7 +206,8 @@ export function MessageInput({
   if (isMobile) {
     const party = describeChannelParty(channel, liveAgents, "runtime");
     const hasContent = value.trim().length > 0 || pendingAttachments.length > 0;
-    const canSend = !isArchived && hasContent && !pendingAttachments.some((a) => a.uploading);
+    const hasFailedAttachment = pendingAttachments.some((a) => a.error);
+    const canSend = !isArchived && hasContent && !pendingAttachments.some((a) => a.uploading) && !hasFailedAttachment;
     const placeholder = isArchived
       ? "This chat is archived"
       : `Message ${party.title || channel?.name || ""}`.trimEnd();
@@ -394,7 +395,7 @@ export function MessageInput({
                       <Picker
                         theme={Theme.DARK}
                         width={300}
-                        height={360}
+                        height={Math.min(360, Math.round((window.visualViewport?.height ?? window.innerHeight) * 0.5))}
                         onEmojiClick={(d) => insertEmoji(d.emoji)}
                       />
                     </div>
@@ -418,6 +419,8 @@ export function MessageInput({
       </>
     );
   }
+
+  const hasFailedAttachment = pendingAttachments.some((a) => a.error);
 
   return (
     <>
@@ -479,7 +482,8 @@ export function MessageInput({
               disabled={
                 (!value.trim() && pendingAttachments.length === 0) ||
                 isArchived ||
-                pendingAttachments.some((a) => a.uploading)
+                pendingAttachments.some((a) => a.uploading) ||
+                hasFailedAttachment
               }
               className="h-8 w-8 shrink-0 mb-0.5"
               aria-label="Send message"

@@ -402,7 +402,7 @@ describe("MessageInput", () => {
       render(<MessageInput {...mobile()} />);
       const card = screen.getByTestId("mobile-composer");
       expect(within(card).getByText("design")).toBeInTheDocument();
-      expect(within(card).getByText("4 people")).toBeInTheDocument();
+      expect(within(card).getByText("4 members")).toBeInTheDocument();
       expect(screen.getByPlaceholderText("Message design")).toBeInTheDocument();
     });
 
