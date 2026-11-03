@@ -1,0 +1,3 @@
+### Fixed
+
+- install_registry row accuracy for legacy installs: `download`, `huggingface` and `ollama` installs no longer write a host row (they install models and assets, not running apps); docker and pip installs always record `location_ref="local"` on the controller even when a target remote was requested; script installs record the controller location (`"local"`) instead of the requested remote; `POST /api/store/uninstall` no longer fails the uninstall when the runtime-location read raises, and always deletes the local host row for non-LXC uninstalls even when a remote runtime row exists (remote and `legacy_lxc` rows are left untouched).

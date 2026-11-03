@@ -574,9 +574,21 @@ async def uninstall_app(request: Request, body: UninstallRequest):
     store_for_loc = getattr(request.app.state, "installed_apps", None)
     runtime_loc = None
     if store_for_loc is not None:
-        runtime_loc = await store_for_loc.get_runtime_location(body.app_id)
+        try:
+            runtime_loc = await store_for_loc.get_runtime_location(body.app_id)
+        except Exception:  # noqa: BLE001
+            # A failing runtime-location read must never fail the uninstall
+            # itself; treat the app as local and proceed with the host-row
+            # cleanup anyway (#4132 follow-up).
+            runtime_loc = None
     is_local = (runtime_loc is None) or (runtime_loc.get("runtime_host") in (None, "", "127.0.0.1"))
-    if method != "lxc" and is_local:
+    # Always delete the local host row for non-LXC uninstalls, even when the
+    # runtime location now points at a remote worker: forget_install_location
+    # only matches location_ref="local", so a remote row (different
+    # location_ref) and any legacy_lxc row are left untouched (#4132
+    # follow-up -- previously is_local skipped the cleanup when the runtime
+    # location was remote, orphaning the local host row).
+    if method != "lxc":
         await forget_install_location(request, body.app_id, "host", "local")
     return {"status": "uninstalled", "app_id": body.app_id}
 
