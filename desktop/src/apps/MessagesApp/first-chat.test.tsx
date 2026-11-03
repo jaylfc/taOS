@@ -99,4 +99,24 @@ describe("useFirstChat", () => {
     expect(result.current.waiting).toBe(false);
     expect(result.current.failure).toMatch(/taking longer/i);
   });
+
+  it("keeps checking, more slowly, after it gives up, and opens a DM that arrives late", async () => {
+    vi.useFakeTimers();
+    const refresh = vi.fn(async () => {});
+    const open = vi.fn();
+    const { result, rerender } = renderHook(
+      ({ channels }) => useFirstChat("sage", channels, refresh, open),
+      { initialProps: { channels: [] as ReturnType<typeof dm>[] } },
+    );
+    await act(async () => { vi.advanceTimersByTime(10 * 60 * 1000 + 6000); });
+    expect(result.current.failure).toMatch(/taking longer/i);
+    const before = refresh.mock.calls.length;
+    await act(async () => { vi.advanceTimersByTime(60 * 1000); });
+    expect(refresh.mock.calls.length).toBeGreaterThan(before);
+    expect(refresh.mock.calls.length).toBeLessThan(before + 20);
+    rerender({ channels: [dm("d", ["user", "sage"])] });
+    await act(async () => {});
+    expect(open).toHaveBeenCalledWith("d");
+    expect(result.current.failure).toBeUndefined();
+  });
 });

@@ -9,8 +9,10 @@ import { useEffect, useRef, useState } from "react";
  */
 
 const POLL_MS = 3000;
-/** Long enough for a first container start on a phone; the poll stops after. */
+/** Long enough for a first container start on a phone; the poll slows after. */
 const GIVE_UP_MS = 10 * 60 * 1000;
+/** After giving up, a deferred model pull can still finish the deploy. */
+const LATE_POLL_MS = 30 * 1000;
 const TOO_LONG = "Setting up your assistant is taking longer than expected.";
 
 /** The deploy's error when it failed. A missing record (404, e.g. after a
@@ -53,6 +55,7 @@ export function useFirstChat(
 ): { waiting: boolean; channelId: string | undefined; failure: string | undefined } {
   const opened = useRef(false);
   const [failure, setFailure] = useState<string | undefined>();
+  const [late, setLate] = useState(false);
   const dm = agent ? findAgentDm(channels, agent) : undefined;
 
   useEffect(() => {
@@ -67,26 +70,25 @@ export function useFirstChat(
     const started = Date.now();
     let live = true;
     const id = setInterval(() => {
-      if (Date.now() - started > GIVE_UP_MS) {
-        clearInterval(id);
-        setFailure(TOO_LONG);
+      if (!late && Date.now() - started > GIVE_UP_MS) {
+        setLate(true);
         return;
       }
       void refresh();
       void deployFailure(agent).then((err) => {
         if (live && err) setFailure(err);
       });
-    }, POLL_MS);
+    }, late ? LATE_POLL_MS : POLL_MS);
     return () => {
       live = false;
       clearInterval(id);
     };
-  }, [agent, found, failure, refresh]);
+  }, [agent, found, failure, late, refresh]);
 
   return {
-    waiting: Boolean(agent) && !found && !failure,
+    waiting: Boolean(agent) && !found && !failure && !late,
     channelId: dm?.id,
-    failure: found ? undefined : failure,
+    failure: found ? undefined : (failure ?? (late ? TOO_LONG : undefined)),
   };
 }
 
