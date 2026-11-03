@@ -156,7 +156,7 @@ export function TaosAgentDetailPanel({
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-1.5 text-sm">
             <span className="text-base leading-none" aria-hidden="true">🤖</span>
-            <span className="font-medium">taOS agent</span>
+            <span className="font-medium">taOS Agent</span>
             <span
               className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium lowercase shrink-0 bg-white/5 text-shell-text-secondary border border-white/10"
               aria-label="System agent"
@@ -164,7 +164,7 @@ export function TaosAgentDetailPanel({
               system
             </span>
           </div>
-          <TabsList aria-label="taOS agent detail tabs">
+          <TabsList aria-label="taOS Agent detail tabs">
             <TabsTrigger value="settings">
               <Settings size={13} className="mr-1.5" />
               Settings
@@ -200,7 +200,7 @@ export function TaosAgentDetailPanel({
           <div className="h-full overflow-auto p-4 flex flex-col gap-4">
             {loadErr ? (
               <div className="text-xs text-red-400" role="alert">
-                Failed to load taOS agent config: {loadErr}
+                Failed to load taOS Agent config: {loadErr}
               </div>
             ) : !config ? (
               <div className="text-sm opacity-60">Loading…</div>
@@ -216,7 +216,7 @@ export function TaosAgentDetailPanel({
                   <code className="text-sm">{currentModel || "(not set)"}</code>
                   <button
                     onClick={async () => { setPickerOpen(true); await ensureModelsLoaded(); }}
-                    aria-label="Change taOS agent model"
+                    aria-label="Change taOS Agent model"
                     className="bg-white/10 hover:bg-white/15 px-2.5 py-1 rounded text-xs"
                   >
                     Change model
@@ -230,7 +230,7 @@ export function TaosAgentDetailPanel({
                     <span className="opacity-60 text-sm">Permitted models</span>
                     <button
                       onClick={async () => { setAddPickerOpen(true); await ensureModelsLoaded(); }}
-                      aria-label="Add permitted model for taOS agent"
+                      aria-label="Add permitted model for taOS Agent"
                       className="bg-white/10 hover:bg-white/15 px-2.5 py-1 rounded text-xs"
                     >
                       + Add
@@ -263,7 +263,7 @@ export function TaosAgentDetailPanel({
                               aria-label={
                                 isCurrent
                                   ? `Cannot remove current model ${m}`
-                                  : `Remove ${m} from taOS agent permitted models`
+                                  : `Remove ${m} from taOS Agent permitted models`
                               }
                               className="opacity-60 hover:opacity-100 disabled:opacity-20 disabled:cursor-not-allowed leading-none"
                             >
@@ -281,7 +281,7 @@ export function TaosAgentDetailPanel({
                     <button
                       onClick={savePermitted}
                       disabled={permittedSaving}
-                      aria-label="Save taOS agent permitted models"
+                      aria-label="Save taOS Agent permitted models"
                       aria-busy={permittedSaving}
                       className="mt-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 px-3 py-1.5 rounded text-xs"
                     >
@@ -323,7 +323,7 @@ export function TaosAgentDetailPanel({
                       setPersonaDirty(e.target.value !== (config.persona ?? ""));
                     }}
                     rows={10}
-                    aria-label="taOS agent persona — system-prompt override"
+                    aria-label="taOS Agent persona — system-prompt override"
                     placeholder="Leave empty to use the built-in manual as the system prompt."
                     className="border border-white/10 rounded bg-shell-bg px-2 py-1 font-mono text-xs text-shell-text-secondary resize-none focus:outline-none focus:ring-1 focus:ring-white/20"
                   />
@@ -333,7 +333,7 @@ export function TaosAgentDetailPanel({
                   <button
                     onClick={savePersona}
                     disabled={personaSaving}
-                    aria-label="Save taOS agent persona"
+                    aria-label="Save taOS Agent persona"
                     aria-busy={personaSaving}
                     className="self-end bg-blue-600 hover:bg-blue-500 disabled:opacity-50 px-3 py-1.5 rounded text-sm text-white transition-colors"
                   >

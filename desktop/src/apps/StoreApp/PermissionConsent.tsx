@@ -21,7 +21,7 @@ const CAPABILITY_DESCRIPTIONS: Record<string, string> = {
   "app.notify": "Send you notifications",
   "app.window": "Open and manage its own windows",
   "app.net": "Connect to the internet",
-  "app.agent": "Ask your taOS agent for help",
+  "app.agent": "Ask your taOS Agent for help",
   "app.llm": "Use a language model",
   "app.memory": "Read and write your memories",
 };
