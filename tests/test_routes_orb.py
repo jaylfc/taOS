@@ -20,6 +20,8 @@ from tinyagentos.orb.catalog_sig import (
     CatalogSignatureInvalid,
     CatalogSerialRegression,
     CatalogStateCorrupt,
+    CatalogInvalid,
+    CatalogKindInvalid,
 )
 from tinyagentos.orb.frames import TransportUnavailable
 from tinyagentos.orb.catalog import Catalog
@@ -538,3 +540,89 @@ async def test_bridges_admin_evaluate_all_passthrough(client, app, monkeypatch):
     assert resp.status_code == 200
     body = resp.json()
     assert body["bridges"] == [{"bridge_id": "x"}]
+
+
+@pytest.mark.asyncio
+async def test_catalog_admin_remote_fetch_bad_kind(client, app, monkeypatch, tmp_data_dir):
+    """Remote fetch with non-firmware kind -> 503 orb_catalog_kind_invalid, cache NOT served."""
+    from tinyagentos.orb.catalog_sig import CatalogKindInvalid
+
+    async def fake_fetch_catalog(base, cache_dir, state_path):
+        raise CatalogKindInvalid("catalog kind orb-desktop-apps is not a firmware catalog")
+
+    def fake_load_cached_catalog(cache_dir, state_path):
+        raise AssertionError("load_cached_catalog must not be called when kind is invalid")
+
+    monkeypatch.setattr("tinyagentos.routes.orb.fetch_catalog", fake_fetch_catalog)
+    monkeypatch.setattr("tinyagentos.routes.orb.load_cached_catalog", fake_load_cached_catalog)
+    app.state.config.orb = {"catalog_url": "https://example.com/catalog"}
+
+    resp = await client.get("/api/orb/catalog")
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["error"] == "orb_catalog_kind_invalid"
+
+
+@pytest.mark.asyncio
+async def test_catalog_admin_cache_only_bad_kind(client, app, monkeypatch, tmp_data_dir):
+    """Cache-only mode with cached catalog having non-firmware kind -> 503 orb_catalog_kind_invalid."""
+    from tinyagentos.orb.catalog_sig import CatalogKindInvalid
+
+    def fake_load_cached_catalog(cache_dir, state_path):
+        raise CatalogKindInvalid("catalog kind orb-desktop-apps is not a firmware catalog")
+
+    monkeypatch.setattr("tinyagentos.routes.orb.fetch_catalog", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("fetch must not be called")))
+    monkeypatch.setattr("tinyagentos.routes.orb.load_cached_catalog", fake_load_cached_catalog)
+    app.state.config.orb = {}  # no base URL -> cache-only
+
+    resp = await client.get("/api/orb/catalog")
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["error"] == "orb_catalog_kind_invalid"
+
+
+@pytest.mark.asyncio
+async def test_catalog_admin_remote_fetch_bad_expires(client, app, monkeypatch, tmp_data_dir):
+    """Remote fetch with invalid expires date -> 503 orb_catalog_invalid."""
+    from tinyagentos.orb.catalog_sig import CatalogInvalid
+
+    async def fake_fetch_catalog(base, cache_dir, state_path):
+        raise CatalogInvalid("catalog expires is not ISO 8601")
+
+    def fake_load_cached_catalog(cache_dir, state_path):
+        raise AssertionError("load_cached_catalog must not be called when expires is invalid")
+
+    monkeypatch.setattr("tinyagentos.routes.orb.fetch_catalog", fake_fetch_catalog)
+    monkeypatch.setattr("tinyagentos.routes.orb.load_cached_catalog", fake_load_cached_catalog)
+    app.state.config.orb = {"catalog_url": "https://example.com/catalog"}
+
+    resp = await client.get("/api/orb/catalog")
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["error"] == "orb_catalog_invalid"
+
+
+@pytest.mark.asyncio
+async def test_catalog_admin_signed_json_array(client, app, monkeypatch, tmp_data_dir):
+    """Signed JSON array [] -> 503 orb_catalog_invalid (remote fetch)."""
+    from tinyagentos.orb.catalog_sig import CatalogInvalid
+
+    async def fake_fetch_catalog(base, cache_dir, state_path):
+        raise CatalogInvalid("catalog is not a JSON object")
+
+    def fake_load_cached_catalog(cache_dir, state_path):
+        raise AssertionError("load_cached_catalog must not be called for JSON array")
+
+    monkeypatch.setattr("tinyagentos.routes.orb.fetch_catalog", fake_fetch_catalog)
+    monkeypatch.setattr("tinyagentos.routes.orb.load_cached_catalog", fake_load_cached_catalog)
+    app.state.config.orb = {"catalog_url": "https://example.com/catalog"}
+
+    resp = await client.get("/api/orb/catalog")
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["error"] == "orb_catalog_invalid"
+
+
+# ---------------------------------------------------------------------------
+# GET /api/orb/bridges (admin-gated, shared _gather_lan(), evaluate_all())
+# ---------------------------------------------------------------------------

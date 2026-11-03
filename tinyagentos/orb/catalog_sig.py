@@ -33,6 +33,14 @@ class CatalogStateCorrupt(OrbError):
     """Catalog state file is corrupt or unreadable."""
 
 
+class CatalogKindInvalid(OrbError):
+    """Catalog kind is not a firmware catalog kind."""
+
+
+class CatalogInvalid(OrbError):
+    """Catalog is invalid (not a JSON object or expires is not ISO 8601)."""
+
+
 CATALOG_KEYS: dict[str, str] = {}
 
 
@@ -118,10 +126,10 @@ def verify_catalog(catalog_bytes: bytes, sig_bytes: bytes | None, keys: dict[str
     try:
         catalog = json.loads(catalog_bytes)
     except ValueError:
-        raise OrbError("catalog is not a JSON object")
+        raise CatalogInvalid("catalog is not a JSON object")
 
     if not isinstance(catalog, dict):
-        raise OrbError("catalog is not a JSON object")
+        raise CatalogInvalid("catalog is not a JSON object")
 
     # Validate serial
     serial = catalog.get("serial")
@@ -132,11 +140,11 @@ def verify_catalog(catalog_bytes: bytes, sig_bytes: bytes | None, keys: dict[str
     expires = catalog.get("expires")
     if expires is not None:
         if not isinstance(expires, str):
-            raise OrbError("catalog expires is not ISO 8601")
+            raise CatalogInvalid("catalog expires is not ISO 8601")
         try:
             datetime.fromisoformat(expires)
         except ValueError:
-            raise OrbError("catalog expires is not ISO 8601")
+            raise CatalogInvalid("catalog expires is not ISO 8601")
 
     return catalog
 
