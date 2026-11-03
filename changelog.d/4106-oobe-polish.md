@@ -16,3 +16,4 @@
 - On a phone, an app opened with settings (such as Messages opening your first chat, or a browser opened at a link) now receives them; before, the phone layout opened the app blank.
 - Signing in to or creating a taOS account now fails with an error, instead of signing you in, when the account service's follow-up answer names a different account than the one you just signed in to.
 - Setup's "Meet your assistant" step can be retried after taOS refuses the deploy, finishing setup waits for earlier progress saves and says so if the last one fails, and an existing cloud provider is used only when it reads the key just entered.
+- Adding a Kilo, DeepSeek or Nous key in setup now says the key was not accepted when the provider lists no models for it, instead of moving on with the built-in model list. The providers list marks that list as `models_seeded`.

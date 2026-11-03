@@ -100,7 +100,11 @@ async function usesSavedKey(type: string): Promise<boolean> {
   return entry?.api_key_secret === secretName(type);
 }
 
-/** Hop 3. The models the provider entry lists (found when it was added). */
+/**
+ * Hop 3. The models the provider entry lists (found when it was added). A
+ * fallback list (models_seeded) means discovery with the key found nothing,
+ * so it is no proof the key works.
+ */
 export async function providerModels(type: string): Promise<string[]> {
   let providers: unknown;
   try {
@@ -112,8 +116,11 @@ export async function providerModels(type: string): Promise<string[]> {
     throw new HopError(`Couldn't read ${label(type)}'s models: taOS didn't answer.`);
   }
   const entry = Array.isArray(providers)
-    ? (providers as { name?: string; models?: unknown[] }[]).find((p) => p?.name === type)
+    ? (providers as { name?: string; models?: unknown[]; models_seeded?: boolean }[]).find((p) => p?.name === type)
     : undefined;
+  if (entry?.models_seeded) {
+    throw new HopError(`${label(type)} didn't accept the key, so it listed no models for it. Check the key, or set this up later in Providers.`);
+  }
   const ids = (entry?.models ?? [])
     .map((m) => (typeof m === "string" ? m : (m as { id?: string; name?: string })?.id ?? (m as { name?: string })?.name))
     .filter((id): id is string => typeof id === "string" && id.length > 0);
