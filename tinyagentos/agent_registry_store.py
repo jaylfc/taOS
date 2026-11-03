@@ -877,7 +877,20 @@ class AgentRegistryStore(BaseStore):
                 )
 
             if handle:
-                holder = await self.get_by_handle_normalised(handle, status="active")
+                want = _slugify(handle)
+                holder = None
+                if want:
+                    cursor = await self._db.execute(
+                        "SELECT * FROM agent_registry WHERE handle != '' "
+                        "AND status = ? ORDER BY id",
+                        ("active",),
+                    )
+                    rows = await cursor.fetchall()
+                    for row in rows:
+                        rec = _row_to_dict(row)
+                        if _slugify(rec.get("handle") or "") == want:
+                            holder = rec
+                            break
                 if holder is not None and holder.get("canonical_id") != canonical_id:
                     raise ValueError(
                         f"adopt: handle {handle!r} is already owned by another "

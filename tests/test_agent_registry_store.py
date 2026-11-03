@@ -2053,6 +2053,10 @@ class TestAdopt:
         errors = [r for r in results if isinstance(r, ValueError)]
         assert len(winners) == 1, f"expected one winner, got {results!r}"
         assert len(errors) == 1, f"expected one ValueError, got {results!r}"
+        assert winners[0]["canonical_id"] in {
+            "alpha-20260101-120000-0a",
+            "beta-20260101-120000-0b",
+        }
 
         rows = await store.list_all()
         assert len(rows) == 1
