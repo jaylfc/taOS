@@ -144,6 +144,27 @@ async def test_chat_no_gateway_path_returns_503(client, app, monkeypatch):
     assert resp.status_code == 503
 
 
+@pytest.mark.asyncio
+async def test_chat_hermes_without_secret_returns_503(client, app, monkeypatch):
+    """POST /api/taos-agent/chat with framework=hermes and no hermes_api_key secret → 503."""
+    import tinyagentos.routes.taos_agent as ta_module
+    from tinyagentos.taos_agent_runtime import FRAMEWORK_HERMES
+
+    monkeypatch.setattr(ta_module, "system_agent_framework", lambda app_state: FRAMEWORK_HERMES)
+    # Ensure the secrets store returns None for hermes_api_key
+    app.state.secrets = SimpleNamespace(get=AsyncMock(return_value=None))
+    await client.patch("/api/taos-agent/settings", json={"model": "gpt-4o"})
+
+    resp = await client.post(
+        "/api/taos-agent/chat",
+        json={"messages": [{"role": "user", "content": "Hello"}]},
+    )
+    assert resp.status_code == 503
+    data = resp.json()
+    assert "Hermes is not ready" in data.get("error", "")
+    assert "hermes_api_key" in data.get("error", "")
+
+
 # ---------------------------------------------------------------------------
 # #1616 — opencode-not-found vs opencode-found-but-failed-to-start must
 # return distinct, accurate errors (the old code masked both behind a single
