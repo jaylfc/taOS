@@ -181,6 +181,107 @@ describe("UpdatesPanel -- optional apps section", () => {
   });
 });
 
+describe("UpdatesPanel -- auto-update prefs persistence", () => {
+  const fullPrefsResp = {
+    check_enabled: true,
+    update_ping_enabled: true,
+    last_notified_commit: "abc123",
+    last_reminder_at: "2026-11-01T00:00:00Z",
+  };
+
+  const fetchWithFullPrefs = async (url: string) => {
+    if (url === "/api/preferences/auto-update") return jResp(fullPrefsResp);
+    if (url === "/api/settings/update-check")
+      return jResp({ has_updates: false, current_version: "1.0.0-beta.2", current_commit: "abc x" });
+    if (url === "/api/settings/update-status") return jResp({ current_sha: "abc", pending_restart_sha: null });
+    if (url === "/api/apps/optional/catalog") return jResp({ apps: [] });
+    return jResp({});
+  };
+
+  it("PUT body preserves last_notified_commit and last_reminder_at when toggling update_ping_enabled", async () => {
+    (global.fetch as any) = vi.fn(fetchWithFullPrefs);
+    render(<UpdatesPanel />);
+    await waitFor(() => expect(screen.getByText("1.0.0-beta.2")).toBeInTheDocument());
+
+    // Toggle the ping switch off
+    const pingSwitch = screen.getByRole("switch", { name: /anonymous install ping/i });
+    fireEvent.click(pingSwitch);
+
+    await waitFor(() => {
+      const putCall = (global.fetch as any).mock.calls.find((c: any[]) => c[0] === "/api/preferences/auto-update" && c[1]?.method === "PUT");
+      expect(putCall).toBeTruthy();
+      const body = JSON.parse(putCall[1].body);
+      expect(body).toEqual({
+        check_enabled: true,
+        update_ping_enabled: false,
+        last_notified_commit: "abc123",
+        last_reminder_at: "2026-11-01T00:00:00Z",
+      });
+    });
+  });
+
+  it("PUT body preserves last_notified_commit and last_reminder_at when toggling check_enabled", async () => {
+    (global.fetch as any) = vi.fn(fetchWithFullPrefs);
+    render(<UpdatesPanel />);
+    await waitFor(() => expect(screen.getByText("1.0.0-beta.2")).toBeInTheDocument());
+
+    // Toggle the check switch off (first switch in the panel)
+    const switches = screen.getAllByRole("switch");
+    const checkSwitch = switches[0];
+    fireEvent.click(checkSwitch);
+
+    await waitFor(() => {
+      const putCall = (global.fetch as any).mock.calls.find((c: any[]) => c[0] === "/api/preferences/auto-update" && c[1]?.method === "PUT");
+      expect(putCall).toBeTruthy();
+      const body = JSON.parse(putCall[1].body);
+      expect(body).toEqual({
+        check_enabled: false,
+        update_ping_enabled: true,
+        last_notified_commit: "abc123",
+        last_reminder_at: "2026-11-01T00:00:00Z",
+      });
+    });
+  });
+
+  it("PUT body preserves unknown future fields from GET response", async () => {
+    const futurePrefsResp = {
+      check_enabled: true,
+      update_ping_enabled: true,
+      last_notified_commit: "abc123",
+      last_reminder_at: "2026-11-01T00:00:00Z",
+      future_field: 7,
+    };
+    const fetchWithFutureField = async (url: string) => {
+      if (url === "/api/preferences/auto-update") return jResp(futurePrefsResp);
+      if (url === "/api/settings/update-check")
+        return jResp({ has_updates: false, current_version: "1.0.0-beta.2", current_commit: "abc x" });
+      if (url === "/api/settings/update-status") return jResp({ current_sha: "abc", pending_restart_sha: null });
+      if (url === "/api/apps/optional/catalog") return jResp({ apps: [] });
+      return jResp({});
+    };
+    (global.fetch as any) = vi.fn(fetchWithFutureField);
+    render(<UpdatesPanel />);
+    await waitFor(() => expect(screen.getByText("1.0.0-beta.2")).toBeInTheDocument());
+
+    // Toggle either switch
+    const pingSwitch = screen.getByRole("switch", { name: /anonymous install ping/i });
+    fireEvent.click(pingSwitch);
+
+    await waitFor(() => {
+      const putCall = (global.fetch as any).mock.calls.find((c: any[]) => c[0] === "/api/preferences/auto-update" && c[1]?.method === "PUT");
+      expect(putCall).toBeTruthy();
+      const body = JSON.parse(putCall[1].body);
+      expect(body).toEqual({
+        check_enabled: true,
+        update_ping_enabled: false,
+        last_notified_commit: "abc123",
+        last_reminder_at: "2026-11-01T00:00:00Z",
+        future_field: 7,
+      });
+    });
+  });
+});
+
 describe("UpdatesPanel -- error announcements", () => {
   it("announces an update-check failure (non-ok) via role=alert", async () => {
     let checkCalls = 0;

@@ -16,6 +16,9 @@ interface UpdateInfo {
 interface AutoUpdatePrefs {
   check_enabled?: boolean;
   update_ping_enabled?: boolean;
+  last_notified_commit?: string;
+  last_reminded_at?: string;
+  [key: string]: unknown;
 }
 
 interface UpdateStatus {
@@ -114,6 +117,7 @@ export function UpdatesPanel() {
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [prefs, setPrefs] = useState<AutoUpdatePrefs>({ check_enabled: true });
+  const fullPrefsRef = useRef<AutoUpdatePrefs>({ check_enabled: true });
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
   const [showRestartModal, setShowRestartModal] = useState(false);
   const [optionalCatalog, setOptionalCatalog] = useState<OptionalAppCatalogEntry[]>([]);
@@ -147,6 +151,7 @@ export function UpdatesPanel() {
         if (r.ok) {
           const data = await r.json();
           if (data && typeof data === "object") {
+            fullPrefsRef.current = data as AutoUpdatePrefs;
             setPrefs({
               check_enabled: data.check_enabled ?? true,
               update_ping_enabled: data.update_ping_enabled ?? true,
@@ -174,12 +179,13 @@ export function UpdatesPanel() {
 
   const savePrefs = useCallback(async (next: AutoUpdatePrefs) => {
     const prev = prefs;
+    const merged = { ...fullPrefsRef.current, ...next };
     setPrefs(next);
     try {
       const res = await fetch("/api/preferences/auto-update", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(next),
+        body: JSON.stringify(merged),
       });
       if (!res.ok) { setPrefs(prev); }   // revert on server error
     } catch {
