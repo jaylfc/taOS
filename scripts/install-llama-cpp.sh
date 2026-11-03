@@ -185,7 +185,7 @@ resolve_asset() {
             ASSET_SHA256=""
             ;;
         *)
-            die "unknown variant: $VARIANT (expected cuda|rocm|apple-silicon|cpu)"
+            die "unknown variant: $VARIANT (expected cuda|rocm|apple-silicon|cpu|musl-arm64)"
             ;;
     esac
 }
@@ -247,7 +247,8 @@ download_and_extract() {
 
 # -------- (4b) build from source for musl arm64 ----------------------------
 build_from_source_musl() {
-    sudo apk add --no-cache build-base cmake samurai git linux-headers openssl-dev || die "apk add failed"
+    if [ "$(id -u)" -eq 0 ]; then SUDO=; else SUDO=sudo; fi
+    $SUDO apk add --no-cache build-base cmake samurai git linux-headers openssl-dev || die "apk add failed"
     local src
     src="$(run_as_user mktemp -d -t llamacpp-src.XXXXXX)"
     trap 'run_as_user rm -rf "$src"' EXIT ERR
@@ -351,10 +352,13 @@ install_openrc_service() {
 #!/sbin/openrc-run
 name="llama.cpp server (router mode) -- taOS default local LLM backend"
 command="$INSTALL_DIR/llama-server"
-command_args="--models-dir $MODELS_DIR --host $HOST --port $PORT"
+command_args="--models-dir \"$MODELS_DIR\" --host $HOST --port $PORT"
 command_user="$TARGET_USER"
 command_background=true
 pidfile="/run/llama-cpp.pid"
+start_pre() {
+    export LD_LIBRARY_PATH="$INSTALL_DIR"
+}
 depend() {
     need net
 }
@@ -370,7 +374,7 @@ install_service() {
         install_macos_service
     elif command -v systemctl >/dev/null 2>&1; then
         install_linux_service
-    elif command -v openrc-run >/dev/null 2>&1 || command -v rc-service >/dev/null 2>&1; then
+    elif command -v openrc-run >/dev/null 2>&1 && command -v rc-service >/dev/null 2>&1 && command -v rc-update >/dev/null 2>&1; then
         install_openrc_service
     else
         die "no supported service manager found (need systemd, OpenRC, or macOS launchd)"
@@ -413,7 +417,7 @@ main() {
     install_service
 
     if ! wait_for_health; then
-        die "llama-server did not answer http://${HOST}:${PORT}/health within 60s -- check the service logs (journalctl -u llama-cpp on Linux, $INSTALL_DIR/llama-cpp.err.log on macOS)"
+        die "llama-server did not answer http://${HOST}:${PORT}/health within 60s -- check the service logs (journalctl -u llama-cpp on systemd, rc-service llama-cpp status on OpenRC, $INSTALL_DIR/llama-cpp.err.log on macOS)"
     fi
 
     local pinned="$LLAMACPP_VERSION"

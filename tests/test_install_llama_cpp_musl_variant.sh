@@ -113,8 +113,14 @@ INIT_D_DIR="$(mktemp -d)"
     exit 1
   fi
 
-  if ! grep -q 'command_args="--models-dir /data/models --host 127.0.0.1 --port 7835"' "$INIT_D_DIR/llama-cpp"; then
-    echo "FAIL: OpenRC init script missing correct command_args"
+  if ! grep -q 'command_args="--models-dir \\"/data/models\\" --host 127.0.0.1 --port 7835"' "$INIT_D_DIR/llama-cpp"; then
+    echo "FAIL: OpenRC init script missing quoted models path in command_args"
+    cat "$INIT_D_DIR/llama-cpp"
+    exit 1
+  fi
+
+  if ! grep -q 'export LD_LIBRARY_PATH="/opt/llama-cpp"' "$INIT_D_DIR/llama-cpp"; then
+    echo "FAIL: OpenRC init script missing LD_LIBRARY_PATH in start_pre"
     cat "$INIT_D_DIR/llama-cpp"
     exit 1
   fi
