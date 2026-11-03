@@ -352,7 +352,7 @@ async def test_mobile_with_override_opencode_is_opencode(mobile, monkeypatch):
 
 @_ASYNC
 @pytest.mark.parametrize("body", [
-    {"framework": "hermes"},
+    {"framework": "nonsense"},
     {"framework": ""},
     {"framework": 7},
     {"device_class": "toaster"},
