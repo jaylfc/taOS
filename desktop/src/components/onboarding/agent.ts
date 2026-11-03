@@ -31,7 +31,11 @@ export function secretName(type: string): string {
   return `provider-${type}-key`;
 }
 
-/** Hop 1. A key saved on an earlier try (Back, or a resume) is replaced. */
+/**
+ * Hop 1. A key saved on an earlier try (Back, or a resume) is replaced, but
+ * never one a provider is already working with: setup cannot check a new key
+ * before it is live, so a typo would break that provider.
+ */
 export async function saveKey(type: string, key: string): Promise<void> {
   const name = secretName(type);
   try {
@@ -48,6 +52,11 @@ export async function saveKey(type: string, key: string): Promise<void> {
       }),
     });
     if (res.status === 409) {
+      if (await keyInUse(type)) {
+        throw new HopError(
+          `${label(type)} is already set up and working. To use a different key, change it in Providers, or set this up later.`,
+        );
+      }
       res = await fetch(`/api/secrets/${encodeURIComponent(name)}`, {
         method: "PUT",
         headers: JSON_HEADERS,
@@ -87,6 +96,18 @@ export async function addProvider(type: string): Promise<void> {
     if (e instanceof HopError) throw e;
     throw new HopError(`Couldn't add ${label(type)}: taOS didn't answer.`);
   }
+}
+
+/** A provider reads this secret and lists models it found with it. */
+async function keyInUse(type: string): Promise<boolean> {
+  const res = await fetch("/api/providers", { credentials: "include", headers: { Accept: "application/json" } });
+  if (!res.ok) throw new HopError(`Couldn't save the API key: ${await reason(res)}.`);
+  const providers = await res.json().catch(() => null);
+  return Array.isArray(providers)
+    ? (providers as { api_key_secret?: string; models?: unknown[]; models_seeded?: boolean }[]).some(
+        (p) => p?.api_key_secret === secretName(type) && (p.models ?? []).length > 0 && !p.models_seeded,
+      )
+    : false;
 }
 
 /** The existing entry named `type` reads its key from the secret hop 1 saved. */

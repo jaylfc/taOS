@@ -649,7 +649,7 @@ describe("OnboardingScreen taOS Agent model", () => {
     });
   });
 
-  it("a key saved on an earlier try is replaced, and an existing provider is used as it is", async () => {
+  it("never replaces the key of a provider that already works, and says where to change it", async () => {
     const calls = routeFetch({
       "POST /api/secrets": () => json({ error: "exists" }, 409),
       "POST /api/providers": () => json({ error: "exists" }, 409),
@@ -657,16 +657,11 @@ describe("OnboardingScreen taOS Agent model", () => {
     });
     render(<OnboardingScreen onDone={() => {}} resume={atAgentStep} />);
     await connect("sk-new");
-    await screen.findByRole("heading", { name: "Pick a model" });
-    expect(chain(calls)).toEqual([
-      "POST /api/secrets",
-      "PUT /api/secrets/provider-openai-key",
-      "POST /api/providers",
-      // The existing entry is read to check it uses the key just saved.
-      "GET /api/providers",
-      "GET /api/providers",
-    ]);
-    expect(calls.find((c) => c.method === "PUT")?.body).toEqual({ value: "sk-new" });
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "OpenAI is already set up and working. To use a different key, change it in Providers, or set this up later.",
+    );
+    expect(chain(calls)).toEqual(["POST /api/secrets", "GET /api/providers"]);
+    expect(calls.some((c) => c.method === "PUT")).toBe(false);
   });
 
   it.each([
