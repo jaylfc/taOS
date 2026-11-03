@@ -2028,3 +2028,31 @@ class TestAdopt:
                 created_ts="2026-11-02T12:00:00+00:00",
                 reports_to="alpha-20261102-120000-0a",
             )
+
+    @pytest.mark.asyncio
+    async def test_adopt_concurrent_same_normalised_handle_one_winner(self, store):
+        import asyncio
+
+        results = await asyncio.gather(
+            store.adopt(
+                canonical_id="alpha-20260101-120000-0a",
+                framework="openclaw",
+                created_ts="2026-01-01T12:00:00+00:00",
+                handle="@shared",
+            ),
+            store.adopt(
+                canonical_id="beta-20260101-120000-0b",
+                framework="openclaw",
+                created_ts="2026-01-01T12:00:00+00:00",
+                handle="shared",
+            ),
+            return_exceptions=True,
+        )
+
+        winners = [r for r in results if isinstance(r, dict)]
+        errors = [r for r in results if isinstance(r, ValueError)]
+        assert len(winners) == 1, f"expected one winner, got {results!r}"
+        assert len(errors) == 1, f"expected one ValueError, got {results!r}"
+
+        rows = await store.list_all()
+        assert len(rows) == 1
