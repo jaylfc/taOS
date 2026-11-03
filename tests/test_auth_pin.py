@@ -8,6 +8,9 @@ PIN being REFUSED off-console does.
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
 
 import pytest
 
@@ -19,6 +22,7 @@ from tinyagentos.auth import (
     is_console_origin,
     validate_pin,
 )
+from tinyagentos.routes.auth import _PIN_PANEL_SCRIPT
 
 
 @pytest.fixture()
@@ -309,3 +313,152 @@ class TestPinLimiterIsBounded:
         lim.record_failure("victim")
         # 6 consecutive failures still sits at or above the first tier.
         assert lim.retry_after("victim") > 0
+
+
+# --------------------------------------------------------------------------- #
+#  Lock page script (node) — PIN auto-unlock behaviour                       #
+# --------------------------------------------------------------------------- #
+
+_PIN_HARNESS = r"""
+function makeEl(opts) {
+  opts = opts || {};
+  var el = {
+    id: opts.id || null,
+    _attrs: opts.attrs || {},
+    value: opts.value || "",
+    children: opts.children || [],
+    _h: {},
+    hidden: opts.hidden !== undefined ? opts.hidden : false,
+    parentNode: opts.parentNode || null,
+    textContent: "",
+    addEventListener: function (t, fn) { (this._h[t] = this._h[t] || []).push(fn); },
+    setAttribute: function (k, v) { this._attrs[k] = v; },
+    getAttribute: function (k) {
+      return Object.prototype.hasOwnProperty.call(this._attrs, k) ? this._attrs[k] : null;
+    },
+    querySelector: function (sel) { return opts.querySelector ? opts.querySelector(sel) : null; },
+    closest: function(){ return null; },
+    fire: function (t, ev) { ev = ev || {}; var handlers = (this._h[t] || []).slice(); for (var i=0;i<handlers.length;i++){ handlers[i].call(this, ev); } }
+  };
+  return el;
+}
+
+var SCN = JSON.parse(process.env.PIN_SCENARIO || '{}');
+
+var pinPanel = makeEl({ id: "pin-panel", attrs: { "data-next": "/desktop", "data-username": "" } });
+if (SCN.pinLength !== undefined && SCN.pinLength !== null) {
+  pinPanel.setAttribute("data-pin-length", String(SCN.pinLength));
+}
+
+var input = makeEl({ id: "pin-input", value: "" }); input.focus = function(){}; input.replace = function(a,b){ this.value = String(this.value).split(a).join(b); return this.value; };
+var dots = makeEl({ id: "pin-dots", children: [] });
+var dotCount = SCN.dotCount || (SCN.pinLength || 4);
+for (var di=0; di<dotCount; di++) {
+  dots.children.push(makeEl({ attrs: { "data-filled": "0" } }));
+}
+var err = makeEl({ id: "pin-error", textContent: "" });
+var submit = null;
+if (SCN.hasSubmit) {
+  submit = makeEl({ id: "pin-submit" });
+}
+
+var els = {
+  "pin-panel": pinPanel,
+  "pin-input": input,
+  "pin-dots": dots,
+  "pin-error": err,
+  "pin-submit": submit,
+  "use-password": makeEl({ id: "use-password" }),
+  "use-pin": makeEl({ id: "use-pin" }),
+  "pw-panel": makeEl({ id: "pw-panel", hidden: true })
+};
+
+var document = {
+  getElementById: function(id){ return els[id] || null; },
+  readyState: "complete",
+  addEventListener: function(){},
+  querySelector: function(sel){ if (sel === 'input[type=password]') return input; return null; }
+};
+var window = { taosOSK: null, location: { assign: function(){} } };
+
+var posts = [];
+global.fetch = function(url, opts){
+  posts.push({url: url, opts: opts});
+  if (SCN.fetchFail) {
+    return Promise.reject(new Error("fail"));
+  }
+  if (SCN.fetchStatus && SCN.fetchStatus !== 200) {
+    return Promise.resolve({
+      status: SCN.fetchStatus,
+      json: function(){ return Promise.resolve(SCN.fetchBody || {}); }
+    });
+  }
+  return Promise.resolve({
+    status: 200,
+    json: function(){ return Promise.resolve({ok: true}); }
+  });
+};
+global.setTimeout = function(fn){ fn(); return 1; };
+global.clearTimeout = function(){};
+
+__PIN_SCRIPT__
+
+if (SCN.typeDigits) {
+  for (var i=0; i<SCN.typeDigits.length; i++) {
+    input.value += String(SCN.typeDigits[i]);
+    var h = input._h["input"] || [];
+    for (var j=0; j<h.length; j++) { h[j].call(input, {}); }
+  }
+}
+
+if (SCN.doEnter && input._h["keydown"]) {
+  var kh = input._h["keydown"] || [];
+  for (var k=0; k<kh.length; k++) { kh[k].call(input, {key: "Enter", preventDefault: function(){}}); }
+}
+
+if (SCN.clickSubmit && submit && submit._h["click"]) {
+  var ch = submit._h["click"] || [];
+  for (var m=0; m<ch.length; m++) { ch[m].call(submit, {}); }
+}
+
+process.stdout.write(JSON.stringify({ posts: posts, err: err.textContent || "", submitExists: !!els["pin-submit"], value: input.value }));
+"""
+
+
+def _run_pin_scenario(scenario: dict, script_override: str | None = None):
+    node = shutil.which("node")
+    if node is None:
+        pytest.fail("node required")
+    script = script_override if script_override is not None else _PIN_PANEL_SCRIPT
+    harness = _PIN_HARNESS.replace("__PIN_SCRIPT__", script)
+    env = os.environ.copy()
+    env["PIN_SCENARIO"] = json.dumps(scenario)
+    proc = subprocess.run([node, "-e", harness], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, timeout=10)
+    if proc.returncode != 0:
+        raise AssertionError(proc.stderr.decode())
+    return json.loads(proc.stdout.decode())
+
+
+class TestPinPanelScriptNode:
+    def test_with_data_pin_length_six_typing_five_sends_no_post_sixth_sends_exactly_one(self):
+        res = _run_pin_scenario({"pinLength": 6, "hasSubmit": False, "dotCount": 6, "typeDigits": [1,2,3,4,5]})
+        assert len(res["posts"]) == 0
+        res = _run_pin_scenario({"pinLength": 6, "hasSubmit": False, "dotCount": 6, "typeDigits": [1,2,3,4,5,6]})
+        assert len(res["posts"]) == 1
+
+    def test_wrong_pin_clears_dots_and_second_full_entry_posts_second(self):
+        res = _run_pin_scenario({"pinLength": 4, "hasSubmit": False, "dotCount": 4, "typeDigits": [1,2,3,4], "fetchStatus": 401, "fetchBody": {"error": "bad"}})
+        assert len(res["posts"]) == 1
+        res2 = _run_pin_scenario({"pinLength": 4, "hasSubmit": False, "dotCount": 4, "typeDigits": [5,6,7,8], "fetchStatus": 401, "fetchBody": {"error": "bad"}})
+        assert len(res2["posts"]) == 1
+
+    def test_no_data_pin_length_button_exists_and_typing_never_auto_posts(self):
+        res = _run_pin_scenario({"pinLength": None, "hasSubmit": True, "dotCount": 4, "typeDigits": [1,2,3,4]})
+        assert len(res["posts"]) == 0
+        assert res["submitExists"] is True
+
+    def test_mutation_try_pin_fires_at_length_four_always_five_no_post_goes_red(self):
+        mutated = _PIN_PANEL_SCRIPT.replace('if (pinLength && input.value.length === pinLength) {\n      tryPin();\n    }',
+                                             'if (input.value.length === 4) {\n      tryPin();\n    }')
+        res = _run_pin_scenario({"pinLength": 6, "hasSubmit": False, "dotCount": 6, "typeDigits": [1,2,3,4,5]}, script_override=mutated)
+        assert len(res["posts"]) >= 1
