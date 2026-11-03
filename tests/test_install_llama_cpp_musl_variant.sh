@@ -168,6 +168,116 @@ INIT_D_DIR="$(mktemp -d)"
   echo "PASS: OpenRC service installation test"
 ) || { echo "FAIL: OpenRC test case"; exit 1; }
 
+# (a) install_openrc_service as uid 0 with no sudo on PATH must succeed.
+# On postmarketOS/Alpine running as root, sudo is often not installed, so
+# the bare `sudo tee`/`sudo chmod`/`sudo rc-update`/`sudo rc-service`
+# calls used to die here. The function must detect uid 0 and use empty SUDO.
+INIT_D_DIR="$(mktemp -d)"
+(
+  log() { :; }
+  die() { echo "DIE: $*"; exit 1; }
+  TARGET_USER="root"
+  TARGET_GROUP="root"
+  INSTALL_DIR="/opt/llama-cpp"
+  MODELS_DIR="/data/models"
+  PORT=7835
+  HOST="127.0.0.1"
+
+  # No sudo anywhere: not as a function, and not on PATH.
+  unset -f sudo 2>/dev/null || true
+  id() { echo 0; }
+  rc-update() { echo "rc-update $*" >> "$INIT_D_DIR/calls2"; }
+  rc-service() { echo "rc-service $*" >> "$INIT_D_DIR/calls2"; }
+  install_linux_service() { echo "WRONG: systemd path" >> "$INIT_D_DIR/calls2"; return 1; }
+  install_macos_service() { return 1; }
+  uname() { echo Linux; }
+
+  command() {
+    case "$1" in
+      -v)
+        case "$2" in
+          systemctl) return 1 ;;
+          openrc-run) return 0 ;;
+          sudo) return 1 ;;
+        esac ;;
+    esac
+    builtin command "$@"
+  }
+
+  eval "$FN_SVC"
+  eval "$FN_OPENRC"
+  install_service
+
+  if [[ ! -f "$INIT_D_DIR/llama-cpp" ]]; then
+    echo "FAIL: uid-0 OpenRC install did not write init script"
+    exit 1
+  fi
+  if ! grep -q '#!/sbin/openrc-run' "$INIT_D_DIR/llama-cpp"; then
+    echo "FAIL: uid-0 OpenRC init script missing shebang"
+    exit 1
+  fi
+  if ! grep -q 'rc-update add llama-cpp default' "$INIT_D_DIR/calls2"; then
+    echo "FAIL: uid-0 OpenRC install did not call rc-update add"
+    cat "$INIT_D_DIR/calls2" 2>/dev/null
+    exit 1
+  fi
+  if ! grep -q 'rc-service llama-cpp restart' "$INIT_D_DIR/calls2"; then
+    echo "FAIL: uid-0 OpenRC install did not call rc-service restart"
+    cat "$INIT_D_DIR/calls2" 2>/dev/null
+    exit 1
+  fi
+  if grep -q 'WRONG: systemd path' "$INIT_D_DIR/calls2"; then
+    echo "FAIL: uid-0 install leaked into the systemd path"
+    exit 1
+  fi
+  echo "PASS: uid-0 OpenRC install (no sudo) succeeds"
+) || { echo "FAIL: uid-0 OpenRC install test case"; exit 1; }
+
+# (b) a MODELS_DIR containing a double quote must make install_openrc_service die.
+INIT_D_DIR="$(mktemp -d)"
+b_out="$(mktemp)"
+(
+  log() { :; }
+  die() { echo "DIE: $*"; exit 1; }
+  TARGET_USER="testuser"
+  TARGET_GROUP="testgroup"
+  INSTALL_DIR="/opt/llama-cpp"
+  MODELS_DIR='/data/models with "quote"'
+  PORT=7835
+  HOST="127.0.0.1"
+
+  sudo() { "$@"; }
+  rc-update() { echo "rc-update $*" >> "$INIT_D_DIR/calls3"; }
+  rc-service() { echo "rc-service $*" >> "$INIT_D_DIR/calls3"; }
+  install_linux_service() { return 1; }
+  install_macos_service() { return 1; }
+  uname() { echo Linux; }
+
+  command() {
+    case "$1" in
+      -v)
+        case "$2" in
+          systemctl) return 1 ;;
+          openrc-run) return 0 ;;
+        esac ;;
+    esac
+    builtin command "$@"
+  }
+
+  eval "$FN_SVC"
+  eval "$FN_OPENRC"
+  install_service
+  echo "FAIL: MODELS_DIR with double quote did not die"
+  exit 1
+) >"$b_out" 2>&1 || true
+if ! grep -q 'DIE: MODELS_DIR contains a double quote' "$b_out"; then
+  echo "FAIL: MODELS_DIR double-quote guard"
+  cat "$b_out"
+  rm -f "$b_out"
+  rm -rf "$INIT_D_DIR"
+  exit 1
+fi
+rm -f "$b_out"
 rm -rf "$INIT_D_DIR"
 
 echo "all tests passed"

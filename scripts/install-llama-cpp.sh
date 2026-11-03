@@ -264,8 +264,15 @@ build_from_source_musl() {
     (( jobs > 6 )) && jobs=6
     run_as_user nice -n 15 ninja -C "$src/build" -j"$jobs" llama-server
     run_as_user mkdir -p "$INSTALL_DIR"
+    # Copy the shared libraries FIRST, then the server. The previous
+    # `find ... -exec cp -P` swallowed cp failures (find's exit status is
+    # not affected by -exec's child), so a dropped .so left an unrunnable
+    # llama-server that the script still reported as installed. Copy each
+    # library in a loop that dies on the first failure instead.
+    while IFS= read -r -d '' lib; do
+        run_as_user cp -P "$lib" "$INSTALL_DIR"/ || die "copying $lib failed"
+    done < <(run_as_user find "$src/build" -name 'lib*.so*' -print0)
     run_as_user cp "$src/build/bin/llama-server" "$INSTALL_DIR/llama-server"
-    run_as_user find "$src/build" -name 'lib*.so*' -exec cp -P {} "$INSTALL_DIR"/ \;
     run_as_user chmod +x "$INSTALL_DIR/llama-server"
     run_as_user rm -rf "$src"
     trap - EXIT ERR
@@ -345,10 +352,16 @@ EOF
 }
 
 install_openrc_service() {
+    if [ "$(id -u)" -eq 0 ]; then SUDO=; else SUDO=sudo; fi
+    # MODELS_DIR is interpolated inside \"...\" quotes in command_args below,
+    # so a double quote or backslash would break out of that quoting.
+    case "$MODELS_DIR" in
+        *\"*|*\\*) die "MODELS_DIR contains a double quote or backslash (interpolated inside \\\" quotes in command_args): $MODELS_DIR" ;;
+    esac
     local init_d="${INIT_D_DIR:-/etc/init.d}"
     local script="$init_d/llama-cpp"
     log "writing $script (port $PORT)"
-    sudo tee "$script" >/dev/null <<EOF
+    $SUDO tee "$script" >/dev/null <<EOF
 #!/sbin/openrc-run
 name="llama.cpp server (router mode) -- taOS default local LLM backend"
 command="$INSTALL_DIR/llama-server"
@@ -363,9 +376,9 @@ depend() {
     need net
 }
 EOF
-    sudo chmod 755 "$script"
-    sudo rc-update add llama-cpp default
-    sudo rc-service llama-cpp restart
+    $SUDO chmod 755 "$script"
+    $SUDO rc-update add llama-cpp default
+    $SUDO rc-service llama-cpp restart
     log "llama-cpp OpenRC service enabled + started"
 }
 
