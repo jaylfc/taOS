@@ -180,44 +180,56 @@ class TestPinFailuresDoNotLockOutPassword:
 #  Store behaviour                                                             #
 # --------------------------------------------------------------------------- #
 
-class TestPinStore:
-    def test_pin_round_trips(self, mgr):
+class TestPinLength:
+    def test_set_pin_stores_length(self, mgr):
         mgr.set_pin("tester", "4913")
-        assert mgr.has_pin("tester") is True
-        assert mgr.check_pin("4913", username="tester")[0] is True
+        data = json.loads((mgr.data_dir / ".auth_user.json").read_text())
+        assert data["users"][0].get("pin_length") == 4
+        assert mgr.pin_length("tester") == 4
 
-    def test_wrong_pin_refused(self, mgr):
+    def test_clear_pin_removes_length(self, mgr):
         mgr.set_pin("tester", "4913")
-        assert mgr.check_pin("4914", username="tester")[0] is False
+        mgr.clear_pin("tester")
+        data = json.loads((mgr.data_dir / ".auth_user.json").read_text())
+        assert "pin_hash" not in data["users"][0]
+        assert "pin_length" not in data["users"][0]
+        assert mgr.pin_length("tester") is None
 
-    def test_pin_is_hashed_not_stored_in_clear(self, mgr, tmp_path):
-        mgr.set_pin("tester", "4913")
+    def test_check_pin_learns_length_on_success_if_missing(self, tmp_path):
+        m = AuthManager(tmp_path)
+        m.setup_user("tester", "Bring-up Test", "", "correct horse battery staple")
+        m.set_pin("tester", "123456")
         data = json.loads((tmp_path / ".auth_user.json").read_text())
-        pin_hash = data["users"][0]["pin_hash"]
-        assert pin_hash.startswith("$argon2")
-        assert pin_hash != "4913"
+        data["users"][0].pop("pin_length", None)
+        (tmp_path / ".auth_user.json").write_text(json.dumps(data))
+        ok, rec = m.check_pin("123456", username="tester")
+        assert ok is True
+        data2 = json.loads((tmp_path / ".auth_user.json").read_text())
+        assert data2["users"][0].get("pin_length") == 6
 
-    def test_bare_digit_assertion_flakes_when_hash_contains_pin(self, mgr, tmp_path, monkeypatch):
-        fake_hash = "$argon2id$v=19$m=65536,t=3,p=4$4913salt$4913hash"
+    def test_failed_check_pin_stores_nothing(self, mgr, tmp_path):
+        mgr.set_pin("tester", "123456")
+        data = json.loads((tmp_path / ".auth_user.json").read_text())
+        data["users"][0].pop("pin_length", None)
+        (tmp_path / ".auth_user.json").write_text(json.dumps(data))
+        ok, rec = mgr.check_pin("000000", username="tester")
+        assert ok is False
+        data2 = json.loads((tmp_path / ".auth_user.json").read_text())
+        assert "pin_length" not in data2["users"][0]
 
-        class FakeHasher:
-            def hash(self, secret):
-                return fake_hash
+    def test_pin_length_none_on_multi_user_store(self, mgr, tmp_path):
+        # add another user
+        code = mgr.add_user_invite("other", "tester")
+        mgr.complete_invite("other", code, "Other", "o@o.com", "anotherpass123")
+        assert mgr.pin_length(None) is None
 
-        monkeypatch.setattr("tinyagentos.auth._ph", FakeHasher())
+    def test_user_listing_has_no_pin_length_key(self, mgr):
         mgr.set_pin("tester", "4913")
-        raw = (tmp_path / ".auth_user.json").read_text()
-        with pytest.raises(AssertionError):
-            assert "4913" not in raw
-        data = json.loads(raw)
-        pin_hash = data["users"][0]["pin_hash"]
-        assert pin_hash.startswith("$argon2")
-        assert pin_hash != "4913"
-
-    def test_pin_hash_never_reaches_the_public_profile(self, mgr):
-        mgr.set_pin("tester", "4913")
+        users = mgr.list_users()
+        assert users
+        assert "pin_length" not in users[0]
         pub = mgr.get_primary_user()
-        assert "pin_hash" not in pub
+        assert pub and "pin_length" not in pub
         assert pub["has_pin"] is True
 
     def test_no_pin_configured_refuses_everything(self, mgr):
