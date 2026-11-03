@@ -225,9 +225,8 @@ describe("UpdatesPanel -- auto-update prefs persistence", () => {
     render(<UpdatesPanel />);
     await waitFor(() => expect(screen.getByText("1.0.0-beta.2")).toBeInTheDocument());
 
-    // Toggle the check switch off (first switch in the panel)
-    const switches = screen.getAllByRole("switch");
-    const checkSwitch = switches[0];
+    // Toggle the check switch off by accessible name
+    const checkSwitch = screen.getByRole("switch", { name: /check for updates automatically/i });
     fireEvent.click(checkSwitch);
 
     await waitFor(() => {

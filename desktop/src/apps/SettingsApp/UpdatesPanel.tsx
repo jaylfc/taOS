@@ -17,7 +17,7 @@ interface AutoUpdatePrefs {
   check_enabled?: boolean;
   update_ping_enabled?: boolean;
   last_notified_commit?: string;
-  last_reminded_at?: string;
+  last_reminder_at?: string;
   [key: string]: unknown;
 }
 
@@ -440,6 +440,7 @@ export function UpdatesPanel() {
             <Switch
               checked={prefs.check_enabled ?? true}
               onCheckedChange={(v) => savePrefs({ ...prefs, check_enabled: v })}
+              aria-label="Check for updates automatically"
             />
           </div>
 
