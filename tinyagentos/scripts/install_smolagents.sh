@@ -112,10 +112,10 @@ async def post_reply(c, u, t, mid, tid, txt, cid=None):
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(1.0 * attempt)
                 continue
-            log.warning("reply: %s", e)
+            log.warning("reply POST failed: %s", e)
             return
         except Exception as e:
-            log.warning("reply: %s", e)
+            log.warning("reply POST failed: %s", e)
             return
 async def handle(c, evt, ch):
     mid=evt.get("id",""); tid=evt.get("trace_id",mid); text=evt.get("text","")

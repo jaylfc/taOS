@@ -483,13 +483,11 @@ async def sse_loop(client: httpx.AsyncClient, channel: dict, stop: asyncio.Event
                             try:
                                 evt = json.loads(evt_data)
                                 if len(pending_tasks) >= _PENDING_CAP:
-                                    log.warning("pending_tasks full (%d/%d), skipping user_message %s",
-                                                len(pending_tasks), _PENDING_CAP, evt.get("id"))
-                                else:
-                                    task = asyncio.create_task(_run_handle_user_message_limited(
-                                        client, evt, channel, seen_ids, error_until))
-                                    pending_tasks.add(task)
-                                    task.add_done_callback(pending_tasks.discard)
+                                    await asyncio.wait(pending_tasks, return_when=asyncio.FIRST_COMPLETED)
+                                task = asyncio.create_task(_run_handle_user_message_limited(
+                                    client, evt, channel, seen_ids, error_until))
+                                pending_tasks.add(task)
+                                task.add_done_callback(pending_tasks.discard)
                             except Exception as e:
                                 log.warning("parse error: %s", e)
                         evt_type, evt_data = "", ""

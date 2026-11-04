@@ -147,6 +147,9 @@ async def post_reply(c, u, t, mid, tid, txt, cid=None):
                 continue
             log.warning("reply POST failed: %s", e)
             return False
+        except Exception as e:
+            log.warning("reply POST failed: %s", e)
+            return False
     return False
 async def handle(c, evt, ch):
     mid = evt.get("id",""); tid = evt.get("trace_id", mid); text = evt.get("text","")

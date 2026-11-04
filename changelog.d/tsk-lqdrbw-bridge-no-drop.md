@@ -1,0 +1,3 @@
+### Fixed
+- Deer-flow bridge no longer drops user_message events when pending_tasks reaches _PENDING_CAP; now applies back-pressure by waiting for a slot to free
+- All nine bridge scripts (deer-flow, hermes, nanobot, thclaws, langroid, openai-agents-sdk, openai_agents_sdk, pocketflow, smolagents) now catch non-TransportError exceptions in post_reply, log "reply POST failed", and return False instead of letting the exception escape
