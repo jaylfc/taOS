@@ -28,10 +28,19 @@ export interface SectionDef {
   items: Channel[];
 }
 
+/** Replaces the "deploy an agent" empty state while setup's first chat is
+ * being prepared ("busy") or has failed ("error"). */
+export interface EmptyNote {
+  title: string;
+  detail: string;
+  tone: "busy" | "error";
+}
+
 export interface ChannelSidebarProps {
   isMobile: boolean;
   wsStatus: WsStatus;
   allEmpty: boolean;
+  emptyNote?: EmptyNote;
   sections: SectionDef[];
   collapsedSections: Record<string, boolean>;
   onToggleSection: (key: string) => void;
@@ -79,6 +88,7 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
     isMobile,
     wsStatus,
     allEmpty,
+    emptyNote,
     sections,
     collapsedSections,
     onToggleSection,
@@ -134,7 +144,7 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
         {wsStatus !== "connected" && <ConnectionStatus wsStatus={wsStatus} />}
 
         {allEmpty ? (
-          <EmptyState onOpenAgentsApp={onOpenAgentsApp} />
+          <EmptyState note={emptyNote} onOpenAgentsApp={onOpenAgentsApp} />
         ) : (
           <>
             <MobileChatList
@@ -197,19 +207,21 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
           <div className="flex flex-col items-center justify-center h-full px-4 py-10 text-center gap-2.5">
             <MessageCircle size={28} className="text-shell-text-disabled" aria-hidden="true" />
             <p className="text-[13px] font-medium text-shell-text-secondary">
-              No conversations yet
+              {emptyNote?.title ?? "No conversations yet"}
             </p>
             <p className="text-[11px] text-shell-text-tertiary">
-              Deploy an agent to start chatting
+              {emptyNote?.detail ?? "Deploy an agent to start chatting"}
             </p>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={onOpenAgentsApp}
-              className="mt-1 text-xs"
-            >
-              Open Agents
-            </Button>
+            {emptyNote?.tone !== "busy" && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={onOpenAgentsApp}
+                className="mt-1 text-xs"
+              >
+                Open Agents
+              </Button>
+            )}
           </div>
         ) : (
           sections.map((section) => (
@@ -457,9 +469,10 @@ function ConnectionStatus({ wsStatus }: { wsStatus: WsStatus }) {
   );
 }
 
-function EmptyState({ onOpenAgentsApp }: { onOpenAgentsApp: () => void }) {
+function EmptyState({ note, onOpenAgentsApp }: { note?: EmptyNote; onOpenAgentsApp: () => void }) {
   return (
     <div
+      role={note ? (note.tone === "busy" ? "status" : "alert") : undefined}
       style={{
         display: "flex",
         flexDirection: "column",
@@ -483,7 +496,7 @@ function EmptyState({ onOpenAgentsApp }: { onOpenAgentsApp: () => void }) {
           margin: 0,
         }}
       >
-        No conversations yet
+        {note?.title ?? "No conversations yet"}
       </p>
       <p
         style={{
@@ -492,9 +505,9 @@ function EmptyState({ onOpenAgentsApp }: { onOpenAgentsApp: () => void }) {
           margin: 0,
         }}
       >
-        Deploy an agent to start chatting
+        {note?.detail ?? "Deploy an agent to start chatting"}
       </p>
-      <button
+      {note?.tone !== "busy" && <button
         type="button"
         onClick={onOpenAgentsApp}
         style={{
@@ -509,7 +522,7 @@ function EmptyState({ onOpenAgentsApp }: { onOpenAgentsApp: () => void }) {
         }}
       >
         Open Agents
-      </button>
+      </button>}
     </div>
   );
 }

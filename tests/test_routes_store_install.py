@@ -1966,6 +1966,142 @@ class TestInstallRegistryWrites:
         finally:
             await ir.close()
 
+    # ------------------------------------------------------------------
+    # install_registry row accuracy (#4132 follow-up)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["download", "huggingface", "ollama"])
+    async def test_model_asset_install_methods_write_no_row(self, client, tmp_path, method):
+        """download / huggingface / ollama install models and assets, not
+        running apps -- they get no install_registry row (the model's own
+        backend owns "where it lives")."""
+        svc = _make_service_manifest("asset-app", method=method)
+        reg = _make_registry(svc)
+        client._transport.app.state.registry = reg
+        client._transport.app.state.installed_apps = _make_installed_apps()
+
+        ir = await self._setup_ir(client, tmp_path)
+        try:
+            resp = await client.post("/api/store/install-v2", json={
+                "manifest_id": "asset-app",
+            })
+            assert resp.status_code == 200
+            assert resp.json()["status"] == "installed"
+
+            rows = await ir.list(item_id="asset-app")
+            assert rows == [], (
+                f"{method} install must not write an install_registry row"
+            )
+        finally:
+            await ir.close()
+
+    @pytest.mark.asyncio
+    async def test_docker_install_records_local_even_when_remote_requested(self, client, tmp_path):
+        """Docker installs always run on the controller, so the row records
+        location_ref="local" even when a target_remote was requested."""
+        svc = _make_service_manifest("remote-docker", method="docker")
+        reg = _make_registry(svc)
+        client._transport.app.state.registry = reg
+        client._transport.app.state.installed_apps = _make_installed_apps()
+
+        ir = await self._setup_ir(client, tmp_path)
+        try:
+            mock_installer = MagicMock()
+            mock_installer.install = AsyncMock(
+                return_value={"success": True, "host_port": 31234},
+            )
+            mock_installer.start = AsyncMock(return_value={"success": True})
+            with patch(
+                "tinyagentos.installers.docker_installer.DockerInstaller",
+                return_value=mock_installer,
+            ):
+                resp = await client.post("/api/store/install-v2", json={
+                    "manifest_id": "remote-docker",
+                    "target_remote": "worker-x",
+                })
+            assert resp.status_code == 200
+
+            rows = await ir.list(item_id="remote-docker")
+            assert len(rows) == 1
+            assert rows[0]["location_kind"] == "host"
+            assert rows[0]["location_ref"] == "local", (
+                "docker install must record location_ref='local' even with a "
+                "requested target_remote"
+            )
+        finally:
+            await ir.close()
+
+    @pytest.mark.asyncio
+    async def test_pip_install_records_local_even_when_remote_requested(self, client, tmp_path):
+        """Pip installs always run on the controller, so the row records
+        location_ref="local" even when a target_remote was requested."""
+        svc = _make_service_manifest("remote-pip", method="pip")
+        reg = _make_registry(svc)
+        client._transport.app.state.registry = reg
+        client._transport.app.state.installed_apps = _make_installed_apps()
+
+        ir = await self._setup_ir(client, tmp_path)
+        try:
+            mock_installer = MagicMock()
+            mock_installer.install = AsyncMock(return_value={"success": True})
+            with patch(
+                "tinyagentos.installers.pip_installer.PipInstaller",
+                return_value=mock_installer,
+            ):
+                resp = await client.post("/api/store/install-v2", json={
+                    "manifest_id": "remote-pip",
+                    "target_remote": "worker-x",
+                })
+            assert resp.status_code == 200
+
+            rows = await ir.list(item_id="remote-pip")
+            assert len(rows) == 1
+            assert rows[0]["location_kind"] == "host"
+            assert rows[0]["location_ref"] == "local", (
+                "pip install must record location_ref='local' even with a "
+                "requested target_remote"
+            )
+        finally:
+            await ir.close()
+
+    @pytest.mark.asyncio
+    async def test_script_install_records_local_not_requested_remote(self, client, tmp_path):
+        """Script installs run on the controller, so the row records
+        location_ref="local" regardless of any requested target_remote."""
+        svc = _make_service_manifest("remote-script", method="script")
+        svc.install = {"method": "script", "script": "scripts/noop.sh"}
+        svc.requires = {"ports": [7833]}
+        reg = _make_registry(svc)
+        client._transport.app.state.registry = reg
+        client._transport.app.state.installed_apps = _make_installed_apps()
+
+        ir = await self._setup_ir(client, tmp_path)
+        try:
+            mock_installer = MagicMock()
+            mock_installer.install = AsyncMock(
+                return_value={"success": True, "app_id": "remote-script", "method": "script"},
+            )
+            with patch(
+                "tinyagentos.routes.store_install.get_installer",
+                return_value=mock_installer,
+            ):
+                resp = await client.post("/api/store/install-v2", json={
+                    "manifest_id": "remote-script",
+                    "target_remote": "worker-x",
+                })
+            assert resp.status_code == 200
+
+            rows = await ir.list(item_id="remote-script")
+            assert len(rows) == 1
+            assert rows[0]["location_kind"] == "host"
+            assert rows[0]["location_ref"] == "local", (
+                "script install must record location_ref='local' even with a "
+                "requested target_remote"
+            )
+        finally:
+            await ir.close()
+
 
 # ---------------------------------------------------------------------------
 # POST /api/store/uninstall (routes/store.py) -- install_registry writes
@@ -2115,6 +2251,130 @@ class TestUninstallStoreRoute:
                 rows = await ir.list(item_id="lxc-app")
                 assert len(rows) == 1, "legacy_lxc row should survive uninstall"
                 assert rows[0]["location_kind"] == "legacy_lxc"
+        finally:
+            await ir.close()
+
+    @pytest.mark.asyncio
+    async def test_uninstall_removes_local_host_row_even_when_remote_row_exists(self, client, tmp_path):
+        """Uninstall must delete the local host row even when a remote
+        runtime row also exists for the app. Only the local host row is
+        removed; the remote row and any legacy_lxc row are left untouched."""
+        svc = _make_service_manifest("mixed-app", method="docker")
+        reg = _make_registry(svc)
+        client._transport.app.state.registry = reg
+        installed_apps = _make_installed_apps()
+        # Runtime location now points at a remote worker -- previously this
+        # skipped the host-row cleanup entirely.
+        installed_apps.get_runtime_location = AsyncMock(
+            return_value={"runtime_host": "worker-x", "runtime_port": 31234},
+        )
+        client._transport.app.state.installed_apps = installed_apps
+
+        ir = await self._setup_ir(client, tmp_path)
+        try:
+            mock_installer = MagicMock()
+            mock_installer.install = AsyncMock(
+                return_value={"success": True, "host_port": 31234},
+            )
+            mock_installer.start = AsyncMock(return_value={"success": True})
+            with patch(
+                "tinyagentos.installers.docker_installer.DockerInstaller",
+                return_value=mock_installer,
+            ):
+                resp = await client.post("/api/store/install-v2", json={
+                    "manifest_id": "mixed-app",
+                })
+            assert resp.status_code == 200
+
+            rows = await ir.list(item_id="mixed-app")
+            assert len(rows) == 1
+            assert rows[0]["location_kind"] == "host"
+            assert rows[0]["location_ref"] == "local"
+
+            # Manually add a remote row and a legacy_lxc row for the same app
+            # so the uninstall can prove it leaves them alone.
+            await ir.record(
+                item_id="mixed-app",
+                item_kind="service",
+                version="1.0.0",
+                location_kind="host",
+                location_ref="worker-x",
+            )
+            await ir.record(
+                item_id="mixed-app",
+                item_kind="service",
+                version="1.0.0",
+                location_kind="legacy_lxc",
+                location_ref="taos-svc-mixed-app",
+            )
+            rows = await ir.list(item_id="mixed-app")
+            assert len(rows) == 3
+
+            # Uninstall via /api/store/uninstall (store.py route)
+            resp = await client.post("/api/store/uninstall", json={
+                "app_id": "mixed-app",
+            })
+            assert resp.status_code == 200
+            assert resp.json()["status"] == "uninstalled"
+
+            rows = await ir.list(item_id="mixed-app")
+            refs = {(r["location_kind"], r["location_ref"]) for r in rows}
+            assert ("host", "local") not in refs, (
+                "local host row must be deleted even when a remote runtime "
+                "row exists"
+            )
+            assert ("host", "worker-x") in refs, (
+                "remote row must survive the uninstall"
+            )
+            assert ("legacy_lxc", "taos-svc-mixed-app") in refs, (
+                "legacy_lxc row must survive the uninstall"
+            )
+        finally:
+            await ir.close()
+
+    @pytest.mark.asyncio
+    async def test_uninstall_succeeds_when_runtime_location_read_raises(self, client, tmp_path):
+        """A failing runtime-location read must never fail the uninstall:
+        the route still returns 200 and still deletes the local host row."""
+        svc = _make_service_manifest("docker-app", method="docker")
+        reg = _make_registry(svc)
+        client._transport.app.state.registry = reg
+        installed_apps = _make_installed_apps()
+        installed_apps.get_runtime_location = AsyncMock(
+            side_effect=RuntimeError("store unreachable"),
+        )
+        client._transport.app.state.installed_apps = installed_apps
+
+        ir = await self._setup_ir(client, tmp_path)
+        try:
+            mock_installer = MagicMock()
+            mock_installer.install = AsyncMock(
+                return_value={"success": True, "host_port": 31234},
+            )
+            mock_installer.start = AsyncMock(return_value={"success": True})
+            with patch(
+                "tinyagentos.installers.docker_installer.DockerInstaller",
+                return_value=mock_installer,
+            ):
+                resp = await client.post("/api/store/install-v2", json={
+                    "manifest_id": "docker-app",
+                })
+            assert resp.status_code == 200
+
+            rows = await ir.list(item_id="docker-app")
+            assert len(rows) == 1
+
+            resp = await client.post("/api/store/uninstall", json={
+                "app_id": "docker-app",
+            })
+            assert resp.status_code == 200
+            assert resp.json()["status"] == "uninstalled"
+
+            rows = await ir.list(item_id="docker-app")
+            assert rows == [], (
+                "host row must still be deleted even though the runtime-location "
+                "read raised"
+            )
         finally:
             await ir.close()
 

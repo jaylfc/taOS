@@ -1,6 +1,10 @@
 @import "tailwindcss";
 
 @theme {
+  /* Shell typeface: Inter, self-hosted (@fontsource-variable/inter) so every
+     device renders the same face; the system stack is only the fallback. */
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+
   /* Background layers — macOS-dark graphite (warm charcoal, neutral, no indigo) */
   --color-shell-bg: #1d1d1f;
   --color-shell-bg-deep: #171717;
