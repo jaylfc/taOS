@@ -9,6 +9,10 @@ reviews:
     base_branches:
       - master
       - dev
+      # The cloud agent integrates on cloud/main before promotion to dev; its
+      # PRs need a review artefact before merge, and the agent cannot post the
+      # manual review command itself.
+      - cloud/main
     # The plan has a finite review quota, and it was being spent in the wrong
     # places: repeatedly "review limit reached" on real code PRs while lockfile
     # bumps consumed reviews. #2127 and #2131 both went unreviewed for this
