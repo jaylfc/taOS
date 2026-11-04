@@ -1534,7 +1534,10 @@ All routes are admin-only via `Depends(require_admin)`. See [docs/hardware-route
 
 ## Hub chain export and blobs (social phase 0, local only)
 
-Route module `tinyagentos/routes/hub.py`, signed-in users of the box only:
+Route module `tinyagentos/routes/hub.py`. These routes, and `GET /api/hub/timeline`,
+expose the box identity's whole chain (friends-only bodies, every blob), so they
+are admin only (`require_admin`: an admin session or the host local token). A
+signed-out caller gets `401`, another signed-in member of the box `403`:
 
 - `GET /api/hub/chain?after_seq=&limit=` returns this node's own chain page
   (`entries`, `object` is `null` once a tombstone dropped the body), the `head`,

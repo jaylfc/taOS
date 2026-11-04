@@ -38,7 +38,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from tinyagentos import peer as peer_channel
-from tinyagentos.auth_context import CurrentUser, current_user
+from tinyagentos.auth_context import CurrentUser, current_user, require_admin
 from tinyagentos.contacts_store import generate_peer_token
 from tinyagentos import task_utils
 from tinyagentos.hub import identity, posts, relationships, store as hub_store
@@ -798,7 +798,7 @@ async def create_post(
     return {"state": "ok", "post": post}
 
 
-@router.get("/api/hub/timeline")
+@router.get("/api/hub/timeline", dependencies=[Depends(require_admin)])
 async def own_timeline(
     request: Request,
     user: CurrentUser = Depends(current_user),
@@ -847,7 +847,7 @@ _SQLITE_INT_MAX = 2**63 - 1
 _BLOB_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
-@router.get("/api/hub/chain")
+@router.get("/api/hub/chain", dependencies=[Depends(require_admin)])
 async def own_chain(
     request: Request,
     after_seq: int = 0,
@@ -884,7 +884,7 @@ async def own_chain(
     }
 
 
-@router.get("/api/hub/blobs/{blob_hash}")
+@router.get("/api/hub/blobs/{blob_hash}", dependencies=[Depends(require_admin)])
 async def get_blob(
     blob_hash: str,
     request: Request,
