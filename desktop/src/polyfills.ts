@@ -5,6 +5,9 @@ declare global {
   interface Array<T> {
     at(index: number): T | undefined;
   }
+  interface AbortSignal {
+    timeout(ms: number): AbortSignal;
+  }
 }
 
 if (typeof Object.hasOwn === "undefined") {
@@ -23,6 +26,19 @@ if (typeof Array.prototype.at === "undefined") {
       if (n < 0) n += len;
       if (n < 0 || n >= len) return undefined;
       return o[n];
+    },
+    writable: true,
+    configurable: true,
+    enumerable: false,
+  });
+}
+
+if (typeof AbortSignal !== "undefined" && typeof (AbortSignal as any).timeout !== "function") {
+  Object.defineProperty(AbortSignal, "timeout", {
+    value: function timeout(this: unknown, ms: number): AbortSignal {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(new DOMException("signal timed out", "TimeoutError")), ms);
+      return controller.signal;
     },
     writable: true,
     configurable: true,
