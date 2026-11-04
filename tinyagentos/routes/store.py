@@ -560,13 +560,16 @@ async def uninstall_app(request: Request, body: UninstallRequest):
         await installer.uninstall(body.app_id)
         # Script-installed services (e.g. llama-cpp) can declare an uninstall
         # script in manifest.install.uninstall. Run it to tear down the service
-        # (systemd unit / OpenRC init script) instead of only marking the app
-        # uninstalled. Best-effort: a failed teardown never fails the uninstall.
+        # (systemd unit / OpenRC init script / launchd plist) instead of only
+        # marking the app uninstalled. Best-effort: a failed teardown never
+        # fails the uninstall.
         if manifest and hasattr(installer, "uninstall_with_script"):
             uninstall_script = manifest.install.get("uninstall")
             if uninstall_script:
                 try:
-                    await installer.uninstall_with_script(body.app_id, uninstall_script)
+                    result = await installer.uninstall_with_script(body.app_id, uninstall_script)
+                    if isinstance(result, dict) and not result.get("success", True):
+                        logger.warning("uninstall teardown script failed for %s: %s", body.app_id, result.get("error"))
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("uninstall teardown script failed for %s: %s", body.app_id, exc)
 
