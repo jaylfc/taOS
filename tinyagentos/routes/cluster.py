@@ -1540,11 +1540,9 @@ async def report_task(request: Request, body: TaskReportRequest):
     When the caller authenticated ONLY via worker HMAC, body.worker must
     match the x-taos-worker-name header; otherwise 403.
     """
-    denied = await _require_lease_access(request)
-    if denied is not None:
-        return denied
-
-    # Bind worker HMAC callers to their identity
+    # Verify the caller identity once and reuse it for both the lease-access
+    # gate and the worker HMAC identity binding below (avoids a second HMAC
+    # verification / timestamp-skew check).
     principal = await _identify_principal(request)
     if principal is None:
         return JSONResponse({"error": "unidentified caller"}, status_code=403)
