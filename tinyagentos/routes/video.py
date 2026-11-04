@@ -22,6 +22,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
+from tinyagentos.atomic_io import atomic_write_text
 from tinyagentos.auth_context import current_user
 from tinyagentos.task_utils import _create_supervised_task
 from tinyagentos.video_jobs import VideoJobStore
@@ -221,7 +222,12 @@ async def _generate_and_save(
         "seed": seed,
     }
     meta_path = videos_dir / f"{timestamp}_{seed}.json"
-    meta_path.write_text(json.dumps({**metadata, "user_id": user_id} if user_id else metadata, indent=2))
+    # Atomic: a torn sidecar would read as ownerless and lock the owner out.
+    await asyncio.to_thread(
+        atomic_write_text,
+        meta_path,
+        json.dumps({**metadata, "user_id": user_id} if user_id else metadata, indent=2),
+    )
 
     return {
         "filename": filename,
@@ -367,6 +373,9 @@ async def delete_video(request: Request, filename: str):
     videos_dir = _videos_dir(request)
 
     if "/" in filename or "\\" in filename or ".." in filename:
+        return JSONResponse({"error": "Invalid filename"}, status_code=400)
+    # Only a video, never its sidecar: deleting the sidecar would strip the owner.
+    if not filename.endswith((".mp4", ".webm")):
         return JSONResponse({"error": "Invalid filename"}, status_code=400)
 
     video_path = videos_dir / filename

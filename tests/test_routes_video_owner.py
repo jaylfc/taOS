@@ -44,10 +44,13 @@ async def setup(tmp_data_dir):
     invite = auth.add_user_invite("bob", "admin")
     auth.complete_invite("bob", invite, "Bob", "bob@test.com", "bobspass11")
     bob_id = auth.find_user("bob")["id"]
+    invite = auth.add_user_invite("carol", "admin")
+    auth.complete_invite("carol", invite, "Carol", "carol@test.com", "carolpass11")
+    carol_id = auth.find_user("carol")["id"]
     admin, bob = _client(app, admin_id), _client(app, bob_id)
     try:
         yield {"app": app, "videos": videos, "admin": admin, "bob": bob,
-               "admin_id": admin_id, "bob_id": bob_id}
+               "admin_id": admin_id, "bob_id": bob_id, "carol_id": carol_id}
     finally:
         await admin.aclose()
         await bob.aclose()
@@ -130,3 +133,25 @@ async def test_generation_records_the_requesting_member_as_owner(setup):
     meta = json.loads(next(setup["videos"].glob("*_7.json")).read_text())
     assert meta["user_id"] == setup["bob_id"]
     assert await _names(setup["bob"]) == [next(setup["videos"].glob("*_7.mp4")).name]
+
+
+@pytest.mark.asyncio
+async def test_a_member_cannot_reach_another_members_video(setup):
+    _video(setup["videos"], "3_carols", setup["carol_id"])
+    bob = setup["bob"]
+
+    assert await _names(bob) == []
+    assert (await bob.get("/api/video/3_carols.mp4")).status_code == 403
+    assert (await bob.delete("/api/video/3_carols.mp4")).status_code == 403
+    assert (setup["videos"] / "3_carols.mp4").exists()
+
+
+@pytest.mark.asyncio
+async def test_delete_refuses_a_sidecar_so_ownership_cannot_be_stripped(setup):
+    _video(setup["videos"], "4_bobs", setup["bob_id"])
+
+    resp = await setup["bob"].delete("/api/video/4_bobs.json")
+
+    assert resp.status_code == 400
+    assert (setup["videos"] / "4_bobs.json").exists()
+    assert await _names(setup["bob"]) == ["4_bobs.mp4"]
