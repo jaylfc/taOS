@@ -13,6 +13,8 @@ import shutil
 import subprocess
 
 import pytest
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
 
 from tinyagentos.auth import (
     AuthManager,
@@ -184,6 +186,77 @@ class TestPinFailuresDoNotLockOutPassword:
 #  Store behaviour                                                             #
 # --------------------------------------------------------------------------- #
 
+class TestPinStore:
+    """The store tests the PR had removed. Restored from origin/dev unchanged:
+    none of them assert behaviour this PR intentionally removed, and each one
+    still passes against the current product code."""
+
+    def test_pin_round_trips(self, mgr):
+        mgr.set_pin("tester", "4913")
+        assert mgr.has_pin("tester") is True
+        assert mgr.check_pin("4913", username="tester")[0] is True
+
+    def test_wrong_pin_refused(self, mgr):
+        mgr.set_pin("tester", "4913")
+        assert mgr.check_pin("4914", username="tester")[0] is False
+
+    def test_pin_is_hashed_not_stored_in_clear(self, mgr, tmp_path):
+        mgr.set_pin("tester", "4913")
+        data = json.loads((tmp_path / ".auth_user.json").read_text())
+        pin_hash = data["users"][0]["pin_hash"]
+        assert pin_hash.startswith("$argon2")
+        assert pin_hash != "4913"
+
+    def test_bare_digit_assertion_flakes_when_hash_contains_pin(self, mgr, tmp_path, monkeypatch):
+        fake_hash = "$argon2id$v=19$m=65536,t=3,p=4$4913salt$4913hash"
+
+        class FakeHasher:
+            def hash(self, secret):
+                return fake_hash
+
+        monkeypatch.setattr("tinyagentos.auth._ph", FakeHasher())
+        mgr.set_pin("tester", "4913")
+        raw = (tmp_path / ".auth_user.json").read_text()
+        with pytest.raises(AssertionError):
+            assert "4913" not in raw
+        data = json.loads(raw)
+        pin_hash = data["users"][0]["pin_hash"]
+        assert pin_hash.startswith("$argon2")
+        assert pin_hash != "4913"
+
+    def test_pin_hash_never_reaches_the_public_profile(self, mgr):
+        mgr.set_pin("tester", "4913")
+        pub = mgr.get_primary_user()
+        assert "pin_hash" not in pub
+        assert pub["has_pin"] is True
+
+    def test_no_pin_configured_refuses_everything(self, mgr):
+        assert mgr.has_pin("tester") is False
+        assert mgr.check_pin("4913", username="tester")[0] is False
+        assert mgr.check_pin("", username="tester")[0] is False
+
+    def test_clear_pin_removes_it(self, mgr):
+        mgr.set_pin("tester", "4913")
+        assert mgr.clear_pin("tester") is True
+        assert mgr.has_pin("tester") is False
+        assert mgr.check_pin("4913", username="tester")[0] is False
+
+    def test_pin_does_not_authenticate_as_a_password(self, mgr):
+        """The two factors must not be interchangeable."""
+        mgr.set_pin("tester", "4913")
+        assert mgr.check_password("4913", username="tester")[0] is False
+
+    def test_password_does_not_authenticate_as_a_pin(self, mgr):
+        mgr.set_pin("tester", "4913")
+        assert mgr.check_pin("correct horse battery staple", username="tester")[0] is False
+
+    def test_multi_user_without_username_refuses_to_guess(self, mgr):
+        """A PIN set on one account must not unlock whichever record is first."""
+        mgr.add_user_invite("second", invited_by_username="tester")
+        mgr.set_pin("tester", "4913")
+        assert mgr.check_pin("4913", username=None)[0] is False
+
+
 class TestPinLength:
     def test_set_pin_stores_length(self, mgr):
         mgr.set_pin("tester", "4913")
@@ -235,32 +308,6 @@ class TestPinLength:
         pub = mgr.get_primary_user()
         assert pub and "pin_length" not in pub
         assert pub["has_pin"] is True
-
-    def test_no_pin_configured_refuses_everything(self, mgr):
-        assert mgr.has_pin("tester") is False
-        assert mgr.check_pin("4913", username="tester")[0] is False
-        assert mgr.check_pin("", username="tester")[0] is False
-
-    def test_clear_pin_removes_it(self, mgr):
-        mgr.set_pin("tester", "4913")
-        assert mgr.clear_pin("tester") is True
-        assert mgr.has_pin("tester") is False
-        assert mgr.check_pin("4913", username="tester")[0] is False
-
-    def test_pin_does_not_authenticate_as_a_password(self, mgr):
-        """The two factors must not be interchangeable."""
-        mgr.set_pin("tester", "4913")
-        assert mgr.check_password("4913", username="tester")[0] is False
-
-    def test_password_does_not_authenticate_as_a_pin(self, mgr):
-        mgr.set_pin("tester", "4913")
-        assert mgr.check_pin("correct horse battery staple", username="tester")[0] is False
-
-    def test_multi_user_without_username_refuses_to_guess(self, mgr):
-        """A PIN set on one account must not unlock whichever record is first."""
-        mgr.add_user_invite("second", invited_by_username="tester")
-        mgr.set_pin("tester", "4913")
-        assert mgr.check_pin("4913", username=None)[0] is False
 
 
 class TestPinValidation:
@@ -382,17 +429,20 @@ var document = {
 var window = { taosOSK: null, location: { assign: function(){} } };
 
 var posts = [];
+var lastStatus = 0;
 global.fetch = function(url, opts){
   posts.push({url: url, opts: opts});
   if (SCN.fetchFail) {
     return Promise.reject(new Error("fail"));
   }
   if (SCN.fetchStatus && SCN.fetchStatus !== 200) {
+    lastStatus = SCN.fetchStatus;
     return Promise.resolve({
       status: SCN.fetchStatus,
       json: function(){ return Promise.resolve(SCN.fetchBody || {}); }
     });
   }
+  lastStatus = 200;
   return Promise.resolve({
     status: 200,
     json: function(){ return Promise.resolve({ok: true}); }
@@ -421,7 +471,7 @@ if (SCN.clickSubmit && submit && submit._h["click"]) {
   for (var m=0; m<ch.length; m++) { ch[m].call(submit, {}); }
 }
 
-process.stdout.write(JSON.stringify({ posts: posts, err: err.textContent || "", submitExists: !!els["pin-submit"], value: input.value }));
+process.stdout.write(JSON.stringify({ posts: posts, err: err.textContent || "", submitExists: !!els["pin-submit"], value: input.value, lastStatus: lastStatus }));
 """
 
 
@@ -440,6 +490,30 @@ def _run_pin_scenario(scenario: dict, script_override: str | None = None):
 
 
 class TestPinPanelScriptNode:
+    @pytest.mark.asyncio
+    async def test_console_login_page_renders_data_pin_length(self, app):
+        """A console GET /auth/login on a single-account install with a 6-digit
+        PIN renders data-pin-length="6" so the keypad auto-submits on the last
+        digit instead of showing a submit button."""
+        app.state.auth.setup_user("admin", "Admin", "", "passw0rd")
+        app.state.auth.set_pin("admin", "123456")
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/auth/login")
+        assert resp.status_code == 200
+        assert 'data-pin-length="6"' in resp.text
+
+    @pytest.mark.asyncio
+    async def test_console_login_page_without_pin_has_no_data_pin_length(self, app):
+        """A sole account with no PIN still renders the lock screen, but the
+        keypad cannot auto-submit because nothing knows the length."""
+        app.state.auth.setup_user("admin", "Admin", "", "passw0rd")
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/auth/login")
+        assert resp.status_code == 200
+        assert "data-pin-length" not in resp.text
+
     def test_with_data_pin_length_six_typing_five_sends_no_post_sixth_sends_exactly_one(self):
         res = _run_pin_scenario({"pinLength": 6, "hasSubmit": False, "dotCount": 6, "typeDigits": [1,2,3,4,5]})
         assert len(res["posts"]) == 0
@@ -449,8 +523,10 @@ class TestPinPanelScriptNode:
     def test_wrong_pin_clears_dots_and_second_full_entry_posts_second(self):
         res = _run_pin_scenario({"pinLength": 4, "hasSubmit": False, "dotCount": 4, "typeDigits": [1,2,3,4], "fetchStatus": 401, "fetchBody": {"error": "bad"}})
         assert len(res["posts"]) == 1
+        assert res["lastStatus"] == 401
         res2 = _run_pin_scenario({"pinLength": 4, "hasSubmit": False, "dotCount": 4, "typeDigits": [5,6,7,8], "fetchStatus": 401, "fetchBody": {"error": "bad"}})
         assert len(res2["posts"]) == 1
+        assert res2["lastStatus"] == 401
 
     def test_no_data_pin_length_button_exists_and_typing_never_auto_posts(self):
         res = _run_pin_scenario({"pinLength": None, "hasSubmit": True, "dotCount": 4, "typeDigits": [1,2,3,4]})

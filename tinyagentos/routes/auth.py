@@ -8621,6 +8621,7 @@ def _login_page(
     next_url: str = "",
     pin_available: bool = False,
     unlock_method: str | None = None,
+    pin_length: int | None = None,
 ) -> str:
     """The sign-in page.
 
@@ -8628,6 +8629,11 @@ def _login_page(
     install (see login_page); it turns the page into the lock screen and picks
     how that screen opens. ``pin_available=True`` alone is the older spelling of
     ``unlock_method="pin"``.
+
+    ``pin_length`` is the known PIN length, passed in by ``login_page`` (which
+    already has the ``AuthManager`` in scope). It drives the auto-submit keypad
+    and the dot count; when it is ``None`` the panel renders a submit button
+    instead, because nothing on the page knows how long the PIN is.
     """
     if unlock_method is None and pin_available:
         unlock_method = "pin"
@@ -8652,12 +8658,7 @@ def _login_page(
     # pin_available is already console-only, so the lock screen never reaches a
     # LAN browser: off-console this page stays exactly the card it has always been.
     lock_screen = unlock_method is not None
-    pin_len = None
-    try:
-        if pin_available:
-            pin_len = auth_mgr.pin_length() if auth_mgr else None
-    except Exception:
-        pin_len = None
+    pin_len = pin_length
     pin_panel = _pin_panel_html(next_url, keypad=lock_screen, pin_length=pin_len) if pin_available else ""
     pin_switch = (
         '<button type="button" class="method-switch" id="use-pin">Use my PIN instead</button>'
@@ -8871,6 +8872,7 @@ async def login_page(request: Request, error: str = "", next: str = ""):
         multi_user=auth_mgr.is_multi_user(),
         next_url=safe_next,
         unlock_method=unlock_method,
+        pin_length=auth_mgr.pin_length() if unlock_method == "pin" else None,
     ))
 
 
