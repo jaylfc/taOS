@@ -40,6 +40,7 @@ from tinyagentos.agent_registry_store import (
 from tinyagentos.agent_token_auth import check_agent_identity, check_agent_identity_claims
 from tinyagentos.auth_context import CurrentUser, current_user, require_owner_or_admin
 from tinyagentos.base_store import PendingCapExceeded
+from tinyagentos.config import slugify_agent_name
 from tinyagentos.notification_labels import project_label
 from tinyagentos.routes.projects import _free_suggestions
 
@@ -251,12 +252,19 @@ def _get_relationships(request: Request):
     return rel
 
 
-async def _classify_proof(request: Request) -> tuple[str, str | None, int | None]:
+async def _classify_proof(
+    request: Request, *, require_active: bool = True
+) -> tuple[str, str | None, int | None]:
     """Return (proof_status, proven_cid, proven_iat) from the request's Authorization header.
 
     Header absent -> ("none", None, None).
     Header present -> check_agent_identity_claims; truthy -> ("accepted", cid, iat);
     None or HTTPException -> ("rejected", None, None).
+
+    ``require_active=False`` lets the consent flow record a proof token for an
+    identity that is not currently active. The token still has to carry a valid
+    signature and a non-superseded iat; only the status gate is relaxed (see
+    ``check_agent_identity_claims``).
     """
     authorization_header = request.headers.get("authorization")
     has_auth_header = authorization_header is not None
@@ -265,7 +273,9 @@ async def _classify_proof(request: Request) -> tuple[str, str | None, int | None
     proven_iat = None
     if has_auth_header:
         try:
-            result = await check_agent_identity_claims(request)
+            result = await check_agent_identity_claims(
+                request, require_active=require_active
+            )
             if result is not None:
                 proven, proven_iat = result
             if proven:
@@ -602,7 +612,13 @@ async def create_auth_request(request: Request, body: CreateAuthRequest):
     # concurrent posts is free, and a count-then-insert check hands every
     # request in that burst the same pre-insert count.
     
-    proof_status, proven, proven_iat = await _classify_proof(request)
+    # The consent flow may be filed by an identity that is not active yet
+    # (pending) or was previously active and is now suspended. The proof token
+    # establishes identity continuity; whether that identity may be reused is
+    # decided at approve time, not here.
+    proof_status, proven, proven_iat = await _classify_proof(
+        request, require_active=False
+    )
 
     try:
         record = await store.create(
@@ -925,6 +941,55 @@ async def approve_request_record(
             handle, status="active"
         )
         collision_via_normalised = existing_active is not None
+    # taOS #2114: if no ACTIVE agent owns the handle, check for an existing
+    # agent in ANY status. Reusing the canonical identity (instead of minting
+    # a fresh one) keeps the documented model where an agent's canonical id
+    # is minted once. The proof-token check below still applies.
+    existing_any = None
+    if existing_active is None:
+        # ``get_by_handle(..., status=None)`` returns only the OLDEST row for a
+        # handle, so one ineligible row can mask an eligible one with the same
+        # handle (CodeRabbit, taOS #2114). Look the reuse-eligible status up
+        # directly instead of picking an arbitrary row.
+        #
+        # Reuse is limited to ``pending``. A pending external-selfjoin row is a
+        # half-finished earlier approval: pending -> active is the transition
+        # the approve makes anyway, so reusing it does not overturn anything.
+        # A SUSPENDED identity is different: suspension is a deliberate owner
+        # action and whether the consent flow may reverse it is an open
+        # maintainer ruling (jaylfc, 2026-10-16). Until that is decided we do
+        # NOT reactivate a suspended identity; we fall through to the pre-#2114
+        # behaviour of minting a fresh external-selfjoin identity, so approval
+        # is never stuck at 409. Revoked is terminal and is likewise not reused.
+        #
+        # A holder of a FOREIGN origin is never reused: reactivating it would
+        # hand an internal identity to the consent flow.
+        #
+        # Two pending rows can share a normalised handle and the lookups return
+        # only one of them, so the identity the proof names is tried first. A
+        # valid token for the other row would otherwise 409 on the canonical-id
+        # check below with no way to resubmit past it.
+        candidate = None
+        proven_cid = record.get("proven_canonical_id")
+        if proven_cid:
+            proven = await registry.get(proven_cid)
+            if (
+                proven is not None
+                and proven.get("status") == "pending"
+                and slugify_agent_name(proven.get("handle") or "") == slugify_agent_name(handle)
+            ):
+                candidate = proven
+        if candidate is None:
+            candidate = await registry.get_by_handle(handle, status="pending")
+        if candidate is None:
+            candidate = await registry.get_by_handle_normalised(
+                handle, status="pending"
+            )
+        if candidate is not None and candidate.get("origin") in (
+            None,
+            "external-selfjoin",
+        ):
+            existing_any = candidate
     if existing_active is not None:
         # The consent approve flow is the only origin that registers here
         # (external-selfjoin). A normalised match whose origin is anything else
@@ -1048,21 +1113,51 @@ async def approve_request_record(
     # the old window (register handle='' -> set active -> update handle) in which
     # an agent could sit ACTIVE with an empty handle, and lets SQLite reject a
     # duplicate active handle the instant a concurrent approve tries to take it.
+    # taOS #2114: reuse an existing non-active identity instead of minting
+    # a fresh one. If the handle already maps to an agent (any status), reuse
+    # its canonical_id. The requester must still prove ownership via the
+    # registry token.
     canonical_id = None
+    # Distinguishes a row this approval registered (safe to delete on failed
+    # activation) from a pre-existing identity that was reused (must never be
+    # deleted by this flow's rollback).
+    created_here = False
+    if existing_any is not None:
+        if record.get("proven_canonical_id") != existing_any["canonical_id"]:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"handle '{handle}' belongs to existing agent "
+                    f"{existing_any['canonical_id']} (status={existing_any.get('status')}); "
+                    f"resubmit the request with that agent's registry token as a Bearer <redacted>"
+                ),
+            )
+        if (record.get("proven_token_iat") or 0) < (existing_any.get("token_min_iat") or 0):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"handle '{handle}' belongs to existing agent "
+                    f"{existing_any['canonical_id']}; the proof token was superseded by a "
+                    f"rotation and the request must be resubmitted with a current token"
+                ),
+            )
+        canonical_id = existing_any["canonical_id"]
     try:
-        reg_record = await registry.register(
-            framework=record["framework"],
-            display_name=display_name,
-            user_id=decided_by,
-            # external-selfjoin is the only origin that births the agent
-            # 'pending' (governance lifecycle) so the pending -> active
-            # transition below is the activation. The provenance of WHO
-            # approved (admin consent vs project invite) lives on the
-            # auth-request record / invite, not the registry origin column.
-            origin="external-selfjoin",
-            handle=handle,
-        )
-        canonical_id = reg_record["canonical_id"]
+        if canonical_id is None:
+            reg_record = await registry.register(
+                framework=record["framework"],
+                display_name=display_name,
+                user_id=decided_by,
+                # external-selfjoin is the only origin that births the agent
+                # 'pending' (governance lifecycle) so the pending -> active
+                # transition below is the activation. The provenance of WHO
+                # approved (admin consent vs project invite) lives on the
+                # auth-request record / invite, not the registry origin column.
+                origin="external-selfjoin",
+                handle=handle,
+            )
+            canonical_id = reg_record["canonical_id"]
+            created_here = True
 
         # Consent approval IS the activation. external-selfjoin agents are born
         # 'pending' (governance lifecycle); approving the auth-request transitions
@@ -1078,6 +1173,14 @@ async def approve_request_record(
             await registry.set_sponsorship(
                 canonical_id, project_id, sponsor_contact_id
             )
+    except ValueError:
+        # Only a reused identity can get here: a concurrent approve picked the
+        # same pending row and activated it first. That approval owns the
+        # identity now, so nothing is rolled back or deleted.
+        raise HTTPException(
+            status_code=409,
+            detail="request was decided concurrently; check current status",
+        )
     except IntegrityError:
         # A concurrent approve already took this active handle (the partial
         # unique index fired). Roll back the failed write and remove the
@@ -1087,7 +1190,7 @@ async def approve_request_record(
             await registry.rollback()
         except Exception:  # noqa: BLE001 - never mask the 409 below
             pass
-        if canonical_id is not None:
+        if canonical_id is not None and created_here:
             try:
                 await registry.delete(canonical_id)
             except Exception:  # noqa: BLE001 - never mask the 409 below
@@ -1110,6 +1213,14 @@ async def approve_request_record(
         framework=record["framework"],
         project_id=binding_project,
     )
+
+    # What this identity already held, so losing the decision race below undoes
+    # only what this approval wrote.
+    prior_grants = {
+        (g["scope"], g.get("project_id"))
+        for g in await grants_store.list_grants(canonical_id)
+    }
+    added_member = False
 
     # Record grants for each approved scope. When deferring, grants are written
     # unbound (project_id=None); assign-agent later writes the project-bound
@@ -1141,6 +1252,9 @@ async def approve_request_record(
                 # Only flags that were explicitly granted are set, mirroring
                 # how the consent card scopes are narrowed.
                 if "project_tasks" in granted_scopes or granted_canvas:
+                    added_member = (
+                        await pstore.get_member(binding_project, canonical_id) is None
+                    )
                     await pstore.add_member(
                         project_id=binding_project,
                         member_id=canonical_id,
@@ -1186,7 +1300,19 @@ async def approve_request_record(
         decided_by=decided_by,
     )
     if result is None:
-        # Another concurrent approve beat us — 409.
+        # Another decision beat us — 409. If it was a deny, what this approval
+        # already wrote would otherwise stay as usable authorization on a
+        # refused request.
+        await _undo_lost_approval(
+            request,
+            record_id=record["id"],
+            canonical_id=canonical_id,
+            created_here=created_here,
+            granted_scopes=granted_scopes,
+            binding_project=binding_project,
+            prior_grants=prior_grants,
+            added_member=added_member,
+        )
         raise HTTPException(
             status_code=409,
             detail="request was decided concurrently; check current status",
@@ -1194,6 +1320,66 @@ async def approve_request_record(
 
     await _retire_request_notification(request, record["id"])
     return {"status": "accepted", "canonical_id": canonical_id}
+
+
+async def _undo_lost_approval(
+    request: Request,
+    *,
+    record_id: str,
+    canonical_id: str,
+    created_here: bool,
+    granted_scopes: list[str],
+    binding_project: Optional[str],
+    prior_grants: set[tuple[str, Optional[str]]],
+    added_member: bool,
+) -> None:
+    """Undo an approve's writes after it lost the decision race.
+
+    Left alone when the winner approved this same identity: it holds a token
+    for it. Every step is best-effort so the caller's 409 is never masked.
+    """
+    auth_store = _get_auth_requests_store(request)
+    final = await auth_store.get(record_id)
+    if (
+        final is not None
+        and final.get("status") == "accepted"
+        and final.get("canonical_id") == canonical_id
+    ):
+        return
+
+    registry = _get_registry_store(request)
+    grants_store = _get_grants_store(request)
+    rel_mgr = _get_relationships(request)
+    try:
+        prior_scopes = {scope for scope, _project in prior_grants}
+        for scope in granted_scopes:
+            if (scope, binding_project) not in prior_grants:
+                await grants_store.revoke_grant(
+                    canonical_id, scope, project_id=binding_project
+                )
+            if scope not in prior_scopes:
+                await rel_mgr.revoke_permission(canonical_id, "taos-instance", scope)
+        pstore = getattr(request.app.state, "project_store", None)
+        if added_member and binding_project and pstore is not None:
+            await pstore.remove_member(binding_project, canonical_id)
+            from tinyagentos.projects.a2a import ensure_a2a_channel
+
+            await ensure_a2a_channel(
+                request.app.state.chat_channels,
+                pstore,
+                binding_project,
+                config=getattr(request.app.state, "config", None),
+            )
+        if created_here:
+            await registry.delete(canonical_id)
+        else:
+            await registry.revert_activation(canonical_id)
+    except Exception:  # noqa: BLE001 - never mask the caller's 409
+        logger.warning(
+            "auth-approve: could not fully undo lost approval for %s",
+            canonical_id,
+            exc_info=True,
+        )
 
 
 async def add_agent_to_project(

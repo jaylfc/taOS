@@ -33,6 +33,7 @@ from httpx import ASGITransport, AsyncClient
 from taos_test_csrf import csrf_event_hooks
 
 from tinyagentos.auth_requests_store import AuthRequestsStore
+from tinyagentos.agent_registry_store import mint_registry_token, verify_registry_token
 from tinyagentos.base_store import PendingCapExceeded
 from tinyagentos.agent_grants_store import AgentGrantsStore
 
@@ -854,3 +855,310 @@ class TestAuthRequestRoutes:
 
         grants = await consent_client._transport.app.state.agent_grants.list_grants(canonical_id)
         assert all(g.get("project_id") is None for g in grants)
+
+    async def test_approve_reuses_pending_identity_returns_200(self, consent_client):
+        """taOS #2114: approving a request whose handle already belongs to a
+        PENDING agent must REUSE that agent's canonical_id and return 200.
+
+        This drives the whole flow end-to-end: the requester files the request
+        with a real registry token for the pending identity, an admin approves,
+        and the existing row is reactivated with exactly one registry row for
+        the handle. Before the fix _classify_proof rejected the token because
+        the identity was not active, so approval always returned 409.
+        """
+        app = consent_client._transport.app
+        registry = app.state.agent_registry
+        transport = ASGITransport(app=app)
+
+        # external-selfjoin identities are born 'pending'; this row is a
+        # half-finished earlier approval.
+        reg_record = await registry.register(
+            framework="hermes",
+            display_name="Hermes",
+            handle="hermes-reuse-test",
+            origin="external-selfjoin",
+        )
+        original_cid = reg_record["canonical_id"]
+        assert reg_record["status"] == "pending"
+
+        # A real proof token for that canonical_id.
+        private_pem, _public_pem = app.state.agent_registry_keypair
+        proof = mint_registry_token(
+            original_cid, private_pem, user_id="test", framework="hermes"
+        )
+
+        # Create an auth request for the same handle, proving the identity.
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            create_resp = await bare.post(
+                "/api/agents/auth-requests",
+                json={**_CREATE_BODY, "identity_claim": "hermes-reuse-test"},
+                headers={"Authorization": f"Bearer {proof}"},
+            )
+            assert create_resp.status_code == 200
+            assert create_resp.json()["proof_status"] == "accepted"
+            request_id = create_resp.json()["request_id"]
+
+        # Approve: must succeed (200) and reuse the pending canonical_id.
+        resp = await consent_client.post(
+            f"/api/agents/auth-requests/{request_id}/approve",
+            json={"granted_scopes": ["a2a_send"]},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["canonical_id"] == original_cid
+
+        # The reused agent is now active ...
+        agent = await registry.get(original_cid)
+        assert agent["status"] == "active"
+
+        # ... and no second identity was minted for the handle.
+        rows = [
+            r
+            for r in await registry.list_all()
+            if r.get("handle") == "hermes-reuse-test"
+        ]
+        assert len(rows) == 1
+        assert rows[0]["canonical_id"] == original_cid
+
+        # The approval really completed: polling returns the accepted request
+        # and a token for the reused identity.
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            status_resp = await bare.get(f"/api/agents/auth-requests/{request_id}")
+        body = status_resp.json()
+        assert body["status"] == "accepted"
+        assert body["canonical_id"] == original_cid
+        assert body["token"]
+        # The token itself must authenticate as the reused identity: the
+        # adjacent canonical_id field proves nothing about what it grants.
+        claims = verify_registry_token(body["token"], _public_pem)
+        assert claims["sub"] == original_cid
+
+    async def test_approve_reuses_the_pending_identity_the_proof_names(
+        self, consent_client
+    ):
+        """Two pending rows can share a normalised handle. The lookups find only
+        one of them, so a valid token for the other must still pick its own
+        identity instead of 409ing forever."""
+        app = consent_client._transport.app
+        registry = app.state.agent_registry
+        transport = ASGITransport(app=app)
+
+        other_spelling = await registry.register(
+            framework="hermes",
+            display_name="Hermes",
+            handle="Hermes-Two-Rows",
+            origin="external-selfjoin",
+        )
+        exact = await registry.register(
+            framework="hermes",
+            display_name="Hermes",
+            handle="hermes-two-rows",
+            origin="external-selfjoin",
+        )
+        assert other_spelling["status"] == exact["status"] == "pending"
+
+        private_pem, _public_pem = app.state.agent_registry_keypair
+        proof = mint_registry_token(
+            other_spelling["canonical_id"], private_pem, user_id="test", framework="hermes"
+        )
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            create_resp = await bare.post(
+                "/api/agents/auth-requests",
+                json={**_CREATE_BODY, "identity_claim": "hermes-two-rows"},
+                headers={"Authorization": f"Bearer {proof}"},
+            )
+        assert create_resp.json()["proof_status"] == "accepted"
+
+        resp = await consent_client.post(
+            f"/api/agents/auth-requests/{create_resp.json()['request_id']}/approve",
+            json={"granted_scopes": ["a2a_send"]},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["canonical_id"] == other_spelling["canonical_id"]
+        assert (await registry.get(exact["canonical_id"]))["status"] == "pending"
+
+    @staticmethod
+    def _deny_wins_the_race(app, monkeypatch):
+        """A competing deny lands after the approve has done its writes, just
+        before the approve commits its decision."""
+        store = app.state.auth_requests
+        real = store.set_decision
+
+        async def racing(request_id, decision, **kwargs):
+            if decision == "accepted":
+                assert await real(request_id, "refused", decided_by="other-admin")
+            return await real(request_id, decision, **kwargs)
+
+        monkeypatch.setattr(store, "set_decision", racing)
+
+    async def _pending_proof_request(self, consent_client, handle):
+        app = consent_client._transport.app
+        reg = await app.state.agent_registry.register(
+            framework="hermes",
+            display_name="Hermes",
+            handle=handle,
+            origin="external-selfjoin",
+        )
+        private_pem, _public_pem = app.state.agent_registry_keypair
+        proof = mint_registry_token(
+            reg["canonical_id"], private_pem, user_id="test", framework="hermes"
+        )
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            resp = await bare.post(
+                "/api/agents/auth-requests",
+                json={**_CREATE_BODY, "identity_claim": handle},
+                headers={"Authorization": f"Bearer {proof}"},
+            )
+        return reg["canonical_id"], resp.json()["request_id"]
+
+    async def test_a_denied_race_leaves_the_reused_identity_pending_with_no_grants(
+        self, consent_client, monkeypatch
+    ):
+        """An admin's deny must not leave usable authorization behind: the loser
+        of the decision race undoes its activation and the grants it wrote."""
+        app = consent_client._transport.app
+        cid, request_id = await self._pending_proof_request(consent_client, "race-reuse")
+        self._deny_wins_the_race(app, monkeypatch)
+
+        resp = await consent_client.post(
+            f"/api/agents/auth-requests/{request_id}/approve",
+            json={"granted_scopes": ["a2a_send"]},
+        )
+
+        assert resp.status_code == 409, resp.text
+        assert (await app.state.agent_registry.get(cid))["status"] == "pending"
+        assert await app.state.agent_grants.list_grants(cid) == []
+        assert not await app.state.relationships.can_communicate(cid, "taos-instance")
+        assert (await app.state.auth_requests.get(request_id))["status"] == "refused"
+
+    async def test_a_denied_race_keeps_grants_the_identity_already_held(
+        self, consent_client, monkeypatch
+    ):
+        app = consent_client._transport.app
+        cid, request_id = await self._pending_proof_request(consent_client, "race-prior")
+        await app.state.agent_grants.add_grant(cid, "a2a_send", tier="once")
+        self._deny_wins_the_race(app, monkeypatch)
+
+        resp = await consent_client.post(
+            f"/api/agents/auth-requests/{request_id}/approve",
+            json={"granted_scopes": ["a2a_send", "a2a_receive"]},
+        )
+
+        assert resp.status_code == 409, resp.text
+        scopes = [g["scope"] for g in await app.state.agent_grants.list_grants(cid)]
+        assert scopes == ["a2a_send"]
+
+    async def test_a_denied_race_removes_a_freshly_minted_identity(
+        self, consent_client, monkeypatch
+    ):
+        app = consent_client._transport.app
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            create_resp = await bare.post(
+                "/api/agents/auth-requests",
+                json={**_CREATE_BODY, "identity_claim": "race-fresh"},
+            )
+        self._deny_wins_the_race(app, monkeypatch)
+
+        resp = await consent_client.post(
+            f"/api/agents/auth-requests/{create_resp.json()['request_id']}/approve",
+            json={"granted_scopes": ["a2a_send"]},
+        )
+
+        assert resp.status_code == 409, resp.text
+        rows = await app.state.agent_registry.list_all()
+        assert [r for r in rows if r.get("handle") == "race-fresh"] == []
+
+    async def test_losing_to_an_approve_of_the_same_identity_undoes_nothing(
+        self, consent_client, monkeypatch
+    ):
+        """The winner holds a token for this identity, so the loser must not
+        pull its activation or grants out from under it."""
+        app = consent_client._transport.app
+        cid, request_id = await self._pending_proof_request(consent_client, "race-same")
+        store = app.state.auth_requests
+        real = store.set_decision
+
+        async def racing(rid, decision, **kwargs):
+            await real(rid, decision, **kwargs)
+            return await real(rid, decision, **kwargs)
+
+        monkeypatch.setattr(store, "set_decision", racing)
+
+        resp = await consent_client.post(
+            f"/api/agents/auth-requests/{request_id}/approve",
+            json={"granted_scopes": ["a2a_send"]},
+        )
+
+        assert resp.status_code == 409, resp.text
+        assert (await app.state.agent_registry.get(cid))["status"] == "active"
+        assert [g["scope"] for g in await app.state.agent_grants.list_grants(cid)] == ["a2a_send"]
+
+    async def test_activation_conflict_on_a_reused_identity_is_a_409(
+        self, consent_client, monkeypatch
+    ):
+        """Two approvals can both pick the same pending row. The second activation
+        raises a transition conflict, which must not surface as a 500 or delete
+        the identity the first approval just activated."""
+        app = consent_client._transport.app
+        registry = app.state.agent_registry
+        cid, request_id = await self._pending_proof_request(consent_client, "race-activate")
+        real = registry.set_status
+
+        async def racing(canonical_id, new_status, **kwargs):
+            await real(canonical_id, new_status, **kwargs)
+            return await real(canonical_id, new_status, **kwargs)
+
+        monkeypatch.setattr(registry, "set_status", racing)
+
+        resp = await consent_client.post(
+            f"/api/agents/auth-requests/{request_id}/approve",
+            json={"granted_scopes": ["a2a_send"]},
+        )
+
+        assert resp.status_code == 409, resp.text
+        assert await registry.get(cid) is not None
+
+    async def test_approve_non_active_identity_without_proof_returns_409(
+        self, consent_client
+    ):
+        """The genuinely invalid case still 409s: a non-active holder exists but
+        the requester presented no proof token for it."""
+        app = consent_client._transport.app
+        registry = app.state.agent_registry
+        transport = ASGITransport(app=app)
+
+        reg_record = await registry.register(
+            framework="hermes",
+            display_name="Hermes",
+            handle="hermes-no-proof-test",
+            origin="external-selfjoin",
+        )
+        original_cid = reg_record["canonical_id"]
+        assert reg_record["status"] == "pending"
+
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            create_resp = await bare.post(
+                "/api/agents/auth-requests",
+                json={**_CREATE_BODY, "identity_claim": "hermes-no-proof-test"},
+            )
+            assert create_resp.status_code == 200
+            request_id = create_resp.json()["request_id"]
+
+        resp = await consent_client.post(
+            f"/api/agents/auth-requests/{request_id}/approve",
+            json={"granted_scopes": ["a2a_send"]},
+        )
+        assert resp.status_code == 409
+        detail = resp.json()["detail"].lower()
+        assert "registry token" in detail or "belongs to existing agent" in detail
+
+        # No new identity was minted, and the pending row is untouched.
+        agent = await registry.get(original_cid)
+        assert agent["status"] == "pending"
+        rows = [
+            r
+            for r in await registry.list_all()
+            if r.get("handle") == "hermes-no-proof-test"
+        ]
+        assert len(rows) == 1
