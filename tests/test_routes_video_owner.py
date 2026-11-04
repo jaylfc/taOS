@@ -155,3 +155,30 @@ async def test_delete_refuses_a_sidecar_so_ownership_cannot_be_stripped(setup):
     assert resp.status_code == 400
     assert (setup["videos"] / "4_bobs.json").exists()
     assert await _names(setup["bob"]) == ["4_bobs.mp4"]
+
+
+@pytest.mark.asyncio
+async def test_two_same_seed_jobs_in_one_second_keep_separate_files(setup):
+    app = setup["app"]
+    app.state.config.server["video_backend_url"] = "http://localhost:9000"
+    response = Response(
+        status_code=200,
+        json={"data": [{"b64_json": base64.b64encode(b"mp4").decode()}]},
+        request=HttpxRequest("POST", "http://localhost:9000/v1/videos/generations"),
+    )
+    with patch("tinyagentos.routes.video.httpx.AsyncClient") as mock_client, \
+            patch("tinyagentos.routes.video.time.time", return_value=1_700_000_000):
+        inst = AsyncMock()
+        inst.post.return_value = response
+        inst.__aenter__ = AsyncMock(return_value=inst)
+        inst.__aexit__ = AsyncMock(return_value=False)
+        mock_client.return_value = inst
+        for client in (setup["bob"], setup["admin"]):
+            resp = await client.post("/api/video/generate", json={"prompt": "same", "seed": 5})
+            assert resp.status_code == 202
+        pending = [t for t in app.state._background_tasks if not t.done()]
+        if pending:
+            await asyncio.gather(*pending)
+
+    assert len(list(setup["videos"].glob("*_5.mp4"))) == 2
+    assert len(await _names(setup["bob"])) == 1

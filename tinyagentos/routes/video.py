@@ -15,6 +15,7 @@ import json
 import logging
 import random
 import time
+import uuid
 from pathlib import Path
 
 import httpx
@@ -196,7 +197,10 @@ async def _generate_and_save(
 
     videos_dir = _videos_dir_from_app(app)
     timestamp = int(time.time())
-    filename = f"{timestamp}_{seed}.mp4"
+    # A per-job token keeps two same-seed jobs in one second from sharing a
+    # clip and sidecar (the later would overwrite the earlier and its owner).
+    stem = f"{timestamp}_{uuid.uuid4().hex[:12]}_{seed}"
+    filename = f"{stem}.mp4"
     video_path = videos_dir / filename
 
     if video_b64:
@@ -221,7 +225,7 @@ async def _generate_and_save(
         "resolution": body.resolution,
         "seed": seed,
     }
-    meta_path = videos_dir / f"{timestamp}_{seed}.json"
+    meta_path = videos_dir / f"{stem}.json"
     # Atomic: a torn sidecar would read as ownerless and lock the owner out.
     await asyncio.to_thread(
         atomic_write_text,
