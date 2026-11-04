@@ -196,7 +196,7 @@ describe("MessagesApp mobile thread header", () => {
     await openGroup();
     const header = screen.getByRole("banner");
     expect(header).toHaveTextContent("design");
-    expect(header).toHaveTextContent("3 people");
+    expect(header).toHaveTextContent("3 members");
     // The old text-link back row ("< Messages") is not rendered.
     expect(screen.queryByRole("button", { name: /^Back to Messages$/ })).not.toBeInTheDocument();
     expect(screen.getAllByRole("banner")).toHaveLength(1);

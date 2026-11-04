@@ -132,6 +132,36 @@ describe("MessageInput", () => {
     expect(screen.getByRole("button", { name: /send message/i })).toBeDisabled();
   });
 
+  it("disables send button when an attachment has an error (desktop)", () => {
+    render(
+      <MessageInput
+        {...defaultProps({
+          value: "hi",
+          isMobile: false,
+          pendingAttachments: [
+            { id: "x", filename: "a.png", size: 1, uploading: false, error: "boom" },
+          ],
+        })}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /send message/i })).toBeDisabled();
+  });
+
+  it("disables send button when an attachment has an error (mobile)", () => {
+    render(
+      <MessageInput
+        {...defaultProps({
+          value: "hi",
+          isMobile: true,
+          pendingAttachments: [
+            { id: "x", filename: "a.png", size: 1, uploading: false, error: "boom" },
+          ],
+        })}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /send message/i })).toBeDisabled();
+  });
+
   it("enables send button when value has non-whitespace text", () => {
     render(<MessageInput {...defaultProps({ value: "hello" })} />);
     expect(screen.getByRole("button", { name: /send message/i })).not.toBeDisabled();

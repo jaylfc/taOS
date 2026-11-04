@@ -1003,6 +1003,7 @@ export function MessagesApp({
   const agentListTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevChannelRef = useRef<string | null>(null);
   const lastFetchRef = useRef<number>(0);
+  const backedOutRef = useRef(false);
 
   /* ---- fetch channels + unread ---- */
   const fetchChannels = useCallback(async () => {
@@ -1792,6 +1793,12 @@ export function MessagesApp({
       return;
     }
 
+    // Block send if any attachment failed — user must remove or retry first
+    if (pendingAttachments.some((a) => a.error)) {
+      setSendError("remove or retry the failed attachment first");
+      return;
+    }
+
     const readyAttachments = pendingAttachments
       .filter((a) => a.record && !a.error)
       .map((a) => a.record!);
@@ -2314,7 +2321,6 @@ export function MessagesApp({
   /* ---------------------------------------------------------------- */
 
   const mobileParty = describeChannelParty(currentChannel, liveAgents, "kind", archivedAgents);
-  const backedOutRef = useRef(false);
 
   const messageAreaUI = busSelected ? (
     <A2aBusMessageView channel={busSelected} />
