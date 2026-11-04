@@ -1323,26 +1323,41 @@ class LeaseRenewRequest(BaseModel):
     epoch: str | None = None
 
 
+_PRINCIPAL_UNSET = object()
+
+
 async def _identify_principal(request: Request) -> str | None:
     """Return which principal authenticated the request.
 
     Returns one of: "admin", "local", "worker", or None if not authenticated.
     Used by report_task to bind worker HMAC callers to their identity.
+
+    The result is cached on ``request.state`` so the worker HMAC (and its
+    timestamp skew check) is verified only once per request even when both
+    ``_require_lease_access`` and ``report_task`` consult this helper.
     """
+    cached = getattr(request.state, "_taos_principal", _PRINCIPAL_UNSET)
+    if cached is not _PRINCIPAL_UNSET:
+        return cached
+
+    result: str | None = None
     ok, _ = _require_admin(request)
     if ok:
-        return "admin"
-    auth_header = request.headers.get("authorization", "")
-    if auth_header.lower().startswith("bearer "):
-        presented = auth_header[7:].strip()
-        if presented and request.app.state.auth.validate_local_token(presented):
-            return "local"
-    try:
-        await require_worker_hmac(request)
-        return "worker"
-    except _HMACError:
-        pass
-    return None
+        result = "admin"
+    else:
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            presented = auth_header[7:].strip()
+            if presented and request.app.state.auth.validate_local_token(presented):
+                result = "local"
+        if result is None:
+            try:
+                await require_worker_hmac(request)
+                result = "worker"
+            except _HMACError:
+                result = None
+    request.state._taos_principal = result
+    return result
 
 
 async def _require_lease_access(request: Request) -> JSONResponse | None:
@@ -1490,6 +1505,14 @@ class TaskReportRequest(BaseModel):
     duration_s: float = Field(..., ge=0, le=86_400 * 30, allow_inf_nan=False)
     status: str = Field(..., pattern="^(success|failure|cancelled)$")
     tokens: dict[str, StrictInt] | None = None
+
+    @field_validator("worker", "resource_id")
+    @classmethod
+    def _strip_blank(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("must not be blank")
+        return v
 
     @field_validator("tokens")
     @classmethod
