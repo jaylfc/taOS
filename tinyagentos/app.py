@@ -1659,6 +1659,11 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await browsing_history.close()
         await knowledge_graph.close()
         await archive.close()
+        try:
+            from tinyagentos.routes import hardware_bluetooth as _bt_routes
+            _bt_routes.cancel_discovery_timers()
+        except Exception:
+            pass
         await close_system_bus()
         await installed_apps.close()
         await feedback_store.close()

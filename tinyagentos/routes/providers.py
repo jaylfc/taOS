@@ -158,6 +158,7 @@ async def _refresh_backend(
     discovered = await _discover_provider_models(url, api_key, timeout=timeout)
     if discovered:
         backend["models"] = discovered
+        backend.pop("models_seeded", None)
     return backend
 
 
@@ -419,8 +420,10 @@ async def list_providers(request: Request):
         # needs an API key it can't reach here — e.g. DeepSeek, whose /models
         # endpoint 401s without auth — still reports its routable models to the
         # picker instead of an empty list that gets filtered out client-side.
+        seeded = False
         if not models and backend.get("models"):
             models = backend["models"]
+            seeded = bool(backend.get("models_seeded"))
         # lifecycle_state only means something for backends taOS actually
         # starts/stops (auto_manage=true) -- LifecycleManager.start()/
         # drain_and_stop() are the only callers of set_lifecycle_state(),
@@ -441,6 +444,10 @@ async def list_providers(request: Request):
             "status": status,
             "response_ms": response_ms,
             "models": models,
+            # True when these are the per-type seed list, which add_provider
+            # stores when discovery with the key found nothing: they say
+            # nothing about whether the key works.
+            "models_seeded": seeded,
             "source": "local",
             "lifecycle_state": lifecycle_state,
             "enabled": backend.get("enabled", True),
@@ -590,6 +597,7 @@ async def add_provider(request: Request, body: ProviderCreate):
             entry["models"] = discovered
         elif entry.get("type") in PROVIDER_DEFAULT_MODELS:
             entry["models"] = list(PROVIDER_DEFAULT_MODELS[entry["type"]])
+            entry["models_seeded"] = True
     config.backends.append(entry)
     await save_config_locked(config, config.config_path)
     # Invalidate the models cache so the next dialog open re-reads LiteLLM

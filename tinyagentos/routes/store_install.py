@@ -608,15 +608,16 @@ async def _legacy_install(request: Request, body: dict, app_id: str | None, targ
         if registry is not None:
             version = body.get("version") or (getattr(manifest, "version", "") if manifest else "")
             registry.mark_installed(app_id, version)
-        # Record the install location for script installs (host/local) so
-        # they appear in GET /api/installs, matching the docker/pip fall-through.
-        raw_remote = body.get("target_remote") or install_config.get("target_remote") or ""
-        _target_remote = raw_remote if raw_remote and raw_remote != "local" else None
+        # Record the install location for script installs. Script-backed services
+        # are host-level systemd units installed via sudo on THIS controller
+        # (the install.sh runs here, not on an incus remote), so the row is
+        # always "local" regardless of any requested target_remote (#4132
+        # follow-up: a requested remote was leaking into the row).
         await _record_install_location(
             request, app_id, manifest,
             body.get("version") or (getattr(manifest, "version", "") if manifest else ""),
             "host",
-            _target_remote or "local",
+            "local",
         )
         return JSONResponse({"ok": True, "app_id": app_id, "status": "installed", **inst_result})
 
@@ -771,12 +772,16 @@ async def _legacy_install(request: Request, body: dict, app_id: str | None, targ
     if registry is not None:
         version = body.get("version") or (getattr(manifest, "version", "") if manifest else "")
         registry.mark_installed(app_id, version)
-    await _record_install_location(
-        request, app_id, manifest,
-        body.get("version") or (getattr(manifest, "version", "") if manifest else ""),
-        "host",
-        _target_remote or "local",
-    )
+    # download / huggingface / ollama install models and assets, not running
+    # apps -- they get no install_registry row (the model's own backend owns
+    # "where it lives"). See #4132 follow-up.
+    if backend not in ("download", "huggingface", "ollama"):
+        await _record_install_location(
+            request, app_id, manifest,
+            body.get("version") or (getattr(manifest, "version", "") if manifest else ""),
+            "host",
+            "local",
+        )
     return JSONResponse({"ok": True, "app_id": app_id, "status": "installed"})
 
 
