@@ -17,7 +17,7 @@ from tinyagentos.catalog.resolver import (
     resolve,
 )
 from tinyagentos.installers.base import get_installer
-from tinyagentos.routes.store_install import get_device_capability
+from tinyagentos.routes.store_install import get_device_capability, forget_install_location
 from tinyagentos.store_popularity import (
     parse_repo,
     popularity_for_homepage_cached,
@@ -565,6 +565,31 @@ async def uninstall_app(request: Request, body: UninstallRequest):
                 if existing is not None:
                     await mcp_supervisor.uninstall(body.app_id)
     registry.mark_uninstalled(body.app_id)
+
+    # Remove the install_registry row for local host installs (docker/pip/script).
+    # LXC installs use location_kind="legacy_lxc" and are not removed here.
+    # Remote installs (runtime_host != 127.0.0.1) are not removed either,
+    # since one app may be installed on several remotes and we cannot yet
+    # tell which one was removed.
+    store_for_loc = getattr(request.app.state, "installed_apps", None)
+    runtime_loc = None
+    if store_for_loc is not None:
+        try:
+            runtime_loc = await store_for_loc.get_runtime_location(body.app_id)
+        except Exception:  # noqa: BLE001
+            # A failing runtime-location read must never fail the uninstall
+            # itself; treat the app as local and proceed with the host-row
+            # cleanup anyway (#4132 follow-up).
+            runtime_loc = None
+    is_local = (runtime_loc is None) or (runtime_loc.get("runtime_host") in (None, "", "127.0.0.1"))
+    # Always delete the local host row for non-LXC uninstalls, even when the
+    # runtime location now points at a remote worker: forget_install_location
+    # only matches location_ref="local", so a remote row (different
+    # location_ref) and any legacy_lxc row are left untouched (#4132
+    # follow-up -- previously is_local skipped the cleanup when the runtime
+    # location was remote, orphaning the local host row).
+    if method != "lxc":
+        await forget_install_location(request, body.app_id, "host", "local")
     return {"status": "uninstalled", "app_id": body.app_id}
 
 
