@@ -481,6 +481,17 @@ class WorkerAgent:
         default_kokoro_keys = {
             _candidate_key(bt, url) for bt, url in _DEFAULT_PROBE_CANDIDATES if bt == "kokoro"
         }
+        # Exclude any kokoro keys that come from configured backends
+        # (manifest or TAOS_EXTRA_BACKENDS) so they get the generic probe.
+        configured_kokoro_keys = {
+            _candidate_key(bt, url)
+            for bt, url in (
+                _parse_extra_backends(os.environ.get("TAOS_EXTRA_BACKENDS", ""))
+                + [(bt, url) for bt, url, _ in declared if url and bt in _PROBEABLE_TYPES]
+            )
+            if bt == "kokoro"
+        }
+        default_kokoro_keys -= configured_kokoro_keys
 
         async def probe(client: httpx.AsyncClient, backend_type: str, base_url: str):
             if backend_type == "llama-swap":
@@ -750,11 +761,11 @@ class WorkerAgent:
             data = resp.json()
             if not isinstance(data, dict) or not isinstance(data.get("voices"), list):
                 return None
+            # kokoro-fastapi confirmed: read the model catalog like the other
+            # OpenAI-compatible backends.
+            return await self._probe_openai_models(client, base_url)
         except Exception:
             return None
-        # kokoro-fastapi confirmed: read the model catalog like the other
-        # OpenAI-compatible backends.
-        return await self._probe_openai_models(client, base_url)
 
     def detect_kv_quant_support(self, backends: list[dict]) -> dict:
         """Aggregate KV cache K/V quant support across all detected backends.
