@@ -23,10 +23,28 @@ async def _allow_all(request):
     return None
 
 
+async def _allow_principal(request):
+    return "admin"
+
+
 def _mock_auth():
-    return patch(
-        "tinyagentos.routes.cluster._require_lease_access", side_effect=_allow_all
-    )
+    from contextlib import ExitStack
+
+    class _Ctx:
+        def __enter__(self):
+            self.stack = ExitStack()
+            self.stack.enter_context(patch(
+                "tinyagentos.routes.cluster._require_lease_access", side_effect=_allow_all
+            ))
+            self.stack.enter_context(patch(
+                "tinyagentos.routes.cluster._identify_principal", side_effect=_allow_principal
+            ))
+            return self
+
+        def __exit__(self, *exc):
+            return self.stack.__exit__(*exc)
+
+    return _Ctx()
 
 
 @pytest.mark.asyncio
@@ -172,7 +190,8 @@ async def test_report_task_strict_write_failure_returns_503(client, app, tmp_dat
 
     with patch.object(store, "_insert_envelope", side_effect=_fail_insert), \
          patch.object(store, "_append_fallback", side_effect=_fail_fallback), \
-         patch("tinyagentos.routes.cluster._require_lease_access", side_effect=_allow_all):
+         patch("tinyagentos.routes.cluster._require_lease_access", side_effect=_allow_all), \
+         patch("tinyagentos.routes.cluster._identify_principal", side_effect=_allow_principal):
         resp = await client.post(
             "/api/cluster/tasks/report",
             json={
@@ -552,4 +571,69 @@ async def test_report_task_lease_id_not_stored(client, app, tmp_data_dir):
     expected_lease_ref = hashlib.sha256("l_abc123".encode()).hexdigest()[:16]
     assert payload["lease_ref"] == expected_lease_ref, f"Expected lease_ref {expected_lease_ref}, got {payload['lease_ref']}"
     
+    await app.state.trace_registry.close_all()
+
+
+@pytest.mark.asyncio
+async def test_report_task_blank_worker_422(client, app, tmp_data_dir):
+    app.state.trace_registry = TraceStoreRegistry(tmp_data_dir)
+    with _mock_auth():
+        resp = await client.post(
+            "/api/cluster/tasks/report",
+            json={
+                "worker": " ",
+                "resource_id": "gpu-cuda-0",
+                "caller": "ext-scheduler",
+                "duration_s": 1.0,
+                "status": "success",
+            },
+        )
+    assert resp.status_code == 422, resp.text
+    store = await app.state.trace_registry.get("taos-cluster-tasks")
+    events = await store.list(kind="task_report", limit=10)
+    assert len(events) == 0
+    await app.state.trace_registry.close_all()
+
+
+@pytest.mark.asyncio
+async def test_report_task_blank_resource_id_422(client, app, tmp_data_dir):
+    app.state.trace_registry = TraceStoreRegistry(tmp_data_dir)
+    with _mock_auth():
+        resp = await client.post(
+            "/api/cluster/tasks/report",
+            json={
+                "worker": "w1",
+                "resource_id": " ",
+                "caller": "ext-scheduler",
+                "duration_s": 1.0,
+                "status": "success",
+            },
+        )
+    assert resp.status_code == 422, resp.text
+    await app.state.trace_registry.close_all()
+
+
+@pytest.mark.asyncio
+async def test_report_task_bad_signature_403(client, app, tmp_data_dir):
+    app.state.trace_registry = TraceStoreRegistry(tmp_data_dir)
+
+    async def mock_identify_none(request):
+        return None
+
+    async def mock_require_none(request):
+        return None
+
+    with patch("tinyagentos.routes.cluster._identify_principal", side_effect=mock_identify_none), \
+         patch("tinyagentos.routes.cluster._require_lease_access", side_effect=mock_require_none):
+        resp = await client.post(
+            "/api/cluster/tasks/report",
+            json={
+                "worker": "w1",
+                "resource_id": "gpu-cuda-0",
+                "caller": "ext-scheduler",
+                "duration_s": 1.0,
+                "status": "success",
+            },
+        )
+    assert resp.status_code == 403, resp.text
     await app.state.trace_registry.close_all()
