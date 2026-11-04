@@ -30,6 +30,8 @@ async def link_env(app, client):
     alice_row = await registry.register(framework="claude-code", display_name="alpha", user_id=alice_uid)
     inactive_row = await registry.register(framework="claude-code", display_name="alpha", user_id=bob_uid)
     await registry.set_status(inactive_row["canonical_id"], "revoked")
+    # A second active "alpha" row (bob's): candidates are hints, all are listed.
+    bob_row = await registry.register(framework="claude-code", display_name="alpha", user_id=bob_uid)
     # A sibling slug must not be offered as a candidate for "alpha".
     await registry.register(framework="claude-code", display_name="alpha-beta", user_id=bob_uid)
     app.state.config.agents.append({
@@ -45,7 +47,7 @@ async def link_env(app, client):
     try:
         yield {
             "alice": clients[0], "bob": clients[1], "alice_uid": alice_uid,
-            "row": alice_row, "inactive": inactive_row,
+            "row": alice_row, "inactive": inactive_row, "bob_row": bob_row,
         }
     finally:
         for c in clients:
@@ -74,7 +76,7 @@ async def test_admin_lists_active_exact_slug_candidates(link_env, client):
     assert resp.status_code == 200
     entry = next(e for e in resp.json()["unlinked"] if e["name"] == "alpha")
     ids = [c["canonical_id"] for c in entry["candidates"]]
-    assert ids == [link_env["row"]["canonical_id"]]
+    assert ids == [link_env["row"]["canonical_id"], link_env["bob_row"]["canonical_id"]]
     cand = entry["candidates"][0]
     assert cand["user_id"] == link_env["alice_uid"]
     assert set(cand) >= {"canonical_id", "user_id", "display_name", "created_ts"}
@@ -134,3 +136,26 @@ async def test_unknown_agent_is_404(link_env, client):
         "/api/agents/nosuch/registry-link", json={"canonical_id": link_env["row"]["canonical_id"]},
     )
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_linked_agent_is_409_even_for_a_bad_row(link_env, app, client):
+    cid = link_env["row"]["canonical_id"]
+    assert (await client.post("/api/agents/alpha/registry-link", json={"canonical_id": cid})).status_code == 200
+    for bad in (link_env["inactive"]["canonical_id"], "alpha-20200101-000000"):
+        resp = await client.post("/api/agents/alpha/registry-link", json={"canonical_id": bad})
+        assert resp.status_code == 409
+    assert _alpha(app)["registry_canonical_id"] == cid
+
+
+@pytest.mark.asyncio
+async def test_a_row_already_linked_to_another_agent_is_409(link_env, app, client):
+    cid = link_env["row"]["canonical_id"]
+    app.state.config.agents.append({
+        "name": "gamma", "host": "127.0.0.1", "qmd_index": "test", "color": "#cccccc",
+    })
+    assert (await client.post("/api/agents/alpha/registry-link", json={"canonical_id": cid})).status_code == 200
+    resp = await client.post("/api/agents/gamma/registry-link", json={"canonical_id": cid})
+    assert resp.status_code == 409
+    gamma = next(a for a in app.state.config.agents if a["name"] == "gamma")
+    assert not gamma.get("registry_canonical_id")

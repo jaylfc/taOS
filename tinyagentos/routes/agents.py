@@ -266,8 +266,11 @@ async def link_agent_registry(request: Request, name: str, body: RegistryLinkReq
     Never relinks: an agent that already has a registry_canonical_id is 409.
     """
     config = request.app.state.config
-    if find_agent(config, name) is None:
+    agent = find_agent(config, name)
+    if agent is None:
         return JSONResponse({"error": f"Agent '{name}' not found"}, status_code=404)
+    if agent.get("registry_canonical_id"):
+        return JSONResponse({"error": "agent is already linked"}, status_code=409)
     registry = _active_registry(request)
     if registry is None:
         return JSONResponse({"error": "agent registry unavailable"}, status_code=503)
@@ -282,6 +285,10 @@ async def link_agent_registry(request: Request, name: str, body: RegistryLinkReq
         return JSONResponse({"error": f"Agent '{name}' not found"}, status_code=404)
     if agent.get("registry_canonical_id"):
         return JSONResponse({"error": "agent is already linked"}, status_code=409)
+    # One row, one config agent: reverse lookups (delegation, project refs, the
+    # auth middleware) would otherwise resolve the row to different agents.
+    if any(a.get("registry_canonical_id") == record["canonical_id"] for a in config.agents):
+        return JSONResponse({"error": "registry row is already linked to another agent"}, status_code=409)
     agent["registry_canonical_id"] = record["canonical_id"]
     await save_config_locked(config, config.config_path)
     logger.info("linked config agent %s to registry row %s", name, record["canonical_id"])
