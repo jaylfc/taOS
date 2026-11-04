@@ -110,7 +110,7 @@ def _read_metadata(video_path: Path) -> dict:
     if meta_path.exists():
         try:
             metadata = json.loads(meta_path.read_text())
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
             return {}
         return metadata if isinstance(metadata, dict) else {}
     return {}

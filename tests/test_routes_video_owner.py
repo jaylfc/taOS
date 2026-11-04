@@ -182,3 +182,17 @@ async def test_two_same_seed_jobs_in_one_second_keep_separate_files(setup):
 
     assert len(list(setup["videos"].glob("*_5.mp4"))) == 2
     assert len(await _names(setup["bob"])) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sidecar", [b'{"user_id": "', b'["not", "an", "object"]', b'\xff\xfe not utf-8'])
+async def test_a_malformed_sidecar_is_ownerless_not_an_error(setup, sidecar):
+    videos = setup["videos"]
+    (videos / "5_broken.mp4").write_bytes(b"fake-mp4")
+    (videos / "5_broken.json").write_bytes(sidecar)
+    bob, admin = setup["bob"], setup["admin"]
+
+    assert await _names(bob) == []
+    assert (await bob.get("/api/video/5_broken.mp4")).status_code == 403
+    assert (await bob.delete("/api/video/5_broken.mp4")).status_code == 403
+    assert await _names(admin) == ["5_broken.mp4"]
