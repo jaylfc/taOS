@@ -526,10 +526,20 @@ class NotificationStore(BaseStore):
         await self._db.commit()
         return cursor.rowcount
 
-    async def emit_event(self, event_type: str, title: str, message: str, level: str = "info") -> None:
+    async def emit_event(
+        self,
+        event_type: str,
+        title: str,
+        message: str,
+        level: str = "info",
+        user_id: str | None = None,
+        webhook: bool = True,
+    ) -> None:
         if await self._is_event_muted(event_type):
             return
-        await self.add(title, message, level=level, source=event_type)
+        await self.add(
+            title, message, level=level, source=event_type, user_id=user_id, webhook=webhook
+        )
 
     async def _is_event_muted(self, event_type: str) -> bool:
         async with self._db.execute(

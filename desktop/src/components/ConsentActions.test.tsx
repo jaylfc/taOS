@@ -368,6 +368,30 @@ describe("ConsentActions", () => {
     ).toBeInTheDocument();
   });
 
+  it("names no project on Deny when the request named none", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        const vocab = vocabHit(url);
+        if (vocab) return vocab;
+        if (String(url).startsWith("/api/projects")) {
+          return okJson({ items: [{ id: "prj-only", name: "Only" }] });
+        }
+        return okJson({ status: "ok" });
+      }),
+    );
+    render(<ConsentActions requestId="req-np" scopes={["project_tasks"]} />);
+
+    await screen.findByLabelText(/Grant project access for/i);
+    await projectListLoaded();
+    // The lone project is auto-picked, so Allow names it, but the request
+    // itself named no project, so Deny must not claim one.
+    expect(
+      screen.getByRole("button", { name: "Allow project_tasks on Only" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Deny project_tasks" })).toBeInTheDocument();
+  });
+
   it("labels Allow and Deny with just the scopes when no project is involved", () => {
     render(<ConsentActions requestId="req-g" scopes={["memory_read"]} />);
     expect(screen.getByRole("button", { name: "Allow memory_read" })).toBeInTheDocument();

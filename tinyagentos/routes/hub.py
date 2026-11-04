@@ -157,6 +157,13 @@ async def _try_handshake(
         return
     contact_id = f"hub:{peer_fingerprint}"
 
+    from tinyagentos.collab_settings import outbound_refusal
+
+    refusal = outbound_refusal(request.app.state.data_dir, contact_id)
+    if refusal is not None:
+        logger.info("friend-accept handshake skipped for %s: %s", contact_id, refusal)
+        return
+
     # Pubkeys: directory first, then local hub_authors cache.
     ed25519_pub = directory_resp.get("signing_pubkey") or ""
     x25519_pub = directory_resp.get("encryption_pubkey") or ""
@@ -240,6 +247,7 @@ async def _try_handshake(
             encryption_pubkey="",
         )
         known_endpoints = peer_channel.known_hostports(link_endpoints)
+        data_dir = request.app.state.data_dir
 
         # Only the network exchange runs in the background; everything it
         # needs is captured as locals above (never ``request``).
@@ -248,6 +256,7 @@ async def _try_handshake(
                 envelope,
                 link_endpoints,
                 known_endpoints=known_endpoints,
+                data_dir=data_dir,
             )
             their_token = peer_channel.verify_handshake_reply(
                 reply, handshake=envelope, sender_ed25519_pub=ed25519_pub,

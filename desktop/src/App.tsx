@@ -93,7 +93,7 @@ function SystemShortcuts({ toggleSearch, toggleLaunchpad, toggleAssistant }: Sys
 
   useShortcut("Ctrl+Space", toggleSearch, "Toggle search palette", "system");
   useShortcut("Ctrl+l", toggleLaunchpad, "Toggle launchpad", "system");
-  useShortcut("Ctrl+/", toggleAssistant, "Toggle taOS agent", "system");
+  useShortcut("Ctrl+/", toggleAssistant, "Toggle taOS Agent", "system");
   useShortcut("Ctrl+w", closeFocused, "Close focused window", "system");
   useShortcut("Ctrl+m", minimizeFocused, "Minimize focused window", "system");
   useShortcut("Ctrl+f", maximizeFocused, "Maximize/restore focused window", "system");
@@ -460,6 +460,8 @@ export function App() {
               <MobileAppWindow
                 appId={activeWindow.appId}
                 windowId={activeWindowId}
+                props={activeWindow.props}
+                launchNonce={activeWindow.launchNonce}
                 onClose={handleMobileClose}
                 onMinimise={handleMobileMinimise}
               />
