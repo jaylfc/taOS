@@ -216,6 +216,88 @@ async def list_archived_agents(request: Request):
     return config.archived_agents
 
 
+# Linking a config agent to its registry row. A config agent that predates the
+# registry link has no registry_canonical_id, so resolve_agent_owner attributes
+# it to nobody and only an admin can reach it. Nothing on a registry row is set
+# only by the system (the canonical-id slug comes from a display name any member
+# can pick), so the link is never inferred: an admin chooses the row.
+
+def _active_registry(request: Request):
+    registry = getattr(request.app.state, "agent_registry", None)
+    if registry is None or getattr(registry, "_db", None) is None:
+        return None
+    return registry
+
+
+@router.get("/api/agents/registry-links", dependencies=[Depends(require_admin)])
+async def list_registry_links(request: Request):
+    """Config agents with no registry link, each with its candidate active rows.
+
+    A candidate is an active row whose canonical-id slug equals the agent name
+    exactly. It is only a suggestion: any member can mint such a row.
+    """
+    registry = _active_registry(request)
+    if registry is None:
+        return JSONResponse({"error": "agent registry unavailable"}, status_code=503)
+    unlinked = []
+    for agent in request.app.state.config.agents:
+        if agent.get("registry_canonical_id"):
+            continue
+        rows = await registry.list_by_slug(agent.get("name") or "")
+        unlinked.append({
+            "name": agent.get("name"),
+            "display_name": agent.get("display_name"),
+            "candidates": [
+                {k: row.get(k) for k in ("canonical_id", "user_id", "display_name", "created_ts")}
+                for row in rows
+            ],
+        })
+    return {"unlinked": unlinked}
+
+
+class RegistryLinkRequest(BaseModel):
+    canonical_id: str
+
+
+@router.post("/api/agents/{name}/registry-link", dependencies=[Depends(require_admin)])
+async def link_agent_registry(request: Request, name: str, body: RegistryLinkRequest):
+    """Link an unlinked config agent to an active registry row (admin only).
+
+    Never relinks: an agent that already has a registry_canonical_id is 409.
+    """
+    config = request.app.state.config
+    agent = find_agent(config, name)
+    if agent is None:
+        return JSONResponse({"error": f"Agent '{name}' not found"}, status_code=404)
+    if agent.get("registry_canonical_id"):
+        return JSONResponse({"error": "agent is already linked"}, status_code=409)
+    registry = _active_registry(request)
+    if registry is None:
+        return JSONResponse({"error": "agent registry unavailable"}, status_code=503)
+    record = await registry.get(body.canonical_id)
+    if record is None:
+        return JSONResponse({"error": "registry row not found"}, status_code=404)
+    if record.get("status") != "active":
+        return JSONResponse({"error": "registry row is not active"}, status_code=400)
+    # Re-read after the await so a concurrent link or delete is seen.
+    agent = find_agent(config, name)
+    if agent is None:
+        return JSONResponse({"error": f"Agent '{name}' not found"}, status_code=404)
+    if agent.get("registry_canonical_id"):
+        return JSONResponse({"error": "agent is already linked"}, status_code=409)
+    # One row, one config agent: reverse lookups (delegation, project refs, the
+    # auth middleware) would otherwise resolve the row to different agents.
+    if any(a.get("registry_canonical_id") == record["canonical_id"] for a in config.agents):
+        return JSONResponse({"error": "registry row is already linked to another agent"}, status_code=409)
+    agent["registry_canonical_id"] = record["canonical_id"]
+    await save_config_locked(config, config.config_path)
+    logger.info("linked config agent %s to registry row %s", name, record["canonical_id"])
+    return {
+        "agent": {"name": agent["name"], "registry_canonical_id": agent["registry_canonical_id"]},
+        "user_id": record.get("user_id") or None,
+    }
+
+
 def _resolve_agent_by_bearer(request: Request) -> dict | None:
     """Return the agent whose llm_key matches the Authorization: Bearer token.
 
