@@ -22,6 +22,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
+from tinyagentos.auth_context import current_user
 from tinyagentos.task_utils import _create_supervised_task
 from tinyagentos.video_jobs import VideoJobStore
 
@@ -102,18 +103,37 @@ def _get_video_backend(request: Request) -> str | None:
     return None
 
 
-def _list_videos(videos_dir: Path) -> list[dict]:
-    """List generated videos with metadata, newest first."""
+def _read_metadata(video_path: Path) -> dict:
+    meta_path = video_path.with_suffix(".json")
+    if meta_path.exists():
+        try:
+            metadata = json.loads(meta_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return {}
+        return metadata if isinstance(metadata, dict) else {}
+    return {}
+
+
+def _may_access(request: Request, metadata: dict) -> bool:
+    """True when the caller owns the video or is an admin.
+
+    Videos share one directory (images and music are per user), so the owner
+    is the ``user_id`` the sidecar recorded at generation. A video with no
+    recorded owner predates that and is admin only.
+    """
+    user = current_user(request)
+    owner = metadata.get("user_id")
+    return user.is_admin or (isinstance(owner, str) and bool(owner) and owner == user.user_id)
+
+
+def _list_videos(videos_dir: Path, request: Request) -> list[dict]:
+    """List the caller's generated videos (every video for an admin), newest first."""
     results = []
     for ext in ("*.mp4", "*.webm"):
         for vid in videos_dir.glob(ext):
-            meta_path = vid.with_suffix(".json")
-            metadata = {}
-            if meta_path.exists():
-                try:
-                    metadata = json.loads(meta_path.read_text())
-                except (json.JSONDecodeError, OSError):
-                    pass
+            metadata = _read_metadata(vid)
+            if not _may_access(request, metadata):
+                continue
             results.append({
                 "filename": vid.name,
                 "path": f"/data/videos/{vid.name}",
@@ -128,7 +148,9 @@ def _list_videos(videos_dir: Path) -> list[dict]:
     return results
 
 
-async def _generate_and_save(app, body: VideoGenerateRequest, seed: int, backend_url: str) -> dict:
+async def _generate_and_save(
+    app, body: VideoGenerateRequest, seed: int, backend_url: str, user_id: str | None = None
+) -> dict:
     """Call the video backend, save the resulting clip + metadata sidecar, and
     return the same result shape the old synchronous endpoint used to return.
     Raises _VideoGenerationError on any known failure mode; the message is
@@ -199,7 +221,7 @@ async def _generate_and_save(app, body: VideoGenerateRequest, seed: int, backend
         "seed": seed,
     }
     meta_path = videos_dir / f"{timestamp}_{seed}.json"
-    meta_path.write_text(json.dumps(metadata, indent=2))
+    meta_path.write_text(json.dumps({**metadata, "user_id": user_id} if user_id else metadata, indent=2))
 
     return {
         "filename": filename,
@@ -218,14 +240,16 @@ async def _record_job_error(store, job_id: str, message: str) -> None:
         logger.exception("video job %s: failed to record error status", job_id)
 
 
-async def _run_generation_job(app, job_id: str, body: VideoGenerateRequest, seed: int, backend_url: str) -> None:
+async def _run_generation_job(
+    app, job_id: str, body: VideoGenerateRequest, seed: int, backend_url: str, user_id: str | None = None
+) -> None:
     """Background task: run the generation and record the outcome on the job.
     Never raises, and always leaves the job in a terminal state (done/error)
     -- never stuck in "running" -- so a poller always sees a final status."""
     store = await _get_video_job_store(app)
     await store.update_job(job_id, status="running")
     try:
-        result = await _generate_and_save(app, body, seed, backend_url)
+        result = await _generate_and_save(app, body, seed, backend_url, user_id)
     except _VideoGenerationError as exc:
         await _record_job_error(store, job_id, str(exc))
         return
@@ -267,7 +291,9 @@ async def generate_video(request: Request, body: VideoGenerateRequest):
     job_id = await store.create_job()
 
     task_set = getattr(request.app.state, "_background_tasks", None)
-    coro = _run_generation_job(request.app, job_id, body, seed, backend_url)
+    coro = _run_generation_job(
+        request.app, job_id, body, seed, backend_url, getattr(request.state, "user_id", None)
+    )
     if task_set is None:
         asyncio.create_task(coro)
     else:
@@ -311,7 +337,7 @@ async def get_video_job(request: Request, job_id: str):
 async def list_videos(request: Request):
     """List all generated videos with metadata, newest first."""
     videos_dir = _videos_dir(request)
-    return {"videos": _list_videos(videos_dir)}
+    return {"videos": _list_videos(videos_dir, request)}
 
 
 @router.get("/api/video/{filename}")
@@ -329,6 +355,8 @@ async def serve_video(request: Request, filename: str):
     video_path = videos_dir / filename
     if not video_path.exists():
         return JSONResponse({"error": f"Video '{filename}' not found"}, status_code=404)
+    if not _may_access(request, _read_metadata(video_path)):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
 
     return FileResponse(video_path, media_type="video/mp4", filename=filename)
 
@@ -344,6 +372,8 @@ async def delete_video(request: Request, filename: str):
     video_path = videos_dir / filename
     if not video_path.exists():
         return JSONResponse({"error": f"Video '{filename}' not found"}, status_code=404)
+    if not _may_access(request, _read_metadata(video_path)):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
 
     video_path.unlink()
     meta_path = video_path.with_suffix(".json")
