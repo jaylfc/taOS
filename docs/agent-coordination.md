@@ -620,6 +620,14 @@ Minted by `ensure_native_agent_identity()` in `tinyagentos/native_agent_identity
 - **The revocation feed covers agent identities only, and that is a decision rather than a gap.** `GET /api/agents/registry/revoked` reads `agent_registry` and returns `{canonical_id, revoked_at}` per entry. Human credential withdrawal is handled through the session/auth layer, so humans will never appear here. Decided 2026-08-13, after a downstream spec was written assuming the opposite. If you are building something that needs to learn a *human's* credential was withdrawn, this feed is the wrong source and the requirement should be raised rather than implemented against it -- `tests/test_agent_registry.py::test_revoked_feed_shape` fails if the feed is widened, deliberately.
 - **Nothing in the chat runtime reads the token yet.** The identity is minted; wiring it into what the agent sends is a separate change. It is deliberately absent from the agent manual until then -- the manual is injected into the agent's prompt and sits at its size ceiling, so it should not describe a capability the agent does not yet have.
 
+## Linking a config agent to its registry row (admin only)
+A config agent owns nothing until its `registry_canonical_id` points at an active registry row; `resolve_agent_owner` never infers the link from the agent name, because the canonical-id slug comes from a display name any member can pick. Agents that predate the link stay admin-only until an admin links them:
+
+- `GET /api/agents/registry-links` lists config agents with no `registry_canonical_id`. Each carries `candidates`: active registry rows whose canonical-id slug equals the agent name exactly (`canonical_id`, `user_id`, `display_name`, `created_ts`). A candidate is a hint, not proof; check the owner before linking.
+- `POST /api/agents/{name}/registry-link` with `{"canonical_id": "..."}` sets the link and saves config. 404 for an unknown agent or row, 400 for a row that is not active, 409 when the agent is already linked (there is no relink). Returns `{"agent": {name, registry_canonical_id}, "user_id": <row owner>}`.
+
+Both routes need an admin session or the host local token (`require_admin`).
+
 ## Response caching (`Cache-Control: no-store` on `/api/` and `/agent/`)
 
 `SecurityHeadersMiddleware` (`tinyagentos/middleware/security_headers.py`) adds

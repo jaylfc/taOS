@@ -880,6 +880,20 @@ class AgentRegistryStore(BaseStore):
         ).fetchone()
         return int(row[0]) if row else 0
 
+    async def list_by_slug(self, slug: str, *, status: str = "active") -> list[dict]:
+        """Every entry with *status* that decodes to *slug* (same match as get_by_slug), oldest first."""
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", slug or ""):
+            return []
+        pattern, suffixed = _slug_globs(slug)
+        cursor = await self._db.execute(
+            "SELECT * FROM agent_registry"
+            " WHERE (canonical_id GLOB ? OR canonical_id GLOB ?) AND status = ? ORDER BY id",
+            (pattern, suffixed, status),
+        )
+        return [_row_to_dict(r) for r in await cursor.fetchall()]
+
     async def get_by_handle(self, handle: str, *, status: str = "active") -> Optional[dict]:
         """Return the oldest entry with *handle* and *status*, or ``None``.
 
