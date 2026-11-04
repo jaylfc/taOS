@@ -94,6 +94,17 @@ describe("wallpaper-fit (per-device, CSS-driven)", () => {
     useThemeStore.getState().setWallpaperFit(before);
   });
 
+  it("persists the fit when crypto.randomUUID is unavailable (plain-http LAN)", () => {
+    const originalRandomUUID = crypto.randomUUID;
+    Object.defineProperty(crypto, "randomUUID", { value: undefined, configurable: true });
+    try {
+      useThemeStore.getState().setWallpaperFit("tile");
+      expect(loadWallpaperFit()).toBe("tile");
+    } finally {
+      Object.defineProperty(crypto, "randomUUID", { value: originalRandomUUID, configurable: true });
+    }
+  });
+
   it("setWallpaperFit flips between two values round-tripping through the store", () => {
     useThemeStore.getState().setWallpaperFit("center");
     expect(useThemeStore.getState().wallpaperFit).toBe("center");
