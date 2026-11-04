@@ -668,13 +668,22 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await secrets_store.init()
         # The harness decision ran at create_app time, before the Secrets
         # store was readable; claude_code needs its token secret, so re-decide
-        # now when that is the preferred harness.
+        # now when that is the preferred harness. Hermes needs its key secret
+        # and a reachable API server, so re-decide when that is the preference.
         _fw_decision = getattr(app.state, "taos_agent_framework_decision", None)
         if _fw_decision is not None and _fw_decision.preference == "claude_code":
             from tinyagentos.claude_code_runtime import claude_code_token_present
             from tinyagentos.taos_agent_runtime import refresh_framework_decision
             refresh_framework_decision(
                 app.state, claude_code_token_present=await claude_code_token_present(app.state))
+        if _fw_decision is not None and _fw_decision.preference == "hermes":
+            from tinyagentos.hermes_runtime import hermes_api_up, hermes_key_present
+            from tinyagentos.taos_agent_runtime import refresh_framework_decision
+            refresh_framework_decision(
+                app.state,
+                hermes_api_up=await hermes_api_up(app.state),
+                hermes_key_present=await hermes_key_present(app.state),
+            )
         # -------------------------------------------------------------------
         # Migrate legacy github_app_private_key from config.yaml → SecretsStore.
         # The key was previously stored as plaintext in config and re-serialized
@@ -1650,6 +1659,11 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await browsing_history.close()
         await knowledge_graph.close()
         await archive.close()
+        try:
+            from tinyagentos.routes import hardware_bluetooth as _bt_routes
+            _bt_routes.cancel_discovery_timers()
+        except Exception:
+            pass
         await close_system_bus()
         await installed_apps.close()
         await feedback_store.close()

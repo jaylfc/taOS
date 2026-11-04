@@ -527,6 +527,9 @@ async def test_fetch_catalog_desktop_kind_rejected(tmp_path, test_key, keys_dict
         await catalog_fetch.fetch_catalog(
             "https://example.com/", cache_dir, state_path, keys=keys_dict, transport=transport
         )
+    from tinyagentos.orb.catalog_sig import CatalogKindInvalid
+
+    assert isinstance(exc.value, CatalogKindInvalid)
     assert "kind" in str(exc.value).lower()
     assert "orb-desktop-apps" in str(exc.value)
     # state file must not be created

@@ -448,6 +448,24 @@ class TestInstallWiring:
         assert "EnvironmentFile=/opt/taos/deer-flow-bridge.env" in unit.group(1)
         assert "chmod 600 /opt/taos/deer-flow-bridge.env" in text
 
+    def test_bridge_env_written_under_umask_077(self):
+        """deer-flow-bridge.env carries TAOS_LOCAL_TOKEN; it must never be
+        world-readable, even briefly between creation and chmod."""
+        text = SCRIPT_PATH.read_text()
+        umask_index = text.find("umask 077")
+        env_index = text.find("cat > /opt/taos/deer-flow-bridge.env")
+        assert umask_index != -1, "Missing umask 077"
+        assert env_index != -1, "Missing bridge env write"
+        assert umask_index < env_index, "umask 077 must precede the bridge env write"
+
+    def test_uv_installer_uses_mktemp(self):
+        """The uv installer must not live at a fixed /tmp path."""
+        text = SCRIPT_PATH.read_text()
+        assert "/tmp/uv-install.sh" not in text
+        assert 'UV_INSTALLER="$(mktemp)"' in text
+        assert 'sh "$UV_INSTALLER"' in text
+        assert 'rm -f "$UV_INSTALLER"' in text
+
     def test_deer_flow_service_still_provisioned(self):
         text = SCRIPT_PATH.read_text()
         assert "/etc/systemd/system/deer-flow.service" in text
