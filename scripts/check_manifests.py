@@ -24,6 +24,8 @@ import argparse
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 import yaml
 
 # Services that declare auto_manage but are legitimately not yet a systemd unit
@@ -56,10 +58,13 @@ def lint_managed(root: Path) -> list[str]:
         # An unparseable or non-mapping manifest is an error, not a silent skip
         # (silently skipping gave a false "clean").
         try:
-            data = yaml.safe_load(manifest.read_text())
-        except yaml.YAMLError as exc:
-            first = str(exc).splitlines()[0] if str(exc) else "parse error"
-            errors.append(f"{sid_dir}: manifest.yaml is not valid YAML ({first[:120]})")
+            data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+        except (yaml.YAMLError, OSError, UnicodeError) as exc:
+            if isinstance(exc, UnicodeError):
+                errors.append(f"{sid_dir}: manifest.yaml could not be read ({type(exc).__name__})")
+            else:
+                first = str(exc).splitlines()[0] if str(exc) else "parse error"
+                errors.append(f"{sid_dir}: manifest.yaml is not valid YAML ({first[:120]})")
             continue
         if not isinstance(data, dict):
             errors.append(f"{sid_dir}: manifest.yaml top-level is not a mapping")
@@ -161,10 +166,13 @@ def lint_model_fields(root: Path) -> tuple[list[str], list[str]]:
     for manifest in sorted(models_dir.glob("*/manifest.yaml")):
         mid_dir = manifest.parent.name
         try:
-            data = yaml.safe_load(manifest.read_text())
-        except yaml.YAMLError as exc:
-            first = str(exc).splitlines()[0] if str(exc) else "parse error"
-            errors.append(f"{mid_dir}: manifest.yaml is not valid YAML ({first[:120]})")
+            data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+        except (yaml.YAMLError, OSError, UnicodeError) as exc:
+            if isinstance(exc, UnicodeError):
+                errors.append(f"{mid_dir}: manifest.yaml could not be read ({type(exc).__name__})")
+            else:
+                first = str(exc).splitlines()[0] if str(exc) else "parse error"
+                errors.append(f"{mid_dir}: manifest.yaml is not valid YAML ({first[:120]})")
             continue
         if not isinstance(data, dict):
             errors.append(f"{mid_dir}: manifest.yaml top-level is not a mapping")
@@ -200,12 +208,25 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["managed-lint"])
     parser.add_argument("--root", default="app-catalog", help="catalog root dir")
+    parser.add_argument("--verbose", action="store_true", help="show all warnings")
     args = parser.parse_args(argv)
 
     root = Path(args.root)
     errors = lint_managed(root)
     warnings, model_errors = lint_model_fields(root)
     errors.extend(model_errors)
+    if warnings:
+        print(f"{len(warnings)} model manifests missing capability fields", file=sys.stderr)
+        shown = 0
+        for w in warnings:
+            if shown < 10:
+                print(f"  warn: {w}", file=sys.stderr)
+                shown += 1
+            elif shown == 10:
+                print("  ... (more warnings hidden, use --verbose to see all)", file=sys.stderr)
+                shown += 1
+        if not args.verbose:
+            warnings = warnings[:10]
     for w in warnings:
         print(f"  warn: {w}", file=sys.stderr)
     if errors:
