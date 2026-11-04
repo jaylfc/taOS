@@ -618,7 +618,7 @@ function CommsView({ paLabel }: { paLabel: string }) {
       <Header title="Comms" sub={`Talk to ${paLabel} and route messages.`} />
       <div className="space-y-4 p-6">
         <p className="text-sm text-shell-text-secondary">
-          Your PA is reachable through the taOS agent chat and the Messages app.
+          Your PA is reachable through the taOS Agent chat and the Messages app.
           Direct requests, briefs, and quick questions go here.
         </p>
         <div className="flex gap-2">

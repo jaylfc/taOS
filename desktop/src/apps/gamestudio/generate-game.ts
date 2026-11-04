@@ -43,7 +43,7 @@ export async function generateGame(
   onProgress({ stage: "seed", detail: `Loading the ${template.title} starter files...` });
   const seedFiles = await fetchSeedFiles(template);
 
-  onProgress({ stage: "streaming", detail: "Asking the taOS agent to customize your game..." });
+  onProgress({ stage: "streaming", detail: "Asking the taOS Agent to customize your game..." });
   const systemPrompt = buildCreateSystemPrompt(seedFiles);
 
   let raw = "";
