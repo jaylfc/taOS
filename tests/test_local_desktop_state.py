@@ -172,11 +172,17 @@ async def test_local_desktop_is_enabled_static(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_local_desktop_non_admin_403(monkeypatch, tmp_path):
-    """Non-admin caller gets 403."""
+async def test_local_desktop_cat_rc_124_returns_503(monkeypatch, tmp_path):
+    """cat rc 124 -> 503."""
+    async def fake(*args):
+        if args[0] == "cat" and args[1] == "taos-kiosk.service":
+            return 124, "systemctl timed out"
+        raise AssertionError("unexpected call")
+
+    monkeypatch.setattr(system_routes, "_systemctl", fake)
+
     from fastapi.testclient import TestClient
     from tinyagentos.app import create_app
-    import yaml
 
     config = {
         "server": {"host": "0.0.0.0", "port": 6969},
@@ -186,19 +192,95 @@ async def test_local_desktop_non_admin_403(monkeypatch, tmp_path):
         "metrics": {"poll_interval": 30, "retention_days": 30},
     }
     config_path = tmp_path / "config.yaml"
-    config_path.write_text(yaml.dump(config))
+    config_path.write_text(__import__("yaml").dump(config))
     app = create_app(data_dir=tmp_path)
 
     app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
-    # Invite a member user (like conftest._member_client does)
-    auth_mgr = app.state.auth
-    invite_code = auth_mgr.add_user_invite("member", "admin")
-    auth_mgr.complete_invite(
-        "member", invite_code, "Test Member", "", "membersettingspass123",
-    )
-    member = auth_mgr.find_user("member")
-    token = auth_mgr.create_session(user_id=member["id"], long_lived=True)
+    record = app.state.auth.find_user("admin")
+    uid = record["id"] if record else ""
+    token = app.state.auth.create_session(user_id=uid, long_lived=True)
     client = TestClient(app, cookies={"taos_session": token})
 
     resp = client.get("/api/system/local-desktop")
-    assert resp.status_code == 403
+    assert resp.status_code == 503
+    assert resp.json() == {"error": "systemctl_failed", "rc": 124}
+
+
+@pytest.mark.asyncio
+async def test_local_desktop_is_active_rc_124_returns_none(monkeypatch, tmp_path):
+    """is-active rc 124 -> active is None with available true."""
+    async def fake(*args):
+        if args[0] == "cat" and args[1] == "taos-kiosk.service":
+            return 0, "# taos-kiosk.service"
+        if args[0] == "is-enabled" and args[1] == "taos-kiosk.service":
+            return 0, "enabled"
+        if args[0] == "is-active" and args[1] == "taos-kiosk.service":
+            return 124, "systemctl timed out"
+        return 1, "unknown"
+
+    monkeypatch.setattr(system_routes, "_systemctl", fake)
+
+    from fastapi.testclient import TestClient
+    from tinyagentos.app import create_app
+
+    config = {
+        "server": {"host": "0.0.0.0", "port": 6969},
+        "backends": [],
+        "qmd": {"url": "http://localhost:7832"},
+        "agents": [],
+        "metrics": {"poll_interval": 30, "retention_days": 30},
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(__import__("yaml").dump(config))
+    app = create_app(data_dir=tmp_path)
+
+    app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
+    record = app.state.auth.find_user("admin")
+    uid = record["id"] if record else ""
+    token = app.state.auth.create_session(user_id=uid, long_lived=True)
+    client = TestClient(app, cookies={"taos_session": token})
+
+    resp = client.get("/api/system/local-desktop")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data == {"available": True, "enabled": True, "active": None}
+
+
+@pytest.mark.asyncio
+async def test_local_desktop_is_enabled_rc_1_stays_false(monkeypatch, tmp_path):
+    """is-enabled rc 1 -> enabled false (unchanged)."""
+    async def fake(*args):
+        if args[0] == "cat" and args[1] == "taos-kiosk.service":
+            return 0, "# taos-kiosk.service"
+        if args[0] == "is-enabled" and args[1] == "taos-kiosk.service":
+            return 1, "disabled"
+        if args[0] == "is-active" and args[1] == "taos-kiosk.service":
+            return 0, "active"
+        return 1, "unknown"
+
+    monkeypatch.setattr(system_routes, "_systemctl", fake)
+
+    from fastapi.testclient import TestClient
+    from tinyagentos.app import create_app
+
+    config = {
+        "server": {"host": "0.0.0.0", "port": 6969},
+        "backends": [],
+        "qmd": {"url": "http://localhost:7832"},
+        "agents": [],
+        "metrics": {"poll_interval": 30, "retention_days": 30},
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(__import__("yaml").dump(config))
+    app = create_app(data_dir=tmp_path)
+
+    app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
+    record = app.state.auth.find_user("admin")
+    uid = record["id"] if record else ""
+    token = app.state.auth.create_session(user_id=uid, long_lived=True)
+    client = TestClient(app, cookies={"taos_session": token})
+
+    resp = client.get("/api/system/local-desktop")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data == {"available": True, "enabled": False, "active": True}
