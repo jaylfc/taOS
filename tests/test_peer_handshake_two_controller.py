@@ -613,3 +613,100 @@ async def test_rehandshake_after_revoke_allowed_when_owner_requested_again(nodes
     assert link_after["revoked_at"] is None
     assert link_after["inbound_token_hash"] != original_inbound_token_hash
     assert link_after["outbound_token"] == "c" * 64
+
+
+# ---------------------------------------------------------------------------
+# tsk-ru647l: check-then-write revoke race
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_handshake_revoke_during_handshake_is_403(nodes, monkeypatch):
+    """A revoke committed between the revoked_at check and the write is honoured.
+
+    The old code read ``existing.revoked_at`` up front, then awaited
+    ``record_nonce``, ``hub.get_author``, ``store.add_contact`` and only then
+    called ``establish_peer_link``, which cleared ``revoked_at`` unconditionally.
+    A revoke committed in that window was silently overwritten and the link
+    came back live.  ``establish_peer_link`` now re-checks ``revoked_at`` inside
+    the same statement, so the link stays revoked and the handshake is refused.
+    """
+    from tinyagentos.hub import store as hub_store
+
+    a, b = nodes
+    await _record_request_out(a, b)
+    await _hub_store(a)
+
+    env1 = _handshake_envelope(b, a, inbound_token="b" * 64, endpoints=["http://100.64.0.9:6969"])
+    resp1 = await _post_handshake(a, env1)
+    assert resp1.status_code == 200, resp1.text
+
+    original_hash = (await a.app.state.contacts_store.get_peer_link(b.contact_id))["inbound_token_hash"]
+    original_outbound = "b" * 64
+
+    real_get_author = hub_store.HubStore.get_author
+
+    async def revoking_get_author(self, fingerprint):
+        author = await real_get_author(self, fingerprint)
+        # Revoke committed AFTER the initial revoked_at check passes.
+        await a.app.state.contacts_store.revoke_peer_link(b.contact_id)
+        return author
+
+    monkeypatch.setattr(hub_store.HubStore, "get_author", revoking_get_author)
+
+    env2 = _handshake_envelope(b, a, inbound_token="c" * 64, endpoints=["http://10.0.0.5:22"])
+    resp2 = await _post_handshake(a, env2)
+    assert resp2.status_code == 403, resp2.text
+    assert resp2.json().get("detail") == "peer link revoked"
+
+    link_after = await a.app.state.contacts_store.get_peer_link(b.contact_id)
+    assert link_after is not None
+    assert link_after["revoked_at"] is not None
+    assert link_after["inbound_token_hash"] == original_hash
+    assert link_after["outbound_token"] == original_outbound
+
+
+@pytest.mark.asyncio
+async def test_owner_re_request_reestablishes_revoked_link_even_during_race(nodes, monkeypatch):
+    """The owner re-request path re-establishes a revoked link even mid-race.
+
+    Same race as above -- a revoke lands between the check and the write -- but
+    here the owner has re-initiated the friend request, so ``allow_revoked=True``
+    is passed and the write applies.
+    """
+    from tinyagentos.hub import store as hub_store
+    from tinyagentos.hub import relationships
+
+    a, b = nodes
+    await _record_request_out(a, b)
+    hub = await _hub_store(a)
+
+    env1 = _handshake_envelope(b, a, inbound_token="b" * 64, endpoints=["http://100.64.0.9:6969"])
+    resp1 = await _post_handshake(a, env1)
+    assert resp1.status_code == 200, resp1.text
+
+    original_hash = (await a.app.state.contacts_store.get_peer_link(b.contact_id))["inbound_token_hash"]
+
+    # Owner pauses the contact, then re-initiates the friend request.
+    await a.app.state.contacts_store.revoke_peer_link(b.contact_id)
+    await hub.delete_relationship(b.fingerprint, relationships.REL_REQUEST_OUT)
+    await hub.put_relationship(b.fingerprint, relationships.REL_REQUEST_OUT)
+
+    real_get_author = hub_store.HubStore.get_author
+
+    async def revoking_get_author(self, fingerprint):
+        author = await real_get_author(self, fingerprint)
+        await a.app.state.contacts_store.revoke_peer_link(b.contact_id)
+        return author
+
+    monkeypatch.setattr(hub_store.HubStore, "get_author", revoking_get_author)
+
+    env2 = _handshake_envelope(b, a, inbound_token="c" * 64, endpoints=["http://10.0.0.5:22"])
+    resp2 = await _post_handshake(a, env2)
+    assert resp2.status_code == 200, resp2.text
+
+    link_after = await a.app.state.contacts_store.get_peer_link(b.contact_id)
+    assert link_after is not None
+    assert link_after["revoked_at"] is None
+    assert link_after["inbound_token_hash"] != original_hash
+    assert link_after["outbound_token"] == "c" * 64
