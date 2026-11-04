@@ -475,6 +475,12 @@ class WorkerAgent:
             + _parse_extra_backends(os.environ.get("TAOS_EXTRA_BACKENDS", ""))
             + [(bt, url) for bt, url, _ in declared if url and bt in _PROBEABLE_TYPES]
         )
+        # Kokoro-specific signal is required only for the DEFAULT kokoro
+        # candidate (kokoro-fastapi on :8880). A kokoro configured via the
+        # manifest or TAOS_EXTRA_BACKENDS keeps the generic /v1/models probe.
+        default_kokoro_keys = {
+            _candidate_key(bt, url) for bt, url in _DEFAULT_PROBE_CANDIDATES if bt == "kokoro"
+        }
 
         async def probe(client: httpx.AsyncClient, backend_type: str, base_url: str):
             if backend_type == "llama-swap":
@@ -483,7 +489,12 @@ class WorkerAgent:
                     return None
                 models, loaded_models = probed
             else:
-                models = await self._probe_models(client, backend_type, base_url)
+                if backend_type == "kokoro" and _candidate_key(
+                    backend_type, base_url
+                ) in default_kokoro_keys:
+                    models = await self._probe_kokoro(client, base_url)
+                else:
+                    models = await self._probe_models(client, backend_type, base_url)
                 if models is None:
                     return None  # backend not running here
                 loaded_models = await self._probe_loaded_models(client, backend_type, base_url)
@@ -698,16 +709,52 @@ class WorkerAgent:
                     for m in (resp.json() if isinstance(resp.json(), list) else [])
                 ]
             # llama-cpp / vllm, OpenAI compat /v1/models
-            resp = await client.get(f"{base_url}/v1/models")
+            return await self._probe_openai_models(client, base_url)
+        except Exception:
+            return None
+
+    async def _probe_openai_models(
+        self, client: httpx.AsyncClient, base_url: str
+    ) -> list[dict] | None:
+        """Query an OpenAI-compatible ``/v1/models`` endpoint.
+
+        Returns the model list, or None when the endpoint is unreachable or
+        does not return a ``{"data": [...]}`` body.
+        """
+        resp = await client.get(f"{base_url}/v1/models")
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        return [
+            {"name": m.get("id", ""), "size_mb": 0}
+            for m in data.get("data", [])
+        ]
+
+    async def _probe_kokoro(
+        self, client: httpx.AsyncClient, base_url: str
+    ) -> list[dict] | None:
+        """Kokoro-specific probe for the DEFAULT kokoro candidate.
+
+        kokoro-fastapi serves GET /v1/audio/voices (JSON with a 'voices'
+        list). The candidate is only advertised as a kokoro/tts backend
+        when that endpoint returns HTTP 200 and a 'voices' key that is a
+        list; otherwise it is skipped silently (like a closed port). A
+        kokoro backend configured via the manifest or TAOS_EXTRA_BACKENDS
+        keeps the generic /v1/models probe and is not subject to this
+        check.
+        """
+        try:
+            resp = await client.get(f"{base_url}/v1/audio/voices")
             if resp.status_code != 200:
                 return None
             data = resp.json()
-            return [
-                {"name": m.get("id", ""), "size_mb": 0}
-                for m in data.get("data", [])
-            ]
+            if not isinstance(data, dict) or not isinstance(data.get("voices"), list):
+                return None
         except Exception:
             return None
+        # kokoro-fastapi confirmed: read the model catalog like the other
+        # OpenAI-compatible backends.
+        return await self._probe_openai_models(client, base_url)
 
     def detect_kv_quant_support(self, backends: list[dict]) -> dict:
         """Aggregate KV cache K/V quant support across all detected backends.
