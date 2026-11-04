@@ -3653,6 +3653,13 @@ class TestProjectCreateRequest:
         monkeypatch.setattr(app.state, "auth_requests", auth_store)
         monkeypatch.setattr(app.state, "project_store", pstore)
         monkeypatch.setattr(app.state, "agent_registry_keypair", (priv, pub))
+        # A second admin shows the row reaches every admin, not just the first.
+        real_list_users = app.state.auth.list_users
+        monkeypatch.setattr(
+            app.state.auth,
+            "list_users",
+            lambda: real_list_users() + [{"id": "second-admin", "is_admin": True}],
+        )
 
         try:
             resp = await client.post(
@@ -3678,6 +3685,9 @@ class TestProjectCreateRequest:
             admin_rows = await rows_for(admin["id"])
             assert [n["data"]["request_id"] for n in admin_rows] == [request_id]
             assert admin_rows[0]["user_id"] == admin["id"]
+            second_rows = await rows_for("second-admin")
+            assert [n["data"]["request_id"] for n in second_rows] == [request_id]
+            assert second_rows[0]["user_id"] == "second-admin"
         finally:
             await registry.close()
             await auth_store.close()

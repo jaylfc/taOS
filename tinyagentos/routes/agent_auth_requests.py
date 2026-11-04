@@ -1881,18 +1881,6 @@ _SCOPE_FILES_SCOPES = _FILES_SCOPES
 _SCOPE_PROJECT_SCOPES = _PROJECT_SCOPES
 
 
-def _admin_user_ids(app_state) -> list[str]:
-    """Ids of every admin user; empty (and logged) when users cannot be read,
-    so a notification addressed with it is never broadcast."""
-    auth = getattr(app_state, "auth", None)
-    try:
-        users = auth.list_users() if auth is not None else []
-    except Exception:
-        logger.warning("could not list users to address an admin notification", exc_info=True)
-        users = []
-    return [u["id"] for u in users if u.get("is_admin") and u.get("id")]
-
-
 def _scope_request_audience(app_state, record: dict) -> list[str]:
     """Ids of the users who may decide a scope request for *record*: the
     agent's owner, then every admin (the approve/deny routes allow exactly
@@ -1901,7 +1889,7 @@ def _scope_request_audience(app_state, record: dict) -> list[str]:
     owner = record.get("user_id")
     if owner:
         ids.append(owner)
-    for uid in _admin_user_ids(app_state):
+    for uid in admin_user_ids(app_state):
         if uid not in ids:
             ids.append(uid)
     return ids

@@ -195,9 +195,9 @@ class NotificationStore(BaseStore):
                 subscribed device (genuinely system-wide notices). When set to a
                 user id, web-push delivery fans out only to that user's
                 subscriptions.
-            webhook: Post to the configured external webhooks (default). A
-                caller writing one row per recipient for the same event passes
-                False on all but one, since the webhook payload names no user.
+            webhook: Also post to the configured webhooks (default). A caller
+                writing one event as several per-user rows passes False on all
+                but one row, so a webhook sees the event once.
         """
         if await self._is_event_muted(source):
             return
