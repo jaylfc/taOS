@@ -2839,3 +2839,14 @@ Agents can delegate project work to another user's agent:
 - **Revocation cascades**: revoking a contact or membership revokes all sponsored identities and unassigns their board tasks.
 
 Routes: `POST /api/decisions` (delegation kind), peer inbox envelope handling, project-invite integration.
+
+## Generated video ownership
+
+Route module `tinyagentos/routes/video.py`. Videos share one directory (images
+and music are stored per user), so `POST /api/video/generate` records the
+caller's `user_id` in each video's metadata sidecar. `GET /api/video` lists the
+caller's own videos (every video for an admin); `GET` and `DELETE
+/api/video/{filename}` answer `403` unless the caller owns the video or is an
+admin. A video with no recorded owner (made before this rule) is admin only.
+Job polling (`GET /api/video/jobs/{job_id}`) is unchanged: job ids are random
+128-bit values.
