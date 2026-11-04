@@ -281,6 +281,7 @@ async def get_wifi():
                         "frequency": frequency_i,
                         "secured": secured,
                         "active": active,
+                        "iface": iface,
                     }
                 )
             except Exception:

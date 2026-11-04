@@ -92,8 +92,8 @@ async def test_lists_wifi_aps_sorted_and_marks_active(monkeypatch):
     assert resp["wifi_enabled"] is True
     assert resp["devices"] == [{"path": "/org/freedesktop/NetworkManager/Devices/2", "iface": "wlan0", "state": 100}]
     assert resp["access_points"] == [
-        {"ssid": "cafe", "strength": 80, "frequency": 2412, "secured": False, "active": False},
-        {"ssid": "home", "strength": 40, "frequency": 5180, "secured": True, "active": True},
+        {"ssid": "cafe", "strength": 80, "frequency": 2412, "secured": False, "active": False, "iface": "wlan0"},
+        {"ssid": "home", "strength": 40, "frequency": 5180, "secured": True, "active": True, "iface": "wlan0"},
     ]
 
 
@@ -134,7 +134,48 @@ async def test_failed_ap_read_is_skipped(monkeypatch):
 
     monkeypatch.setattr(hw_routes, "busctl", fake)
     resp = await hw_routes.get_wifi()
-    assert resp["access_points"] == [{"ssid": "home", "strength": 40, "frequency": 5180, "secured": False, "active": True}]
+    assert resp["access_points"] == [{"ssid": "home", "strength": 40, "frequency": 5180, "secured": False, "active": True, "iface": "wlan0"}]
+
+
+@pytest.mark.asyncio
+async def test_wifi_aps_carry_device_iface(monkeypatch):
+    calls = []
+
+    async def fake(*args):
+        calls.append(args)
+        if args[0] == "get-property" and args[-1] == "WirelessEnabled":
+            return 0, True
+        if args[0] == "call" and args[-1] == "GetDevices":
+            return 0, ["/org/freedesktop/NetworkManager/Devices/2"]
+        if args[0] == "get-property" and args[2] == "/org/freedesktop/NetworkManager/Devices/2":
+            if args[4] == "DeviceType":
+                return 0, 2
+            if args[4] == "Interface":
+                return 0, "wlan1"
+            if args[4] == "State":
+                return 0, 100
+        if args[0] == "get-property" and args[2] == "/org/freedesktop/NetworkManager/Devices/2" and args[3] == "org.freedesktop.NetworkManager.Device.Wireless" and args[4] == "ActiveAccessPoint":
+            return 0, "/org/freedesktop/NetworkManager/AccessPoint/10"
+        if args[0] == "call" and args[2] == "/org/freedesktop/NetworkManager/Devices/2" and args[4] == "GetAllAccessPoints":
+            return 0, ["/org/freedesktop/NetworkManager/AccessPoint/10"]
+        if args[0] == "get-property" and args[2] == "/org/freedesktop/NetworkManager/AccessPoint/10":
+            if args[4] == "Ssid":
+                return 0, [ord(c) for c in "home"]
+            if args[4] == "Strength":
+                return 0, 40
+            if args[4] == "Frequency":
+                return 0, 5180
+            if args[4] == "WpaFlags":
+                return 0, 0
+            if args[4] == "RsnFlags":
+                return 0, 0x188
+        raise AssertionError(f"unexpected busctl call: {args}")
+
+    monkeypatch.setattr(hw_routes, "busctl", fake)
+    resp = await hw_routes.get_wifi()
+    assert resp["access_points"] == [
+        {"ssid": "home", "strength": 40, "frequency": 5180, "secured": True, "active": True, "iface": "wlan1"},
+    ]
 
 
 # --- Write route tests ---
