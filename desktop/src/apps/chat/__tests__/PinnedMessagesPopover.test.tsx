@@ -24,4 +24,26 @@ describe("PinnedMessagesPopover", () => {
     fireEvent.click(screen.getByRole("button", { name: /Jump to/i }));
     expect(onJumpTo).toHaveBeenCalledWith("m1");
   });
+
+  it("renders dialog with max-w-[calc(100vw-1rem)] class when pins list is empty", () => {
+    render(
+      <PinnedMessagesPopover
+        pins={[]}
+        onJumpTo={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    const dialog = screen.getByRole("dialog", { name: /pinned messages/i });
+    expect(dialog).toHaveClass("max-w-[calc(100vw-1rem)]");
+  });
+
+  it("container max-height is not bare 400px", () => {
+    const pins = [{ id: "m1", author_id: "tom", content: "x", created_at: 123, pinned_by: "u", pinned_at: 200 }];
+    render(<PinnedMessagesPopover pins={pins} onJumpTo={vi.fn()} onClose={vi.fn()} />);
+    const dialog = screen.getByRole("dialog", { name: /pinned messages/i });
+    // Before fix: the dialog has max-h-[400px] class (bare 400px cap)
+    // After fix: it should use a dynamic max-height like min(400px, 60dvh) via style or class
+    // The test should fail before fix (has max-h-[400px]) and pass after fix (no bare 400px)
+    expect(dialog).not.toHaveClass("max-h-[400px]");
+  });
 });

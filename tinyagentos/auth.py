@@ -894,6 +894,7 @@ class AuthManager:
         for i, u in enumerate(data.get("users", [])):
             if u.get("username") == username:
                 data["users"][i]["pin_hash"] = hash_password(pin)
+                data["users"][i]["pin_length"] = len(pin)
                 self._write_users(data)
                 return
         raise ValueError(f"user '{username}' not found")
@@ -906,6 +907,7 @@ class AuthManager:
             if u.get("username") == username:
                 removed = data["users"][i].pop("pin_hash", None) is not None
                 if removed:
+                    data["users"][i].pop("pin_length", None)
                     self._write_users(data)
                 return removed
         raise ValueError(f"user '{username}' not found")
@@ -924,7 +926,60 @@ class AuthManager:
             return (False, None)
         if not verify_password(pin, record.get("pin_hash", "")):
             return (False, None)
+        if "pin_length" not in record or record.get("pin_length") is None:
+            self._learn_pin_length(record, pin)
         return (True, record)
+
+    @_serialized
+    def _learn_pin_length(self, record: dict, pin: str) -> None:
+        # Verify the PIN hash before saving a learned length: a length learned
+        # from a wrong guess would let the keypad show the right number of dots
+        # for an attempt that still failed. ``check_pin`` already verified this
+        # on the happy path; the check stays here because this method is the
+        # only writer of pin_length and should not trust its caller.
+        if not verify_password(pin, record.get("pin_hash", "")):
+            logger.warning(
+                "refusing to learn PIN length for user %s: stored hash did not "
+                "verify against the supplied PIN",
+                record.get("username"),
+            )
+            return
+        pin_len = len(pin)
+        if not (PIN_MIN_LEN <= pin_len <= PIN_MAX_LEN):
+            logger.warning(
+                "refusing to learn PIN length %s for user %s: outside the "
+                "%d..%d range",
+                pin_len, record.get("username"), PIN_MIN_LEN, PIN_MAX_LEN,
+            )
+            return
+        data = self._read_users()
+        for i, u in enumerate(data.get("users", [])):
+            if u.get("id") == record.get("id") or u.get("username") == record.get("username"):
+                data["users"][i]["pin_length"] = pin_len
+                self._write_users(data)
+                record["pin_length"] = pin_len
+                return
+        logger.warning(
+            "could not learn PIN length for user %s: record vanished during write",
+            record.get("username"),
+        )
+
+    def pin_length(self, username: str | None = None) -> int | None:
+        record = self._pin_user(username)
+        if record is None:
+            return None
+        pl = record.get("pin_length")
+        if pl is None:
+            return None
+        try:
+            length = int(pl)
+        except Exception:
+            return None
+        if not (PIN_MIN_LEN <= length <= PIN_MAX_LEN):
+            # A stored value outside the range is not a usable length; treat it
+            # as absent rather than leaking an out-of-bounds count to the UI.
+            return None
+        return length
 
     # ------------------------------------------------------------------ #
     #  Lock-screen unlock method (console-only; see effective_unlock_method) #

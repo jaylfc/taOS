@@ -5,7 +5,7 @@ import { Card, Switch, Button, Input, Label } from "@/components/ui";
 export function WifiPanel() {
   const [available, setAvailable] = useState<boolean | null>(null);
   const [wifiEnabled, setWifiEnabled] = useState<boolean | null>(null);
-  const [accessPoints, setAccessPoints] = useState<{ ssid: string; strength: number; frequency: number; secured: boolean; active: boolean }[]>([]);
+  const [accessPoints, setAccessPoints] = useState<{ ssid: string; strength: number; frequency: number; secured: boolean; active: boolean; iface?: string }[]>([]);
   const [devices, setDevices] = useState<{ path: string; iface: string; state: number }[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
@@ -260,7 +260,7 @@ export function WifiPanel() {
                       <Button
                         variant="destructive"
                         size="sm"
-                        onClick={() => handleDisconnect(getIface())}
+                        onClick={() => handleDisconnect(ap.iface ?? getIface())}
                         disabled={isConnecting || disconnecting}
                         aria-label={`Disconnect from ${ap.ssid || "this network"}`}
                       >

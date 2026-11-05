@@ -537,3 +537,35 @@ describe("WifiPanel StrictMode", () => {
     expect(connectCalls.length).toBe(1);
   });
 });
+describe("WifiPanel disconnect iface", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("two devices, active AP iface wlan1; Disconnect POSTs {iface: wlan1}", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const response = {
+      available: true,
+      wifi_enabled: true,
+      devices: [
+        { path: "/org/freedesktop/NetworkManager/Devices/1", iface: "wlan0", state: 100 },
+        { path: "/org/freedesktop/NetworkManager/Devices/2", iface: "wlan1", state: 100 },
+      ],
+      access_points: [
+        { ssid: "ConnectedNet", strength: 80, frequency: 2437, secured: true, active: true, iface: "wlan1" },
+      ],
+    };
+    fetchSpy
+      .mockResolvedValueOnce(json(response))
+      .mockResolvedValueOnce(json({ ok: true }))
+      .mockResolvedValueOnce(json({ ...response, access_points: response.access_points.map((ap: any) => ({ ...ap, active: false })) }));
+    render(<WifiPanel />);
+    await waitFor(() => expect(screen.getByText("ConnectedNet")).toBeInTheDocument());
+    const disconnectBtn = screen.getByRole("button", { name: /Disconnect from ConnectedNet/i });
+    await act(async () => {
+      fireEvent.click(disconnectBtn);
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    const [, disconnectCall] = fetchSpy.mock.calls;
+    expect(disconnectCall[0]).toBe("/api/hardware/wifi/disconnect");
+    expect(JSON.parse(disconnectCall[1]?.body as string)).toEqual({ iface: "wlan1" });
+  });
+});

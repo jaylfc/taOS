@@ -43,8 +43,8 @@ describe("TaosAssistantWindow", () => {
 
     render(<TaosAssistantWindow windowId="win-1" />);
 
-    expect(screen.getByText("taOS agent")).toBeInTheDocument();
-    expect(screen.getByRole("textbox", { name: /message taOS agent/i })).toBeInTheDocument();
+    expect(screen.getByText("taOS Agent")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: /message taOS Agent/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /send message/i })).toBeInTheDocument();
   });
 
@@ -73,8 +73,8 @@ describe("TaosAssistantWindow", () => {
 
     render(<TaosAssistantWindow windowId="win-2" />);
 
-    expect(screen.getByText("taOS agent")).toBeInTheDocument();
-    expect(screen.getByRole("textbox", { name: /message taOS agent/i })).toBeInTheDocument();
+    expect(screen.getByText("taOS Agent")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: /message taOS Agent/i })).toBeInTheDocument();
   });
 
   it("surfaces the runtime error inline instead of leaving the dialog blank", async () => {
@@ -96,7 +96,7 @@ describe("TaosAssistantWindow", () => {
 
     render(<TaosAssistantWindow windowId="win-3" />);
 
-    const textarea = screen.getByRole("textbox", { name: /message taOS agent/i });
+    const textarea = screen.getByRole("textbox", { name: /message taOS Agent/i });
     fireEvent.change(textarea, { target: { value: "hello" } });
     fireEvent.click(screen.getByRole("button", { name: /send message/i }));
 
@@ -104,6 +104,6 @@ describe("TaosAssistantWindow", () => {
     await waitFor(() => {
       expect(screen.getByText(/opencode is not installed/i)).toBeInTheDocument();
     });
-    expect(screen.getByRole("textbox", { name: /message taOS agent/i })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: /message taOS Agent/i })).toBeInTheDocument();
   });
 });

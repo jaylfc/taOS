@@ -1003,6 +1003,7 @@ export function MessagesApp({
   const agentListTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevChannelRef = useRef<string | null>(null);
   const lastFetchRef = useRef<number>(0);
+  const backedOutRef = useRef(false);
 
   /* ---- fetch channels + unread ---- */
   const fetchChannels = useCallback(async () => {
@@ -1457,21 +1458,32 @@ export function MessagesApp({
   * Also runs when the project switches: if the previously selected channel
   * is not in the new project's channel list, it's stale — fall back to
   * the remembered/A2A channel for the new project, or clear the selection.
+  * Also checks archivedChannels so that selecting an archived channel from
+  * the sidebar does not get overridden by the default-selection logic.
   */
   useEffect(() => {
+    if (backedOutRef.current) return;
     if (!scope?.projectId) return;
-    if (channels.length === 0) return;
+    if (channels.length === 0 && archivedChannels.length === 0) return;
+    const allChannels = [...channels, ...archivedChannels];
     const selectedStillVisible =
-      !!selectedChannel && channels.some((c) => c.id === selectedChannel);
+      !!selectedChannel && allChannels.some((c) => c.id === selectedChannel);
     if (selectedStillVisible) return;
     const remembered = readLastChannel(scope.projectId);
-    if (remembered && channels.some((c) => c.id === remembered)) {
+    if (remembered && allChannels.some((c) => c.id === remembered)) {
       setSelectedChannel(remembered);
       return;
     }
     const a2aId = findA2aChannelId(channels);
     setSelectedChannel(a2aId ?? null);
-  }, [scope?.projectId, channels, selectedChannel]);
+  }, [scope?.projectId, channels, archivedChannels, selectedChannel]);
+
+  /* ---- clear the Back-out guard when the project scope changes ----
+  * The guard stops the default-select effect from re-picking a channel
+  * right after the user backed out; it only applies within one project. */
+  useEffect(() => {
+    backedOutRef.current = false;
+  }, [scope?.projectId]);
 
   /* ---- persist last-selected channel per project ----
   * Split from the channel-join effect so we only write when we know the
@@ -1497,6 +1509,11 @@ export function MessagesApp({
 
   const selectBusChannel = useCallback((channel: string) => {
     setBusSelected(channel);
+  }, []);
+
+  const handleSelectChannel = useCallback((channelId: string) => {
+    backedOutRef.current = false;
+    setSelectedChannel(channelId);
   }, []);
 
   /* ---- fetch project list for sidebar grouping (standalone mode only) ---- */
@@ -1579,7 +1596,10 @@ export function MessagesApp({
       saveDraft(prevChannelRef.current, input);
     }
     if (!selectedChannel) {
-      // No new channel: clear refs and stop here.
+      // No new channel: send leave frame for previous channel, then clear refs and stop.
+      if (prevChannelRef.current && wsRef.current?.readyState === 1) {
+        wsRef.current.send(JSON.stringify({ type: "leave", channel_id: prevChannelRef.current }));
+      }
       prevChannelRef.current = null;
       return;
     }
@@ -1784,6 +1804,12 @@ export function MessagesApp({
       return;
     }
 
+    // Block send if any attachment failed — user must remove or retry first
+    if (pendingAttachments.some((a) => a.error)) {
+      setSendError("remove or retry the failed attachment first");
+      return;
+    }
+
     const readyAttachments = pendingAttachments
       .filter((a) => a.record && !a.error)
       .map((a) => a.record!);
@@ -1812,6 +1838,7 @@ export function MessagesApp({
         if (selectedChannel) saveDraft(selectedChannel, "");
         setNewDividerAtId(null);
         setPendingAttachments([]);
+        setSendError(null);
         if (inputRef.current) inputRef.current.style.height = "auto";
         autoScrollRef.current = true;
         armResponseWatch(text);
@@ -2273,7 +2300,7 @@ export function MessagesApp({
       onToggleSection={toggleSection}
       visibleInSection={visibleInSection}
       selectedChannel={selectedChannel}
-      onSelectChannel={setSelectedChannel}
+      onSelectChannel={handleSelectChannel}
       unread={unread}
       nowMs={nowMs}
       liveAgents={liveAgents}
@@ -2305,7 +2332,7 @@ export function MessagesApp({
   /*  Message area                                                     */
   /* ---------------------------------------------------------------- */
 
-  const mobileParty = describeChannelParty(currentChannel, liveAgents, "kind");
+  const mobileParty = describeChannelParty(currentChannel, liveAgents, "kind", archivedAgents);
 
   const messageAreaUI = busSelected ? (
     <A2aBusMessageView channel={busSelected} />
@@ -2331,7 +2358,7 @@ export function MessagesApp({
         >
           <button
             type="button"
-            onClick={() => { setSelectedChannel(null); setBusSelected(null); }}
+            onClick={() => { backedOutRef.current = true; setSelectedChannel(null); setBusSelected(null); }}
             aria-label="Back to chats"
             className="h-10 w-10 shrink-0 rounded-xl flex items-center justify-center border border-shell-border bg-shell-surface backdrop-blur-xl text-shell-text active:opacity-60"
           >
@@ -2341,16 +2368,10 @@ export function MessagesApp({
             <h1 className="text-[16px] font-semibold leading-tight truncate text-shell-text">
               {mobileParty.title || currentChannel?.name || ""}
             </h1>
-            {mobileParty.kind === "group" ? (
-              mobileParty.subtitle && (
-                <div className="text-[12px] leading-tight truncate text-shell-text-tertiary">
-                  {mobileParty.subtitle}
-                </div>
-              )
-            ) : (
-              mobileParty.kind === "agent" && (
-                <div className="text-[12px] leading-tight truncate text-shell-text-tertiary">Agent</div>
-              )
+            {(mobileParty.kind === "group" || mobileParty.kind === "agent") && mobileParty.subtitle && (
+              <div className="text-[12px] leading-tight truncate text-shell-text-tertiary">
+                {mobileParty.subtitle}
+              </div>
             )}
           </div>
         </header>
@@ -2615,6 +2636,7 @@ className="shrink-0 p-0.5 rounded hover:bg-shell-surface-active transition-color
             }}
             onFileUpload={handleFileUpload}
             liveAgents={liveAgents}
+            archivedAgents={archivedAgents}
             onOpenSettings={handleOpenSettings}
             onToggleAllThreads={() => {
               if (showAllThreads) { setShowAllThreads(false); }
@@ -2665,7 +2687,7 @@ className="shrink-0 p-0.5 rounded hover:bg-shell-surface-active transition-color
       <div className="flex-1 min-h-0 overflow-hidden">
         <MobileSplitView
           selectedId={selectedChannel ?? busSelected}
-          onBack={() => { setSelectedChannel(null); setBusSelected(null); }}
+          onBack={() => { backedOutRef.current = true; setSelectedChannel(null); setBusSelected(null); }}
           listTitle="Messages"
           // On mobile the in-pane channel header already shows the channel name
           // (and its toolbar), so suppressing the nav title removes the doubled
@@ -2812,7 +2834,7 @@ className="shrink-0 p-0.5 rounded hover:bg-shell-surface-active transition-color
       {showSwitcher && (
         <ChannelSwitcher
           channels={channels.map((c) => ({ id: c.id, name: c.name }))}
-          onSelect={(id) => setSelectedChannel(id)}
+          onSelect={(id) => { backedOutRef.current = false; setSelectedChannel(id); }}
           onClose={() => setShowSwitcher(false)}
         />
       )}

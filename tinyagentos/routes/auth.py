@@ -2563,6 +2563,9 @@ _PIN_PANEL_SCRIPT = r"""
   var toPin   = document.getElementById("use-pin");
   var nextUrl = pinPanel.getAttribute("data-next") || "/desktop";
   var user    = pinPanel.getAttribute("data-username") || "";
+  var pinLengthAttr = pinPanel.getAttribute("data-pin-length");
+  var pinLength = pinLengthAttr ? parseInt(pinLengthAttr, 10) : NaN;
+  if (isNaN(pinLength)) pinLength = null;
   var busy    = false;
 
   function paint() {
@@ -2573,22 +2576,7 @@ _PIN_PANEL_SCRIPT = r"""
     }
   }
 
-  input.addEventListener("input", function () {
-    // Digits only: the keypad cannot produce anything else, but a physical
-    // keyboard can, and a stray letter would fail server-side validation with
-    // a confusing "incorrect PIN".
-    input.value = input.value.replace(/\D/g, "");
-    paint();
-    err.textContent = "";
-  });
-
-  function fail(msg) {
-    err.textContent = msg;
-    input.value = "";
-    paint();
-  }
-
-  submit.addEventListener("click", function () {
+  function tryPin() {
     if (busy) return;
     var pin = input.value;
     if (pin.length < 4) { fail("Enter your PIN."); return; }
@@ -2621,7 +2609,38 @@ _PIN_PANEL_SCRIPT = r"""
       busy = false;
       fail("Could not reach taOS. Check the connection and try again.");
     });
+  }
+
+  input.addEventListener("input", function () {
+    // Digits only: the keypad cannot produce anything else, but a physical
+    // keyboard can, and a stray letter would fail server-side validation with
+    // a confusing "incorrect PIN".
+    input.value = input.value.replace(/\D/g, "");
+    paint();
+    err.textContent = "";
+    if (pinLength && input.value.length === pinLength) {
+      tryPin();
+    }
   });
+
+  input.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      tryPin();
+    }
+  });
+
+  function fail(msg) {
+    err.textContent = msg;
+    input.value = "";
+    paint();
+  }
+
+  if (submit) {
+    submit.addEventListener("click", function () {
+      tryPin();
+    });
+  }
 
   function swap(showPin) {
     pinPanel.hidden = !showPin;
@@ -2697,7 +2716,7 @@ _KEYPAD_HTML = """
 """
 
 
-def _pin_panel_html(next_url: str, keypad: bool = False) -> str:
+def _pin_panel_html(next_url: str, keypad: bool = False, pin_length: int | None = None) -> str:
     """The PIN entry panel, shown only when the request is console-local.
 
     Rendered HIDDEN. /auth/pin-panel.js reveals it (and hides the password
@@ -2712,25 +2731,32 @@ def _pin_panel_html(next_url: str, keypad: bool = False) -> str:
     osk_attr = "" if keypad else 'data-osk-submit="pin-submit"'
     keypad_html = _KEYPAD_HTML if keypad else ""
 
+    pin_len_attr = f' data-pin-length="{int(pin_length)}"' if pin_length is not None else ""
+    if pin_length is not None:
+        dots_html = "\n        " + "".join('<span class="pin-dot"></span>' for _ in range(int(pin_length)))
+    else:
+        dots_html = "\n        <span class=\"pin-dot\"></span><span class=\"pin-dot\"></span>\n        <span class=\"pin-dot\"></span><span class=\"pin-dot\"></span>"
+
+    submit_html = "" if pin_length is not None else '      <button type="button" id="pin-submit">Sign in with PIN</button>\n'
+    if pin_length is not None:
+        osk_attr = ""
+
     # No username is sent with a PIN: this panel is only ever rendered for a
     # single-user store, because AuthManager.has_pin(None) refuses to guess
     # which account a PIN belongs to on a multi-user one.
     return f"""
-    <div class="pin-panel" id="pin-panel" data-next="{safe_next}" data-username="" hidden>
+    <div class="pin-panel" id="pin-panel" data-next="{safe_next}" data-username=""{pin_len_attr} hidden>
       <label class="field">
         <span>PIN</span>
         <input type="password" id="pin-input" inputmode="{osk_mode}" autocomplete="off"
                {osk_attr} aria-describedby="pin-error"
                maxlength="12" required>
       </label>
-      <div class="pin-dots" id="pin-dots" aria-hidden="true">
-        <span class="pin-dot"></span><span class="pin-dot"></span>
-        <span class="pin-dot"></span><span class="pin-dot"></span>
+      <div class="pin-dots" id="pin-dots" aria-hidden="true">{dots_html}
       </div>
       <p class="error" id="pin-error" role="alert"></p>
       {keypad_html}
-      <button type="button" id="pin-submit">Sign in with PIN</button>
-      <button type="button" class="method-switch" id="use-password">
+{submit_html}      <button type="button" class="method-switch" id="use-password">
         Use my password instead
       </button>
     </div>
@@ -8595,6 +8621,7 @@ def _login_page(
     next_url: str = "",
     pin_available: bool = False,
     unlock_method: str | None = None,
+    pin_length: int | None = None,
 ) -> str:
     """The sign-in page.
 
@@ -8602,6 +8629,11 @@ def _login_page(
     install (see login_page); it turns the page into the lock screen and picks
     how that screen opens. ``pin_available=True`` alone is the older spelling of
     ``unlock_method="pin"``.
+
+    ``pin_length`` is the known PIN length, passed in by ``login_page`` (which
+    already has the ``AuthManager`` in scope). It drives the auto-submit keypad
+    and the dot count; when it is ``None`` the panel renders a submit button
+    instead, because nothing on the page knows how long the PIN is.
     """
     if unlock_method is None and pin_available:
         unlock_method = "pin"
@@ -8626,7 +8658,8 @@ def _login_page(
     # pin_available is already console-only, so the lock screen never reaches a
     # LAN browser: off-console this page stays exactly the card it has always been.
     lock_screen = unlock_method is not None
-    pin_panel = _pin_panel_html(next_url, keypad=lock_screen) if pin_available else ""
+    pin_len = pin_length
+    pin_panel = _pin_panel_html(next_url, keypad=lock_screen, pin_length=pin_len) if pin_available else ""
     pin_switch = (
         '<button type="button" class="method-switch" id="use-pin">Use my PIN instead</button>'
         if pin_available else ""
@@ -8839,6 +8872,7 @@ async def login_page(request: Request, error: str = "", next: str = ""):
         multi_user=auth_mgr.is_multi_user(),
         next_url=safe_next,
         unlock_method=unlock_method,
+        pin_length=auth_mgr.pin_length() if unlock_method == "pin" else None,
     ))
 
 
