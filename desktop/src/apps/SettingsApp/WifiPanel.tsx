@@ -82,7 +82,7 @@ export function WifiPanel() {
         return;
       }
       setStatus(null);
-      load();
+      await load();
     } catch {
       setError("Could not reach taOS.");
       setStatus(null);
@@ -110,7 +110,7 @@ export function WifiPanel() {
         return;
       }
       setStatus(null);
-      load();
+      await load();
     } catch {
       setError("Could not reach taOS.");
       setStatus(null);
@@ -140,6 +140,12 @@ export function WifiPanel() {
     setSubmitting(true);
     setError(null);
     setPasswordError(null);
+    if (secured && !psk) {
+      setPasswordError("Enter the network password.");
+      setSubmitting(false);
+      setConnectingSsid(null);
+      return;
+    }
     try {
       const res = await fetch("/api/hardware/wifi/connect", {
         method: "POST",
@@ -188,7 +194,9 @@ export function WifiPanel() {
   const handlePasswordKeyDown = (e: React.KeyboardEvent, ssid: string) => {
     if (e.key === "Enter") {
       e.preventDefault();
-      handleConnect(ssid, password, true);
+      if (password.trim() !== "") {
+        handleConnect(ssid, password, true);
+      }
     } else if (e.key === "Escape") {
       e.preventDefault();
       setConnectingSsid(null);
@@ -327,7 +335,6 @@ export function WifiPanel() {
                           className="absolute right-2 top-1/2 -translate-y-1/2 h-6 w-6 p-0"
                           onClick={() => setShowPassword(isPasswordVisible ? null : ap.ssid)}
                           aria-label={isPasswordVisible ? "Hide password" : "Show password"}
-                          tabIndex={-1}
                         >
                           {isPasswordVisible ? <EyeOff size={14} /> : <Eye size={14} />}
                         </Button>
@@ -359,7 +366,6 @@ export function WifiPanel() {
                           btn?.focus();
                         }}
                         aria-label="Cancel"
-                        tabIndex={-1}
                         disabled={submitting}
                       >
                         <X size={14} />
