@@ -331,6 +331,79 @@ class TestProviderAPI:
         assert by_name["kilo-goodkey"]["models"], by_name["kilo-goodkey"]
         assert by_name["kilo-goodkey"].get("models_seeded") is False
 
+    async def test_list_marks_legacy_seed_list_as_seeded(self, client, app):
+        app.state.config.backends.append({
+            "name": "legacy-seeded-kilo",
+            "type": "kilocode",
+            "url": "https://kilo.example/api",
+            "models": [{"id": "kilo-auto/free"}],
+        })
+
+        class _EmptyHealth:
+            async def health(self, *_a, **_k):
+                return {"status": "ok", "response_ms": 5, "models": []}
+
+        with patch(
+            "tinyagentos.routes.providers.get_adapter",
+            return_value=_EmptyHealth(),
+        ), patch(
+            "tinyagentos.routes.providers._resolve_api_key_for_backend",
+            new=AsyncMock(return_value=None),
+        ):
+            resp = await client.get("/api/providers")
+        assert resp.status_code == 200
+        by_name = {p.get("name"): p for p in resp.json()}
+        assert by_name["legacy-seeded-kilo"].get("models_seeded") is True
+
+    async def test_list_does_not_mark_non_seed_list_as_seeded(self, client, app):
+        app.state.config.backends.append({
+            "name": "legacy-real-kilo",
+            "type": "kilocode",
+            "url": "https://kilo.example/api",
+            "models": [{"id": "kilo/real-model"}],
+        })
+
+        class _EmptyHealth:
+            async def health(self, *_a, **_k):
+                return {"status": "ok", "response_ms": 5, "models": []}
+
+        with patch(
+            "tinyagentos.routes.providers.get_adapter",
+            return_value=_EmptyHealth(),
+        ), patch(
+            "tinyagentos.routes.providers._resolve_api_key_for_backend",
+            new=AsyncMock(return_value=None),
+        ):
+            resp = await client.get("/api/providers")
+        assert resp.status_code == 200
+        by_name = {p.get("name"): p for p in resp.json()}
+        assert by_name["legacy-real-kilo"].get("models_seeded") is False
+
+    async def test_list_respects_explicit_models_seeded_false(self, client, app):
+        app.state.config.backends.append({
+            "name": "legacy-explicit-false",
+            "type": "kilocode",
+            "url": "https://kilo.example/api",
+            "models": [{"id": "kilo-auto/free"}],
+            "models_seeded": False,
+        })
+
+        class _EmptyHealth:
+            async def health(self, *_a, **_k):
+                return {"status": "ok", "response_ms": 5, "models": []}
+
+        with patch(
+            "tinyagentos.routes.providers.get_adapter",
+            return_value=_EmptyHealth(),
+        ), patch(
+            "tinyagentos.routes.providers._resolve_api_key_for_backend",
+            new=AsyncMock(return_value=None),
+        ):
+            resp = await client.get("/api/providers")
+        assert resp.status_code == 200
+        by_name = {p.get("name"): p for p in resp.json()}
+        assert by_name["legacy-explicit-false"].get("models_seeded") is False
+
     async def test_list_providers_surfaces_seeded_models_when_probe_empty(self, client, app):
         """A cloud provider whose live /models probe returns nothing (e.g.
         DeepSeek, whose endpoint 401s without a key the probe can't reach)
