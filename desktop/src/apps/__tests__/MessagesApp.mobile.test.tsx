@@ -554,3 +554,95 @@ describe("MessagesApp mobile sendError clearing", () => {
     await waitFor(() => expect(screen.queryByText(/couldn't send message/)).toBeNull());
   });
 });
+
+describe("MessagesApp mobile Back button sends leave frame", () => {
+  let originalFetch: typeof global.fetch;
+  let wsMock: { send: ReturnType<typeof vi.fn>; readyState: number; close: ReturnType<typeof vi.fn>; onopen: (() => void) | null; onmessage: ((e: MessageEvent) => void) | null; onclose: (() => void) | null };
+  let WebSocketConstructor: typeof WebSocket;
+
+  beforeEach(() => {
+    (useIsMobile as ReturnType<typeof vi.fn>).mockReset();
+    (useIsMobile as ReturnType<typeof vi.fn>).mockReturnValue(true);
+    originalFetch = global.fetch;
+    wsMock = {
+      send: vi.fn(),
+      readyState: 1, // WebSocket.OPEN
+      close: vi.fn(),
+      onopen: null,
+      onmessage: null,
+      onclose: null,
+    };
+    WebSocketConstructor = global.WebSocket;
+    // Mock WebSocket constructor to return our mock - use a real constructor function
+    function MockWebSocket(this: WebSocket, url: string) {
+      (this as unknown as { _url: string })._url = url;
+      return wsMock as unknown as WebSocket;
+    }
+    global.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+    global.fetch = vi.fn().mockImplementation((url: string) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      const ok = (body: unknown) =>
+        Promise.resolve({
+          ok: true,
+          headers: { get: () => "application/json" },
+          json: () => Promise.resolve(body),
+        } as unknown as Response);
+      if (urlStr.includes("/api/chat/channels") && !urlStr.includes("/messages")) {
+        return ok({
+          channels: [
+            { id: "ch-g", name: "design", type: "group", members: ["user", "tom", "lin"] },
+          ],
+          unread: {},
+        });
+      }
+      if (urlStr.includes("/api/chat/unread")) return ok({ unread: {} });
+      if (urlStr.includes("/api/agents?include_guests=1")) return ok([]);
+      if (urlStr.includes("/api/agents/archived")) return ok([]);
+      if (urlStr.includes("/api/chat/channels/ch-g/messages")) {
+        return ok({ messages: [] });
+      }
+      if (urlStr.includes("/api/chat/channels/ch-g/mark-read")) {
+        return ok({});
+      }
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        headers: { get: () => "application/json" },
+        json: () => Promise.resolve({}),
+      } as unknown as Response);
+    });
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    global.WebSocket = WebSocketConstructor;
+  });
+
+  it("sends leave frame on Back tap", async () => {
+    render(<MessagesApp windowId="test" />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "open-group" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "open-group" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Back to chats" })).toBeInTheDocument());
+
+    // Click Back to chats - this should send a leave frame for ch-g
+    fireEvent.click(screen.getByRole("button", { name: "Back to chats" }));
+
+    await waitFor(() => {
+      expect(wsMock.send).toHaveBeenCalledWith(JSON.stringify({ type: "leave", channel_id: "ch-g" }));
+    });
+  });
+
+  it("sidebar select works after Back", async () => {
+    render(<MessagesApp windowId="test" />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "open-group" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "open-group" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Back to chats" })).toBeInTheDocument());
+
+    // Click Back to chats
+    fireEvent.click(screen.getByRole("button", { name: "Back to chats" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Back to chats" })).not.toBeInTheDocument());
+
+    // Sidebar should be visible again and selectable
+    await waitFor(() => expect(screen.getByRole("button", { name: "open-group" })).toBeInTheDocument());
+  });
+});

@@ -1458,22 +1458,25 @@ export function MessagesApp({
   * Also runs when the project switches: if the previously selected channel
   * is not in the new project's channel list, it's stale — fall back to
   * the remembered/A2A channel for the new project, or clear the selection.
+  * Also checks archivedChannels so that selecting an archived channel from
+  * the sidebar does not get overridden by the default-selection logic.
   */
   useEffect(() => {
     if (backedOutRef.current) return;
     if (!scope?.projectId) return;
-    if (channels.length === 0) return;
+    if (channels.length === 0 && archivedChannels.length === 0) return;
+    const allChannels = [...channels, ...archivedChannels];
     const selectedStillVisible =
-      !!selectedChannel && channels.some((c) => c.id === selectedChannel);
+      !!selectedChannel && allChannels.some((c) => c.id === selectedChannel);
     if (selectedStillVisible) return;
     const remembered = readLastChannel(scope.projectId);
-    if (remembered && channels.some((c) => c.id === remembered)) {
+    if (remembered && allChannels.some((c) => c.id === remembered)) {
       setSelectedChannel(remembered);
       return;
     }
     const a2aId = findA2aChannelId(channels);
     setSelectedChannel(a2aId ?? null);
-  }, [scope?.projectId, channels, selectedChannel]);
+  }, [scope?.projectId, channels, archivedChannels, selectedChannel]);
 
   /* ---- clear the Back-out guard when the project scope changes ----
   * The guard stops the default-select effect from re-picking a channel
@@ -1506,6 +1509,11 @@ export function MessagesApp({
 
   const selectBusChannel = useCallback((channel: string) => {
     setBusSelected(channel);
+  }, []);
+
+  const handleSelectChannel = useCallback((channelId: string) => {
+    backedOutRef.current = false;
+    setSelectedChannel(channelId);
   }, []);
 
   /* ---- fetch project list for sidebar grouping (standalone mode only) ---- */
@@ -1588,7 +1596,10 @@ export function MessagesApp({
       saveDraft(prevChannelRef.current, input);
     }
     if (!selectedChannel) {
-      // No new channel: clear refs and stop here.
+      // No new channel: send leave frame for previous channel, then clear refs and stop.
+      if (prevChannelRef.current && wsRef.current?.readyState === 1) {
+        wsRef.current.send(JSON.stringify({ type: "leave", channel_id: prevChannelRef.current }));
+      }
       prevChannelRef.current = null;
       return;
     }
@@ -2289,7 +2300,7 @@ export function MessagesApp({
       onToggleSection={toggleSection}
       visibleInSection={visibleInSection}
       selectedChannel={selectedChannel}
-      onSelectChannel={setSelectedChannel}
+      onSelectChannel={handleSelectChannel}
       unread={unread}
       nowMs={nowMs}
       liveAgents={liveAgents}
