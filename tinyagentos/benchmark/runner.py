@@ -435,6 +435,7 @@ async def _cli_main(args: argparse.Namespace) -> int:
             "platform": _detect_platform(),
             "suite_name": suite.name,
             "first_join": bool(args.first_join),
+            "request_id": args.request_id,
             "results": [r.to_dict() for r in results],
         }
         try:
@@ -457,6 +458,16 @@ def main() -> int:
     parser.add_argument("--worker-name", default=None)
     parser.add_argument("--worker-id", default=None)
     parser.add_argument("--first-join", action="store_true", help="mark this run as the one-time first-join benchmark")
+    parser.add_argument(
+        "--request-id",
+        type=float,
+        default=None,
+        help=(
+            "requested_at of the queued manual run this invocation is serving. "
+            "Echoed in the report so the controller clears exactly that queued "
+            "run and not a newer click that arrived while this one ran."
+        ),
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     return asyncio.run(_cli_main(args))
