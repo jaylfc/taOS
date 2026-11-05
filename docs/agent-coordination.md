@@ -2765,7 +2765,10 @@ the choice is made, from two config.yaml keys:
   elsewhere), `opencode`, `picoclaw` or `claude_code` (operator overrides;
   `auto` never picks `claude_code`).
 - **Local desktop state**: `GET /api/system/local-desktop` reports `available`,
-  `enabled`, and `active` based on `taos-kiosk.service` systemd unit state.
+  `enabled`, and `active` based on `taos-kiosk.service` systemd unit state. The
+  `enabled` and `active` fields can be `null` if `systemctl` times out or is
+  missing; `cat` rc 1 means absent (all false), other nonzero `cat` rc returns
+  503 `{"error":"systemctl_failed","rc":<rc>}`.
 
 PicoClaw needs the LLM gateway (on unless `TAOS_LLM_GATEWAY=0`) and a `picoclaw` binary
 (`TAOS_PICOCLAW_BIN`, PATH, `/usr/local/bin`, `/usr/bin`). Without either,
