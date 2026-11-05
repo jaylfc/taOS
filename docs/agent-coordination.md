@@ -1556,7 +1556,7 @@ All routes are admin-only via `Depends(require_admin)`. See [docs/hardware-route
 
 ## Hub chain export and blobs (social phase 0, local only)
 
-Route module `tinyagentos/routes/hub.py`, admin-only:
+Route module `tinyagentos/routes/hub.py`. The four routes below are admin-only (a signed-in non-admin member gets `403 forbidden`); `POST /api/hub/posts` is not one of them and accepts any signed-in user:
 
 - `GET /api/hub/chain?after_seq=&limit=` returns this node's own chain page
   (`entries`, `object` is `null` once a tombstone dropped the body), the `head`,
