@@ -38,7 +38,7 @@ class CatalogKindInvalid(OrbError):
 
 
 class CatalogInvalid(OrbError):
-    """Catalog is invalid (not a JSON object or expires is not ISO 8601)."""
+    """Catalog is not a JSON object or expires is not ISO 8601."""
 
 
 CATALOG_KEYS: dict[str, str] = {}
