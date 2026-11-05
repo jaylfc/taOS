@@ -21,7 +21,7 @@ Additional tests:
 """
 
 import asyncio
-import logging
+import json
 import os
 import re
 import tempfile
@@ -141,152 +141,136 @@ class TestPostReplyRetry:
 # -- deer-flow back-pressure ----------------------------------------------------
 
 
+class _FakeResp:
+    """HTTP response stand-in whose aiter_lines() yields the given SSE lines."""
+
+    status_code = 200
+
+    def __init__(self, lines):
+        self._lines = lines
+
+    async def aiter_lines(self):
+        for line in self._lines:
+            yield line
+
+
+class _FakeStream:
+    """Async context manager returned by _FakeClient.stream()."""
+
+    def __init__(self, lines, stop=None, stop_on_exit=False):
+        self._lines = lines
+        self._stop = stop
+        self._stop_on_exit = stop_on_exit
+
+    async def __aenter__(self):
+        return _FakeResp(self._lines)
+
+    async def __aexit__(self, *args):
+        if self._stop_on_exit and self._stop is not None:
+            self._stop.set()
+        return False
+
+
+class _FakeClient:
+    """Minimal httpx.AsyncClient stand-in exposing only stream()."""
+
+    def __init__(self, lines, stop=None, stop_on_exit=False):
+        self._lines = lines
+        self._stop = stop
+        self._stop_on_exit = stop_on_exit
+
+    def stream(self, method, url, headers=None, timeout=None):
+        return _FakeStream(self._lines, self._stop, self._stop_on_exit)
+
+
 class TestDeerFlowBackPressure:
-    """Tests for deer-flow bridge back-pressure handling at _PENDING_CAP."""
+    """Tests driving the real sse_loop loaded from install_deer-flow.sh."""
+
+    def _make_channel(self):
+        return {
+            "events_url": "http://test/events",
+            "reply_url": "http://test/reply",
+            "auth_bearer": "test-token",
+        }
+
+    def _make_evt(self, msg_id, text="hello"):
+        return {
+            "id": msg_id,
+            "trace_id": msg_id,
+            "text": text,
+            "force_respond": False,
+            "context": [],
+            "attachments": [],
+            "channel_id": "ch1",
+        }
+
+    def _sse_lines(self, count):
+        lines = []
+        for i in range(count):
+            evt = self._make_evt(f"msg-{i}", f"text {i}")
+            lines.append("event: user_message")
+            lines.append("data: " + json.dumps(evt))
+            lines.append("")
+        return lines
 
     def test_pending_cap_backpressure_waits_for_slot(self):
-        """When pending_tasks reaches _PENDING_CAP, further user_messages
-        wait for a slot instead of being dropped."""
-        # Load only the deer-flow bridge
+        """Test A: real sse_loop handles every one of cap+1 user_messages,
+        waiting for a free slot at the cap instead of dropping."""
         ns = _load("install_deer-flow.sh")
+        cap = ns["_MAX_INFLIGHT"] * 4
+        handled = []
 
-        # We need to test the sse_loop logic. Extract the key constants and functions.
-        # The bridge uses _MAX_INFLIGHT = 4, _PENDING_CAP = _MAX_INFLIGHT * 4 = 16
-        # We'll simulate filling pending_tasks to capacity and verify back-pressure.
-
-        # Since the bridge code is executed at module level, we can access its internals
-        MAX_INFLIGHT = ns["_MAX_INFLIGHT"]
-        PENDING_CAP = MAX_INFLIGHT * 4
-        SEMAPHORE = ns["_SEMAPHORE"]
-        handle_user_message = ns["handle_user_message"]
-        _run_handle_user_message_limited = ns["_run_handle_user_message_limited"]
-
-        # Create a mock client and channel
-        client = MagicMock()
-        channel = {
-            "reply_url": "http://test/reply",
-            "auth_bearer": "test-token",
-            "events_url": "http://test/events",
-        }
-        seen_ids = set()
-        error_until = [0.0]
-
-        # Track how many times handle_user_message is called
-        call_count = 0
-        original_handle = handle_user_message
-
-        async def counting_handle(client, evt, channel, seen_ids, error_until):
-            nonlocal call_count
-            call_count += 1
-            # Simulate some work
-            await asyncio.sleep(0.01)
+        async def fake_limited(client, evt, channel, seen_ids, error_until):
+            handled.append(evt["id"])
+            await asyncio.sleep(0.05)
             return True
 
-        # Monkey-patch for this test
-        ns["handle_user_message"] = counting_handle
+        ns["_run_handle_user_message_limited"] = fake_limited
 
-        # Re-create the limited wrapper with our patched function
-        async def limited_wrapper(client, evt, channel, seen_ids, error_until):
-            async with SEMAPHORE:
-                return await counting_handle(client, evt, channel, seen_ids, error_until)
+        lines = self._sse_lines(cap + 1)
+        channel = self._make_channel()
 
-        ns["_run_handle_user_message_limited"] = limited_wrapper
-
-        async def test_backpressure():
-            pending_tasks = set()
+        async def run():
             stop = asyncio.Event()
+            client = _FakeClient(lines, stop=stop, stop_on_exit=True)
+            await ns["sse_loop"](client, channel, stop)
 
-            # Fill pending_tasks to PENDING_CAP
-            for i in range(PENDING_CAP):
-                evt = {"id": f"msg-{i}", "text": f"test {i}", "trace_id": f"trace-{i}", "force_respond": False, "context": [], "attachments": [], "channel_id": "ch1"}
-                task = asyncio.create_task(limited_wrapper(client, evt, channel, seen_ids, error_until))
-                pending_tasks.add(task)
-                task.add_done_callback(pending_tasks.discard)
+        asyncio.run(run())
 
-            assert len(pending_tasks) == PENDING_CAP
+        assert len(handled) == cap + 1
+        assert set(handled) == {f"msg-{i}" for i in range(cap + 1)}
 
-            # Now add one more - this should wait for a slot (back-pressure)
-            # We'll create a task that waits for FIRST_COMPLETED
-            extra_evt = {"id": "extra-msg", "text": "extra", "trace_id": "extra-trace", "force_respond": False, "context": [], "attachments": [], "channel_id": "ch1"}
-
-            # This simulates the fixed logic: wait for a slot, then create task
-            async def wait_and_create():
-                if len(pending_tasks) >= PENDING_CAP:
-                    await asyncio.wait(pending_tasks, return_when=asyncio.FIRST_COMPLETED)
-                task = asyncio.create_task(limited_wrapper(client, extra_evt, channel, seen_ids, error_until))
-                pending_tasks.add(task)
-                task.add_done_callback(pending_tasks.discard)
-
-            await wait_and_create()
-
-            # Wait for all tasks to complete
-            if pending_tasks:
-                await asyncio.wait(pending_tasks)
-
-            # The extra message should have been handled
-            assert call_count == PENDING_CAP + 1
-
-        asyncio.run(test_backpressure())
-
-    def test_no_skipping_user_message_log(self, caplog):
-        """Verify that 'skipping user_message' is NOT logged when at capacity."""
+    def test_pending_cap_shutdown_breaks_wait(self):
+        """Test B: sse_loop returns inside the stop timeout when shutdown begins
+        while waiting for a free slot at the cap. The unfixed code ignored stop
+        in asyncio.wait and missed the unit's TimeoutStopSec=75."""
         ns = _load("install_deer-flow.sh")
+        cap = ns["_MAX_INFLIGHT"] * 4
+        ns["_DRAIN_TIMEOUT_S"] = 0.1
+        ns["RECONNECT_DELAY"] = 0
 
-        MAX_INFLIGHT = ns["_MAX_INFLIGHT"]
-        PENDING_CAP = MAX_INFLIGHT * 4
-        SEMAPHORE = ns["_SEMAPHORE"]
+        lines = self._sse_lines(cap + 1)
+        channel = self._make_channel()
 
-        client = MagicMock()
-        channel = {
-            "reply_url": "http://test/reply",
-            "auth_bearer": "test-token",
-            "events_url": "http://test/events",
-        }
-        seen_ids = set()
-        error_until = [0.0]
+        async def run():
+            stop = asyncio.Event()
+            release = asyncio.Event()
 
-        call_count = 0
+            async def fake_limited(client, evt, channel, seen_ids, error_until):
+                await release.wait()
+                return True
 
-        async def counting_handle(client, evt, channel, seen_ids, error_until):
-            nonlocal call_count
-            call_count += 1
-            await asyncio.sleep(0.01)
-            return True
+            ns["_run_handle_user_message_limited"] = fake_limited
 
-        async def limited_wrapper(client, evt, channel, seen_ids, error_until):
-            async with SEMAPHORE:
-                return await counting_handle(client, evt, channel, seen_ids, error_until)
+            async def set_stop_later():
+                await asyncio.sleep(0.2)
+                stop.set()
 
-        async def test_no_skip_log():
-            pending_tasks = set()
+            asyncio.create_task(set_stop_later())
+            client = _FakeClient(lines)
+            await ns["sse_loop"](client, channel, stop)
 
-            # Fill to capacity
-            for i in range(PENDING_CAP):
-                evt = {"id": f"msg-{i}", "text": f"test {i}", "trace_id": f"trace-{i}", "force_respond": False, "context": [], "attachments": [], "channel_id": "ch1"}
-                task = asyncio.create_task(limited_wrapper(client, evt, channel, seen_ids, error_until))
-                pending_tasks.add(task)
-                task.add_done_callback(pending_tasks.discard)
-
-            # Add one more with back-pressure wait
-            extra_evt = {"id": "extra-msg", "text": "extra", "trace_id": "extra-trace", "force_respond": False, "context": [], "attachments": [], "channel_id": "ch1"}
-
-            if len(pending_tasks) >= PENDING_CAP:
-                await asyncio.wait(pending_tasks, return_when=asyncio.FIRST_COMPLETED)
-            task = asyncio.create_task(limited_wrapper(client, extra_evt, channel, seen_ids, error_until))
-            pending_tasks.add(task)
-            task.add_done_callback(pending_tasks.discard)
-
-            if pending_tasks:
-                await asyncio.wait(pending_tasks)
-
-            assert call_count == PENDING_CAP + 1
-
-        with caplog.at_level(logging.WARNING):
-            asyncio.run(test_no_skip_log())
-
-        # Check that no 'skipping user_message' log was emitted
-        skip_logs = [r for r in caplog.records if "skipping user_message" in r.getMessage()]
-        assert len(skip_logs) == 0, f"Found 'skipping user_message' logs: {[r.getMessage() for r in skip_logs]}"
+        asyncio.run(asyncio.wait_for(run(), 2))
 
 
 # -- non-TransportError exception handling --------------------------------------
