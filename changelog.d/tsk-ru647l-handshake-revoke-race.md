@@ -1,0 +1,4 @@
+### Security
+
+- Fix a check-then-write race in the peer handshake revocation path. `establish_peer_link` cleared `revoked_at` unconditionally, so a revoke committed between the initial `revoked_at` read and the write was silently overwritten and the link came back live. It now takes `allow_revoked: bool = False` and re-checks `revoked_at IS NULL` inside the same UPSERT statement, returning `False` when the write is refused. `peer_handshake` passes `allow_revoked=True` only on the owner re-request path (`REL_REQUEST_OUT` branch) and raises HTTP 403 "peer link revoked" otherwise. All other callers keep current behaviour (routes/hub.py friend-accept, which does not re-establish a revoked link).
+- The owner accepting a friend request again restores a revoked peer link, re-establishing the peer channel and clearing `revoked_at`.

@@ -129,7 +129,7 @@ async def _try_handshake(
     request: Request,
     directory_resp: dict,
     peer_fingerprint: str,
-) -> None:
+) -> Optional[Response]:
     """Establish a peer channel on friend-accept (collab A2).
 
     Extracts the peer's Ed25519/X25519 pubkeys and advertised endpoints
@@ -222,12 +222,19 @@ async def _try_handshake(
         # signed handshake_reply arrives, and left empty if it never does.
         outbound_token = ""
 
-        await contacts_store.establish_peer_link(
+        written = await contacts_store.establish_peer_link(
             contact_id=contact_id,
             inbound_token=inbound_token,
             outbound_token=outbound_token,
             endpoints=endpoints,
+            allow_revoked=True,  # owner accept re-initiates the friendship, restoring a revoked link
         )
+        if not written:
+            logger.warning(
+                "friend-accept handshake: peer link revoked, not restored for %s",
+                contact_id,
+            )
+            return JSONResponse({"state": "rejected"}, status_code=403)
         logger.info(
             "friend-accept handshake: contact=%s endpoints=%s",
             contact_id, endpoints,
@@ -523,7 +530,9 @@ async def accept_friend_request(
     # When the directory omits these fields, we fall back to the locally cached
     # hub_authors record (populated during the friend-request flow).
     if peer:
-        await _try_handshake(request, resp, peer)
+        handshake_response = await _try_handshake(request, resp, peer)
+        if handshake_response is not None:
+            return handshake_response
 
     return {"state": "accepted", "peer": peer, "directory": resp}
 
