@@ -1,0 +1,51 @@
+[Unit]
+Description=taOS kiosk session (Wayland, full-screen)
+Documentation=https://github.com/jaylfc/taOS
+
+# A device with a fallback session adds it in a drop-in (taOSmobile:
+# taos-kiosk.service.d/10-plasma-fallback.conf adds Conflicts= and OnFailure=
+# for plasma-mobile.service).
+Conflicts=getty@tty1.service
+After=getty@tty1.service systemd-user-sessions.service dbus.socket
+Wants=dbus.socket
+
+# Prevent starting on systems without virtual consoles (same guard Plasma Mobile uses)
+ConditionPathExists=/dev/tty0
+Before=graphical.target
+
+[Service]
+Type=simple
+User=taos
+Group=taos
+PAMName=login
+
+# A virtual terminal is needed.
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+StandardInput=tty-fail
+StandardOutput=journal
+StandardError=journal
+UtmpIdentifier=tty1
+UtmpMode=user
+
+Environment=XDG_SESSION_TYPE=wayland
+Environment=XDG_CURRENT_DESKTOP=taOS
+Environment=MOZ_ENABLE_WAYLAND=1
+
+# sway runs here as a single-surface KIOSK compositor (see sway-kiosk.conf):
+# the browser is the only window, there is no bar and no decorations, so the
+# session looks like a native OS rather than a browser on a desktop. sway was
+# chosen over cage because cage cannot power the output down -- see the config.
+ExecStart=/usr/local/bin/taos-kiosk-launch
+
+# Do NOT Restart=always: on a handset a crash-looping kiosk would fight the
+# fallback drop-in's OnFailure= and the user could never get back to Plasma.
+Restart=no
+
+[Install]
+WantedBy=graphical.target
+# Claim the same alias Plasma Mobile used, so the system still has a
+# display-manager for boot to resolve when taOS is the default session.
+Alias=display-manager.service
