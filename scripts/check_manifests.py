@@ -60,7 +60,7 @@ def lint_managed(root: Path) -> list[str]:
         try:
             data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
         except (yaml.YAMLError, OSError, UnicodeError) as exc:
-            if isinstance(exc, UnicodeError):
+            if isinstance(exc, (OSError, UnicodeError)):
                 errors.append(f"{sid_dir}: manifest.yaml could not be read ({type(exc).__name__})")
             else:
                 first = str(exc).splitlines()[0] if str(exc) else "parse error"
@@ -168,7 +168,7 @@ def lint_model_fields(root: Path) -> tuple[list[str], list[str]]:
         try:
             data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
         except (yaml.YAMLError, OSError, UnicodeError) as exc:
-            if isinstance(exc, UnicodeError):
+            if isinstance(exc, (OSError, UnicodeError)):
                 errors.append(f"{mid_dir}: manifest.yaml could not be read ({type(exc).__name__})")
             else:
                 first = str(exc).splitlines()[0] if str(exc) else "parse error"
@@ -217,18 +217,18 @@ def main(argv: list[str] | None = None) -> int:
     errors.extend(model_errors)
     if warnings:
         print(f"{len(warnings)} model manifests missing capability fields", file=sys.stderr)
-        shown = 0
-        for w in warnings:
-            if shown < 10:
+        if args.verbose:
+            for w in warnings:
                 print(f"  warn: {w}", file=sys.stderr)
-                shown += 1
-            elif shown == 10:
-                print("  ... (more warnings hidden, use --verbose to see all)", file=sys.stderr)
-                shown += 1
-        if not args.verbose:
-            warnings = warnings[:10]
-    for w in warnings:
-        print(f"  warn: {w}", file=sys.stderr)
+        else:
+            shown = 0
+            for w in warnings:
+                if shown < 10:
+                    print(f"  warn: {w}", file=sys.stderr)
+                    shown += 1
+                else:
+                    print("  ... (more warnings hidden, use --verbose to see all)", file=sys.stderr)
+                    break
     if errors:
         print("MANIFEST-LINT FAIL:", file=sys.stderr)
         for e in errors:
