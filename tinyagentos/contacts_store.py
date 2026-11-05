@@ -334,15 +334,27 @@ class ContactsStore(BaseStore):
         inbound_token: str,
         outbound_token: str,
         endpoints: list[str] | None = None,
-    ) -> None:
+        allow_revoked: bool = False,
+    ) -> bool:
         """Create a peer link row.  Called after the handshake completes.
 
         ``inbound_token`` is the plaintext token WE minted for them (hashed at
         rest); ``outbound_token`` is the token THEY minted for us.
+
+        The check and the write happen in ONE statement, so a revoke committed
+        between a prior ``revoked_at`` read and this call cannot be silently
+        overwritten: when ``allow_revoked`` is False and a row already exists
+        with ``revoked_at`` NOT NULL, the UPDATE arm's WHERE clause filters it
+        out, the row is left revoked, and this returns False.  When the row is
+        new or still live, the write applies and this returns True.
+
+        ``allow_revoked`` is only for the owner re-request path, where the
+        owner has explicitly re-initiated the friendship and the revoked link
+        is meant to be restored.
         """
         now = time.time()
         eps_json = _json_dumps(endpoints or [])
-        await self._db.execute(
+        cursor = await self._db.execute(
             """INSERT INTO peer_links
                (contact_id, inbound_token_hash, outbound_token, endpoints,
                 established_at)
@@ -352,10 +364,12 @@ class ContactsStore(BaseStore):
                  outbound_token = excluded.outbound_token,
                  endpoints = excluded.endpoints,
                  established_at = excluded.established_at,
-                 revoked_at = NULL""",
+                 revoked_at = NULL
+               WHERE peer_links.revoked_at IS NULL""",
             (contact_id, _hash_token(inbound_token), outbound_token, eps_json, now),
         )
         await self._db.commit()
+        return (cursor.rowcount or 0) > 0
 
     async def set_outbound_token(self, contact_id: str, token: str, expected_inbound_token: str | None = None) -> bool:
         """Store the token THEY minted for us, from a verified handshake reply.
