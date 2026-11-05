@@ -172,6 +172,39 @@ async def test_local_desktop_is_enabled_static(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_local_desktop_non_admin_403(monkeypatch, tmp_path):
+    """Non-admin caller gets 403."""
+    from fastapi.testclient import TestClient
+    from tinyagentos.app import create_app
+    import yaml
+
+    config = {
+        "server": {"host": "0.0.0.0", "port": 6969},
+        "backends": [],
+        "qmd": {"url": "http://localhost:7832"},
+        "agents": [],
+        "metrics": {"poll_interval": 30, "retention_days": 30},
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump(config))
+    app = create_app(data_dir=tmp_path)
+
+    app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
+    # Invite a member user (like conftest._member_client does)
+    auth_mgr = app.state.auth
+    invite_code = auth_mgr.add_user_invite("member", "admin")
+    auth_mgr.complete_invite(
+        "member", invite_code, "Test Member", "", "membersettingspass123",
+    )
+    member = auth_mgr.find_user("member")
+    token = auth_mgr.create_session(user_id=member["id"], long_lived=True)
+    client = TestClient(app, cookies={"taos_session": token})
+
+    resp = client.get("/api/system/local-desktop")
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_local_desktop_cat_rc_124_returns_503(monkeypatch, tmp_path):
     """cat rc 124 -> 503."""
     async def fake(*args):
