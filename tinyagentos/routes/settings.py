@@ -744,7 +744,7 @@ async def update_status(request: Request):
     """Return current SHA, pending restart SHA, and auto-update prefs."""
     import asyncio
     from tinyagentos.restart_orchestrator import read_pending_restart
-    from tinyagentos.auto_update import PREF_NAMESPACE, DEFAULT_PREFS
+    from tinyagentos.auto_update import PREF_NAMESPACE, DEFAULT_PREFS, _ping_enabled_by_env
 
     project_dir = Path(__file__).parent.parent.parent
 
@@ -786,6 +786,7 @@ async def update_status(request: Request):
         "pending_restart_sha": pending_sha,
         "auto_check": prefs.get("check_enabled", True),
         "gpg": gpg_prefs,
+        "ping_disabled_by_env": not _ping_enabled_by_env(),
     }
 
 

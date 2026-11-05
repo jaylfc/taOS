@@ -458,7 +458,8 @@ async def fake_get_system_bus_success():
             return MockReply(message_type=MessageType.METHOD_RETURN)
         elif message.member == "Get" and message.interface == "org.freedesktop.DBus.Properties":
             if message.body[1] == "Discovering":
-                return MockReply(body=[True if getattr(bus, "discovery_in_progress", False) else False], message_type=MessageType.METHOD_RETURN)
+                from dbus_fast import Variant
+                return MockReply(body=[Variant("b", True if getattr(bus, "discovery_in_progress", False) else False)], message_type=MessageType.METHOD_RETURN)
         return MockReply(message_type=MessageType.METHOD_RETURN)
 
     bus.call = call

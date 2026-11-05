@@ -42,7 +42,7 @@ export async function generateApp(
   onProgress: (p: GenerateProgress) => void,
   opts?: { signal?: AbortSignal },
 ): Promise<GenerateAppResult> {
-  onProgress({ stage: "streaming", detail: "Asking the taOS agent to build your app..." });
+  onProgress({ stage: "streaming", detail: "Asking the taOS Agent to build your app..." });
 
   let raw = "";
   let streamError: string | null = null;

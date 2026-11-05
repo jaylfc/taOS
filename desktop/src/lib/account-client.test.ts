@@ -229,6 +229,20 @@ describe("login and register against taos.my's real response shapes", () => {
     ]);
   });
 
+  it("login: a /me for a different user than the login answer is not a sign-in", async () => {
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce(res(200, { user_id: "u-other" }))
+      .mockResolvedValueOnce(res(200, account));
+    expect(isAuthError(await login("a@b.test", "pw"))).toBe(true);
+  });
+
+  it("register: a /me for a different user than the register answer is not a sign-in", async () => {
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce(res(200, { user_id: "u-other" }))
+      .mockResolvedValueOnce(res(200, account));
+    expect(isAuthError(await register("a@b.test", "pw"))).toBe(true);
+  });
+
   it("register: signups_closed keeps its code for the caller to show", async () => {
     global.fetch = vi.fn().mockResolvedValue(res(403, { detail: "signups_closed" }));
     const result = await register("a@b.test", "pw");

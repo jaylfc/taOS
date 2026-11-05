@@ -55,8 +55,8 @@ const STEPS: Step[] = [
   },
   {
     key: "taos_model_set",
-    label: "Choose a model for the taOS agent",
-    detail: "Pick the model your taOS agent will use",
+    label: "Choose a model for the taOS Agent",
+    detail: "Pick the model your taOS Agent will use",
     appId: "models",
   },
   {

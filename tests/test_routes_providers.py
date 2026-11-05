@@ -291,6 +291,46 @@ class TestProviderAPI:
         ]
         assert "kilo-auto/free" in kilo_ids
 
+    async def test_list_marks_models_seeded_only_when_discovery_failed(self, client, app):
+        """Setup checks a key by the models a provider lists. The per-type seed
+        list says nothing about the key, so the list marks it: a probe that
+        found nothing gives the seed (models_seeded true), a probe that found
+        models with the key does not."""
+
+        class _EmptyHealth:
+            async def health(self, *_a, **_k):
+                return {"status": "ok", "response_ms": 5, "models": []}
+
+        with patch(
+            "tinyagentos.routes.providers._discover_provider_models",
+            new=AsyncMock(return_value=[]),
+        ):
+            assert (await client.post("/api/providers", json={
+                "name": "kilo-badkey", "type": "kilocode", "api_key_secret": "provider-kilo-badkey-key",
+            })).status_code == 200
+        with patch(
+            "tinyagentos.routes.providers._discover_provider_models",
+            new=AsyncMock(return_value=[{"id": "kilo/real-model"}]),
+        ):
+            assert (await client.post("/api/providers", json={
+                "name": "kilo-goodkey", "type": "kilocode", "api_key_secret": "provider-kilo-goodkey-key",
+                "url": "https://kilo.example/api",
+            })).status_code == 200
+        with patch(
+            "tinyagentos.routes.providers.get_adapter",
+            return_value=_EmptyHealth(),
+        ), patch(
+            "tinyagentos.routes.providers._resolve_api_key_for_backend",
+            new=AsyncMock(return_value=None),
+        ):
+            resp = await client.get("/api/providers")
+        assert resp.status_code == 200
+        by_name = {p.get("name"): p for p in resp.json()}
+        assert by_name["kilo-badkey"]["models"], by_name["kilo-badkey"]
+        assert by_name["kilo-badkey"].get("models_seeded") is True
+        assert by_name["kilo-goodkey"]["models"], by_name["kilo-goodkey"]
+        assert by_name["kilo-goodkey"].get("models_seeded") is False
+
     async def test_list_providers_surfaces_seeded_models_when_probe_empty(self, client, app):
         """A cloud provider whose live /models probe returns nothing (e.g.
         DeepSeek, whose endpoint 401s without a key the probe can't reach)
