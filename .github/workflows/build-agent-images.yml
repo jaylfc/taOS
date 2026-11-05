@@ -53,9 +53,9 @@ jobs:
           set -euo pipefail
           # openclaw: latest published npm version (the base bakes openclaw@latest).
           OPENCLAW=$(npm view openclaw version)
-          # hermes: NousResearch hermes-agent default-branch commit (the base bakes
-          # the installer from main); the commit sha is the freshness signal.
-          HERMES=$(gh api repos/NousResearch/hermes-agent/commits/main --jq '.sha')
+          # hermes: the commit pinned in tinyagentos/scripts/install_hermes.sh (HERMES_COMMIT) and the bake step's --commit;
+          # keep all three in sync (tests/test_hermes_pin.py enforces it).
+          HERMES=29112bef099274229cadff79cdff7bf7b99c4b77
           echo "openclaw=$OPENCLAW" >> "$GITHUB_OUTPUT"
           echo "hermes=$HERMES" >> "$GITHUB_OUTPUT"
           echo "current openclaw=$OPENCLAW hermes=$HERMES"
