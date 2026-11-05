@@ -156,6 +156,70 @@ class TestProviderAPI:
         ]
         assert model_ids == ["custom/model-a"]
 
+    async def test_add_provider_models_source_discovered(self, client, app):
+        """Live discovery returned at least one model -> "discovered"."""
+        with patch(
+            "tinyagentos.routes.providers._discover_provider_models",
+            new=AsyncMock(return_value=[{"id": "m1"}]),
+        ):
+            resp = await client.post("/api/providers", json={
+                "name": "discovered-source",
+                "type": "kilocode",
+                "api_key_secret": "provider-discovered-key",
+            })
+            assert resp.status_code == 200
+        assert resp.json()["models_source"] == "discovered"
+
+    async def test_add_provider_models_source_defaults(self, client, app):
+        """Discovery returned nothing and a seed list exists -> "defaults"."""
+        with patch(
+            "tinyagentos.routes.providers._discover_provider_models",
+            new=AsyncMock(return_value=[]),
+        ):
+            resp = await client.post("/api/providers", json={
+                "name": "defaults-source",
+                "type": "kilocode",
+                "api_key_secret": "provider-defaults-key",
+            })
+            assert resp.status_code == 200
+        assert resp.json()["models_source"] == "defaults"
+
+    async def test_add_provider_models_source_none(self, client, app):
+        """Discovery returned nothing and no seed list for the type -> "none"."""
+        with patch(
+            "tinyagentos.routes.providers._discover_provider_models",
+            new=AsyncMock(return_value=[]),
+        ):
+            resp = await client.post("/api/providers", json={
+                "name": "none-source",
+                "type": "openrouter",
+                "api_key_secret": "provider-none-key",
+            })
+            assert resp.status_code == 200
+        assert resp.json()["models_source"] == "none"
+
+    async def test_add_provider_models_source_supplied(self, client, app):
+        """Caller supplied models so discovery did not run -> "supplied"."""
+        resp = await client.post("/api/providers", json={
+            "name": "supplied-source",
+            "type": "kilocode",
+            "url": "https://example.test/api",
+            "models": [{"id": "custom/model-a"}],
+            "api_key_secret": "provider-supplied-key",
+        })
+        assert resp.status_code == 200
+        assert resp.json()["models_source"] == "supplied"
+
+    async def test_add_provider_non_cloud_no_models(self, client, app):
+        """Non-cloud provider with no models supplied -> models_source == 'none'."""
+        resp = await client.post("/api/providers", json={
+            "name": "non-cloud-no-models",
+            "type": "ollama",
+            "url": "http://localhost:11434",
+        })
+        assert resp.status_code == 200
+        assert resp.json()["models_source"] == "none"
+
     async def test_add_provider_discovers_models_when_empty(self, client, app):
         """Empty models list on a cloud provider triggers a server-side
         probe of ``{url}/models``. Works for any provider type that

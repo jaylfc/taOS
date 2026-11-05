@@ -169,8 +169,9 @@ async def test_invite_access_request_names_project_and_carries_its_id(client):
         async def add(self, **kw):
             added.append(kw)
 
+    app_state = client._transport.app.state
     state = SimpleNamespace(
-        notifications=_Notifs(), project_store=client._transport.app.state.project_store
+        notifications=_Notifs(), project_store=app_state.project_store, auth=app_state.auth
     )
     request = SimpleNamespace(app=SimpleNamespace(state=state))
     _notify_pending_invite(
@@ -191,3 +192,184 @@ async def test_invite_access_request_names_project_and_carries_its_id(client):
     [kw] = added
     assert kw["message"] == "taos-dev is requesting project_tasks on taOS"
     assert kw["data"]["project_id"] == pid
+    assert kw["user_id"] == _admin_id(client)
+
+
+@pytest.mark.asyncio
+async def test_session_reopen_without_reopened_by_names_the_session_user(client):
+    pid, task = await _project_and_task(client)
+    await client.post(
+        f"/api/projects/{pid}/tasks/{task['id']}/close",
+        json={"closed_by": _admin_id(client), "reason": "done"},
+    )
+
+    resp = await client.post(f"/api/projects/{pid}/tasks/{task['id']}/reopen")
+    assert resp.status_code == 200, resp.text
+
+    [msg] = await _messages(client, "task.reopened")
+    assert msg == '"Fix login" reopened by Test Admin on taOS'
+
+
+# tsk-g7w4yu: a notification that names a project or task must reach only the
+# users allowed to see that project, never every user as a broadcast.
+
+
+async def _visible_to(client, user_id, source):
+    store = client._transport.app.state.notifications
+    return [n["message"] for n in await store.list(user_id=user_id) if n["source"] == source]
+
+
+@pytest.mark.asyncio
+async def test_task_event_names_reach_only_the_project_audience(client):
+    pid, task = await _project_and_task(client)
+    uid = _admin_id(client)
+
+    resp = await client.post(
+        f"/api/projects/{pid}/tasks/{task['id']}/close",
+        json={"closed_by": uid, "reason": "done"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    assert await _visible_to(client, uid, "task.closed") == [
+        '"Fix login" closed by Test Admin on taOS'
+    ]
+    assert await _visible_to(client, "someone-else", "task.closed") == []
+
+
+@pytest.mark.asyncio
+async def test_access_request_project_name_reaches_only_admins(client, monkeypatch, tmp_path):
+    from tinyagentos.agent_grants_store import AgentGrantsStore
+    from tinyagentos.agent_registry_store import AgentRegistryStore, load_or_create_signing_keypair
+    from tinyagentos.auth_requests_store import AuthRequestsStore
+
+    state = client._transport.app.state
+    registry = AgentRegistryStore(tmp_path / "reg.db")
+    await registry.init()
+    auth_store = AuthRequestsStore(tmp_path / "auth.db")
+    await auth_store.init()
+    grants = AgentGrantsStore(tmp_path / "grants.db")
+    await grants.init()
+    monkeypatch.setattr(state, "agent_registry", registry)
+    monkeypatch.setattr(state, "auth_requests", auth_store)
+    monkeypatch.setattr(state, "agent_grants", grants)
+    monkeypatch.setattr(
+        state, "agent_registry_keypair", load_or_create_signing_keypair(tmp_path / "keys")
+    )
+    pid, _task = await _project_and_task(client)
+
+    resp = await client.post(
+        "/api/agents/auth-requests",
+        json={
+            "identity_claim": "taos-dev",
+            "framework": "claude-code",
+            "requested_scopes": ["project_tasks"],
+            "project_id": pid,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+    assert await _visible_to(client, _admin_id(client), "auth_requests") == [
+        "taos-dev is requesting project_tasks on taOS"
+    ]
+    assert await _visible_to(client, "someone-else", "auth_requests") == []
+
+    await registry.close()
+    await auth_store.close()
+    await grants.close()
+
+
+@pytest.mark.asyncio
+async def test_invite_access_request_project_name_reaches_only_admins(client):
+    import asyncio
+    from types import SimpleNamespace
+
+    from tinyagentos.routes.project_invites import _notify_pending_invite
+
+    pid, _task = await _project_and_task(client)
+    uid = _admin_id(client)
+    request = SimpleNamespace(app=client._transport.app)
+    _notify_pending_invite(
+        request,
+        {
+            "id": "ar-2",
+            "identity_claim": "taos-dev",
+            "framework": "claude-code",
+            "requested_scopes": ["project_tasks"],
+            "project_id": pid,
+        },
+    )
+    for _ in range(50):
+        if await _visible_to(client, uid, "auth_requests"):
+            break
+        await asyncio.sleep(0.01)
+
+    assert await _visible_to(client, uid, "auth_requests") == [
+        "taos-dev is requesting project_tasks on taOS"
+    ]
+    assert await _visible_to(client, "someone-else", "auth_requests") == []
+
+
+@pytest.mark.asyncio
+async def test_failed_task_notification_does_not_fail_the_committed_change(client, monkeypatch):
+    pid, task = await _project_and_task(client)
+    store = client._transport.app.state.notifications
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("notification db unavailable")
+
+    monkeypatch.setattr(store, "emit_event", _boom)
+
+    resp = await client.post(
+        f"/api/projects/{pid}/tasks/{task['id']}/close",
+        json={"closed_by": _admin_id(client), "reason": "done"},
+    )
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_access_request_reaches_each_admin_but_webhooks_once(client, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    from tinyagentos.routes.project_invites import _notify_pending_invite
+
+    app_state = client._transport.app.state
+    store = app_state.notifications
+    posted = []
+
+    class _Webhook:
+        async def notify(self, title, message, level):
+            posted.append(message)
+
+    monkeypatch.setattr(store, "_webhook_notifier", _Webhook())
+
+    class _Auth:
+        def list_users(self):
+            return [{"id": "admin-a", "is_admin": True}, {"id": "admin-b", "is_admin": True}]
+
+    pid, _task = await _project_and_task(client)
+    state = SimpleNamespace(
+        notifications=store, project_store=app_state.project_store, auth=_Auth()
+    )
+    _notify_pending_invite(
+        SimpleNamespace(app=SimpleNamespace(state=state)),
+        {
+            "id": "ar-3",
+            "identity_claim": "taos-dev",
+            "framework": "claude-code",
+            "requested_scopes": ["project_tasks"],
+            "project_id": pid,
+        },
+    )
+    for _ in range(50):
+        if await _visible_to(client, "admin-b", "auth_requests"):
+            break
+        await asyncio.sleep(0.01)
+
+    assert await _visible_to(client, "admin-a", "auth_requests") == [
+        "taos-dev is requesting project_tasks on taOS"
+    ]
+    assert await _visible_to(client, "admin-b", "auth_requests") == [
+        "taos-dev is requesting project_tasks on taOS"
+    ]
+    assert posted == ["taos-dev is requesting project_tasks on taOS"]

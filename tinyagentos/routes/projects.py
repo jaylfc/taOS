@@ -18,7 +18,12 @@ from tinyagentos.agent_token_auth import (
     check_agent_scope_for_project,
 )
 from tinyagentos.auth_context import CurrentUser, current_user
-from tinyagentos.notification_labels import actor_label, project_label, task_label
+from tinyagentos.notification_labels import (
+    actor_label,
+    project_audience,
+    project_label,
+    task_label,
+)
 from tinyagentos.projects.element_store import _SLUG_RE
 from tinyagentos.projects.folders import (
     ensure_element_folder,
@@ -861,6 +866,36 @@ async def _task_event_message(
     return f"{task_label(task, task_id)} {verb} by {actor} on {project}"
 
 
+async def _notify_task_event(
+    request: Request,
+    event_type: str,
+    title: str,
+    task: dict,
+    task_id: str,
+    verb: str,
+    actor_id: "str | None",
+) -> None:
+    """Send a task lifecycle notification to the project's owner and admins.
+
+    The text names the task and project, so it is addressed per user rather
+    than broadcast to every user of the instance (tsk-g7w4yu)."""
+    notifs = getattr(request.app.state, "notifications", None)
+    if notifs is None:
+        return
+    message = await _task_event_message(request, task, task_id, verb, actor_id)
+    audience = await project_audience(request.app.state, task.get("project_id"))
+    for i, user_id in enumerate(audience):
+        # The task change is already committed: a failed write for one
+        # recipient must neither fail the request nor skip the others. Only
+        # the first row posts to webhooks, so a webhook sees the event once.
+        try:
+            await notifs.emit_event(
+                event_type, title, message, user_id=user_id, webhook=i == 0
+            )
+        except Exception:
+            logger.warning("task notification to %s failed", user_id, exc_info=True)
+
+
 def _resolve_actor(
     is_agent: bool, actor_id: str, body_actor: "str | None"
 ) -> "str | None | JSONResponse":
@@ -1267,13 +1302,9 @@ async def claim_task(
         return JSONResponse({"error": "already claimed"}, status_code=409)
     _beads_mark_dirty(request, project_id)
     await pstore.log_activity(project_id, claimer_id, "task.claimed", {"task_id": task_id})
-    notifs = getattr(request.app.state, "notifications", None)
-    if notifs is not None:
-        await notifs.emit_event(
-            "task.claimed",
-            "Task claimed",
-            await _task_event_message(request, existing, task_id, "claimed", claimer_id),
-        )
+    await _notify_task_event(
+        request, "task.claimed", "Task claimed", existing, task_id, "claimed", claimer_id
+    )
     return await store.get_task(task_id)
 
 
@@ -1403,13 +1434,9 @@ async def close_task(
         return JSONResponse({"error": "cannot close"}, status_code=409)
     _beads_mark_dirty(request, project_id)
     await pstore.log_activity(project_id, closed_by, "task.closed", {"task_id": task_id})
-    notifs = getattr(request.app.state, "notifications", None)
-    if notifs is not None:
-        await notifs.emit_event(
-            "task.closed",
-            "Task closed",
-            await _task_event_message(request, existing, task_id, "closed", closed_by),
-        )
+    await _notify_task_event(
+        request, "task.closed", "Task closed", existing, task_id, "closed", closed_by
+    )
     task = await store.get_task(task_id)
     qmd = getattr(request.app.state, "qmd_client", None)
     if qmd is not None and task is not None:
@@ -1449,13 +1476,12 @@ async def reopen_task(
         return JSONResponse({"error": "task is not closed"}, status_code=409)
     _beads_mark_dirty(request, project_id)
     await pstore.log_activity(project_id, actor, "task.reopened", {"task_id": task_id})
-    notifs = getattr(request.app.state, "notifications", None)
-    if notifs is not None:
-        await notifs.emit_event(
-            "task.reopened",
-            "Task reopened",
-            await _task_event_message(request, existing, task_id, "reopened", actor),
-        )
+    # Name the session user, not the "user" placeholder, when the body gave
+    # no reopened_by.
+    await _notify_task_event(
+        request, "task.reopened", "Task reopened", existing, task_id, "reopened",
+        resolved or actor_id,
+    )
     return await store.get_task(task_id)
 
 
@@ -1487,13 +1513,10 @@ async def unquarantine_task(
         return JSONResponse({"error": "task is not quarantined"}, status_code=409)
     _beads_mark_dirty(request, project_id)
     await pstore.log_activity(project_id, actor_id, "task.unquarantined", {"task_id": task_id})
-    notifs = getattr(request.app.state, "notifications", None)
-    if notifs is not None:
-        await notifs.emit_event(
-            "task.unquarantined",
-            "Task unquarantined",
-            await _task_event_message(request, existing, task_id, "unquarantined", actor_id),
-        )
+    await _notify_task_event(
+        request, "task.unquarantined", "Task unquarantined", existing, task_id,
+        "unquarantined", actor_id,
+    )
     return await store.get_task(task_id)
 
 

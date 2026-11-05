@@ -1,0 +1,6 @@
+### Fixed
+
+- Store uninstall of the llama-cpp service now tears down its init system service instead of only marking it uninstalled: on systemd it runs `systemctl disable --now llama-cpp.service` and removes `/etc/systemd/system/llama-cpp.service`, on OpenRC it runs `rc-service llama-cpp stop`, `rc-update del llama-cpp default`, and removes `/etc/init.d/llama-cpp`, and on macOS it runs `launchctl bootout gui/$(id -u)/com.taos.llama-cpp` and removes `~/Library/LaunchAgents/com.taos.llama-cpp.plist`. The teardown is driven by `scripts/uninstall-llama-cpp.sh` declared as `install.uninstall` in the service manifest and is best-effort so a missing unit, init script, or plist never fails the uninstall.
+- Uninstall script now uses `TAOS_SUDO` (default `sudo -n`, empty when root) to prefix privileged commands on systemd and OpenRC, never prompting for a password.
+- Uninstall script reports failure explicitly: if removing the unit file or init script fails or the file still exists afterwards, it prints a warning to stderr and exits 1 without logging `torn down`.
+- `tinyagentos/routes/store.py` captures the result of `installer.uninstall_with_script()`; if the returned dict has `success` falsy, a warning is logged but the uninstall remains best-effort.
