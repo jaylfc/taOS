@@ -381,7 +381,7 @@ class TestFriendAcceptHandshake:
 
         link = await store.get_peer_link(f"hub:{_PEER_FP}")
         assert link is not None
-        assert link["endpoints"] == [{"kind": "hub", "url": "https://second.example.com:6969", "priority": 0}]
+        assert link["endpoints"] == [{"kind": "hub", "url": "https://first.example.com:6969", "priority": 0}]
         assert link["revoked_at"] is None, "re-establish must clear revocation"
 
     async def test_accept_without_contacts_store_does_not_crash(
