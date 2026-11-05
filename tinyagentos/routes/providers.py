@@ -566,11 +566,11 @@ async def add_provider(request: Request, body: ProviderCreate):
         )
     # Auto-discover models for cloud providers when the caller didn't
     # supply any. Keeps the path generic across openai/anthropic/
-    # openrouter/kilocode — each exposes an OpenAI-shaped {url}/models.
+    # openrouter/kilocode -- each exposes an OpenAI-shaped {url}/models.
     # On probe failure we fall back to the per-type seed list (if any)
     # so the entry still registers at least one routable model. The
     # entry is saved either way so the user can refine in Settings.
-    models_source = "supplied"
+    models_source = "supplied" if entry.get("models") else "none"
     if not entry.get("models") and entry.get("type") in CLOUD_TYPES:
         api_key = None
         secret_name = entry.get("api_key_secret")

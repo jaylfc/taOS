@@ -210,6 +210,16 @@ class TestProviderAPI:
         assert resp.status_code == 200
         assert resp.json()["models_source"] == "supplied"
 
+    async def test_add_provider_non_cloud_no_models(self, client, app):
+        """Non-cloud provider with no models supplied -> models_source == 'none'."""
+        resp = await client.post("/api/providers", json={
+            "name": "non-cloud-no-models",
+            "type": "ollama",
+            "url": "http://localhost:11434",
+        })
+        assert resp.status_code == 200
+        assert resp.json()["models_source"] == "none"
+
     async def test_add_provider_discovers_models_when_empty(self, client, app):
         """Empty models list on a cloud provider triggers a server-side
         probe of ``{url}/models``. Works for any provider type that
