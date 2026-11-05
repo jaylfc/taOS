@@ -30,6 +30,11 @@ ALLOWED_COMMANDS = {
     "install-rknpu",
     "update-worker",
     "status",
+    # Worker self-update subcommands (taOS #890 C3).
+    "checkpoint",
+    "rollback",
+    "restart-self",
+    "health-check",
 }
 
 
