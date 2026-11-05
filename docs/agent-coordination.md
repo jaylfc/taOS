@@ -1285,6 +1285,8 @@ and must not expect a 403 to distinguish "exists, not yours". Admin-only
 lifecycle routes (approve/reject/suspend/reactivate) still 403 non-admins
 before any lookup, which discloses nothing.
 
+`POST /api/agents/registry/register` mints active rows: a `taos-deployed` (or any non-`external-selfjoin`) origin requires an admin session or the host local token; `external-selfjoin` stays open to any signed-in user (rows created pending).
+
 Requested scopes are validated against the same closed `VALID_SCOPES` vocabulary
 as the consent flow. The project-bound scopes -- `project_tasks`,
 `project_tasks_create`, `project_tasks_update`, `project_lists`, `project_notes`,
