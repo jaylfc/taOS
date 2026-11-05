@@ -288,12 +288,12 @@ export function WifiPanel() {
                       disabled={isConnecting}
                       aria-label={ap.secured ? `Join ${ap.ssid} (secured)` : `Join ${ap.ssid}`}
                     >
-                      {isConnecting && ap.secured ? (
+                      {isConnecting && ap.secured && submitting ? (
                         <>
                           <Loader2 size={12} className="animate-spin" />
                           Connecting
                         </>
-                      ) : isConnecting ? (
+                      ) : isConnecting && !ap.secured ? (
                         <>
                           <Loader2 size={12} className="animate-spin" />
                           Joining
