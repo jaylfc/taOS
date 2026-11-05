@@ -19,8 +19,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import urllib.parse
-
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
@@ -35,7 +33,7 @@ from tinyagentos.peer import (
     verify_envelope_signature,
 )
 from tinyagentos.rate_limit import MovingWindowLimiter, retry_after_headers
-from tinyagentos.routes.hub import _normalize_endpoints
+from tinyagentos.routes.hub import _safe_endpoints
 
 logger = logging.getLogger(__name__)
 
@@ -65,33 +63,6 @@ _limiter = MovingWindowLimiter(_RATE_MAX_PER_WINDOW, _RATE_WINDOW_SECS)
 _rate_hits = _limiter.hits
 # Handshakes are keyed by sender fingerprint, separately from the bearer routes.
 _handshake_limiter = MovingWindowLimiter(_RATE_MAX_PER_WINDOW, _RATE_WINDOW_SECS)
-
-
-def _safe_endpoints(raw) -> list[dict]:
-    """Filter endpoints to only valid http/https dict entries with a hostname.
-
-    Takes the output of _normalize_endpoints and keeps only dict entries whose
-    'url' is a string with scheme 'http' or 'https' and a truthy hostname.
-    Everything else (ints, dicts without url, non-http schemes, etc.) is dropped.
-    """
-    normalized = _normalize_endpoints(raw)
-    kept = []
-    for e in normalized:
-        if not isinstance(e, dict):
-            continue
-        url = e.get("url")
-        if not isinstance(url, str):
-            continue
-        try:
-            parts = urllib.parse.urlsplit(url)
-        except (ValueError, TypeError):
-            continue
-        if parts.scheme not in ("http", "https"):
-            continue
-        if not parts.hostname:
-            continue
-        kept.append(e)
-    return kept
 
 
 # ---------------------------------------------------------------------------
