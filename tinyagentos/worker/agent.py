@@ -185,6 +185,7 @@ _DEFAULT_PROBE_CANDIDATES: tuple[tuple[str, str], ...] = (
     ("vllm", "http://localhost:18000"),           # TAOS-bundled vLLM (future)
     ("sd-cpp", "http://localhost:7864"),
     ("exo", "http://localhost:52415"),           # exo distributed inference (default port)
+    ("lmstudio", "http://localhost:1234"),       # LM Studio local server (default port)
     ("kokoro", "http://localhost:8880"),         # kokoro-fastapi TTS server
 )
 # moss (:30000) and whisper (:9000) deliberately have no default candidate.
@@ -203,10 +204,10 @@ _DEFAULT_PROBE_CANDIDATES: tuple[tuple[str, str], ...] = (
 # probed when the manifest or TAOS_EXTRA_BACKENDS configures them.
 _PROBEABLE_TYPES = frozenset({
     "rkllama", "ollama", "hailo-ollama", "llama-cpp", "llama-swap", "vllm", "exo", "mlx",
-    "sd-cpp", "whisper", "kokoro", "moss",
+    "sd-cpp", "lmstudio", "whisper", "kokoro", "moss",
 })
 # Types detected by /v1/models alone, which a llama-swap server also answers.
-_OPENAI_MODELS_TYPES = frozenset({"llama-cpp", "vllm", "exo", "mlx", "whisper", "kokoro", "moss"})
+_OPENAI_MODELS_TYPES = frozenset({"llama-cpp", "vllm", "exo", "mlx", "lmstudio", "whisper", "kokoro", "moss"})
 _MAX_EXTRA_BACKENDS = 16
 # Total time one candidate may take. httpx timeouts are per read, so a server
 # trickling bytes could otherwise hold the probe (and the heartbeat, which the

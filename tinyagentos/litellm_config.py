@@ -13,7 +13,14 @@ import logging
 
 import httpx
 
-from tinyagentos.providers import ALL_TYPES, BACKEND_TYPE_MAP, CHAT_BACKEND_TYPE_MAP, CLOUD_TYPES as CLOUD_BACKEND_TYPES, NEEDS_API_BASE_TYPES
+from tinyagentos.providers import (
+    ALL_TYPES,
+    BACKEND_TYPE_MAP,
+    CHAT_BACKEND_TYPE_MAP,
+    CLOUD_TYPES as CLOUD_BACKEND_TYPES,
+    NEEDS_API_BASE_TYPES,
+    inference_api_base,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -137,26 +144,31 @@ async def _discover_openai_compatible_backends_concurrent(
     """
     import asyncio
 
-    openai_urls = [
-        b.get("url", "").rstrip("/")
+    probes = [
+        (b.get("url", "").rstrip("/"), b.get("type"))
         for b in backends
         if (b.get("type") == "llama-cpp"
             or (b.get("type") == "lmstudio" and "lmstudio" in ALL_TYPES))
         and b.get("url")
     ]
-    if not openai_urls:
+    if not probes:
         return {}
     key_map = keys or {}
     results = await asyncio.gather(
         *(
-            asyncio.to_thread(_discover_openai_compatible_models, url, timeout, api_key=key_map.get(url))
-            for url in openai_urls
+            asyncio.to_thread(
+                _discover_openai_compatible_models,
+                inference_api_base(backend_type, url),
+                timeout,
+                api_key=key_map.get(url),
+            )
+            for url, backend_type in probes
         ),
         return_exceptions=True,
     )
     return {
         url: (res if isinstance(res, list) else [])
-        for url, res in zip(openai_urls, results)
+        for (url, _), res in zip(probes, results)
     }
 
 
@@ -268,9 +280,13 @@ def build_model_list(
             "model": f"{prefix}/{model_name}",
         }
 
-        # Set api_base for local/self-hosted backends and openai-compatible
+        # Set api_base for local/self-hosted backends and openai-compatible.
+        # ``inference_api_base`` adds any version prefix the backend's OpenAI
+        # surface requires (LM Studio serves under /v1); the worker's probe URL
+        # stays unversioned.
+        api_base = inference_api_base(backend_type, url)
         if backend_type in NEEDS_API_BASE_TYPES:
-            litellm_params["api_base"] = url
+            litellm_params["api_base"] = api_base
 
         # API key from secrets reference
         if backend.get("api_key_secret"):
@@ -296,11 +312,11 @@ def build_model_list(
                 }
                 # kilocode isn't a native LiteLLM provider — must set api_base
                 if backend_type == "kilocode":
-                    per_model_params["api_base"] = url
+                    per_model_params["api_base"] = api_base
                 elif url and backend_type not in ("openai",):
                     # For openrouter and other pass-through types, set api_base
                     # when an explicit url is provided
-                    per_model_params["api_base"] = url
+                    per_model_params["api_base"] = api_base
                 # API key resolution
                 if backend.get("api_key_secret"):
                     per_model_params["api_key"] = f"os.environ/{backend['api_key_secret']}"
@@ -343,13 +359,13 @@ def build_model_list(
                 # (multi-backend failover) and must NOT be skipped.
                 if any(
                     e.get("model_name") == manifest_id
-                    and e.get("litellm_params", {}).get("api_base") == url
+                    and e.get("litellm_params", {}).get("api_base") == api_base
                     for e in model_list
                 ):
                     continue
                 per_model_params: dict = {
                     "model": f"{prefix}/{manifest_id}",
-                    "api_base": url,
+                    "api_base": api_base,
                 }
                 if backend.get("api_key_secret"):
                     per_model_params["api_key"] = f"os.environ/{backend['api_key_secret']}"
@@ -412,7 +428,7 @@ def build_model_list(
                 # Authenticated probing (with api_key/api_key_secret) happens
                 # on the gateway request path via _discovered(); the config
                 # writer has no secrets store and calls this keyless probe.
-                _probed = _discover_openai_compatible_models(url) if discover else []
+                _probed = _discover_openai_compatible_models(inference_api_base(backend_type, url)) if discover else []
             if _probed:
                 embed_prefix = BACKEND_TYPE_MAP.get(backend_type, "openai")
                 for discovered_name in _probed:
@@ -420,7 +436,7 @@ def build_model_list(
                         continue
                     embed_params = {
                         "model": f"{embed_prefix}/{discovered_name}",
-                        "api_base": url,
+                        "api_base": inference_api_base(backend_type, url),
                     }
                     # API key from secrets reference (same precedence as the
                     # chat entry: api_key_secret first, else api_key), so a

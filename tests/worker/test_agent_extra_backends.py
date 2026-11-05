@@ -118,7 +118,7 @@ def test_parses_pairs_normalising_case_space_and_trailing_slash():
     "ollama", "=http://127.0.0.1:1", "ollama=", "ollama=http://127.0.0.1:abc",
     "openai=http://127.0.0.1:1234",    # cloud type, not a local probeable server
     "comfyui=http://127.0.0.1:8188",   # serves none of the probed paths
-    "lmstudio=http://127.0.0.1:1234",  # not in the catalog
+    "iopaint=http://127.0.0.1:8080",   # in the catalog, but not a probed server type
 ])
 def test_bad_entry_skipped_and_warned_once(entry, caplog):
     caplog.set_level(logging.WARNING)
