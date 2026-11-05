@@ -9,9 +9,12 @@ bridge and asserts the retry contract:
   * other 4xx (e.g. 400) -> no retry, treated as failure.
   * httpx.TransportError -> retried; exhausting all attempts fails.
 
-The compact variants (pocketflow, smolagents, openai-agents-sdk,
-openai_agents_sdk) return None on both success and failure today, so the
-contract we assert there is the POST count, not the return value.
+All nine bridges return True on a 2xx reply and False on every failure
+path (non-retryable 4xx, exhausted retries, TransportError, other
+Exception). The compact variants (pocketflow, smolagents,
+openai-agents-sdk, openai_agents_sdk) used to end both except blocks
+with a bare return (None); this module now asserts the bool contract
+for every bridge.
 
 Additional tests:
   * deer-flow: back-pressure at _PENDING_CAP waits for a slot instead of
@@ -84,13 +87,13 @@ def bridge(request):
 
 @pytest.mark.parametrize("script", BRIDGES, ids=lambda s: s.replace(".sh", ""))
 def test_bridge_python_compiles(script):
-    with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
-        f.write(_extract(script))
-        tmp = f.name
-    try:
-        py_compile.compile(tmp, doraise=True)
-    finally:
-        Path(tmp).unlink()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir) / "bridge.py"
+        tmp.write_text(_extract(script))
+        try:
+            py_compile.compile(tmp, cfile=Path(tmpdir) / "bridge.pyc", doraise=True)
+        finally:
+            tmp.unlink()
 
 
 # -- retry contract ------------------------------------------------------------
@@ -105,6 +108,7 @@ class TestPostReplyRetry:
             result = asyncio.run(post_reply(client, "http://x/reply", "tok", "m1", "t1", "hi"))
 
         assert client.post.call_count == 2
+        assert result is True
 
     def test_400_is_not_retried(self, bridge):
         post_reply = bridge["post_reply"]
@@ -116,6 +120,7 @@ class TestPostReplyRetry:
 
         assert client.post.call_count == 1
         mock_sleep.assert_not_called()
+        assert result is False
 
     def test_transport_error_exhausts_retries(self, bridge):
         post_reply = bridge["post_reply"]
@@ -126,6 +131,7 @@ class TestPostReplyRetry:
             result = asyncio.run(post_reply(client, "http://x/reply", "tok", "m1", "t1", "hi"))
 
         assert client.post.call_count == 3
+        assert result is False
 
     def test_429_is_retried(self, bridge):
         post_reply = bridge["post_reply"]
@@ -136,6 +142,7 @@ class TestPostReplyRetry:
             result = asyncio.run(post_reply(client, "http://x/reply", "tok", "m1", "t1", "hi"))
 
         assert client.post.call_count == 2
+        assert result is True
 
 
 # -- deer-flow back-pressure ----------------------------------------------------
@@ -307,8 +314,8 @@ class TestPostReplyNonTransportError:
         with patch("asyncio.sleep", new_callable=AsyncMock):
             result = asyncio.run(post_reply(client, "http://x/reply", "tok", "m1", "t1", "hi"))
 
-        # Should return False (or None for compact bridges)
-        assert result is False or result is None
+        # Should return False and log 'reply POST failed'
+        assert result is False
 
         # Should log 'reply POST failed'
         fail_logs = [r for r in caplog.records if "reply POST failed" in r.getMessage()]
@@ -326,7 +333,7 @@ class TestPostReplyNonTransportError:
         with patch("asyncio.sleep", new_callable=AsyncMock):
             result = asyncio.run(post_reply(client, "http://x/reply", "tok", "m1", "t1", "hi"))
 
-        assert result is False or result is None
+        assert result is False
 
         fail_logs = [r for r in caplog.records if "reply POST failed" in r.getMessage()]
         assert len(fail_logs) >= 1, f"Expected 'reply POST failed' log, got: {[r.getMessage() for r in caplog.records]}"
