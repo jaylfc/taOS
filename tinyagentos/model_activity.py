@@ -7,9 +7,9 @@ are fanned out to SSE subscribers so the Activity app can show a live feed.
 
 Wiring status: the gateway hooks fire on every proxied request.  The scheduler
 hooks fire for any ``CoreAwareModelScheduler`` constructed with this feed
-(``activity_feed=...`` or ``set_activity_feed(...)``); nothing in
-``create_app`` constructs one yet, so that half stays quiet until the Phase-1.5
-sequential-loading wiring (#172) lands.  Both halves are covered by
+(``activity_feed=...`` or ``set_activity_feed(...)``); ``create_app``
+constructs one for the idle-TTL sweep, and the load/evict half of that wiring
+follows with the Phase-1.5 sequential-loading work (#172).  Both halves are covered by
 ``tests/test_model_activity.py``.
 
 Event vocabulary (stable -- the desktop feed and any consumer switch on these
