@@ -500,6 +500,14 @@ class BridgeSessionRegistry:
                     await self._chat_messages.update_state(existing_id, "complete")
                     if validated_blocks is not None:
                         await self._chat_messages.extend_content_blocks(existing_id, validated_blocks)
+                    existing_meta = existing_msg.get("metadata") or {}
+                    if not isinstance(existing_meta, dict):
+                        existing_meta = {}
+                    existing_meta["openclaw_msg_id"] = reply_id or msg_id
+                    existing_meta.setdefault("trace_id", trace_id)
+                    setter = getattr(self._chat_messages, "set_metadata", None)
+                    if setter is not None:
+                        await setter(existing_id, existing_meta)
                 session.pending_hops.pop(trace_id, None)
                 if self._chat_channels and channel_id:
                     await self._chat_channels.update_last_message_at(channel_id)
@@ -529,6 +537,15 @@ class BridgeSessionRegistry:
                         validated_blocks_for_broadcast = merged
                     else:
                         validated_blocks_for_broadcast = None
+                    pending = await self._chat_messages.get_message(pending_msg_id)
+                    pending_meta = (pending or {}).get("metadata") or {}
+                    if not isinstance(pending_meta, dict):
+                        pending_meta = {}
+                    pending_meta["openclaw_msg_id"] = reply_id or msg_id
+                    pending_meta.setdefault("trace_id", trace_id)
+                    setter = getattr(self._chat_messages, "set_metadata", None)
+                    if setter is not None:
+                        await setter(pending_msg_id, pending_meta)
                     session.pending_hops.pop(trace_id, None)
                     if self._chat_hub:
                         # Broadcast message_edit with content and optionally content_blocks
@@ -559,7 +576,7 @@ class BridgeSessionRegistry:
                         content=final_content,
                         state="complete",
                         content_blocks=validated_blocks,  # passes None or list, which send_message handles
-                        metadata={"trace_id": trace_id, "openclaw_msg_id": msg_id, "hops_since_user": _final_hops},
+                        metadata={"trace_id": trace_id, "openclaw_msg_id": reply_id or msg_id, "hops_since_user": _final_hops},
                     )
                     await self._chat_channels.update_last_message_at(channel_id)
                     if self._chat_hub:

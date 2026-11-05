@@ -60,6 +60,10 @@ class _FakeStore:
                 return m
         return None
 
+    async def set_metadata(self, message_id: str, metadata: dict) -> None:
+        if message_id in self.messages:
+            self.messages[message_id]["metadata"] = metadata
+
 
 class _FakeChannelStore:
     def __init__(self, channels=None, fail_update_after=999):
