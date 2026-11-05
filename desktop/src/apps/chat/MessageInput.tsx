@@ -20,7 +20,7 @@ import { resolveAgentEmoji } from "@/lib/agent-emoji";
 import { MessageAvatar } from "./MessageAvatar";
 import { SlashMenu, type SlashCommandsBySlug } from "./SlashMenu";
 import { AttachmentsBar, type PendingAttachment } from "./AttachmentsBar";
-import type { Channel, LiveAgent } from "./types";
+import type { Channel, LiveAgent, ArchivedAgentEntry } from "./types";
 import { describeChannelParty } from "./channel-party";
 
 export interface MessageInputProps {
@@ -68,6 +68,7 @@ export interface MessageInputProps {
 
   /* ---- mobile context row (all optional; only used when isMobile) ---- */
   liveAgents?: LiveAgent[];
+  archivedAgents?: ArchivedAgentEntry[];
   onOpenSettings?: () => void;
   onToggleAllThreads?: () => void;
   onToggleSearch?: () => void;
@@ -103,6 +104,7 @@ export function MessageInput({
   onSlashClose,
   onPaste,
   liveAgents,
+  archivedAgents,
   onOpenSettings,
   onToggleAllThreads,
   onToggleSearch,
@@ -204,7 +206,7 @@ export function MessageInput({
   );
 
   if (isMobile) {
-    const party = describeChannelParty(channel, liveAgents, "runtime");
+    const party = describeChannelParty(channel, liveAgents, "runtime", archivedAgents);
     const hasContent = value.trim().length > 0 || pendingAttachments.length > 0;
     const hasFailedAttachment = pendingAttachments.some((a) => a.error);
     const canSend = !isArchived && hasContent && !pendingAttachments.some((a) => a.uploading) && !hasFailedAttachment;

@@ -58,10 +58,22 @@ vi.mock("../chat/MessageList", () => ({
 }));
 
 vi.mock("../chat/MessageInput", () => ({
-  MessageInput: ({ onToggleSearch, onTogglePinned }: { onToggleSearch?: () => void; onTogglePinned?: () => void }) => (
+  MessageInput: ({
+    onToggleSearch,
+    onTogglePinned,
+    onSend,
+    onFileUpload,
+  }: {
+    onToggleSearch?: () => void;
+    onTogglePinned?: () => void;
+    onSend?: () => void;
+    onFileUpload?: () => void;
+  }) => (
     <div data-testid="message-input">
       <button type="button" onClick={onToggleSearch}>mock-search</button>
       <button type="button" onClick={onTogglePinned}>mock-pinned</button>
+      <button type="button" onClick={onFileUpload}>mock-upload</button>
+      <button type="button" onClick={onSend}>mock-send</button>
     </div>
   ),
 }));
@@ -84,9 +96,16 @@ vi.mock("@/lib/api", () => ({
   uploadFileAttachment: vi.fn(),
 }));
 
+vi.mock("@/shell/file-picker-api", () => ({
+  openFilePicker: vi.fn().mockResolvedValue([
+    { source: "disk", file: new File([], "a.png") },
+  ]),
+}));
+
 vi.mock("../MessagesApp.stallWatch", () => ({
   useStallWatch: () => ({ stallInfo: null }),
   computeStallInfo: () => null,
+  pickWatchAgent: vi.fn(),
 }));
 
 vi.mock("../MessagesApp.a2aSelection", () => ({
@@ -110,6 +129,7 @@ vi.mock("../chat/ChannelSidebar", () => ({
       data-agent-roster-ready={String(agentRosterReady)}
     >
       <button type="button" onClick={() => onSelectChannel?.("ch-g")}>open-group</button>
+      <button type="button" onClick={() => onSelectChannel?.("ch-dm")}>open-archived-dm</button>
     </div>
   ),
 }));
@@ -394,5 +414,143 @@ describe("MessagesApp fetchAgentLists - archived fetch failure", () => {
       const sidebar = screen.getByTestId("channel-sidebar");
       expect(sidebar.getAttribute("data-agent-roster-ready")).toBe("true");
     });
+  });
+});
+
+describe("MessagesApp mobile archived DM header", () => {
+  let originalFetch: typeof global.fetch;
+
+  beforeEach(() => {
+    (useIsMobile as ReturnType<typeof vi.fn>).mockReset();
+    (useIsMobile as ReturnType<typeof vi.fn>).mockReturnValue(true);
+    originalFetch = global.fetch;
+    global.fetch = vi.fn().mockImplementation((url: string) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      const ok = (body: unknown) =>
+        Promise.resolve({
+          ok: true,
+          headers: { get: () => "application/json" },
+          json: () => Promise.resolve(body),
+        } as unknown as Response);
+      if (urlStr.includes("/api/chat/channels") && !urlStr.includes("/messages")) {
+        return ok({
+          channels: [
+            {
+              id: "ch-dm",
+              name: "old-bot",
+              type: "dm",
+              members: ["user", "old-bot"],
+              settings: { archived_agent_id: "a1", archived: true },
+            },
+          ],
+          unread: {},
+        });
+      }
+      if (urlStr.includes("/api/chat/unread")) return ok({ unread: {} });
+      if (urlStr.includes("/api/agents?include_guests=1")) return ok([]);
+      if (urlStr.includes("/api/agents/archived")) {
+        return ok([
+          { id: "a1", archived_slug: "old-bot-x", original: { name: "old-bot", display_name: "Old Bot" } },
+        ]);
+      }
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        headers: { get: () => "application/json" },
+        json: () => Promise.resolve({}),
+      } as unknown as Response);
+    });
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it("shows 'Archived agent' subtitle for an archived DM", async () => {
+    render(<MessagesApp windowId="test" />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "open-archived-dm" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "open-archived-dm" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Back to chats" })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("banner")).toHaveTextContent("Old Bot"));
+    await waitFor(() => expect(screen.getByRole("banner")).toHaveTextContent("Archived agent"));
+  });
+});
+
+describe("MessagesApp mobile sendError clearing", () => {
+  let originalFetch: typeof global.fetch;
+
+  beforeEach(() => {
+    (useIsMobile as ReturnType<typeof vi.fn>).mockReset();
+    (useIsMobile as ReturnType<typeof vi.fn>).mockReturnValue(true);
+    let messagePosts = 0;
+    originalFetch = global.fetch;
+    global.fetch = vi.fn().mockImplementation((url: string) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      const ok = (body: unknown) =>
+        Promise.resolve({
+          ok: true,
+          headers: { get: () => "application/json" },
+          json: () => Promise.resolve(body),
+        } as unknown as Response);
+      if (urlStr.includes("/api/chat/channels") && !urlStr.includes("/messages")) {
+        return ok({
+          channels: [
+            { id: "ch-g", name: "design", type: "group", members: ["user", "tom", "lin"] },
+          ],
+          unread: {},
+        });
+      }
+      if (urlStr.includes("/api/chat/unread")) return ok({ unread: {} });
+      if (urlStr.includes("/api/agents?include_guests=1")) return ok([]);
+      if (urlStr.includes("/api/agents/archived")) return ok([]);
+      if (urlStr.includes("/api/chat/upload"))
+        return ok({ filename: "a.png", mime_type: "image/png", size: 1, url: "http://localhost/a.png" });
+      if (urlStr.includes("/api/chat/messages")) {
+        messagePosts += 1;
+        // First attachment POST fails (an earlier error is on screen), the
+        // retry succeeds -- the success path must clear sendError.
+        if (messagePosts === 1) {
+          return Promise.resolve({
+            ok: false,
+            status: 400,
+            headers: { get: () => "application/json" },
+            json: () => Promise.resolve({ error: "couldn't send message" }),
+          } as unknown as Response);
+        }
+        return ok({});
+      }
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        headers: { get: () => "application/json" },
+        json: () => Promise.resolve({}),
+      } as unknown as Response);
+    });
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it("clears sendError after a successful attachment send", async () => {
+    render(<MessagesApp windowId="test" />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "open-group" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "open-group" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Back to chats" })).toBeInTheDocument());
+
+    // Add a completed attachment so the attachment POST path is taken.
+    fireEvent.click(screen.getByRole("button", { name: "mock-upload" }));
+    await waitFor(() =>
+      expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/api/chat/upload"), expect.anything()),
+    );
+    await waitFor(() => true); // flush the completed upload into the committed render
+
+    // First attachment send fails -> an error is on screen.
+    fireEvent.click(screen.getByRole("button", { name: "mock-send" }));
+    await waitFor(() => expect(screen.getByText(/couldn't send message/)).toBeInTheDocument());
+
+    // Retry: the attachment POST succeeds and the error is cleared.
+    fireEvent.click(screen.getByRole("button", { name: "mock-send" }));
+    await waitFor(() => expect(screen.queryByText(/couldn't send message/)).toBeNull());
   });
 });

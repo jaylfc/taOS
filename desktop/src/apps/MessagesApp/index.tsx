@@ -1827,6 +1827,7 @@ export function MessagesApp({
         if (selectedChannel) saveDraft(selectedChannel, "");
         setNewDividerAtId(null);
         setPendingAttachments([]);
+        setSendError(null);
         if (inputRef.current) inputRef.current.style.height = "auto";
         autoScrollRef.current = true;
         armResponseWatch(text);
@@ -2356,16 +2357,10 @@ export function MessagesApp({
             <h1 className="text-[16px] font-semibold leading-tight truncate text-shell-text">
               {mobileParty.title || currentChannel?.name || ""}
             </h1>
-            {mobileParty.kind === "group" ? (
-              mobileParty.subtitle && (
-                <div className="text-[12px] leading-tight truncate text-shell-text-tertiary">
-                  {mobileParty.subtitle}
-                </div>
-              )
-            ) : (
-              mobileParty.kind === "agent" && (
-                <div className="text-[12px] leading-tight truncate text-shell-text-tertiary">Agent</div>
-              )
+            {(mobileParty.kind === "group" || mobileParty.kind === "agent") && mobileParty.subtitle && (
+              <div className="text-[12px] leading-tight truncate text-shell-text-tertiary">
+                {mobileParty.subtitle}
+              </div>
             )}
           </div>
         </header>
@@ -2630,6 +2625,7 @@ className="shrink-0 p-0.5 rounded hover:bg-shell-surface-active transition-color
             }}
             onFileUpload={handleFileUpload}
             liveAgents={liveAgents}
+            archivedAgents={archivedAgents}
             onOpenSettings={handleOpenSettings}
             onToggleAllThreads={() => {
               if (showAllThreads) { setShowAllThreads(false); }

@@ -519,6 +519,20 @@ describe("MessageInput", () => {
       expect(screen.getByText("Agent")).toBeInTheDocument();
     });
 
+    it("for an archived agent DM shows the archived party title and subtitle", () => {
+      const dm: Channel = { id: "d", name: "old-bot", type: "dm", members: ["user", "old-bot"] };
+      render(
+        <MessageInput
+          {...mobile({
+            channel: dm,
+            archivedAgents: [{ id: "a1", archived_slug: "old-bot-x", original: { name: "old-bot", display_name: "Old Bot" } }],
+          })}
+        />,
+      );
+      expect(screen.getByText("Old Bot")).toBeInTheDocument();
+      expect(screen.getByText("Archived agent")).toBeInTheDocument();
+    });
+
     it("keeps the desktop composer unchanged", () => {
       render(<MessageInput {...defaultProps()} />);
       expect(screen.queryByTestId("mobile-composer")).not.toBeInTheDocument();

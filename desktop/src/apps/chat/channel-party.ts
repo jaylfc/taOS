@@ -38,7 +38,10 @@ export function describeChannelParty(
       };
     }
     const archived = archivedAgents.find(
-      (a) => a.archived_slug === other || a.original?.name === other,
+      (a) =>
+        (channel?.settings?.archived_agent_id && a.id === channel.settings.archived_agent_id) ||
+        a.archived_slug === other ||
+        a.original?.name === other,
     );
     if (archived) {
       return {
