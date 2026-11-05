@@ -1,0 +1,2 @@
+### Fixed
+- A revoked peer link can no longer be restored by the revoked peer sending a fresh handshake. The handshake is now refused with 403 "peer link revoked" unless the owner has re-initiated a friend request (REL_REQUEST_OUT edge) after the revocation.

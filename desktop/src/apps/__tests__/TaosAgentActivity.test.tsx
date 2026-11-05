@@ -1,5 +1,5 @@
 /**
- * TaosAgentActivity: the Settings > taOS agent > Activity list (tsk-jku5a5).
+ * TaosAgentActivity: the Settings > taOS Agent > Activity list (tsk-jku5a5).
  * Reads the taos-agent trace's external_write and local_fix rows.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -39,7 +39,7 @@ describe("<TaosAgentActivity />", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(<TaosAgentActivity />);
 
-    const list = await screen.findByRole("list", { name: "taOS agent activity" });
+    const list = await screen.findByRole("list", { name: "taOS Agent activity" });
     const items = within(list).getAllByRole("listitem");
     expect(items).toHaveLength(2);
     expect(items[0]).toHaveTextContent("Open a pull request (done)");
@@ -65,7 +65,7 @@ describe("<TaosAgentActivity />", () => {
     const evil = { ...EXECUTED, payload: { ...EXECUTED.payload, url: "javascript:alert(1)" } };
     vi.stubGlobal("fetch", mockFetch({ external_write: [evil] }));
     render(<TaosAgentActivity />);
-    const list = await screen.findByRole("list", { name: "taOS agent activity" });
+    const list = await screen.findByRole("list", { name: "taOS Agent activity" });
     expect(within(list).queryByRole("link")).toBeNull();
   });
 

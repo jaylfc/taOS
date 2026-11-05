@@ -940,6 +940,13 @@ against the operator's visible project list and lets the operator confirm or
 correct the binding before minting -- so an unapproved or unseen project id is
 never trusted as a grant target.
 
+Because its text names the requested project, that notification (and the one an
+invite redeem raises in manual mode) is added once per admin user, never as a
+broadcast row every user reads; only an admin can approve it. Task lifecycle
+notifications (`task.claimed`, `task.closed`, `task.reopened`,
+`task.unquarantined`) name the task and project the same way, so they go only to
+the project's owner and each admin.
+
 ## Console-only PIN sign-in (third passthrough, narrowest)
 
 A touchscreen device with no keyboard could not sign in at all, so a PIN is an
@@ -2828,6 +2835,8 @@ credential and mints a fresh one.
 ## Peer handshake (friend-accept)
 
 The private/CGNAT endpoint allowance comes from endpoints the OTHER side supplies (directory response or handshake body), so a friend can make this node POST to a private host:port on the fixed handshake/inbox paths; loopback, link-local and metadata addresses stay blocked.
+
+A revoked peer link (paused via the per-contact kill switch) cannot be restored by the revoked peer alone. The handshake is refused with 403 "peer link revoked" unless the owner has re-initiated a friend request (REL_REQUEST_OUT edge) after the revocation. This ensures only the owner can resume a paused connection.
 
 ## Collaboration kill switch (`/api/settings/collaboration`, admin-only)
 

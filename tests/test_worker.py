@@ -763,6 +763,80 @@ class TestDetectBackends:
         name2 = f"{backend_type}:{port2}" if port2 is not None else backend_type
         assert name2 == "ollama:11434"
 
+    async def test_default_kokoro_voices_404_not_recorded(self):
+        """The DEFAULT kokoro candidate is skipped silently when its
+        /v1/audio/voices returns anything but 200-with-a-voices-list,
+        even though kokoro is in _OPENAI_MODELS_TYPES and /v1/models
+        would otherwise make it look like a healthy kokoro backend."""
+        agent = WorkerAgent("http://localhost:6969")
+        voices_resp = MagicMock()
+        voices_resp.status_code = 404
+        models_resp = MagicMock()
+        models_resp.status_code = 200
+        models_resp.json.return_value = {
+            "data": [{"id": "kokoro-model", "object": "model", "created": 1234567890}],
+            "object": "list",
+        }
+
+        with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+
+            async def mock_get(url):
+                if "8880" in url:
+                    if "/v1/audio/voices" in url:
+                        return voices_resp
+                    if "/v1/models" in url:
+                        return models_resp
+                raise Exception("not running")
+
+            mock_client.get = AsyncMock(side_effect=mock_get)
+            mock_client_cls.return_value = mock_client
+
+            backends = await agent.detect_backends()
+
+        assert backends == []
+
+    async def test_default_kokoro_voices_list_recorded_with_tts(self):
+        """The DEFAULT kokoro candidate is recorded (with capability tts)
+        when /v1/audio/voices returns 200 and a 'voices' list."""
+        agent = WorkerAgent("http://localhost:6969")
+        voices_resp = MagicMock()
+        voices_resp.status_code = 200
+        voices_resp.json.return_value = {"voices": ["af_bella"]}
+        models_resp = MagicMock()
+        models_resp.status_code = 200
+        models_resp.json.return_value = {
+            "data": [{"id": "kokoro-model", "object": "model", "created": 1234567890}],
+            "object": "list",
+        }
+
+        with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+
+            async def mock_get(url):
+                if "8880" in url:
+                    if "/v1/audio/voices" in url:
+                        return voices_resp
+                    if "/v1/models" in url:
+                        return models_resp
+                raise Exception("not running")
+
+            mock_client.get = AsyncMock(side_effect=mock_get)
+            mock_client_cls.return_value = mock_client
+
+            backends = await agent.detect_backends()
+
+        kokoro = [b for b in backends if b["type"] == "kokoro"]
+        assert len(kokoro) == 1
+        assert kokoro[0]["url"] == "http://localhost:8880"
+        assert kokoro[0]["name"] == "kokoro:8880"
+        assert kokoro[0]["capabilities"] == ["tts"]
+        assert kokoro[0]["models"] == [{"name": "kokoro-model", "size_mb": 0}]
+
     async def test_llama_swap_on_kokoro_port_is_not_double_reported(self):
         """Test that a llama-swap on kokoro's default port (8880) is not
         double-reported as a kokoro backend, because kokoro is in
@@ -818,6 +892,107 @@ class TestDetectBackends:
         # The llama-swap should have the kokoro model from /v1/models
         assert len(backends[0]["models"]) == 1
         assert backends[0]["models"][0]["name"] == "kokoro-model"
+
+    async def test_default_kokoro_voices_ok_models_error_returns_none(self):
+        """Default kokoro candidate with /v1/audio/voices 200 but /v1/models
+        raising (connection error or malformed JSON) must not raise and must
+        produce no kokoro entry (treated as down)."""
+        import httpx
+        agent = WorkerAgent("http://localhost:6969")
+        voices_resp = MagicMock()
+        voices_resp.status_code = 200
+        voices_resp.json.return_value = {"voices": []}
+
+        with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+
+            async def mock_get(url):
+                if "8880" in url:
+                    if "/v1/audio/voices" in url:
+                        return voices_resp
+                    if "/v1/models" in url:
+                        raise httpx.ConnectError("connection refused")
+                raise Exception("not running")
+
+            mock_client.get = AsyncMock(side_effect=mock_get)
+            mock_client_cls.return_value = mock_client
+
+            backends = await agent.detect_backends()
+
+        assert backends == []
+
+    async def test_default_kokoro_voices_ok_models_non_json_returns_none(self):
+        """Default kokoro candidate with /v1/audio/voices 200 but /v1/models
+        returning non-JSON body must not raise and must produce no kokoro entry."""
+        agent = WorkerAgent("http://localhost:6969")
+        voices_resp = MagicMock()
+        voices_resp.status_code = 200
+        voices_resp.json.return_value = {"voices": []}
+        models_resp = MagicMock()
+        models_resp.status_code = 200
+        models_resp.json.side_effect = ValueError("not json")
+
+        with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+
+            async def mock_get(url):
+                if "8880" in url:
+                    if "/v1/audio/voices" in url:
+                        return voices_resp
+                    if "/v1/models" in url:
+                        return models_resp
+                raise Exception("not running")
+
+            mock_client.get = AsyncMock(side_effect=mock_get)
+            mock_client_cls.return_value = mock_client
+
+            backends = await agent.detect_backends()
+
+        assert backends == []
+
+    async def test_configured_kokoro_at_default_url_gets_generic_probe(self):
+        """A kokoro configured via TAOS_EXTRA_BACKENDS at the default :8880 URL
+        must use the generic /v1/models probe (not the voices check) and be
+        included when /v1/models returns a model."""
+        agent = WorkerAgent("http://localhost:6969")
+        voices_resp = MagicMock()
+        voices_resp.status_code = 404
+        models_resp = MagicMock()
+        models_resp.status_code = 200
+        models_resp.json.return_value = {
+            "data": [{"id": "kokoro-model", "object": "model", "created": 1234567890}],
+            "object": "list",
+        }
+
+        with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+
+            async def mock_get(url):
+                if "8880" in url:
+                    if "/v1/audio/voices" in url:
+                        return voices_resp
+                    if "/v1/models" in url:
+                        return models_resp
+                raise Exception("not running")
+
+            mock_client.get = AsyncMock(side_effect=mock_get)
+            mock_client_cls.return_value = mock_client
+
+            with patch("os.environ.get", return_value="kokoro=http://localhost:8880"):
+                backends = await agent.detect_backends()
+
+        kokoro = [b for b in backends if b["type"] == "kokoro"]
+        assert len(kokoro) == 1
+        assert kokoro[0]["url"] == "http://localhost:8880"
+        assert kokoro[0]["name"] == "kokoro:8880"
+        assert kokoro[0]["capabilities"] == ["tts"]
+        assert kokoro[0]["models"] == [{"name": "kokoro-model", "size_mb": 0}]
 
 
 # ---------------------------------------------------------------------------

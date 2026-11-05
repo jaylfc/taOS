@@ -1,6 +1,7 @@
 from __future__ import annotations
 import logging
 import httpx
+from fastapi import HTTPException
 from tinyagentos.cluster.manager import ClusterManager
 from tinyagentos.cluster.placement import rank as _placement_rank
 
@@ -31,7 +32,18 @@ class TaskRouter:
         When affinity_key is provided, workers are ordered by rendezvous hash
         first, then overflowed workers (load >= OVERFLOW_LOAD) are moved to
         the end so a lightly loaded non-affinity worker is preferred.
+
+        A capability of 'tts' is refused up front: kokoro answers binary
+        audio, so resp.json() would raise and the worker would be counted as
+        failed against the circuit breaker for a perfectly working backend.
+        Callers must call a kokoro worker directly instead.
         """
+        if capability == "tts":
+            raise HTTPException(
+                status_code=503,
+                detail="tts returns binary audio; call the worker directly",
+            )
+
         workers = self.cluster.get_workers_for_capability(capability)
         ft = self.cluster.failure_tracker  # may be None (tests without tracker)
 

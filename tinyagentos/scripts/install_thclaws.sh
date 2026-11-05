@@ -247,18 +247,31 @@ async def post_reply(client: httpx.AsyncClient, reply_url: str, token: str,
                      msg_id: str, trace_id: str, content: str, cid=None) -> bool:
     body = {"kind": "final", "id": msg_id, "trace_id": trace_id, "content": content}
     if cid: body["channel_id"] = cid
-    try:
-        resp = await client.post(reply_url, json=body,
-                                  headers={"Content-Type": "application/json",
-                                           "Authorization": f"Bearer {token}"},
-                                  timeout=30)
-        if resp.status_code >= 400:
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            resp = await client.post(reply_url, json=body, headers=headers, timeout=30)
+            if 200 <= resp.status_code < 300:
+                return True
+            if (resp.status_code == 429 or 500 <= resp.status_code < 600) and attempt < MAX_RETRIES:
+                log.warning("reply POST %s (attempt %d/%d), retry in %.1fs",
+                            resp.status_code, attempt, MAX_RETRIES, 1.0 * attempt)
+                await asyncio.sleep(1.0 * attempt)
+                continue
             log.warning("reply POST %s: %s", resp.status_code, resp.text[:300])
             return False
-        return True
-    except Exception as e:
-        log.warning("reply POST failed: %s", e)
-        return False
+        except httpx.TransportError as e:
+            if attempt < MAX_RETRIES:
+                log.warning("reply POST error %s (attempt %d/%d), retry in %.1fs",
+                            e, attempt, MAX_RETRIES, 1.0 * attempt)
+                await asyncio.sleep(1.0 * attempt)
+                continue
+            log.warning("reply POST failed: %s", e)
+            return False
+        except Exception as e:
+            log.warning("reply POST failed: %s", e)
+            return False
+    return False
 
 
 async def handle_user_message(client: httpx.AsyncClient, evt: dict, channel: dict,

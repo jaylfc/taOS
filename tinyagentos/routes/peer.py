@@ -317,6 +317,11 @@ async def peer_handshake(body: PeerEnvelope, request: Request):
             headers=retry_after_headers(_handshake_limiter.retry_after(fp)),
         )
 
+    existing = await store.get_peer_link(contact_id)
+    if existing is not None and existing.get("revoked_at") is not None:
+        if not await hub.has_edge(fp, relationships.REL_REQUEST_OUT):
+            raise HTTPException(status_code=403, detail="peer link revoked")
+
     if not await store.record_nonce(envelope["nonce"], contact_id, "handshake"):
         raise HTTPException(status_code=409, detail="nonce replay detected")
 
@@ -336,7 +341,6 @@ async def peer_handshake(body: PeerEnvelope, request: Request):
     # endpoints.  A repeat handshake must not allow the sender to rewrite the
     # SSRF allowance.  Only on first handshake do we accept endpoints from the
     # envelope, and even then only valid http/https entries with a hostname.
-    existing = await store.get_peer_link(contact_id)
     if existing is not None:
         endpoints = existing.get("endpoints") or []
     else:
