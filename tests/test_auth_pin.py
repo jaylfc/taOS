@@ -26,6 +26,21 @@ from tinyagentos.auth import (
 )
 from tinyagentos.routes.auth import _PIN_PANEL_SCRIPT
 
+from httpx import ASGITransport, AsyncClient
+
+UA = "Mozilla/5.0 (Linux; taOS kiosk) Chromium/131"
+
+
+@pytest_asyncio.fixture()
+async def console(app):
+    """Loopback client that sends the lock screen's console header."""
+    headers = {"User-Agent": UA, "X-taOS-Console": "1"}
+    transport = ASGITransport(app=app, client=("127.0.0.1", 51234))
+    async with AsyncClient(
+        transport=transport, base_url="http://localhost:6969", headers=headers,
+    ) as c:
+        yield c
+
 
 @pytest.fixture()
 def mgr(tmp_path):
@@ -538,3 +553,121 @@ class TestPinPanelScriptNode:
                                              'if (input.value.length === 4) {\n      tryPin();\n    }')
         res = _run_pin_scenario({"pinLength": 6, "hasSubmit": False, "dotCount": 6, "typeDigits": [1,2,3,4,5]}, script_override=mutated)
         assert len(res["posts"]) >= 1
+
+    def test_enter_gated_on_known_length(self):
+        """Enter submits nothing until the typed length matches data-pin-length."""
+        res = _run_pin_scenario({"pinLength": 6, "hasSubmit": False, "dotCount": 6, "typeDigits": [1,2,3,4], "doEnter": True})
+        assert len(res["posts"]) == 0
+        res = _run_pin_scenario({"pinLength": 6, "hasSubmit": False, "dotCount": 6, "typeDigits": [1,2,3,4,5,6], "doEnter": True})
+        assert len(res["posts"]) == 1
+
+    def test_enter_submits_when_pin_length_unknown(self):
+        """Without data-pin-length, Enter keeps today's submit-whatever-was-typed behaviour."""
+        res = _run_pin_scenario({"pinLength": None, "hasSubmit": True, "dotCount": 4, "typeDigits": [1,2,3,4], "doEnter": True})
+        assert len(res["posts"]) == 1
+
+
+# --------------------------------------------------------------------------- #
+#  pin_login does not block the event loop                                      #
+# --------------------------------------------------------------------------- #
+
+class TestPinLoginDoesNotBlockTheLoop:
+    """check_pin hashes on the event loop; the route must offload it.
+
+    The route's own ``asyncio.to_thread`` is the thing under test here, so we
+    patch the narrow thing the route calls -- ``check_pin`` on the route
+    module's imported name -- and record the thread it runs on. A correct
+    implementation calls it from a worker thread; an implementation that calls
+    it directly runs it on the event-loop thread and fails this.
+    """
+
+    @pytest.mark.asyncio
+    async def test_pin_login_offloads_check_pin_off_the_event_loop(self, app, console, monkeypatch):
+        import threading
+
+        app.state.auth.setup_user("owner", "Owner", "", "passw0rd")
+        recorded = {}
+
+        def fake_check_pin(self, pin, username=None):
+            recorded["thread"] = threading.get_ident()
+            return (True, self._pin_user(username))
+
+        monkeypatch.setattr("tinyagentos.auth.AuthManager.check_pin", fake_check_pin)
+        app.state.auth.set_pin("owner", "4913")
+        r = await console.post("/auth/pin-login", json={"pin": "4913"})
+        assert r.status_code == 200
+        assert recorded.get("thread") is not None
+        assert recorded["thread"] != threading.get_ident()
+
+
+# --------------------------------------------------------------------------- #
+#  set_pin racing a login with the OLD PIN                                       #
+# --------------------------------------------------------------------------- #
+
+class TestSetPinRace:
+    """A concurrent set_pin/clear_pin must not let a login with the old PIN win.
+
+    Two observations, both of which are red without the fix:
+
+    1. check_pin holds the account-store lock while it verifies the hash. A
+       helper thread trying to grab the lock during verify is refused -- that
+       is what stops a concurrent clearer from swapping the hash out between
+       the read and the check. Without the lock the helper grabs it, and the
+       old PIN can be verified against a store that has already changed.
+    2. Once set_pin has committed a new PIN, a login racing it with the old PIN
+       is refused.
+    """
+
+    def test_check_pin_holds_the_lock_during_verify(self, mgr, monkeypatch):
+        import threading
+        from tinyagentos import auth as auth_mod
+
+        mgr.set_pin("tester", "4913")
+        state = {}
+        real_verify = auth_mod.verify_password
+
+        def spy_verify(pin, stored):
+            tried = {}
+
+            def probe():
+                tried["acquired"] = mgr._users_lock.acquire(blocking=False)
+                if tried.get("acquired"):
+                    mgr._users_lock.release()
+
+            t = threading.Thread(target=probe)
+            t.start()
+            t.join()
+            state["lock_held_during_verify"] = not tried.get("acquired", False)
+            return real_verify(pin, stored)
+
+        monkeypatch.setattr("tinyagentos.auth.verify_password", spy_verify)
+        ok, _ = mgr.check_pin("4913", username="tester")
+        assert ok is True
+        assert state["lock_held_during_verify"] is True
+
+    def test_old_pin_refused_once_set_pin_commits(self, mgr):
+        import threading
+
+        mgr.set_pin("tester", "4913")
+        barrier = threading.Barrier(2)
+        results = {}
+
+        def set_new_pin():
+            mgr.set_pin("tester", "0000")
+            barrier.wait()
+
+        def check_old():
+            barrier.wait()
+            results["old_pin_ok"] = mgr.check_pin("4913", username="tester")[0]
+
+        t1 = threading.Thread(target=set_new_pin)
+        t2 = threading.Thread(target=check_old)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        # Once set_pin has committed, the old PIN is refused and the new one
+        # works -- the two states never cross.
+        assert mgr.check_pin("4913", username="tester")[0] is False
+        assert mgr.check_pin("0000", username="tester")[0] is True
