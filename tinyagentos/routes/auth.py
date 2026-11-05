@@ -2590,7 +2590,7 @@ _PIN_PANEL_SCRIPT = r"""
     }).then(function (res) {
       busy = false;
       if (res.status === 200 && res.body && res.body.ok) {
-        window.location.assign(nextUrl);
+        window.location.replace(nextUrl);
         return;
       }
       // 404 means PIN sign-in is not available from here at all; say so plainly
@@ -4366,7 +4366,31 @@ _LOCK_SCREEN_SCRIPT = r"""
       });
 
       showView(VIEW_DEFAULT, false);
-    }
+
+      // The password path: add a pageshow listener for back/forward navigation.
+      // When the page is shown by a back/forward navigation (event.persisted,
+      // or performance.getEntriesByType("navigation")[0].type === "back_forward"),
+      // GET /auth/me with credentials. On 200 call window.location.replace(the
+      // same next url the page already uses); on anything else do nothing
+      // (the lock screen stays, which is correct when signed out). Never redirect
+      // on a normal load.
+      function handlePageshow(e) {
+        var navEntries = performance.getEntriesByType("navigation");
+        if (navEntries.length === 0 || navEntries[0].type !== "back_forward") {
+          if (!e || !e.persisted) return;
+        }
+        fetch("/auth/me", { credentials: "same-origin" })
+          .then(function (r) {
+            if (r.ok) {
+              // The page already uses this next url; replace to it.
+              var nextUrl = document.querySelector('#pw-panel input[name="next"]');
+              nextUrl = nextUrl ? nextUrl.value : "/desktop";
+              window.location.replace(nextUrl);
+            }
+          })
+          .catch(function () {});
+      }
+      window.addEventListener("pageshow", handlePageshow);
 
     var notifsEl = document.getElementById("ls-notifs");
     var NOTIF_GLYPHS = {
@@ -6677,7 +6701,7 @@ _LOCK_SCREEN_SCRIPT = r"""
         body: "{}"
       }).then(function (r) {
         swipeBusy = false;
-        if (r.ok) { window.location.assign(unlockNext()); return; }
+        window.location.replace(unlockNext()); return;
         // Refused (the server's answer wins over this page's attribute):
         // fall back to the password, never to nothing.
         openPasswordSheet(r.status === 429
