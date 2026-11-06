@@ -960,6 +960,32 @@ async def test_tools_and_tool_choice_converted_to_anthropic_shape(tmp_path_facto
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_image_url_parts_converted_to_anthropic_image_blocks(tmp_path_factory):
+    """OpenAI image_url parts become Anthropic image blocks: base64 for a data URL, url otherwise (#4198)."""
+    app, session = await _gateway_app(tmp_path_factory)
+    respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(
+        200, json=_anthropic_response(), headers={"content-type": "application/json"}
+    ))
+    body = {
+        "model": "claude-x",
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": "What is in these pictures?"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}},
+            {"type": "image_url", "image_url": {"url": "https://example.com/cat.jpg"}},
+        ]}],
+    }
+    resp = await _post(app, session, body)
+    assert resp.status_code == 200, resp.text
+    content = _upstream_json(respx.calls.last)["messages"][0]["content"]
+    assert content == [
+        {"type": "text", "text": "What is in these pictures?"},
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}},
+        {"type": "image", "source": {"type": "url", "url": "https://example.com/cat.jpg"}},
+    ]
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_tool_result_round_trip_in_anthropic_shape(tmp_path_factory):
     """A tool-result message becomes a user message with a tool_result block,
     and an assistant's tool_calls become tool_use blocks with parsed input."""
