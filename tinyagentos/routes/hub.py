@@ -289,7 +289,13 @@ async def _try_handshake(
                         "friend-accept handshake: set_contact_status blocked failed for %s",
                         contact_id,
                     )
-            return JSONResponse({"state": "rejected"}, status_code=403)
+            # The directory/local friendship was already accepted above; only the
+            # peer handshake was refused, so report acceptance with a refused
+            # handshake while leaving the link revoked.
+            return JSONResponse(
+                {"state": "accepted", "handshake": "refused", "peer": peer_fingerprint},
+                status_code=200,
+            )
         logger.info(
             "friend-accept handshake: contact=%s endpoints=%s",
             contact_id, endpoints,

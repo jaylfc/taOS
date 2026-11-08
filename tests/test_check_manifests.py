@@ -304,7 +304,7 @@ def test_fifteen_model_warns_capped(capsys) -> None:
     assert exit_code == 0  # exits 0 when warnings are non-fatal
 
     output = capsys.readouterr().err
-    assert "15 model manifests missing capability fields" in output
+    assert "15 model capability field warnings" in output
     # Count warn: lines - should be exactly 10
     warn_lines = [l for l in output.splitlines() if l.startswith("  warn:")]
     assert len(warn_lines) == 10, f"Expected 10 warn lines, got {len(warn_lines)}"

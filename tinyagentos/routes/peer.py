@@ -334,6 +334,15 @@ async def peer_handshake(body: PeerEnvelope, request: Request):
         restore_revoked_at=restore_revoked_at,
     )
     if not written:
+        # add_contact above commits the contact as active; a revoke that lands
+        # during the handshake leaves that row active for a revoked peer unless
+        # we restore the revoked status on the refused path.
+        try:
+            await store.set_contact_status(contact_id, "revoked")
+        except Exception:
+            logger.warning(
+                "peer handshake: set_contact_status revoked failed for %s", contact_id,
+            )
         raise HTTPException(status_code=403, detail="peer link revoked")
     if not await hub.has_edge(fp, relationships.REL_FRIEND):
         from tinyagentos.hub import identity
