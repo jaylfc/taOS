@@ -242,6 +242,32 @@ class TestProviderAPI:
         stored_entry = next(
             b for b in app.state.config.backends if b.get("name") == "disco"
         )
+
+    async def test_add_provider_explicit_empty_models_triggers_discovery(self, client, app):
+        """Explicit ``models: []`` on a cloud provider still triggers discovery;
+        the empty list is treated as 'not supplied' so server-side probe runs.
+        ``models_source`` reflects the discovery result ("discovered"), not "supplied"."""
+        fake_ids = ["explicit/model-a", "explicit/model-b"]
+        with patch(
+            "tinyagentos.routes.providers._discover_provider_models",
+            new=AsyncMock(return_value=[{"id": mid} for mid in fake_ids]),
+        ):
+            resp = await client.post("/api/providers", json={
+                "name": "explicit-empty",
+                "type": "openrouter",
+                "api_key_secret": "provider-explicit-empty-key",
+                "models": [],
+            })
+            assert resp.status_code == 200
+        assert resp.json()["models_source"] == "discovered"
+
+        stored_entry = next(
+            b for b in app.state.config.backends if b.get("name") == "explicit-empty"
+        )
+        stored_ids = [
+            m.get("id") if isinstance(m, dict) else m for m in stored_entry["models"]
+        ]
+        assert stored_ids == fake_ids
         assert stored_entry["url"] == "https://openrouter.ai/api/v1"
         stored_ids = [
             m.get("id") if isinstance(m, dict) else m
