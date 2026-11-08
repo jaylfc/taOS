@@ -1536,6 +1536,46 @@ async def test_forget_nm_unavailable_precheck_returns_503(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_forget_delete_fails_returns_502_write_failed(monkeypatch):
+    """Forget when Delete returns non-zero rc returns 502 write_failed with polkit hint."""
+    busctl_calls = []
+
+    async def fake_busctl(*args):
+        busctl_calls.append(args)
+        if args[0] == "get-property" and args[-1] == "WirelessEnabled":
+            return 0, True
+        if args[0] == "call" and args[1] == "org.freedesktop.NetworkManager" and args[2] == "/org/freedesktop/NetworkManager/Settings" and args[3] == "org.freedesktop.NetworkManager.Settings" and args[4] == "ListConnections":
+            return 0, ["/org/freedesktop/NetworkManager/Settings/1"]
+        if args[0] == "call" and args[2] == "/org/freedesktop/NetworkManager/Settings/1" and args[3] == "org.freedesktop.NetworkManager.Settings.Connection" and args[4] == "GetSettings":
+            return 0, {
+                "type": "a{sa{sv}}",
+                "data": [{
+                    "connection": {
+                        "type": {"type": "s", "data": "802-11-wireless"},
+                        "id": {"type": "s", "data": "MyWiFi"}
+                    },
+                    "802-11-wireless": {
+                        "ssid": {"type": "ay", "data": [77, 121, 87, 105, 70, 105]},
+                        "mode": {"type": "s", "data": "infrastructure"}
+                    }
+                }]
+            }
+        if args[0] == "call" and args[2] == "/org/freedesktop/NetworkManager/Settings/1" and args[3] == "org.freedesktop.NetworkManager.Settings.Connection" and args[4] == "Delete":
+            return 1, None
+        raise AssertionError(f"unexpected busctl call: {args}")
+
+    monkeypatch.setattr(hw_routes, "busctl", fake_busctl)
+
+    body = hw_routes.WifiForgetBody(ssid="MyWiFi")
+    resp = await hw_routes.wifi_forget(body)
+
+    assert resp.status_code == 502
+    body_json = _json_body(resp)
+    assert body_json["error"] == "write_failed"
+    assert "polkit rule 50-taos-hardware.rules" in body_json["hint"]
+
+
+@pytest.mark.asyncio
 async def test_forget_skips_profile_with_nonempty_permissions_returns_404(monkeypatch):
     """A matching-SSID profile with permissions [\"user:taos:\"] is not deleted and the route returns 404 unknown_ssid."""
     busctl_calls = []
