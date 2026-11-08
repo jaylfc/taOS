@@ -178,6 +178,91 @@ async def test_wifi_aps_carry_device_iface(monkeypatch):
     ]
 
 
+@pytest.mark.asyncio
+async def test_wifi_two_devices_active_ap_on_second_iface(monkeypatch):
+    """Two Wi-Fi devices (wlan0, wlan1); active AP on wlan1 asserts iface=wlan1."""
+    calls = []
+
+    async def fake(*args):
+        calls.append(args)
+        if args[0] == "get-property" and args[-1] == "WirelessEnabled":
+            return 0, True
+        if args[0] == "call" and args[-1] == "GetDevices":
+            return 0, [
+                "/org/freedesktop/NetworkManager/Devices/1",
+                "/org/freedesktop/NetworkManager/Devices/2",
+            ]
+        # device 1: wlan0
+        if args[0] == "get-property" and args[2] == "/org/freedesktop/NetworkManager/Devices/1":
+            if args[4] == "DeviceType":
+                return 0, 2
+            if args[4] == "Interface":
+                return 0, "wlan0"
+            if args[4] == "State":
+                return 0, 100
+        # device 2: wlan1
+        if args[0] == "get-property" and args[2] == "/org/freedesktop/NetworkManager/Devices/2":
+            if args[4] == "DeviceType":
+                return 0, 2
+            if args[4] == "Interface":
+                return 0, "wlan1"
+            if args[4] == "State":
+                return 0, 100
+        # active AP on device 2 (wlan1)
+        if args[0] == "get-property" and args[2] == "/org/freedesktop/NetworkManager/Devices/2" and args[3] == "org.freedesktop.NetworkManager.Device.Wireless" and args[4] == "ActiveAccessPoint":
+            return 0, "/org/freedesktop/NetworkManager/AccessPoint/20"
+        # active AP on device 1 (wlan0) - no active AP
+        if args[0] == "get-property" and args[2] == "/org/freedesktop/NetworkManager/Devices/1" and args[3] == "org.freedesktop.NetworkManager.Device.Wireless" and args[4] == "ActiveAccessPoint":
+            return 0, "/"
+        # APs on device 1
+        if args[0] == "call" and args[2] == "/org/freedesktop/NetworkManager/Devices/1" and args[4] == "GetAllAccessPoints":
+            return 0, ["/org/freedesktop/NetworkManager/AccessPoint/10"]
+        # APs on device 2
+        if args[0] == "call" and args[2] == "/org/freedesktop/NetworkManager/Devices/2" and args[4] == "GetAllAccessPoints":
+            return 0, ["/org/freedesktop/NetworkManager/AccessPoint/20"]
+        # ap 10 on wlan0
+        if args[0] == "get-property" and args[2] == "/org/freedesktop/NetworkManager/AccessPoint/10":
+            if args[4] == "Ssid":
+                return 0, [ord(c) for c in "ap0"]
+            if args[4] == "Strength":
+                return 0, 30
+            if args[4] == "Frequency":
+                return 0, 2412
+            if args[4] == "WpaFlags":
+                return 0, 0
+            if args[4] == "RsnFlags":
+                return 0, 0
+        # ap 20 on wlan1 (active)
+        if args[0] == "get-property" and args[2] == "/org/freedesktop/NetworkManager/AccessPoint/20":
+            if args[4] == "Ssid":
+                return 0, [ord(c) for c in "ap1"]
+            if args[4] == "Strength":
+                return 0, 80
+            if args[4] == "Frequency":
+                return 0, 5180
+            if args[4] == "WpaFlags":
+                return 0, 0
+            if args[4] == "RsnFlags":
+                return 0, 0x188
+        raise AssertionError(f"unexpected busctl call: {args}")
+
+    monkeypatch.setattr(hw_routes, "busctl", fake)
+    resp = await hw_routes.get_wifi()
+    assert resp["devices"] == [
+        {"path": "/org/freedesktop/NetworkManager/Devices/1", "iface": "wlan0", "state": 100},
+        {"path": "/org/freedesktop/NetworkManager/Devices/2", "iface": "wlan1", "state": 100},
+    ]
+    # Active AP should have iface=wlan1
+    aps = resp["access_points"]
+    active_ap = next(ap for ap in aps if ap["active"])
+    assert active_ap["iface"] == "wlan1"
+    assert active_ap["ssid"] == "ap1"
+    # Inactive AP on wlan0 should have iface=wlan0
+    inactive_ap = next(ap for ap in aps if not ap["active"])
+    assert inactive_ap["iface"] == "wlan0"
+    assert inactive_ap["ssid"] == "ap0"
+
+
 # --- Write route tests ---
 
 

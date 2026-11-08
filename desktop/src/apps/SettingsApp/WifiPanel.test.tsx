@@ -226,7 +226,7 @@ describe("WifiPanel controls", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("keyboard-only join secured network: Tab to Join, Enter, type password, Enter posts {ssid, psk} once", async () => {
+  it("keyboard-only join secured network: Tab to Join button, Enter, type password, Enter posts {ssid, psk} once", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     fetchSpy
       .mockResolvedValueOnce(json(baseResponse))
@@ -235,6 +235,8 @@ describe("WifiPanel controls", () => {
     render(<WifiPanel />);
     await waitFor(() => expect(screen.getByText("SecuredNet")).toBeInTheDocument());
     const joinBtn = screen.getByRole("button", { name: /Join SecuredNet \(secured\)/i });
+    // Tab-order check: Join button should be focusable and in tab order
+    expect(joinBtn).not.toHaveAttribute("tabindex", "-1");
     await act(async () => {
       fireEvent.click(joinBtn);
     });
@@ -485,17 +487,23 @@ describe("WifiPanel controls", () => {
     fetchSpy
       .mockResolvedValueOnce(json(baseResponse))
       .mockReturnValueOnce(connectPromise);
-    render(<WifiPanel />);
+    const { container } = render(<WifiPanel />);
     await waitFor(() => expect(screen.getByText("OpenNet")).toBeInTheDocument());
     const joinBtn = screen.getByRole("button", { name: /Join OpenNet/i });
+    // Grab live region before click
+    const liveRegion = container.querySelector('[aria-live="polite"]');
+    expect(liveRegion).toBeInTheDocument();
+    expect(liveRegion).toHaveTextContent("");
     await act(async () => {
       fireEvent.click(joinBtn);
     });
-    expect(screen.getByText(/Joining OpenNet/)).toBeInTheDocument();
+    // Assert the in-flight status has aria-live="polite"
+    expect(liveRegion).toHaveTextContent("Joining OpenNet...");
+    expect(liveRegion).toHaveAttribute("aria-live", "polite");
     await act(async () => {
       resolveConnect!(json({ ok: true }));
     });
-    await waitFor(() => expect(screen.queryByText(/Joining OpenNet/)).not.toBeInTheDocument());
+    await waitFor(() => expect(liveRegion).toHaveTextContent(""));
   });
 
   it("password field cleared after successful connect", async () => {
@@ -650,7 +658,7 @@ describe("WifiPanel StrictMode", () => {
 describe("WifiPanel disconnect iface", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("two devices, active AP iface wlan1; Disconnect POSTs {iface: wlan1}", async () => {
+  it("two devices, active AP iface wlan1; Disconnect POSTs {iface: wlan1} and UI shows inactive state", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     const response = {
       available: true,
@@ -669,6 +677,7 @@ describe("WifiPanel disconnect iface", () => {
       .mockResolvedValueOnce(json({ ...response, access_points: response.access_points.map((ap: any) => ({ ...ap, active: false })) }));
     render(<WifiPanel />);
     await waitFor(() => expect(screen.getByText("ConnectedNet")).toBeInTheDocument());
+    expect(screen.getByText("Connected")).toBeInTheDocument();
     const disconnectBtn = screen.getByRole("button", { name: /Disconnect from ConnectedNet/i });
     await act(async () => {
       fireEvent.click(disconnectBtn);
@@ -677,5 +686,8 @@ describe("WifiPanel disconnect iface", () => {
     const [, disconnectCall] = fetchSpy.mock.calls;
     expect(disconnectCall[0]).toBe("/api/hardware/wifi/disconnect");
     expect(JSON.parse(disconnectCall[1]?.body as string)).toEqual({ iface: "wlan1" });
+    // Assert reloaded inactive state: "Connected" badge gone, signal strength still shown
+    await waitFor(() => expect(screen.queryByText("Connected")).not.toBeInTheDocument());
+    expect(screen.getByText("80%")).toBeInTheDocument();
   });
 });
