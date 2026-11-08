@@ -672,6 +672,12 @@ _CLUSTER_PAIRING_CLAIM = "/api/cluster/pairing/claim"
 _CLUSTER_PAIRING_MANUAL_CLAIM = "/api/cluster/pairing/manual-claim"
 _CLUSTER_WORKERS = "/api/cluster/workers"
 _CLUSTER_HEARTBEAT = "/api/cluster/heartbeat"
+# Worker task report and lease endpoints: session-exempt, HMAC gate at route level
+_CLUSTER_TASK_REPORT = "/api/cluster/tasks/report"
+_CLUSTER_LEASE_CLAIM = "/api/cluster/leases/claim"
+_CLUSTER_LEASE_RELEASE = "/api/cluster/leases/release"
+_CLUSTER_LEASE_RENEW = "/api/cluster/leases/renew"
+_CLUSTER_LEASE_LIST = "/api/cluster/leases"
 
 # Project-invite redeem: unauthenticated (the PIN is the proof of possession,
 # exactly like cluster pairing). The redeem POST and the content-negotiated
@@ -824,6 +830,11 @@ def _is_exempt(method: str, path: str) -> bool:
       POST /api/cluster/workers               — session-exempt, HMAC gate at route level
       POST /api/cluster/workers/{n}/incus-enroll — session-exempt, HMAC gate at route level
       POST /api/cluster/heartbeat             — session-exempt, HMAC gate at route level
+      POST /api/cluster/tasks/report          — session-exempt, HMAC gate at route level
+      POST /api/cluster/leases/claim          — session-exempt, HMAC gate at route level
+      POST /api/cluster/leases/release        — session-exempt, HMAC gate at route level
+      POST /api/cluster/leases/renew          — session-exempt, HMAC gate at route level
+      GET  /api/cluster/leases                — session-exempt, HMAC gate at route level
     """
     if path in EXEMPT_PATHS or any(path.startswith(p) for p in EXEMPT_PREFIXES):
         return True
@@ -857,6 +868,17 @@ def _is_exempt(method: str, path: str) -> bool:
         and path.startswith(_CLUSTER_WORKERS + "/")
         and path.endswith("/incus-enroll")
     ):
+        return True
+    # Cluster task report and lease endpoints — session-exempt, HMAC gate at route level.
+    if method == "POST" and path == _CLUSTER_TASK_REPORT:
+        return True
+    if method == "POST" and path == _CLUSTER_LEASE_CLAIM:
+        return True
+    if method == "POST" and path == _CLUSTER_LEASE_RELEASE:
+        return True
+    if method == "POST" and path == _CLUSTER_LEASE_RENEW:
+        return True
+    if method == "GET" and path == _CLUSTER_LEASE_LIST:
         return True
     # Project-invite redeem: POST /api/projects/invites/redeem is
     # unauthenticated (the PIN is the proof of possession, exactly like cluster
