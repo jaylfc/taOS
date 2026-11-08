@@ -103,6 +103,8 @@ export function parseChoice(raw: unknown): OnDeviceChoice | undefined {
  * one POST /api/models/download derives (app_id-variant_id). No record at all
  * (a restart dropped it) ends the wait: the deploy then says whether the
  * model is there.
+ *
+ * Repeated failed checks end the wait with an error after 20 consecutive polls.
  */
 export async function waitForDownload(
   choice: OnDeviceChoice,
@@ -111,6 +113,7 @@ export async function waitForDownload(
 ): Promise<void> {
   if (choice.downloaded) return;
   const id = choice.download_id ?? `${choice.app_id}-${choice.variant_id}`;
+  let failedPolls = 0;
   for (;;) {
     let task: { status?: string; percent?: number; error?: string } | undefined;
     try {
@@ -120,6 +123,8 @@ export async function waitForDownload(
     } catch {
       /* a missed poll is retried on the next tick */
     }
+    failedPolls = task ? 0 : failedPolls + 1;
+    if (failedPolls >= 20) throw new HopError(`Couldn't check the ${choice.name} download. Try again.`);
     if (task?.status === "complete") return;
     if (task?.status === "error") throw new HopError(`${choice.name} didn't finish downloading: ${task.error || "the download failed"}.`);
     if (task) onProgress(Number(task.percent) || 0);
