@@ -226,6 +226,7 @@ def test_base64_decode_inside_decode_slot(monkeypatch):
     # Before the fix, it was called before the with _DECODE_SLOTS: block.
     # This test verifies the function runs to completion without error.
     assert new_url != url  # verified that the URL was processed
+    assert decode_called_while_held["called"], "base64.b64decode must be called inside _DECODE_SLOTS"
 
 
 def test_unsupported_format_bmp_returned_unchanged(monkeypatch):
