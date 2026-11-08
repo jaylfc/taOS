@@ -1,9 +1,8 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { installAbortSignalTimeout } from "./polyfills";
 
-// Save the original timeout to restore later
 const originalTimeout = AbortSignal.timeout;
 
-// Function to delete the global timeout (from the original test file)
 function deleteGlobalAbortTimeout() {
   try {
     delete (AbortSignal as any).timeout;
@@ -12,7 +11,6 @@ function deleteGlobalAbortTimeout() {
   }
 }
 
-// Function to restore the global timeout
 function restoreGlobalAbortTimeout() {
   if (originalTimeout !== undefined) {
     (AbortSignal as any).timeout = originalTimeout;
@@ -22,81 +20,99 @@ function restoreGlobalAbortTimeout() {
 }
 
 describe("AbortSignal.timeout polyfill", () => {
-  it("should exist and abort after the delay", async () => {
+  beforeEach(() => {
     vi.useFakeTimers();
-    try {
-      // First delete the existing timeout if it exists
-      deleteGlobalAbortTimeout();
-      
-      // Verify that timeout doesn't exist
-      expect(typeof AbortSignal.timeout).toBe("undefined");
-      
-      // Now apply the polyfill (this is what polyfills.ts does)
-      if (typeof AbortSignal !== "undefined" && typeof (AbortSignal as any).timeout !== "function") {
-        Object.defineProperty(AbortSignal, "timeout", {
-          value: function timeout(this: unknown, ms: number): AbortSignal {
-            const controller = new AbortController();
-            setTimeout(() => controller.abort(new DOMException("signal timed out", "TimeoutError")), ms);
-            return controller.signal;
-          },
-          writable: true,
-          configurable: true,
-          enumerable: false,
-        });
-      }
-      
-      // Now timeout should exist
-      expect(typeof AbortSignal.timeout).toBe("function");
-      
-      // Create a timeout signal
-      const s = AbortSignal.timeout(50);
-      expect(s.aborted).toBe(false);
-      
-      // Advance time to trigger timeout
-      vi.advanceTimersByTime(50);
-      
-      // Should be aborted now
-      expect(s.aborted).toBe(true);
-      
-      // Should have the correct error
-      expect((s.reason as DOMException).name).toBe("TimeoutError");
-    } finally {
-      restoreGlobalAbortTimeout();
-      vi.useRealTimers();
-    }
+    deleteGlobalAbortTimeout();
+    installAbortSignalTimeout(1000);
+  });
+
+  afterEach(() => {
+    restoreGlobalAbortTimeout();
+    vi.useRealTimers();
+  });
+
+  it("should exist and abort after the delay", () => {
+    expect(typeof AbortSignal.timeout).toBe("function");
+
+    const s = AbortSignal.timeout(50);
+    expect(s.aborted).toBe(false);
+
+    vi.advanceTimersByTime(50);
+
+    expect(s.aborted).toBe(true);
+    expect((s.reason as DOMException).name).toBe("TimeoutError");
+  });
+
+  it("throws TypeError for negative delay", () => {
+    expect(() => AbortSignal.timeout(-1)).toThrow(TypeError);
+    expect(() => AbortSignal.timeout(-1)).toThrow("non-negative finite number");
+  });
+
+  it("throws TypeError for NaN delay", () => {
+    expect(() => AbortSignal.timeout(NaN)).toThrow(TypeError);
+  });
+
+  it("throws TypeError for Infinity delay", () => {
+    expect(() => AbortSignal.timeout(Infinity)).toThrow(TypeError);
+    expect(() => AbortSignal.timeout(-Infinity)).toThrow(TypeError);
+  });
+
+  it("throws TypeError for delay > Number.MAX_SAFE_INTEGER", () => {
+    expect(() => AbortSignal.timeout(Number.MAX_SAFE_INTEGER + 1)).toThrow(TypeError);
+    expect(() => AbortSignal.timeout(Number.MAX_SAFE_INTEGER + 100)).toThrow(TypeError);
+  });
+
+  it("accepts Number.MAX_SAFE_INTEGER as valid delay", () => {
+    const s = AbortSignal.timeout(Number.MAX_SAFE_INTEGER);
+    expect(s.aborted).toBe(false);
+  });
+
+  it("aborts exactly at the requested time for chained timeout (1500 ms)", () => {
+    const s = AbortSignal.timeout(1500);
+    expect(s.aborted).toBe(false);
+
+    vi.advanceTimersByTime(1499);
+    expect(s.aborted).toBe(false);
+
+    vi.advanceTimersByTime(1);
+    expect(s.aborted).toBe(true);
+    expect((s.reason as DOMException).name).toBe("TimeoutError");
+  });
+
+  it("aborts exactly at the requested time for chained timeout (3500 ms)", () => {
+    const s = AbortSignal.timeout(3500);
+    expect(s.aborted).toBe(false);
+
+    vi.advanceTimersByTime(3499);
+    expect(s.aborted).toBe(false);
+
+    vi.advanceTimersByTime(1);
+    expect(s.aborted).toBe(true);
+    expect((s.reason as DOMException).name).toBe("TimeoutError");
+  });
+
+  it("aborts exactly at the requested time for short timeout (50 ms)", () => {
+    const s = AbortSignal.timeout(50);
+    expect(s.aborted).toBe(false);
+
+    vi.advanceTimersByTime(49);
+    expect(s.aborted).toBe(false);
+
+    vi.advanceTimersByTime(1);
+    expect(s.aborted).toBe(true);
+    expect((s.reason as DOMException).name).toBe("TimeoutError");
   });
 
   it("does not replace existing native AbortSignal.timeout", async () => {
-    // Save native timeout
     const nativeTimeout = AbortSignal.timeout;
-    
-    // Delete timeout to trigger polyfill application
+
     deleteGlobalAbortTimeout();
-    
-    // Verify it's gone
-    expect(typeof AbortSignal.timeout).toBe("undefined");
-    
-    // Now apply the polyfill (this is what polyfills.ts does)
-    if (typeof AbortSignal !== "undefined" && typeof (AbortSignal as any).timeout !== "function") {
-      Object.defineProperty(AbortSignal, "timeout", {
-        value: function timeout(this: unknown, ms: number): AbortSignal {
-          const controller = new AbortController();
-          setTimeout(() => controller.abort(new DOMException("signal timed out", "TimeoutError")), ms);
-          return controller.signal;
-        },
-        writable: true,
-        configurable: true,
-        enumerable: false,
-      });
-    }
-    
-    // Restore native timeout (to test that polyfill doesn't replace it)
+    installAbortSignalTimeout();
+
     (AbortSignal as any).timeout = nativeTimeout;
-    
-    // Import polyfills.ts to verify it doesn't replace the native timeout
+
     await import("./polyfills");
-    
-    // Verify it's still the native timeout
+
     expect(AbortSignal.timeout).toBe(nativeTimeout);
   });
 });
