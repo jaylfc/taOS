@@ -391,19 +391,30 @@ async def get_local_desktop():
 
     Reads via `systemctl cat`, `systemctl is-enabled`, and `systemctl is-active`.
     Admin only.  Unit absent => all false (is-enabled/is-active are NOT called).
+    enabled/active may be null if systemctl times out or is missing.
     """
     # availability: unit must exist (cat succeeds)
     cat_rc, _ = await _systemctl("cat", "taos-kiosk.service")
-    if cat_rc != 0:
+    if cat_rc == 1:
         return {"available": False, "enabled": False, "active": False}
+    if cat_rc != 0:
+        return JSONResponse(
+            {"error": "systemctl_failed", "rc": cat_rc}, status_code=503
+        )
 
     # enabled: is-enabled output must be exactly "enabled"
     en_rc, en_out = await _systemctl("is-enabled", "taos-kiosk.service")
-    enabled = en_rc == 0 and en_out.strip() == "enabled"
+    if en_rc in (124, 127):
+        enabled = None
+    else:
+        enabled = en_rc == 0 and en_out.strip() == "enabled"
 
     # active: is-active output must be exactly "active"
     ac_rc, ac_out = await _systemctl("is-active", "taos-kiosk.service")
-    active = ac_rc == 0 and ac_out.strip() == "active"
+    if ac_rc in (124, 127):
+        active = None
+    else:
+        active = ac_rc == 0 and ac_out.strip() == "active"
 
     return {"available": True, "enabled": enabled, "active": active}
 

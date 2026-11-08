@@ -164,7 +164,7 @@ describe("SetupChecklist", () => {
     expect(await screen.findByText("Create your account")).toBeInTheDocument();
     expect(screen.getByText(CLOUD_LABEL)).toBeInTheDocument();
     expect(screen.getByText("Add a provider")).toBeInTheDocument();
-    expect(screen.getByText("Choose a model for the taOS agent")).toBeInTheDocument();
+    expect(screen.getByText("Choose a model for the taOS Agent")).toBeInTheDocument();
     expect(screen.getByText("Deploy your first agent")).toBeInTheDocument();
     expect(screen.getByText("Set up memory")).toBeInTheDocument();
   });
@@ -173,7 +173,7 @@ describe("SetupChecklist", () => {
     mockFetchStatus(baseStatus);
     render(<SetupChecklist />);
     expect(await screen.findByText("Connect a cloud API key or local model server")).toBeInTheDocument();
-    expect(screen.getByText("Pick the model your taOS agent will use")).toBeInTheDocument();
+    expect(screen.getByText("Pick the model your taOS Agent will use")).toBeInTheDocument();
     expect(screen.getByText("Deploy an AI agent (Hermes recommended)")).toBeInTheDocument();
     expect(screen.getByText("taOSmd memory is recommended and on by default")).toBeInTheDocument();
   });

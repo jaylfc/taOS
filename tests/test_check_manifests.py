@@ -257,3 +257,93 @@ def test_main_fails_the_gate_on_malformed_model(tmp_path: Path) -> None:
     d.mkdir(parents=True)
     (d / "manifest.yaml").write_text("id: broken\nfamily: {: bad")
     assert check_manifests.main(["managed-lint", "--root", str(tmp_path)]) == 1
+
+def test_binary_manifest_unicode_decode_error(tmp_path: Path) -> None:
+    """A model manifest with binary bytes b"\xff\xfe" must be reported as unreadable."""
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "broken-model").mkdir()
+    (models_dir / "broken-model" / "manifest.yaml").write_bytes(b"\xff\xfe")
+    
+    import io
+    import sys
+    from contextlib import redirect_stderr
+    _stderr = io.StringIO()
+    with redirect_stderr(_stderr):
+        exit_code = check_manifests.main(["managed-lint", "--root", str(tmp_path)])
+    stderr = _stderr.getvalue()
+    assert exit_code == 1, f"Expected exit code 1, got {exit_code}"
+    assert "could not be read (UnicodeDecodeError)" in stderr, f"Expected error message in stderr, got: {stderr}"
+
+
+def test_fifteen_model_warns_capped(capsys) -> None:
+    """15 model manifests missing 'family' print count + first 10 warnings only."""
+    from pathlib import Path
+    import yaml
+    import tempfile
+
+    tmp = Path(tempfile.mkdtemp())
+    models_dir = tmp / "models"
+    models_dir.mkdir()
+
+    # Create 15 model manifests missing 'family' but with min_context/max_context
+    for i in range(15):
+        mid = f"model-{i:02d}"
+        (m_dir := models_dir / mid).mkdir()
+        (m_dir / "manifest.yaml").write_text(yaml.safe_dump({
+            "id": mid,
+            "name": mid,
+            "type": "model",
+            "version": "1.0.0",
+            "min_context": 4096,
+            "max_context": 131072,
+        }))
+
+    
+    exit_code = check_manifests.main(["managed-lint", "--root", str(tmp)])
+    assert exit_code == 0  # exits 0 when warnings are non-fatal
+
+    output = capsys.readouterr().err
+    assert "15 model capability field warnings" in output
+    # Count warn: lines - should be exactly 10
+    warn_lines = [l for l in output.splitlines() if l.startswith("  warn:")]
+    assert len(warn_lines) == 10, f"Expected 10 warn lines, got {len(warn_lines)}"
+    # Each warning text should appear exactly once
+    warning_texts = [l.replace("  warn: ", "") for l in warn_lines]
+    assert len(warning_texts) == len(set(warning_texts)), "Duplicate warning texts found"
+
+
+def test_fifteen_model_warns_verbose(capsys) -> None:
+    """Same 15 manifests with --verbose print all 15 warn lines exactly once."""
+    from pathlib import Path
+    import yaml
+    import tempfile
+
+    tmp = Path(tempfile.mkdtemp())
+    models_dir = tmp / "models"
+    models_dir.mkdir()
+
+    # Create 15 model manifests missing 'family' but with min_context/max_context
+    for i in range(15):
+        mid = f"model-{i:02d}"
+        (m_dir := models_dir / mid).mkdir()
+        (m_dir / "manifest.yaml").write_text(yaml.safe_dump({
+            "id": mid,
+            "name": mid,
+            "type": "model",
+            "version": "1.0.0",
+            "min_context": 4096,
+            "max_context": 131072,
+        }))
+
+    
+    exit_code = check_manifests.main(["managed-lint", "--root", str(tmp), "--verbose"])
+    assert exit_code == 0  # exits 0 when warnings are non-fatal
+
+    output = capsys.readouterr().err
+    # Count warn: lines - should be exactly 15
+    warn_lines = [l for l in output.splitlines() if l.startswith("  warn:")]
+    assert len(warn_lines) == 15, f"Expected 15 warn lines, got {len(warn_lines)}"
+    # Each warning text should appear exactly once
+    warning_texts = [l.replace("  warn: ", "") for l in warn_lines]
+    assert len(warning_texts) == len(set(warning_texts)), "Duplicate warning texts found"

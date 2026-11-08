@@ -1,0 +1,2 @@
+### Added
+- Hermes API chat path for the system taOS Agent: when `taos_agent.framework=hermes`, POST /api/taos-agent/chat drives the Hermes OpenAI-compatible API server via `POST {url}/v1/chat/completions` (same NDJSON contract as PicoClaw).

@@ -1,5 +1,7 @@
 import pytest
 import pytest_asyncio
+from types import SimpleNamespace
+
 import yaml
 import httpx
 from httpx import AsyncClient, ASGITransport
@@ -523,6 +525,130 @@ class TestModelRecommendations:
         assert "compatible" in data
         assert isinstance(data["recommended"], list)
         assert isinstance(data["compatible"], list)
+
+    async def test_dict_tier_recommended_lists_model(self, models_app, models_client):
+        models_app.state.hardware_profile = SimpleNamespace(profile_id="arm-npu-16gb")
+        resp = await models_client.get("/api/models/recommended")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["profile_id"] == "arm-npu-16gb"
+        rec = {m["id"]: m for m in data["recommended"]}
+        assert "test-model" in rec
+        assert rec["test-model"]["variant"] == "npu"
+        assert rec["test-model"]["compatibility"] == "full"
+        assert "another-model" not in rec
+        assert "another-model" not in {m["id"] for m in data["compatible"]}
+
+    async def test_dict_tier_fallback_only_is_compatible(
+        self, models_app, models_client, catalog_with_models
+    ):
+        models_app.state.hardware_profile = SimpleNamespace(profile_id="arm-npu-16gb")
+        fallback_dir = catalog_with_models / "models" / "fallback-model"
+        fallback_dir.mkdir(parents=True)
+        (fallback_dir / "manifest.yaml").write_text(yaml.dump({
+            "id": "fallback-model", "name": "Fallback Model", "type": "model",
+            "version": "1.0.0", "description": "Fallback tier test",
+            "capabilities": ["chat"],
+            "variants": [
+                {"id": "small", "name": "Small", "format": "gguf", "size_mb": 50,
+                 "min_ram_mb": 256, "download_url": "https://example.com/small.gguf",
+                 "backend": ["ollama"]},
+            ],
+            "hardware_tiers": {"arm-npu-16gb": {"fallback": "small"}},
+            "install": {"method": "download"},
+        }))
+        models_app.state.registry.reload()
+        resp = await models_client.get("/api/models/recommended")
+        assert resp.status_code == 200
+        data = resp.json()
+        comp = {m["id"]: m for m in data["compatible"]}
+        assert "fallback-model" in comp
+        assert comp["fallback-model"]["variant"] == "small"
+        assert comp["fallback-model"]["compatibility"] == "limited"
+
+    async def test_string_tier_still_works(
+        self, models_app, models_client, catalog_with_models
+    ):
+        models_app.state.hardware_profile = SimpleNamespace(profile_id="arm-npu-16gb")
+        string_dir = catalog_with_models / "models" / "string-model"
+        string_dir.mkdir(parents=True)
+        (string_dir / "manifest.yaml").write_text(yaml.dump({
+            "id": "string-model", "name": "String Model", "type": "model",
+            "version": "1.0.0", "description": "String tier test",
+            "capabilities": ["chat"],
+            "variants": [
+                {"id": "default", "name": "Default", "format": "gguf", "size_mb": 50,
+                 "min_ram_mb": 256, "download_url": "https://example.com/s.gguf",
+                 "backend": ["ollama"]},
+            ],
+            "hardware_tiers": {"arm-npu-16gb": "full"},
+            "install": {"method": "download"},
+        }))
+        models_app.state.registry.reload()
+        resp = await models_client.get("/api/models/recommended")
+        assert resp.status_code == 200
+        data = resp.json()
+        rec = {m["id"]: m for m in data["recommended"]}
+        assert "string-model" in rec
+        assert rec["string-model"]["compatibility"] == "full"
+
+    async def test_dict_tier_invalid_variant_is_skipped(
+        self, models_app, models_client, catalog_with_models
+    ):
+        """A tier that names a variant not present in model.variants
+        should not list the model at all."""
+        models_app.state.hardware_profile = SimpleNamespace(profile_id="arm-npu-16gb")
+        bad_dir = catalog_with_models / "models" / "bad-variant-model"
+        bad_dir.mkdir(parents=True)
+        (bad_dir / "manifest.yaml").write_text(yaml.dump({
+            "id": "bad-variant-model", "name": "Bad Variant Model", "type": "model",
+            "version": "1.0.0", "description": "Invalid variant test",
+            "capabilities": ["chat"],
+            "variants": [
+                {"id": "small", "name": "Small", "format": "gguf", "size_mb": 50,
+                 "min_ram_mb": 256, "download_url": "https://example.com/small.gguf",
+                 "backend": ["ollama"]},
+            ],
+            "hardware_tiers": {"arm-npu-16gb": {"recommended": "nonexistent"}},
+            "install": {"method": "download"},
+        }))
+        models_app.state.registry.reload()
+        resp = await models_client.get("/api/models/recommended")
+        assert resp.status_code == 200
+        data = resp.json()
+        rec_ids = {m["id"] for m in data["recommended"]}
+        comp_ids = {m["id"] for m in data["compatible"]}
+        assert "bad-variant-model" not in rec_ids
+        assert "bad-variant-model" not in comp_ids
+
+    async def test_dict_tier_invalid_fallback_is_skipped(
+        self, models_app, models_client, catalog_with_models
+    ):
+        """A tier that names a fallback variant not present in model.variants
+        should not list the model in compatible."""
+        models_app.state.hardware_profile = SimpleNamespace(profile_id="arm-npu-16gb")
+        bad_dir = catalog_with_models / "models" / "bad-fallback-model"
+        bad_dir.mkdir(parents=True)
+        (bad_dir / "manifest.yaml").write_text(yaml.dump({
+            "id": "bad-fallback-model", "name": "Bad Fallback Model", "type": "model",
+            "version": "1.0.0", "description": "Invalid fallback test",
+            "capabilities": ["chat"],
+            "variants": [
+                {"id": "small", "name": "Small", "format": "gguf", "size_mb": 50,
+                 "min_ram_mb": 256, "download_url": "https://example.com/small.gguf",
+                 "backend": ["ollama"]},
+            ],
+            "hardware_tiers": {"arm-npu-16gb": {"fallback": "nonexistent"}},
+            "install": {"method": "download"},
+        }))
+        models_app.state.registry.reload()
+        resp = await models_client.get("/api/models/recommended")
+        assert resp.status_code == 200
+        data = resp.json()
+        rec_ids = {m["id"] for m in data["recommended"]}
+        comp_ids = {m["id"] for m in data["compatible"]}
+        assert "bad-fallback-model" not in rec_ids
+        assert "bad-fallback-model" not in comp_ids
 
 
 class TestGetDownloadedModels:

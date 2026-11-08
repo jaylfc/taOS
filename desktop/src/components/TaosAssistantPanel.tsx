@@ -377,10 +377,10 @@ export function TaosAssistantPanelInner({ embedded = false }: { embedded?: boole
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={noModel ? "Choose a model first…" : "Ask taOS agent…"}
+            placeholder={noModel ? "Choose a model first…" : "Ask taOS Agent…"}
             disabled={noModel || streaming}
             rows={1}
-            aria-label="Message taOS agent"
+            aria-label="Message taOS Agent"
             className="flex-1 resize-none border-none bg-transparent text-sm text-shell-text placeholder:text-shell-text-tertiary focus:outline-none px-1.5 py-2 disabled:opacity-40"
             style={{ minHeight: 36, maxHeight: 160 }}
           />
@@ -420,7 +420,7 @@ export function TaosAssistantPanel() {
       />
       <div
         role="dialog"
-        aria-label="taOS agent"
+        aria-label="taOS Agent"
         aria-modal="true"
         className="fixed right-0 z-[101] flex flex-col border-l border-white/10 shadow-2xl"
         style={{
@@ -461,11 +461,11 @@ function HeaderBar({}: { onClose?: () => void } = {}) {
   return (
     <div className="flex items-center gap-2 px-4 py-3 border-b border-white/5 shrink-0 select-none">
       <Sparkles size={15} className="text-accent shrink-0" />
-      <span className="text-sm font-semibold flex-1">taOS agent</span>
+      <span className="text-sm font-semibold flex-1">taOS Agent</span>
       <ToolbarButton label="Pop out" icon={<ExternalLink size={14} />} onClick={handlePopOut} />
       <ToolbarButton label="Assistant settings" icon={<Settings size={14} />} onClick={() => setSettingsOpen(true)} />
       <ToolbarButton
-        label="Close taOS agent"
+        label="Close taOS Agent"
         icon={<X size={14} />}
         onClick={closePanel}
       />

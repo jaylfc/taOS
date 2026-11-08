@@ -1,6 +1,7 @@
 # tinyagentos/routes/store.py
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict
 from typing import Any
 
@@ -23,6 +24,8 @@ from tinyagentos.store_popularity import (
     popularity_for_homepage_cached,
 )
 from tinyagentos.auth_context import require_admin
+
+logger = logging.getLogger(__name__)
 
 
 def _popularity_by_app_id(apps) -> dict[str, dict]:
@@ -555,6 +558,20 @@ async def uninstall_app(request: Request, body: UninstallRequest):
         pass  # best effort uninstall
     else:
         await installer.uninstall(body.app_id)
+        # Script-installed services (e.g. llama-cpp) can declare an uninstall
+        # script in manifest.install.uninstall. Run it to tear down the service
+        # (systemd unit / OpenRC init script / launchd plist) instead of only
+        # marking the app uninstalled. Best-effort: a failed teardown never
+        # fails the uninstall.
+        if manifest and hasattr(installer, "uninstall_with_script"):
+            uninstall_script = manifest.install.get("uninstall")
+            if uninstall_script:
+                try:
+                    result = await installer.uninstall_with_script(body.app_id, uninstall_script)
+                    if isinstance(result, dict) and not result.get("success", True):
+                        logger.warning("uninstall teardown script failed for %s: %s", body.app_id, result.get("error"))
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("uninstall teardown script failed for %s: %s", body.app_id, exc)
 
     if manifest and manifest.type == "plugin":
         mcp_supervisor = getattr(request.app.state, "mcp_supervisor", None)
@@ -574,9 +591,21 @@ async def uninstall_app(request: Request, body: UninstallRequest):
     store_for_loc = getattr(request.app.state, "installed_apps", None)
     runtime_loc = None
     if store_for_loc is not None:
-        runtime_loc = await store_for_loc.get_runtime_location(body.app_id)
+        try:
+            runtime_loc = await store_for_loc.get_runtime_location(body.app_id)
+        except Exception:  # noqa: BLE001
+            # A failing runtime-location read must never fail the uninstall
+            # itself; treat the app as local and proceed with the host-row
+            # cleanup anyway (#4132 follow-up).
+            runtime_loc = None
     is_local = (runtime_loc is None) or (runtime_loc.get("runtime_host") in (None, "", "127.0.0.1"))
-    if method != "lxc" and is_local:
+    # Always delete the local host row for non-LXC uninstalls, even when the
+    # runtime location now points at a remote worker: forget_install_location
+    # only matches location_ref="local", so a remote row (different
+    # location_ref) and any legacy_lxc row are left untouched (#4132
+    # follow-up -- previously is_local skipped the cleanup when the runtime
+    # location was remote, orphaning the local host row).
+    if method != "lxc":
         await forget_install_location(request, body.app_id, "host", "local")
     return {"status": "uninstalled", "app_id": body.app_id}
 

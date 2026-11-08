@@ -61,7 +61,7 @@ describe("TaosAssistantSettings", () => {
   it("renders the dialog with title when open is true", () => {
     render(<TaosAssistantSettings open={true} onClose={vi.fn()} />);
     expect(screen.getByRole("dialog")).toBeInTheDocument();
-    expect(screen.getByText("taOS agent — Settings")).toBeInTheDocument();
+    expect(screen.getByText("taOS Agent — Settings")).toBeInTheDocument();
   });
 
   it("shows the current model name in the header when set", () => {
@@ -73,7 +73,7 @@ describe("TaosAssistantSettings", () => {
   it("does not show a model name span when no model is set", () => {
     useTaosAgentStore.setState({ model: null });
     render(<TaosAssistantSettings open={true} onClose={vi.fn()} />);
-    expect(screen.getByText("taOS agent — Settings")).toBeInTheDocument();
+    expect(screen.getByText("taOS Agent — Settings")).toBeInTheDocument();
     expect(screen.queryByText("gpt-4o")).not.toBeInTheDocument();
   });
 

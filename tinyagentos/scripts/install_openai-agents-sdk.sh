@@ -18,6 +18,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [oas-bridge] %(messa
 log = logging.getLogger("oas-bridge")
 BRIDGE_URL=os.environ["TAOS_BRIDGE_URL"]; AGENT_NAME=os.environ["TAOS_AGENT_NAME"]
 LOCAL_TOKEN=os.environ["TAOS_LOCAL_TOKEN"]; MODEL=os.environ.get("TAOS_MODEL","kilo-auto/free")
+MAX_RETRIES = 3
 _pool=ThreadPoolExecutor(max_workers=2)
 _SYSTEM_INSTRUCTIONS = (
     f"You are {AGENT_NAME}, an agent running inside the "
@@ -95,8 +96,27 @@ async def fetch_boot(c):
 async def post_reply(c, u, t, mid, tid, txt, cid=None):
     body = {"kind":"final","id":mid,"trace_id":tid,"content":txt}
     if cid: body["channel_id"] = cid
-    try: await c.post(u, json=body, headers={"Authorization":f"Bearer {t}"}, timeout=30)
-    except Exception as e: log.warning("reply: %s", e)
+    headers={"Authorization":f"Bearer {t}"}
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            resp = await c.post(u, json=body, headers=headers, timeout=30)
+            if 200 <= resp.status_code < 300:
+                return True
+            if resp.status_code in (429,) or 500 <= resp.status_code < 600:
+                if attempt < MAX_RETRIES:
+                    await asyncio.sleep(1.0 * attempt)
+                    continue
+            log.warning("reply POST %s: %s", resp.status_code, resp.text[:300])
+            return False
+        except httpx.TransportError as e:
+            if attempt < MAX_RETRIES:
+                await asyncio.sleep(1.0 * attempt)
+                continue
+            log.warning("reply POST failed: %s", e)
+            return False
+        except Exception as e:
+            log.warning("reply POST failed: %s", e)
+            return False
 async def handle(c, evt, ch):
     mid = evt.get("id",""); tid = evt.get("trace_id", mid); text = evt.get("text","")
     force = bool(evt.get("force_respond"))

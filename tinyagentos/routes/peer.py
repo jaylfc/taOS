@@ -317,6 +317,16 @@ async def peer_handshake(body: PeerEnvelope, request: Request):
             headers=retry_after_headers(_handshake_limiter.retry_after(fp)),
         )
 
+    existing = await store.get_peer_link(contact_id)
+    restore_revoked_at = None
+    if existing is not None and existing.get("revoked_at") is not None:
+        if not await hub.has_edge(fp, relationships.REL_REQUEST_OUT):
+            raise HTTPException(status_code=403, detail="peer link revoked")
+        # Owner re-request path: the owner re-initiated the friendship, so
+        # restoring the revoked link is intentional.  Pass the exact timestamp
+        # we observed so a newer revocation is not silently cleared.
+        restore_revoked_at = existing.get("revoked_at")
+
     if not await store.record_nonce(envelope["nonce"], contact_id, "handshake"):
         raise HTTPException(status_code=409, detail="nonce replay detected")
 
@@ -336,18 +346,33 @@ async def peer_handshake(body: PeerEnvelope, request: Request):
     # endpoints.  A repeat handshake must not allow the sender to rewrite the
     # SSRF allowance.  Only on first handshake do we accept endpoints from the
     # envelope, and even then only valid http/https entries with a hostname.
-    existing = await store.get_peer_link(contact_id)
     if existing is not None:
         endpoints = existing.get("endpoints") or []
     else:
         endpoints = _safe_endpoints(hs.get("endpoints"))
 
-    await store.establish_peer_link(
+    # The check above and this write are not atomic: a revoke committed in this
+    # window used to be silently overwritten, because establish_peer_link cleared
+    # revoked_at unconditionally.  establish_peer_link re-checks revoked_at inside
+    # the same statement, so a link revoked after the check is not written.
+    written = await store.establish_peer_link(
         contact_id=contact_id,
         inbound_token=our_token,
         outbound_token=their_token,
         endpoints=endpoints,
+        restore_revoked_at=restore_revoked_at,
     )
+    if not written:
+        # add_contact above commits the contact as active; a revoke that lands
+        # during the handshake leaves that row active for a revoked peer unless
+        # we restore the revoked status on the refused path.
+        try:
+            await store.set_contact_status(contact_id, "revoked")
+        except Exception:
+            logger.warning(
+                "peer handshake: set_contact_status revoked failed for %s", contact_id,
+            )
+        raise HTTPException(status_code=403, detail="peer link revoked")
     if not await hub.has_edge(fp, relationships.REL_FRIEND):
         from tinyagentos.hub import identity
 

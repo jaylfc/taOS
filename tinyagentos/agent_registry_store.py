@@ -798,6 +798,7 @@ class AgentRegistryStore(BaseStore):
         reports_to: Optional[str] = None,
         capabilities: Optional[list[str]] = None,
         status: str = "active",
+        revoked_at: Optional[float] = None,
         allow_reserved: bool = False,
     ) -> dict:
         """Adopt an existing canonical_id byte-for-byte on this device.
@@ -829,20 +830,28 @@ class AgentRegistryStore(BaseStore):
             raise RuntimeError("AgentRegistryStore not initialised - call init() first")
 
         if not re.fullmatch(
-            r"[a-z0-9][a-z0-9-]*-[0-9]{8}-[0-9]{6}(-[0-9a-f]{2})?",
+            r"[a-z0-9][a-z0-9-]*-[0-9]{8}-[0-9]{6}(-[0-9a-f]{2,})?",
             canonical_id,
         ):
             raise ValueError(f"adopt: malformed canonical_id {canonical_id!r}")
 
         if not allow_reserved:
             slug = re.sub(
-                r"-[0-9]{8}-[0-9]{6}(-[0-9a-f]{2})?$", "", canonical_id
+                r"-[0-9]{8}-[0-9]{6}(-[0-9a-f]{2,})?$", "", canonical_id
             )
             _check_reserved_prefix(slug, display_name)
 
         if status not in VALID_STATUSES:
             raise ValueError(
                 f"unknown status {status!r}; valid: {sorted(VALID_STATUSES)}"
+            )
+
+        if reports_to is not None and reports_to == canonical_id:
+            raise ValueError("an agent cannot report to itself")
+
+        if status != "revoked" and revoked_at is not None:
+            raise ValueError(
+                "adopt: revoked_at may only be set when status is 'revoked'"
             )
 
         async with self._write_lock:
@@ -868,30 +877,44 @@ class AgentRegistryStore(BaseStore):
                 )
 
             if handle:
-                holder = await (
-                    await self._db.execute(
-                        "SELECT canonical_id FROM agent_registry "
-                        "WHERE handle = ? AND status = 'active' AND handle != ''",
-                        (handle,),
+                want = _slugify(handle)
+                holder = None
+                if want:
+                    cursor = await self._db.execute(
+                        "SELECT * FROM agent_registry WHERE handle != '' "
+                        "AND status = ? ORDER BY id",
+                        ("active",),
                     )
-                ).fetchone()
-                if holder is not None:
+                    rows = await cursor.fetchall()
+                    for row in rows:
+                        rec = _row_to_dict(row)
+                        if _slugify(rec.get("handle") or "") == want:
+                            holder = rec
+                            break
+                if holder is not None and holder.get("canonical_id") != canonical_id:
                     raise ValueError(
                         f"adopt: handle {handle!r} is already owned by another "
-                        f"active agent ({holder[0]})"
+                        f"active agent ({holder.get('canonical_id')})"
                     )
 
             try:
+                revoked_value = None
+                if status == "revoked":
+                    revoked_value = (
+                        revoked_at if revoked_at is not None else time.time()
+                    )
                 await self._db.execute(
                     """
                     INSERT INTO agent_registry
                         (canonical_id, display_name, framework, user_id, origin,
-                         handle, role, title, reports_to, capabilities, created_ts, status)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         handle, role, title, reports_to, capabilities, created_ts, status,
+                         revoked_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         canonical_id, display_name, framework, user_id, origin,
                         handle, role, title, reports_to, caps_json, created_ts, status,
+                        revoked_value,
                     ),
                 )
                 await self._db.commit()

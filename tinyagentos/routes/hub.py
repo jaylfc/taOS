@@ -129,7 +129,7 @@ async def _try_handshake(
     request: Request,
     directory_resp: dict,
     peer_fingerprint: str,
-) -> None:
+) -> Optional[Response]:
     """Establish a peer channel on friend-accept (collab A2).
 
     Extracts the peer's Ed25519/X25519 pubkeys and advertised endpoints
@@ -205,6 +205,16 @@ async def _try_handshake(
         display_name = directory_resp.get("display_name") or username
         endpoints = _normalize_endpoints(directory_resp.get("endpoints"))
 
+        # Read the existing peer link BEFORE add_contact so we capture the
+        # revocation state that existed at the start of the handshake.
+        existing_link = await contacts_store.get_peer_link(contact_id)
+        observed_revoked_at = existing_link.get("revoked_at") if existing_link else None
+
+        # Re-check the block edge after reading the link.  A block that lands
+        # between the initial guard and this point must be honoured.
+        if peer_fingerprint and await store.has_edge(peer_fingerprint, relationships.REL_BLOCK):
+            return
+
         # Create/refresh the contact row (trust-on-first-use key pinning).
         await contacts_store.add_contact(
             contact_id=contact_id,
@@ -222,12 +232,38 @@ async def _try_handshake(
         # signed handshake_reply arrives, and left empty if it never does.
         outbound_token = ""
 
-        await contacts_store.establish_peer_link(
+        # Restore only the revocation we observed.  A newer revocation that
+        # lands after our read (e.g. from a concurrent block) will not be
+        # cleared because the UPDATE arm requires an exact timestamp match.
+        written = await contacts_store.establish_peer_link(
             contact_id=contact_id,
             inbound_token=inbound_token,
             outbound_token=outbound_token,
             endpoints=endpoints,
+            restore_revoked_at=observed_revoked_at,
         )
+        if not written:
+            logger.warning(
+                "friend-accept handshake: peer link revoked, not restored for %s",
+                contact_id,
+            )
+            # If a block edge now exists, ensure the contact status reflects it.
+            # add_contact resets status to active, so we must re-apply blocked.
+            if peer_fingerprint and await store.has_edge(peer_fingerprint, relationships.REL_BLOCK):
+                try:
+                    await contacts_store.set_contact_status(contact_id, "blocked")
+                except Exception:
+                    logger.warning(
+                        "friend-accept handshake: set_contact_status blocked failed for %s",
+                        contact_id,
+                    )
+            # The directory/local friendship was already accepted above; only the
+            # peer handshake was refused, so report acceptance with a refused
+            # handshake while leaving the link revoked.
+            return JSONResponse(
+                {"state": "accepted", "handshake": "refused", "peer": peer_fingerprint},
+                status_code=200,
+            )
         logger.info(
             "friend-accept handshake: contact=%s endpoints=%s",
             contact_id, endpoints,
@@ -523,7 +559,9 @@ async def accept_friend_request(
     # When the directory omits these fields, we fall back to the locally cached
     # hub_authors record (populated during the friend-request flow).
     if peer:
-        await _try_handshake(request, resp, peer)
+        handshake_response = await _try_handshake(request, resp, peer)
+        if handshake_response is not None:
+            return handshake_response
 
     return {"state": "accepted", "peer": peer, "directory": resp}
 

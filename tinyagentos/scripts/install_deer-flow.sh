@@ -366,18 +366,31 @@ async def post_reply(client: httpx.AsyncClient, reply_url: str, token: str,
                      msg_id: str, trace_id: str, content: str, cid=None) -> bool:
     body = {"kind": "final", "id": msg_id, "trace_id": trace_id, "content": content}
     if cid: body["channel_id"] = cid
-    try:
-        resp = await client.post(reply_url, json=body,
-                                  headers={"Content-Type": "application/json",
-                                           "Authorization": f"Bearer {token}"},
-                                  timeout=30)
-        if not (200 <= resp.status_code < 300):
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            resp = await client.post(reply_url, json=body, headers=headers, timeout=30)
+            if 200 <= resp.status_code < 300:
+                return True
+            if (resp.status_code == 429 or 500 <= resp.status_code < 600) and attempt < MAX_RETRIES:
+                log.warning("reply POST %s (attempt %d/%d), retry in %.1fs",
+                            resp.status_code, attempt, MAX_RETRIES, 1.0 * attempt)
+                await asyncio.sleep(1.0 * attempt)
+                continue
             log.warning("reply POST %s: %s", resp.status_code, resp.text[:300])
             return False
-        return True
-    except Exception as e:
-        log.warning("reply POST failed: %s", e)
-        return False
+        except httpx.TransportError as e:
+            if attempt < MAX_RETRIES:
+                log.warning("reply POST error %s (attempt %d/%d), retry in %.1fs",
+                            e, attempt, MAX_RETRIES, 1.0 * attempt)
+                await asyncio.sleep(1.0 * attempt)
+                continue
+            log.warning("reply POST failed: %s", e)
+            return False
+        except Exception as e:
+            log.warning("reply POST failed: %s", e)
+            return False
+    return False
 
 
 async def handle_user_message(client: httpx.AsyncClient, evt: dict, channel: dict,
@@ -446,6 +459,7 @@ async def sse_loop(client: httpx.AsyncClient, channel: dict, stop: asyncio.Event
     seen_ids: set[str] = set()
     error_until: list[float] = [0.0]  # mutable so tasks can update it
     pending_tasks: set[asyncio.Task] = set()
+    _PENDING_CAP = _MAX_INFLIGHT * 4
     while not stop.is_set():
         try:
             log.info("SSE connecting to %s", channel["events_url"])
@@ -468,6 +482,21 @@ async def sse_loop(client: httpx.AsyncClient, channel: dict, stop: asyncio.Event
                         if evt_type == "user_message" and evt_data:
                             try:
                                 evt = json.loads(evt_data)
+                                if len(pending_tasks) >= _PENDING_CAP:
+                                    stop_task = asyncio.create_task(stop.wait())
+                                    try:
+                                        await asyncio.wait(
+                                            pending_tasks | {stop_task},
+                                            return_when=asyncio.FIRST_COMPLETED,
+                                        )
+                                    finally:
+                                        stop_task.cancel()
+                                    if stop.is_set():
+                                        log.warning(
+                                            "user_message id=%s not dispatched: shutdown began",
+                                            evt.get("id"),
+                                        )
+                                        break
                                 task = asyncio.create_task(_run_handle_user_message_limited(
                                     client, evt, channel, seen_ids, error_until))
                                 pending_tasks.add(task)

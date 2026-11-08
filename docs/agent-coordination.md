@@ -940,6 +940,13 @@ against the operator's visible project list and lets the operator confirm or
 correct the binding before minting -- so an unapproved or unseen project id is
 never trusted as a grant target.
 
+Because its text names the requested project, that notification (and the one an
+invite redeem raises in manual mode) is added once per admin user, never as a
+broadcast row every user reads; only an admin can approve it. Task lifecycle
+notifications (`task.claimed`, `task.closed`, `task.reopened`,
+`task.unquarantined`) name the task and project the same way, so they go only to
+the project's owner and each admin.
+
 ## Console-only PIN sign-in (third passthrough, narrowest)
 
 A touchscreen device with no keyboard could not sign in at all, so a PIN is an
@@ -1278,6 +1285,8 @@ and must not expect a 403 to distinguish "exists, not yours". Admin-only
 lifecycle routes (approve/reject/suspend/reactivate) still 403 non-admins
 before any lookup, which discloses nothing.
 
+`POST /api/agents/registry/register` mints active rows: a `taos-deployed` (or any non-`external-selfjoin`) origin requires an admin session or the host local token; `external-selfjoin` stays open to any signed-in user (rows created pending).
+
 Requested scopes are validated against the same closed `VALID_SCOPES` vocabulary
 as the consent flow. The project-bound scopes -- `project_tasks`,
 `project_tasks_create`, `project_tasks_update`, `project_lists`, `project_notes`,
@@ -1547,7 +1556,7 @@ All routes are admin-only via `Depends(require_admin)`. See [docs/hardware-route
 
 ## Hub chain export and blobs (social phase 0, local only)
 
-Route module `tinyagentos/routes/hub.py`, admin-only:
+Route module `tinyagentos/routes/hub.py`. The four routes below are admin-only (a signed-in non-admin member gets `403 forbidden`); `POST /api/hub/posts` is not one of them and accepts any signed-in user:
 
 - `GET /api/hub/chain?after_seq=&limit=` returns this node's own chain page
   (`entries`, `object` is `null` once a tombstone dropped the body), the `head`,
@@ -2756,7 +2765,10 @@ the choice is made, from two config.yaml keys:
   elsewhere), `opencode`, `picoclaw` or `claude_code` (operator overrides;
   `auto` never picks `claude_code`).
 - **Local desktop state**: `GET /api/system/local-desktop` reports `available`,
-  `enabled`, and `active` based on `taos-kiosk.service` systemd unit state.
+  `enabled`, and `active` based on `taos-kiosk.service` systemd unit state. The
+  `enabled` and `active` fields can be `null` if `systemctl` times out or is
+  missing; `cat` rc 1 means absent (all false), other nonzero `cat` rc returns
+  503 `{"error":"systemctl_failed","rc":<rc>}`.
 
 PicoClaw needs the LLM gateway (on unless `TAOS_LLM_GATEWAY=0`) and a `picoclaw` binary
 (`TAOS_PICOCLAW_BIN`, PATH, `/usr/local/bin`, `/usr/bin`). Without either,
@@ -2828,6 +2840,8 @@ credential and mints a fresh one.
 ## Peer handshake (friend-accept)
 
 The private/CGNAT endpoint allowance comes from endpoints the OTHER side supplies (directory response or handshake body), so a friend can make this node POST to a private host:port on the fixed handshake/inbox paths; loopback, link-local and metadata addresses stay blocked.
+
+A revoked peer link (paused via the per-contact kill switch) cannot be restored by the revoked peer alone. The handshake is refused with 403 "peer link revoked" unless the owner has re-initiated a friend request (REL_REQUEST_OUT edge) after the revocation. This ensures only the owner can resume a paused connection.
 
 ## Collaboration kill switch (`/api/settings/collaboration`, admin-only)
 

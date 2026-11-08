@@ -8,8 +8,13 @@ PIN being REFUSED off-console does.
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
 
 import pytest
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
 
 from tinyagentos.auth import (
     AuthManager,
@@ -19,6 +24,7 @@ from tinyagentos.auth import (
     is_console_origin,
     validate_pin,
 )
+from tinyagentos.routes.auth import _PIN_PANEL_SCRIPT
 
 
 @pytest.fixture()
@@ -181,6 +187,10 @@ class TestPinFailuresDoNotLockOutPassword:
 # --------------------------------------------------------------------------- #
 
 class TestPinStore:
+    """The store tests the PR had removed. Restored from origin/dev unchanged:
+    none of them assert behaviour this PR intentionally removed, and each one
+    still passes against the current product code."""
+
     def test_pin_round_trips(self, mgr):
         mgr.set_pin("tester", "4913")
         assert mgr.has_pin("tester") is True
@@ -247,6 +257,59 @@ class TestPinStore:
         assert mgr.check_pin("4913", username=None)[0] is False
 
 
+class TestPinLength:
+    def test_set_pin_stores_length(self, mgr):
+        mgr.set_pin("tester", "4913")
+        data = json.loads((mgr.data_dir / ".auth_user.json").read_text())
+        assert data["users"][0].get("pin_length") == 4
+        assert mgr.pin_length("tester") == 4
+
+    def test_clear_pin_removes_length(self, mgr):
+        mgr.set_pin("tester", "4913")
+        mgr.clear_pin("tester")
+        data = json.loads((mgr.data_dir / ".auth_user.json").read_text())
+        assert "pin_hash" not in data["users"][0]
+        assert "pin_length" not in data["users"][0]
+        assert mgr.pin_length("tester") is None
+
+    def test_check_pin_learns_length_on_success_if_missing(self, tmp_path):
+        m = AuthManager(tmp_path)
+        m.setup_user("tester", "Bring-up Test", "", "correct horse battery staple")
+        m.set_pin("tester", "123456")
+        data = json.loads((tmp_path / ".auth_user.json").read_text())
+        data["users"][0].pop("pin_length", None)
+        (tmp_path / ".auth_user.json").write_text(json.dumps(data))
+        ok, rec = m.check_pin("123456", username="tester")
+        assert ok is True
+        data2 = json.loads((tmp_path / ".auth_user.json").read_text())
+        assert data2["users"][0].get("pin_length") == 6
+
+    def test_failed_check_pin_stores_nothing(self, mgr, tmp_path):
+        mgr.set_pin("tester", "123456")
+        data = json.loads((tmp_path / ".auth_user.json").read_text())
+        data["users"][0].pop("pin_length", None)
+        (tmp_path / ".auth_user.json").write_text(json.dumps(data))
+        ok, rec = mgr.check_pin("000000", username="tester")
+        assert ok is False
+        data2 = json.loads((tmp_path / ".auth_user.json").read_text())
+        assert "pin_length" not in data2["users"][0]
+
+    def test_pin_length_none_on_multi_user_store(self, mgr, tmp_path):
+        # add another user
+        code = mgr.add_user_invite("other", "tester")
+        mgr.complete_invite("other", code, "Other", "o@o.com", "anotherpass123")
+        assert mgr.pin_length(None) is None
+
+    def test_user_listing_has_no_pin_length_key(self, mgr):
+        mgr.set_pin("tester", "4913")
+        users = mgr.list_users()
+        assert users
+        assert "pin_length" not in users[0]
+        pub = mgr.get_primary_user()
+        assert pub and "pin_length" not in pub
+        assert pub["has_pin"] is True
+
+
 class TestPinValidation:
     @pytest.mark.parametrize("bad", ["123", "1" * (PIN_MAX_LEN + 1), "12a4", "12 4", "", "-123"])
     def test_malformed_pins_rejected(self, bad):
@@ -297,3 +360,181 @@ class TestPinLimiterIsBounded:
         lim.record_failure("victim")
         # 6 consecutive failures still sits at or above the first tier.
         assert lim.retry_after("victim") > 0
+
+
+# --------------------------------------------------------------------------- #
+#  Lock page script (node) — PIN auto-unlock behaviour                       #
+# --------------------------------------------------------------------------- #
+
+_PIN_HARNESS = r"""
+function makeEl(opts) {
+  opts = opts || {};
+  var el = {
+    id: opts.id || null,
+    _attrs: opts.attrs || {},
+    value: opts.value || "",
+    children: opts.children || [],
+    _h: {},
+    hidden: opts.hidden !== undefined ? opts.hidden : false,
+    parentNode: opts.parentNode || null,
+    textContent: "",
+    addEventListener: function (t, fn) { (this._h[t] = this._h[t] || []).push(fn); },
+    setAttribute: function (k, v) { this._attrs[k] = v; },
+    getAttribute: function (k) {
+      return Object.prototype.hasOwnProperty.call(this._attrs, k) ? this._attrs[k] : null;
+    },
+    querySelector: function (sel) { return opts.querySelector ? opts.querySelector(sel) : null; },
+    closest: function(){ return null; },
+    fire: function (t, ev) { ev = ev || {}; var handlers = (this._h[t] || []).slice(); for (var i=0;i<handlers.length;i++){ handlers[i].call(this, ev); } }
+  };
+  return el;
+}
+
+var SCN = JSON.parse(process.env.PIN_SCENARIO || '{}');
+
+var pinPanel = makeEl({ id: "pin-panel", attrs: { "data-next": "/desktop", "data-username": "" } });
+if (SCN.pinLength !== undefined && SCN.pinLength !== null) {
+  pinPanel.setAttribute("data-pin-length", String(SCN.pinLength));
+}
+
+var input = makeEl({ id: "pin-input", value: "" }); input.focus = function(){}; input.replace = function(a,b){ this.value = String(this.value).split(a).join(b); return this.value; };
+var dots = makeEl({ id: "pin-dots", children: [] });
+var dotCount = SCN.dotCount || (SCN.pinLength || 4);
+for (var di=0; di<dotCount; di++) {
+  dots.children.push(makeEl({ attrs: { "data-filled": "0" } }));
+}
+var err = makeEl({ id: "pin-error", textContent: "" });
+var submit = null;
+if (SCN.hasSubmit) {
+  submit = makeEl({ id: "pin-submit" });
+}
+
+var els = {
+  "pin-panel": pinPanel,
+  "pin-input": input,
+  "pin-dots": dots,
+  "pin-error": err,
+  "pin-submit": submit,
+  "use-password": makeEl({ id: "use-password" }),
+  "use-pin": makeEl({ id: "use-pin" }),
+  "pw-panel": makeEl({ id: "pw-panel", hidden: true })
+};
+
+var document = {
+  getElementById: function(id){ return els[id] || null; },
+  readyState: "complete",
+  addEventListener: function(){},
+  querySelector: function(sel){ if (sel === 'input[type=password]') return input; return null; }
+};
+var window = { taosOSK: null, location: { assign: function(){} } };
+
+var posts = [];
+var lastStatus = 0;
+global.fetch = function(url, opts){
+  posts.push({url: url, opts: opts});
+  if (SCN.fetchFail) {
+    return Promise.reject(new Error("fail"));
+  }
+  if (SCN.fetchStatus && SCN.fetchStatus !== 200) {
+    lastStatus = SCN.fetchStatus;
+    return Promise.resolve({
+      status: SCN.fetchStatus,
+      json: function(){ return Promise.resolve(SCN.fetchBody || {}); }
+    });
+  }
+  lastStatus = 200;
+  return Promise.resolve({
+    status: 200,
+    json: function(){ return Promise.resolve({ok: true}); }
+  });
+};
+global.setTimeout = function(fn){ fn(); return 1; };
+global.clearTimeout = function(){};
+
+__PIN_SCRIPT__
+
+if (SCN.typeDigits) {
+  for (var i=0; i<SCN.typeDigits.length; i++) {
+    input.value += String(SCN.typeDigits[i]);
+    var h = input._h["input"] || [];
+    for (var j=0; j<h.length; j++) { h[j].call(input, {}); }
+  }
+}
+
+if (SCN.doEnter && input._h["keydown"]) {
+  var kh = input._h["keydown"] || [];
+  for (var k=0; k<kh.length; k++) { kh[k].call(input, {key: "Enter", preventDefault: function(){}}); }
+}
+
+if (SCN.clickSubmit && submit && submit._h["click"]) {
+  var ch = submit._h["click"] || [];
+  for (var m=0; m<ch.length; m++) { ch[m].call(submit, {}); }
+}
+
+process.stdout.write(JSON.stringify({ posts: posts, err: err.textContent || "", submitExists: !!els["pin-submit"], value: input.value, lastStatus: lastStatus }));
+"""
+
+
+def _run_pin_scenario(scenario: dict, script_override: str | None = None):
+    node = shutil.which("node")
+    if node is None:
+        pytest.fail("node required")
+    script = script_override if script_override is not None else _PIN_PANEL_SCRIPT
+    harness = _PIN_HARNESS.replace("__PIN_SCRIPT__", script)
+    env = os.environ.copy()
+    env["PIN_SCENARIO"] = json.dumps(scenario)
+    proc = subprocess.run([node, "-e", harness], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, timeout=10)
+    if proc.returncode != 0:
+        raise AssertionError(proc.stderr.decode())
+    return json.loads(proc.stdout.decode())
+
+
+class TestPinPanelScriptNode:
+    @pytest.mark.asyncio
+    async def test_console_login_page_renders_data_pin_length(self, app):
+        """A console GET /auth/login on a single-account install with a 6-digit
+        PIN renders data-pin-length="6" so the keypad auto-submits on the last
+        digit instead of showing a submit button."""
+        app.state.auth.setup_user("admin", "Admin", "", "passw0rd")
+        app.state.auth.set_pin("admin", "123456")
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/auth/login")
+        assert resp.status_code == 200
+        assert 'data-pin-length="6"' in resp.text
+
+    @pytest.mark.asyncio
+    async def test_console_login_page_without_pin_has_no_data_pin_length(self, app):
+        """A sole account with no PIN still renders the lock screen, but the
+        keypad cannot auto-submit because nothing knows the length."""
+        app.state.auth.setup_user("admin", "Admin", "", "passw0rd")
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/auth/login")
+        assert resp.status_code == 200
+        assert "data-pin-length" not in resp.text
+
+    def test_with_data_pin_length_six_typing_five_sends_no_post_sixth_sends_exactly_one(self):
+        res = _run_pin_scenario({"pinLength": 6, "hasSubmit": False, "dotCount": 6, "typeDigits": [1,2,3,4,5]})
+        assert len(res["posts"]) == 0
+        res = _run_pin_scenario({"pinLength": 6, "hasSubmit": False, "dotCount": 6, "typeDigits": [1,2,3,4,5,6]})
+        assert len(res["posts"]) == 1
+
+    def test_wrong_pin_clears_dots_and_second_full_entry_posts_second(self):
+        res = _run_pin_scenario({"pinLength": 4, "hasSubmit": False, "dotCount": 4, "typeDigits": [1,2,3,4], "fetchStatus": 401, "fetchBody": {"error": "bad"}})
+        assert len(res["posts"]) == 1
+        assert res["lastStatus"] == 401
+        res2 = _run_pin_scenario({"pinLength": 4, "hasSubmit": False, "dotCount": 4, "typeDigits": [5,6,7,8], "fetchStatus": 401, "fetchBody": {"error": "bad"}})
+        assert len(res2["posts"]) == 1
+        assert res2["lastStatus"] == 401
+
+    def test_no_data_pin_length_button_exists_and_typing_never_auto_posts(self):
+        res = _run_pin_scenario({"pinLength": None, "hasSubmit": True, "dotCount": 4, "typeDigits": [1,2,3,4]})
+        assert len(res["posts"]) == 0
+        assert res["submitExists"] is True
+
+    def test_mutation_try_pin_fires_at_length_four_always_five_no_post_goes_red(self):
+        mutated = _PIN_PANEL_SCRIPT.replace('if (pinLength && input.value.length === pinLength) {\n      tryPin();\n    }',
+                                             'if (input.value.length === 4) {\n      tryPin();\n    }')
+        res = _run_pin_scenario({"pinLength": 6, "hasSubmit": False, "dotCount": 6, "typeDigits": [1,2,3,4,5]}, script_override=mutated)
+        assert len(res["posts"]) >= 1

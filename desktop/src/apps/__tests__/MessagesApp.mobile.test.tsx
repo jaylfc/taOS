@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import React from "react";
+import * as a2aSelection from "../MessagesApp.a2aSelection";
 
 // Stub the heavy data hooks / stores MessagesApp transitively imports so the
 // test only cares about the mobile shell structure. Anything that would fire
@@ -58,10 +59,22 @@ vi.mock("../chat/MessageList", () => ({
 }));
 
 vi.mock("../chat/MessageInput", () => ({
-  MessageInput: ({ onToggleSearch, onTogglePinned }: { onToggleSearch?: () => void; onTogglePinned?: () => void }) => (
+  MessageInput: ({
+    onToggleSearch,
+    onTogglePinned,
+    onSend,
+    onFileUpload,
+  }: {
+    onToggleSearch?: () => void;
+    onTogglePinned?: () => void;
+    onSend?: () => void;
+    onFileUpload?: () => void;
+  }) => (
     <div data-testid="message-input">
       <button type="button" onClick={onToggleSearch}>mock-search</button>
       <button type="button" onClick={onTogglePinned}>mock-pinned</button>
+      <button type="button" onClick={onFileUpload}>mock-upload</button>
+      <button type="button" onClick={onSend}>mock-send</button>
     </div>
   ),
 }));
@@ -84,14 +97,24 @@ vi.mock("@/lib/api", () => ({
   uploadFileAttachment: vi.fn(),
 }));
 
+vi.mock("@/shell/file-picker-api", () => ({
+  openFilePicker: vi.fn().mockResolvedValue([
+    { source: "disk", file: new File([], "a.png") },
+  ]),
+}));
+
 vi.mock("../MessagesApp.stallWatch", () => ({
   useStallWatch: () => ({ stallInfo: null }),
   computeStallInfo: () => null,
+  pickWatchAgent: vi.fn(),
 }));
 
 vi.mock("../MessagesApp.a2aSelection", () => ({
   selectInitialBusChannel: vi.fn(),
   selectFirstBoundChannel: vi.fn(),
+  readLastChannel: vi.fn(),
+  findA2aChannelId: vi.fn(),
+  writeLastChannel: vi.fn(),
 }));
 
 vi.mock("../chat/ChannelSidebar", () => ({
@@ -110,6 +133,7 @@ vi.mock("../chat/ChannelSidebar", () => ({
       data-agent-roster-ready={String(agentRosterReady)}
     >
       <button type="button" onClick={() => onSelectChannel?.("ch-g")}>open-group</button>
+      <button type="button" onClick={() => onSelectChannel?.("ch-dm")}>open-archived-dm</button>
     </div>
   ),
 }));
@@ -196,7 +220,7 @@ describe("MessagesApp mobile thread header", () => {
     await openGroup();
     const header = screen.getByRole("banner");
     expect(header).toHaveTextContent("design");
-    expect(header).toHaveTextContent("3 people");
+    expect(header).toHaveTextContent("3 members");
     // The old text-link back row ("< Messages") is not rendered.
     expect(screen.queryByRole("button", { name: /^Back to Messages$/ })).not.toBeInTheDocument();
     expect(screen.getAllByRole("banner")).toHaveLength(1);
@@ -394,5 +418,321 @@ describe("MessagesApp fetchAgentLists - archived fetch failure", () => {
       const sidebar = screen.getByTestId("channel-sidebar");
       expect(sidebar.getAttribute("data-agent-roster-ready")).toBe("true");
     });
+  });
+});
+
+describe("MessagesApp mobile archived DM header", () => {
+  let originalFetch: typeof global.fetch;
+
+  beforeEach(() => {
+    (useIsMobile as ReturnType<typeof vi.fn>).mockReset();
+    (useIsMobile as ReturnType<typeof vi.fn>).mockReturnValue(true);
+    originalFetch = global.fetch;
+    global.fetch = vi.fn().mockImplementation((url: string) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      const ok = (body: unknown) =>
+        Promise.resolve({
+          ok: true,
+          headers: { get: () => "application/json" },
+          json: () => Promise.resolve(body),
+        } as unknown as Response);
+      if (urlStr.includes("/api/chat/channels") && !urlStr.includes("/messages")) {
+        return ok({
+          channels: [
+            {
+              id: "ch-dm",
+              name: "old-bot",
+              type: "dm",
+              members: ["user", "old-bot"],
+              settings: { archived_agent_id: "a1", archived: true },
+            },
+          ],
+          unread: {},
+        });
+      }
+      if (urlStr.includes("/api/chat/unread")) return ok({ unread: {} });
+      if (urlStr.includes("/api/agents?include_guests=1")) return ok([]);
+      if (urlStr.includes("/api/agents/archived")) {
+        return ok([
+          { id: "a1", archived_slug: "old-bot-x", original: { name: "old-bot", display_name: "Old Bot" } },
+        ]);
+      }
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        headers: { get: () => "application/json" },
+        json: () => Promise.resolve({}),
+      } as unknown as Response);
+    });
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it("shows 'Archived agent' subtitle for an archived DM", async () => {
+    render(<MessagesApp windowId="test" />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "open-archived-dm" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "open-archived-dm" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Back to chats" })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("banner")).toHaveTextContent("Old Bot"));
+    await waitFor(() => expect(screen.getByRole("banner")).toHaveTextContent("Archived agent"));
+  });
+});
+
+describe("MessagesApp mobile sendError clearing", () => {
+  let originalFetch: typeof global.fetch;
+
+  beforeEach(() => {
+    (useIsMobile as ReturnType<typeof vi.fn>).mockReset();
+    (useIsMobile as ReturnType<typeof vi.fn>).mockReturnValue(true);
+    let messagePosts = 0;
+    originalFetch = global.fetch;
+    global.fetch = vi.fn().mockImplementation((url: string) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      const ok = (body: unknown) =>
+        Promise.resolve({
+          ok: true,
+          headers: { get: () => "application/json" },
+          json: () => Promise.resolve(body),
+        } as unknown as Response);
+      if (urlStr.includes("/api/chat/channels") && !urlStr.includes("/messages")) {
+        return ok({
+          channels: [
+            { id: "ch-g", name: "design", type: "group", members: ["user", "tom", "lin"] },
+          ],
+          unread: {},
+        });
+      }
+      if (urlStr.includes("/api/chat/unread")) return ok({ unread: {} });
+      if (urlStr.includes("/api/agents?include_guests=1")) return ok([]);
+      if (urlStr.includes("/api/agents/archived")) return ok([]);
+      if (urlStr.includes("/api/chat/upload"))
+        return ok({ filename: "a.png", mime_type: "image/png", size: 1, url: "http://localhost/a.png" });
+      if (urlStr.includes("/api/chat/messages")) {
+        messagePosts += 1;
+        // First attachment POST fails (an earlier error is on screen), the
+        // retry succeeds -- the success path must clear sendError.
+        if (messagePosts === 1) {
+          return Promise.resolve({
+            ok: false,
+            status: 400,
+            headers: { get: () => "application/json" },
+            json: () => Promise.resolve({ error: "couldn't send message" }),
+          } as unknown as Response);
+        }
+        return ok({});
+      }
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        headers: { get: () => "application/json" },
+        json: () => Promise.resolve({}),
+      } as unknown as Response);
+    });
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it("clears sendError after a successful attachment send", async () => {
+    render(<MessagesApp windowId="test" />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "open-group" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "open-group" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Back to chats" })).toBeInTheDocument());
+
+    // Add a completed attachment so the attachment POST path is taken.
+    fireEvent.click(screen.getByRole("button", { name: "mock-upload" }));
+    await waitFor(() =>
+      expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/api/chat/upload"), expect.anything()),
+    );
+    await waitFor(() => true); // flush the completed upload into the committed render
+
+    // First attachment send fails -> an error is on screen.
+    fireEvent.click(screen.getByRole("button", { name: "mock-send" }));
+    await waitFor(() => expect(screen.getByText(/couldn't send message/)).toBeInTheDocument());
+
+    // Retry: the attachment POST succeeds and the error is cleared.
+    fireEvent.click(screen.getByRole("button", { name: "mock-send" }));
+    await waitFor(() => expect(screen.queryByText(/couldn't send message/)).toBeNull());
+  });
+});
+
+describe("MessagesApp mobile Back button sends leave frame", () => {
+  let originalFetch: typeof global.fetch;
+  let wsMock: { send: ReturnType<typeof vi.fn>; readyState: number; close: ReturnType<typeof vi.fn>; onopen: (() => void) | null; onmessage: ((e: MessageEvent) => void) | null; onclose: (() => void) | null };
+  let WebSocketConstructor: typeof WebSocket;
+
+  beforeEach(() => {
+    (useIsMobile as ReturnType<typeof vi.fn>).mockReset();
+    (useIsMobile as ReturnType<typeof vi.fn>).mockReturnValue(true);
+    originalFetch = global.fetch;
+    wsMock = {
+      send: vi.fn(),
+      readyState: 1, // WebSocket.OPEN
+      close: vi.fn(),
+      onopen: null,
+      onmessage: null,
+      onclose: null,
+    };
+    WebSocketConstructor = global.WebSocket;
+    // Mock WebSocket constructor to return our mock - use a real constructor function
+    function MockWebSocket(this: WebSocket, url: string) {
+      (this as unknown as { _url: string })._url = url;
+      return wsMock as unknown as WebSocket;
+    }
+    global.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+    global.fetch = vi.fn().mockImplementation((url: string) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      const ok = (body: unknown) =>
+        Promise.resolve({
+          ok: true,
+          headers: { get: () => "application/json" },
+          json: () => Promise.resolve(body),
+        } as unknown as Response);
+      if (urlStr.includes("/api/chat/channels") && !urlStr.includes("/messages")) {
+        return ok({
+          channels: [
+            { id: "ch-g", name: "design", type: "group", members: ["user", "tom", "lin"] },
+          ],
+          unread: {},
+        });
+      }
+      if (urlStr.includes("/api/chat/unread")) return ok({ unread: {} });
+      if (urlStr.includes("/api/agents?include_guests=1")) return ok([]);
+      if (urlStr.includes("/api/agents/archived")) return ok([]);
+      if (urlStr.includes("/api/chat/channels/ch-g/messages")) {
+        return ok({ messages: [] });
+      }
+      if (urlStr.includes("/api/chat/channels/ch-g/mark-read")) {
+        return ok({});
+      }
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        headers: { get: () => "application/json" },
+        json: () => Promise.resolve({}),
+      } as unknown as Response);
+    });
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    global.WebSocket = WebSocketConstructor;
+  });
+
+  it("sends leave frame on Back tap", async () => {
+    render(<MessagesApp windowId="test" />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "open-group" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "open-group" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Back to chats" })).toBeInTheDocument());
+
+    // Click Back to chats - this should send a leave frame for ch-g
+    fireEvent.click(screen.getByRole("button", { name: "Back to chats" }));
+
+    await waitFor(() => {
+      expect(wsMock.send).toHaveBeenCalledWith(JSON.stringify({ type: "leave", channel_id: "ch-g" }));
+    });
+  });
+
+  it("sidebar select works after Back", async () => {
+    render(<MessagesApp windowId="test" />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "open-group" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "open-group" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Back to chats" })).toBeInTheDocument());
+
+    // Click Back to chats
+    fireEvent.click(screen.getByRole("button", { name: "Back to chats" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Back to chats" })).not.toBeInTheDocument());
+
+    // Sidebar should be visible again and selectable
+    await waitFor(() => expect(screen.getByRole("button", { name: "open-group" })).toBeInTheDocument());
+  });
+});
+
+describe("MessagesApp mobile Back-out guard resets on non-null selection paths", () => {
+  let originalFetch: typeof global.fetch;
+  let WebSocketConstructor: typeof WebSocket;
+
+  beforeEach(() => {
+    (useIsMobile as ReturnType<typeof vi.fn>).mockReset();
+    (useIsMobile as ReturnType<typeof vi.fn>).mockReturnValue(true);
+    originalFetch = global.fetch;
+    WebSocketConstructor = global.WebSocket;
+    const wsMock = {
+      send: vi.fn(),
+      readyState: 1,
+      close: vi.fn(),
+      onopen: null,
+      onmessage: null,
+      onclose: null,
+    };
+    function MockWebSocket(this: WebSocket, _url: string) {
+      return wsMock as unknown as WebSocket;
+    }
+    global.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    global.WebSocket = WebSocketConstructor;
+  });
+
+  it("reselects remembered/A2A channel after Back, open-messages select, then channel removed", async () => {
+    vi.mocked(a2aSelection.findA2aChannelId).mockReturnValue("ch-a2a");
+    let channels = [
+      { id: "ch-a2a", name: "a2a", type: "group", members: ["user", "tom"], settings: { kind: "a2a" } },
+      { id: "ch-del", name: "todelete", type: "group", members: ["user", "tom"] },
+    ];
+    global.fetch = vi.fn().mockImplementation((url: string) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      const ok = (body: unknown) =>
+        Promise.resolve({
+          ok: true,
+          headers: { get: () => "application/json" },
+          json: () => Promise.resolve(body),
+        } as unknown as Response);
+      if (urlStr.includes("/api/chat/channels") && !urlStr.includes("/messages") && !urlStr.includes("archived=true") && !urlStr.includes("/mark-read")) {
+        return ok({ channels, unread: {} });
+      }
+      if (urlStr.includes("archived=true")) return ok({ channels: [] });
+      if (urlStr.includes("/api/chat/unread")) return ok({ unread: {} });
+      if (urlStr.includes("/api/agents?include_guests=1")) return ok([]);
+      if (urlStr.includes("/api/agents/archived")) return ok([]);
+      if (urlStr.includes("/messages")) return ok({ messages: [] });
+      if (urlStr.includes("/mark-read")) return ok({});
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        headers: { get: () => "application/json" },
+        json: () => Promise.resolve({}),
+      } as unknown as Response);
+    });
+
+    render(<MessagesApp windowId="test" scope={{ projectId: "proj1" }} />);
+    await waitFor(() => expect(screen.getByTestId("channel-sidebar")).toBeInTheDocument());
+
+    // Default selection should pick the A2A channel.
+    await waitFor(() => expect(screen.getByRole("button", { name: "Back to chats" })).toBeInTheDocument());
+    expect(screen.getByRole("banner")).toHaveTextContent("a2a");
+
+    // Back out
+    fireEvent.click(screen.getByRole("button", { name: "Back to chats" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Back to chats" })).not.toBeInTheDocument());
+
+    // Select the channel-to-delete via the open-messages event (a non-null selection path)
+    window.dispatchEvent(new CustomEvent("taos:open-messages", { detail: { channelId: "ch-del" } }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Back to chats" })).toBeInTheDocument());
+    expect(screen.getByRole("banner")).toHaveTextContent("todelete");
+
+    // Remove that channel from the list and trigger a refresh
+    channels = [
+      { id: "ch-a2a", name: "a2a", type: "group", members: ["user", "tom"], settings: { kind: "a2a" } },
+    ];
+    window.dispatchEvent(new Event("focus"));
+
+    // Default selection should re-pick the remembered/A2A channel again.
+    await waitFor(() => expect(screen.getByRole("banner")).toHaveTextContent("a2a"), { timeout: 5000 });
   });
 });

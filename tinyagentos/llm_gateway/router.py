@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 from fastapi import APIRouter, Depends, Request
@@ -24,6 +25,7 @@ from tinyagentos.llm_gateway.forward import (
 from tinyagentos.llm_gateway.anthropic import chat_completion_anthropic
 from tinyagentos.llm_gateway import stt, tts
 from tinyagentos.llm_gateway.resolve import TAOS_DEFAULT, find_routes, model_names, routing_table
+from tinyagentos.llm_gateway.images import shrink_images, has_image_parts
 import tinyagentos.llm_gateway.resolve as resolve_mod
 
 PREFIX = "/api/llm/v1"
@@ -100,6 +102,9 @@ async def chat_completions(request: Request, caller: GatewayCaller = Depends(gat
     alias_grant = requested == TAOS_DEFAULT and caller.may_use(TAOS_DEFAULT)
     if route.model_name != requested and not alias_grant and not caller.may_use(route.model_name):
         raise model_not_permitted(route.model_name)
+
+    if has_image_parts(body):
+        body = await asyncio.to_thread(shrink_images, body)
 
     # Route through appropriate handler based on provider
     if route.provider == "anthropic":

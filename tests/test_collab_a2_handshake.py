@@ -857,3 +857,263 @@ class TestSecurityRegression:
         assert contact["status"] == "blocked", (
             "blocked contact must not be resurrected by re-accept"
         )
+
+
+# ---------------------------------------------------------------------------
+# Race condition tests: block/revoke during friend-accept handshake
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestHandshakeRevokeRace:
+    async def test_accept_restores_link_revoked_before_accept(
+        self, client_with_contacts, app_with_contacts, monkeypatch
+    ):
+        """A link revoked BEFORE the accept is restored (existing behaviour)."""
+        store = app_with_contacts.state.contacts_store
+
+        # Pre-create a contact and peer link, then revoke it.
+        await store.add_contact(
+            contact_id=f"hub:{_PEER_FP}",
+            hub_username=_PEER_USERNAME,
+            display_name="Remote",
+            ed25519_pub=_PEER_SIGNING_PUB,
+            x25519_pub=_PEER_ENCRYPTION_PUB,
+            peer_fingerprint=_PEER_FP,
+        )
+        await store.establish_peer_link(
+            contact_id=f"hub:{_PEER_FP}",
+            inbound_token=generate_peer_token(),
+            outbound_token=generate_peer_token(),
+        )
+        await store.revoke_peer_link(f"hub:{_PEER_FP}")
+        revoked_link = await store.get_peer_link(f"hub:{_PEER_FP}")
+        assert revoked_link["revoked_at"] is not None
+
+        dir_resp_body = {
+            "peer": _PEER_FP,
+            "username": _PEER_USERNAME,
+            "display_name": "Remote Peer",
+            "signing_pubkey": _PEER_SIGNING_PUB,
+            "encryption_pubkey": _PEER_ENCRYPTION_PUB,
+            "endpoints": ["https://peer.example.com:6969"],
+        }
+
+        async def handler(method, url, **kw):
+            return _fake_dir_resp(body=dir_resp_body)
+
+        _patch_account_proxy(monkeypatch, handler)
+
+        resp = await client_with_contacts.post(
+            "/api/hub/friends/requests/test-rid-rev-pre/accept",
+            json={"peer_fingerprint": _PEER_FP},
+        )
+        # Accept succeeds and restores the revoked link
+        assert resp.status_code == 200
+
+        link = await store.get_peer_link(f"hub:{_PEER_FP}")
+        assert link["revoked_at"] is None, "revoked link must be restored on accept"
+
+        contact = await store.get_contact(f"hub:{_PEER_FP}")
+        assert contact["status"] == "active"
+
+    async def test_block_during_accept_is_not_undone(
+        self, client_with_contacts, app_with_contacts, monkeypatch
+    ):
+        """A block that lands BETWEEN the link read and the write is NOT undone.
+
+        Monkeypatch add_contact to inject a block (REL_BLOCK edge + revoke_peer_link)
+        after the handshake reads the peer link but before it writes the new one.
+        """
+        store = app_with_contacts.state.contacts_store
+
+        # Pre-create a contact and peer link (active, not revoked)
+        await store.add_contact(
+            contact_id=f"hub:{_PEER_FP}",
+            hub_username=_PEER_USERNAME,
+            display_name="Remote",
+            ed25519_pub=_PEER_SIGNING_PUB,
+            x25519_pub=_PEER_ENCRYPTION_PUB,
+            peer_fingerprint=_PEER_FP,
+        )
+        await store.establish_peer_link(
+            contact_id=f"hub:{_PEER_FP}",
+            inbound_token=generate_peer_token(),
+            outbound_token=generate_peer_token(),
+        )
+
+        # Also add REL_BLOCK on hub relationships — the accept guard
+        # checks has_edge(peer, REL_BLOCK) at the hub layer.
+        from tinyagentos.hub.store import HubStore
+        hub_store = HubStore(
+            Path(app_with_contacts.state.data_dir) / "hub" / "hub.db"
+        )
+        await hub_store.init()
+
+        dir_resp_body = {
+            "peer": _PEER_FP,
+            "username": _PEER_USERNAME,
+            "display_name": "Remote Peer",
+            "signing_pubkey": _PEER_SIGNING_PUB,
+            "encryption_pubkey": _PEER_ENCRYPTION_PUB,
+            "endpoints": ["https://peer.example.com:6969"],
+        }
+
+        # Wrap the real add_contact to inject a block after the link read
+        real_add_contact = store.add_contact
+
+        async def blocking_add_contact(*args, **kwargs):
+            # First, establish the block edge and revoke the peer link
+            await hub_store.put_relationship(_PEER_FP, "block")
+            await store.revoke_peer_link(f"hub:{_PEER_FP}")
+            # Then call the real add_contact
+            return await real_add_contact(*args, **kwargs)
+
+        monkeypatch.setattr(store, "add_contact", blocking_add_contact)
+
+        async def handler(method, url, **kw):
+            return _fake_dir_resp(body=dir_resp_body)
+
+        _patch_account_proxy(monkeypatch, handler)
+
+        resp = await client_with_contacts.post(
+            "/api/hub/friends/requests/test-rid-race-block/accept",
+            json={"peer_fingerprint": _PEER_FP},
+        )
+        # The directory/local friendship was already accepted; the block that
+        # landed during the handshake refuses only the peer handshake and must
+        # stay in force.
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["state"] == "accepted"
+        assert data["handshake"] == "refused"
+
+        # The peer link must still be revoked
+        link = await store.get_peer_link(f"hub:{_PEER_FP}")
+        assert link["revoked_at"] is not None, "block during accept must not be undone"
+
+        # The contact status must be blocked
+        contact = await store.get_contact(f"hub:{_PEER_FP}")
+        assert contact["status"] == "blocked", "contact must be blocked"
+
+        await hub_store.close()
+
+    async def test_accept_reports_handshake_refused_when_link_revoked(
+        self, client_with_contacts, app_with_contacts, monkeypatch
+    ):
+        """Accepted directory/local friendship reports a refused peer handshake
+        when a revoke lands during the handshake and leaves the link revoked."""
+        store = app_with_contacts.state.contacts_store
+
+        await store.add_contact(
+            contact_id=f"hub:{_PEER_FP}",
+            hub_username=_PEER_USERNAME,
+            display_name="Remote",
+            ed25519_pub=_PEER_SIGNING_PUB,
+            x25519_pub=_PEER_ENCRYPTION_PUB,
+            peer_fingerprint=_PEER_FP,
+        )
+        await store.establish_peer_link(
+            contact_id=f"hub:{_PEER_FP}",
+            inbound_token=generate_peer_token(),
+            outbound_token=generate_peer_token(),
+        )
+
+        dir_resp_body = {
+            "peer": _PEER_FP,
+            "username": _PEER_USERNAME,
+            "display_name": "Remote Peer",
+            "signing_pubkey": _PEER_SIGNING_PUB,
+            "encryption_pubkey": _PEER_ENCRYPTION_PUB,
+            "endpoints": ["https://peer.example.com:6969"],
+        }
+
+        real_add_contact = store.add_contact
+
+        async def revoking_add_contact(*args, **kwargs):
+            await store.revoke_peer_link(f"hub:{_PEER_FP}")
+            return await real_add_contact(*args, **kwargs)
+
+        monkeypatch.setattr(store, "add_contact", revoking_add_contact)
+
+        async def handler(method, url, **kw):
+            return _fake_dir_resp(body=dir_resp_body)
+
+        _patch_account_proxy(monkeypatch, handler)
+
+        resp = await client_with_contacts.post(
+            "/api/hub/friends/requests/test-rid-race-refused/accept",
+            json={"peer_fingerprint": _PEER_FP},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["state"] == "accepted"
+        assert data["handshake"] == "refused"
+        assert data["peer"] == _PEER_FP
+
+        link = await store.get_peer_link(f"hub:{_PEER_FP}")
+        assert link["revoked_at"] is not None
+
+    async def test_revoke_after_link_read_refuses_restore(
+        self, client_with_contacts, app_with_contacts, monkeypatch
+    ):
+        """A revoke_peer_link that lands AFTER the link read (no REL_BLOCK edge)
+        must refuse the restore — the handshake returns 403 and revoked_at stays set.
+        """
+        store = app_with_contacts.state.contacts_store
+
+        # Pre-create a contact and peer link (active, not revoked)
+        await store.add_contact(
+            contact_id=f"hub:{_PEER_FP}",
+            hub_username=_PEER_USERNAME,
+            display_name="Remote",
+            ed25519_pub=_PEER_SIGNING_PUB,
+            x25519_pub=_PEER_ENCRYPTION_PUB,
+            peer_fingerprint=_PEER_FP,
+        )
+        await store.establish_peer_link(
+            contact_id=f"hub:{_PEER_FP}",
+            inbound_token=generate_peer_token(),
+            outbound_token=generate_peer_token(),
+        )
+
+        dir_resp_body = {
+            "peer": _PEER_FP,
+            "username": _PEER_USERNAME,
+            "display_name": "Remote Peer",
+            "signing_pubkey": _PEER_SIGNING_PUB,
+            "encryption_pubkey": _PEER_ENCRYPTION_PUB,
+            "endpoints": ["https://peer.example.com:6969"],
+        }
+
+        # Wrap the real add_contact to inject ONLY a revoke_peer_link (no block edge)
+        real_add_contact = store.add_contact
+
+        async def revoking_add_contact(*args, **kwargs):
+            await store.revoke_peer_link(f"hub:{_PEER_FP}")
+            return await real_add_contact(*args, **kwargs)
+
+        monkeypatch.setattr(store, "add_contact", revoking_add_contact)
+
+        async def handler(method, url, **kw):
+            return _fake_dir_resp(body=dir_resp_body)
+
+        _patch_account_proxy(monkeypatch, handler)
+
+        resp = await client_with_contacts.post(
+            "/api/hub/friends/requests/test-rid-race-revoke/accept",
+            json={"peer_fingerprint": _PEER_FP},
+        )
+        # The directory/local friendship was already accepted; only the peer
+        # handshake was refused because the revoked link cannot be restored.
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["state"] == "accepted"
+        assert data["handshake"] == "refused"
+
+        # The peer link must still be revoked
+        link = await store.get_peer_link(f"hub:{_PEER_FP}")
+        assert link["revoked_at"] is not None, "revoke during accept must not be undone"
+
+        # Note: add_contact resets contact status to active, so we don't assert
+        # on contact status here. The key invariant is that revoked_at stays set.
