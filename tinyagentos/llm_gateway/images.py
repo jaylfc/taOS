@@ -59,8 +59,6 @@ def _shrink_one(url: str) -> str:
             fmt = img.format
             img = ImageOps.exif_transpose(img)
             img.thumbnail((MAX_LONG_EDGE, MAX_LONG_EDGE))
-            if fmt is None:
-                fmt = img.format
             if fmt not in _FORMAT_MEDIA:
                 return url
             out = io.BytesIO()
@@ -161,7 +159,8 @@ def shrink_images(body: dict) -> dict:
             if not isinstance(url, str):
                 continue
             if image_count > MAX_IMAGES_PER_REQUEST:
-                skipped += 1
+                if url.startswith("data:"):
+                    skipped += 1
                 continue
             new_url = _shrink_one(url)
             if new_url == url:

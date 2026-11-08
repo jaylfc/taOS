@@ -123,3 +123,72 @@ def test_animated_gif_passed_through():
     result = shrink_images(body)
     new_url = result["messages"][0]["content"][0]["image_url"]["url"]
     assert new_url == url
+
+
+from tinyagentos.llm_gateway.images import MAX_IMAGES_PER_REQUEST, has_image_parts
+
+
+def _body_with_images(urls):
+    return {
+        "messages": [
+            {"role": "user", "content": [{"type": "image_url", "image_url": {"url": u}} for u in urls]}
+        ]
+    }
+
+
+def test_per_request_image_cap_shrinks_first_eight():
+    urls = [_png_data_url(2000, 1000) for _ in range(MAX_IMAGES_PER_REQUEST + 2)]
+    body = _body_with_images(urls)
+    result = shrink_images(body)
+    parts = result["messages"][0]["content"]
+    # first 8 shrunk to 1568 long edge
+    for i in range(MAX_IMAGES_PER_REQUEST):
+        new_url = parts[i]["image_url"]["url"]
+        assert new_url != urls[i]
+        _, img, _ = _decode_data_url(new_url)
+        assert max(img.size) == 1568
+    # last 2 byte-identical to input
+    for i in range(MAX_IMAGES_PER_REQUEST, MAX_IMAGES_PER_REQUEST + 2):
+        assert parts[i]["image_url"]["url"] == urls[i]
+
+
+def test_has_image_parts_text_only_and_data_url():
+    text_only = {"messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]}
+    assert has_image_parts(text_only) is False
+    img_body = {
+        "messages": [
+            {"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]}
+        ]
+    }
+    assert has_image_parts(img_body) is True
+
+
+def test_jpeg_labelled_png_reencoded_as_jpeg():
+    img = Image.new("RGB", (2000, 1000), color=(10, 20, 30))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG")
+    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    url = f"data:image/png;base64,{b64}"
+    body = {"messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": url}}]}]}
+    result = shrink_images(body)
+    new_url = result["messages"][0]["content"][0]["image_url"]["url"]
+    media_type, out_img, _ = _decode_data_url(new_url)
+    assert media_type == "image/jpeg"
+
+
+def test_large_noisy_rgba_png_stays_png():
+    import random
+    size = 2000
+    img = Image.new("RGBA", (size, size))
+    pixels = [tuple(random.randrange(256) for _ in range(4)) for _ in range(size * size)]
+    img.putdata(pixels)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    url = f"data:image/png;base64,{b64}"
+    body = {"messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": url}}]}]}
+    result = shrink_images(body)
+    new_url = result["messages"][0]["content"][0]["image_url"]["url"]
+    media_type, out_img, _ = _decode_data_url(new_url)
+    assert media_type == "image/png"
+    assert out_img.mode == "RGBA"
