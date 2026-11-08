@@ -5,9 +5,7 @@ declare global {
   interface Array<T> {
     at(index: number): T | undefined;
   }
-  interface AbortSignal {
-    timeout: undefined;
-  }
+  interface AbortSignal {}
   interface AbortSignalConstructor {
     timeout(ms: number): AbortSignal;
   }
