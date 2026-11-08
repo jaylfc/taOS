@@ -95,6 +95,27 @@ def _convert_tool_choice(tool_choice: dict | str | None) -> dict | str | None:
     return tool_choice
 
 
+def _convert_user_content(content: Any) -> Any:
+    """Map OpenAI image_url parts to Anthropic image blocks; leave the rest as is."""
+    if not isinstance(content, list):
+        return content
+    converted = []
+    for part in content:
+        if isinstance(part, dict) and part.get("type") == "image_url":
+            image_url = part.get("image_url")
+            url = image_url.get("url") if isinstance(image_url, dict) else image_url
+            if not isinstance(url, str) or not url:
+                raise bad_request("image URL must be a non-empty string")
+            if url.startswith("data:") and ";base64," in url:
+                media_type, data = url[5:].split(";base64,", 1)
+                media_type = media_type.split(";", 1)[0]
+                part = {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}}
+            else:
+                part = {"type": "image", "source": {"type": "url", "url": url}}
+        converted.append(part)
+    return converted
+
+
 def _messages_url(route: Any) -> str:
     base = (getattr(route, "api_base", None) or ANTHROPIC_API_BASE).rstrip("/")
     if base.endswith("/v1"):
@@ -129,7 +150,7 @@ async def _openai_to_anthropic(
         if role == "system":
             system_message = content
         elif role == "user":
-            anthropic_messages.append({"role": "user", "content": content or ""})
+            anthropic_messages.append({"role": "user", "content": _convert_user_content(content) or ""})
         elif role == "assistant":
             tool_calls = msg.get("tool_calls")
             if tool_calls:
