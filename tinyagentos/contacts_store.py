@@ -351,8 +351,13 @@ class ContactsStore(BaseStore):
         ``restore_revoked_at`` is only for the owner re-request / re-accept path,
         where the owner has explicitly re-initiated the friendship and the revoked
         link is meant to be restored.  Only the exact revocation timestamp the
-        caller observed may be cleared — a newer revocation that lands after the
+        caller observed may be cleared -- a newer revocation that lands after the
         read is preserved.
+
+        Note: restore matching is by ``revoked_at`` float equality and relies on
+        distinct ``time.time()`` values per revoke.  If two revokes happened to
+        produce the same timestamp (extremely unlikely but theoretically
+        possible), the later revoke could be cleared unintentionally.
         """
         now = time.time()
         eps_json = _json_dumps(endpoints or [])

@@ -1053,3 +1053,70 @@ class TestHandshakeRevokeRace:
 
         # Note: add_contact resets contact status to active, so we don't assert
         # on contact status here. The key invariant is that revoked_at stays set.
+
+    async def test_block_during_first_accept_revokes_new_link(
+        self, client_with_contacts, app_with_contacts, monkeypatch
+    ):
+        """A block that lands DURING the FIRST friend-accept handshake (no
+        pre-existing peer link) must revoke the newly created link and return
+        a non-200 response. The contact status must be 'blocked'.
+        """
+        from tinyagentos.hub import relationships
+        from tinyagentos.hub.store import HubStore
+
+        store = app_with_contacts.state.contacts_store
+
+        # NO pre-existing contact or peer link — this is a FIRST accept.
+        # Set up hub relationships so the block edge can be written.
+        hub_store = HubStore(
+            Path(app_with_contacts.state.data_dir) / "hub" / "hub.db"
+        )
+        await hub_store.init()
+
+        dir_resp_body = {
+            "peer": _PEER_FP,
+            "username": _PEER_USERNAME,
+            "display_name": "Remote Peer",
+            "signing_pubkey": _PEER_SIGNING_PUB,
+            "encryption_pubkey": _PEER_ENCRYPTION_PUB,
+            "endpoints": ["https://peer.example.com:6969"],
+        }
+
+        # Wrap the real add_contact to inject a REL_BLOCK edge BEFORE
+        # the real add_contact runs. This simulates a block committing
+        # between the re-check and the establish_peer_link call.
+        real_add_contact = store.add_contact
+
+        async def blocking_add_contact(*args, **kwargs):
+            # Inject the block edge at the hub layer
+            await hub_store.put_relationship(_PEER_FP, relationships.REL_BLOCK)
+            # Then call the real add_contact
+            return await real_add_contact(*args, **kwargs)
+
+        monkeypatch.setattr(store, "add_contact", blocking_add_contact)
+
+        async def handler(method, url, **kw):
+            return _fake_dir_resp(body=dir_resp_body)
+
+        _patch_account_proxy(monkeypatch, handler)
+
+        resp = await client_with_contacts.post(
+            "/api/hub/friends/requests/test-rid-first-block/accept",
+            json={"peer_fingerprint": _PEER_FP},
+        )
+        # The accept should NOT return 200 — the block that landed during
+        # the first handshake must be honoured.
+        assert resp.status_code != 200
+
+        # The peer link must be revoked (not live)
+        cid = f"hub:{_PEER_FP}"
+        link = await store.get_peer_link(cid)
+        assert link is not None, "peer link should exist but be revoked"
+        assert link["revoked_at"] is not None, "new link must be revoked by block"
+
+        # The contact status must be blocked
+        contact = await store.get_contact(cid)
+        assert contact is not None
+        assert contact["status"] == "blocked", "contact must be blocked"
+
+        await hub_store.close()
