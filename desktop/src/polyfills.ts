@@ -6,6 +6,9 @@ declare global {
     at(index: number): T | undefined;
   }
   interface AbortSignal {
+    timeout: undefined;
+  }
+  interface AbortSignalConstructor {
     timeout(ms: number): AbortSignal;
   }
 }
@@ -36,8 +39,26 @@ if (typeof Array.prototype.at === "undefined") {
 if (typeof AbortSignal !== "undefined" && typeof (AbortSignal as any).timeout !== "function") {
   Object.defineProperty(AbortSignal, "timeout", {
     value: function timeout(this: unknown, ms: number): AbortSignal {
+      if (!Number.isFinite(ms) || ms < 0 || ms > Number.MAX_SAFE_INTEGER) {
+        throw new TypeError("AbortSignal.timeout delay must be a non-negative finite number <= Number.MAX_SAFE_INTEGER");
+      }
       const controller = new AbortController();
-      setTimeout(() => controller.abort(new DOMException("signal timed out", "TimeoutError")), ms);
+      const MAX_TIMEOUT = 2147483647;
+      if (ms <= MAX_TIMEOUT) {
+        setTimeout(() => controller.abort(new DOMException("signal timed out", "TimeoutError")), ms);
+      } else {
+        let remaining = ms;
+        const chain = () => {
+          const chunk = Math.min(remaining, MAX_TIMEOUT);
+          remaining -= chunk;
+          if (remaining <= 0) {
+            controller.abort(new DOMException("signal timed out", "TimeoutError"));
+          } else {
+            setTimeout(chain, chunk);
+          }
+        };
+        setTimeout(chain, MAX_TIMEOUT);
+      }
       return controller.signal;
     },
     writable: true,
