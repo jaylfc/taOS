@@ -242,6 +242,12 @@ class TestProviderAPI:
         stored_entry = next(
             b for b in app.state.config.backends if b.get("name") == "disco"
         )
+        assert stored_entry["url"] == "https://openrouter.ai/api/v1"
+        stored_ids = [
+            m.get("id") if isinstance(m, dict) else m
+            for m in stored_entry["models"]
+        ]
+        assert stored_ids == fake_ids
 
     async def test_add_provider_explicit_empty_models_triggers_discovery(self, client, app):
         """Explicit ``models: []`` on a cloud provider still triggers discovery;
@@ -266,12 +272,6 @@ class TestProviderAPI:
         )
         stored_ids = [
             m.get("id") if isinstance(m, dict) else m for m in stored_entry["models"]
-        ]
-        assert stored_ids == fake_ids
-        assert stored_entry["url"] == "https://openrouter.ai/api/v1"
-        stored_ids = [
-            m.get("id") if isinstance(m, dict) else m
-            for m in stored_entry["models"]
         ]
         assert stored_ids == fake_ids
 
