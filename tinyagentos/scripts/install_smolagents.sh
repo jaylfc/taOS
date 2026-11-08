@@ -101,22 +101,22 @@ async def post_reply(c, u, t, mid, tid, txt, cid=None):
         try:
             resp = await c.post(u, json=body, headers=headers, timeout=30)
             if 200 <= resp.status_code < 300:
-                return
+                return True
             if resp.status_code in (429,) or 500 <= resp.status_code < 600:
                 if attempt < MAX_RETRIES:
                     await asyncio.sleep(1.0 * attempt)
                     continue
             log.warning("reply POST %s: %s", resp.status_code, resp.text[:300])
-            return
+            return False
         except httpx.TransportError as e:
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(1.0 * attempt)
                 continue
             log.warning("reply POST failed: %s", e)
-            return
+            return False
         except Exception as e:
             log.warning("reply POST failed: %s", e)
-            return
+            return False
 async def handle(c, evt, ch):
     mid=evt.get("id",""); tid=evt.get("trace_id",mid); text=evt.get("text","")
     force = bool(evt.get("force_respond"))
