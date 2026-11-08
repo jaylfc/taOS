@@ -1393,6 +1393,48 @@ async def test_scan_requestscan_fails_returns_502(monkeypatch):
     assert _json_body(resp) == {"error": "scan_failed"}
 
 
+@pytest.mark.asyncio
+async def test_scan_continues_on_adapter_failure_two_adapters(monkeypatch):
+    """Two adapters, first RequestScan fails, second succeeds -> 202, scanning == [second iface], RequestScan called twice."""
+    busctl_calls = []
+
+    async def fake_busctl(*args):
+        busctl_calls.append(args)
+        if args[0] == "get-property" and args[-1] == "WirelessEnabled":
+            return 0, True
+        if args[0] == "call" and args[-1] == "GetDevices":
+            return 0, [
+                "/org/freedesktop/NetworkManager/Devices/1",
+                "/org/freedesktop/NetworkManager/Devices/2",
+            ]
+        if args[0] == "get-property" and args[2] == "/org/freedesktop/NetworkManager/Devices/1" and args[4] == "DeviceType":
+            return 0, 2
+        if args[0] == "get-property" and args[2] == "/org/freedesktop/NetworkManager/Devices/1" and args[4] == "Interface":
+            return 0, "wlan0"
+        if args[0] == "get-property" and args[2] == "/org/freedesktop/NetworkManager/Devices/2" and args[4] == "DeviceType":
+            return 0, 2
+        if args[0] == "get-property" and args[2] == "/org/freedesktop/NetworkManager/Devices/2" and args[4] == "Interface":
+            return 0, "wlan1"
+        if args[0] == "call" and args[1] == "org.freedesktop.NetworkManager" and args[3] == "org.freedesktop.NetworkManager.Device.Wireless" and args[4] == "RequestScan":
+            if args[2] == "/org/freedesktop/NetworkManager/Devices/1":
+                return 1, None
+            if args[2] == "/org/freedesktop/NetworkManager/Devices/2":
+                return 0, None
+            return 1, None
+        raise AssertionError(f"unexpected busctl call: {args}")
+
+    monkeypatch.setattr(hw_routes, "busctl", fake_busctl)
+
+    body = hw_routes.WifiScanBody()
+    resp = await hw_routes.wifi_scan(body)
+
+    assert resp.status_code == 202
+    assert _json_body(resp) == {"ok": True, "scanning": ["wlan1"]}
+
+    request_scan_calls = [c for c in busctl_calls if c[0] == "call" and len(c) >= 5 and c[4] == "RequestScan"]
+    assert len(request_scan_calls) == 2
+
+
 # --- Forget route tests ---
 
 
@@ -1403,6 +1445,8 @@ async def test_forget_happy_path_deletes_matching_wifi_profile_only(monkeypatch)
 
     async def fake_busctl(*args):
         busctl_calls.append(args)
+        if args[0] == "get-property" and args[-1] == "WirelessEnabled":
+            return 0, True
         if args[0] == "call" and args[1] == "org.freedesktop.NetworkManager" and args[2] == "/org/freedesktop/NetworkManager/Settings" and args[3] == "org.freedesktop.NetworkManager.Settings" and args[4] == "ListConnections":
             return 0, [
                 "/org/freedesktop/NetworkManager/Settings/1",
@@ -1486,6 +1530,8 @@ async def test_forget_no_matching_profile_returns_404(monkeypatch):
 
     async def fake_busctl(*args):
         busctl_calls.append(args)
+        if args[0] == "get-property" and args[-1] == "WirelessEnabled":
+            return 0, True
         if args[0] == "call" and args[1] == "org.freedesktop.NetworkManager" and args[2] == "/org/freedesktop/NetworkManager/Settings" and args[3] == "org.freedesktop.NetworkManager.Settings" and args[4] == "ListConnections":
             return 0, [
                 "/org/freedesktop/NetworkManager/Settings/1",
@@ -1558,12 +1604,31 @@ async def test_forget_invalid_ssid_33_bytes_returns_422_zero_busctl(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_forget_nm_unavailable_precheck_returns_503(monkeypatch):
+    """Forget when WirelessEnabled precheck fails returns 503 networkmanager_unavailable."""
+    async def fake_busctl(*args):
+        if args[0] == "get-property" and args[-1] == "WirelessEnabled":
+            return 1, None
+        raise AssertionError(f"unexpected busctl call: {args}")
+
+    monkeypatch.setattr(hw_routes, "busctl", fake_busctl)
+
+    body = hw_routes.WifiForgetBody(ssid="MyWiFi")
+    resp = await hw_routes.wifi_forget(body)
+
+    assert resp.status_code == 503
+    assert _json_body(resp) == {"error": "networkmanager_unavailable"}
+
+
+@pytest.mark.asyncio
 async def test_forget_delete_fails_returns_502_write_failed(monkeypatch):
     """Forget when Delete returns non-zero rc returns 502 write_failed with polkit hint."""
     busctl_calls = []
 
     async def fake_busctl(*args):
         busctl_calls.append(args)
+        if args[0] == "get-property" and args[-1] == "WirelessEnabled":
+            return 0, True
         if args[0] == "call" and args[1] == "org.freedesktop.NetworkManager" and args[2] == "/org/freedesktop/NetworkManager/Settings" and args[3] == "org.freedesktop.NetworkManager.Settings" and args[4] == "ListConnections":
             return 0, ["/org/freedesktop/NetworkManager/Settings/1"]
         if args[0] == "call" and args[2] == "/org/freedesktop/NetworkManager/Settings/1" and args[3] == "org.freedesktop.NetworkManager.Settings.Connection" and args[4] == "GetSettings":
@@ -1575,7 +1640,7 @@ async def test_forget_delete_fails_returns_502_write_failed(monkeypatch):
                         "id": {"type": "s", "data": "MyWiFi"}
                     },
                     "802-11-wireless": {
-                        "ssid": {"type": "ay", "data": [77, 121, 87, 105, 70, 105]},  # 'MyWiFi' as bytes
+                        "ssid": {"type": "ay", "data": [77, 121, 87, 105, 70, 105]},
                         "mode": {"type": "s", "data": "infrastructure"}
                     }
                 }]
@@ -1596,26 +1661,68 @@ async def test_forget_delete_fails_returns_502_write_failed(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_forget_non_admin_returns_403(monkeypatch):
-    """Forget route requires admin (403 when not admin)."""
+async def test_forget_skips_profile_with_nonempty_permissions_returns_404(monkeypatch):
+    """A matching-SSID profile with permissions [\"user:taos:\"] is not deleted and the route returns 404 unknown_ssid."""
+    busctl_calls = []
+
     async def fake_busctl(*args):
-        raise AssertionError(f"busctl should not be called for non-admin: {args}")
+        busctl_calls.append(args)
+        if args[0] == "get-property" and args[-1] == "WirelessEnabled":
+            return 0, True
+        if args[0] == "call" and args[1] == "org.freedesktop.NetworkManager" and args[2] == "/org/freedesktop/NetworkManager/Settings" and args[3] == "org.freedesktop.NetworkManager.Settings" and args[4] == "ListConnections":
+            return 0, ["/org/freedesktop/NetworkManager/Settings/1"]
+        if args[0] == "call" and args[2] == "/org/freedesktop/NetworkManager/Settings/1" and args[3] == "org.freedesktop.NetworkManager.Settings.Connection" and args[4] == "GetSettings":
+            return 0, {
+                "type": "a{sa{sv}}",
+                "data": [{
+                    "connection": {
+                        "type": {"type": "s", "data": "802-11-wireless"},
+                        "id": {"type": "s", "data": "MyWiFi"},
+                        "permissions": {"type": "as", "data": ["user:taos:"]},
+                    },
+                    "802-11-wireless": {
+                        "ssid": {"type": "ay", "data": [77, 121, 87, 105, 70, 105]},
+                        "mode": {"type": "s", "data": "infrastructure"}
+                    }
+                }]
+            }
+        raise AssertionError(f"unexpected busctl call: {args}")
 
     monkeypatch.setattr(hw_routes, "busctl", fake_busctl)
 
-    # Simulate non-admin by calling the handler directly without the Depends
-    # The actual admin check is done by FastAPI's Depends, so we test that the
-    # route function exists and would be gated. We just verify the function is defined.
-    assert hasattr(hw_routes, "wifi_forget")
+    body = hw_routes.WifiForgetBody(ssid="MyWiFi")
+    resp = await hw_routes.wifi_forget(body)
+
+    assert resp.status_code == 404
+    assert _json_body(resp) == {"error": "unknown_ssid"}
+
+    delete_calls = [c for c in busctl_calls if c[0] == "call" and len(c) >= 5 and c[4] == "Delete"]
+    assert len(delete_calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_forget_non_admin_returns_403(monkeypatch):
+    """Forget route requires admin."""
+    from tinyagentos.auth_context import require_admin
+
+    route = None
+    for r in hw_routes.router.routes:
+        if getattr(r, "path", None) == "/api/hardware/wifi/forget":
+            route = r
+            break
+    assert route is not None
+    assert require_admin in [d.dependency for d in route.dependencies]
 
 
 @pytest.mark.asyncio
 async def test_scan_non_admin_returns_403(monkeypatch):
-    """Scan route requires admin (403 when not admin)."""
-    async def fake_busctl(*args):
-        raise AssertionError(f"busctl should not be called for non-admin: {args}")
+    """Scan route requires admin."""
+    from tinyagentos.auth_context import require_admin
 
-    monkeypatch.setattr(hw_routes, "busctl", fake_busctl)
-
-    # Same as above - verify the function exists
-    assert hasattr(hw_routes, "wifi_scan")
+    route = None
+    for r in hw_routes.router.routes:
+        if getattr(r, "path", None) == "/api/hardware/wifi/scan":
+            route = r
+            break
+    assert route is not None
+    assert require_admin in [d.dependency for d in route.dependencies]
