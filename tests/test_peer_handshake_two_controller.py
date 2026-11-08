@@ -753,6 +753,40 @@ async def test_handshake_revoke_during_handshake_is_403(nodes, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_handshake_refused_write_revokes_contact_status(nodes, monkeypatch):
+    """A refused link write during handshake marks the contact as revoked."""
+    from tinyagentos.hub import store as hub_store
+
+    a, b = nodes
+    await _record_request_out(a, b)
+    await _hub_store(a)
+
+    env1 = _handshake_envelope(b, a, inbound_token="b" * 64, endpoints=["http://100.64.0.9:6969"])
+    resp1 = await _post_handshake(a, env1)
+    assert resp1.status_code == 200, resp1.text
+
+    real_get_author = hub_store.HubStore.get_author
+
+    async def revoking_get_author(self, fingerprint):
+        author = await real_get_author(self, fingerprint)
+        await a.app.state.contacts_store.revoke_peer_link(b.contact_id)
+        return author
+
+    monkeypatch.setattr(hub_store.HubStore, "get_author", revoking_get_author)
+
+    env2 = _handshake_envelope(b, a, inbound_token="c" * 64, endpoints=["http://10.0.0.5:22"])
+    resp2 = await _post_handshake(a, env2)
+    assert resp2.status_code == 403, resp2.text
+    assert resp2.json().get("detail") == "peer link revoked"
+
+    contact = await a.app.state.contacts_store.get_contact(b.contact_id)
+    assert contact is not None
+    assert contact["status"] == "revoked"
+    link_after = await a.app.state.contacts_store.get_peer_link(b.contact_id)
+    assert link_after["revoked_at"] is not None
+
+
+@pytest.mark.asyncio
 async def test_owner_re_request_reestablishes_revoked_link_only_if_same_revocation(nodes, monkeypatch):
     """The owner re-request path re-establishes a revoked link ONLY if the
     revocation observed at read time is still the current one.
