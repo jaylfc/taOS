@@ -203,6 +203,29 @@ describe("WifiPanel controls", () => {
     expect(body.psk).toBeUndefined();
   });
 
+  it("pressing Enter with empty password on secured AP does not call fetch", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy
+      .mockResolvedValueOnce(json(baseResponse))
+      .mockResolvedValueOnce(json({ ok: true }));
+    render(<WifiPanel />);
+    await waitFor(() => expect(screen.getByText("SecuredNet")).toBeInTheDocument());
+    const joinBtn = screen.getByRole("button", { name: /Join SecuredNet \(secured\)/i });
+    await act(async () => {
+      fireEvent.click(joinBtn);
+    });
+    await waitFor(() => {
+      const input = screen.getByLabelText("Password for SecuredNet");
+      expect(input).toBeInTheDocument();
+    });
+    const input = screen.getByLabelText("Password for SecuredNet") as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(input, { target: { value: "" } });
+      fireEvent.keyDown(input, { key: "Enter" });
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("keyboard-only join secured network: Tab to Join, Enter, type password, Enter posts {ssid, psk} once", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     fetchSpy
@@ -229,6 +252,37 @@ describe("WifiPanel controls", () => {
     const [, connectCall] = fetchSpy.mock.calls;
     expect(connectCall[0]).toBe("/api/hardware/wifi/connect");
     expect(JSON.parse(connectCall[1]?.body as string)).toEqual({ ssid: "SecuredNet", psk: "secret123" });
+  });
+
+  it("secured AP prompt open and idle shows Join button text, not Connecting", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(json(baseResponse));
+    render(<WifiPanel />);
+    await waitFor(() => expect(screen.getByText("SecuredNet")).toBeInTheDocument());
+    const joinBtn = screen.getByRole("button", { name: /Join SecuredNet \(secured\)/i });
+    await act(async () => {
+      fireEvent.click(joinBtn);
+    });
+    await waitFor(() => {
+      expect(screen.getByLabelText("Password for SecuredNet")).toBeInTheDocument();
+    });
+    expect(joinBtn).toHaveTextContent("Join");
+    expect(joinBtn).not.toHaveTextContent("Connecting");
+  });
+
+  it("show password button has no tabindex attribute", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(json(baseResponse));
+    render(<WifiPanel />);
+    await waitFor(() => expect(screen.getByText("SecuredNet")).toBeInTheDocument());
+    const joinBtn = screen.getByRole("button", { name: /Join SecuredNet \(secured\)/i });
+    await act(async () => {
+      fireEvent.click(joinBtn);
+    });
+    await waitFor(() => {
+      const showBtn = screen.getByRole("button", { name: "Show password" });
+      expect(showBtn).toBeInTheDocument();
+      expect(showBtn).not.toHaveAttribute("tabindex", "-1");
+    });
   });
 
   it("Esc cancels inline password with no POST", async () => {

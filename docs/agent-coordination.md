@@ -1556,7 +1556,7 @@ All routes are admin-only via `Depends(require_admin)`. See [docs/hardware-route
 
 ## Hub chain export and blobs (social phase 0, local only)
 
-Route module `tinyagentos/routes/hub.py`, admin-only:
+Route module `tinyagentos/routes/hub.py`. The four routes below are admin-only (a signed-in non-admin member gets `403 forbidden`); `POST /api/hub/posts` is not one of them and accepts any signed-in user:
 
 - `GET /api/hub/chain?after_seq=&limit=` returns this node's own chain page
   (`entries`, `object` is `null` once a tombstone dropped the body), the `head`,
@@ -2765,7 +2765,10 @@ the choice is made, from two config.yaml keys:
   elsewhere), `opencode`, `picoclaw` or `claude_code` (operator overrides;
   `auto` never picks `claude_code`).
 - **Local desktop state**: `GET /api/system/local-desktop` reports `available`,
-  `enabled`, and `active` based on `taos-kiosk.service` systemd unit state.
+  `enabled`, and `active` based on `taos-kiosk.service` systemd unit state. The
+  `enabled` and `active` fields can be `null` if `systemctl` times out or is
+  missing; `cat` rc 1 means absent (all false), other nonzero `cat` rc returns
+  503 `{"error":"systemctl_failed","rc":<rc>}`.
 
 PicoClaw needs the LLM gateway (on unless `TAOS_LLM_GATEWAY=0`) and a `picoclaw` binary
 (`TAOS_PICOCLAW_BIN`, PATH, `/usr/local/bin`, `/usr/bin`). Without either,

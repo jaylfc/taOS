@@ -96,4 +96,46 @@ describe("describeChannelParty", () => {
     expect(result.kind).toBe("agent");
     expect(result.title).toBe("Old Bot");
   });
+
+  it("archived dm with live agent reusing slug resolves to archived agent when settings.archived is true", () => {
+    const channel: Channel = {
+      id: "ch-7",
+      name: "old-bot",
+      type: "dm",
+      members: ["user", "bob"],
+      settings: { archived: true, archived_agent_id: "a1" },
+    };
+    const liveAgents: LiveAgent[] = [{ name: "bob", display_name: "Bob" }];
+    const archivedAgents: ArchivedAgentEntry[] = [
+      {
+        id: "a1",
+        archived_slug: "bob-old",
+        original: { display_name: "Old Bob" },
+      },
+    ];
+    const result = describeChannelParty(channel, liveAgents, "kind", archivedAgents);
+    expect(result.title).toBe("Old Bob");
+    expect(result.subtitle).toBe("Archived agent");
+  });
+
+  it("restored dm (settings.archived false) with live agent reusing slug shows the live agent", () => {
+    const channel: Channel = {
+      id: "ch-8",
+      name: "old-bot",
+      type: "dm",
+      members: ["user", "bob"],
+      settings: { archived: false, archived_agent_id: "a1" },
+    };
+    const liveAgents: LiveAgent[] = [{ name: "bob", display_name: "Bob" }];
+    const archivedAgents: ArchivedAgentEntry[] = [
+      {
+        id: "a1",
+        archived_slug: "bob-old",
+        original: { display_name: "Old Bob" },
+      },
+    ];
+    const result = describeChannelParty(channel, liveAgents, "kind", archivedAgents);
+    expect(result.title).toBe("Bob");
+    expect(result.subtitle).not.toBe("Archived agent");
+  });
 });

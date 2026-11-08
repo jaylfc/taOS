@@ -423,7 +423,15 @@ async def list_providers(request: Request):
         seeded = False
         if not models and backend.get("models"):
             models = backend["models"]
-            seeded = bool(backend.get("models_seeded"))
+            # Entries saved before models_seeded existed carry the seed list but no marker; treat those as seeded.
+            if "models_seeded" in backend:
+                seeded = bool(backend.get("models_seeded"))
+            else:
+                seeded = (
+                    backend.get("type") in PROVIDER_DEFAULT_MODELS
+                    and [m.get("id") if isinstance(m, dict) else m for m in backend["models"]]
+                    == [m["id"] for m in PROVIDER_DEFAULT_MODELS[backend.get("type")]]
+                )
         # lifecycle_state only means something for backends taOS actually
         # starts/stops (auto_manage=true) -- LifecycleManager.start()/
         # drain_and_stop() are the only callers of set_lifecycle_state(),

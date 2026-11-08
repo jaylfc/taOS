@@ -1161,6 +1161,11 @@ export function MessagesApp({
   }, []);
 
   /* ---- WebSocket ---- */
+  const handleSelectChannel = useCallback((channelId: string) => {
+    backedOutRef.current = false;
+    setSelectedChannel(channelId);
+  }, []);
+
   const connectWs = useCallback(() => {
     if (wsRef.current && wsRef.current.readyState <= 1) return;
     setWsStatus("connecting");
@@ -1222,7 +1227,7 @@ export function MessagesApp({
               setUnread((u) => ({ ...u, [data.channel_id]: (u[data.channel_id] ?? 0) + 1 }));
               if (data.author_id && data.author_id !== currentUserIdRef.current) {
                 const chName = channelsRef.current.find((c) => c.id === data.channel_id)?.name ?? "a channel";
-                notify(`${data.author_id} in #${chName}`, data.content ?? "", () => setSelectedChannel(data.channel_id));
+                notify(`${data.author_id} in #${chName}`, data.content ?? "", () => handleSelectChannel(data.channel_id));
               }
             }
             // #1741: the waited-on agent's reply frame in the watched channel
@@ -1511,11 +1516,6 @@ export function MessagesApp({
     setBusSelected(channel);
   }, []);
 
-  const handleSelectChannel = useCallback((channelId: string) => {
-    backedOutRef.current = false;
-    setSelectedChannel(channelId);
-  }, []);
-
   /* ---- fetch project list for sidebar grouping (standalone mode only) ---- */
   useEffect(() => {
     if (scope?.projectId) return;
@@ -1549,7 +1549,7 @@ export function MessagesApp({
 
       // Select the channel — try to match by id or by name (DM channels often use agent name)
       if (cancelled) return;
-      setSelectedChannel(detail.channelId);
+      handleSelectChannel(detail.channelId);
 
       // Fetch the admin prompt body if requested
       if (detail.prefillPromptName) {
@@ -1586,7 +1586,7 @@ export function MessagesApp({
       cancelled = true;
       window.removeEventListener("taos:open-messages", handler);
     };
-  }, []);
+  }, [handleSelectChannel]);
 
   /* ---- channel selection ---- */
   useEffect(() => {
@@ -2006,7 +2006,7 @@ export function MessagesApp({
       if (res.ok) {
         const ch = await res.json();
         await fetchChannels();
-        setSelectedChannel(ch.id);
+        handleSelectChannel(ch.id);
         setShowCreate(false);
         setNewChannel({ name: "", type: "topic", topic: "" });
       }
@@ -2805,7 +2805,7 @@ className="shrink-0 p-0.5 rounded hover:bg-shell-surface-active transition-color
             if (channelId !== selectedChannel) {
               // Switching channel triggers fetchMessages; the scroll happens
               // once the new messages render (the rAF retry below waits for it).
-              setSelectedChannel(channelId);
+              handleSelectChannel(channelId);
             }
             // Poll across a few frames so a slow channel switch/render still
             // lands instead of relying on a single fixed delay. If the target
@@ -2834,7 +2834,7 @@ className="shrink-0 p-0.5 rounded hover:bg-shell-surface-active transition-color
       {showSwitcher && (
         <ChannelSwitcher
           channels={channels.map((c) => ({ id: c.id, name: c.name }))}
-          onSelect={(id) => { backedOutRef.current = false; setSelectedChannel(id); }}
+          onSelect={handleSelectChannel}
           onClose={() => setShowSwitcher(false)}
         />
       )}
@@ -2857,7 +2857,7 @@ className="shrink-0 p-0.5 rounded hover:bg-shell-surface-active transition-color
               && (ch.members || []).includes(slug)
             );
             if (existing) {
-              setSelectedChannel(existing.id);
+              handleSelectChannel(existing.id);
             } else {
               const r = await fetch("/api/chat/channels", {
                 method: "POST",
@@ -2872,7 +2872,7 @@ className="shrink-0 p-0.5 rounded hover:bg-shell-surface-active transition-color
               if (r.ok) {
                 const created = await r.json();
                 await fetchChannels();
-                setSelectedChannel(created.id);
+                handleSelectChannel(created.id);
               }
             }
             setContextMenu(null);

@@ -128,4 +128,40 @@ describe("waitForDownload", () => {
   it("keeps the download id through a saved-progress round trip", () => {
     expect(parseChoice({ ...choice, download_id: "dl-7" })?.download_id).toBe("dl-7");
   });
+
+  it("rejects after 20 consecutive 500 polls", async () => {
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      urls.push(url);
+      return new Response(JSON.stringify({}), { status: 500 });
+    }));
+    await expect(waitForDownload(choice, () => {}, 0)).rejects.toThrow(/Couldn't check/);
+    expect(fetch).toHaveBeenCalledTimes(20);
+  });
+
+  it("rejects after 20 consecutive network errors", async () => {
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      urls.push(url);
+      throw new Error("network error");
+    }));
+    await expect(waitForDownload(choice, () => {}, 0)).rejects.toThrow(/Couldn't check/);
+    expect(fetch).toHaveBeenCalledTimes(20);
+  });
+
+  it("resolves when 19 failures then ok then 19 failures then complete (counter resets on good poll)", async () => {
+    const urls: string[] = [];
+    let fetchCallCount = 0;
+    const fetchMock = vi.fn(async (url: string) => {
+      urls.push(url);
+      fetchCallCount++;
+      if (fetchCallCount <= 19) return new Response(JSON.stringify({ status: "downloading", percent: 10 }), { status: 500 });
+      if (fetchCallCount === 20) return new Response(JSON.stringify({ status: "downloading", percent: 10 }), { status: 200 });
+      if (fetchCallCount <= 39) return new Response(JSON.stringify({ status: "downloading", percent: 10 }), { status: 500 });
+      return new Response(JSON.stringify({ status: "complete" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await waitForDownload(choice, () => {}, 0);
+    expect(fetchMock).toHaveBeenCalledTimes(40);
+  });
 });

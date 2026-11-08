@@ -960,6 +960,72 @@ async def test_tools_and_tool_choice_converted_to_anthropic_shape(tmp_path_facto
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_image_url_parts_converted_to_anthropic_image_blocks(tmp_path_factory):
+    """OpenAI image_url parts become Anthropic image blocks: base64 for a data URL, url otherwise (#4198)."""
+    app, session = await _gateway_app(tmp_path_factory)
+    respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(
+        200, json=_anthropic_response(), headers={"content-type": "application/json"}
+    ))
+    body = {
+        "model": "claude-x",
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": "What is in these pictures?"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}},
+            {"type": "image_url", "image_url": {"url": "https://example.com/cat.jpg"}},
+        ]}],
+    }
+    resp = await _post(app, session, body)
+    assert resp.status_code == 200, resp.text
+    content = _upstream_json(respx.calls.last)["messages"][0]["content"]
+    assert content == [
+        {"type": "text", "text": "What is in these pictures?"},
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}},
+        {"type": "image", "source": {"type": "url", "url": "https://example.com/cat.jpg"}},
+    ]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_image_data_url_media_type_drops_mime_parameters(tmp_path_factory):
+    """A data URL with MIME parameters sends only the bare media type upstream."""
+    app, session = await _gateway_app(tmp_path_factory)
+    respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(
+        200, json=_anthropic_response(), headers={"content-type": "application/json"}
+    ))
+    body = {
+        "model": "claude-x",
+        "messages": [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": "data:image/png;charset=utf-8;base64,iVBORw0KGgo="}},
+        ]}],
+    }
+    resp = await _post(app, session, body)
+    assert resp.status_code == 200, resp.text
+    source = _upstream_json(respx.calls.last)["messages"][0]["content"][0]["source"]
+    assert source == {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}
+
+
+@pytest.mark.asyncio
+@respx.mock
+@pytest.mark.parametrize("image_url", [{"url": 123}, {"url": None}, {"url": ""}, {}, None, ""])
+async def test_non_string_image_url_is_a_400_not_a_500(tmp_path_factory, image_url):
+    """A missing, null, empty or non-string image URL is a client error and never sent upstream."""
+    app, session = await _gateway_app(tmp_path_factory)
+    route = respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(
+        200, json=_anthropic_response(), headers={"content-type": "application/json"}
+    ))
+    body = {
+        "model": "claude-x",
+        "messages": [{"role": "user", "content": [
+            {"type": "image_url", "image_url": image_url},
+        ]}],
+    }
+    resp = await _post(app, session, body)
+    assert resp.status_code == 400, resp.text
+    assert not route.called
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_tool_result_round_trip_in_anthropic_shape(tmp_path_factory):
     """A tool-result message becomes a user message with a tool_result block,
     and an assistant's tool_calls become tool_use blocks with parsed input."""
@@ -1915,3 +1981,45 @@ async def test_stream_cancelled_scope_still_records_spend(tmp_path_factory):
     assert spend_calls and all(c > 0 for c in spend_calls), \
         "a cancelled stream must still be charged"
     assert trace_calls, "a cancelled stream must still record its trace"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_chat_image_shrunk_before_upstream(tmp_path_factory):
+    """A 3000x2000 PNG posted through the gateway reaches upstream <= 1568px."""
+    import base64
+    import io
+
+    from PIL import Image
+
+    img = Image.new("RGB", (3000, 2000), color=(10, 20, 30))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    data_url = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+    app, session = await _gateway_app(tmp_path_factory)
+    respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(
+        200, json=_anthropic_response(), headers={"content-type": "application/json"}
+    ))
+    body = {
+        "model": "claude-x",
+        "messages": [
+            {"role": "user", "content": [
+                {"type": "text", "text": "hi"},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ]},
+        ],
+    }
+    resp = await _post(app, session, body)
+    assert resp.status_code == 200, resp.text
+    data = _upstream_json(respx.calls.last)
+    # find image block in upstream content (Anthropic format: type="image", source.type="base64")
+    parts = None
+    for m in data["messages"]:
+        if isinstance(m.get("content"), list):
+            parts = m["content"]
+    img_part = next(p for p in parts if p.get("type") == "image")
+    assert img_part["source"]["type"] == "base64"
+    raw = base64.b64decode(img_part["source"]["data"])
+    up_img = Image.open(io.BytesIO(raw))
+    assert max(up_img.size) <= 1568
