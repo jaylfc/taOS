@@ -646,3 +646,88 @@ describe("MessagesApp mobile Back button sends leave frame", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "open-group" })).toBeInTheDocument());
   });
 });
+
+describe("MessagesApp mobile Back-out guard resets on non-null selection paths", () => {
+  let originalFetch: typeof global.fetch;
+  let WebSocketConstructor: typeof WebSocket;
+
+  beforeEach(() => {
+    (useIsMobile as ReturnType<typeof vi.fn>).mockReset();
+    (useIsMobile as ReturnType<typeof vi.fn>).mockReturnValue(true);
+    originalFetch = global.fetch;
+    WebSocketConstructor = global.WebSocket;
+    const wsMock = {
+      send: vi.fn(),
+      readyState: 1,
+      close: vi.fn(),
+      onopen: null,
+      onmessage: null,
+      onclose: null,
+    };
+    function MockWebSocket(this: WebSocket, _url: string) {
+      return wsMock as unknown as WebSocket;
+    }
+    global.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    global.WebSocket = WebSocketConstructor;
+  });
+
+  it("reselects remembered/A2A channel after Back, open-messages select, then channel removed", async () => {
+    let channels = [
+      { id: "ch-a2a", name: "a2a", type: "group", members: ["user", "tom"], settings: { kind: "a2a" } },
+      { id: "ch-del", name: "todelete", type: "group", members: ["user", "tom"] },
+    ];
+    global.fetch = vi.fn().mockImplementation((url: string) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      const ok = (body: unknown) =>
+        Promise.resolve({
+          ok: true,
+          headers: { get: () => "application/json" },
+          json: () => Promise.resolve(body),
+        } as unknown as Response);
+      if (urlStr.includes("/api/chat/channels") && !urlStr.includes("/messages") && !urlStr.includes("archived=true") && !urlStr.includes("/mark-read")) {
+        return ok({ channels, unread: {} });
+      }
+      if (urlStr.includes("archived=true")) return ok({ channels: [] });
+      if (urlStr.includes("/api/chat/unread")) return ok({ unread: {} });
+      if (urlStr.includes("/api/agents?include_guests=1")) return ok([]);
+      if (urlStr.includes("/api/agents/archived")) return ok([]);
+      if (urlStr.includes("/messages")) return ok({ messages: [] });
+      if (urlStr.includes("/mark-read")) return ok({});
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        headers: { get: () => "application/json" },
+        json: () => Promise.resolve({}),
+      } as unknown as Response);
+    });
+
+    render(<MessagesApp windowId="test" scope={{ projectId: "proj1" }} />);
+    await waitFor(() => expect(screen.getByTestId("channel-sidebar")).toBeInTheDocument());
+
+    // Default selection should pick the A2A channel.
+    await waitFor(() => expect(screen.getByRole("button", { name: "Back to chats" })).toBeInTheDocument());
+    expect(screen.getByRole("banner")).toHaveTextContent("a2a");
+
+    // Back out
+    fireEvent.click(screen.getByRole("button", { name: "Back to chats" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Back to chats" })).not.toBeInTheDocument());
+
+    // Select the channel-to-delete via the open-messages event (a non-null selection path)
+    window.dispatchEvent(new CustomEvent("taos:open-messages", { detail: { channelId: "ch-del" } }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Back to chats" })).toBeInTheDocument());
+    expect(screen.getByRole("banner")).toHaveTextContent("todelete");
+
+    // Remove that channel from the list and trigger a refresh
+    channels = [
+      { id: "ch-a2a", name: "a2a", type: "group", members: ["user", "tom"], settings: { kind: "a2a" } },
+    ];
+    window.dispatchEvent(new Event("focus"));
+
+    // Default selection should re-pick the remembered/A2A channel again.
+    await waitFor(() => expect(screen.getByRole("banner")).toHaveTextContent("a2a"));
+  });
+});

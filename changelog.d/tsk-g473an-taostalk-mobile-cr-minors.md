@@ -7,3 +7,5 @@
 - taOS Talk mobile: send WebSocket leave frame when deselecting a channel so the server releases the socket join
 - taOS Talk mobile: clear backedOut guard on sidebar channel select and consider archived channels in default selection
 - taOS Talk pinned messages popover: cap max-height with min(400px, 60dvh) so Jump to buttons stay visible on short screens
+- taOS Talk mobile: route non-null channel selections (notifications, open-messages, channel switcher/search jumps, and DM create/open paths) through the Back-out guard reset so default selection recovers after a channel is removed
+- taOS Talk channel-party: when an archived DM has settings.archived and archived_agent_id, prefer the archived agent record over a live agent reusing the slug
