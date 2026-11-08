@@ -5,8 +5,6 @@ test_leases.py). These tests mock it to focus on the report logic.
 """
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 import time
 from contextlib import ExitStack
@@ -17,6 +15,7 @@ from pydantic import ValidationError
 
 from tinyagentos.routes.cluster import TaskReportRequest
 from tinyagentos.trace_store import TraceStoreRegistry, VALID_KINDS, TraceWriteError
+from tests.conftest import sign_worker_request
 
 
 @pytest.mark.asyncio
@@ -50,21 +49,12 @@ def _mock_auth():
     return _Ctx()
 
 
-# ---------------------------------------------------------------------------
-# HMAC signing helper (mirrors conftest.py:sign_worker_request)
-# ---------------------------------------------------------------------------
-
-def _sign_worker_request(key: bytes, name: str, method: str, path: str, body: bytes) -> dict:
-    """Return the three HMAC auth headers for a worker request."""
-    ts = str(int(time.time()))
-    body_hash = hashlib.sha256(body).hexdigest()
-    message = f"{ts}.{method.upper()}.{path}.{body_hash}".encode()
-    sig = hmac.new(key, message, hashlib.sha256).hexdigest()
-    return {
-        "X-TAOS-Worker-Name": name,
-        "X-TAOS-Timestamp": ts,
-        "X-TAOS-Signature": sig,
-    }
+def _exempt_report_task(method: str, path: str) -> bool:
+    """Exempt the report_task route from auth middleware for HMAC tests."""
+    if method == "POST" and path == "/api/cluster/tasks/report":
+        return True
+    from tinyagentos.auth_middleware import _is_exempt as real_is_exempt
+    return real_is_exempt(method, path)
 
 
 # ---------------------------------------------------------------------------
@@ -657,15 +647,6 @@ async def test_report_task_bad_signature_403(client, app, tmp_data_dir):
     app.state.cluster_pairing = pairing_store
 
     # Exempt this route from the auth middleware so the request reaches the handler
-    # (Other cluster HMAC endpoints like /api/cluster/workers and /api/cluster/heartbeat
-    # are already exempt in tinyagentos.auth_middleware._is_exempt)
-    def _exempt_report_task(method: str, path: str) -> bool:
-        if method == "POST" and path == "/api/cluster/tasks/report":
-            return True
-        # Delegate to the real implementation for other paths
-        from tinyagentos.auth_middleware import _is_exempt as real_is_exempt
-        return real_is_exempt(method, path)
-
     with patch("tinyagentos.auth_middleware._is_exempt", side_effect=_exempt_report_task):
         # Prepare request body and WRONG signature
         body = json.dumps({
@@ -695,9 +676,6 @@ async def test_report_task_bad_signature_403(client, app, tmp_data_dir):
             )
 
     assert resp.status_code == 403, f"Expected 403 for bad signature, got {resp.status_code}: {resp.text}"
-    # The HMAC failure is caught by _identify_principal which returns None,
-    # causing report_task to return "unidentified caller" 403.
-    # This is the correct behavior - any HMAC failure results in 403.
 
     await app.state.trace_registry.close_all()
 
@@ -719,24 +697,11 @@ async def test_report_task_valid_worker_signature_verifies_once(client, app, tmp
     pairing_store.get_signing_key.return_value = signing_key
     app.state.cluster_pairing = pairing_store
 
-    # Exempt this route from the auth middleware
-    def _exempt_report_task(method: str, path: str) -> bool:
-        if method == "POST" and path == "/api/cluster/tasks/report":
-            return True
-        from tinyagentos.auth_middleware import _is_exempt as real_is_exempt
-        return real_is_exempt(method, path)
-
     # Wrap require_worker_hmac to count calls (patch where cluster.py imports it)
     from tinyagentos.cluster.worker_auth import require_worker_hmac as real_require_worker_hmac
-    call_count = 0
-
-    async def counting_require_worker_hmac(request):
-        nonlocal call_count
-        call_count += 1
-        return await real_require_worker_hmac(request)
 
     with patch("tinyagentos.auth_middleware._is_exempt", side_effect=_exempt_report_task), \
-         patch("tinyagentos.routes.cluster.require_worker_hmac", side_effect=counting_require_worker_hmac):
+         patch("tinyagentos.routes.cluster.require_worker_hmac", wraps=real_require_worker_hmac) as mock_require:
         # Prepare request body and CORRECT signature
         body = json.dumps({
             "worker": "w1",
@@ -745,7 +710,7 @@ async def test_report_task_valid_worker_signature_verifies_once(client, app, tmp
             "duration_s": 1.0,
             "status": "success",
         }).encode()
-        headers = _sign_worker_request(signing_key, "w1", "POST", "/api/cluster/tasks/report", body)
+        headers = sign_worker_request(signing_key, "w1", "POST", "/api/cluster/tasks/report", body)
         headers["Content-Type"] = "application/json"
 
         # Use a client WITHOUT session cookie
@@ -761,6 +726,6 @@ async def test_report_task_valid_worker_signature_verifies_once(client, app, tmp
     # Response must not be 401/403 (should be 200 or other non-auth error)
     assert resp.status_code not in (401, 403), f"Expected non-auth error, got {resp.status_code}: {resp.text}"
     # require_worker_hmac must have been called exactly once
-    assert call_count == 1, f"require_worker_hmac called {call_count} times, expected 1"
+    assert mock_require.call_count == 1, f"require_worker_hmac called {mock_require.call_count} times, expected 1"
 
     await app.state.trace_registry.close_all()
