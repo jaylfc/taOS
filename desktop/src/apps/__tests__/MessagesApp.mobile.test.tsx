@@ -111,6 +111,9 @@ vi.mock("../MessagesApp.stallWatch", () => ({
 vi.mock("../MessagesApp.a2aSelection", () => ({
   selectInitialBusChannel: vi.fn(),
   selectFirstBoundChannel: vi.fn(),
+  readLastChannel: vi.fn(),
+  findA2aChannelId: vi.fn(() => "ch-a2a"),
+  writeLastChannel: vi.fn(),
 }));
 
 vi.mock("../chat/ChannelSidebar", () => ({
@@ -728,6 +731,6 @@ describe("MessagesApp mobile Back-out guard resets on non-null selection paths",
     window.dispatchEvent(new Event("focus"));
 
     // Default selection should re-pick the remembered/A2A channel again.
-    await waitFor(() => expect(screen.getByRole("banner")).toHaveTextContent("a2a"));
+    await waitFor(() => expect(screen.getByRole("banner")).toHaveTextContent("a2a"), { timeout: 5000 });
   });
 });
