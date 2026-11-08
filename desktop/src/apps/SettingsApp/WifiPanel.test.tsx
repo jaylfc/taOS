@@ -420,6 +420,62 @@ describe("WifiPanel controls", () => {
     expect(screen.getByText("Connection failed: invalid_psk")).toBeInTheDocument();
   });
 
+  it("a passphrase of eight spaces enables Join and Enter submits it", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy
+      .mockResolvedValueOnce(json(baseResponse))
+      .mockResolvedValueOnce(json({ ok: true }))
+      .mockResolvedValueOnce(json({ ...baseResponse, access_points: baseResponse.access_points.map(ap => ({ ...ap, active: ap.ssid === "SecuredNet" })) }));
+    render(<WifiPanel />);
+    await waitFor(() => expect(screen.getByText("SecuredNet")).toBeInTheDocument());
+    const joinBtn = screen.getByRole("button", { name: /Join SecuredNet \(secured\)/i });
+    await act(async () => {
+      fireEvent.click(joinBtn);
+    });
+    const input = screen.getByLabelText("Password for SecuredNet") as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(input, { target: { value: "        " } });
+    });
+    const submitBtn = screen.getByRole("button", { name: /Join SecuredNet$/i });
+    expect(submitBtn).not.toBeDisabled();
+    await act(async () => {
+      fireEvent.keyDown(input, { key: "Enter" });
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    const [, connectCall] = fetchSpy.mock.calls;
+    expect(connectCall[0]).toBe("/api/hardware/wifi/connect");
+    expect(JSON.parse(connectCall[1]?.body as string)).toEqual({ ssid: "SecuredNet", psk: "        " });
+  });
+
+  it("toggle re-enables control when the refresh GET never resolves", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout"] });
+    let resolveLoad: (value: Response) => void;
+    const loadPromise = new Promise<Response>((resolve) => {
+      resolveLoad = resolve;
+    });
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy
+      .mockResolvedValueOnce(json(baseResponse))
+      .mockResolvedValueOnce(json({ ok: true, wifi_enabled: false }))
+      .mockReturnValueOnce(loadPromise);
+    render(<WifiPanel />);
+    await act(async () => {});
+    expect(screen.getByText("ConnectedNet")).toBeInTheDocument();
+    const toggle = screen.getByRole("switch", { name: "Wi-Fi" });
+    await act(async () => {
+      fireEvent.click(toggle);
+    });
+    expect(toggle).toBeDisabled();
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+    });
+    expect(toggle).not.toBeDisabled();
+    await act(async () => {
+      resolveLoad!(json({ ...baseResponse, wifi_enabled: false }));
+    });
+    vi.useRealTimers();
+  }, 15000);
+
   it("in-flight status announced via aria-live polite", async () => {
     let resolveConnect: (value: Response) => void;
     const connectPromise = new Promise<Response>((resolve) => {
