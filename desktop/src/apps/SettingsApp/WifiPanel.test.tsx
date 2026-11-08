@@ -226,12 +226,46 @@ describe("WifiPanel controls", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
+  it("keyboard-only join secured network: Tab to Join, Enter, type password, Enter posts {ssid, psk} once", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy
+      .mockResolvedValueOnce(json(baseResponse))
+      .mockResolvedValueOnce(json({ ok: true }))
+      .mockResolvedValueOnce(json({ ...baseResponse, access_points: baseResponse.access_points.map(ap => ({ ...ap, active: ap.ssid === "SecuredNet" })) }));
+    render(<WifiPanel />);
+    await waitFor(() => expect(screen.getByText("SecuredNet")).toBeInTheDocument());
+    const joinBtn = screen.getByRole("button", { name: /Join SecuredNet \(secured\)/i });
+    await act(async () => {
+      fireEvent.click(joinBtn);
+    });
+    await waitFor(() => {
+      const input = screen.getByLabelText("Password for SecuredNet");
+      expect(input).toBeInTheDocument();
+      expect(input).toHaveFocus();
+    });
+    await act(async () => {
+      const input = screen.getByLabelText("Password for SecuredNet");
+      fireEvent.change(input, { target: { value: "secret123" } });
+      fireEvent.keyDown(input, { key: "Enter" });
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    const [, connectCall] = fetchSpy.mock.calls;
+    expect(connectCall[0]).toBe("/api/hardware/wifi/connect");
+    expect(JSON.parse(connectCall[1]?.body as string)).toEqual({ ssid: "SecuredNet", psk: "secret123" });
+  });
+
   it("secured AP prompt open and idle shows Join button text, not Connecting", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     fetchSpy.mockResolvedValueOnce(json(baseResponse));
     render(<WifiPanel />);
     await waitFor(() => expect(screen.getByText("SecuredNet")).toBeInTheDocument());
     const joinBtn = screen.getByRole("button", { name: /Join SecuredNet \(secured\)/i });
+    await act(async () => {
+      fireEvent.click(joinBtn);
+    });
+    await waitFor(() => {
+      expect(screen.getByLabelText("Password for SecuredNet")).toBeInTheDocument();
+    });
     expect(joinBtn).toHaveTextContent("Join");
     expect(joinBtn).not.toHaveTextContent("Connecting");
   });
