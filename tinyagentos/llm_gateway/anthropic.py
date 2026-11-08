@@ -104,8 +104,11 @@ def _convert_user_content(content: Any) -> Any:
         if isinstance(part, dict) and part.get("type") == "image_url":
             image_url = part.get("image_url")
             url = image_url.get("url", "") if isinstance(image_url, dict) else (image_url or "")
+            if not isinstance(url, str):
+                raise bad_request("image URL must be a string")
             if url.startswith("data:") and ";base64," in url:
                 media_type, data = url[5:].split(";base64,", 1)
+                media_type = media_type.split(";", 1)[0]
                 part = {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}}
             else:
                 part = {"type": "image", "source": {"type": "url", "url": url}}

@@ -986,6 +986,45 @@ async def test_image_url_parts_converted_to_anthropic_image_blocks(tmp_path_fact
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_image_data_url_media_type_drops_mime_parameters(tmp_path_factory):
+    """A data URL with MIME parameters sends only the bare media type upstream."""
+    app, session = await _gateway_app(tmp_path_factory)
+    respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(
+        200, json=_anthropic_response(), headers={"content-type": "application/json"}
+    ))
+    body = {
+        "model": "claude-x",
+        "messages": [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": "data:image/png;charset=utf-8;base64,iVBORw0KGgo="}},
+        ]}],
+    }
+    resp = await _post(app, session, body)
+    assert resp.status_code == 200, resp.text
+    source = _upstream_json(respx.calls.last)["messages"][0]["content"][0]["source"]
+    assert source == {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_non_string_image_url_is_a_400_not_a_500(tmp_path_factory):
+    """A non-string image URL is rejected as a client error and never sent upstream."""
+    app, session = await _gateway_app(tmp_path_factory)
+    route = respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(
+        200, json=_anthropic_response(), headers={"content-type": "application/json"}
+    ))
+    body = {
+        "model": "claude-x",
+        "messages": [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": 123}},
+        ]}],
+    }
+    resp = await _post(app, session, body)
+    assert resp.status_code == 400, resp.text
+    assert not route.called
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_tool_result_round_trip_in_anthropic_shape(tmp_path_factory):
     """A tool-result message becomes a user message with a tool_result block,
     and an assistant's tool_calls become tool_use blocks with parsed input."""
