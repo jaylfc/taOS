@@ -232,7 +232,7 @@ export function WifiPanel() {
           Wi-Fi
         </Label>
       </div>
-      {status && <p aria-live="polite" className="mb-3 text-xs text-sky-400">{status}</p>}
+      <p aria-live="polite" className="mb-3 text-xs text-sky-400">{status ?? ""}</p>
       {error && (
         <p role="alert" className="mb-3 text-xs text-amber-400 flex items-center gap-1.5">
           <AlertCircle size={12} /> {error}

@@ -437,6 +437,7 @@ class TestAgentInterface:
     @pytest.mark.asyncio
     async def test_request_confirmation_handler_directly(self):
         """Test RequestConfirmation handler directly without DBusError wrapping."""
+        pytest.importorskip("dbus_fast")
         session = PairingSession("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF")
         iface = build_agent_interface(session)
 

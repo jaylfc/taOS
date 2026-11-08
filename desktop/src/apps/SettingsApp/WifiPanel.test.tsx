@@ -431,20 +431,23 @@ describe("WifiPanel controls", () => {
     fetchSpy
       .mockResolvedValueOnce(json(baseResponse))
       .mockReturnValueOnce(connectPromise);
-    render(<WifiPanel />);
+    const { container } = render(<WifiPanel />);
     await waitFor(() => expect(screen.getByText("OpenNet")).toBeInTheDocument());
     const joinBtn = screen.getByRole("button", { name: /Join OpenNet/i });
+    // Grab live region before click
+    const liveRegion = container.querySelector('[aria-live="polite"]');
+    expect(liveRegion).toBeInTheDocument();
+    expect(liveRegion).toHaveTextContent("");
     await act(async () => {
       fireEvent.click(joinBtn);
     });
     // Assert the in-flight status has aria-live="polite"
-    const statusEl = screen.getByText(/Joining OpenNet/);
-    expect(statusEl).toBeInTheDocument();
-    expect(statusEl).toHaveAttribute("aria-live", "polite");
+    expect(liveRegion).toHaveTextContent("Joining OpenNet...");
+    expect(liveRegion).toHaveAttribute("aria-live", "polite");
     await act(async () => {
       resolveConnect!(json({ ok: true }));
     });
-    await waitFor(() => expect(screen.queryByText(/Joining OpenNet/)).not.toBeInTheDocument());
+    await waitFor(() => expect(liveRegion).toHaveTextContent(""));
   });
 
   it("password field cleared after successful connect", async () => {
