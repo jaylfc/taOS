@@ -2013,14 +2013,13 @@ async def test_chat_image_shrunk_before_upstream(tmp_path_factory):
     resp = await _post(app, session, body)
     assert resp.status_code == 200, resp.text
     data = _upstream_json(respx.calls.last)
-    # find image url in upstream content (passed through)
+    # find image block in upstream content (Anthropic format: type="image", source.type="base64")
     parts = None
     for m in data["messages"]:
         if isinstance(m.get("content"), list):
             parts = m["content"]
-    img_part = next(p for p in parts if p.get("type") == "image_url")
-    url = img_part["image_url"]["url"] if isinstance(img_part["image_url"], dict) else img_part["image_url"]
-    header, b64 = url.split(";base64,", 1)
-    raw = base64.b64decode(b64)
+    img_part = next(p for p in parts if p.get("type") == "image")
+    assert img_part["source"]["type"] == "base64"
+    raw = base64.b64decode(img_part["source"]["data"])
     up_img = Image.open(io.BytesIO(raw))
     assert max(up_img.size) <= 1568

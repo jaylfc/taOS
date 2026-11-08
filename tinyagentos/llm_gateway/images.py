@@ -9,6 +9,7 @@ from PIL import Image, ImageOps
 
 MAX_LONG_EDGE = 1568
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
+MAX_SOURCE_PIXELS = 40_000_000
 
 _FORMAT_MEDIA = {
     "PNG": "image/png",
@@ -38,6 +39,12 @@ def _shrink_one(url: str) -> str:
         return url
     try:
         w, h = img.size
+        # Bound decode memory before exif_transpose/thumbnail.
+        if w * h > MAX_SOURCE_PIXELS:
+            return url
+        # Animated GIF/WebP: re-saving would keep only the first frame.
+        if getattr(img, "n_frames", 1) > 1:
+            return url
         long_edge = max(w, h)
         if long_edge <= MAX_LONG_EDGE and len(raw) <= MAX_IMAGE_BYTES:
             return url

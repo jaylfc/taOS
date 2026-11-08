@@ -91,3 +91,35 @@ def test_input_body_not_mutated():
     # still large
     _, img, _ = _decode_data_url(original_url)
     assert max(img.size) == 3000
+
+
+def test_oversized_pixels_passed_through(monkeypatch):
+    import tinyagentos.llm_gateway.images as images_mod
+    monkeypatch.setattr(images_mod, "MAX_SOURCE_PIXELS", 1000)
+    url = _png_data_url(3000, 2000)
+    body = {
+        "messages": [
+            {"role": "user", "content": [{"type": "image_url", "image_url": {"url": url}}]}
+        ]
+    }
+    result = shrink_images(body)
+    new_url = result["messages"][0]["content"][0]["image_url"]["url"]
+    assert new_url == url
+
+
+def test_animated_gif_passed_through():
+    # Create a 2-frame GIF larger than 1568px on long edge
+    frame1 = Image.new("RGB", (2000, 1000), color=(255, 0, 0))
+    frame2 = Image.new("RGB", (2000, 1000), color=(0, 255, 0))
+    buf = io.BytesIO()
+    frame1.save(buf, format="GIF", save_all=True, append_images=[frame2], duration=100, loop=0)
+    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    url = f"data:image/gif;base64,{b64}"
+    body = {
+        "messages": [
+            {"role": "user", "content": [{"type": "image_url", "image_url": {"url": url}}]}
+        ]
+    }
+    result = shrink_images(body)
+    new_url = result["messages"][0]["content"][0]["image_url"]["url"]
+    assert new_url == url
