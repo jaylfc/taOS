@@ -1,3 +1,3 @@
 ### Fixed
 
-- Orb catalog route (GET /api/orb/catalog) now returns named 503 errors: orb_catalog_kind_invalid when fetched catalog has wrong kind (not firmware), and orb_catalog_invalid when catalog is not a JSON object or expires is not ISO 8601, instead of generic OrbError.
+- Orb catalog route (GET /api/orb/catalog) now returns named 503 errors: orb_catalog_kind_invalid when the kind is present and is neither null nor orb-firmware (missing or null kind is accepted for legacy catalogs), and orb_catalog_invalid when the catalog is not a JSON object, or when expires is present and is not a string that datetime.fromisoformat can parse (expires is optional, missing or null is accepted), instead of generic OrbError.
