@@ -26,6 +26,16 @@ export function describeChannelParty(
   const name = channel?.name ?? "";
   if (channel?.type === "dm-remote") return { title: name, kind: "person", subtitle: "" };
   if (channel?.type === "dm") {
+    if (channel.settings?.archived && channel.settings.archived_agent_id) {
+      const archivedById = archivedAgents.find((a) => a.id === channel.settings?.archived_agent_id);
+      if (archivedById) {
+        return {
+          title: archivedById.original?.display_name || archivedById.original?.name || archivedById.archived_slug,
+          kind: "agent",
+          subtitle: "Archived agent",
+        };
+      }
+    }
     const other = (channel.members ?? []).find((m) => m !== "user") ?? name;
     const agent = liveAgents.find((a) => a.name === other);
     if (agent) {
