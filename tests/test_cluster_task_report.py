@@ -15,7 +15,6 @@ from pydantic import ValidationError
 
 from tinyagentos.routes.cluster import TaskReportRequest
 from tinyagentos.trace_store import TraceStoreRegistry, VALID_KINDS, TraceWriteError
-from tests.conftest import sign_worker_request
 
 
 @pytest.mark.asyncio
@@ -681,7 +680,7 @@ async def test_report_task_bad_signature_403(client, app, tmp_data_dir):
 
 
 @pytest.mark.asyncio
-async def test_report_task_valid_worker_signature_verifies_once(client, app, tmp_data_dir):
+async def test_report_task_valid_worker_signature_verifies_once(client, app, tmp_data_dir, worker_request_signer):
     """Valid worker HMAC must verify once and allow the request.
 
     Same setup as the bad-signature test but with a CORRECT signature.
@@ -710,7 +709,7 @@ async def test_report_task_valid_worker_signature_verifies_once(client, app, tmp
             "duration_s": 1.0,
             "status": "success",
         }).encode()
-        headers = sign_worker_request(signing_key, "w1", "POST", "/api/cluster/tasks/report", body)
+        headers = worker_request_signer(signing_key, "w1", "POST", "/api/cluster/tasks/report", body)
         headers["Content-Type"] = "application/json"
 
         # Use a client WITHOUT session cookie
