@@ -365,8 +365,8 @@ class ContactsStore(BaseStore):
                  endpoints = excluded.endpoints,
                  established_at = excluded.established_at,
                  revoked_at = NULL
-               WHERE peer_links.revoked_at IS NULL""",
-            (contact_id, _hash_token(inbound_token), outbound_token, eps_json, now),
+               WHERE peer_links.revoked_at IS NULL OR ?""",
+            (contact_id, _hash_token(inbound_token), outbound_token, eps_json, now, 1 if allow_revoked else 0),
         )
         await self._db.commit()
         return (cursor.rowcount or 0) > 0

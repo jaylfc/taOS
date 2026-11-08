@@ -615,6 +615,92 @@ async def test_rehandshake_after_revoke_allowed_when_owner_requested_again(nodes
     assert link_after["outbound_token"] == "c" * 64
 
 
+@pytest.mark.asyncio
+async def test_friend_accept_restores_revoked_link_with_request_out(nodes, monkeypatch):
+    """Friend-accept on a revoked peer link restores it when REL_REQUEST_OUT exists.
+
+    Mirrors the direct-handshake re-request tests but exercises the
+    ``accept_friend_request`` route: the directory accept returns the peer's
+    identity, the route calls ``_try_handshake``, and the revoked link is
+    restored because REL_REQUEST_OUT is present.
+    """
+    a, b = nodes
+    await _record_request_out(a, b)
+    await _hub_store(b)
+    _patch_directory(monkeypatch, a)
+    seen: dict = {}
+    _route_delivery_to(monkeypatch, a, seen)
+
+    # Create a single authenticated client for both accepts
+    auth = b.app.state.auth
+    with node_env(b.data_dir):
+        auth.setup_user("admin", "Test Admin", "", "testpass")
+        rec = auth.find_user("admin")
+        token = auth.create_session(user_id=rec["id"] if rec else "", long_lived=True)
+    client = AsyncClient(
+        transport=ASGITransport(app=b.asgi),
+        base_url=f"http://{b.name}",
+        cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
+    )
+
+    async def _accept_with_client(rid: str) -> httpx.Response:
+        from unittest import mock
+        from tinyagentos import task_utils
+        from tinyagentos.routes import hub as hub_routes
+
+        deferred: list = []
+
+        def _defer(coro, task_set):
+            assert task_set is hub_routes._BACKGROUND_TASKS
+            deferred.append(coro)
+
+        with mock.patch.object(task_utils, "_create_supervised_task", _defer):
+            resp = await client.post(f"/api/hub/friends/requests/{rid}/accept", json={})
+        with node_env(b.data_dir):
+            for coro in deferred:
+                await coro
+        return resp
+
+    # First accept -> handshake completes
+    resp1 = await _accept_with_client("rid-1")
+    assert resp1.status_code == 200, resp1.text
+    assert resp1.json()["state"] == "accepted"
+
+    link1 = await a.app.state.contacts_store.get_peer_link(b.contact_id)
+    assert link1 is not None
+    assert link1["revoked_at"] is None
+    original_inbound_token_hash = link1["inbound_token_hash"]
+
+    # Owner pauses the contact (revokes peer link)
+    await a.app.state.contacts_store.revoke_peer_link(b.contact_id)
+
+    # Remove the original REL_REQUEST_OUT edge (consumed by first accept)
+    from tinyagentos.hub import relationships
+    hub_store = await _hub_store(a)
+    await hub_store.delete_relationship(b.fingerprint, relationships.REL_REQUEST_OUT)
+
+    link_revoked = await a.app.state.contacts_store.get_peer_link(b.contact_id)
+    assert link_revoked is not None
+    assert link_revoked["revoked_at"] is not None
+
+    # Owner re-initiates a friend request (adds REL_REQUEST_OUT again)
+    await hub_store.put_relationship(b.fingerprint, relationships.REL_REQUEST_OUT)
+
+    # Second accept -> handshake should restore the revoked link
+    resp2 = await _accept_with_client("rid-2")
+    assert resp2.status_code == 200, resp2.text
+    assert resp2.json()["state"] == "accepted"
+
+    # Peer link must be restored (revoked_at cleared, new inbound token)
+    link_after = await a.app.state.contacts_store.get_peer_link(b.contact_id)
+    assert link_after is not None
+    assert link_after["revoked_at"] is None
+    assert link_after["inbound_token_hash"] != original_inbound_token_hash
+
+    await client.aclose()
+
+
 # ---------------------------------------------------------------------------
 # tsk-ru647l: check-then-write revoke race
 # ---------------------------------------------------------------------------

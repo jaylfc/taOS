@@ -241,21 +241,13 @@ async def _try_handshake(
                     contact_id,
                 )
                 return JSONResponse({"state": "rejected"}, status_code=403)
-            # Clear revoked_at on the peer link so establish_peer_link can
-            # restore the live link.
-            now = time.time()
-            await self._db.execute(
-                "UPDATE peer_links SET revoked_at = ? WHERE contact_id = ?",
-                (now, contact_id),
-            )
-            await self._db.commit()
 
         written = await contacts_store.establish_peer_link(
             contact_id=contact_id,
             inbound_token=inbound_token,
             outbound_token=outbound_token,
             endpoints=endpoints,
-            allow_revoked=True,  # owner accept re-initiates the friendship, restoring a revoked link
+            allow_revoked=link_revoked,
         )
         if not written:
             logger.warning(
