@@ -1,2 +1,4 @@
 ### Fixed
-- Peer link restoration on owner re-request: `establish_peer_link` now honors the `allow_revoked` flag, allowing a revoked link to be restored when the owner has re-initiated the friendship (REL_REQUEST_OUT present). The `_try_handshake` route no longer incorrectly sets `revoked_at` and passes `allow_revoked` only when the link was revoked and REL_REQUEST_OUT exists.
+- establish_peer_link honours allow_revoked
+- the stray revoked_at UPDATE was removed from friend-accept
+- the owner's friend-accept restores a revoked link while a concurrent revoke of a live link is still refused

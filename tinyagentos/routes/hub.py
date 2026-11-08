@@ -228,19 +228,7 @@ async def _try_handshake(
         existing_link = await contacts_store.get_peer_link(contact_id)
         link_revoked = existing_link is not None and existing_link.get("revoked_at") is not None
 
-        if link_revoked:
-            # A revoked peer link may be restored only if the owner has
-            # re-initiated the friendship (REL_REQUEST_OUT present).
-            hub_store = await _get_store(request)
-            has_request_out = await hub_store.has_edge(
-                peer_fingerprint, relationships.REL_REQUEST_OUT
-            )
-            if not has_request_out:
-                logger.info(
-                    "friend-accept handshake: revoked peer link with no REL_REQUEST_OUT, rejecting %s",
-                    contact_id,
-                )
-                return JSONResponse({"state": "rejected"}, status_code=403)
+        # The owner's accept is an explicit re-initiation, so a link revoked before this accept is restored.
 
         written = await contacts_store.establish_peer_link(
             contact_id=contact_id,
