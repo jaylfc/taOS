@@ -149,6 +149,11 @@ def _safe_endpoints(raw) -> list[dict]:
             continue
         if not parts.hostname:
             continue
+        # Validate port: unparseable or out-of-range ports drop the entry
+        try:
+            _ = parts.port
+        except ValueError:
+            continue
         kept.append(e)
     return kept
 
@@ -233,7 +238,11 @@ async def _try_handshake(
         display_name = directory_resp.get("display_name") or username
         existing = await contacts_store.get_peer_link(contact_id)
         if existing is not None:
-            endpoints = existing.get("endpoints") or []
+            pinned = _safe_endpoints(existing.get("endpoints") or [])
+            if pinned:
+                endpoints = pinned
+            else:
+                endpoints = _safe_endpoints(directory_resp.get("endpoints"))
         else:
             endpoints = _safe_endpoints(directory_resp.get("endpoints"))
 

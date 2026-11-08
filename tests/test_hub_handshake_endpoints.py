@@ -172,3 +172,58 @@ async def test_first_link_filters_endpoints(client_with_contacts, app_with_conta
     link = await store.get_peer_link(f"hub:{_PEER_FP}")
     urls = [e.get("url") if isinstance(e, dict) else e for e in link["endpoints"]]
     assert urls == ["https://peer.example.com:6969"], f"filter failed: {urls}"
+
+
+@pytest.mark.asyncio
+async def test_safe_endpoints_drops_unparseable_port():
+    from tinyagentos.routes.hub import _safe_endpoints
+
+    raw = [
+        {"url": "https://peer.example:notaport"},
+        {"url": "https://peer.example:99999"},
+        {"url": "https://peer.example:8443"},
+    ]
+    kept = _safe_endpoints(raw)
+    urls = [e.get("url") for e in kept]
+    assert urls == ["https://peer.example:8443"], f"unparseable ports not dropped: {urls}"
+
+
+@pytest.mark.asyncio
+async def test_empty_link_recovers_on_later_accept(client_with_contacts, app_with_contacts, monkeypatch):
+    """First accept advertises only invalid endpoints (stored link endpoints == []),
+    second accept advertises a valid one; assert the stored endpoints are now the valid one."""
+    # First accept: only invalid endpoints
+    dir_resp_body = {
+        "peer": _PEER_FP,
+        "username": _PEER_USERNAME,
+        "display_name": "Remote Peer",
+        "signing_pubkey": _PEER_SIGNING_PUB,
+        "encryption_pubkey": _PEER_ENCRYPTION_PUB,
+        "endpoints": ["https://peer.example:notaport", "https://peer.example:99999"],
+    }
+
+    async def handler(method, url, **kw):
+        return _fake_dir_resp(body=dir_resp_body)
+
+    _patch_account_proxy(monkeypatch, handler)
+
+    resp = await client_with_contacts.post(
+        "/api/hub/friends/requests/rid-empty1/accept", json={"peer_fingerprint": _PEER_FP}
+    )
+    assert resp.status_code == 200
+
+    store = app_with_contacts.state.contacts_store
+    first_link = await store.get_peer_link(f"hub:{_PEER_FP}")
+    assert first_link is not None
+    assert first_link["endpoints"] == [], f"first link should have empty endpoints: {first_link['endpoints']}"
+
+    # Second accept: valid endpoint
+    dir_resp_body["endpoints"] = ["https://peer.example.com:8443"]
+    resp2 = await client_with_contacts.post(
+        "/api/hub/friends/requests/rid-empty2/accept", json={"peer_fingerprint": _PEER_FP}
+    )
+    assert resp2.status_code == 200
+
+    link = await store.get_peer_link(f"hub:{_PEER_FP}")
+    urls = [e.get("url") if isinstance(e, dict) else e for e in link["endpoints"]]
+    assert urls == ["https://peer.example.com:8443"], f"recovery failed: {urls}"

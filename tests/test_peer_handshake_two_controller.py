@@ -572,6 +572,38 @@ async def test_rehandshake_after_kill_switch_is_refused(nodes):
 
 
 @pytest.mark.asyncio
+async def test_empty_handshake_link_recovers(nodes):
+    """Link stored with [] then a handshake advertising a valid endpoint;
+    stored becomes the valid one."""
+    a, b = nodes
+    await _record_request_out(a, b)
+
+    # First handshake with only invalid endpoints (should store [])
+    bad_endpoints = [
+        {"url": "http://peer.example:notaport"},
+        {"url": "http://peer.example:99999"},
+    ]
+    env1 = _handshake_envelope(b, a, endpoints=bad_endpoints)
+    resp1 = await _post_handshake(a, env1)
+    assert resp1.status_code == 200, resp1.text
+
+    link1 = await a.app.state.contacts_store.get_peer_link(b.contact_id)
+    assert link1 is not None
+    urls1 = [e.get("url") if isinstance(e, dict) else e for e in link1["endpoints"]]
+    assert urls1 == [], f"first handshake should have empty endpoints: {urls1}"
+
+    # Second handshake with valid endpoint — should recover
+    env2 = _handshake_envelope(b, a, endpoints=["http://100.64.0.9:6969"])
+    resp2 = await _post_handshake(a, env2)
+    assert resp2.status_code == 200, resp2.text
+
+    link2 = await a.app.state.contacts_store.get_peer_link(b.contact_id)
+    assert link2 is not None
+    urls2 = [e.get("url") if isinstance(e, dict) else e for e in link2["endpoints"]]
+    assert urls2 == ["http://100.64.0.9:6969"], f"recovery failed: {urls2}"
+
+
+@pytest.mark.asyncio
 async def test_rehandshake_after_revoke_allowed_when_owner_requested_again(nodes):
     """A revoked peer link CAN be restored if the owner re-initiates a friend request."""
     a, b = nodes

@@ -318,7 +318,11 @@ async def peer_handshake(body: PeerEnvelope, request: Request):
     # SSRF allowance.  Only on first handshake do we accept endpoints from the
     # envelope, and even then only valid http/https entries with a hostname.
     if existing is not None:
-        endpoints = existing.get("endpoints") or []
+        pinned = _safe_endpoints(existing.get("endpoints") or [])
+        if pinned:
+            endpoints = pinned
+        else:
+            endpoints = _safe_endpoints(hs.get("endpoints"))
     else:
         endpoints = _safe_endpoints(hs.get("endpoints"))
 
