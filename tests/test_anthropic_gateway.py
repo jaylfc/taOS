@@ -1006,8 +1006,9 @@ async def test_image_data_url_media_type_drops_mime_parameters(tmp_path_factory)
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_non_string_image_url_is_a_400_not_a_500(tmp_path_factory):
-    """A non-string image URL is rejected as a client error and never sent upstream."""
+@pytest.mark.parametrize("image_url", [{"url": 123}, {"url": None}, {"url": ""}, {}, None, ""])
+async def test_non_string_image_url_is_a_400_not_a_500(tmp_path_factory, image_url):
+    """A missing, null, empty or non-string image URL is a client error and never sent upstream."""
     app, session = await _gateway_app(tmp_path_factory)
     route = respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(
         200, json=_anthropic_response(), headers={"content-type": "application/json"}
@@ -1015,7 +1016,7 @@ async def test_non_string_image_url_is_a_400_not_a_500(tmp_path_factory):
     body = {
         "model": "claude-x",
         "messages": [{"role": "user", "content": [
-            {"type": "image_url", "image_url": {"url": 123}},
+            {"type": "image_url", "image_url": image_url},
         ]}],
     }
     resp = await _post(app, session, body)
