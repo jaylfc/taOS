@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import React from "react";
+import * as a2aSelection from "../MessagesApp.a2aSelection";
 
 // Stub the heavy data hooks / stores MessagesApp transitively imports so the
 // test only cares about the mobile shell structure. Anything that would fire
@@ -112,7 +113,7 @@ vi.mock("../MessagesApp.a2aSelection", () => ({
   selectInitialBusChannel: vi.fn(),
   selectFirstBoundChannel: vi.fn(),
   readLastChannel: vi.fn(),
-  findA2aChannelId: vi.fn(() => "ch-a2a"),
+  findA2aChannelId: vi.fn(),
   writeLastChannel: vi.fn(),
 }));
 
@@ -679,6 +680,7 @@ describe("MessagesApp mobile Back-out guard resets on non-null selection paths",
   });
 
   it("reselects remembered/A2A channel after Back, open-messages select, then channel removed", async () => {
+    vi.mocked(a2aSelection.findA2aChannelId).mockReturnValue("ch-a2a");
     let channels = [
       { id: "ch-a2a", name: "a2a", type: "group", members: ["user", "tom"], settings: { kind: "a2a" } },
       { id: "ch-del", name: "todelete", type: "group", members: ["user", "tom"] },
