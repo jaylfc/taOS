@@ -318,13 +318,14 @@ async def peer_handshake(body: PeerEnvelope, request: Request):
         )
 
     existing = await store.get_peer_link(contact_id)
-    allow_revoked = False
+    restore_revoked_at = None
     if existing is not None and existing.get("revoked_at") is not None:
         if not await hub.has_edge(fp, relationships.REL_REQUEST_OUT):
             raise HTTPException(status_code=403, detail="peer link revoked")
         # Owner re-request path: the owner re-initiated the friendship, so
-        # restoring the revoked link is intentional.
-        allow_revoked = True
+        # restoring the revoked link is intentional.  Pass the exact timestamp
+        # we observed so a newer revocation is not silently cleared.
+        restore_revoked_at = existing.get("revoked_at")
 
     if not await store.record_nonce(envelope["nonce"], contact_id, "handshake"):
         raise HTTPException(status_code=409, detail="nonce replay detected")
@@ -359,7 +360,7 @@ async def peer_handshake(body: PeerEnvelope, request: Request):
         inbound_token=our_token,
         outbound_token=their_token,
         endpoints=endpoints,
-        allow_revoked=allow_revoked,
+        restore_revoked_at=restore_revoked_at,
     )
     if not written:
         raise HTTPException(status_code=403, detail="peer link revoked")

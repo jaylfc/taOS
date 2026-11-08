@@ -753,12 +753,13 @@ async def test_handshake_revoke_during_handshake_is_403(nodes, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_owner_re_request_reestablishes_revoked_link_even_during_race(nodes, monkeypatch):
-    """The owner re-request path re-establishes a revoked link even mid-race.
+async def test_owner_re_request_reestablishes_revoked_link_only_if_same_revocation(nodes, monkeypatch):
+    """The owner re-request path re-establishes a revoked link ONLY if the
+    revocation observed at read time is still the current one.
 
-    Same race as above -- a revoke lands between the check and the write -- but
-    here the owner has re-initiated the friend request, so ``allow_revoked=True``
-    is passed and the write applies.
+    A revoke that lands between the check and the write (a newer revocation)
+    prevents the restore, returning 403.  This prevents a block that lands
+    during the handshake from being silently undone.
     """
     from tinyagentos.hub import store as hub_store
     from tinyagentos.hub import relationships
@@ -789,10 +790,12 @@ async def test_owner_re_request_reestablishes_revoked_link_even_during_race(node
 
     env2 = _handshake_envelope(b, a, inbound_token="c" * 64, endpoints=["http://10.0.0.5:22"])
     resp2 = await _post_handshake(a, env2)
-    assert resp2.status_code == 200, resp2.text
+    # A newer revocation landed during the handshake -- restore is refused.
+    assert resp2.status_code == 403, resp2.text
 
+    # The peer link must still be revoked (the newer revocation stands).
     link_after = await a.app.state.contacts_store.get_peer_link(b.contact_id)
     assert link_after is not None
-    assert link_after["revoked_at"] is None
-    assert link_after["inbound_token_hash"] != original_hash
-    assert link_after["outbound_token"] == "c" * 64
+    assert link_after["revoked_at"] is not None
+    # The inbound token hash must be unchanged (no restore happened).
+    assert link_after["inbound_token_hash"] == original_hash

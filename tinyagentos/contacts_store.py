@@ -334,7 +334,7 @@ class ContactsStore(BaseStore):
         inbound_token: str,
         outbound_token: str,
         endpoints: list[str] | None = None,
-        allow_revoked: bool = False,
+        restore_revoked_at: float | None = None,
     ) -> bool:
         """Create a peer link row.  Called after the handshake completes.
 
@@ -343,14 +343,16 @@ class ContactsStore(BaseStore):
 
         The check and the write happen in ONE statement, so a revoke committed
         between a prior ``revoked_at`` read and this call cannot be silently
-        overwritten: when ``allow_revoked`` is False and a row already exists
+        overwritten: when ``restore_revoked_at`` is None and a row already exists
         with ``revoked_at`` NOT NULL, the UPDATE arm's WHERE clause filters it
         out, the row is left revoked, and this returns False.  When the row is
         new or still live, the write applies and this returns True.
 
-        ``allow_revoked`` is only for the owner re-request path, where the
-        owner has explicitly re-initiated the friendship and the revoked link
-        is meant to be restored.
+        ``restore_revoked_at`` is only for the owner re-request / re-accept path,
+        where the owner has explicitly re-initiated the friendship and the revoked
+        link is meant to be restored.  Only the exact revocation timestamp the
+        caller observed may be cleared — a newer revocation that lands after the
+        read is preserved.
         """
         now = time.time()
         eps_json = _json_dumps(endpoints or [])
@@ -365,8 +367,9 @@ class ContactsStore(BaseStore):
                  endpoints = excluded.endpoints,
                  established_at = excluded.established_at,
                  revoked_at = NULL
-               WHERE peer_links.revoked_at IS NULL OR ?""",
-            (contact_id, _hash_token(inbound_token), outbound_token, eps_json, now, 1 if allow_revoked else 0),
+               WHERE peer_links.revoked_at IS NULL OR (? IS NOT NULL AND peer_links.revoked_at = ?)""",
+            (contact_id, _hash_token(inbound_token), outbound_token, eps_json, now,
+             restore_revoked_at, restore_revoked_at),
         )
         await self._db.commit()
         return (cursor.rowcount or 0) > 0
