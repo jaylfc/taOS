@@ -1915,3 +1915,46 @@ async def test_stream_cancelled_scope_still_records_spend(tmp_path_factory):
     assert spend_calls and all(c > 0 for c in spend_calls), \
         "a cancelled stream must still be charged"
     assert trace_calls, "a cancelled stream must still record its trace"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_chat_image_shrunk_before_upstream(tmp_path_factory):
+    """A 3000x2000 PNG posted through the gateway reaches upstream <= 1568px."""
+    import base64
+    import io
+
+    from PIL import Image
+
+    img = Image.new("RGB", (3000, 2000), color=(10, 20, 30))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    data_url = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+    app, session = await _gateway_app(tmp_path_factory)
+    respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(
+        200, json=_anthropic_response(), headers={"content-type": "application/json"}
+    ))
+    body = {
+        "model": "claude-x",
+        "messages": [
+            {"role": "user", "content": [
+                {"type": "text", "text": "hi"},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ]},
+        ],
+    }
+    resp = await _post(app, session, body)
+    assert resp.status_code == 200, resp.text
+    data = _upstream_json(respx.calls.last)
+    # find image url in upstream content (passed through)
+    parts = None
+    for m in data["messages"]:
+        if isinstance(m.get("content"), list):
+            parts = m["content"]
+    img_part = next(p for p in parts if p.get("type") == "image_url")
+    url = img_part["image_url"]["url"] if isinstance(img_part["image_url"], dict) else img_part["image_url"]
+    header, b64 = url.split(";base64,", 1)
+    raw = base64.b64decode(b64)
+    up_img = Image.open(io.BytesIO(raw))
+    assert max(up_img.size) <= 1568
