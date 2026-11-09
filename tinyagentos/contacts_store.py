@@ -335,6 +335,7 @@ class ContactsStore(BaseStore):
         outbound_token: str,
         endpoints: list[str] | None = None,
         restore_revoked_at: float | None = None,
+        keep_existing_endpoints: bool = False,
     ) -> bool:
         """Create a peer link row.  Called after the handshake completes.
 
@@ -353,20 +354,32 @@ class ContactsStore(BaseStore):
         link is meant to be restored.  Only the exact revocation timestamp the
         caller observed may be cleared — a newer revocation that lands after the
         read is preserved.
+
+        ``keep_existing_endpoints``: when True, the ON CONFLICT DO UPDATE arm
+        keeps the stored endpoints (`endpoints = peer_links.endpoints`) instead
+        of overwriting with the new ones (`excluded.endpoints`).  Default False
+        keeps every other caller unchanged.
         """
         now = time.time()
         eps_json = _json_dumps(endpoints or [])
+        if keep_existing_endpoints:
+            endpoints_clause = "endpoints = peer_links.endpoints, "
+        else:
+            endpoints_clause = "endpoints = excluded.endpoints, "
+        set_clause = (
+            f"inbound_token_hash = excluded.inbound_token_hash, "
+            f"outbound_token = excluded.outbound_token, "
+            f"{endpoints_clause}"
+            f"established_at = excluded.established_at, "
+            f"revoked_at = NULL"
+        )
         cursor = await self._db.execute(
-            """INSERT INTO peer_links
+            f"""INSERT INTO peer_links
                (contact_id, inbound_token_hash, outbound_token, endpoints,
                 established_at)
                VALUES (?, ?, ?, ?, ?)
                ON CONFLICT(contact_id) DO UPDATE SET
-                 inbound_token_hash = excluded.inbound_token_hash,
-                 outbound_token = excluded.outbound_token,
-                 endpoints = excluded.endpoints,
-                 established_at = excluded.established_at,
-                 revoked_at = NULL
+                 {set_clause}
                WHERE peer_links.revoked_at IS NULL OR (? IS NOT NULL AND peer_links.revoked_at = ?)""",
             (contact_id, _hash_token(inbound_token), outbound_token, eps_json, now,
              restore_revoked_at, restore_revoked_at),

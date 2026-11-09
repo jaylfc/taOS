@@ -227,3 +227,91 @@ async def test_empty_link_recovers_on_later_accept(client_with_contacts, app_wit
     link = await store.get_peer_link(f"hub:{_PEER_FP}")
     urls = [e.get("url") if isinstance(e, dict) else e for e in link["endpoints"]]
     assert urls == ["https://peer.example.com:8443"], f"recovery failed: {urls}"
+
+
+@pytest.mark.asyncio
+async def test_establish_peer_link_keep_first_endpoints():
+    """When called twice with keep_existing_endpoints=True, the first endpoints are kept."""
+    from tinyagentos.contacts_store import ContactsStore
+
+    import tempfile, os
+    from pathlib import Path
+
+    tmp_dir = Path(tempfile.mkdtemp())
+    db_path = tmp_dir / "test.db"
+
+    store = ContactsStore(db_path=db_path)
+    await store.init()
+
+    contact_id = "hub:testfp1234567890abcdef"
+
+    # First call: establish with first endpoints
+    result1 = await store.establish_peer_link(
+        contact_id=contact_id,
+        inbound_token="token1",
+        outbound_token="token1_out",
+        endpoints=["https://first.example.com:6969"],
+        keep_existing_endpoints=False,
+    )
+    assert result1 is True
+
+    # Second call: establish with different endpoints, but keep_existing_endpoints=True
+    result2 = await store.establish_peer_link(
+        contact_id=contact_id,
+        inbound_token="token2",
+        outbound_token="token2_out",
+        endpoints=["https://second.example.com:6969"],
+        keep_existing_endpoints=True,
+    )
+    assert result2 is True
+
+    link = await store.get_peer_link(contact_id)
+    urls = [e.get("url") if isinstance(e, dict) else e for e in link["endpoints"]]
+    assert urls == ["https://first.example.com:6969"], f"kept wrong: {urls}"
+
+    await store.close()
+    os.unlink(db_path)
+
+
+@pytest.mark.asyncio
+async def test_establish_peer_link_second_wins_default():
+    """With default (keep_existing_endpoints=False), the second write wins."""
+    from tinyagentos.contacts_store import ContactsStore
+
+    import tempfile, os
+    from pathlib import Path
+
+    tmp_dir = Path(tempfile.mkdtemp())
+    db_path = tmp_dir / "test.db"
+
+    store = ContactsStore(db_path=db_path)
+    await store.init()
+
+    contact_id = "hub:testfp1234567890abcdef"
+
+    # First call: establish with first endpoints
+    result1 = await store.establish_peer_link(
+        contact_id=contact_id,
+        inbound_token="token1",
+        outbound_token="token1_out",
+        endpoints=["https://first.example.com:6969"],
+        keep_existing_endpoints=False,
+    )
+    assert result1 is True
+
+    # Second call: establish with different endpoints, default (keep_existing_endpoints=False)
+    result2 = await store.establish_peer_link(
+        contact_id=contact_id,
+        inbound_token="token2",
+        outbound_token="token2_out",
+        endpoints=["https://second.example.com:6969"],
+        keep_existing_endpoints=False,
+    )
+    assert result2 is True
+
+    link = await store.get_peer_link(contact_id)
+    urls = [e.get("url") if isinstance(e, dict) else e for e in link["endpoints"]]
+    assert urls == ["https://second.example.com:6969"], f"second should win: {urls}"
+
+    await store.close()
+    os.unlink(db_path)
