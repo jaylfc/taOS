@@ -30,6 +30,7 @@ import asyncio
 import json
 import logging
 import re
+import urllib.parse
 from pathlib import Path
 from typing import Optional
 
@@ -125,6 +126,38 @@ def _normalize_endpoints(endpoints) -> list:
     ]
 
 
+def _safe_endpoints(raw) -> list[dict]:
+    """Filter endpoints to only valid http/https dict entries with a hostname.
+
+    Takes the output of _normalize_endpoints and keeps only dict entries whose
+    'url' is a string with scheme 'http' or 'https' and a truthy hostname.
+    Everything else (ints, dicts without url, non-http schemes, etc.) is dropped.
+    """
+    normalized = _normalize_endpoints(raw)
+    kept = []
+    for e in normalized:
+        if not isinstance(e, dict):
+            continue
+        url = e.get("url")
+        if not isinstance(url, str):
+            continue
+        try:
+            parts = urllib.parse.urlsplit(url)
+        except (ValueError, TypeError):
+            continue
+        if parts.scheme not in ("http", "https"):
+            continue
+        if not parts.hostname:
+            continue
+        # Validate port: unparseable or out-of-range ports drop the entry
+        try:
+            _ = parts.port
+        except ValueError:
+            continue
+        kept.append(e)
+    return kept
+
+
 async def _try_handshake(
     request: Request,
     directory_resp: dict,
@@ -203,7 +236,15 @@ async def _try_handshake(
             return
 
         display_name = directory_resp.get("display_name") or username
-        endpoints = _normalize_endpoints(directory_resp.get("endpoints"))
+        existing = await contacts_store.get_peer_link(contact_id)
+        if existing is not None:
+            pinned = _safe_endpoints(existing.get("endpoints") or [])
+            if pinned:
+                endpoints = pinned
+            else:
+                endpoints = _safe_endpoints(directory_resp.get("endpoints"))
+        else:
+            endpoints = _safe_endpoints(directory_resp.get("endpoints"))
 
         # Read the existing peer link BEFORE add_contact so we capture the
         # revocation state that existed at the start of the handshake.
