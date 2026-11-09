@@ -315,3 +315,103 @@ async def test_establish_peer_link_second_wins_default():
 
     await store.close()
     os.unlink(db_path)
+
+
+@pytest.mark.asyncio
+async def test_establish_peer_link_keep_existing_takes_new_when_stored_empty():
+    """Stored endpoints [] with keep_existing_endpoints=True takes the new endpoints."""
+    from tinyagentos.contacts_store import ContactsStore
+
+    import tempfile, os
+    from pathlib import Path
+
+    tmp_dir = Path(tempfile.mkdtemp())
+    db_path = tmp_dir / "test.db"
+
+    store = ContactsStore(db_path=db_path)
+    await store.init()
+
+    contact_id = "hub:testfp1234567890abcdef"
+
+    # First call: store empty endpoints
+    result1 = await store.establish_peer_link(
+        contact_id=contact_id,
+        inbound_token="token1",
+        outbound_token="token1_out",
+        endpoints=[],
+        keep_existing_endpoints=False,
+    )
+    assert result1 is True
+
+    # Second call: keep_existing_endpoints=True but stored is empty -> take new
+    result2 = await store.establish_peer_link(
+        contact_id=contact_id,
+        inbound_token="token2",
+        outbound_token="token2_out",
+        endpoints=["https://second.example.com:6969"],
+        keep_existing_endpoints=True,
+    )
+    assert result2 is True
+
+    link = await store.get_peer_link(contact_id)
+    urls = [e.get("url") if isinstance(e, dict) else e for e in link["endpoints"]]
+    assert urls == ["https://second.example.com:6969"], f"recovery failed: {urls}"
+
+    await store.close()
+    os.unlink(db_path)
+
+
+@pytest.mark.asyncio
+async def test_overlapping_first_accept_keeps_first_endpoints(
+    client_with_contacts, app_with_contacts, monkeypatch
+):
+    """Two overlapping first accepts: both see get_peer_link() == None, so on the
+    unfixed code both write with keep_existing_endpoints=False and the second
+    overwrites the first link's endpoints.  The fix keeps the FIRST list."""
+    first_body = {
+        "peer": _PEER_FP,
+        "username": _PEER_USERNAME,
+        "display_name": "Remote Peer",
+        "signing_pubkey": _PEER_SIGNING_PUB,
+        "encryption_pubkey": _PEER_ENCRYPTION_PUB,
+        "endpoints": ["https://first.example.com:6969"],
+    }
+    second_body = dict(first_body)
+    second_body["endpoints"] = ["https://second.example.com:6969"]
+
+    calls = {"n": 0}
+
+    async def handler(method, url, **kw):
+        calls["n"] += 1
+        body = first_body if calls["n"] == 1 else second_body
+        return _fake_dir_resp(body=body)
+
+    _patch_account_proxy(monkeypatch, handler)
+
+    store = app_with_contacts.state.contacts_store
+
+    # Both accepts observe no existing peer link (the race case).
+    async def _get_peer_link_none(contact_id):
+        return None
+
+    monkeypatch.setattr(store, "get_peer_link", _get_peer_link_none)
+
+    resp = await client_with_contacts.post(
+        "/api/hub/friends/requests/rid-race-1/accept",
+        json={"peer_fingerprint": _PEER_FP},
+    )
+    assert resp.status_code == 200, resp.text
+
+    resp2 = await client_with_contacts.post(
+        "/api/hub/friends/requests/rid-race-2/accept",
+        json={"peer_fingerprint": _PEER_FP},
+    )
+    assert resp2.status_code == 200, resp2.text
+
+    # Restore the real reader now that both accepts (which must see None) are done.
+    monkeypatch.undo()
+    store = app_with_contacts.state.contacts_store
+    link = await store.get_peer_link(f"hub:{_PEER_FP}")
+    assert link is not None
+    urls = [e.get("url") if isinstance(e, dict) else e for e in link["endpoints"]]
+    assert urls == ["https://first.example.com:6969"], f"second overwrote first: {urls}"

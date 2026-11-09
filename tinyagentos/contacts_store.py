@@ -356,14 +356,19 @@ class ContactsStore(BaseStore):
         read is preserved.
 
         ``keep_existing_endpoints``: when True, the ON CONFLICT DO UPDATE arm
-        keeps the stored endpoints (`endpoints = peer_links.endpoints`) instead
-        of overwriting with the new ones (`excluded.endpoints`).  Default False
-        keeps every other caller unchanged.
+        keeps the stored endpoints only when they are non-empty (not NULL, '' or
+        '[]'); when the stored endpoints are empty it takes the new ones
+        (``excluded.endpoints``).  When False, always overwrites with the new
+        ones.  Default False keeps every other caller unchanged.
         """
         now = time.time()
         eps_json = _json_dumps(endpoints or [])
         if keep_existing_endpoints:
-            endpoints_clause = "endpoints = peer_links.endpoints, "
+            endpoints_clause = (
+                "endpoints = CASE WHEN peer_links.endpoints IS NULL "
+                "OR peer_links.endpoints IN ('', '[]') "
+                "THEN excluded.endpoints ELSE peer_links.endpoints END, "
+            )
         else:
             endpoints_clause = "endpoints = excluded.endpoints, "
         set_clause = (

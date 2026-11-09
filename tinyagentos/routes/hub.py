@@ -241,13 +241,10 @@ async def _try_handshake(
             pinned = _safe_endpoints(existing.get("endpoints") or [])
             if pinned:
                 endpoints = pinned
-                keep_existing = True
             else:
                 endpoints = _safe_endpoints(directory_resp.get("endpoints"))
-                keep_existing = False
         else:
             endpoints = _safe_endpoints(directory_resp.get("endpoints"))
-            keep_existing = False
 
         # Read the existing peer link BEFORE add_contact so we capture the
         # revocation state that existed at the start of the handshake.
@@ -285,7 +282,7 @@ async def _try_handshake(
             outbound_token=outbound_token,
             endpoints=endpoints,
             restore_revoked_at=observed_revoked_at,
-            keep_existing_endpoints=keep_existing,
+            keep_existing_endpoints=True,
         )
         if not written:
             logger.warning(
