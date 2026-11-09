@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { withCsrf } from "@/lib/csrf";
 import { useNotificationStore } from "@/stores/notification-store";
+import { useAuthReadyStore } from "@/stores/auth-ready-store";
 
 /**
  * Layout preferences.
@@ -15,12 +16,23 @@ import { useNotificationStore } from "@/stores/notification-store";
  * the user to other browsers. `App` calls `syncFromServer()` once auth is
  * ready, and `LoginScreen` waits (briefly) for that sync before deciding
  * whether to request fullscreen, so a fresh browser honours the saved choice.
+ *
+ * Save semantics: PUTs are serialized so rapid toggles reach the server in
+ * order; each PUT is bounded by `SAVE_TIMEOUT_MS`; a failed or timed-out save
+ * is reported once per session and leaves an "unsaved" marker so a later
+ * sync re-pushes the local choice instead of overwriting it with the server's
+ * older value. Saves queued before a logout are dropped, never replayed under
+ * a different session.
  */
 
 const FULLSCREEN_LAUNCH_KEY = "taos-layout-fullscreen-launch";
+/** Set while the local choice has not been confirmed saved on the server. */
+const UNSAVED_KEY = "taos-layout-fullscreen-launch-unsaved";
 const PREF_URL = "/api/preferences/layout";
 /** Upper bound on how long LoginScreen waits for the server sync. */
 export const LAYOUT_SYNC_WAIT_MS = 1500;
+/** Upper bound on a single preference PUT before it is aborted and reported. */
+export const SAVE_TIMEOUT_MS = 10_000;
 
 /** Read the locally cached value; absent or unreadable storage means the default (on). */
 function loadFullscreenOnLaunch(): boolean {
@@ -40,12 +52,34 @@ function persistLocal(on: boolean): void {
   }
 }
 
+/** Mark or clear the "local choice not yet saved on the server" state. */
+function setUnsaved(unsaved: boolean): void {
+  try {
+    if (unsaved) localStorage.setItem(UNSAVED_KEY, "1");
+    else localStorage.removeItem(UNSAVED_KEY);
+  } catch {
+    /* ignore: without storage there is nothing to preserve across loads */
+  }
+}
+
+/** True when a previous save did not complete and the local choice must win over the server copy. */
+function hasUnsaved(): boolean {
+  try {
+    return localStorage.getItem(UNSAVED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
 // Bumped on every local change. A server GET that started before a change
 // must not overwrite the newer local choice when its response arrives.
 let localVersion = 0;
 // PUTs are chained so rapid toggles reach the server in order and the last
 // choice is the one that stays persisted.
 let saveChain: Promise<void> = Promise.resolve();
+// Bumped when the authenticated session ends; saves queued under an earlier
+// generation are skipped rather than replayed under whoever signs in next.
+let sessionGeneration = 0;
 // In-flight GET, shared so concurrent callers (and the launch wait) reuse it.
 let inflightSync: Promise<void> | null = null;
 // Tell the user once per session if the server copy cannot be written.
@@ -63,25 +97,58 @@ function reportSaveFailure(detail: string): void {
   });
 }
 
-/** Append a serialized PUT of `body` to the save chain and surface failures. */
+/** Perform one bounded PUT; resolves true when the server confirmed the save. */
+async function putOnce(body: Record<string, boolean>): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SAVE_TIMEOUT_MS);
+  try {
+    const res = await fetch(
+      PREF_URL,
+      withCsrf({
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      }),
+    );
+    if (!res.ok) {
+      reportSaveFailure(`HTTP ${res.status}`);
+      return false;
+    }
+    return true;
+  } catch (err: unknown) {
+    if (controller.signal.aborted) reportSaveFailure(`timed out after ${SAVE_TIMEOUT_MS / 1000}s`);
+    else reportSaveFailure(err instanceof Error ? err.message : "network error");
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Append a serialized PUT of `body` to the save chain. The chain always
+ * recovers (a failure never blocks later saves), a save enqueued under a
+ * session that has since ended is skipped, and the unsaved marker is cleared
+ * only when the server confirms.
+ */
 function pushToServer(body: Record<string, boolean>): Promise<void> {
+  const generation = sessionGeneration;
   saveChain = saveChain
     .then(async () => {
-      const res = await fetch(
-        PREF_URL,
-        withCsrf({
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        }),
-      );
-      if (!res.ok) reportSaveFailure(`HTTP ${res.status}`);
+      if (generation !== sessionGeneration) return; // session ended while queued
+      if (await putOnce(body)) setUnsaved(false);
     })
-    .catch((err: unknown) => {
-      reportSaveFailure(err instanceof Error ? err.message : "network error");
+    .catch(() => {
+      /* putOnce reports its own failures; keep the chain alive */
     });
   return saveChain;
 }
+
+// Drop queued saves when the authenticated session ends (logout). The local
+// value and its unsaved marker stay, so the next session's sync re-pushes it.
+useAuthReadyStore.subscribe((s, prev) => {
+  if (prev.ready && !s.ready) sessionGeneration += 1;
+});
 
 /** Sync lifecycle: idle (never asked), pending (GET in flight), done (answered or failed). */
 export type LayoutSyncState = "idle" | "pending" | "done";
@@ -103,6 +170,7 @@ export const useLayoutStore = create<LayoutStore>((set, get) => ({
     localVersion += 1;
     set({ fullscreenOnLaunch: on });
     persistLocal(on);
+    setUnsaved(true);
     void pushToServer({ fullscreen_on_launch: on });
   },
 
@@ -112,6 +180,12 @@ export const useLayoutStore = create<LayoutStore>((set, get) => ({
     set({ syncState: "pending" });
     inflightSync = (async () => {
       try {
+        // An unsaved local choice outranks the server copy: re-push it
+        // instead of letting an older server value overwrite it.
+        if (hasUnsaved()) {
+          void pushToServer({ fullscreen_on_launch: get().fullscreenOnLaunch });
+          return;
+        }
         const res = await fetch(PREF_URL, { headers: { Accept: "application/json" } });
         if (!res.ok) return;
         const data = (await res.json()) as { fullscreen_on_launch?: unknown } | null;
@@ -156,6 +230,7 @@ export function waitForLayoutSync(timeoutMs = LAYOUT_SYNC_WAIT_MS): Promise<void
 export function __resetLayoutStoreForTests(): void {
   localVersion = 0;
   saveChain = Promise.resolve();
+  sessionGeneration = 0;
   inflightSync = null;
   saveFailureReported = false;
   useLayoutStore.setState({ fullscreenOnLaunch: loadFullscreenOnLaunch(), syncState: "idle" });
