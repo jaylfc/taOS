@@ -69,7 +69,7 @@ describe("layout-store", () => {
     useLayoutStore.getState().setFullscreenOnLaunch(false);
     expect(useLayoutStore.getState().fullscreenOnLaunch).toBe(false);
     expect(localStorage.getItem(KEY)).toBe("off");
-    expect(localStorage.getItem(UNSAVED_KEY)).toBe("1");
+    expect(localStorage.getItem(UNSAVED_KEY)).toBe("off");
 
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -111,11 +111,48 @@ describe("layout-store", () => {
 
     expect(useLayoutStore.getState().fullscreenOnLaunch).toBe(true);
     expect(localStorage.getItem(KEY)).toBe("on");
-    expect(localStorage.getItem(UNSAVED_KEY)).toBe("1");
+    // 403 is a permanent rejection for this session: the marker is released so
+    // later syncs follow the server again instead of re-pushing forever.
+    expect(localStorage.getItem(UNSAVED_KEY)).toBeNull();
     const notes = useNotificationStore.getState().notifications;
     expect(notes).toHaveLength(1);
     expect(notes[0]?.level).toBe("warning");
     expect(notes[0]?.body).toContain("HTTP 403");
+  });
+
+  it("after a permanent rejection, a later sync resumes and applies the server value", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({}, false, 403)) as unknown as typeof fetch;
+    useLayoutStore.getState().setFullscreenOnLaunch(false);
+    await vi.waitFor(() => expect(localStorage.getItem(UNSAVED_KEY)).toBeNull());
+
+    globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({ fullscreen_on_launch: true })) as unknown as typeof fetch;
+    await useLayoutStore.getState().syncFromServer();
+    expect(useLayoutStore.getState().fullscreenOnLaunch).toBe(true);
+  });
+
+  it("a transient failure (5xx) keeps the marker so the choice is re-pushed later", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({}, false, 503)) as unknown as typeof fetch;
+    useLayoutStore.getState().setFullscreenOnLaunch(false);
+    await vi.waitFor(() => expect(useNotificationStore.getState().notifications).toHaveLength(1));
+    expect(localStorage.getItem(UNSAVED_KEY)).toBe("off");
+  });
+
+  it("a confirmed save of an older choice does not clear the marker for a newer queued one", async () => {
+    const first = deferred<Response>();
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockResolvedValueOnce(jsonResponse({}, false, 500)); // newer choice fails transiently
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    useLayoutStore.getState().setFullscreenOnLaunch(false);
+    useLayoutStore.getState().setFullscreenOnLaunch(true); // latest choice
+    expect(localStorage.getItem(UNSAVED_KEY)).toBe("on");
+    first.resolve(jsonResponse({ ok: true })); // older choice confirmed
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(useNotificationStore.getState().notifications).toHaveLength(1));
+    // Marker still names the latest, unconfirmed choice.
+    expect(localStorage.getItem(UNSAVED_KEY)).toBe("on");
   });
 
   it("aborts a stalled PUT after the timeout, reports it, and lets the next save proceed in order", async () => {
@@ -153,11 +190,13 @@ describe("layout-store", () => {
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1)); // first PUT in flight
     useAuthReadyStore.setState({ ready: false }); // logout while it is in flight
     first.resolve(jsonResponse({ ok: true }));
-    await vi.waitFor(() => expect(localStorage.getItem(UNSAVED_KEY)).toBeNull());
-    await Promise.resolve();
+    for (let i = 0; i < 10; i++) await Promise.resolve(); // let the chain settle
 
     expect(fetchMock).toHaveBeenCalledTimes(1); // the queued save was skipped
     expect(useLayoutStore.getState().fullscreenOnLaunch).toBe(true); // local choice intact
+    // The first PUT confirmed the OLDER choice, so the marker still names the
+    // latest, unsent one; the next session's sync will re-push it.
+    expect(localStorage.getItem(UNSAVED_KEY)).toBe("on");
   });
 
   it("syncFromServer applies the server value and marks the sync done", async () => {
@@ -174,7 +213,8 @@ describe("layout-store", () => {
     // Session 1: save fails, page is then reloaded.
     globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({}, false, 500)) as unknown as typeof fetch;
     useLayoutStore.getState().setFullscreenOnLaunch(false);
-    await vi.waitFor(() => expect(localStorage.getItem(UNSAVED_KEY)).toBe("1"));
+    await vi.waitFor(() => expect(useNotificationStore.getState().notifications).toHaveLength(1));
+    expect(localStorage.getItem(UNSAVED_KEY)).toBe("off");
     __resetLayoutStoreForTests(); // simulated reload: state rebuilt from storage
     expect(useLayoutStore.getState().fullscreenOnLaunch).toBe(false);
 
@@ -190,6 +230,11 @@ describe("layout-store", () => {
     await vi.waitFor(() => expect(putBodies(fetchMock)).toEqual([{ fullscreen_on_launch: false }]));
     await vi.waitFor(() => expect(localStorage.getItem(UNSAVED_KEY)).toBeNull());
     expect(fetchMock.mock.calls.some(([, init]) => !(init as RequestInit | undefined)?.method)).toBe(false); // no GET issued
+
+    // The re-push path must not leave a stale completed promise behind: the
+    // next sync issues a real GET again (regression for the inflightSync ordering bug).
+    await useLayoutStore.getState().syncFromServer();
+    expect(fetchMock.mock.calls.some(([, init]) => !(init as RequestInit | undefined)?.method)).toBe(true);
   });
 
   it("discards a server response made stale by a local change during the request", async () => {

@@ -26,7 +26,11 @@ import { useAuthReadyStore } from "@/stores/auth-ready-store";
  */
 
 const FULLSCREEN_LAUNCH_KEY = "taos-layout-fullscreen-launch";
-/** Set while the local choice has not been confirmed saved on the server. */
+/**
+ * Holds the latest local choice ("on"/"off") while it has not been confirmed
+ * saved on the server; absent once confirmed or once the server has
+ * permanently rejected the save (so syncs can resume).
+ */
 const UNSAVED_KEY = "taos-layout-fullscreen-launch-unsaved";
 const PREF_URL = "/api/preferences/layout";
 /** Upper bound on how long LoginScreen waits for the server sync. */
@@ -52,23 +56,50 @@ function persistLocal(on: boolean): void {
   }
 }
 
-/** Mark or clear the "local choice not yet saved on the server" state. */
-function setUnsaved(unsaved: boolean): void {
+/** Serialize a boolean choice the way it is stored. */
+function encode(on: boolean): "on" | "off" {
+  return on ? "on" : "off";
+}
+
+/** Record the latest local choice as awaiting server confirmation. */
+function markUnsaved(on: boolean): void {
   try {
-    if (unsaved) localStorage.setItem(UNSAVED_KEY, "1");
-    else localStorage.removeItem(UNSAVED_KEY);
+    localStorage.setItem(UNSAVED_KEY, encode(on));
   } catch {
     /* ignore: without storage there is nothing to preserve across loads */
   }
 }
 
-/** True when a previous save did not complete and the local choice must win over the server copy. */
-function hasUnsaved(): boolean {
+/** The unsaved choice, or null when the server copy is authoritative again. */
+function unsavedChoice(): boolean | null {
   try {
-    return localStorage.getItem(UNSAVED_KEY) === "1";
+    const v = localStorage.getItem(UNSAVED_KEY);
+    return v === "on" ? true : v === "off" ? false : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+/**
+ * Clear the unsaved marker, but only if it still refers to `on`: a confirmed
+ * save of an older choice must not clear the marker for a newer one that is
+ * still queued. `force` clears it regardless (permanent rejection).
+ */
+function clearUnsaved(on: boolean, force = false): void {
+  try {
+    if (force || localStorage.getItem(UNSAVED_KEY) === encode(on)) localStorage.removeItem(UNSAVED_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * A 4xx other than timeout/rate-limit means this session is not allowed to
+ * write (e.g. a non-admin member gets 403) or the request is malformed;
+ * retrying the same save cannot succeed. Everything else is transient.
+ */
+function isPermanentRejection(status: number): boolean {
+  return status >= 400 && status < 500 && status !== 408 && status !== 429;
 }
 
 // Bumped on every local change. A server GET that started before a change
@@ -97,8 +128,11 @@ function reportSaveFailure(detail: string): void {
   });
 }
 
-/** Perform one bounded PUT; resolves true when the server confirmed the save. */
-async function putOnce(body: Record<string, boolean>): Promise<boolean> {
+/** Outcome of one PUT attempt. */
+type SaveOutcome = "saved" | "transient" | "permanent";
+
+/** Perform one bounded PUT and classify the outcome. */
+async function putOnce(body: Record<string, boolean>): Promise<SaveOutcome> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), SAVE_TIMEOUT_MS);
   try {
@@ -113,13 +147,13 @@ async function putOnce(body: Record<string, boolean>): Promise<boolean> {
     );
     if (!res.ok) {
       reportSaveFailure(`HTTP ${res.status}`);
-      return false;
+      return isPermanentRejection(res.status) ? "permanent" : "transient";
     }
-    return true;
+    return "saved";
   } catch (err: unknown) {
     if (controller.signal.aborted) reportSaveFailure(`timed out after ${SAVE_TIMEOUT_MS / 1000}s`);
     else reportSaveFailure(err instanceof Error ? err.message : "network error");
-    return false;
+    return "transient";
   } finally {
     clearTimeout(timer);
   }
@@ -129,14 +163,18 @@ async function putOnce(body: Record<string, boolean>): Promise<boolean> {
  * Append a serialized PUT of `body` to the save chain. The chain always
  * recovers (a failure never blocks later saves), a save enqueued under a
  * session that has since ended is skipped, and the unsaved marker is cleared
- * only when the server confirms.
+ * when the server confirms the latest choice, or when it permanently rejects
+ * the write (the local value still applies here, but syncs resume so this
+ * browser follows later server changes instead of re-pushing forever).
  */
-function pushToServer(body: Record<string, boolean>): Promise<void> {
+function pushToServer(on: boolean): Promise<void> {
   const generation = sessionGeneration;
   saveChain = saveChain
     .then(async () => {
       if (generation !== sessionGeneration) return; // session ended while queued
-      if (await putOnce(body)) setUnsaved(false);
+      const outcome = await putOnce({ fullscreen_on_launch: on });
+      if (outcome === "saved") clearUnsaved(on);
+      else if (outcome === "permanent") clearUnsaved(on, true);
     })
     .catch(() => {
       /* putOnce reports its own failures; keep the chain alive */
@@ -170,20 +208,26 @@ export const useLayoutStore = create<LayoutStore>((set, get) => ({
     localVersion += 1;
     set({ fullscreenOnLaunch: on });
     persistLocal(on);
-    setUnsaved(true);
-    void pushToServer({ fullscreen_on_launch: on });
+    markUnsaved(on);
+    void pushToServer(on);
   },
 
   syncFromServer() {
     if (inflightSync) return inflightSync;
     const startedAt = localVersion;
     set({ syncState: "pending" });
-    inflightSync = (async () => {
+    let run: Promise<void> | undefined;
+    run = (async () => {
+      // Yield once so `inflightSync = run` below is assigned before any
+      // synchronous early return reaches `finally` (otherwise the completed
+      // promise would be stored and every later sync would short-circuit).
+      await Promise.resolve();
       try {
         // An unsaved local choice outranks the server copy: re-push it
         // instead of letting an older server value overwrite it.
-        if (hasUnsaved()) {
-          void pushToServer({ fullscreen_on_launch: get().fullscreenOnLaunch });
+        const unsaved = unsavedChoice();
+        if (unsaved !== null) {
+          void pushToServer(unsaved);
           return;
         }
         const res = await fetch(PREF_URL, { headers: { Accept: "application/json" } });
@@ -199,10 +243,11 @@ export const useLayoutStore = create<LayoutStore>((set, get) => ({
         /* offline or unauthenticated: keep the local value */
       } finally {
         set({ syncState: "done" });
-        inflightSync = null;
+        if (inflightSync === run) inflightSync = null;
       }
     })();
-    return inflightSync;
+    inflightSync = run;
+    return run;
   },
 }));
 
