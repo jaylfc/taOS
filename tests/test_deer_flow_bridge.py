@@ -6,6 +6,7 @@ and dedup/cooldown logic with mocked httpx clients.
 """
 
 import asyncio
+import json
 import py_compile
 import re
 import tempfile
@@ -333,6 +334,7 @@ class TestSeenTiming:
 
         # The function returns False (reply POST failed)
         # but the message id should NOT be in seen since POST failed
+        assert result is False, f"expected False on reply POST failure, got {result!r}"
         assert "m-post-fail" not in seen, "Message with failed reply POST must NOT be added to _seen"
 
     def test_successful_reply_adds_to_seen(self, bridge_ns):
@@ -354,11 +356,39 @@ class TestSeenTiming:
 # -- bounded _seen test --------------------------------------------------------
 
 class TestSeenBounded:
+    def _make_channel(self):
+        return {"reply_url": "http://x/reply", "auth_bearer": "tok"}
+
+    def _make_evt(self, msg_id="msg-1", text="hello", force=False):
+        return {"id": msg_id, "trace_id": msg_id, "text": text, "force_respond": force}
+
     def test_seen_clears_at_1000_to_prevent_unbounded_growth(self, bridge_ns):
-        """Verify the _MAX_SEEN guard exists in the source."""
-        assert "_MAX_SEEN" in BRIDGE_PY, "Missing _MAX_SEEN constant"
-        assert "len(_seen) >= _MAX_SEEN" in BRIDGE_PY, "Missing bound check"
-        assert "_seen.clear()" in BRIDGE_PY, "Missing clear on bound"
+        """_seen is capped: once it reaches _MAX_SEEN entries it is cleared
+        before adding the next id, so memory stays bounded under a flood."""
+        handle = bridge_ns["handle_user_message"]
+        client = MagicMock()
+        client.post = AsyncMock(return_value=MagicMock(status_code=200))
+        channel = self._make_channel()
+        seen: set = set()
+        error_until: list = [0.0]
+
+        # Pre-fill _seen to the cap with ids that are NOT the one we will post.
+        # _MAX_SEEN is defined inside handle_user_message, so read it from the
+        # source the same way the bridge does.
+        m = re.search(r"_MAX_SEEN\s*=\s*(\d+)", BRIDGE_PY)
+        max_seen = int(m.group(1))
+        for i in range(max_seen):
+            seen.add(f"filler-{i}")
+
+        with patch.dict(bridge_ns, {"call_deer_flow": AsyncMock(return_value="ok")}):
+            result = asyncio.run(handle(
+                client, self._make_evt("m-cap"), channel, seen, error_until))
+
+        assert result is True
+        assert "m-cap" in seen, "new id must be added after the cap is cleared"
+        # The cap was hit, so the set was cleared first: the fillers are gone.
+        assert not any(s.startswith("filler-") for s in seen), (
+            "_seen must be cleared when it reaches _MAX_SEEN, not appended to")
 
 
 # -- bounded concurrency test -------------------------------------------------
@@ -411,6 +441,83 @@ class TestBoundedConcurrency:
 
         assert all(r is True for r in results), results
         assert peak["n"] <= 4, f"peak concurrent calls {peak['n']} > 4"
+
+    def test_sse_loop_dispatch_bounded(self, bridge_ns):
+        """sse_loop dispatches every user_message through the bounded path:
+        peak concurrency stays <= _MAX_INFLIGHT and every event is handled."""
+        sse_loop = bridge_ns["sse_loop"]
+        channel = self._make_channel()
+
+        peak = {"n": 0}
+        current = {"n": 0}
+        handled = []
+
+        async def slow_handle(client, evt, channel, seen_ids, error_until):
+            current["n"] += 1
+            if current["n"] > peak["n"]:
+                peak["n"] = current["n"]
+            handled.append(evt["id"])
+            await asyncio.sleep(0.02)
+            current["n"] -= 1
+            return True
+
+        # Patch the inner handler, not the semaphore-guarded wrapper, so the
+        # real _run_handle_user_message_limited still enforces _MAX_INFLIGHT.
+        bridge_ns["handle_user_message"] = slow_handle
+        # The module-level _SEMAPHORE is bound to whatever loop first used it;
+        # give this run a fresh one so the bound check is measured here.
+        bridge_ns["_SEMAPHORE"] = asyncio.Semaphore(bridge_ns["_MAX_INFLIGHT"])
+
+        events = 12
+        lines = []
+        for i in range(events):
+            evt = {"id": f"m-{i}", "trace_id": f"m-{i}", "text": "hi",
+                   "force_respond": True, "context": [], "attachments": [],
+                   "channel_id": "ch1"}
+            lines.append("event: user_message")
+            lines.append("data: " + json.dumps(evt))
+            lines.append("")
+
+        class _SseFakeResp:
+            status_code = 200
+
+            def __init__(self_inner, lines):
+                self_inner._lines = lines
+
+            async def aiter_lines(self_inner):
+                for line in self_inner._lines:
+                    yield line
+
+        class _SseFakeStream:
+            def __init__(self_inner, lines, stop):
+                self_inner._lines = lines
+                self_inner._stop = stop
+
+            async def __aenter__(self_inner):
+                return _SseFakeResp(self_inner._lines)
+
+            async def __aexit__(self_inner, *args):
+                self_inner._stop.set()
+                return False
+
+        class _SseFakeClient:
+            def __init__(self_inner, lines, stop):
+                self_inner._lines = lines
+                self_inner._stop = stop
+
+            def stream(self_inner, method, url, headers=None, timeout=None):
+                return _SseFakeStream(self_inner._lines, self_inner._stop)
+
+        async def run():
+            stop = asyncio.Event()
+            client = _SseFakeClient(lines, stop)
+            await sse_loop(client, channel, stop)
+
+        asyncio.run(asyncio.wait_for(run(), 5))
+
+        assert len(handled) == events
+        assert peak["n"] <= bridge_ns["_MAX_INFLIGHT"], (
+            f"peak concurrent calls {peak['n']} > {bridge_ns['_MAX_INFLIGHT']}")
 
 
 # -- install script + registry wiring ------------------------------------------
