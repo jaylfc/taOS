@@ -1,7 +1,9 @@
 """Regression tests for tsk-ibcysh: hub friend-accept keeps stored endpoints
 and filters first-link endpoints.
-"""
 
+Also covers tsk-rujtny: SSRF protection - private/loopback/link-local endpoints
+are dropped on first link.
+"""
 from __future__ import annotations
 
 import json
@@ -227,3 +229,76 @@ async def test_empty_link_recovers_on_later_accept(client_with_contacts, app_wit
     link = await store.get_peer_link(f"hub:{_PEER_FP}")
     urls = [e.get("url") if isinstance(e, dict) else e for e in link["endpoints"]]
     assert urls == ["https://peer.example.com:8443"], f"recovery failed: {urls}"
+
+
+@pytest.mark.asyncio
+async def test_safe_endpoints_drops_loopback_and_link_local():
+    """_safe_endpoints drops loopback, link-local, and RFC1918 private IPs."""
+    from tinyagentos.routes.hub import _safe_endpoints
+
+    raw = [
+        {"url": "http://127.0.0.1:8080"},           # loopback
+        {"url": "http://localhost:8080"},          # localhost hostname
+        {"url": "http://169.254.169.254:80"},      # link-local (AWS metadata)
+        {"url": "http://10.0.0.1:8080"},           # RFC1918 class A
+        {"url": "http://172.16.0.1:8080"},         # RFC1918 class B
+        {"url": "http://192.168.1.1:8080"},        # RFC1918 class C
+        {"url": "http://[::1]:8080"},              # IPv6 loopback
+        {"url": "http://[fe80::1]:8080"},          # IPv6 link-local
+        {"url": "http://[fc00::1]:8080"},          # IPv6 unique-local
+        {"url": "https://peer.example.com:6969"},  # valid public
+    ]
+    kept = _safe_endpoints(raw)
+    urls = [e.get("url") for e in kept]
+    assert urls == ["https://peer.example.com:6969"], f"private endpoints not dropped: {urls}"
+
+
+@pytest.mark.asyncio
+async def test_safe_endpoints_drops_blocked_suffixes():
+    """_safe_endpoints drops hostnames with blocked suffixes (.local, .onion, etc.)."""
+    from tinyagentos.routes.hub import _safe_endpoints
+
+    raw = [
+        {"url": "http://myserver.local:8080"},     # .local suffix
+        {"url": "http://service.internal:8080"},   # .internal suffix
+        {"url": "http://host.corp:8080"},          # .corp suffix
+        {"url": "http://machine.lan:8080"},        # .lan suffix
+        {"url": "http://server.intranet:8080"},    # .intranet suffix
+        {"url": "http://hidden.onion:8080"},       # .onion suffix
+        {"url": "https://peer.example.com:6969"},  # valid public
+    ]
+    kept = _safe_endpoints(raw)
+    urls = [e.get("url") for e in kept]
+    assert urls == ["https://peer.example.com:6969"], f"blocked suffixes not dropped: {urls}"
+
+
+@pytest.mark.asyncio
+async def test_first_link_drops_private_endpoints(client_with_contacts, app_with_contacts, monkeypatch):
+    """Friend-accept drops private/loopback/link-local endpoints from directory response."""
+    dir_resp_body = {
+        "peer": _PEER_FP,
+        "username": _PEER_USERNAME,
+        "display_name": "Remote Peer",
+        "signing_pubkey": _PEER_SIGNING_PUB,
+        "encryption_pubkey": _PEER_ENCRYPTION_PUB,
+        "endpoints": [
+            "http://127.0.0.1:8080",
+            "http://192.168.1.100:8080",
+            "https://peer.example.com:6969",
+        ],
+    }
+
+    async def handler(method, url, **kw):
+        return _fake_dir_resp(body=dir_resp_body)
+
+    _patch_account_proxy(monkeypatch, handler)
+
+    resp = await client_with_contacts.post(
+        "/api/hub/friends/requests/rid-private/accept", json={"peer_fingerprint": _PEER_FP}
+    )
+    assert resp.status_code == 200
+
+    store = app_with_contacts.state.contacts_store
+    link = await store.get_peer_link(f"hub:{_PEER_FP}")
+    urls = [e.get("url") if isinstance(e, dict) else e for e in link["endpoints"]]
+    assert urls == ["https://peer.example.com:6969"], f"private endpoints not dropped: {urls}"

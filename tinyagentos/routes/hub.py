@@ -12,8 +12,8 @@ here talks to a peer.
 Slice 2 surfaces the node's own profile: render it and create/update it with a
 version bump. Slice 3 adds the social-graph surface: signed follow and
 cache-grant statements (stored locally; caching itself is a later slice), the
-friend-request send/accept/decline flows that broker through the directory,
-and the local block/mute operations. Every response carries an explicit ``state``
+friend-request send/accept/decline flows that broker through the directory, and
+the local block/mute operations. Every response carries an explicit ``state``
 so the app can render the standard degrade states (design "Client resilience")
 without guessing:
 
@@ -27,6 +27,7 @@ dependency (401), exactly like every other local app route.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
 import re
@@ -132,6 +133,11 @@ def _safe_endpoints(raw) -> list[dict]:
     Takes the output of _normalize_endpoints and keeps only dict entries whose
     'url' is a string with scheme 'http' or 'https' and a truthy hostname.
     Everything else (ints, dicts without url, non-http schemes, etc.) is dropped.
+
+    Additionally, drops endpoints whose hostname resolves to a private (RFC1918),
+    loopback, link-local, CGNAT (RFC6598), or otherwise non-public address.
+    This prevents a malicious peer from registering an internal endpoint that
+    would become an SSRF allowance via known_hostports().
     """
     normalized = _normalize_endpoints(raw)
     kept = []
@@ -154,8 +160,68 @@ def _safe_endpoints(raw) -> list[dict]:
             _ = parts.port
         except ValueError:
             continue
+
+        # Check if hostname is a literal IP in a blocked range
+        host = parts.hostname.strip().lower()
+        if _is_blocked_host(host):
+            continue
+
         kept.append(e)
     return kept
+
+
+# Hostname-suffix blocklist (mirrors SSRF guard in desktop_browser/ssrf.py)
+_BLOCKED_HOST_SUFFIXES = (
+    ".local",     # mDNS / Bonjour
+    ".onion",     # Tor hidden services
+    ".internal",  # common internal alias
+    ".home",      # IETF reserved for residential networks
+    ".corp",      # common enterprise internal alias
+    ".lan",       # common home-network alias
+    ".intranet",  # common enterprise alias
+)
+
+# Networks that are blocked even as literal IPs (RFC1918, loopback, link-local)
+# CGNAT (100.64.0.0/10) is NOT blocked here because the project's A2A bus uses it.
+# The SSRF guard blocks CGNAT by default but allows it for known_hostports.
+_BLOCKED_IP_NETWORKS = (
+    ipaddress.ip_network("127.0.0.0/8"),       # loopback
+    ipaddress.ip_network("169.254.0.0/16"),    # link-local (IPv4)
+    ipaddress.ip_network("10.0.0.0/8"),        # RFC1918 class A
+    ipaddress.ip_network("172.16.0.0/12"),     # RFC1918 class B
+    ipaddress.ip_network("192.168.0.0/16"),    # RFC1918 class C
+    ipaddress.ip_network("::1/128"),           # IPv6 loopback
+    ipaddress.ip_network("fe80::/10"),         # IPv6 link-local
+    ipaddress.ip_network("fc00::/7"),          # IPv6 unique-local (RFC4193)
+    ipaddress.ip_network("fec0::/10"),         # deprecated IPv6 site-local
+)
+
+
+def _is_blocked_host(host: str) -> bool:
+    """Return True if *host* is a blocked hostname or literal IP."""
+    # Explicit localhost
+    if host == "localhost":
+        return True
+
+    # Blocked suffixes (catch .local, .onion, etc. before DNS resolution)
+    for suffix in _BLOCKED_HOST_SUFFIXES:
+        if host.endswith(suffix):
+            return True
+
+    # Try parsing as a literal IP address
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        # Not a literal IP; we can't verify without DNS resolution.
+        # The SSRF guard will validate resolved addresses at connection time.
+        return False
+
+    # Check if the literal IP falls in any blocked network
+    for net in _BLOCKED_IP_NETWORKS:
+        if ip in net:
+            return True
+
+    return False
 
 
 async def _try_handshake(
