@@ -247,6 +247,60 @@ class TestAgentInterface:
         }
         assert set(method_names) == expected_methods
 
+        # Check method signatures (input/output)
+        methods_by_name = {m.name: m for m in introspection.methods}
+
+        def get_in_args(method):
+            return [(arg.name, arg.type.signature) for arg in method.in_args]
+
+        def get_out_args(method):
+            return [(arg.name, arg.type.signature) for arg in method.out_args]
+
+        # Release: no args, no return
+        release = methods_by_name["Release"]
+        assert get_in_args(release) == []
+        assert get_out_args(release) == []
+
+        # RequestPinCode: in: device (o), out: pincode (s)
+        rpc = methods_by_name["RequestPinCode"]
+        assert get_in_args(rpc) == [("object_path", "o")]
+        assert get_out_args(rpc) == [(None, "s")]
+
+        # DisplayPinCode: in: device (o), pincode (s), no return
+        dpc = methods_by_name["DisplayPinCode"]
+        assert get_in_args(dpc) == [("object_path", "o"), ("pin", "s")]
+        assert get_out_args(dpc) == []
+
+        # RequestPasskey: in: device (o), out: passkey (u)
+        rpk = methods_by_name["RequestPasskey"]
+        assert get_in_args(rpk) == [("object_path", "o")]
+        assert get_out_args(rpk) == [(None, "u")]
+
+        # DisplayPasskey: in: device (o), passkey (u), entered (q), no return
+        dpk = methods_by_name["DisplayPasskey"]
+        assert get_in_args(dpk) == [("object_path", "o"), ("passkey", "u"), ("entered", "q")]
+        assert get_out_args(dpk) == []
+
+        # RequestConfirmation: in: device (o), passkey (u), no return
+        rc = methods_by_name["RequestConfirmation"]
+        assert get_in_args(rc) == [("object_path", "o"), ("passkey", "u")]
+        assert get_out_args(rc) == []
+
+        # RequestAuthorization: in: device (o), no return
+        ra = methods_by_name["RequestAuthorization"]
+        assert get_in_args(ra) == [("object_path", "o")]
+        assert get_out_args(ra) == []
+
+        # AuthorizeService: in: device (o), uuid (s), no return
+        asvc = methods_by_name["AuthorizeService"]
+        assert get_in_args(asvc) == [("object_path", "o"), ("service", "s")]
+        assert get_out_args(asvc) == []
+
+        # Cancel: no args, no return
+        cancel = methods_by_name["Cancel"]
+        assert get_in_args(cancel) == []
+        assert get_out_args(cancel) == []
+
     @pytest.mark.asyncio
     async def test_request_pin_code_accepted_returns_pin(self):
         """RequestPinCode returns pin when session accepts."""
@@ -381,6 +435,49 @@ class TestAgentInterface:
         assert exc_info.value.type == "org.bluez.Error.Rejected"
 
     @pytest.mark.asyncio
+    async def test_request_confirmation_handler_directly(self):
+        """Test RequestConfirmation handler directly without DBusError wrapping."""
+        pytest.importorskip("dbus_fast")
+        session = PairingSession("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF")
+        iface = build_agent_interface(session)
+
+        request_confirmation = self._get_async_method(iface, "RequestConfirmation")
+
+        # Start the request
+        task = asyncio.create_task(request_confirmation(iface, "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF", 123456))
+        await asyncio.sleep(0.01)
+
+        # Verify prompt was set with correct passkey
+        assert session._prompt == {
+            "device": "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF",
+            "kind": "confirm",
+            "passkey": 123456,
+        }
+
+        # Accept the confirmation
+        session.answer(True)
+
+        # Should return None on success
+        result = await task
+        assert result is None
+        assert session._prompt is None
+
+    @pytest.mark.asyncio
+    async def test_request_confirmation_wrong_device_raises_rejected(self):
+        """RequestConfirmation with wrong device raises Rejected."""
+        dbus_fast = pytest.importorskip("dbus_fast")
+        from dbus_fast.errors import DBusError
+
+        session = PairingSession("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF")
+        iface = build_agent_interface(session)
+
+        request_confirmation = self._get_async_method(iface, "RequestConfirmation")
+
+        with pytest.raises(DBusError) as exc_info:
+            await request_confirmation(iface, "/org/bluez/hci0/dev_00_11_22_33_44_55", 123456)
+        assert exc_info.value.type == "org.bluez.Error.Rejected"
+
+    @pytest.mark.asyncio
     async def test_request_authorization_always_rejects(self):
         """RequestAuthorization always raises DBusError."""
         dbus_fast = pytest.importorskip("dbus_fast")
@@ -411,8 +508,8 @@ class TestAgentInterface:
         assert exc_info.value.type == "org.bluez.Error.Rejected"
 
     @pytest.mark.asyncio
-    async def test_cancel_clears_prompt(self):
-        """Cancel clears the pending prompt."""
+    async def test_cancel_method_clears_pending_prompt_and_raises_canceled(self):
+        """Cancel method clears the pending prompt and raises Canceled error."""
         dbus_fast = pytest.importorskip("dbus_fast")
         from dbus_fast.service import ServiceInterface
         from dbus_fast.errors import DBusError
@@ -469,9 +566,23 @@ class TestPairingSessionTimeout:
         assert session._timeout_handle is not None
 
     @pytest.mark.asyncio
-    async def test_timeout_rejects_after_expiry(self):
-        """Timeout rejects the future after 60 seconds."""
-        pass
+    async def test_timeout_callback_rejects_future(self):
+        """Timeout callback (_reject_timeout) rejects the future with timed out reason."""
+        session = PairingSession("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF")
+        future = session.request("confirm")
+        assert session._timeout_handle is not None
+        assert session._prompt is not None
+
+        # Call the timeout callback directly
+        session._reject_timeout()
+
+        # Timeout handle should be cleared
+        assert session._timeout_handle is None
+        # Prompt should be cleared
+        assert session._prompt is None
+        # Future should be resolved with timeout rejection
+        result = await future
+        assert result == {"accepted": False, "reason": "timed out"}
 
     @pytest.mark.asyncio
     async def test_timeout_clears_prompt_allows_next_request(self):

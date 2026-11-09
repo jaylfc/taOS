@@ -104,7 +104,7 @@ def _convert_user_content(content: Any) -> Any:
         if isinstance(part, dict) and part.get("type") == "image_url":
             image_url = part.get("image_url")
             url = image_url.get("url") if isinstance(image_url, dict) else image_url
-            if not isinstance(url, str) or not url:
+            if not isinstance(url, str) or not url.strip():
                 raise bad_request("image URL must be a non-empty string")
             if url.startswith("data:") and ";base64," in url:
                 media_type, data = url[5:].split(";base64,", 1)

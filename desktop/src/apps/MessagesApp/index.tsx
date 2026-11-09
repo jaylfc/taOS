@@ -1033,7 +1033,12 @@ export function MessagesApp({
     }
   }, [scope?.projectId]);
 
-  const firstChat = useFirstChat(firstChatAgent, channels, fetchChannels, setSelectedChannel);
+  const openFirstChat = useCallback((channelId: string) => {
+    backedOutRef.current = false;
+    setSelectedChannel(channelId);
+  }, []);
+
+  const firstChat = useFirstChat(firstChatAgent, channels, fetchChannels, openFirstChat);
 
   /* ---- fetch archived channels ---- */
   const fetchArchivedChannels = useCallback(async () => {
