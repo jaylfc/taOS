@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { LoginScreen } from "./LoginScreen";
-import { useLayoutStore } from "@/stores/layout-store";
+import { useLayoutStore, __resetLayoutStoreForTests } from "@/stores/layout-store";
 
 let originalUserAgent: string;
 let originalRequestFullscreen: typeof document.documentElement.requestFullscreen;
@@ -122,6 +122,29 @@ describe("LoginScreen", () => {
       vi.useRealTimers();
     } finally {
       useLayoutStore.setState({ fullscreenOnLaunch: true });
+    }
+  });
+
+  it("waits for an in-flight preference sync and honours the server's off", async () => {
+    setUserAgent("Mozilla/5.0 Chrome/120.0.0.0");
+    __resetLayoutStoreForTests();
+    useLayoutStore.setState({ syncState: "pending" });
+    try {
+      vi.useFakeTimers();
+      const onLaunch = vi.fn();
+      render(<LoginScreen onLaunch={onLaunch} />);
+      fireEvent.click(screen.getByRole("button", { name: /launch taos/i }));
+      // Sync still pending: no decision yet.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(document.documentElement.requestFullscreen).not.toHaveBeenCalled();
+      // Server answers "off" -> launch proceeds without fullscreen.
+      useLayoutStore.setState({ fullscreenOnLaunch: false, syncState: "done" });
+      await vi.advanceTimersByTimeAsync(600);
+      expect(document.documentElement.requestFullscreen).not.toHaveBeenCalled();
+      expect(onLaunch).toHaveBeenCalledTimes(1);
+      vi.useRealTimers();
+    } finally {
+      __resetLayoutStoreForTests();
     }
   });
 });

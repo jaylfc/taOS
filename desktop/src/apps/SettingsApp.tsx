@@ -854,8 +854,6 @@ export function DesktopDockSection() {
   const applyDockPosition = useDockStore((s) => s.setPosition);
   const fullscreenOnLaunch = useLayoutStore((s) => s.fullscreenOnLaunch);
   const setFullscreenOnLaunch = useLayoutStore((s) => s.setFullscreenOnLaunch);
-  const syncLayoutFromServer = useLayoutStore((s) => s.syncFromServer);
-  useEffect(() => { void syncLayoutFromServer(); }, [syncLayoutFromServer]);
 
   const wallpaperId = useThemeStore((s) => s.wallpaperId);
   const wallpaperImage = useThemeStore((s) => s.wallpaperImage);
@@ -938,7 +936,7 @@ export function DesktopDockSection() {
               Browser fullscreen at launch
             </Label>
             <p className="text-xs text-shell-text-tertiary mt-0.5">
-              Ask the browser to go fullscreen when you click Launch taOS, and show the "Return to fullscreen" pill. Off: taOS stays a normal browser tab.
+              Ask the browser to go fullscreen when you click Launch taOS, and show the "Return to fullscreen" pill. When off, future launches do not request fullscreen; to leave fullscreen now, exit it in your browser (Esc or F11).
             </p>
           </div>
           <Switch

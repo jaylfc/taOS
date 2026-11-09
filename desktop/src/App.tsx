@@ -300,6 +300,9 @@ export function App() {
   // later re-login.
   useOnAuthReady(() => {
     void restoreActiveTheme();
+    // Saved layout preference (Settings > Desktop & Dock), so a fresh browser
+    // honours "Browser fullscreen at launch" before the user clicks Launch.
+    void useLayoutStore.getState().syncFromServer();
     // Learn once whether this is a taOSmobile handset, so app opens can go to
     // the device shell as their own windows (lib/mobile-shell).
     void primeDeviceClass();

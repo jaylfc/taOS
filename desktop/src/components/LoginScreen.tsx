@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Button } from "@/components/ui";
-import { useLayoutStore } from "@/stores/layout-store";
+import { useLayoutStore, waitForLayoutSync } from "@/stores/layout-store";
 
 function getBrowserTier(): "full" | "safari" | "limited" {
   const ua = navigator.userAgent;
@@ -11,13 +11,18 @@ function getBrowserTier(): "full" | "safari" | "limited" {
 
 export function LoginScreen({ onLaunch }: { onLaunch: () => void }) {
   const [launching, setLaunching] = useState(false);
-  const fullscreenOnLaunch = useLayoutStore((s) => s.fullscreenOnLaunch);
   const tier = getBrowserTier();
 
   const handleLaunch = async () => {
     setLaunching(true);
-    // Settings > Desktop & Dock > "Browser fullscreen at launch" (default on)
-    if (fullscreenOnLaunch) {
+    // Settings > Desktop & Dock > "Browser fullscreen at launch" (default on).
+    // A fresh browser has no cached value, so if the server sync App started
+    // on auth-ready is still in flight, wait for it (bounded) before deciding.
+    // The wait stays well inside the browser's user-activation window.
+    if (useLayoutStore.getState().syncState === "pending") {
+      await waitForLayoutSync();
+    }
+    if (useLayoutStore.getState().fullscreenOnLaunch) {
       try {
         await document.documentElement.requestFullscreen();
       } catch {
