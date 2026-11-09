@@ -1,3 +1,5 @@
+### Fixed
+
 - Desktop nitpick batch: fix AbortSignal.timeout(0) deferral in polyfills
 - Polyfill install test uses no-op stub
 - WifiPanel: in-flight Connecting label, Show password tabIndex >= 0, tab navigation test
