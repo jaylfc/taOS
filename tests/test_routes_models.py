@@ -650,6 +650,43 @@ class TestModelRecommendations:
         assert "bad-fallback-model" not in rec_ids
         assert "bad-fallback-model" not in comp_ids
 
+    async def test_dict_tier_invalid_recommended_valid_fallback(
+        self, models_app, models_client, catalog_with_models
+    ):
+        """Invalid recommended variant + valid fallback -> model returned in
+        compatible with the fallback variant and compatibility 'limited'."""
+        models_app.state.hardware_profile = SimpleNamespace(profile_id="arm-npu-16gb")
+        bad_dir = catalog_with_models / "models" / "bad-rec-valid-fallback"
+        bad_dir.mkdir(parents=True)
+        (bad_dir / "manifest.yaml").write_text(yaml.dump({
+            "id": "bad-rec-valid-fallback",
+            "name": "Bad Rec Valid Fallback",
+            "type": "model",
+            "version": "1.0.0",
+            "description": "Invalid recommended, valid fallback test",
+            "capabilities": ["chat"],
+            "variants": [
+                {"id": "small", "name": "Small", "format": "gguf", "size_mb": 50,
+                 "min_ram_mb": 256, "download_url": "https://example.com/small.gguf",
+                 "backend": ["ollama"]},
+                {"id": "medium", "name": "Medium", "format": "gguf", "size_mb": 100,
+                 "min_ram_mb": 512, "download_url": "https://example.com/medium.gguf",
+                 "backend": ["ollama"]},
+            ],
+            "hardware_tiers": {"arm-npu-16gb": {"recommended": "nonexistent", "fallback": "small"}},
+            "install": {"method": "download"},
+        }))
+        models_app.state.registry.reload()
+        resp = await models_client.get("/api/models/recommended")
+        assert resp.status_code == 200
+        data = resp.json()
+        rec_ids = {m["id"] for m in data["recommended"]}
+        comp = {m["id"]: m for m in data["compatible"]}
+        assert "bad-rec-valid-fallback" not in rec_ids
+        assert "bad-rec-valid-fallback" in comp
+        assert comp["bad-rec-valid-fallback"]["variant"] == "small"
+        assert comp["bad-rec-valid-fallback"]["compatibility"] == "limited"
+
 
 class TestGetDownloadedModels:
     def test_empty_dir(self, tmp_path):

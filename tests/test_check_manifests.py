@@ -304,9 +304,10 @@ def test_fifteen_model_warns_capped(capsys) -> None:
     assert exit_code == 0  # exits 0 when warnings are non-fatal
 
     output = capsys.readouterr().err
-    assert "15 model capability field warnings" in output
+    lines = output.splitlines()
+    assert any(line == "15 model capability field warnings" for line in lines)
     # Count warn: lines - should be exactly 10
-    warn_lines = [l for l in output.splitlines() if l.startswith("  warn:")]
+    warn_lines = [l for l in lines if l.startswith("  warn:")]
     assert len(warn_lines) == 10, f"Expected 10 warn lines, got {len(warn_lines)}"
     # Each warning text should appear exactly once
     warning_texts = [l.replace("  warn: ", "") for l in warn_lines]
@@ -347,3 +348,42 @@ def test_fifteen_model_warns_verbose(capsys) -> None:
     # Each warning text should appear exactly once
     warning_texts = [l.replace("  warn: ", "") for l in warn_lines]
     assert len(warning_texts) == len(set(warning_texts)), "Duplicate warning texts found"
+
+
+def test_model_missing_family_and_context_counts_both_warnings(capsys) -> None:
+    """One manifest missing both 'family' and context fields produces two warnings;
+    the summary line reflects the total count."""
+    from pathlib import Path
+    import yaml
+    import tempfile
+
+    tmp = Path(tempfile.mkdtemp())
+    models_dir = tmp / "models"
+    models_dir.mkdir()
+
+    # One model manifest missing both 'family' and min_context/max_context
+    mid = "model-missing-both"
+    (m_dir := models_dir / mid).mkdir()
+    (m_dir / "manifest.yaml").write_text(yaml.safe_dump({
+        "id": mid,
+        "name": mid,
+        "type": "model",
+        "version": "1.0.0",
+        "variants": [
+            {"id": "q4", "format": "gguf", "size_mb": 5000, "vram_floor_mb": 6000}
+        ],
+    }))
+
+    exit_code = check_manifests.main(["managed-lint", "--root", str(tmp)])
+    assert exit_code == 0
+
+    output = capsys.readouterr().err
+    lines = output.splitlines()
+    # Summary line should show 2 warnings (1 for family, 1 for context)
+    assert any(line == "2 model capability field warnings" for line in lines)
+    # Both warning texts should be present
+    warn_lines = [l for l in lines if l.startswith("  warn:")]
+    assert len(warn_lines) == 2
+    warning_texts = [l.replace("  warn: ", "") for l in warn_lines]
+    assert any("family" in w for w in warning_texts)
+    assert any("min_context" in w for w in warning_texts)
