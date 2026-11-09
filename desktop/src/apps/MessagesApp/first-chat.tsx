@@ -69,9 +69,8 @@ export function useFirstChat(
     open(dm.id);
   }, [dm, open]);
 
-  const found = Boolean(dm);
   useEffect(() => {
-    if (!agent || found || failure) return;
+    if (!agent || dm || failure) return;
     const started = Date.now();
     let live = true;
     const id = setInterval(() => {
@@ -86,7 +85,7 @@ export function useFirstChat(
           setFailure(error);
           return;
         }
-        if (status === "success" && !found) {
+        if (status === "success" && !dm) {
           successPollsRef.current += 1;
           if (successPollsRef.current >= 3) {
             setFailure(NO_DM_AFTER_SUCCESS);
@@ -100,12 +99,12 @@ export function useFirstChat(
       live = false;
       clearInterval(id);
     };
-  }, [agent, found, failure, late, refresh]);
+  }, [agent, dm, failure, late, refresh]);
 
   return {
-    waiting: Boolean(agent) && !found && !failure && !late,
+    waiting: Boolean(agent) && !dm && !failure && !late,
     channelId: dm?.id,
-    failure: found ? undefined : (failure ?? (late ? TOO_LONG : undefined)),
+    failure: dm ? undefined : (failure ?? (late ? TOO_LONG : undefined)),
   };
 }
 
