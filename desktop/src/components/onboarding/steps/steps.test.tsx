@@ -1,6 +1,6 @@
 import { StrictMode } from "react";
 import { act, fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/account-client", () => ({
   isAuthError: () => false,
@@ -16,6 +16,7 @@ vi.mock("../privacy", () => ({
 }));
 
 import { AgentCloud } from "./AgentStep";
+import { ModelStep } from "./ModelStep";
 import { PrivacyStep } from "./PrivacyStep";
 import { TaosAccountForm } from "./TaosAccountStep";
 
@@ -62,5 +63,68 @@ describe("PrivacyStep", () => {
     await act(async () => {
       resolveSave();
     });
+  });
+});
+
+describe("ModelStep", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it("stops polling and shows Try Again when the download status returns 404", async () => {
+    const models = {
+      models: [
+        {
+          id: "qwen3-1.7b",
+          name: "Qwen3 1.7B",
+          capabilities: ["chat"],
+          variants: [
+            {
+              id: "q4",
+              format: "gguf",
+              size_mb: 1200,
+              compatibility: "green",
+              downloaded: false,
+            },
+          ],
+        },
+      ],
+      hardware_profile_id: "",
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/api/models")) {
+        return new Response(JSON.stringify(models), { status: 200 });
+      }
+      if (url.endsWith("/api/models/download")) {
+        return new Response(JSON.stringify({ download_id: "dl-1" }), { status: 200 });
+      }
+      if (url.includes("/api/models/downloads/dl-1")) {
+        return new Response("", { status: 404 });
+      }
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ModelStep onBack={() => {}} onDone={() => {}} onSkip={() => {}} />);
+    await act(async () => {});
+
+    const download = screen.getByRole("button", { name: /download/i });
+    await act(async () => {
+      fireEvent.click(download);
+    });
+
+    expect(screen.getByText(/lost track of the download/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /try again/i })).toBeTruthy();
+
+    const dl1Calls = () =>
+      fetchMock.mock.calls.filter((c) => String(c[0]).includes("/api/models/downloads/dl-1")).length;
+    const before = dl1Calls();
+    vi.useFakeTimers();
+    await act(async () => {
+      vi.advanceTimersByTime(5000);
+    });
+    expect(dl1Calls()).toBe(before);
   });
 });
