@@ -35,6 +35,11 @@ export function describeChannelParty(
           subtitle: "Archived agent",
         };
       }
+      // archived_agent_id is set but the archived roster has not loaded yet
+      // (or does not carry it): show an archived placeholder instead of
+      // falling through to a live agent that reuses the member slug.
+      const other = (channel.members ?? []).find((m) => m !== "user") ?? name;
+      return { title: other, kind: "agent", subtitle: "Archived agent" };
     }
     const other = (channel.members ?? []).find((m) => m !== "user") ?? name;
     const agent = liveAgents.find((a) => a.name === other);

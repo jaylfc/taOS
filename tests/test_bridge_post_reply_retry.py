@@ -104,10 +104,15 @@ class TestPostReplyRetry:
         client = MagicMock()
         client.post = AsyncMock(side_effect=[_ok(503), _ok(200)])
 
-        with patch("asyncio.sleep", new_callable=AsyncMock):
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             result = asyncio.run(post_reply(client, "http://x/reply", "tok", "m1", "t1", "hi"))
 
         assert client.post.call_count == 2
+        assert mock_sleep.call_count == 1
+        assert mock_sleep.call_args_list[0].args[0] == 1.0
+        for call in client.post.call_args_list:
+            assert call.args[0] == "http://x/reply"
+            assert call.kwargs["headers"]["Authorization"] == "Bearer tok"
         assert result is True
 
     def test_400_is_not_retried(self, bridge):
@@ -120,6 +125,18 @@ class TestPostReplyRetry:
 
         assert client.post.call_count == 1
         mock_sleep.assert_not_called()
+        assert result is False
+
+    def test_503_exhausts_retries(self, bridge):
+        """All-503 responses: retries are exhausted and post_reply returns False."""
+        post_reply = bridge["post_reply"]
+        client = MagicMock()
+        client.post = AsyncMock(return_value=_ok(503))
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = asyncio.run(post_reply(client, "http://x/reply", "tok", "m1", "t1", "hi"))
+
+        assert client.post.call_count == 3
         assert result is False
 
     def test_transport_error_exhausts_retries(self, bridge):
@@ -138,11 +155,25 @@ class TestPostReplyRetry:
         client = MagicMock()
         client.post = AsyncMock(side_effect=[_ok(429), _ok(200)])
 
-        with patch("asyncio.sleep", new_callable=AsyncMock):
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             result = asyncio.run(post_reply(client, "http://x/reply", "tok", "m1", "t1", "hi"))
 
         assert client.post.call_count == 2
+        assert mock_sleep.call_count == 1
+        assert mock_sleep.call_args_list[0].args[0] == 1.0
         assert result is True
+
+    def test_429_exhausts_retries(self, bridge):
+        """All-429 responses: retries are exhausted and post_reply returns False."""
+        post_reply = bridge["post_reply"]
+        client = MagicMock()
+        client.post = AsyncMock(return_value=_ok(429))
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = asyncio.run(post_reply(client, "http://x/reply", "tok", "m1", "t1", "hi"))
+
+        assert client.post.call_count == 3
+        assert result is False
 
 
 # -- deer-flow back-pressure ----------------------------------------------------
