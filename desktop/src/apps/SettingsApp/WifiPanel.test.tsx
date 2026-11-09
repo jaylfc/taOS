@@ -337,16 +337,19 @@ describe("WifiPanel controls", () => {
 
     await act(async () => {
       fireEvent.change(input, { target: { value: "secret" } });
+      fireEvent.keyDown(input, { key: "Tab" });
       showBtn.focus();
     });
     expect(showBtn).toHaveFocus();
 
     await act(async () => {
+      fireEvent.keyDown(showBtn, { key: "Tab" });
       submitBtn.focus();
     });
     expect(submitBtn).toHaveFocus();
 
     await act(async () => {
+      fireEvent.keyDown(submitBtn, { key: "Tab" });
       cancelBtn.focus();
     });
     expect(cancelBtn).toHaveFocus();

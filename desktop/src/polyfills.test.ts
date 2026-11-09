@@ -114,7 +114,7 @@ describe("AbortSignal.timeout polyfill", () => {
 
   it("does not replace existing native AbortSignal.timeout", () => {
     deleteGlobalAbortTimeout();
-    const stubTimeout = vi.fn((ms: number) => AbortSignal.timeout(ms));
+    const stubTimeout = vi.fn();
     (AbortSignal as any).timeout = stubTimeout;
 
     installAbortSignalTimeout();
