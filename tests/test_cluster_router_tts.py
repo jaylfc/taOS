@@ -68,7 +68,7 @@ class TestTtsRefusal:
         assert exc.value.status_code == 503
         assert exc.value.detail == "tts returns binary audio; call the worker directly"
         assert calls == [], f"no worker may be called for tts, got {calls}"
-        assert not ft.is_tripped("kokoro"), "breaker must not be touched by the tts refusal"
+        assert not ft._records, "tts refusal must not record any breaker call"
 
     def test_other_capabilities_unaffected(self):
         """A non-tts capability still routes normally."""

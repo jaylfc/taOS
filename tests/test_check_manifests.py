@@ -309,8 +309,12 @@ def test_fifteen_model_warns_capped(capsys) -> None:
     # Count warn: lines - should be exactly 10
     warn_lines = [l for l in lines if l.startswith("  warn:")]
     assert len(warn_lines) == 10, f"Expected 10 warn lines, got {len(warn_lines)}"
-    # Each warning text should appear exactly once
+    # Non-verbose prints only the first ten warnings, then a hidden notice.
+    assert any("(more warnings hidden" in l for l in lines), "missing hidden-warnings notice"
+    # The first ten warnings are for model-00 through model-09, in order.
     warning_texts = [l.replace("  warn: ", "") for l in warn_lines]
+    expected_prefixes = [f"model-{i:02d}: missing 'family'" for i in range(10)]
+    assert all(t.startswith(p) for t, p in zip(warning_texts, expected_prefixes)), warning_texts
     assert len(warning_texts) == len(set(warning_texts)), "Duplicate warning texts found"
 
 
