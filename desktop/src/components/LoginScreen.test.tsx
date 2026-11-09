@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { LoginScreen } from "./LoginScreen";
+import { useLayoutStore } from "@/stores/layout-store";
 
 let originalUserAgent: string;
 let originalRequestFullscreen: typeof document.documentElement.requestFullscreen;
@@ -105,5 +106,22 @@ describe("LoginScreen", () => {
     render(<LoginScreen onLaunch={onLaunch} />);
     fireEvent.click(screen.getByRole("button", { name: /launch taos/i }));
     expect(document.documentElement.requestFullscreen).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not call requestFullscreen when 'Browser fullscreen at launch' is off", async () => {
+    setUserAgent("Mozilla/5.0 Chrome/120.0.0.0");
+    useLayoutStore.setState({ fullscreenOnLaunch: false });
+    try {
+      vi.useFakeTimers();
+      const onLaunch = vi.fn();
+      render(<LoginScreen onLaunch={onLaunch} />);
+      fireEvent.click(screen.getByRole("button", { name: /launch taos/i }));
+      expect(document.documentElement.requestFullscreen).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(600);
+      expect(onLaunch).toHaveBeenCalledTimes(1);
+      vi.useRealTimers();
+    } finally {
+      useLayoutStore.setState({ fullscreenOnLaunch: true });
+    }
   });
 });

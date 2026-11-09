@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Button } from "@/components/ui";
+import { useLayoutStore } from "@/stores/layout-store";
 
 function getBrowserTier(): "full" | "safari" | "limited" {
   const ua = navigator.userAgent;
@@ -10,14 +11,18 @@ function getBrowserTier(): "full" | "safari" | "limited" {
 
 export function LoginScreen({ onLaunch }: { onLaunch: () => void }) {
   const [launching, setLaunching] = useState(false);
+  const fullscreenOnLaunch = useLayoutStore((s) => s.fullscreenOnLaunch);
   const tier = getBrowserTier();
 
   const handleLaunch = async () => {
     setLaunching(true);
-    try {
-      await document.documentElement.requestFullscreen();
-    } catch {
-      // Fullscreen may not be available in some contexts
+    // Settings > Desktop & Dock > "Browser fullscreen at launch" (default on)
+    if (fullscreenOnLaunch) {
+      try {
+        await document.documentElement.requestFullscreen();
+      } catch {
+        // Fullscreen may not be available in some contexts
+      }
     }
     setTimeout(onLaunch, 600);
   };
