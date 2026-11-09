@@ -16,8 +16,7 @@ import { PrivacyStep } from "./steps/PrivacyStep";
 import { FirstChatStep } from "./steps/FirstChatStep";
 import {
   DEFAULT_ASSISTANT_NAME,
-  DeployUnanswered,
-  deployAssistant,
+  deployFirstChat,
   deviceFramework,
   newIdempotencyKey,
   openFirstChat,
@@ -41,7 +40,7 @@ export interface OobeProps {
   inviteCode?: string;
   defaultAutoLogin?: boolean;
   /** Resume first-run setup here (the account was created in an earlier visit). */
-  resume?: Pick<OnboardingProgress, "step" | "completed" | "skipped" | "about" | "model" | "agent_model" | "first_chat">;
+  resume?: Pick<OnboardingProgress, "step" | "completed" | "skipped" | "about" | "model" | "agent_model" | "first_chat" | "deploy_key">;
   /** This is the device's own screen, so first run may set a PIN too. */
   pinOffered?: boolean;
 }
@@ -87,8 +86,9 @@ export function Oobe({
   /** Percent of the on-device model still downloading when the first chat starts. */
   const [downloading, setDownloading] = useState<number | undefined>();
   const firstChat = useRef<{ agent: string } | undefined>(resume?.first_chat);
-  // One per visit: a retry after a lost answer gets the same deploy back.
-  const deployKey = useRef(newIdempotencyKey());
+  // Saved before the deploy request, so a resume retries with the same key
+  // and gets the first deploy back instead of a second agent.
+  const deployKey = useRef(resume?.deploy_key ?? newIdempotencyKey());
   // Reaching a NEEDS_TAOS_ACCOUNT step on resume means the sign-in happened.
   const [accountLinked, setAccountLinked] = useState(
     resumeAt !== null && NEEDS_TAOS_ACCOUNT.includes(resumeAt),
@@ -164,7 +164,7 @@ export function Oobe({
 
   /** Answers that ride along in the progress blob (PUT replaces all of it). */
   function extras(answers: AboutYou) {
-    return { about: answers, model: model.current, agent_model: agentModel.current, first_chat: firstChat.current };
+    return { about: answers, model: model.current, agent_model: agentModel.current, first_chat: firstChat.current, deploy_key: deployKey.current };
   }
 
   /** The model the assistant runs on: the agent's, else the on-device one. */
@@ -208,13 +208,11 @@ export function Oobe({
       }
       const framework = await deviceFramework();
       const who = fullName.trim() || (await ownerName());
-      agent = await deployAssistant(
+      agent = await deployFirstChat(deployKey, (k) =>
+        saveProgress({ in_progress: true, step: "first-chat", ...done.current, ...extras(about), deploy_key: k }),
         { name: assistantName.trim(), framework, model: modelId, soul_md: buildSoulMd(who, about) },
-        deployKey.current,
       );
     } catch (e) {
-      // A refusal is cached under the key: only a lost answer may reuse it.
-      if (!(e instanceof DeployUnanswered)) deployKey.current = newIdempotencyKey();
       setBusy(false);
       setError(e instanceof HopError ? e.message : "Couldn't set up your assistant. Try again.");
       return;

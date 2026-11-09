@@ -34,6 +34,7 @@ import { useIsMobile } from "@/hooks/use-is-mobile";
 import { useThemeStore } from "@/stores/theme-store";
 import { WALLPAPER_FIT_OPTIONS } from "@/stores/theme-store";
 import { useDockStore } from "@/stores/dock-store";
+import { useLayoutStore } from "@/stores/layout-store";
 import { ThemesPanel } from "@/apps/SettingsApp/ThemesPanel";
 import { safeFetch, ProgressBar, RestartProgressModal } from "@/apps/SettingsApp/_shared";
 import { WallpaperPicker } from "@/components/WallpaperPicker";
@@ -851,6 +852,8 @@ export function DesktopDockSection() {
   const dockPosition = useDockStore((s) => s.position);
   const applyDockSize = useDockStore((s) => s.setIconSize);
   const applyDockPosition = useDockStore((s) => s.setPosition);
+  const fullscreenOnLaunch = useLayoutStore((s) => s.fullscreenOnLaunch);
+  const setFullscreenOnLaunch = useLayoutStore((s) => s.setFullscreenOnLaunch);
 
   const wallpaperId = useThemeStore((s) => s.wallpaperId);
   const wallpaperImage = useThemeStore((s) => s.wallpaperImage);
@@ -925,6 +928,23 @@ export function DesktopDockSection() {
               </Button>
             ))}
           </div>
+        </Card>
+
+        <Card className="p-4 flex items-center justify-between gap-3">
+          <div className="flex-1 min-w-0">
+            <Label htmlFor="fullscreen-on-launch" className="text-sm font-medium text-shell-text">
+              Browser fullscreen at launch
+            </Label>
+            <p className="text-xs text-shell-text-tertiary mt-0.5">
+              Ask the browser to go fullscreen when you click Launch taOS, and show the "Return to fullscreen" pill. When off, future launches do not request fullscreen; to leave fullscreen now, exit it in your browser (Esc or F11).
+            </p>
+          </div>
+          <Switch
+            id="fullscreen-on-launch"
+            checked={fullscreenOnLaunch}
+            onCheckedChange={setFullscreenOnLaunch}
+            aria-label="Browser fullscreen at launch"
+          />
         </Card>
 
         <Card className="p-4">
