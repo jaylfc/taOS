@@ -53,6 +53,12 @@ export function WifiPanel() {
     }
   }, []);
 
+  const loadWithTimeout = () =>
+    Promise.race([
+      load(),
+      new Promise<void>((resolve) => setTimeout(resolve, 10_000)),
+    ]);
+
   useEffect(() => {
     active.current = true;
     load();
@@ -82,7 +88,7 @@ export function WifiPanel() {
         return;
       }
       setStatus(null);
-      await load();
+      await loadWithTimeout();
     } catch {
       setError("Could not reach taOS.");
       setStatus(null);
@@ -110,7 +116,7 @@ export function WifiPanel() {
         return;
       }
       setStatus(null);
-      await load();
+      await loadWithTimeout();
     } catch {
       setError("Could not reach taOS.");
       setStatus(null);
@@ -194,7 +200,7 @@ export function WifiPanel() {
   const handlePasswordKeyDown = (e: React.KeyboardEvent, ssid: string) => {
     if (e.key === "Enter") {
       e.preventDefault();
-      if (password.trim() !== "") {
+      if (password !== "") {
         handleConnect(ssid, password, true);
       }
     } else if (e.key === "Escape") {
@@ -232,7 +238,7 @@ export function WifiPanel() {
           Wi-Fi
         </Label>
       </div>
-      {status && <p aria-live="polite" className="mb-3 text-xs text-sky-400">{status}</p>}
+      <p aria-live="polite" className="mb-3 text-xs text-sky-400">{status ?? ""}</p>
       {error && (
         <p role="alert" className="mb-3 text-xs text-amber-400 flex items-center gap-1.5">
           <AlertCircle size={12} /> {error}
@@ -344,7 +350,7 @@ export function WifiPanel() {
                         variant="default"
                         size="sm"
                         onClick={() => handleConnect(ap.ssid, password, true)}
-                        disabled={submitting || password.trim() === ""}
+                        disabled={submitting || password === ""}
                         aria-label={`Join ${ap.ssid}`}
                       >
                         Join

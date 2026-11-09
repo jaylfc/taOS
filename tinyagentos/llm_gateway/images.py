@@ -33,13 +33,13 @@ def _media_type_from_header(header: str) -> str:
 def _shrink_one(url: str) -> str:
     if not url.startswith("data:") or ";base64," not in url:
         return url
-    prefix, b64 = url.split(";base64,", 1)
-    media_type = _media_type_from_header(prefix)
-    try:
-        raw = base64.b64decode(b64)
-    except Exception:  # noqa: BLE001
-        return url
     with _DECODE_SLOTS:
+        try:
+            prefix, b64 = url.split(";base64,", 1)
+            media_type = _media_type_from_header(prefix)
+            raw = base64.b64decode(b64)
+        except Exception:  # noqa: BLE001
+            return url
         try:
             img = Image.open(io.BytesIO(raw))
         except Exception:  # noqa: BLE001
@@ -57,6 +57,18 @@ def _shrink_one(url: str) -> str:
                 return url
             # Capture format before transpose (transpose returns format=None).
             fmt = img.format
+            # Return unsupported formats unchanged (before exif_transpose/thumbnail).
+            if fmt not in _FORMAT_MEDIA:
+                return url
+            # Convert palette mode before thumbnail (transparency-aware).
+            if img.mode == "P":
+                if "transparency" in img.info:
+                    img = img.convert("RGBA")
+                else:
+                    img = img.convert("RGB")
+            # Convert 16-bit modes to 'L' before thumbnail.
+            if img.mode.startswith("I"):
+                img = img.point(lambda v: v / 256).convert("L")
             img = ImageOps.exif_transpose(img)
             img.thumbnail((MAX_LONG_EDGE, MAX_LONG_EDGE))
             if fmt not in _FORMAT_MEDIA:

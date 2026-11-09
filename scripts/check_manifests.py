@@ -216,7 +216,7 @@ def main(argv: list[str] | None = None) -> int:
     warnings, model_errors = lint_model_fields(root)
     errors.extend(model_errors)
     if warnings:
-        print(f"{len(warnings)} model manifests missing capability fields", file=sys.stderr)
+        print(f"{len(warnings)} model capability field warnings", file=sys.stderr)
         if args.verbose:
             for w in warnings:
                 print(f"  warn: {w}", file=sys.stderr)
