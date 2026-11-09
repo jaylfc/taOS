@@ -254,6 +254,14 @@ any agent's inbox, and an agent token could send under any name.
 400 without `?channel=<thread>`; there is no all-threads mode yet, so watching
 several threads means one connection each.
 
+**First boot redirects browsers to the desktop OOBE, not `/auth/setup`.** On a
+fresh install with no user configured, a request whose `Accept` header includes
+`text/html` gets a 303 redirect to `/desktop`, where the out-of-box experience
+runs setup. `/auth/setup` remains the no-JS fallback. API callers still receive
+401 `{"error":"onboarding_required","needs_onboarding":true}`. An agent or script
+hitting an API before setup should treat `onboarding_required` as "no owner yet",
+not as an expired session.
+
 **A malformed JSON body to an auth route is a 400, not a 500.** `request.json()`
 happily parses `null`, `[]`, `1` and `"x"` - all valid JSON, none of them an
 object - and the `body.get()` that follows then raises `AttributeError`. Six
