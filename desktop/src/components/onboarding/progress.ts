@@ -25,6 +25,8 @@ export interface OnboardingProgress {
   agent_model?: string;
   /** The assistant the first chat deployed (its agent slug). */
   first_chat?: { agent: string };
+  /** The Idempotency-Key of the first-chat deploy, saved before the request so a resume retries with the same key. */
+  deploy_key?: string;
 }
 
 import { parseAbout, type AboutYou } from "./about";
@@ -51,6 +53,7 @@ export async function loadProgress(): Promise<OnboardingProgress | null> {
         data.first_chat && typeof data.first_chat.agent === "string" && data.first_chat.agent
           ? { agent: data.first_chat.agent }
           : undefined,
+      deploy_key: typeof data.deploy_key === "string" && data.deploy_key ? data.deploy_key : undefined,
     };
   } catch {
     return null;
