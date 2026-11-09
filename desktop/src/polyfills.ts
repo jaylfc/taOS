@@ -5,7 +5,8 @@ declare global {
   interface Array<T> {
     at(index: number): T | undefined;
   }
-  interface AbortSignal {
+  interface AbortSignal {}
+  interface AbortSignalConstructor {
     timeout(ms: number): AbortSignal;
   }
 }
@@ -33,18 +34,35 @@ if (typeof Array.prototype.at === "undefined") {
   });
 }
 
-if (typeof AbortSignal !== "undefined" && typeof (AbortSignal as any).timeout !== "function") {
-  Object.defineProperty(AbortSignal, "timeout", {
-    value: function timeout(this: unknown, ms: number): AbortSignal {
-      const controller = new AbortController();
-      setTimeout(() => controller.abort(new DOMException("signal timed out", "TimeoutError")), ms);
-      return controller.signal;
-    },
-    writable: true,
-    configurable: true,
-    enumerable: false,
-  });
+export function installAbortSignalTimeout(maxTimeout = 2147483647): void {
+  if (typeof AbortSignal !== "undefined" && typeof (AbortSignal as any).timeout !== "function") {
+    Object.defineProperty(AbortSignal, "timeout", {
+      value: function timeout(this: unknown, ms: number): AbortSignal {
+        if (!Number.isFinite(ms) || ms < 0 || ms > Number.MAX_SAFE_INTEGER) {
+          throw new TypeError("AbortSignal.timeout delay must be a non-negative finite number <= Number.MAX_SAFE_INTEGER");
+        }
+        const controller = new AbortController();
+        let remaining = ms;
+        const step = () => {
+          if (remaining <= 0) {
+            controller.abort(new DOMException("signal timed out", "TimeoutError"));
+            return;
+          }
+          const chunk = Math.min(remaining, maxTimeout);
+          remaining -= chunk;
+          setTimeout(step, chunk);
+        };
+        step();
+        return controller.signal;
+      },
+      writable: true,
+      configurable: true,
+      enumerable: false,
+    });
+  }
 }
+
+installAbortSignalTimeout();
 
 if (typeof globalThis.structuredClone === "undefined") {
   function isPlainObject(value: unknown): value is Record<string, unknown> {
