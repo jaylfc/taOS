@@ -285,19 +285,17 @@ async def test_append_lock_weakref_cleanup(store, data_dir):
 
     s = hub_store.HubStore(hub_store.default_db_path())
     await s.init()
-    try:
-        # First lock: create and immediately delete
-        posts._append_lock(s)
-        # Delete strong reference; WeakKeyDictionary should reclaim the lock.
-        del s
-        gc.collect()
-        # After GC the weakref key is gone, so the dict should be empty.
-        assert len(posts._append_locks) == 0, (
-            f"Expected empty dict after GC, got {len(posts._append_locks)}"
-        )
-    finally:
-        # s was deleted above; nothing to close.
-        pass
+    # First lock: create and immediately delete
+    posts._append_lock(s)
+    # Close the store so its aiosqlite worker thread exits cleanly.
+    await s.close()
+    # Delete strong reference; WeakKeyDictionary should reclaim the lock.
+    del s
+    gc.collect()
+    # After GC the weakref key is gone, so the dict should be empty.
+    assert len(posts._append_locks) == 0, (
+        f"Expected empty dict after GC, got {len(posts._append_locks)}"
+    )
 
 
 @pytest.mark.asyncio
