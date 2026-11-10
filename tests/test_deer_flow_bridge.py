@@ -463,6 +463,8 @@ class TestBoundedConcurrency:
 
         # Patch the inner handler, not the semaphore-guarded wrapper, so the
         # real _run_handle_user_message_limited still enforces _MAX_INFLIGHT.
+        original_handle = bridge_ns.get("handle_user_message")
+        original_semaphore = bridge_ns.get("_SEMAPHORE")
         bridge_ns["handle_user_message"] = slow_handle
         # The module-level _SEMAPHORE is bound to whatever loop first used it;
         # give this run a fresh one so the bound check is measured here.
@@ -513,11 +515,19 @@ class TestBoundedConcurrency:
             client = _SseFakeClient(lines, stop)
             await sse_loop(client, channel, stop)
 
-        asyncio.run(asyncio.wait_for(run(), 5))
+        try:
+            asyncio.run(asyncio.wait_for(run(), 5))
 
-        assert len(handled) == events
-        assert peak["n"] <= bridge_ns["_MAX_INFLIGHT"], (
-            f"peak concurrent calls {peak['n']} > {bridge_ns['_MAX_INFLIGHT']}")
+            assert len(handled) == events
+            assert peak["n"] <= bridge_ns["_MAX_INFLIGHT"], (
+                f"peak concurrent calls {peak['n']} > {bridge_ns['_MAX_INFLIGHT']}"
+            )
+        finally:
+            # Restore shared fixture
+            if original_handle is not None:
+                bridge_ns["handle_user_message"] = original_handle
+            if original_semaphore is not None:
+                bridge_ns["_SEMAPHORE"] = original_semaphore
 
 
 # -- install script + registry wiring ------------------------------------------

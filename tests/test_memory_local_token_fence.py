@@ -197,6 +197,11 @@ class TestMemoryLocalTokenFence:
         async with _host_token_client(local_token_app) as c:
             resp = await c.post("/api/memory/search", json={"query": "x", "agent": "agent-b"})
         assert resp.status_code == 200
+        mock_client = local_token_app.state.http_client
+        call_args = mock_client.get.call_args
+        assert call_args is not None
+        params = call_args.kwargs.get("params", {})
+        assert "agent-b/index.sqlite" in params.get("dbPath", "")
 
     async def test_host_token_browse_other_agent_works(self, local_token_app):
         """Host token (unbound) browsing another agent works (admin path)."""
@@ -206,6 +211,11 @@ class TestMemoryLocalTokenFence:
         async with _host_token_client(local_token_app) as c:
             resp = await c.get("/api/memory/browse?agent=agent-b")
         assert resp.status_code == 200
+        mock_client = local_token_app.state.http_client
+        call_args = mock_client.get.call_args
+        assert call_args is not None
+        params = call_args.kwargs.get("params", {})
+        assert "agent-b/index.sqlite" in params.get("dbPath", "")
 
     async def test_host_token_collections_other_agent_works(self, local_token_app):
         """Host token (unbound) accessing collections for another agent works (admin path)."""
@@ -215,3 +225,23 @@ class TestMemoryLocalTokenFence:
         async with _host_token_client(local_token_app) as c:
             resp = await c.get("/api/memory/collections/agent-b")
         assert resp.status_code == 200
+        mock_client = local_token_app.state.http_client
+        call_args = mock_client.get.call_args
+        assert call_args is not None
+        params = call_args.kwargs.get("params", {})
+        assert "agent-b/index.sqlite" in params.get("dbPath", "")
+
+    async def test_host_token_delete_chunk_works(self, local_token_app):
+        """Host token (unbound) can delete a chunk for a specified agent namespace."""
+        _stub_http(local_token_app, {
+            "/delete-chunk": {"status": "ok"},
+        })
+        async with _host_token_client(local_token_app) as c:
+            resp = await c.delete("/api/memory/chunk/abc123?agent=agent-b")
+        assert resp.status_code == 200
+        mock_client = local_token_app.state.http_client
+        call_args = mock_client.post.call_args
+        assert call_args is not None
+        payload = call_args.kwargs.get("json", {})
+        assert payload.get("hash") == "abc123"
+        assert "agent-b/index.sqlite" in payload.get("dbPath", "")
