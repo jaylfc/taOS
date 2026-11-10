@@ -1701,7 +1701,7 @@ async def test_forget_skips_profile_with_nonempty_permissions_returns_404(monkey
 
 
 @pytest.mark.asyncio
-async def test_forget_non_admin_returns_403(tmp_path):
+async def test_forget_http_non_admin_returns_403(tmp_path):
     """Non-admin member gets 403 on POST /api/hardware/wifi/forget."""
     from fastapi.testclient import TestClient
     from tinyagentos.app import create_app
@@ -1732,10 +1732,11 @@ async def test_forget_non_admin_returns_403(tmp_path):
 
     resp = client.post("/api/hardware/wifi/forget", json={"ssid": "test-ssid"})
     assert resp.status_code == 403
+    assert resp.json()["detail"] == "forbidden"
 
 
 @pytest.mark.asyncio
-async def test_scan_non_admin_returns_403(tmp_path):
+async def test_scan_http_non_admin_returns_403(tmp_path):
     """Non-admin member gets 403 on POST /api/hardware/wifi/scan."""
     from fastapi.testclient import TestClient
     from tinyagentos.app import create_app
@@ -1766,6 +1767,7 @@ async def test_scan_non_admin_returns_403(tmp_path):
 
     resp = client.post("/api/hardware/wifi/scan", json={"iface": "wlan0"})
     assert resp.status_code == 403
+    assert resp.json()["detail"] == "forbidden"
 
 
 @pytest.mark.asyncio
@@ -1800,6 +1802,7 @@ async def test_enabled_non_admin_returns_403(tmp_path):
 
     resp = client.post("/api/hardware/wifi/enabled", json={"enabled": False})
     assert resp.status_code == 403
+    assert resp.json()["detail"] == "forbidden"
 
 
 @pytest.mark.asyncio
@@ -1834,6 +1837,7 @@ async def test_disconnect_non_admin_returns_403(tmp_path):
 
     resp = client.post("/api/hardware/wifi/disconnect", json={"iface": "wlan0"})
     assert resp.status_code == 403
+    assert resp.json()["detail"] == "forbidden"
 
 
 @pytest.mark.asyncio
@@ -1868,6 +1872,7 @@ async def test_connect_non_admin_returns_403(tmp_path):
 
     resp = client.post("/api/hardware/wifi/connect", json={"ssid": "test-ssid"})
     assert resp.status_code == 403
+    assert resp.json()["detail"] == "forbidden"
 
 
 @pytest.mark.asyncio
