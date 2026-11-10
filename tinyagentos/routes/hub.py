@@ -282,6 +282,7 @@ async def _try_handshake(
             outbound_token=outbound_token,
             endpoints=endpoints,
             restore_revoked_at=observed_revoked_at,
+            keep_existing_endpoints=True,
         )
         if not written:
             logger.warning(
