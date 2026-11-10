@@ -725,6 +725,51 @@ class TestBlockCascade:
             )
 
 
+    async def test_block_cascade_revoke_failure_returns_incomplete(
+        self, client_with_contacts, app_with_contacts, monkeypatch
+    ):
+        """A revoke failure must fail the block response closed, not report success."""
+        store = app_with_contacts.state.contacts_store
+        await store.add_contact(
+            contact_id=f"hub:{_PEER_FP}",
+            hub_username=_PEER_USERNAME,
+            display_name="Remote",
+            ed25519_pub=_PEER_SIGNING_PUB,
+            x25519_pub=_PEER_ENCRYPTION_PUB,
+            peer_fingerprint=_PEER_FP,
+        )
+        await store.establish_peer_link(
+            contact_id=f"hub:{_PEER_FP}",
+            inbound_token=generate_peer_token(),
+            outbound_token=generate_peer_token(),
+        )
+
+        async def handler(method, url, **kw):
+            if "/api/hub/edges/revoke" in url:
+                return _fake_dir_resp(body={"status": "revoked"})
+            return _fake_dir_resp(body={})
+
+        _patch_account_proxy(monkeypatch, handler)
+
+        async def boom(cid):
+            raise RuntimeError("revoke boom")
+
+        monkeypatch.setattr(store, "revoke_peer_link", boom)
+
+        resp = await client_with_contacts.post(
+            "/api/hub/friends/block",
+            json={"peer_fingerprint": _PEER_FP},
+        )
+        assert resp.status_code == 500
+        assert resp.json()["state"] == "block-incomplete"
+        assert resp.json()["peer"] == _PEER_FP
+
+        from tinyagentos.hub import relationships
+        hub_store = app_with_contacts.state.hub_store
+        assert await hub_store.has_edge(_PEER_FP, relationships.REL_BLOCK)
+
+
+
 # ---------------------------------------------------------------------------
 # Security regression tests
 # ---------------------------------------------------------------------------
