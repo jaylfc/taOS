@@ -832,6 +832,11 @@ class TestInstallV2AdminGuard:
     @pytest.mark.asyncio
     async def test_non_admin_uninstall_v2_returns_403_and_removes_nothing(self, client, fake_registry):
         client._transport.app.state.registry = fake_registry
+        # The guard short-circuits before the handler body runs, so the
+        # installed-apps store is never touched either.
+        mock_installed_apps = MagicMock()
+        mock_installed_apps.get_runtime_location = AsyncMock(return_value=None)
+        client._transport.app.state.installed_apps = mock_installed_apps
         member_client = await _member_client(client._transport.app)
         try:
             with patch(
@@ -845,6 +850,8 @@ class TestInstallV2AdminGuard:
             # store record is never touched and no container is removed.
             mock_get.assert_not_called()
             fake_registry.mark_uninstalled.assert_not_called()
+            mock_installed_apps.uninstall.assert_not_called()
+            mock_installed_apps.remove_runtime_location.assert_not_called()
         finally:
             await member_client.aclose()
 
