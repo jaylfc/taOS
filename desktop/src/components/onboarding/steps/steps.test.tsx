@@ -110,6 +110,7 @@ describe("ModelStep", () => {
     render(<ModelStep onBack={() => {}} onDone={() => {}} onSkip={() => {}} />);
     await act(async () => {});
 
+    vi.useFakeTimers();
     const download = screen.getByRole("button", { name: /download/i });
     await act(async () => {
       fireEvent.click(download);
@@ -121,7 +122,6 @@ describe("ModelStep", () => {
     const dl1Calls = () =>
       fetchMock.mock.calls.filter((c) => String(c[0]).includes("/api/models/downloads/dl-1")).length;
     const before = dl1Calls();
-    vi.useFakeTimers();
     await act(async () => {
       vi.advanceTimersByTime(5000);
     });
