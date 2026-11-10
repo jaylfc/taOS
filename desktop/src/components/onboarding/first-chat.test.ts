@@ -76,7 +76,9 @@ describe("deployFirstChat", () => {
     const saveLog: string[] = [];
     await expect(deployFirstChat(key, async (k) => { saveLog.push(k); return true; }, BODY)).rejects.toBeInstanceOf(HopError);
     expect(key.current).not.toBe("k-1");
-    expect(saveLog).toContain(key.current);
+    // The full save sequence: the original key is saved before the POST, and the
+    // rotated key is saved again after the refusal, in that order.
+    expect(saveLog).toEqual(["k-1", key.current]);
   });
 
   it("a fetch rejection (DeployUnanswered) leaves the key alone", async () => {
