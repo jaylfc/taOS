@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from tinyagentos.agent_token_auth import check_agent_scope
 from tinyagentos.auth_context import (
     CurrentUser,
     current_user,
@@ -13,6 +14,7 @@ from tinyagentos.auth_context import (
     require_agent_owner_or_admin,
     require_owner_or_admin,
 )
+from tinyagentos.config import slugify_agent_name
 
 # The keystore is system-global (one store, plaintext values on read), so every
 # handler is admin-or-local-token EXCEPT the two agent-scoped reads, which stay
@@ -143,3 +145,50 @@ async def delete_secret(request: Request, name: str):
     if not deleted:
         return JSONResponse({"error": "Secret not found"}, status_code=404)
     return {"status": "deleted"}
+
+
+@router.get("/api/agents/self/secrets/{name}")
+async def get_self_secret(
+    request: Request,
+    name: str,
+):
+    """Return a secret value if it is granted to the agent named by the verified
+    token AND the token carries the ``secrets_read_own`` scope.
+
+    The agent name is resolved from the token's canonical_id -- never from the
+    path parameter ``name``.  If the secret is not granted to that agent, or the
+    name is unknown, a 404 is returned with an identical body (no existence
+    oracle).  Missing ``secrets_read_own`` scope yields 403.
+    """
+    # Verify the token holds the required scope and get the canonical_id.
+    cid = await check_agent_scope(request, "secrets_read_own")
+    # Resolve the agent name from the canonical_id via config.agents.
+    config = getattr(request.app.state, "config", None)
+    agent_name = None
+    if config is not None:
+        for agent in config.agents:
+            if isinstance(agent, dict) and agent.get("registry_canonical_id") == cid:
+                agent_name = agent.get("name")
+                break
+    if agent_name is None:
+        # Fall back to the display name from the registry record.
+        from tinyagentos.agent_registry_store import AgentRegistryStore
+        registry = getattr(request.app.state, "agent_registry", None)
+        if registry is not None:
+            record = await registry.get(cid)
+            if record is not None:
+                agent_name = record.get("display_name")
+                # Strip leading @ (handle sigil) for consistency with config
+                # agent names used in the secrets store.
+                if agent_name and agent_name.startswith("@"):
+                    agent_name = agent_name[1:]
+    if agent_name is None:
+        raise HTTPException(status_code=403, detail="agent identity could not be resolved")
+    # Look up secrets granted to this agent.
+    store = request.app.state.secrets
+    secrets = await store.get_agent_secrets(agent_name)
+    # Find the requested secret by name; return 404 if not granted or unknown.
+    for s in secrets:
+        if s["name"] == name:
+            return {"name": s["name"], "value": s["value"]}
+    raise HTTPException(status_code=404, detail="Secret not found")

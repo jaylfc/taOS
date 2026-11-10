@@ -1,0 +1,3 @@
+### Added
+
+- Self-only secrets read scope `secrets_read_own` and route `GET /api/agents/self/secrets/{name}`: a registry agent holding this grant may read only secrets granted to the agent named by the verified token. Identity is derived from the token, never from the path. Unknown or ungranted secret names return 404 with an identical body to prevent an existence oracle. Missing scope returns 403.
