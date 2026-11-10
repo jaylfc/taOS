@@ -1,0 +1,2 @@
+### Fixed
+- Messages no longer shows "Setting up your assistant" indefinitely when deploy succeeds but the agent's DM channel creation fails. After 3 successful deploy status polls without a DM, it now shows "Your assistant is set up, but its chat could not be created."
