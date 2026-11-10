@@ -193,7 +193,8 @@ class TestMemoryRemember:
             # Assert the /ingest payload reaches the resolved config-name index.
             ingest_payload = app.state.http_client.post.call_args.kwargs["json"]
             assert ingest_payload["body"] == "test memory"
-            assert ingest_payload["dbPath"].endswith("test-agent-remember3/index.sqlite")
+            expected_db_path = str(app.state.agent_memory_dir / "test-agent-remember3" / "index.sqlite")
+            assert ingest_payload["dbPath"] == expected_db_path
 
     async def test_bound_local_token_other_agent_gets_403(self, client_with_qmd):
         """Bound local token for agent-a, agent=agent-b -> 403."""
@@ -225,7 +226,8 @@ class TestMemoryRemember:
             # Assert the /ingest payload reaches the bound agent's index.
             ingest_payload = app.state.http_client.post.call_args.kwargs["json"]
             assert ingest_payload["body"] == "test memory"
-            assert ingest_payload["dbPath"].endswith("agent-a/index.sqlite")
+            expected_db_path = str(app.state.agent_memory_dir / "agent-a" / "index.sqlite")
+            assert ingest_payload["dbPath"] == expected_db_path
 
     async def test_admin_session_no_agent_gets_400(self, client_with_qmd):
         """Admin session (conftest client fixture), no agent -> 400."""
@@ -263,7 +265,8 @@ class TestMemoryRemember:
         # Assert the /ingest body value reaches the resolved agent's index.
         ingest_payload = app.state.http_client.post.call_args.kwargs["json"]
         assert ingest_payload["body"] == "test memory"
-        assert ingest_payload["dbPath"].endswith("agent-a/index.sqlite")
+        expected_db_path = str(app.state.agent_memory_dir / "agent-a" / "index.sqlite")
+        assert ingest_payload["dbPath"] == expected_db_path
 
     async def test_admin_session_empty_agent_gets_400(self, client_with_qmd):
         """Admin session (conftest client fixture), empty or whitespace agent -> 400."""
