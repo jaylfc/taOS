@@ -347,7 +347,7 @@ class TestAgentInterface:
 
     @pytest.mark.asyncio
     async def test_request_pin_code_timeout_raises_dbus_error(self):
-        """RequestPinCode raises DBusError when session times out."""
+        """RequestPinCode raises DBusError with org.bluez.Error.Rejected on timeout."""
         dbus_fast = pytest.importorskip("dbus_fast")
         from dbus_fast.service import ServiceInterface
         from dbus_fast.errors import DBusError
@@ -357,23 +357,21 @@ class TestAgentInterface:
 
         request_pin_code = self._get_async_method(iface, "RequestPinCode")
 
-        # Patch the session's request to return a future that never resolves
-        from unittest.mock import patch
-
-        with patch.object(session, "request") as mock_request:
-            mock_future = asyncio.get_event_loop().create_future()
-            mock_request.return_value = mock_future
+        # Patch PROMPT_TIMEOUT_S to a very small value so wait_for times out quickly
+        import tinyagentos.bluez_agent as ba
+        original_timeout = ba.PROMPT_TIMEOUT_S
+        try:
+            ba.PROMPT_TIMEOUT_S = 0.01
 
             task = asyncio.create_task(request_pin_code(iface, "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF"))
 
-            # Wait a bit then trigger timeout by cancelling the future
-            await asyncio.sleep(0.01)
-            mock_future.cancel()
-
             with pytest.raises(DBusError) as exc_info:
                 await task
-            # Cancelling the future triggers Canceled error
-            assert exc_info.value.type == "org.bluez.Error.Canceled"
+            # wait_for timeout should raise Rejected, not Canceled
+            assert exc_info.value.type == "org.bluez.Error.Rejected"
+            assert "timed out" in str(exc_info.value).lower()
+        finally:
+            ba.PROMPT_TIMEOUT_S = original_timeout
 
     @pytest.mark.asyncio
     async def test_request_passkey_accepted_returns_passkey(self):

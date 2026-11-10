@@ -254,9 +254,10 @@ class TestProviderAPI:
         the empty list is treated as 'not supplied' so server-side probe runs.
         ``models_source`` reflects the discovery result ("discovered"), not "supplied"."""
         fake_ids = ["explicit/model-a", "explicit/model-b"]
+        discover_mock = AsyncMock(return_value=[{"id": mid} for mid in fake_ids])
         with patch(
             "tinyagentos.routes.providers._discover_provider_models",
-            new=AsyncMock(return_value=[{"id": mid} for mid in fake_ids]),
+            new=discover_mock,
         ):
             resp = await client.post("/api/providers", json={
                 "name": "explicit-empty",
@@ -266,14 +267,23 @@ class TestProviderAPI:
             })
             assert resp.status_code == 200
         assert resp.json()["models_source"] == "discovered"
+        # Verify the URL passed to discovery is the canonical OpenRouter URL
+        discover_mock.assert_awaited_once()
+        called_url = discover_mock.await_args.args[0]
+        assert called_url == "https://openrouter.ai/api/v1"
 
         stored_entry = next(
             b for b in app.state.config.backends if b.get("name") == "explicit-empty"
         )
+        # Check the saved provider configuration
+        assert stored_entry["type"] == "openrouter"
+        assert stored_entry["url"] == "https://openrouter.ai/api/v1"
+        assert stored_entry["api_key_secret"] == "provider-explicit-empty-key"
         stored_ids = [
             m.get("id") if isinstance(m, dict) else m for m in stored_entry["models"]
         ]
         assert stored_ids == fake_ids
+        # models_source is returned in the response but not persisted in config
 
     async def test_add_provider_discovery_failure_keeps_entry(self, client, app):
         """A failing probe must NOT block saving the provider — we still
