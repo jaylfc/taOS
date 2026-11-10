@@ -85,6 +85,40 @@ class TestDetectCapabilities:
         assert "llm-chat" not in caps
         assert "tts" not in caps
 
+    @pytest.mark.asyncio
+    async def test_configured_whisper_backend_live_probe(self):
+        """A configured whisper backend is probed via /v1/models and advertises ASR."""
+        agent = WorkerAgent("http://localhost:6969")
+        models_resp = MagicMock()
+        models_resp.status_code = 200
+        models_resp.json.return_value = {
+            "data": [{"id": "whisper-1", "object": "model", "created": 1234567890}],
+            "object": "list",
+        }
+
+        with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+
+            async def mock_get(url):
+                if "9000" in url and "/v1/models" in url:
+                    return models_resp
+                raise Exception("not running")
+
+            mock_client.get = AsyncMock(side_effect=mock_get)
+            mock_client_cls.return_value = mock_client
+
+            with patch("os.environ.get", return_value="whisper=http://localhost:9000"):
+                backends = await agent.detect_backends()
+
+        whisper = [b for b in backends if b["type"] == "whisper"]
+        assert len(whisper) == 1
+        assert whisper[0]["url"] == "http://localhost:9000"
+        assert whisper[0]["name"] == "whisper:9000"
+        assert whisper[0]["capabilities"] == ["asr"]
+        assert whisper[0]["models"] == [{"name": "whisper-1", "size_mb": 0}]
+
     def test_kokoro_backend(self):
         """A kokoro backend advertises tts only (taOS #3231)."""
         agent = WorkerAgent("http://localhost:6969")

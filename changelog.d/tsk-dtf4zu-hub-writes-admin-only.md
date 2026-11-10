@@ -1,0 +1,3 @@
+### Fixed
+
+- Hub write routes now require admin authentication (PUT /api/hub/profile, PUT /api/hub/follow, PUT /api/hub/cache-grant, POST /api/hub/friends/request, POST /api/hub/friends/requests/{rid}/accept, POST /api/hub/friends/requests/{rid}/decline, POST /api/hub/friends/block, POST /api/hub/friends/mute, POST /api/hub/friends/unmute, POST /api/hub/posts). Non-admin members receive 403 forbidden.

@@ -36,10 +36,9 @@ export function describeChannelParty(
         };
       }
       // archived_agent_id is set but the archived roster has not loaded yet
-      // (or does not carry it): show an archived placeholder instead of
-      // falling through to a live agent that reuses the member slug.
-      const other = (channel.members ?? []).find((m) => m !== "user") ?? name;
-      return { title: other, kind: "agent", subtitle: "Archived agent" };
+      // (or does not carry it): keep the DM's title stable until the roster
+      // loads instead of swapping in the member slug and changing it later.
+      return { title: name, kind: "agent", subtitle: "Archived agent" };
     }
     const other = (channel.members ?? []).find((m) => m !== "user") ?? name;
     const agent = liveAgents.find((a) => a.name === other);

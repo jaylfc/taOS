@@ -150,7 +150,9 @@ describe("describeChannelParty", () => {
     const liveAgents: LiveAgent[] = [{ name: "bob", display_name: "Bob" }];
     const result = describeChannelParty(channel, liveAgents, "kind", []);
     expect(result.kind).toBe("agent");
-    expect(result.title).toBe("bob");
+    // While the archived roster has not loaded, the DM title stays stable at
+    // the channel's name instead of flipping to the member slug.
+    expect(result.title).toBe("old-bot");
     expect(result.subtitle).toBe("Archived agent");
     expect(result.agent).toBeUndefined();
   });
