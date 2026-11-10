@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from tinyagentos.archive_spool import record_lossless, drain_spool
+from tinyagentos.archive_spool import drain_spool, record_lossless
 
 
 class _FakeArchive:
@@ -300,6 +301,7 @@ async def test_append_during_drain_survives():
 
         # Fake archive that blocks on first record call
         drain_event = asyncio.Event()
+        drain_started = asyncio.Event()
 
         class BlockingArchive:
             def __init__(self):
@@ -313,6 +315,7 @@ async def test_append_during_drain_survives():
                     "summary": summary,
                 })
                 if event_type == "conversation" and data.get("content") == "msg1":
+                    drain_started.set()
                     await drain_event.wait()
 
         archive = BlockingArchive()
@@ -321,7 +324,7 @@ async def test_append_during_drain_survives():
         drain_task = asyncio.create_task(drain_spool(archive, spool_path))
 
         # Wait for drain to start and block on the first entry
-        await asyncio.sleep(0.01)
+        await drain_started.wait()
 
         # While drain is blocked, append a second event via record_lossless
         # Use a failing archive so it goes to spool
@@ -355,12 +358,9 @@ async def test_record_lossless_non_json_payload_never_raises():
         spool_path = Path(tmpdir) / "archive" / "spool.jsonl"
         archive = _FakeArchive(should_fail=True)
 
-        import base64
-        from datetime import datetime, timezone
-
         data = {
             "blob": b"\x00\xffraw",
-            "when": datetime.now(timezone.utc),
+            "when": datetime.now(UTC),
         }
 
         # Must not raise
@@ -408,18 +408,20 @@ async def test_concurrent_drains_do_not_double_replay():
             encoding="utf-8",
         )
 
-        # Recording fake archive that blocks until all drains have started
-        start_barrier = asyncio.Barrier(2)
-        done_event = asyncio.Event()
+        # Recording fake archive that blocks on the FIRST record call only
+        first_call_event = asyncio.Event()
+        release_event = asyncio.Event()
 
         class BlockingRecordingArchive:
             def __init__(self):
                 self.calls = []
+                self._first_call = True
 
             async def record(self, event_type: str, data: dict, *, agent_name=None, summary=None):
-                await start_barrier.wait()
-                if not done_event.is_set():
-                    await done_event.wait()
+                if self._first_call:
+                    self._first_call = False
+                    first_call_event.set()
+                    await release_event.wait()
                 self.calls.append({
                     "event_type": event_type,
                     "data": data,
@@ -435,10 +437,10 @@ async def test_concurrent_drains_do_not_double_replay():
             asyncio.create_task(drain_spool(archive, spool_path)),
         ]
 
-        # Wait for both drains to hit the barrier (both have read the file)
-        await asyncio.sleep(0.05)
+        # Wait for first drain to hit the barrier (started processing first entry)
+        await first_call_event.wait()
         # Release them
-        done_event.set()
+        release_event.set()
         await asyncio.gather(*drain_tasks)
 
         # Each entry should be recorded exactly once
