@@ -54,6 +54,7 @@ from tinyagentos.taos_agent_runtime import (
     FRAMEWORK_CHOICES,
     FRAMEWORK_CLAUDE_CODE,
     FRAMEWORK_HERMES,
+    FRAMEWORK_KILO,
     FRAMEWORK_PICOCLAW,
     FrameworkDecision,
     apply_framework,
@@ -629,7 +630,19 @@ async def chat(request: Request, body: ChatRequest):
             )
         harness = None
 
-    if not (use_picoclaw or use_claude_code or use_hermes):
+    use_kilo = system_agent_framework(app_state) == FRAMEWORK_KILO
+    if use_kilo:
+        from tinyagentos.kilo_runtime import kilo_key_present, resolve_kilo_binary
+        if resolve_kilo_binary() is None or not await kilo_key_present(app_state):
+            logger.error("taos-agent: kilo is not ready")
+            return JSONResponse(
+                {"error": "Kilo is not ready: add a kilo_api_key secret in Secrets, make sure the kilo "
+                          "binary is installed, or switch the taOS Agent to opencode."},
+                status_code=503,
+            )
+        harness = None
+
+    if not (use_picoclaw or use_claude_code or use_hermes or use_kilo):
         # opencode is always given the in-process gateway (/api/llm/v1), the
         # only LLM path since LiteLLM removal 2b-2a. When it cannot serve the
         # model, say so up front instead of starting a server that will only
@@ -644,7 +657,7 @@ async def chat(request: Request, body: ChatRequest):
 
     # Ensure the host opencode server is running.
     try:
-        server = None if (use_picoclaw or use_claude_code or use_hermes) else await ensure_taos_opencode_server(request.app.state, model)
+        server = None if (use_picoclaw or use_claude_code or use_hermes or use_kilo) else await ensure_taos_opencode_server(request.app.state, model)
     except OpenCodeBinaryNotFoundError as exc:
         # The binary genuinely isn't reachable (not on PATH, not at the
         # installer's default location) — a clear install instruction, not a
@@ -788,7 +801,7 @@ async def chat(request: Request, body: ChatRequest):
     async def _drive() -> None:
         try:
             await adapter.ensure_session()
-            if not (use_picoclaw or use_claude_code or use_hermes):
+            if not (use_picoclaw or use_claude_code or use_hermes or use_kilo):
                 app_state.taos_opencode_session_id = adapter.session_id
                 # Keep the per-agent session cache in sync (agent-as-a-model path).
                 sess = getattr(app_state, "taos_opencode_sessions", None)
