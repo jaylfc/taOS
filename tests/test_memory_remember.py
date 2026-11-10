@@ -144,6 +144,9 @@ class TestMemoryRemember:
             resp = await client.post("/api/memory/remember", json={"text": "test memory", "agent": "other-agent"})
             assert resp.status_code == 403
             assert resp.json()["detail"] == "Agent can only write its own memory"
+            assert app.state.http_client.post.call_args is None, (
+                "ingest was called despite the 403 -- cross-agent write would have succeeded"
+            )
 
     async def test_agent_token_with_memory_write_omitted_agent_works(self, client_with_qmd):
         """Agent token WITH memory_write, body.agent omitted -> 200, dbPath ends with resolved name/index.sqlite."""
