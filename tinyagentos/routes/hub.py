@@ -311,6 +311,22 @@ async def _try_handshake(
             contact_id, endpoints,
         )
 
+        # Final block check: a block that commits after the re-check but before
+        # or during establish_peer_link must be honoured. On the first handshake
+        # path (no pre-existing link) the INSERT arm has no WHERE clause, so it
+        # always writes and the not-written block handling never runs. This
+        # re-check closes that window.
+        if peer_fingerprint and await store.has_edge(peer_fingerprint, relationships.REL_BLOCK):
+            await contacts_store.revoke_peer_link(contact_id)
+            try:
+                await contacts_store.set_contact_status(contact_id, "blocked")
+            except Exception:
+                logger.warning(
+                    "friend-accept handshake: set_contact_status blocked failed for %s",
+                    contact_id,
+                )
+            return JSONResponse({"state": "rejected"}, status_code=403)
+
         # Deliver the token to their POST /api/peer/handshake.  The SSRF
         # allowance is built from the peer link just stored, never from the
         # request.  This node has no self-advertised endpoint list yet, so

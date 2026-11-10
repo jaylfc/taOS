@@ -309,6 +309,8 @@ def test_fifteen_model_warns_capped(capsys) -> None:
     # Count warn: lines - should be exactly 10
     warn_lines = [l for l in lines if l.startswith("  warn:")]
     assert len(warn_lines) == 10, f"Expected 10 warn lines, got {len(warn_lines)}"
+    # Hidden warning notice should be printed
+    assert any("more warnings hidden" in l for l in lines), f"Expected hidden warning notice, got lines: {lines}"
     # Each warning text should appear exactly once
     warning_texts = [l.replace("  warn: ", "") for l in warn_lines]
     assert len(warning_texts) == len(set(warning_texts)), "Duplicate warning texts found"
@@ -387,3 +389,72 @@ def test_model_missing_family_and_context_counts_both_warnings(capsys) -> None:
     warning_texts = [l.replace("  warn: ", "") for l in warn_lines]
     assert any("family" in w for w in warning_texts)
     assert any("min_context" in w for w in warning_texts)
+
+
+def test_model_single_context_field_no_warning(capsys) -> None:
+    """A manifest with only min_context OR only max_context (not both missing)
+    should NOT warn about missing context fields."""
+    from pathlib import Path
+    import yaml
+    import tempfile
+
+    tmp = Path(tempfile.mkdtemp())
+    models_dir = tmp / "models"
+    models_dir.mkdir()
+
+    # Model with only min_context (no max_context, no family)
+    mid = "model-only-min-context"
+    (m_dir := models_dir / mid).mkdir()
+    (m_dir / "manifest.yaml").write_text(yaml.safe_dump({
+        "id": mid,
+        "name": mid,
+        "type": "model",
+        "version": "1.0.0",
+        "min_context": 4096,
+        "variants": [
+            {"id": "q4", "format": "gguf", "size_mb": 5000, "vram_floor_mb": 6000}
+        ],
+    }))
+
+    exit_code = check_manifests.main(["managed-lint", "--root", str(tmp)])
+    assert exit_code == 0
+
+    output = capsys.readouterr().err
+    lines = output.splitlines()
+    # Should only warn about missing family (1 warning), not about context
+    assert any(line == "1 model capability field warnings" for line in lines)
+    warn_lines = [l for l in lines if l.startswith("  warn:")]
+    assert len(warn_lines) == 1
+    warning_texts = [l.replace("  warn: ", "") for l in warn_lines]
+    assert any("family" in w for w in warning_texts)
+    assert not any("min_context" in w or "max_context" in w for w in warning_texts)
+
+    # Model with only max_context (no min_context, no family)
+    tmp2 = Path(tempfile.mkdtemp())
+    models_dir2 = tmp2 / "models"
+    models_dir2.mkdir()
+
+    mid2 = "model-only-max-context"
+    (m_dir2 := models_dir2 / mid2).mkdir()
+    (m_dir2 / "manifest.yaml").write_text(yaml.safe_dump({
+        "id": mid2,
+        "name": mid2,
+        "type": "model",
+        "version": "1.0.0",
+        "max_context": 131072,
+        "variants": [
+            {"id": "q4", "format": "gguf", "size_mb": 5000, "vram_floor_mb": 6000}
+        ],
+    }))
+
+    exit_code = check_manifests.main(["managed-lint", "--root", str(tmp2)])
+    assert exit_code == 0
+
+    output = capsys.readouterr().err
+    lines = output.splitlines()
+    assert any(line == "1 model capability field warnings" for line in lines)
+    warn_lines = [l for l in lines if l.startswith("  warn:")]
+    assert len(warn_lines) == 1
+    warning_texts = [l.replace("  warn: ", "") for l in warn_lines]
+    assert any("family" in w for w in warning_texts)
+    assert not any("min_context" in w or "max_context" in w for w in warning_texts)

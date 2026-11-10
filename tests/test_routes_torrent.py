@@ -129,7 +129,7 @@ async def test_put_torrent_settings_non_admin_403(tmp_path):
     app.state.torrent_settings_store = app.state.download_manager._torrent_settings_store
     before = app.state.torrent_settings_store.load()
 
-    resp = client.put("/api/torrent/settings", json={"seed_enabled": True})
+    resp = client.put("/api/torrent/settings", json={"seed_enabled": False})
     assert resp.status_code == 403
 
     # Settings must be unchanged.
