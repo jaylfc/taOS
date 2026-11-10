@@ -2411,8 +2411,7 @@ The allowlist is the union of:
 - Observatory (`/api/observatory/*`, scope `observatory_control`).
 - Container requests (`/api/containers/requests`, `/api/container-requests`, `/api/containers/requests/{id}/provision`, `/api/containers/requests/{id}/destroy`, `/api/agents/containers/quota`).
 - Agent self-serve (`/api/agents/me/models` GET, `/api/agents/me/model` POST).
-- **Registry feeds** (`/api/agents/registry/*`, scope `registry_feeds_read`).
-- Registry-link (`/api/agents/registry-links` GET, `/api/agents/{agent_name}/registry-link` POST) -- admin-only: list unlinked config agents with candidates, or link an agent to a canonical ID.
+- **Registry feeds** (`/api/agents/registry/*`, scope `registry_feeds_read`); a registry-link (`/api/agents/registry-links` GET, `/api/agents/{agent_name}/registry-link` POST) is admin-only: list unlinked config agents with candidates, or link an agent to a canonical ID.
 - Agent self-serve (`/api/agents/me/models` GET, `/api/agents/me/model` POST).
 - **Credential rotation** (`POST /api/agents/registry/{id}/rotate-tokens`) -- identity-only, no scope grant: the route requires the JWT's `sub` to equal the path `canonical_id`, so an agent can rotate its own token and nobody else's. Returns the replacement token and the `storage_guidance` string; the superseded token is rejected by the identity's `token_min_iat` cutoff.
 

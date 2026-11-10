@@ -73,10 +73,10 @@ def register(subparsers) -> None:
     ra.add_argument("canonical_id")
     ra.set_defaults(func=_reactivate)
 
-    ln = verbs.add_parser("links", help="List unlinked config agents with candidate canonical IDs (admin)")
+    ln = verbs.add_parser("links", help="List unlinked config agents with candidate canonical IDs (admin); a candidate is a hint, not proof of ownership")
     ln.set_defaults(func=_links)
 
-    lk = verbs.add_parser("link", help="Link a config agent to a canonical ID (admin)")
+    lk = verbs.add_parser("link", help="Link a config agent to a canonical ID (admin); a candidate is a hint, not proof of ownership")
     lk.add_argument("agent_name")
     lk.add_argument("canonical_id")
     lk.set_defaults(func=_link)
