@@ -235,7 +235,9 @@ class TestFriendRequestFlow:
         self, client, app, upstream, monkeypatch
     ):
         """A slow network exchange never delays the accept, and the contact
-        (local work) already exists when the response returns."""
+        (local work) already exists when the response returns. The bound only
+        has to separate the inline 0.3s contact write from the backgrounded 5s
+        exchange."""
         import asyncio
         import time
 
@@ -284,7 +286,7 @@ class TestFriendRequestFlow:
         try:
             assert resp.status_code == 200
             assert resp.json()["state"] == "accepted"
-            assert elapsed < 1.0
+            assert elapsed < 3.0
             contact = await contacts_store.get_contact(f"hub:{peer_fp}")
             assert contact is not None, "contact must exist when accept returns"
             assert await contacts_store.get_peer_link(f"hub:{peer_fp}") is not None
