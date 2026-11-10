@@ -288,6 +288,15 @@ class TestFriendRequestFlow:
             contact = await contacts_store.get_contact(f"hub:{peer_fp}")
             assert contact is not None, "contact must exist when accept returns"
             assert await contacts_store.get_peer_link(f"hub:{peer_fp}") is not None
+            app_state = app.state
+            hub_store = getattr(app_state, "hub_store", None)
+            if hub_store is None:
+                from tinyagentos.hub import store as hub_store_mod
+                from pathlib import Path
+                hub_store = hub_store_mod.HubStore(Path(hub_store_mod.default_db_path()))
+                await hub_store.init()
+                app_state.hub_store = hub_store
+            assert await hub_store.has_edge(peer_fp, "friend")
         finally:
             for t in list(hub_routes._BACKGROUND_TASKS):
                 t.cancel()

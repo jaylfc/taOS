@@ -278,3 +278,12 @@ class TestPruneBackgroundTask:
         # First call raised, second call should have been attempted
         assert len(prune_calls) >= 2
         assert call_count >= 2
+
+    def test_prune_loop_registered_in_app_lifespan(self):
+        """Lifespan wires guest_outbox prune via _create_supervised_task (PR #3864)."""
+        import inspect
+        import tinyagentos.app as app_mod
+
+        src = inspect.getsource(app_mod.create_app)
+        assert "prune_loop(app.state.guest_outbox)" in src
+        assert "_create_supervised_task(prune_loop(app.state.guest_outbox), app.state._background_tasks)" in src

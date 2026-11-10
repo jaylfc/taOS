@@ -1006,7 +1006,11 @@ async def test_image_data_url_media_type_drops_mime_parameters(tmp_path_factory)
 
 @pytest.mark.asyncio
 @respx.mock
-@pytest.mark.parametrize("image_url", [{"url": 123}, {"url": None}, {"url": ""}, {"url": "   "}, {}, None, ""])
+@pytest.mark.parametrize("image_url", [
+    {"url": 123}, {"url": None}, {"url": ""}, {"url": "   "},
+    {"url": "\t"}, {"url": "\n"}, {"url": "\r"}, {"url": "\f"}, {"url": "\v"},
+    {"url": " \t\n\r\f\v "}, {}, None, ""
+])
 async def test_non_string_image_url_is_a_400_not_a_500(tmp_path_factory, image_url):
     """A missing, null, empty or non-string image URL is a client error and never sent upstream."""
     app, session = await _gateway_app(tmp_path_factory)

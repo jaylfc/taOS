@@ -52,7 +52,11 @@ export function installAbortSignalTimeout(maxTimeout = 2147483647): void {
           remaining -= chunk;
           setTimeout(step, chunk);
         };
-        step();
+        if (ms === 0) {
+          setTimeout(step, 0);
+        } else {
+          step();
+        }
         return controller.signal;
       },
       writable: true,

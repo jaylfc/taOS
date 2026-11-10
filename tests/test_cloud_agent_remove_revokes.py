@@ -50,19 +50,28 @@ async def test_revoke_value_error_without_state_change_is_raised(client, app, mo
     monkeypatch.setenv("TAOS_CONTROLLER_RELAY_URL", "https://relay.example.test")
     pid = await _create_project(client, slug="valerror")
     cid, _token = await _invite_and_redeem(client, pid, kind="cloud_agent")
-    
+
     # Verify the member exists
     members = await app.state.project_store.list_members(pid)
     assert cid in {m["member_id"] for m in members}
     assert cid not in await _revoked_ids(client)
-    
-    # Step 1: Monkeypatch registry.revoke to raise ValueError
+
+    # Step 1: Monkeypatch registry.revoke to raise ValueError after the pre-check.
     registry = app.state.agent_registry
-    original_revoke = registry.revoke
-    
+    prechecked = {"ok": False}
+    original_get = registry.get
+
+    async def get_tracking(canonical_id):
+        rec = await original_get(canonical_id)
+        if canonical_id == cid and rec and rec.get("status") != "revoked":
+            prechecked["ok"] = True
+        return rec
+
     async def raising_revoke(canonical_id):
+        assert prechecked["ok"], "expected pre-check to observe active record before revoke"
         raise ValueError("boom")
-    
+
+    monkeypatch.setattr(registry, "get", get_tracking)
     monkeypatch.setattr(registry, "revoke", raising_revoke)
     
     # Step 2: Try to DELETE the cloud_agent member, expecting error to propagate
