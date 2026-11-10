@@ -2411,10 +2411,10 @@ The allowlist is the union of:
 - Observatory (`/api/observatory/*`, scope `observatory_control`).
 - Container requests (`/api/containers/requests`, `/api/container-requests`, `/api/containers/requests/{id}/provision`, `/api/containers/requests/{id}/destroy`, `/api/agents/containers/quota`).
 - Agent self-serve (`/api/agents/me/models` GET, `/api/agents/me/model` POST).
+- **Registry feeds** (`/api/agents/registry/*`, scope `registry_feeds_read`).
+- Registry-link (`/api/agents/registry-links` GET, `/api/agents/{agent_name}/registry-link` POST) -- admin-only: list unlinked config agents with candidates, or link an agent to a canonical ID.
+- Agent self-serve (`/api/agents/me/models` GET, `/api/agents/me/model` POST).
 - **Credential rotation** (`POST /api/agents/registry/{id}/rotate-tokens`) -- identity-only, no scope grant: the route requires the JWT's `sub` to equal the path `canonical_id`, so an agent can rotate its own token and nobody else's. Returns the replacement token and the `storage_guidance` string; the superseded token is rejected by the identity's `token_min_iat` cutoff.
-- **Desktop control (system taOS Agent only)**: `POST /api/desktop/command`, `POST /api/desktop/screenshot`, `POST /api/desktop/layout` (native agent's registry JWT sets `user_id` to the owner, so desktop commands are delivered to the owner's desktop).
-- **Skill-exec (system taOS Agent only)**: `POST /api/skill-exec/{skill_id}/call`, `GET /api/skill-exec/tools` (native agent's registry JWT with `SYSTEM_AGENT_API_SCOPES`).
-- **Sign-in broker** (`POST /api/auth-broker/requests`, `GET /api/auth-broker/requests/{id}`, `POST /api/auth-broker/requests/{id}/{code,token}`) -- identity-only, no scope grant: each handler resolves the caller itself (see *Sign-in broker* below). `/code` is on the list only so an agent token gets the route's own `403`, never a `401`.
 
 Task checklist items (`/api/projects/{project_id}/tasks/{task_id}/checklist-items`)
 

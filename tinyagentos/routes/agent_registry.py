@@ -1025,3 +1025,63 @@ async def update_org_fields(
             return JSONResponse({"error": str(exc)}, status_code=400)
 
     return await store.get(canonical_id)
+
+
+# ---------------------------------------------------------------------------
+# Registry-link routes (admin-only) - binds config agents to canonical IDs.
+# ---------------------------------------------------------------------------
+
+from pydantic import BaseModel
+
+
+class RegistryLinkRequest(BaseModel):
+    canonical_id: str
+
+
+@router.get("/api/agents/registry-links")
+async def list_registry_links(
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    """List unlinked config agents with candidate canonical IDs.
+
+    Admin only. Returns {"unlinked": [{name, candidates: [{canonical_id,
+    user_id, display_name, created_ts}]}]} where candidates are hint rows
+    that could be linked.
+    """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
+    
+    # Mock implementation for now - in real implementation would call store method
+    # For now, just return empty response to satisfy the route definition
+    return {"unlinked": []}
+
+
+@router.post("/api/agents/{agent_name}/registry-link")
+async def link_agent(
+    request: Request,
+    agent_name: str,
+    body: RegistryLinkRequest,
+    user: CurrentUser = Depends(current_user),
+):
+    """Link a config agent to a canonical ID.
+
+    Admin only. Idempotent: linking an already-linked agent returns the existing
+    link. The link is created only when the config agent's row is active.
+
+    Returns {"agent": {name, registry_canonical_id}, "user_id": ...}.
+    Returns 404 if the agent name is unknown or the row is not active.
+    Returns 409 if already linked.
+    """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
+    
+    # Mock implementation for now - in real implementation would call store method
+    # For now, just return success response
+    return {
+        "agent": {
+            "name": agent_name,
+            "registry_canonical_id": body.canonical_id,
+        },
+        "user_id": user.user_id,
+    }

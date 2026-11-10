@@ -126,3 +126,18 @@ def test_lifecycle_transitions(monkeypatch, verb):
     fake = _FakeClient()
     assert _run(monkeypatch, ["agent-registry", verb, "alpha"], fake) == 0
     assert ("POST", f"/api/agents/registry/alpha/{verb}") in _paths(fake)
+
+
+def test_links(monkeypatch):
+    fake = _FakeClient()
+    assert _run(monkeypatch, ["agent-registry", "links"], fake) == 0
+    method, path, params = fake.calls[0]
+    assert (method, path) == ("GET", "/api/agents/registry-links")
+    assert params is None
+
+
+def test_link_with_name_needing_quoting(monkeypatch):
+    fake = _FakeClient()
+    assert _run(monkeypatch, ["agent-registry", "link", "my agent", "canon-123"], fake) == 0
+    assert ("POST", "/api/agents/my%20agent/registry-link") in _paths(fake)
+    assert fake.calls[-1][2] == {"canonical_id": "canon-123"}

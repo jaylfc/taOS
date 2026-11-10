@@ -8,6 +8,8 @@ reactivate) on registered agent identities without the web UI. Distinct from the
 
 Skipped: POST /api/agents/registry/register, a signed-pubkey enrolment flow that
 expects a cryptographically prepared payload, not a shell verb.
+
+New: links (admin) and link (admin) commands manage registry-link relationships.
 """
 from __future__ import annotations
 
@@ -70,6 +72,14 @@ def register(subparsers) -> None:
     ra = verbs.add_parser("reactivate", help="Reactivate a suspended agent (admin)")
     ra.add_argument("canonical_id")
     ra.set_defaults(func=_reactivate)
+
+    ln = verbs.add_parser("links", help="List unlinked config agents with candidate canonical IDs (admin)")
+    ln.set_defaults(func=_links)
+
+    lk = verbs.add_parser("link", help="Link a config agent to a canonical ID (admin)")
+    lk.add_argument("agent_name")
+    lk.add_argument("canonical_id")
+    lk.set_defaults(func=_link)
 
 
 def _cid(args):
@@ -144,3 +154,14 @@ def _suspend(args, client):
 
 def _reactivate(args, client):
     return client.post(f"/api/agents/registry/{_cid(args)}/reactivate")
+
+
+def _links(args, client):
+    return client.get("/api/agents/registry-links")
+
+
+def _link(args, client):
+    return client.post(
+        f"/api/agents/{quote(args.agent_name)}/registry-link",
+        body={"canonical_id": args.canonical_id},
+    )
