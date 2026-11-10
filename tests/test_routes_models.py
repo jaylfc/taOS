@@ -673,7 +673,7 @@ class TestModelRecommendations:
                  "min_ram_mb": 512, "download_url": "https://example.com/medium.gguf",
                  "backend": ["ollama"]},
             ],
-            "hardware_tiers": {"arm-npu-16gb": {"recommended": "nonexistent", "fallback": "small"}},
+            "hardware_tiers": {"arm-npu-16gb": {"recommended": "nonexistent", "fallback": "medium"}},
             "install": {"method": "download"},
         }))
         models_app.state.registry.reload()
@@ -684,7 +684,7 @@ class TestModelRecommendations:
         comp = {m["id"]: m for m in data["compatible"]}
         assert "bad-rec-valid-fallback" not in rec_ids
         assert "bad-rec-valid-fallback" in comp
-        assert comp["bad-rec-valid-fallback"]["variant"] == "small"
+        assert comp["bad-rec-valid-fallback"]["variant"] == "medium"
         assert comp["bad-rec-valid-fallback"]["compatibility"] == "limited"
 
 
