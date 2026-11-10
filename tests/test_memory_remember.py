@@ -211,6 +211,9 @@ class TestMemoryRemember:
             resp = await client.post("/api/memory/remember", json={"text": "test memory", "agent": "agent-b"})
             assert resp.status_code == 403
             assert resp.json()["detail"] == "Agent can only write its own memory"
+            assert app.state.http_client.post.call_args is None, (
+                "ingest was called despite the 403 -- cross-agent write would have succeeded"
+            )
 
     async def test_bound_local_token_omitted_agent_works(self, client_with_qmd):
         """Bound local token for agent-a, agent omitted -> 200 written to agent-a/index.sqlite."""
@@ -344,6 +347,27 @@ class TestMemoryRemember:
                 "registry_canonical_id": cid_alice,
             })
 
+        # Create an agent owned by bob (non-admin)
+        rec_bob = await registry.register(
+            framework="test",
+            display_name="Bob's Agent",
+            origin="external-selfjoin",
+            handle="@bob-own-agent",
+            user_id=bob_uid,
+        )
+        cid_bob = rec_bob["canonical_id"]
+        await registry.set_status(cid_bob, "active")
+        await grants.add_grant(cid_bob, "memory_write", project_id="prj-1")
+        if find_agent(config, "bob-own-agent") is None:
+            config.agents.append({
+                "name": "bob-own-agent",
+                "display_name": "Bob's Agent",
+                "host": "",
+                "qmd_index": "bob-own-agent",
+                "color": "#888",
+                "registry_canonical_id": cid_bob,
+            })
+
         # Bob (non-admin) tries to write to Alice's agent -> 403
         bob_token = auth.create_session(user_id=bob_uid, long_lived=True)
         async with AsyncClient(
@@ -355,6 +379,11 @@ class TestMemoryRemember:
             resp = await client.post("/api/memory/remember", json={"text": "test memory", "agent": "alice-agent"})
             assert resp.status_code == 403
             assert resp.json()["detail"] == "forbidden"
+
+            # Bob (non-admin owner) can write to his own config agent -> 200
+            resp = await client.post("/api/memory/remember", json={"text": "test memory", "agent": "bob-own-agent"})
+            assert resp.status_code == 200
+            assert resp.json()["stored"] is True
 
         # Alice (admin) can write to her own agent -> 200
         alice_token = auth.create_session(user_id=alice_uid, long_lived=True)
