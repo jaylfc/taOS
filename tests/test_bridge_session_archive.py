@@ -282,7 +282,7 @@ async def test_final_event_archive_single_record_verbatim():
     reg, tr = _make_registry(archive=archive)
     
     # Drive a bridge session through to a final event
-    # Use channel_id to trigger the chat.py path
+    # Use channel_id to trigger the chat.py path (but verify chat.py doesn't archive)
     await reg.record_reply("test_agent", {
         "kind": "final",
         "trace_id": "t1",
