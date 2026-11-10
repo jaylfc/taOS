@@ -61,12 +61,26 @@ function encode(on: boolean): "on" | "off" {
   return on ? "on" : "off";
 }
 
-/** Record the latest local choice as awaiting server confirmation. */
-function markUnsaved(on: boolean): void {
+/** Cache the value locally and record it as unsaved, atomically: if the cache
+ * write succeeds but the marker write fails (quota), roll the cache back so a
+ * reload cannot sync the older server value over an unmarked local choice. */
+function persistLocalAndMarkUnsaved(on: boolean): void {
+  try {
+    localStorage.setItem(FULLSCREEN_LAUNCH_KEY, on ? "on" : "off");
+  } catch {
+    /* private mode or quota: nothing cached, nothing to mark */
+    return;
+  }
   try {
     localStorage.setItem(UNSAVED_KEY, encode(on));
   } catch {
-    /* ignore: without storage there is nothing to preserve across loads */
+    // Cache written but marker failed: roll back the cache so the marker and
+    // cache stay in sync and a later sync does not overwrite the local choice.
+    try {
+      localStorage.removeItem(FULLSCREEN_LAUNCH_KEY);
+    } catch {
+      /* ignore */
+    }
   }
 }
 
@@ -207,8 +221,7 @@ export const useLayoutStore = create<LayoutStore>((set, get) => ({
   setFullscreenOnLaunch(on) {
     localVersion += 1;
     set({ fullscreenOnLaunch: on });
-    persistLocal(on);
-    markUnsaved(on);
+    persistLocalAndMarkUnsaved(on);
     void pushToServer(on);
   },
 
