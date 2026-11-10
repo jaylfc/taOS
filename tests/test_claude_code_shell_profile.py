@@ -409,6 +409,12 @@ def test_hard_refusal_wrapper_bypass_positive_controls():
     assert refusal(payload) is None
 
 
+def test_profile_deny_env_split_string_key():
+    from tinyagentos.claude_code_guard import profile_refusal
+    refusal_msg, _ = profile_refusal("env -S 'ls -la'", allow={"env"}, deny={"ls"})
+    assert refusal_msg is not None, "profile deny of ls should block env -S split string"
+
+
 def test_hard_gh_refusal_on_parsed_keys():
     from tinyagentos.claude_code_guard import refusal
     # g""h and 'gh' should be refused same as gh
@@ -424,6 +430,9 @@ def test_hard_gh_refusal_on_parsed_keys():
     # git push also
     payload_git = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "git push origin main"}}
     assert refusal(payload_git) == msg_gh
+    for cmd in ('git  push origin main', 'git\tpush origin main', 'g""it push origin main'):
+        payload = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": cmd}}
+        assert refusal(payload) == msg_gh, cmd
 
 
 # ---------------------------------------------------------------------------
@@ -469,6 +478,16 @@ def test_bypass_chroot_option_forms():
         payload = {"tool_name": "Bash", "tool_input": {"command": cmd}}
         msg = refusal(payload)
         assert msg is not None, f"should refuse but got None for {cmd!r}"
+
+
+def test_chroot_separate_value_options_regression():
+    from tinyagentos.claude_code_guard import commands, refusal
+    # Separate-value --userspec/--groups must not hide the wrapped command.
+    bad = 'chroot --userspec nobody:nogroup /tmp/x g""h pr merge'
+    assert 'gh' in commands(bad), commands(bad)
+    assert refusal({"tool_name": "Bash", "tool_input": {"command": bad}}) is not None
+    good = 'chroot --userspec nobody:nogroup /tmp/x ls -la'
+    assert refusal({"tool_name": "Bash", "tool_input": {"command": good}}) is None
 
 
 def test_bypass_env_split_string_state_leak():
@@ -701,7 +720,7 @@ def test_benign_ls():
     assert refusal(payload) is None
 
 
-def test_main_fails_closed_on_exception(tmp_path, monkeypatch):
+def test_main_fails_closed_on_exception(tmp_path, monkeypatch, capsys):
     from tinyagentos.claude_code_guard import main
     import json
     import sys
@@ -720,6 +739,8 @@ def test_main_fails_closed_on_exception(tmp_path, monkeypatch):
     finally:
         sys.stdin = old_stdin
     assert rc == 2
+    captured = capsys.readouterr()
+    assert captured.err.strip(), "expected a diagnostic on stderr for fail-closed path"
 
 
 # ---------------------------------------------------------------------------
