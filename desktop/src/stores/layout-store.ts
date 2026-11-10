@@ -65,6 +65,12 @@ function encode(on: boolean): "on" | "off" {
  * write succeeds but the marker write fails (quota), roll the cache back so a
  * reload cannot sync the older server value over an unmarked local choice. */
 function persistLocalAndMarkUnsaved(on: boolean): void {
+  let previous: string | null;
+  try {
+    previous = localStorage.getItem(FULLSCREEN_LAUNCH_KEY);
+  } catch {
+    previous = null;
+  }
   try {
     localStorage.setItem(FULLSCREEN_LAUNCH_KEY, on ? "on" : "off");
   } catch {
@@ -74,10 +80,11 @@ function persistLocalAndMarkUnsaved(on: boolean): void {
   try {
     localStorage.setItem(UNSAVED_KEY, encode(on));
   } catch {
-    // Cache written but marker failed: roll back the cache so the marker and
-    // cache stay in sync and a later sync does not overwrite the local choice.
+    // Marker write failed: restore the previous cache value so a reload keeps
+    // a value that already matched instead of falling back to the default.
     try {
-      localStorage.removeItem(FULLSCREEN_LAUNCH_KEY);
+      if (previous === null) localStorage.removeItem(FULLSCREEN_LAUNCH_KEY);
+      else localStorage.setItem(FULLSCREEN_LAUNCH_KEY, previous);
     } catch {
       /* ignore */
     }
