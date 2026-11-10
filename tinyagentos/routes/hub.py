@@ -693,7 +693,7 @@ async def block_peer(
     # and can be stale (renamed since the contact was pinned).  A present-but-
     # stale username row must never break revocation.
     contacts_store = getattr(request.app.state, "contacts_store", None)
-    if contacts_store is not None and getattr(contacts_store, "_db", None) is not None:
+    if contacts_store is not None:
         try:
             # Resolve ALL contacts pinned to this fingerprint.  Legacy
             # username-keyed rows (or a rename mid-flight) can leave several
