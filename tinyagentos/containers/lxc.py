@@ -12,6 +12,7 @@ import signal
 import subprocess
 
 from .backend import ContainerBackend, ContainerInfo, PtyHandle, _parse_memory
+from . import SNAPSHOT_TIMEOUT_S
 
 logger = logging.getLogger(__name__)
 
@@ -360,7 +361,10 @@ class LXCBackend(ContainerBackend):
         this is a zero-copy COW operation; on dir-backed pools incus does a
         full rsync of the rootfs.
         """
-        code, output = await _run(["incus", "snapshot", "create", name, snapshot_name])
+        code, output = await _run(
+            ["incus", "snapshot", "create", name, snapshot_name],
+            timeout=SNAPSHOT_TIMEOUT_S,
+        )
         return {"success": code == 0, "output": output}
 
     async def snapshot_restore(self, name: str, snapshot_name: str) -> dict:
