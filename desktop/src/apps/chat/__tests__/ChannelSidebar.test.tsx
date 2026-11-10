@@ -339,6 +339,56 @@ describe("ChannelSidebar — mobile", () => {
     expect(screen.getByRole("button", { name: /Open Agents/i })).toBeInTheDocument();
   });
 
+  it("on mobile with other channels present, an error emptyNote is announced above the list as alert", () => {
+    const ch = makeChannel({ id: "ch-1", name: "general" });
+    const sections = [makeSection("Topics", [ch])];
+    render(
+      <ChannelSidebar
+        {...buildProps({
+          isMobile: true,
+          allEmpty: false,
+          sections,
+          emptyNote: {
+            title: "Your assistant isn't ready",
+            detail: "The deploy failed.",
+            tone: "error",
+          },
+        })}
+      />,
+    );
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toContain("Your assistant isn't ready");
+    expect(alert.textContent).toContain("The deploy failed.");
+  });
+
+  it("on mobile with other channels present, a busy emptyNote is announced as status", () => {
+    const ch = makeChannel({ id: "ch-1", name: "general" });
+    const sections = [makeSection("Topics", [ch])];
+    render(
+      <ChannelSidebar
+        {...buildProps({
+          isMobile: true,
+          allEmpty: false,
+          sections,
+          emptyNote: { title: "Setting up your assistant", detail: "Soon.", tone: "busy" },
+        })}
+      />,
+    );
+    expect(screen.getByRole("status").textContent).toContain("Setting up your assistant");
+    expect(screen.getByRole("status").textContent).toContain("Soon.");
+  });
+
+  it("on mobile with other channels present and no emptyNote, no live region is rendered", () => {
+    const ch = makeChannel({ id: "ch-1", name: "general" });
+    const sections = [makeSection("Topics", [ch])];
+    render(
+      <ChannelSidebar {...buildProps({ isMobile: true, allEmpty: false, sections })} />,
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.getByText("general")).toBeInTheDocument();
+  });
+
   it("on mobile the plain empty state is not a live region", () => {
     render(<ChannelSidebar {...buildProps({ isMobile: true, allEmpty: true })} />);
     expect(screen.queryByRole("status")).not.toBeInTheDocument();

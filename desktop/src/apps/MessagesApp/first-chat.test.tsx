@@ -119,4 +119,34 @@ describe("useFirstChat", () => {
     expect(open).toHaveBeenCalledWith("d");
     expect(result.current.failure).toBeUndefined();
   });
+
+  it("fails after 3 success polls with no DM", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", statusFetch({ status: "success", name: "sage" }));
+    const refresh = vi.fn(async () => {});
+    const { result } = renderHook(() => useFirstChat("sage", [], refresh, vi.fn()));
+    // Advance by 4 poll intervals (4 * 3000 = 12000ms)
+    // Failure should be set after 3 success polls (at 9000ms), so at 12000ms it's still set
+    await act(async () => { vi.advanceTimersByTime(12000); });
+    expect(result.current.waiting).toBe(false);
+    expect(result.current.failure).toMatch(/chat could not be created/i);
+  });
+
+  it("opens DM if it appears after first success poll", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", statusFetch({ status: "success", name: "sage" }));
+    const refresh = vi.fn(async () => {});
+    const open = vi.fn();
+    const { result, rerender } = renderHook(
+      ({ channels }) => useFirstChat("sage", channels, refresh, open),
+      { initialProps: { channels: [] as ReturnType<typeof dm>[] } },
+    );
+    await act(async () => { vi.advanceTimersByTime(3000); });
+    expect(result.current.waiting).toBe(true);
+    rerender({ channels: [dm("d", ["user", "sage"])] });
+    await act(async () => {});
+    expect(open).toHaveBeenCalledWith("d");
+    expect(result.current.failure).toBeUndefined();
+    expect(result.current.channelId).toBe("d");
+  });
 });
