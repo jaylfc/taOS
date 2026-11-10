@@ -397,6 +397,8 @@ async def put_own_profile(
     keypair) so publishing a profile is the natural first act. The new version is
     one past the current profile's, keeping the highest-version-wins invariant.
     """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     # Mint the identity if this is the node's first hub action.
     identity.load_or_create()
     store = await _get_store(request)
@@ -435,6 +437,8 @@ async def follow_peer(
     target need not approve it (they can block). The signed statement is stored
     locally as an out-follow and is what this node later publishes to peers.
     """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     identity.load_or_create()
     store = await _get_store(request)
     fingerprint = identity.signing_fingerprint()
@@ -466,6 +470,8 @@ async def grant_cache(
     ahead of the cache engine. ``quota_hint`` is the suggested per-friend budget
     in bytes (defaults to a few hundred MB per design open-question 4).
     """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     identity.load_or_create()
     store = await _get_store(request)
     fingerprint = identity.signing_fingerprint()
@@ -509,6 +515,8 @@ async def send_friend_request(
     view can show the pending state; the directory's own response (e.g. a request
     id) passes through verbatim.
     """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     identity.load_or_create()
     store = await _get_store(request)
     fingerprint = identity.signing_fingerprint()
@@ -573,6 +581,8 @@ async def accept_friend_request(
     an accepted edge (design: presence requires "an accepted edge"). The peer
     fingerprint comes from the directory response when present, else the body.
     """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     upstream = await _forward_to(request, "POST", f"/api/hub/requests/{rid}/accept")
     if upstream.status_code < 200 or upstream.status_code >= 300:
         return JSONResponse(
@@ -615,6 +625,8 @@ async def decline_friend_request(
     user: CurrentUser = Depends(current_user),
 ):
     """Decline a brokered friend request; record it locally as declined."""
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     upstream = await _forward_to(request, "POST", f"/api/hub/requests/{rid}/decline")
     if upstream.status_code < 200 or upstream.status_code >= 300:
         return JSONResponse(
@@ -650,6 +662,8 @@ async def block_peer(
     server-side accepted edge (no more presence visibility or hints either way);
     that directory call is best-effort and its result never blocks the local op.
     """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     store = await _get_store(request)
     # A social action implies this node has an identity (its fingerprint is the
     # local party in every relationship), so mint it if this is the first act.
@@ -723,6 +737,8 @@ async def mute_peer(
 ):
     """Mute a peer locally: stop rendering, keep the edge (design "block and mute
     are local + circle operations"; mute is the local-only subset)."""
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     identity.load_or_create()
     store = await _get_store(request)
     await store.put_relationship(body.peer_fingerprint, relationships.REL_MUTE)
@@ -736,6 +752,8 @@ async def unmute_peer(
     user: CurrentUser = Depends(current_user),
 ):
     """Unmute a previously muted peer (local-only operation)."""
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     identity.load_or_create()
     store = await _get_store(request)
     await store.delete_relationship(body.peer_fingerprint, relationships.REL_MUTE)
@@ -853,6 +871,8 @@ async def create_post(
     post is chain-positioned and signed before it lands in the store, so it is
     self-verifying the moment it is created.
     """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     identity.load_or_create()
     store = await _get_store(request)
     attachments: list[dict] = []
