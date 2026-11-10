@@ -13,6 +13,7 @@ from tinyagentos.auth_context import (
     require_agent_owner_or_admin,
     require_owner_or_admin,
 )
+from tinyagentos.secrets import WriteOnceError
 
 # The keystore is system-global (one store, plaintext values on read), so every
 # handler is admin-or-local-token EXCEPT the two agent-scoped reads, which stay
@@ -28,6 +29,7 @@ class SecretCreate(BaseModel):
     category: str = "general"
     description: str = ""
     agents: list[str] = []
+    write_once: bool = False
 
 
 class SecretUpdate(BaseModel):
@@ -117,6 +119,7 @@ async def add_secret(request: Request, body: SecretCreate):
         category=body.category,
         description=body.description,
         agents=body.agents,
+        write_once=body.write_once,
     )
     return {"id": secret_id, "status": "created"}
 
@@ -124,13 +127,19 @@ async def add_secret(request: Request, body: SecretCreate):
 @router.put("/api/secrets/{name:path}", dependencies=[Depends(require_admin)])
 async def update_secret(request: Request, name: str, body: SecretUpdate):
     store = request.app.state.secrets
-    updated = await store.update(
-        name=name,
-        value=body.value,
-        category=body.category,
-        description=body.description,
-        agents=body.agents,
-    )
+    try:
+        updated = await store.update(
+            name=name,
+            value=body.value,
+            category=body.category,
+            description=body.description,
+            agents=body.agents,
+        )
+    except WriteOnceError:
+        return JSONResponse(
+            {"error": "Secret is write_once; its value is pinned and cannot be changed"},
+            status_code=409,
+        )
     if not updated:
         return JSONResponse({"error": "Secret not found"}, status_code=404)
     return {"status": "updated"}
@@ -139,7 +148,14 @@ async def update_secret(request: Request, name: str, body: SecretUpdate):
 @router.delete("/api/secrets/{name:path}", dependencies=[Depends(require_admin)])
 async def delete_secret(request: Request, name: str):
     store = request.app.state.secrets
-    deleted = await store.delete(name)
+    force = request.query_params.get("force", "").lower() in ("1", "true", "yes")
+    try:
+        deleted = await store.delete(name, force=force)
+    except WriteOnceError:
+        return JSONResponse(
+            {"error": "Secret is write_once; delete it only with an explicit force=true admin query"},
+            status_code=409,
+        )
     if not deleted:
         return JSONResponse({"error": "Secret not found"}, status_code=404)
     return {"status": "deleted"}
