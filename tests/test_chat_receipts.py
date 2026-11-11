@@ -582,6 +582,13 @@ async def test_patch_receipts_broadcasts_receipt(client):
     ch_store = app.state.chat_channels
     msg_store = app.state.chat_messages
 
+    # Replace the chat hub with a mock to capture broadcasts
+    from unittest.mock import AsyncMock, MagicMock
+    mock_hub = MagicMock()
+    mock_hub.next_seq = MagicMock(return_value=1)
+    mock_hub.broadcast = AsyncMock()
+    app.state.chat_hub = mock_hub
+
     ch = await ch_store.create_channel(name="test-ch3", type="dm", created_by="user", members=[admin_id])
     msg = await msg_store.send_message(
         channel_id=ch["id"], author_id="agent1", author_type="agent", content="hello"
@@ -598,6 +605,17 @@ async def test_patch_receipts_broadcasts_receipt(client):
     assert receipts[0]["reader_id"] == admin_id
     assert receipts[0]["reader_type"] == "user"
     assert receipts[0]["seen_at"] is not None
+
+    # Verify the receipt was broadcast via the chat hub
+    mock_hub.broadcast.assert_awaited_once()
+    broadcast_args = mock_hub.broadcast.call_args
+    assert broadcast_args.args[0] == ch["id"]
+    broadcast_payload = broadcast_args.args[1]
+    assert broadcast_payload["type"] == "receipt"
+    assert broadcast_payload["message_id"] == mid
+    assert broadcast_payload["agent_id"] == admin_id
+    assert broadcast_payload["reader_type"] == "user"
+    assert broadcast_payload["seen_at"] is not None
 
 
 # ---------------------------------------------------------------------------

@@ -127,7 +127,12 @@ class TestFriendsList:
 
 class TestBlockMute:
     @pytest.mark.asyncio
-    async def test_block_severs_local_edges(self, client, upstream):
+    async def test_block_severs_local_edges(self, client, upstream, app):
+        # This test exercises local edge severing only; it does not need the
+        # contacts cascade. The shared ``client`` fixture leaves
+        # contacts_store uninitialised, so point it at None rather than let the
+        # block route reach an uninitialised store and fail closed.
+        app.state.contacts_store = None
         # Establish a friend edge + a follow, then block.
         captured, calls = upstream
         await client.put("/api/hub/follow", json={"target_fingerprint": "peerFP"})

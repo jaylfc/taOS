@@ -473,6 +473,8 @@ async def test_chat_queued_message_claude_code_shell_rules_overwrites_active_tur
     # Assert the response text contains 'queued'
     assert resp.status_code == 200
     assert "queued" in resp.text.lower()
+    # Queued turn must NOT load shell profile
+    mock_shell_profile.rules_for.assert_not_called()
 
 # ---------------------------------------------------------------------------
 # Claude Code shell rules: accepted turn must load the shell profile
@@ -502,6 +504,10 @@ async def test_chat_accepted_claude_code_turn_loads_shell_profile(client, app, m
     monkeypatch.setattr(ta_module, "ensure_taos_claude_code_harness", fake_ensure_taos_claude_code_harness)
 
     async def fake_rules_for(store, shell_user):
+        # shell_user should be the session user's ID (admin user)
+        record = app.state.auth.find_user("admin")
+        expected_user = record["id"] if record else "user"
+        assert shell_user == expected_user, f"expected shell_user={expected_user}, got {shell_user}"
         return expected_rules
 
     mock_shell_profile = SimpleNamespace(
