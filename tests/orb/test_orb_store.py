@@ -470,6 +470,20 @@ class Catalog(unittest.TestCase):
             ob.load_catalog(path)
         tmp.cleanup()
 
+    def test_load_catalog_second_non_firmware_kind_rejected(self):
+        """load_catalog must reject a SECOND non-firmware kind, not only the
+        desktop one: 'firmware' is not 'orb-firmware' and must be refused."""
+        import tempfile
+        import json
+        tmp = tempfile.TemporaryDirectory()
+        cat = {"apps": [], "kind": "firmware"}
+        path = os.path.join(tmp.name, "catalog.json")
+        with open(path, "w") as f:
+            json.dump(cat, f)
+        with self.assertRaisesRegex(ob.OrbError, "kind"):
+            ob.load_catalog(path)
+        tmp.cleanup()
+
     def test_load_catalog_no_kind_accepted(self):
         """load_catalog must accept a catalog with no kind field (backward compatible)."""
         import tempfile

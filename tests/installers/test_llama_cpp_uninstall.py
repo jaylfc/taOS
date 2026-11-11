@@ -166,9 +166,6 @@ class TestUninstallLlamaCppScript:
     def test_sudo_prefix_used_when_not_root(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        if os.geteuid() == 0:
-            pytest.skip("Test requires non-root user")
-
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         systemd_dir = tmp_path / "systemd"
@@ -206,6 +203,89 @@ class TestUninstallLlamaCppScript:
         )
 
         calls = call_log.read_text().splitlines() if call_log.exists() else []
-        # Check that sudo -n is used for systemctl disable --now
-        assert any("sudo -n systemctl disable --now llama-cpp.service" in c for c in calls), \
-            f"Expected 'sudo -n systemctl disable --now llama-cpp.service' in calls, got: {calls}"
+        if os.geteuid() == 0:
+            # Running as root: the script drops the sudo prefix entirely (SUDO=""),
+            # so the init-system command runs directly with no sudo stub involved.
+            assert any("systemctl disable --now llama-cpp.service" in c for c in calls), calls
+            assert not any(c.startswith("sudo") for c in calls), calls
+        else:
+            # Check that sudo -n is used for systemctl disable --now
+            assert any("sudo -n systemctl disable --now llama-cpp.service" in c for c in calls), \
+                f"Expected 'sudo -n systemctl disable --now llama-cpp.service' in calls, got: {calls}"
+
+    def test_systemd_best_effort_when_systemctl_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Best-effort path: systemctl fails but the script still removes the
+        unit file and exits 0 (disable --now and daemon-reload use || true)."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        systemd_dir = tmp_path / "systemd"
+        systemd_dir.mkdir()
+        initd_dir = tmp_path / "initd"
+        initd_dir.mkdir()
+        call_log = tmp_path / "calls.log"
+
+        sudo_stub = bin_dir / "sudo"
+        sudo_stub.write_text(
+            "#!/usr/bin/env bash\n"
+            "printf '%s\\n' \"sudo $*\" >> \"$TAOS_STUB_LOG\"\n"
+            "shift\n"
+            "exec \"$@\"\n"
+        )
+        sudo_stub.chmod(0o755)
+        # systemctl stub that always fails
+        systemctl_stub = bin_dir / "systemctl"
+        systemctl_stub.write_text(
+            "#!/usr/bin/env bash\nprintf '%s\\n' \"$(basename \"$0\") $*\" >> \"$TAOS_STUB_LOG\"\nexit 1\n"
+        )
+        systemctl_stub.chmod(0o755)
+        # unit file is "installed" so the teardown path runs
+        (systemd_dir / "llama-cpp.service").write_text("[Unit]\n")
+
+        env = dict(os.environ)
+        env["PATH"] = str(bin_dir) + os.pathsep + env.get("PATH", "")
+        env["TAOS_INIT_SYSTEM"] = "systemd"
+        env["TAOS_SYSTEMD_DIR"] = str(systemd_dir)
+        env["TAOS_INITD_DIR"] = str(initd_dir)
+        env["TAOS_STUB_LOG"] = str(call_log)
+        env["TAOS_SUDO"] = ""
+
+        result = subprocess.run(
+            ["bash", str(SCRIPT), str(tmp_path)],
+            env=env,
+            capture_output=True,
+        )
+
+        assert result.returncode == 0, f"Expected exit 0 on best-effort failure, got {result.returncode}"
+        stdout = result.stdout.decode()
+        assert "llama-cpp.service torn down" in stdout, f"Expected 'torn down', got: {stdout}"
+        assert not (systemd_dir / "llama-cpp.service").exists(), "Unit file should be removed despite systemctl failure"
+        calls = call_log.read_text().splitlines() if call_log.exists() else []
+        assert any("systemctl disable --now llama-cpp.service" in c for c in calls), calls
+        assert any("systemctl daemon-reload" in c for c in calls), calls
+
+    def test_none_init_system_exits_zero_nothing_to_tear_down(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """No supported init system: the script takes the ``*)`` route, logs
+        nothing to tear down, and exits 0."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        call_log = tmp_path / "calls.log"
+
+        env = dict(os.environ)
+        env["PATH"] = str(bin_dir) + os.pathsep + env.get("PATH", "")
+        env["TAOS_INIT_SYSTEM"] = "none"
+        env["TAOS_STUB_LOG"] = str(call_log)
+        env["TAOS_SUDO"] = ""
+
+        result = subprocess.run(
+            ["bash", str(SCRIPT), str(tmp_path)],
+            env=env,
+            capture_output=True,
+        )
+
+        assert result.returncode == 0, f"Expected exit 0, got {result.returncode}"
+        assert "no supported init system detected; nothing to tear down" in result.stdout.decode(), \
+            result.stdout.decode()

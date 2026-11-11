@@ -832,6 +832,42 @@ class TestDetectBackends:
 
         assert backends == []
 
+    async def test_default_kokoro_voices_malformed_200_not_recorded(self):
+        """The DEFAULT kokoro candidate is skipped silently when
+        /v1/audio/voices returns HTTP 200 with a malformed body (no
+        'voices' list), even though /v1/models would otherwise make it look
+        like a healthy kokoro backend."""
+        agent = WorkerAgent("http://localhost:6969")
+        voices_resp = MagicMock()
+        voices_resp.status_code = 200
+        voices_resp.json.return_value = {"voices": "af_bella"}
+        models_resp = MagicMock()
+        models_resp.status_code = 200
+        models_resp.json.return_value = {
+            "data": [{"id": "kokoro-model", "object": "model", "created": 1234567890}],
+            "object": "list",
+        }
+
+        with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+
+            async def mock_get(url):
+                if "8880" in url:
+                    if "/v1/audio/voices" in url:
+                        return voices_resp
+                    if "/v1/models" in url:
+                        return models_resp
+                raise Exception("not running")
+
+            mock_client.get = AsyncMock(side_effect=mock_get)
+            mock_client_cls.return_value = mock_client
+
+            backends = await agent.detect_backends()
+
+        assert backends == []
+
     async def test_default_kokoro_voices_list_recorded_with_tts(self):
         """The DEFAULT kokoro candidate is recorded (with capability tts)
         when /v1/audio/voices returns 200 and a 'voices' list."""

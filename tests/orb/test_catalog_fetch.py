@@ -438,11 +438,13 @@ async def test_compressed_response_rejected_before_reading_body(tmp_path, test_k
 
 @pytest.mark.asyncio
 async def test_fetch_catalog_file_io_runs_in_thread(tmp_path, test_key, keys_dict, monkeypatch):
-    """accept_catalog and the cache writes run off the event loop via
-    asyncio.to_thread."""
+    """verify_catalog, check_firmware_kind, accept_catalog and the cache
+    writes all run off the event loop via asyncio.to_thread."""
     import threading
     from tinyagentos import atomic_io
     from tinyagentos.orb import catalog_fetch
+    from tinyagentos.orb import catalog as catalog_module
+    from tinyagentos.orb import catalog_sig
 
     private_key, _, _ = test_key
     catalog = {"serial": 1, "apps": [{"id": "app1", "name": "App1", "versions": []}]}
@@ -463,12 +465,27 @@ async def test_fetch_catalog_file_io_runs_in_thread(tmp_path, test_key, keys_dic
 
     call_thread_ids = []
     original_write = atomic_io.atomic_write_bytes
+    original_verify = catalog_sig.verify_catalog
+    original_check = catalog_module.check_firmware_kind
 
     def recording_write_bytes(path, data, **kwargs):
         call_thread_ids.append(threading.get_ident())
         return original_write(path, data, **kwargs)
 
+    def recording_verify(*args, **kwargs):
+        call_thread_ids.append(threading.get_ident())
+        return original_verify(*args, **kwargs)
+
+    def recording_check(doc):
+        call_thread_ids.append(threading.get_ident())
+        return original_check(doc)
+
+    # verify_catalog is looked up twice: once directly in _accept_and_cache
+    # (imported name) and once inside accept_catalog (module attribute).
     monkeypatch.setattr("tinyagentos.atomic_io.atomic_write_bytes", recording_write_bytes)
+    monkeypatch.setattr("tinyagentos.orb.catalog_fetch.verify_catalog", recording_verify)
+    monkeypatch.setattr("tinyagentos.orb.catalog_sig.verify_catalog", recording_verify)
+    monkeypatch.setattr("tinyagentos.orb.catalog.check_firmware_kind", recording_check)
 
     result = await catalog_fetch.fetch_catalog(
         "https://example.com/",
@@ -479,7 +496,10 @@ async def test_fetch_catalog_file_io_runs_in_thread(tmp_path, test_key, keys_dic
     )
     assert "app1" in result.apps
     test_thread_id = threading.get_ident()
-    assert len(call_thread_ids) == 3
+    # verify_catalog (2: once in _accept_and_cache, once in accept_catalog) +
+    # check_firmware_kind (2: once in _accept_and_cache, once in load_catalog) +
+    # three atomic_write_bytes (catalog.json, catalog.json.sig, state.json) = 7.
+    assert len(call_thread_ids) == 7
     assert all(tid != test_thread_id for tid in call_thread_ids)
 
 
@@ -499,6 +519,26 @@ def test_load_cached_catalog_oversize_rejected(tmp_path, keys_dict, monkeypatch)
     monkeypatch.setattr(Path, "read_bytes", raise_on_read_bytes)
 
     with pytest.raises(CatalogFetchError, match="cached catalog exceeds cap"):
+        catalog_fetch.load_cached_catalog(cache_dir, state_path, keys=keys_dict)
+
+
+def test_load_cached_catalog_oversize_signature_rejected(tmp_path, keys_dict, monkeypatch):
+    """A cached signature exceeding SIG_MAX_BYTES raises CatalogFetchError
+    without using Path.read_bytes (which is patched to fail)."""
+    from tinyagentos.orb import catalog_fetch
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "catalog.json").write_bytes(b'{"serial": 1, "apps": []}')
+    (cache_dir / "catalog.json.sig").write_bytes(b"y" * (catalog_fetch.SIG_MAX_BYTES + 10))
+    state_path = tmp_path / "state.json"
+
+    def raise_on_read_bytes(self):
+        raise AssertionError("Path.read_bytes must not be used")
+
+    monkeypatch.setattr(Path, "read_bytes", raise_on_read_bytes)
+
+    with pytest.raises(CatalogFetchError, match="cached catalog signature exceeds cap"):
         catalog_fetch.load_cached_catalog(cache_dir, state_path, keys=keys_dict)
 
 
@@ -610,16 +650,19 @@ def test_load_cached_catalog_desktop_kind_rejected(tmp_path, test_key, keys_dict
     (cache_dir / "catalog.json.sig").write_bytes(sig_bytes)
     from tinyagentos.orb import catalog_sig
     import hashlib
-    catalog_sig.record_serial(state_path, 8, hashlib.sha256(catalog_bytes).hexdigest())
+    # Pre-record an OLDER serial so that, if the kind check were skipped and
+    # accept_catalog ran early, it would bump the state to 8. The refusal must
+    # happen before that, so the state stays at the older serial.
+    catalog_sig.record_serial(state_path, 7, hashlib.sha256(catalog_bytes).hexdigest())
 
     from tinyagentos.orb import catalog_fetch
     with pytest.raises(OrbError) as exc:
         catalog_fetch.load_cached_catalog(cache_dir, state_path, keys=keys_dict)
     assert "kind" in str(exc.value).lower()
     assert "orb-desktop-apps" in str(exc.value)
-    # state must be unchanged (serial still 8)
+    # state must be unchanged (serial still 7): no early acceptance
     state_text = state_path.read_text()
-    assert '"serial": 8' in state_text
+    assert '"serial": 7' in state_text
 
 
 def test_accept_and_cache_refuses_desktop_kind_before_any_work(tmp_path, test_key, keys_dict):

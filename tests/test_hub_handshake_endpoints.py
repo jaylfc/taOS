@@ -362,6 +362,62 @@ async def test_establish_peer_link_keep_existing_takes_new_when_stored_empty():
 
 
 @pytest.mark.asyncio
+async def test_establish_peer_link_replaces_unusable_stored_endpoints():
+    """A stored list holding ONLY unusable entries is treated as empty, so a
+    later establish_peer_link(keep_existing_endpoints=True) with valid
+    endpoints replaces them instead of keeping the broken list forever."""
+    from tinyagentos.contacts_store import ContactsStore
+
+    import tempfile, os
+    from pathlib import Path
+
+    tmp_dir = Path(tempfile.mkdtemp())
+    db_path = tmp_dir / "test.db"
+
+    store = ContactsStore(db_path=db_path)
+    await store.init()
+
+    contact_id = "hub:testfp1234567890abcdef"
+
+    # Seed a link whose endpoints are all unusable (non-http / no hostname /
+    # unparseable port -- exactly what _safe_endpoints would reject).
+    result1 = await store.establish_peer_link(
+        contact_id=contact_id,
+        inbound_token="token1",
+        outbound_token="token1_out",
+        endpoints=[
+            {"url": "file:///etc/passwd"},
+            {"url": "http:///nohost"},
+            {"url": "https://peer.example:notaport"},
+            {"url": "https://peer.example:99999"},
+        ],
+        keep_existing_endpoints=False,
+    )
+    assert result1 is True
+    first_link = await store.get_peer_link(contact_id)
+    assert first_link is not None
+    assert len(first_link["endpoints"]) == 4, f"seed failed: {first_link['endpoints']}"
+
+    # Second call: keep_existing_endpoints=True but the stored list has no
+    # usable endpoint, so the valid ones must be stored.
+    result2 = await store.establish_peer_link(
+        contact_id=contact_id,
+        inbound_token="token2",
+        outbound_token="token2_out",
+        endpoints=["https://peer.example.com:8443"],
+        keep_existing_endpoints=True,
+    )
+    assert result2 is True
+
+    link = await store.get_peer_link(contact_id)
+    urls = [e.get("url") if isinstance(e, dict) else e for e in link["endpoints"]]
+    assert urls == ["https://peer.example.com:8443"], f"recovery failed: {urls}"
+
+    await store.close()
+    os.unlink(db_path)
+
+
+@pytest.mark.asyncio
 async def test_overlapping_first_accept_keeps_first_endpoints(
     client_with_contacts, app_with_contacts, monkeypatch
 ):
