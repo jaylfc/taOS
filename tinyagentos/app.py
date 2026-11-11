@@ -829,9 +829,20 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         from tinyagentos.archive_spool import drain_spool
         spool_path = data_dir / "archive" / "spool.jsonl"
         try:
-            await drain_spool(archive, spool_path)
+            # Run drain_spool as a background task to avoid blocking startup
+            async def _drain_with_callback():
+                try:
+                    await drain_spool(archive, spool_path)
+                except Exception as e:
+                    logger.exception("archive spool drain failed: %s", e)
+            
+            app.state.archive_spool_drain_task = asyncio.create_task(_drain_with_callback())
+            # Set up a callback to log any exceptions that occur
+            app.state.archive_spool_drain_task.add_done_callback(
+                lambda t: None if t.exception() is None else logger.exception("archive spool drain task failed")
+            )
         except Exception:
-            logger.exception("archive spool drain failed at startup")
+            logger.exception("archive spool drain setup failed at startup")
 
         # BrowserApp v2 stores. Cookie store uses a per-install random
         # key persisted in data_dir; PR 5+ will replace this with a
