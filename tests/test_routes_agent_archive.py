@@ -1,4 +1,6 @@
 import pytest
+import asyncio
+from unittest.mock import AsyncMock
 
 
 class TestListArchivedAgents:
@@ -161,3 +163,54 @@ class TestPurgeSlugReuse:
 
         assert app.state.auth.validate_local_token(new_token) is True
         assert app.state.auth.get_local_token_agent(new_token) == "test-agent"
+
+
+@pytest.mark.asyncio
+class TestArchiveSnapshotTimeout:
+    """archive_agent_fully must return 504 when snapshot_create times out."""
+
+    async def test_archive_returns_504_on_snapshot_timeout(self, client, monkeypatch):
+        app = client._transport.app
+        config = app.state.config
+
+        async def fake_stop(name, force=False):
+            return {"success": True, "output": ""}
+
+        async def fake_snapshot_create(name, snapshot_name):
+            raise asyncio.TimeoutError()
+
+        async def fake_container_exists(name):
+            return True
+
+        monkeypatch.setattr("tinyagentos.containers.stop_container", fake_stop)
+        monkeypatch.setattr(
+            "tinyagentos.containers.snapshot_create", fake_snapshot_create
+        )
+        monkeypatch.setattr(
+            "tinyagentos.containers.container_exists", fake_container_exists
+        )
+
+        # Need an agent to archive
+        config.agents.append(
+            {"name": "test-agent", "host": "", "qmd_index": "", "color": ""}
+        )
+        from tinyagentos.config import save_config_locked
+        await save_config_locked(config, config.config_path)
+
+        resp = await client.delete("/api/agents/test-agent")
+
+        # Should return 504 with descriptive error
+        assert resp.status_code == 504
+        data = resp.json()
+        assert "error" in data
+        assert "archive failed: snapshot" in data["error"]
+        assert "taos-agent-test-agent" in data["error"]
+        assert "taos-archive-" in data["error"]
+        assert "1800s" in data["error"]
+        assert "dir-backed pools copy the full rootfs" in data["error"]
+        assert "Agent left in live list" in data["error"]
+        assert "incus snapshot list" in data["error"]
+
+        # Agent must still be in config (config not mutated)
+        agent_names = [a["name"] for a in config.agents]
+        assert "test-agent" in agent_names

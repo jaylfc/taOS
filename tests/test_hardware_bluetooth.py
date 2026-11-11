@@ -723,12 +723,27 @@ async def test_get_bluetooth_includes_discovering(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_close_system_bus_idempotent():
-    """close_system_bus() twice does not raise."""
+    """close_system_bus() disconnects a live bus and is idempotent."""
+    from unittest.mock import MagicMock
+
     from tinyagentos import bluez_bus
 
-    await bluez_bus.close_system_bus()
-    await bluez_bus.close_system_bus()
-    # If we get here without exception, the test passes
+    old_bus = bluez_bus._bus
+    try:
+        mock_bus = MagicMock()
+        mock_bus.disconnect = MagicMock()
+        bluez_bus._bus = mock_bus
+
+        await bluez_bus.close_system_bus()
+        mock_bus.disconnect.assert_called_once()
+        assert bluez_bus._bus is None
+
+        # Second call must be idempotent: no extra disconnect, no error.
+        await bluez_bus.close_system_bus()
+        mock_bus.disconnect.assert_called_once()
+        assert bluez_bus._bus is None
+    finally:
+        bluez_bus._bus = old_bus
 
 
 # Tests for non-admin access and 60s auto-stop timer
@@ -804,6 +819,35 @@ def test_discovery_non_admin_returns_403(bt_test_app, bt_nonadmin_headers, monke
             headers=bt_nonadmin_headers,
         )
     assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_discovery_admin_success_returns_200(bt_test_app, bt_admin_headers, monkeypatch):
+    """Admin user gets 200 with discovering=true from the discovery route."""
+    from fastapi.testclient import TestClient
+    from taos_test_csrf import arm_test_client
+
+    from tinyagentos import bluez_bus
+    from tinyagentos.routes import hardware_bluetooth as bt_routes
+
+    mock_bus = await fake_get_system_bus_success()
+
+    async def fake_get_bus():
+        return mock_bus
+
+    monkeypatch.setattr(bluez_bus, "get_system_bus", fake_get_bus)
+    monkeypatch.setattr(bt_routes, "get_system_bus", fake_get_bus)
+
+    with TestClient(bt_test_app, raise_server_exceptions=False) as client:
+        arm_test_client(client)
+        resp = client.post(
+            "/api/hardware/bluetooth/discovery",
+            json={"adapter": "/org/bluez/hci0", "on": True},
+            headers=bt_admin_headers,
+        )
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "discovering": True}
+    assert any(call.member == "StartDiscovery" for call in mock_bus.calls)
 
 
 @pytest.mark.asyncio

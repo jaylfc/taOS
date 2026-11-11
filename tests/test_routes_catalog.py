@@ -269,6 +269,20 @@ class TestCatalogIndexDateValidation:
         assert resp.status_code == 400
 
     @pytest.mark.asyncio
-    async def test_real_date_still_indexes(self, client):
+    async def test_real_date_still_indexes(self, client, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        pipeline = MagicMock()
+        pipeline.init = AsyncMock()
+        pipeline.close = AsyncMock()
+        pipeline.index_day = AsyncMock(return_value={"indexed": 1})
+
+        monkeypatch.setattr(
+            "tinyagentos.routes.catalog.CatalogPipeline",
+            lambda **kwargs: pipeline,
+        )
+
         resp = await client.post("/api/memory/catalog/index", json={"date": "2026-01-01"})
+
         assert resp.status_code == 200
+        pipeline.index_day.assert_awaited_once_with("2026-01-01", force=False)

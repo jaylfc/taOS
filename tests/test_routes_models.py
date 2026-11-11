@@ -565,6 +565,9 @@ class TestModelRecommendations:
         assert "fallback-model" in comp
         assert comp["fallback-model"]["variant"] == "small"
         assert comp["fallback-model"]["compatibility"] == "limited"
+        # Dictionary-tier fallback model must not appear in recommended
+        rec_ids = {m["id"] for m in data["recommended"]}
+        assert "fallback-model" not in rec_ids
 
     async def test_string_tier_still_works(
         self, models_app, models_client, catalog_with_models

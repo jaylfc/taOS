@@ -240,6 +240,7 @@ async def test_busctl_invalid_json_on_success_returns_one(monkeypatch):
 async def test_second_cancel_during_drain_still_drains(monkeypatch):
     """A second cancellation during post-kill drain must not interrupt the drain; pipes must still be reaped."""
     drain_gate = asyncio.Event()
+    drain_started = asyncio.Event()
     drained = []
 
     class FakeProcess:
@@ -249,7 +250,8 @@ async def test_second_cancel_during_drain_still_drains(monkeypatch):
 
         async def communicate(self):
             if self._killed:
-                # Post-kill drain waits for the gate, then marks drained
+                # Signal that the post-kill drain has begun.
+                drain_started.set()
                 await drain_gate.wait()
                 drained.append(True)
                 return b"", b""
@@ -263,8 +265,10 @@ async def test_second_cancel_during_drain_still_drains(monkeypatch):
         async def wait(self):
             raise AssertionError("busctl() must drain with communicate() after kill, not wait()")
 
+    proc = FakeProcess()
+
     async def fake_create_subprocess_exec(*args, **kwargs):
-        return FakeProcess()
+        return proc
 
     monkeypatch.setattr(dbus_cli, "BUSCTL_TIMEOUT_S", 0.05)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
@@ -274,8 +278,8 @@ async def test_second_cancel_during_drain_still_drains(monkeypatch):
     await asyncio.sleep(0)
     # First cancellation: triggers kill + drain
     task.cancel()
-    # Let the cancellation propagate to the kill/drain point
-    await asyncio.sleep(0)
+    # Wait for the post-kill drain to begin before the second cancellation.
+    await drain_started.wait()
     # Second cancellation: must not interrupt the drain
     task.cancel()
     # Now allow the drain to complete
