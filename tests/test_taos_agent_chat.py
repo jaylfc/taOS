@@ -1260,6 +1260,74 @@ async def test_status_scopes_subagent_fields(client, app):
 
 
 # ---------------------------------------------------------------------------
+# Kilo harness: a kilo turn runs kilo, not the opencode adapter with server=None
+# ---------------------------------------------------------------------------
+
+_KILO_STUB = r'''#!/bin/bash
+test -n "$KILO_API_KEY" || { echo "KILO_API_KEY is not set" >&2; exit 1; }
+[ -t 0 ] && { echo "stdin is a tty" >&2; exit 1; }
+echo '{"type":"step_start","sessionID":"ses-1"}'
+echo '{"type":"text","sessionID":"ses-1","part":{"type":"text","text":"pong"}}'
+echo '{"type":"step_finish","sessionID":"ses-1"}'
+'''
+
+
+@pytest.mark.asyncio
+async def test_chat_kilo_turn_runs_kilo_not_opencode(client, app, monkeypatch, tmp_path):
+    """A kilo turn builds a KiloCliAdapter and streams "pong"; the opencode
+    server is never touched (the old bug built an OpenCode adapter with
+    server=None and died on server.base_url)."""
+    import tinyagentos.routes.taos_agent as ta_module
+    from tinyagentos.kilo_runtime import KiloHarness
+    from tinyagentos.taos_agent_runtime import FRAMEWORK_KILO
+
+    monkeypatch.setattr(ta_module, "system_agent_framework", lambda app_state: FRAMEWORK_KILO)
+
+    # Stub the kilo binary with the three success lines from test_kilo_runtime.py.
+    stub = tmp_path / "kilo"
+    stub.write_text(_KILO_STUB)
+    stub.chmod(0o755)
+
+    harness = KiloHarness(
+        home=tmp_path / "kilo-home", key="sk-kilo-test", model="kilo/kilo-auto/free",
+        binary=str(stub),
+    )
+    harness.write_home()
+
+    async def fake_ensure_taos_kilo_harness(app_state):
+        return harness
+
+    monkeypatch.setattr(ta_module, "ensure_taos_kilo_harness", fake_ensure_taos_kilo_harness)
+
+    # The opencode path must not be called at all for a kilo turn.
+    opencode_calls: list = []
+
+    async def fake_ensure_opencode_server(state, model):
+        opencode_calls.append(model)
+        return _fake_server()
+
+    monkeypatch.setattr(
+        "tinyagentos.routes.taos_agent.ensure_taos_opencode_server",
+        fake_ensure_opencode_server,
+    )
+
+    # A kilo_api_key secret is present (the readiness check reads it).
+    app.state.secrets = SimpleNamespace(get=AsyncMock(return_value={"value": "sk-kilo-test"}))
+
+    await client.patch("/api/taos-agent/settings", json={"model": "kilo/kilo-auto/free"})
+    app.state.taos_opencode_password = "testpw"
+    app.state.taos_opencode_session_id = None
+
+    resp = await client.post(
+        "/api/taos-agent/chat",
+        json={"messages": [{"role": "user", "content": "ping"}]},
+    )
+    assert resp.status_code == 200
+    assert "pong" in resp.text
+    assert opencode_calls == [], "ensure_taos_opencode_server must not be called for a kilo turn"
+
+
+# ---------------------------------------------------------------------------
 # ensure_taos_opencode_server: legacy key re-scope failure remints locally
 # ---------------------------------------------------------------------------
 

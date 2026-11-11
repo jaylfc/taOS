@@ -1,6 +1,6 @@
 """The system taOS Agent's harness: which one runs it, and its lifecycle.
 
-Three harnesses can run the system taOS Agent:
+Five harnesses can run the system taOS Agent:
 
 - opencode (every host by default): a single host ``opencode serve`` used
   exclusively by the taOS agent chat endpoint, started lazily on the first
@@ -12,6 +12,9 @@ Three harnesses can run the system taOS Agent:
 - Claude Code (operator override only, never chosen by ``auto``): one
   ``claude -p`` process per turn, signed in with a ``claude setup-token``
   token kept in the device Secrets (see :mod:`tinyagentos.claude_code_runtime`).
+- Kilo (operator override only, never chosen by ``auto``): one
+  ``kilo run --format json`` process per turn, signed in with a ``kilo_api_key``
+  secret kept in the device Secrets (see :mod:`tinyagentos.kilo_runtime`).
 - Hermes (operator override only, never chosen by ``auto``): one
   OpenAI-compatible chat completion per turn, served by a hermes API server
   at ``127.0.0.1:8642`` (see :mod:`tinyagentos.hermes_runtime`).
@@ -41,8 +44,9 @@ TAOS_OPENCODE_PORT = 4188  # local-only port for the taOS agent opencode server
 FRAMEWORK_OPENCODE = OpenCodeServer.__name__.split("Server")[0].lower()  # "opencode"
 FRAMEWORK_PICOCLAW = "picoclaw"
 FRAMEWORK_CLAUDE_CODE = "claude_code"
+FRAMEWORK_KILO = "kilo"
 FRAMEWORK_HERMES = "hermes"
-FRAMEWORK_CHOICES = ("auto", FRAMEWORK_OPENCODE, FRAMEWORK_PICOCLAW, FRAMEWORK_CLAUDE_CODE, FRAMEWORK_HERMES)
+FRAMEWORK_CHOICES = ("auto", FRAMEWORK_OPENCODE, FRAMEWORK_PICOCLAW, FRAMEWORK_CLAUDE_CODE, FRAMEWORK_KILO, FRAMEWORK_HERMES)
 DEVICE_CLASS_CHOICES = ("auto", "mobile", "desktop")
 
 #: The gateway principal the PicoClaw-run taOS Agent's key is bound to.
@@ -54,6 +58,8 @@ REASON_NO_CLAUDE_BINARY = "claude_code preferred, claude binary not found, using
 REASON_NO_CLAUDE_TOKEN = "claude_code preferred, no claude_code_oauth_token secret, using opencode"
 REASON_HERMES_API_DOWN = "hermes preferred, hermes api_server not reachable, using opencode"
 REASON_NO_HERMES_KEY = "hermes preferred, no hermes_api_key secret, using opencode"
+REASON_NO_KILO_BINARY = "kilo preferred, kilo binary not found, using opencode"
+REASON_NO_KILO_KEY = "kilo preferred, no kilo_api_key secret, using opencode"
 
 
 @dataclass(frozen=True)
@@ -89,16 +95,20 @@ def decide_framework(
     claude_code_token_present: bool = False,
     hermes_api_up: bool = False,
     hermes_key_present: bool = False,
+    kilo_available: bool = False,
+    kilo_key_present: bool = False,
 ) -> FrameworkDecision:
     """Pick the system taOS Agent's harness. Pure: no I/O besides a warning.
 
-    ``taos_agent.framework`` "opencode"/"picoclaw"/"claude_code"/"hermes" is an operator override;
+    ``taos_agent.framework`` "opencode"/"picoclaw"/"claude_code"/"kilo"/"hermes" is an operator override;
     "auto" means picoclaw on a mobile device and opencode everywhere else.
     ``device.class`` "auto" takes the detected class (hardware.py's kiosk-unit
     probe). PicoClaw needs the LLM gateway and the binary; without either,
     opencode runs and the reason says why. Claude Code needs the ``claude``
-    binary and the token secret, not the gateway. Hermes needs the hermes_api_key
-    secret and a reachable api_server; without either, opencode runs.
+    binary and the token secret, not the gateway. Kilo needs the ``kilo``
+    binary and the kilo_api_key secret, not the gateway. Hermes needs the
+    hermes_api_key secret and a reachable api_server; without either,
+    opencode runs.
     """
     dev = _setting(device_class_setting, DEVICE_CLASS_CHOICES, "device.class")
     if dev == "auto":
@@ -127,10 +137,15 @@ def decide_framework(
             return FrameworkDecision(FRAMEWORK_OPENCODE, preference, REASON_NO_HERMES_KEY, device_class)
         if not hermes_api_up:
             return FrameworkDecision(FRAMEWORK_OPENCODE, preference, REASON_HERMES_API_DOWN, device_class)
+    if preference == FRAMEWORK_KILO:
+        if not kilo_available:
+            return FrameworkDecision(FRAMEWORK_OPENCODE, preference, REASON_NO_KILO_BINARY, device_class)
+        if not kilo_key_present:
+            return FrameworkDecision(FRAMEWORK_OPENCODE, preference, REASON_NO_KILO_KEY, device_class)
     return FrameworkDecision(preference, preference, why, device_class)
 
 
-def refresh_framework_decision(app_state, *, claude_code_token_present: bool = False, hermes_api_up: bool = False, hermes_key_present: bool = False) -> FrameworkDecision:
+def refresh_framework_decision(app_state, *, claude_code_token_present: bool = False, hermes_api_up: bool = False, hermes_key_present: bool = False, kilo_available: bool = False, kilo_key_present: bool = False) -> FrameworkDecision:
     """Decide from app_state's config, hardware profile and the gateway flag;
     store it on ``app_state.taos_agent_framework_decision`` and log it.
 
@@ -138,9 +153,13 @@ def refresh_framework_decision(app_state, *, claude_code_token_present: bool = F
     awaits :func:`tinyagentos.claude_code_runtime.claude_code_token_present`
     and the caller that wants hermes honoured awaits
     :func:`tinyagentos.hermes_runtime.hermes_key_present` and
-    :func:`tinyagentos.hermes_runtime.hermes_api_up`, and passes the answers in."""
+    :func:`tinyagentos.hermes_runtime.hermes_api_up`, and passes the answers in.
+    The caller that wants kilo honoured awaits
+    :func:`tinyagentos.kilo_runtime.kilo_key_present` and passes the answer in
+    along with :func:`tinyagentos.kilo_runtime.resolve_kilo_binary`."""
     from tinyagentos import llm_gateway
     from tinyagentos.claude_code_runtime import resolve_claude_binary
+    from tinyagentos.kilo_runtime import resolve_kilo_binary
     from tinyagentos.picoclaw_runtime import resolve_picoclaw_binary
 
     config = getattr(app_state, "config", None)
@@ -155,6 +174,8 @@ def refresh_framework_decision(app_state, *, claude_code_token_present: bool = F
         claude_code_token_present=claude_code_token_present,
         hermes_api_up=hermes_api_up,
         hermes_key_present=hermes_key_present,
+        kilo_available=resolve_kilo_binary() is not None,
+        kilo_key_present=kilo_key_present,
     )
     app_state.taos_agent_framework_decision = decision
     if decision.framework != decision.preference:
@@ -718,6 +739,47 @@ async def ensure_taos_claude_code_harness(app_state, model: str, system_prompt: 
     return harness
 
 
+async def ensure_taos_kilo_harness(app_state) -> "KiloHarness":
+    """The Kilo harness for the taOS Agent.
+
+    Reads the kilo_api_key secret VALUE from the Secrets store at provision
+    time (it is never in the controller env) and caches the harness on
+    ``app_state.taos_kilo_harness``; rebuilt only when the key changes. Raises
+    ``KiloBinaryNotFoundError`` when ``kilo`` is missing and
+    ``KiloKeyMissingError`` without the secret.
+    """
+    from tinyagentos.kilo_runtime import (
+        KILO_API_KEY_SECRET,
+        KiloBinaryNotFoundError,
+        KiloHarness,
+        KiloKeyMissingError,
+        home_for,
+        resolve_kilo_binary,
+    )
+
+    binary = resolve_kilo_binary()
+    if binary is None:
+        raise KiloBinaryNotFoundError("kilo binary not found")
+    store = getattr(app_state, "secrets", None)
+    row = await store.get(KILO_API_KEY_SECRET) if store is not None else None
+    key = (row or {}).get("value") or ""
+    if not key:
+        raise KiloKeyMissingError(KILO_API_KEY_SECRET)
+    harness = getattr(app_state, "taos_kilo_harness", None)
+    if (
+        harness is not None
+        and harness.key == key
+        and harness.binary == binary
+    ):
+        return harness
+    harness = KiloHarness(
+        home=home_for(app_state.data_dir), key=key, binary=binary,
+    )
+    harness.write_home()
+    app_state.taos_kilo_harness = harness
+    return harness
+
+
 async def apply_framework(app_state) -> FrameworkDecision:
     """Re-decide and make the running harness match: the agent restarts, the
     controller does not. Leaving PicoClaw revokes its key; entering it stops
@@ -727,9 +789,11 @@ async def apply_framework(app_state) -> FrameworkDecision:
     the decision is applied; the harness is built per chat request."""
     from tinyagentos.claude_code_runtime import claude_code_token_present
     from tinyagentos.hermes_runtime import hermes_key_present, hermes_api_up
+    from tinyagentos.kilo_runtime import kilo_key_present, resolve_kilo_binary
 
     framework = (getattr(getattr(app_state, "config", None), "taos_agent", None) or {}).get("framework")
     hermes_enabled = isinstance(framework, str) and framework.strip().lower() == FRAMEWORK_HERMES
+    kilo_enabled = isinstance(framework, str) and framework.strip().lower() == FRAMEWORK_KILO
 
     if hermes_enabled:
         key_present = await hermes_key_present(app_state)
@@ -737,12 +801,15 @@ async def apply_framework(app_state) -> FrameworkDecision:
     else:
         key_present = False
         api_up = False
+    kilo_key = await kilo_key_present(app_state) if kilo_enabled else False
 
     decision = refresh_framework_decision(
         app_state,
         claude_code_token_present=await claude_code_token_present(app_state) if not hermes_enabled else False,
         hermes_api_up=api_up,
         hermes_key_present=key_present,
+        kilo_available=resolve_kilo_binary() is not None,
+        kilo_key_present=kilo_key,
     )
     if decision.framework == FRAMEWORK_CLAUDE_CODE:
         await stop_taos_opencode_server(app_state)
@@ -751,7 +818,7 @@ async def apply_framework(app_state) -> FrameworkDecision:
         app_state.taos_claude_code_harness = None
         app_state.taos_claude_code_session_id = None
         return decision
-    if decision.framework == FRAMEWORK_HERMES:
+    if decision.framework in (FRAMEWORK_HERMES, FRAMEWORK_KILO):
         await stop_taos_opencode_server(app_state)
         async with _picoclaw_lock(app_state):
             retire_picoclaw(app_state)

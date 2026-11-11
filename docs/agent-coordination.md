@@ -2760,7 +2760,7 @@ the LiteLLM hook's 429 before anything is forwarded. Revoking, blocking or
 deleting a cluster node, and archiving an agent, revoke the keys bound to it
 in the same request.
 
-## The system taOS Agent's harness (opencode, PicoClaw on a handset, or Claude Code)
+## The system taOS Agent's harness (opencode, PicoClaw on a handset, Claude Code or Kilo)
 
 The built-in taOS Agent runs on opencode (a host `opencode serve`) on every
 host, except a taOSmobile handset, where it runs on PicoClaw (the catalog's
@@ -2770,8 +2770,8 @@ the choice is made, from two config.yaml keys:
 - `device.class`: `auto` (default; `hardware._detect_device_class`, which
   reads the `taos-kiosk.service` and `plasma-mobile.service` units), `mobile` or `desktop`;
 - `taos_agent.framework`: `auto` (default; picoclaw on mobile, opencode
-  elsewhere), `opencode`, `picoclaw` or `claude_code` (operator overrides;
-  `auto` never picks `claude_code`).
+  elsewhere), `opencode`, `picoclaw`, `claude_code` or `kilo` (operator
+  overrides; `auto` never picks `claude_code` or `kilo`).
 - **Local desktop state**: `GET /api/system/local-desktop` reports `available`,
   `enabled`, and `active` based on `taos-kiosk.service` systemd unit state. The
   `enabled` and `active` fields can be `null` if `systemctl` times out or is
@@ -2796,6 +2796,20 @@ gateway. Without them opencode runs, with the reason exactly
 `claude_code preferred, no claude_code_oauth_token secret, using opencode`;
 a chat request while it is selected but not ready answers 503 with a plain
 message. Attachments are not supported yet.
+
+`kilo` runs one `kilo run --format json --model <provider/model> --dir <workdir>` turn per chat
+message (`tinyagentos/kilo_runtime.py`), continued with `-s <session-id>` taken from
+the previous turn's events. It signs in with the `kilo_api_key` secret, passed to the
+child only as `KILO_API_KEY` (never the controller env, never logged); the child
+gets only `HOME`, `PATH`, `LANG`, `NO_COLOR`, `TZ` and `KILO_API_KEY`. It needs
+the `kilo` binary (PATH, `/usr/local/bin/kilo`, `~/.local/bin/kilo`) and that
+secret, not the gateway. Without them opencode runs, with the reason exactly
+`kilo preferred, kilo binary not found, using opencode` or
+`kilo preferred, no kilo_api_key secret, using opencode`;
+a chat request while it is selected but not ready answers 503 with a plain
+message. The turn's `--dir` is a git repo created once under the harness home;
+kilo's JSON-lines output is parsed for `type == "text"` events whose `part.text`
+is the reply and whose `sessionID` continues the conversation.
 
 - `GET /api/taos-agent/config` and the lock screen (`/auth/lock-widgets`)
   report `framework` = the harness that RUNS the agent (never the
