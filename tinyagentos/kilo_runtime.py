@@ -42,6 +42,7 @@ _KILO_FALLBACK_PATHS = ("/usr/local/bin/kilo", "~/.local/bin/kilo")
 
 DEFAULT_MODEL = "kilo/kilo-auto/free"
 TURN_TIMEOUT = 300.0
+_STREAM_LIMIT = 16 * 1024 * 1024  # 16 MiB limit for subprocess stdout lines
 
 
 def _is_executable(path: Path) -> bool:
@@ -162,6 +163,7 @@ class KiloHarness:
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                limit=_STREAM_LIMIT,
             )
         except FileNotFoundError as exc:
             raise KiloBinaryNotFoundError(f"kilo binary not found ({self.binary!r})") from exc
@@ -224,6 +226,14 @@ class KiloHarness:
             except ProcessLookupError:
                 pass
             raise
+        except Exception as exc:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            await proc.wait()
+            return TurnResult(returncode=-1, reply="", session_id=found_session[0],
+                              detail=f"kilo turn failed: {exc}"[:300])
         stderr = err.decode("utf-8", "replace")
         reply = "".join(reply_parts)
         detail = ""

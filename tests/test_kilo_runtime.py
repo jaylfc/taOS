@@ -251,3 +251,54 @@ async def test_key_never_in_logs(tmp_path, caplog):
     with caplog.at_level(logging.DEBUG, logger="tinyagentos.kilo_runtime"):
         await h.run_turn("x", None)
     assert SECRET not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_run_turn_large_output(tmp_path):
+    large_text = "x" * 70000
+    body = f'''#!/bin/bash
+test -n "$KILO_API_KEY" || {{ echo "KILO_API_KEY is not set" >&2; exit 1; }}
+[ -t 0 ] && {{ echo "stdin is a tty" >&2; exit 1; }}
+printf '%s\\n' "$@" > "$(dirname "$0")/dump.argv"
+env > "$(dirname "$0")/dump.env"
+pwd > "$(dirname "$0")/dump.cwd"
+echo '{{"type":"step_start","sessionID":"ses-1"}}'
+echo '{{"type":"text","sessionID":"ses-1","part":{{"type":"text","text":"{large_text}"}}}}'
+echo '{{"type":"step_finish","sessionID":"ses-1"}}'
+exit 0
+'''
+    h = _harness(tmp_path, binary=_fake(tmp_path, body))
+    h.write_home()
+    res = await h.run_turn("test", None)
+    assert res.returncode == 0
+    assert len(res.reply) >= 70000
+    assert res.session_id == "ses-1"
+    assert not res.timed_out
+
+
+@pytest.mark.asyncio
+async def test_run_turn_stream_limit_overflow(tmp_path, monkeypatch):
+    # Monkeypatch _STREAM_LIMIT to 1024 to trigger overflow
+    from tinyagentos.kilo_runtime import _STREAM_LIMIT
+    monkeypatch.setattr("tinyagentos.kilo_runtime._STREAM_LIMIT", 1024)
+    
+    body = f'''#!/bin/bash
+test -n "$KILO_API_KEY" || {{ echo "KILO_API_KEY is not set" >&2; exit 1; }}
+[ -t 0 ] && {{ echo "stdin is a tty" >&2; exit 1; }}
+printf '%s\\n' "$@" > "$(dirname "$0")/dump.argv"
+echo "$(dirname "$0")/pid" > "$(dirname "$0")/dump.pid"
+echo "$$" > "$(dirname "$0")/dump.pid"
+echo "{"x" * 4096}"
+sleep 30
+'''
+    h = _harness(tmp_path, binary=_fake(tmp_path, body))
+    h.write_home()
+    res = await h.run_turn("test", None)
+    assert res.returncode == -1
+    assert not res.timed_out
+    # Verify the stub process is no longer running
+    with open(tmp_path / "dump.pid", "r") as f:
+        pid = int(f.read().strip())
+    import os
+    with pytest.raises(OSError):
+        os.kill(pid, 0)
