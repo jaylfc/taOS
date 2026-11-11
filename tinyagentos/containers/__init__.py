@@ -11,6 +11,9 @@ import logging
 import re
 import time
 
+# Snapshot timeout for dir-backed pools (full rootfs copy can exceed 120s default)
+SNAPSHOT_TIMEOUT_S = 1800
+
 from .backend import ContainerInfo, _parse_memory, detect_runtime, get_backend, set_backend
 from .lxc import LXCBackend
 from .docker import DockerBackend
@@ -31,7 +34,19 @@ async def _run(cmd: list[str], timeout: int = 120) -> tuple[int, str]:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
     )
-    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    try:
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        # Kill the child process to avoid orphans (e.g. incus snapshot create on dir pool)
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        try:
+            await proc.wait()
+        except ProcessLookupError:
+            pass
+        raise
     return proc.returncode, stdout.decode() if stdout else ""
 
 
@@ -545,7 +560,7 @@ def _is_snapshot_forbidden(output: str) -> bool:
 async def snapshot_create(name: str, snapshot_name: str) -> dict:
     """Create a named snapshot of a container.
 
-    LXC: ``incus snapshot create <name> <snapshot_name>`` — zero-copy on
+    LXC: ``incus snapshot create <name> <snapshot_name>`` -- zero-copy on
     btrfs/ZFS-backed pools; full rsync on dir-backed pools.
 
     Docker: ``docker commit <name> taos/<snapshot_name>:latest``.
@@ -561,7 +576,10 @@ async def snapshot_create(name: str, snapshot_name: str) -> dict:
 
     Returns ``{"success": bool, "output": str}``.
     """
-    code, output = await _run(["incus", "snapshot", "create", name, snapshot_name])
+    code, output = await _run(
+        ["incus", "snapshot", "create", name, snapshot_name],
+        timeout=SNAPSHOT_TIMEOUT_S,
+    )
     if code != 0 and _is_snapshot_forbidden(output):
         # Find the project named in the error; fall back to resolving it from
         # the container itself if the message did not quote one.
@@ -579,7 +597,8 @@ async def snapshot_create(name: str, snapshot_name: str) -> dict:
                     project, name, snapshot_name,
                 )
                 code, output = await _run(
-                    ["incus", "snapshot", "create", name, snapshot_name]
+                    ["incus", "snapshot", "create", name, snapshot_name],
+                    timeout=SNAPSHOT_TIMEOUT_S,
                 )
             else:
                 logger.warning(

@@ -1,0 +1,3 @@
+### Fixed
+
+- `hub` block route (`POST /api/hub/friends/block`): restored the contacts-store guard to `if contacts_store is not None:`. The `_db` check added in #4259 was unrequested: a contacts store that exists but is not initialised skipped the whole revoke cascade and the route still returned `{"state": "blocked"}` with 200, re-opening the fail-open the card closes. An uninitialised store now reaches the try block, raises, and returns the new 500 `{"state": "block-incomplete", "peer": peer}`.

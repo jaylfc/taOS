@@ -6,7 +6,7 @@ token only; a body-supplied identity must never select another agent's session.
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import pytest_asyncio
@@ -322,12 +322,13 @@ class TestChatSessionReplyMembership:
 
         # Ensure the agent has a DM channel (create one if needed)
         channels = chat_app_with_stores.state.chat_channels
-        await channels.create_channel(
+        dm_channel = await channels.create_channel(
             name="DM with guest-a",
             type="dm",
             created_by="user",
             members=["user", "guest-a"],
         )
+        dm_channel_id = dm_channel["id"]
 
         mock = AsyncMock()
         chat_app_with_stores.state.bridge_sessions.record_reply = mock
@@ -336,7 +337,7 @@ class TestChatSessionReplyMembership:
             r = await c.post(
                 REPLY,
                 headers=_hdr(token_a),
-                json={"kind": "final", "content": "hi"},
+                json={"kind": "final", "content": "hi", "channel_id": dm_channel_id},
             )
         assert r.status_code == 202
         mock.assert_awaited_once()
@@ -442,12 +443,17 @@ class TestGuestOutboxReplayReceipt:
                 "from": "user-123",
             })
 
-            # Wire up bridge session with the fake message store and outbox
+            # Mock chat hub to capture receipt broadcasts
+            mock_hub = MagicMock()
+            mock_hub.next_seq = MagicMock(return_value=1)
+            mock_hub.broadcast = AsyncMock()
+
+            # Wire up bridge session with the fake message store, outbox, and hub
             bridge = BridgeSessionRegistry(
                 trace_registry=None,
                 chat_messages=fake_msg_store,
                 chat_channels=None,
-                chat_hub=None,
+                chat_hub=mock_hub,
                 archive=None,
             )
             bridge._guest_outbox = outbox
@@ -473,6 +479,14 @@ class TestGuestOutboxReplayReceipt:
             called_msg_id, called_reader_id, _ = fake_msg_store.mark_delivered_calls[0]
             assert called_msg_id == msg_id
             assert called_reader_id == "guest-replay"
+            # And the receipt should have been broadcast via the chat hub
+            mock_hub.broadcast.assert_awaited_once()
+            broadcast_args = mock_hub.broadcast.call_args
+            assert broadcast_args.args[0] == "ch1"
+            broadcast_payload = broadcast_args.args[1]
+            assert broadcast_payload["type"] == "receipt"
+            assert broadcast_payload["message_id"] == msg_id
+            assert broadcast_payload["agent_id"] == "guest-replay"
         finally:
             await outbox.close()
 

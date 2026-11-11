@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from unittest.mock import patch, mock_open
 
 import yaml
 
@@ -114,6 +115,47 @@ def test_unparseable_yaml_is_an_error(tmp_path: Path) -> None:
     (d / "manifest.yaml").write_text("id: broken\nlifecycle: {: bad")
     errors = check_manifests.lint_managed(tmp_path)
     assert any("not valid YAML" in e for e in errors)
+
+
+def test_service_manifest_os_error_reported(tmp_path: Path) -> None:
+    """An OSError when reading a service manifest (e.g. permission denied)
+    must be reported as an error, not silently skipped."""
+    d = tmp_path / "services" / "unreadable"
+    d.mkdir(parents=True)
+    (d / "manifest.yaml").write_text("id: unreadable\nlifecycle: {auto_manage: true}")
+
+    with patch("pathlib.Path.read_text", side_effect=OSError("Permission denied")):
+        errors = check_manifests.lint_managed(tmp_path)
+
+    assert any("could not be read (OSError)" in e for e in errors)
+    assert any("unreadable" in e for e in errors)
+
+
+def test_service_manifest_unicode_error_reported(tmp_path: Path) -> None:
+    """A UnicodeError when reading a service manifest must be reported
+    as an error, not silently skipped."""
+    d = tmp_path / "services" / "bad-encoding"
+    d.mkdir(parents=True)
+    (d / "manifest.yaml").write_text("id: bad-encoding\nlifecycle: {auto_manage: true}")
+
+    with patch("pathlib.Path.read_text", side_effect=UnicodeDecodeError("utf-8", b"", 0, 1, "invalid")):
+        errors = check_manifests.lint_managed(tmp_path)
+
+    assert any("could not be read (UnicodeDecodeError)" in e for e in errors)
+    assert any("bad-encoding" in e for e in errors)
+
+
+def test_model_manifest_os_error_reported(tmp_path: Path) -> None:
+    """An OSError when reading a model manifest must be reported as an error."""
+    d = tmp_path / "models" / "unreadable-model"
+    d.mkdir(parents=True)
+    (d / "manifest.yaml").write_text("id: unreadable-model\nfamily: test")
+
+    with patch("pathlib.Path.read_text", side_effect=OSError("Permission denied")):
+        warns, errors = check_manifests.lint_model_fields(tmp_path)
+
+    assert any("could not be read (OSError)" in e for e in errors)
+    assert any("unreadable-model" in e for e in errors)
 
 
 def test_unit_without_service_suffix_is_flagged(tmp_path: Path) -> None:
@@ -309,10 +351,12 @@ def test_fifteen_model_warns_capped(capsys) -> None:
     # Count warn: lines - should be exactly 10
     warn_lines = [l for l in lines if l.startswith("  warn:")]
     assert len(warn_lines) == 10, f"Expected 10 warn lines, got {len(warn_lines)}"
-    # Hidden warning notice should be printed
-    assert any("more warnings hidden" in l for l in lines), f"Expected hidden warning notice, got lines: {lines}"
-    # Each warning text should appear exactly once
+    # Non-verbose prints only the first ten warnings, then a hidden notice.
+    assert any("(more warnings hidden" in l for l in lines), "missing hidden-warnings notice"
+    # The first ten warnings are for model-00 through model-09, in order.
     warning_texts = [l.replace("  warn: ", "") for l in warn_lines]
+    expected_prefixes = [f"model-{i:02d}: missing 'family'" for i in range(10)]
+    assert all(t.startswith(p) for t, p in zip(warning_texts, expected_prefixes)), warning_texts
     assert len(warning_texts) == len(set(warning_texts)), "Duplicate warning texts found"
 
 

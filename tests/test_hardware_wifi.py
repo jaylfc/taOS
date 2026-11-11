@@ -17,6 +17,26 @@ def _json_body(resp) -> dict:
     return json.loads(resp.body.decode())
 
 
+def _ap_get_all(**props) -> tuple[int, dict]:
+    """Build a real busctl --json=short GetAll(AccessPoint) response for one AP.
+
+    Each property value is encoded as a typed variant leaf, matching real busctl
+    output: {"type": "a{sv}", "data": [{<prop>: {"type": "...", "data": ...}, ...}]}.
+    """
+    encoded = {}
+    for key, val in props.items():
+        if isinstance(val, list):
+            encoded[key] = {"type": "ay", "data": val}
+        elif isinstance(val, bool):
+            encoded[key] = {"type": "b", "data": val}
+        elif isinstance(val, int):
+            encoded[key] = {"type": "u", "data": val}
+        else:
+            encoded[key] = {"type": "s", "data": val}
+    return 0, {"type": "a{sv}", "data": [encoded]}
+
+
+
 @pytest.mark.asyncio
 async def test_unavailable_when_networkmanager_absent(monkeypatch):
     calls = []
@@ -60,30 +80,24 @@ async def test_lists_wifi_aps_sorted_and_marks_active(monkeypatch):
         # get all aps
         if args[0] == "call" and args[2] == "/org/freedesktop/NetworkManager/Devices/2" and args[3] == "org.freedesktop.NetworkManager.Device.Wireless" and args[4] == "GetAllAccessPoints":
             return 0, ["/org/freedesktop/NetworkManager/AccessPoint/5", "/org/freedesktop/NetworkManager/AccessPoint/10"]
-        # ap 5: cafe, strength 80, no security
-        if args[0] == "get-property" and args[2] == "/org/freedesktop/NetworkManager/AccessPoint/5":
-            if args[4] == "Ssid":
-                return 0, [ord(c) for c in "cafe"]
-            if args[4] == "Strength":
-                return 0, 80
-            if args[4] == "Frequency":
-                return 0, 2412
-            if args[4] == "WpaFlags":
-                return 0, 0
-            if args[4] == "RsnFlags":
-                return 0, 0
+        # ap 5: cafe, strength 80, no security (single GetAll call, typed leaves)
+        if args[0] == "call" and args[2] == "/org/freedesktop/NetworkManager/AccessPoint/5" and args[3] == "org.freedesktop.DBus.Properties" and args[4] == "GetAll":
+            return _ap_get_all(
+                Ssid=[ord(c) for c in "cafe"],
+                Strength=80,
+                Frequency=2412,
+                WpaFlags=0,
+                RsnFlags=0,
+            )
         # ap 10: home, strength 40, secured
-        if args[0] == "get-property" and args[2] == "/org/freedesktop/NetworkManager/AccessPoint/10":
-            if args[4] == "Ssid":
-                return 0, [ord(c) for c in "home"]
-            if args[4] == "Strength":
-                return 0, 40
-            if args[4] == "Frequency":
-                return 0, 5180
-            if args[4] == "WpaFlags":
-                return 0, 0
-            if args[4] == "RsnFlags":
-                return 0, 0x188
+        if args[0] == "call" and args[2] == "/org/freedesktop/NetworkManager/AccessPoint/10" and args[3] == "org.freedesktop.DBus.Properties" and args[4] == "GetAll":
+            return _ap_get_all(
+                Ssid=[ord(c) for c in "home"],
+                Strength=40,
+                Frequency=5180,
+                WpaFlags=0,
+                RsnFlags=0x188,
+            )
         raise AssertionError(f"unexpected busctl call: {args}")
 
     monkeypatch.setattr(hw_routes, "busctl", fake)
@@ -115,21 +129,18 @@ async def test_failed_ap_read_is_skipped(monkeypatch):
             return 0, "/org/freedesktop/NetworkManager/AccessPoint/10"
         if args[0] == "call" and args[2] == "/org/freedesktop/NetworkManager/Devices/2" and args[4] == "GetAllAccessPoints":
             return 0, ["/org/freedesktop/NetworkManager/AccessPoint/5", "/org/freedesktop/NetworkManager/AccessPoint/10"]
-        if args[0] == "get-property" and args[2] == "/org/freedesktop/NetworkManager/AccessPoint/5":
-            if args[4] == "Ssid":
-                return 1, None  # failed read - skip
-            return 0, 0
-        if args[0] == "get-property" and args[2] == "/org/freedesktop/NetworkManager/AccessPoint/10":
-            if args[4] == "Ssid":
-                return 0, [ord(c) for c in "home"]
-            if args[4] == "Strength":
-                return 0, 40
-            if args[4] == "Frequency":
-                return 0, 5180
-            if args[4] == "WpaFlags":
-                return 0, 0
-            if args[4] == "RsnFlags":
-                return 0, 0
+        # ap 5: GetAll fails - AP is skipped
+        if args[0] == "call" and args[2] == "/org/freedesktop/NetworkManager/AccessPoint/5" and args[3] == "org.freedesktop.DBus.Properties" and args[4] == "GetAll":
+            return 1, None
+        # ap 10: home, strength 40, no security (single GetAll call, typed leaves)
+        if args[0] == "call" and args[2] == "/org/freedesktop/NetworkManager/AccessPoint/10" and args[3] == "org.freedesktop.DBus.Properties" and args[4] == "GetAll":
+            return _ap_get_all(
+                Ssid=[ord(c) for c in "home"],
+                Strength=40,
+                Frequency=5180,
+                WpaFlags=0,
+                RsnFlags=0,
+            )
         raise AssertionError(f"unexpected busctl call: {args}")
 
     monkeypatch.setattr(hw_routes, "busctl", fake)
@@ -158,17 +169,15 @@ async def test_wifi_aps_carry_device_iface(monkeypatch):
             return 0, "/org/freedesktop/NetworkManager/AccessPoint/10"
         if args[0] == "call" and args[2] == "/org/freedesktop/NetworkManager/Devices/2" and args[4] == "GetAllAccessPoints":
             return 0, ["/org/freedesktop/NetworkManager/AccessPoint/10"]
-        if args[0] == "get-property" and args[2] == "/org/freedesktop/NetworkManager/AccessPoint/10":
-            if args[4] == "Ssid":
-                return 0, [ord(c) for c in "home"]
-            if args[4] == "Strength":
-                return 0, 40
-            if args[4] == "Frequency":
-                return 0, 5180
-            if args[4] == "WpaFlags":
-                return 0, 0
-            if args[4] == "RsnFlags":
-                return 0, 0x188
+        # ap 10: home on wlan1 (single GetAll call, typed leaves)
+        if args[0] == "call" and args[2] == "/org/freedesktop/NetworkManager/AccessPoint/10" and args[3] == "org.freedesktop.DBus.Properties" and args[4] == "GetAll":
+            return _ap_get_all(
+                Ssid=[ord(c) for c in "home"],
+                Strength=40,
+                Frequency=5180,
+                WpaFlags=0,
+                RsnFlags=0x188,
+            )
         raise AssertionError(f"unexpected busctl call: {args}")
 
     monkeypatch.setattr(hw_routes, "busctl", fake)
@@ -220,30 +229,24 @@ async def test_wifi_two_devices_active_ap_on_second_iface(monkeypatch):
         # APs on device 2
         if args[0] == "call" and args[2] == "/org/freedesktop/NetworkManager/Devices/2" and args[4] == "GetAllAccessPoints":
             return 0, ["/org/freedesktop/NetworkManager/AccessPoint/20"]
-        # ap 10 on wlan0
-        if args[0] == "get-property" and args[2] == "/org/freedesktop/NetworkManager/AccessPoint/10":
-            if args[4] == "Ssid":
-                return 0, [ord(c) for c in "ap0"]
-            if args[4] == "Strength":
-                return 0, 30
-            if args[4] == "Frequency":
-                return 0, 2412
-            if args[4] == "WpaFlags":
-                return 0, 0
-            if args[4] == "RsnFlags":
-                return 0, 0
-        # ap 20 on wlan1 (active)
-        if args[0] == "get-property" and args[2] == "/org/freedesktop/NetworkManager/AccessPoint/20":
-            if args[4] == "Ssid":
-                return 0, [ord(c) for c in "ap1"]
-            if args[4] == "Strength":
-                return 0, 80
-            if args[4] == "Frequency":
-                return 0, 5180
-            if args[4] == "WpaFlags":
-                return 0, 0
-            if args[4] == "RsnFlags":
-                return 0, 0x188
+        # ap 10 on wlan0 (single GetAll call, typed leaves)
+        if args[0] == "call" and args[2] == "/org/freedesktop/NetworkManager/AccessPoint/10" and args[3] == "org.freedesktop.DBus.Properties" and args[4] == "GetAll":
+            return _ap_get_all(
+                Ssid=[ord(c) for c in "ap0"],
+                Strength=30,
+                Frequency=2412,
+                WpaFlags=0,
+                RsnFlags=0,
+            )
+        # ap 20 on wlan1 (active) (single GetAll call, typed leaves)
+        if args[0] == "call" and args[2] == "/org/freedesktop/NetworkManager/AccessPoint/20" and args[3] == "org.freedesktop.DBus.Properties" and args[4] == "GetAll":
+            return _ap_get_all(
+                Ssid=[ord(c) for c in "ap1"],
+                Strength=80,
+                Frequency=5180,
+                WpaFlags=0,
+                RsnFlags=0x188,
+            )
         raise AssertionError(f"unexpected busctl call: {args}")
 
     monkeypatch.setattr(hw_routes, "busctl", fake)
@@ -1876,28 +1879,68 @@ async def test_connect_non_admin_returns_403(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_forget_non_admin_returns_403(monkeypatch):
-    """Forget route requires admin."""
-    from tinyagentos.auth_context import require_admin
+async def test_forget_non_admin_returns_403(tmp_path):
+    """Non-admin member gets 403 on POST /api/hardware/wifi/forget (request sent through the app)."""
+    from fastapi.testclient import TestClient
+    from tinyagentos.app import create_app
+    import yaml
 
-    route = None
-    for r in hw_routes.router.routes:
-        if getattr(r, "path", None) == "/api/hardware/wifi/forget":
-            route = r
-            break
-    assert route is not None
-    assert require_admin in [d.dependency for d in route.dependencies]
+    config = {
+        "server": {"host": "0.0.0.0", "port": 6969},
+        "backends": [],
+        "qmd": {"url": "http://localhost:7832"},
+        "agents": [],
+        "metrics": {"poll_interval": 30, "retention_days": 30},
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump(config))
+    app = create_app(data_dir=tmp_path)
+
+    app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
+    auth_mgr = app.state.auth
+    invite_code = auth_mgr.add_user_invite("member", "admin")
+    auth_mgr.complete_invite(
+        "member", invite_code, "Test Member", "", "member-wifi-pass-123",
+    )
+    member = auth_mgr.find_user("member")
+    token = auth_mgr.create_session(user_id=member["id"], long_lived=True)
+    client = TestClient(app, cookies={"taos_session": token})
+    from taos_test_csrf import arm_test_client
+    arm_test_client(client)
+
+    resp = client.post("/api/hardware/wifi/forget", json={"ssid": "test-ssid"})
+    assert resp.status_code == 403
 
 
 @pytest.mark.asyncio
-async def test_scan_non_admin_returns_403(monkeypatch):
-    """Scan route requires admin."""
-    from tinyagentos.auth_context import require_admin
+async def test_scan_non_admin_returns_403(tmp_path):
+    """Non-admin member gets 403 on POST /api/hardware/wifi/scan (request sent through the app)."""
+    from fastapi.testclient import TestClient
+    from tinyagentos.app import create_app
+    import yaml
 
-    route = None
-    for r in hw_routes.router.routes:
-        if getattr(r, "path", None) == "/api/hardware/wifi/scan":
-            route = r
-            break
-    assert route is not None
-    assert require_admin in [d.dependency for d in route.dependencies]
+    config = {
+        "server": {"host": "0.0.0.0", "port": 6969},
+        "backends": [],
+        "qmd": {"url": "http://localhost:7832"},
+        "agents": [],
+        "metrics": {"poll_interval": 30, "retention_days": 30},
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump(config))
+    app = create_app(data_dir=tmp_path)
+
+    app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
+    auth_mgr = app.state.auth
+    invite_code = auth_mgr.add_user_invite("member", "admin")
+    auth_mgr.complete_invite(
+        "member", invite_code, "Test Member", "", "member-wifi-pass-123",
+    )
+    member = auth_mgr.find_user("member")
+    token = auth_mgr.create_session(user_id=member["id"], long_lived=True)
+    client = TestClient(app, cookies={"taos_session": token})
+    from taos_test_csrf import arm_test_client
+    arm_test_client(client)
+
+    resp = client.post("/api/hardware/wifi/scan", json={"iface": "wlan0"})
+    assert resp.status_code == 403

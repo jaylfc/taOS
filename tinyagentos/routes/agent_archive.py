@@ -7,6 +7,7 @@ agents.py; only the business logic lives here.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,6 +16,7 @@ from fastapi import Request
 
 from tinyagentos.agent_db import find_agent
 from tinyagentos.config import save_config_locked, unique_agent_slug
+from tinyagentos.containers import SNAPSHOT_TIMEOUT_S
 
 logger = logging.getLogger(__name__)
 
@@ -195,7 +197,20 @@ async def archive_agent_fully(request: Request, name: str) -> dict:
 
     # 2) Create snapshot. If this fails (container not found, pool error, etc.)
     #    we abort without mutating config so the agent stays in the live list.
-    snap_result = await snapshot_create(container, snapshot_name)
+    try:
+        snap_result = await snapshot_create(container, snapshot_name)
+    except asyncio.TimeoutError:
+        return {
+            "error": (
+                f"archive failed: snapshot {snapshot_name} on {container} "
+                f"did not finish within {SNAPSHOT_TIMEOUT_S}s (dir-backed pools "
+                f"copy the full rootfs). Agent left in live list; check "
+                f"`incus snapshot list {container}` for a partial taos-archive "
+                f"snapshot before retrying."
+            ),
+            "status_code": 504,
+        }
+
     if not snap_result.get("success"):
         out = (snap_result.get("output") or "").strip()
         return {

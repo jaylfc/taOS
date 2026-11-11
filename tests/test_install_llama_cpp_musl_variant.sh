@@ -7,6 +7,70 @@ unset TAOS_LLAMACPP_VARIANT
 bash -n "$SCRIPT"
 grep -q 'LLAMACPP_MUSL_COMMIT="0ec4027a2a0183de87c007069adddc06e665f7de"' "$SCRIPT"
 
+# Extract is_musl function for testing
+FN_IS_MUSL="$(sed -n '/^is_musl() {/,/^}/p' "$SCRIPT")"
+# Extract has_rocm function for testing
+FN_HAS_ROCM="$(sed -n '/^has_rocm() {/,/^}/p' "$SCRIPT")"
+# Extract has_nvidia function for testing
+FN_HAS_NVIDIA="$(sed -n '/^has_nvidia() {/,/^}/p' "$SCRIPT")"
+
+# Extract build_from_source_musl function for testing
+FN_BUILD="$(sed -n '/^build_from_source_musl() {/,/^}/p' "$SCRIPT")"
+
+# Regression test: copy-failure in build_from_source_musl must die
+# Simulate a failure when cp is called for a .so file
+out=$(
+  (
+    log() { :; }
+    die() { echo "DIE: $*"; exit 1; }
+    LLAMACPP_MUSL_TAG=b12020
+    LLAMACPP_MUSL_COMMIT="0ec4027a2a0183de87c007069adddc06e665f7de"
+    INSTALL_DIR="/tmp/fake-install"
+    SUDO=""
+
+    # Mock commands
+    apk() { echo "apk $*" >> /tmp/mock_calls; return 0; }
+    mktemp() { echo "/tmp/fake-src"; }
+    git() {
+      case "$1" in
+        clone) echo "git clone" >> /tmp/mock_calls; mkdir -p "/tmp/fake-src/build"; return 0 ;;
+        -C) shift; shift; git "$@"; return $? ;;
+        rev-parse) echo "0ec4027a2a0183de87c007069adddc06e665f7de"; return 0 ;;
+        *) command git "$@" ;;
+      esac
+    }
+    cmake() { echo "cmake" >> /tmp/mock_calls; mkdir -p "/tmp/fake-src/build"; touch "/tmp/fake-src/build/build.ninja"; return 0; }
+    ninja() { echo "ninja" >> /tmp/mock_calls; return 0; }
+    nproc() { echo 2; }
+    nice() { shift 2; "$@"; }
+    run_as_user() { "$@"; }
+    find() {
+      # Simulate finding one .so file
+      if [[ "$*" == *"-name lib*.so*"* ]]; then
+        printf "%s\0" "/tmp/fake-src/build/libggml.so"
+      fi
+    }
+    cp() {
+      # Fail on the .so copy (args: -P src dst)
+      if [[ "$2" == "/tmp/fake-src/build/libggml.so" ]]; then
+        return 1
+      fi
+      command cp "$@"
+    }
+    mkdir() { command mkdir "$@"; }
+    chmod() { command chmod "$@"; }
+    rm() { command rm "$@"; }
+    trap() { :; }
+    sudo() { "$@"; }
+
+    eval "$FN_BUILD"
+    build_from_source_musl
+    echo "FAIL: build_from_source_musl should have died on copy failure"
+    exit 1
+  ) 2>&1 || true
+)
+echo "$out" | grep -q "DIE: copying /tmp/fake-src/build/libggml.so failed" || { echo "FAIL: copy-failure check"; exit 1; }
+
 FN_DETECT="$(sed -n '/^detect_variant() {/,/^}/p' "$SCRIPT")"
 FN_OPENRC="$(awk '
   /^install_openrc_service\(\) {/ { p=1; d=1; print; next }
@@ -18,7 +82,11 @@ FN_SVC="$(sed -n '/^install_service() {/,/^}/p' "$SCRIPT")"
   log() { :; }
   die() { echo "DIE: $*"; exit 1; }
   LLAMACPP_MUSL_TAG=b12020
-  is_musl() { return 0; }
+  # Use real is_musl probe with a test-controlled path
+  MUSL_LINKER_PATH="$(mktemp -u)/ld-musl-aarch64.so.1"
+  mkdir -p "$(dirname "$MUSL_LINKER_PATH")"
+  touch "$MUSL_LINKER_PATH"
+  is_musl() { [[ -e "$MUSL_LINKER_PATH" ]]; }
   uname() { case "$1" in -s) echo Linux;; -m) echo aarch64;; *) command uname "$@";; esac; }
   eval "$FN_DETECT"
   detect_variant
@@ -30,7 +98,9 @@ out=$(
     log() { :; }
     die() { echo "DIE: $*"; exit 1; }
     LLAMACPP_MUSL_TAG=b12020
-    is_musl() { return 1; }
+    # Real is_musl probe: no linker file -> returns false
+    MUSL_LINKER_PATH="$(mktemp -u)/ld-musl-aarch64.so.1"
+    is_musl() { [[ -e "$MUSL_LINKER_PATH" ]]; }
     uname() { case "$1" in -s) echo Linux;; -m) echo aarch64;; *) command uname "$@";; esac; }
     eval "$FN_DETECT"
     detect_variant
@@ -41,13 +111,30 @@ echo "$out" | grep -q "DIE:" || { echo "FAIL: non-musl aarch64 should die"; exit
 (
   log() { :; }
   die() { echo "DIE: $*"; exit 1; }
-  uname() { case "$1" in -s) echo Linux;; -m) echo x86_64;; *) command uname "$@";; esac; }
-  command() { return 1; }
-  has_rocm() { return 1; }
-  has_nvidia() { return 1; }
-  is_musl() { return 1; }
-  unset TAOS_LLAMACPP_VARIANT
+  # Use real uname (Linux x86_64 on this system)
+  # Use production helper functions with test-controlled paths
   eval "$FN_DETECT"
+  eval "$FN_IS_MUSL"
+  eval "$FN_HAS_ROCM"
+  eval "$FN_HAS_NVIDIA"
+  # Override helpers with test-controlled versions
+  MUSL_LINKER_PATH="$(mktemp -u)/ld-musl-aarch64.so.1"
+  is_musl() { [[ -e "$MUSL_LINKER_PATH" ]]; }
+  ROCM_PATH="$(mktemp -u)/rocm"
+  has_rocm() { [[ -d "$ROCM_PATH" ]]; }
+  # Mock command to hide nvidia-smi, and control proc directory
+  NVIDIA_PROC_PATH="$(mktemp -u)/proc/driver/nvidia/gpus"
+  command() {
+    case "$1" in
+      -v)
+        case "$2" in
+          nvidia-smi) return 1 ;;
+        esac ;;
+    esac
+    builtin command "$@"
+  }
+  has_nvidia() { command -v nvidia-smi >/dev/null 2>&1 || [[ -d "$NVIDIA_PROC_PATH" ]]; }
+  unset TAOS_LLAMACPP_VARIANT
   detect_variant
   [ "$VARIANT" = "cpu" ]
 ) || { echo "FAIL: x86_64 cpu variant"; exit 1; }
@@ -273,6 +360,13 @@ b_out="$(mktemp)"
 if ! grep -q 'DIE: MODELS_DIR contains a double quote' "$b_out"; then
   echo "FAIL: MODELS_DIR double-quote guard"
   cat "$b_out"
+  rm -f "$b_out"
+  rm -rf "$INIT_D_DIR"
+  exit 1
+fi
+# Assert that the rejected MODELS_DIR leaves no init script
+if [[ -f "$INIT_D_DIR/llama-cpp" ]]; then
+  echo "FAIL: rejected MODELS_DIR left init script at $INIT_D_DIR/llama-cpp"
   rm -f "$b_out"
   rm -rf "$INIT_D_DIR"
   exit 1
