@@ -56,6 +56,10 @@ async def test_no_real_opencode_spawn_raises_binary_not_found(tmp_path, monkeypa
     # non-existent path and TAOS_OPENCODE_BIN points to a non-existent path,
     # so the spawn attempt hits FileNotFoundError which ensure_running maps to
     # OpenCodeBinaryNotFoundError.
+    from tinyagentos.opencode_runtime import resolve_opencode_binary
+    # Assert the guard's effective binary path is the fake path
+    assert resolve_opencode_binary() == "/this/path/does/not/exist/opencode"
+
     with pytest.raises(OpenCodeBinaryNotFoundError):
         await server.ensure_running(deadline_s=0.05, poll_s=0.01)
 

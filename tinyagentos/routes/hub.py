@@ -741,6 +741,10 @@ async def block_peer(
                     )
         except Exception:
             logger.exception("hub block: contacts-store cascade failed for %s", peer)
+            return JSONResponse(
+                {"state": "block-incomplete", "peer": peer},
+                status_code=500,
+            )
 
     return {"state": "blocked", "peer": peer, "severed": severed}
 
