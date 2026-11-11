@@ -44,9 +44,11 @@ def map_kilo_event(evt: dict, state: dict) -> list[tuple[str, dict]]:
 class KiloCliConfig:
     harness: KiloHarness
     system: str | None = None
-    """Carried for symmetry with the other adapters; the harness holds the
-    system prompt it passes to ``--model`` (Kilo has no append-system-prompt
-    flag, so this is kept for interface parity only)."""
+    """The taOS Agent's system prompt. Prefixed to the first user turn of a
+    kilo session (session_id is None) as ``<system prompt>\\n\\n<user text>``;
+    later turns (session_id set, resumed with ``-s``) send the user text only.
+    Kilo has no append-system-prompt flag, so this is not passed as a CLI flag
+    and is kept for interface parity with the other adapters."""
 
 
 class KiloCliAdapter:
@@ -103,7 +105,10 @@ class KiloCliAdapter:
                     logger.exception("kilo_cli_adapter: sink raised for reply kind=%s", item.get("kind"))
 
         try:
-            result = await harness.run_turn(text, self.session_id, on_event=on_event)
+            message = text
+            if self.session_id is None and self._cfg.system:
+                message = f"{self._cfg.system}\n\n{text}"
+            result = await harness.run_turn(message, self.session_id, on_event=on_event)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - degrade to an error reply

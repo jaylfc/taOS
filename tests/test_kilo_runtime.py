@@ -27,6 +27,7 @@ from tinyagentos.taos_agent_runtime import (
     REASON_NO_KILO_BINARY,
     REASON_NO_KILO_KEY,
     decide_framework,
+    ensure_taos_kilo_harness,
 )
 
 SECRET = "sk-kilo-SECRETSECRETSECRET"
@@ -211,6 +212,18 @@ async def test_run_turn_first_and_resumed(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_run_turn_uses_configured_model(tmp_path):
+    h = KiloHarness(home=tmp_path / "home", key=SECRET, model="openai/gpt-4o",
+                    binary=_fake(tmp_path, _FAKE_OK))
+    h.write_home()
+    res = await h.run_turn("hello there", None)
+    assert res.returncode == 0
+    argv = (tmp_path / "dump.argv").read_text().split("\n")[:-1]
+    assert argv == ["run", "--format", "json", "--model", "openai/gpt-4o",
+                    "--dir", str(h.workspace), "hello there"]
+
+
+@pytest.mark.asyncio
 async def test_error_event_surfaces_data_message_not_headers(tmp_path):
     body = ('#!/bin/bash\ntest -n "$KILO_API_KEY" || exit 1\n'
             "printf '%s\\n' '{\"type\":\"error\",\"sessionID\":\"ses-1\","
@@ -302,3 +315,56 @@ sleep 30
     import os
     with pytest.raises(OSError):
         os.kill(pid, 0)
+
+
+# ---------------------------------------------------------------- ensure_taos_kilo_harness
+def _kilo_state(tmp_path, monkeypatch):
+    """Patch kilo_runtime so ensure_taos_kilo_harness builds a recording fake
+    harness instead of touching the real kilo binary or secrets store."""
+    import tinyagentos.kilo_runtime as kr
+
+    built: list[str] = []
+
+    class _FakeHarness:
+        def __init__(self, home, key, binary, model):
+            self.home = home
+            self.key = key
+            self.binary = binary
+            self.model = model
+            built.append(model)
+
+        def write_home(self):
+            pass
+
+    monkeypatch.setattr(kr, "resolve_kilo_binary", lambda: "/usr/bin/kilo")
+    monkeypatch.setattr(kr, "KiloHarness", _FakeHarness)
+
+    state = _MockAppState(has_key=True)
+    state.data_dir = tmp_path
+    state.taos_kilo_harness = None
+    return state, built
+
+
+@pytest.mark.asyncio
+async def test_ensure_taos_kilo_harness_uses_configured_model(tmp_path, monkeypatch):
+    state, built = _kilo_state(tmp_path, monkeypatch)
+    await ensure_taos_kilo_harness(state, "openai/gpt-4o", "the system prompt")
+    assert built == ["openai/gpt-4o"]
+    assert state.taos_kilo_harness.model == "openai/gpt-4o"
+
+
+@pytest.mark.asyncio
+async def test_ensure_taos_kilo_harness_defaults_empty_model(tmp_path, monkeypatch):
+    state, built = _kilo_state(tmp_path, monkeypatch)
+    await ensure_taos_kilo_harness(state, "", None)
+    assert built == [DEFAULT_MODEL]
+    assert state.taos_kilo_harness.model == DEFAULT_MODEL
+
+
+@pytest.mark.asyncio
+async def test_ensure_taos_kilo_harness_rebuilds_on_model_change(tmp_path, monkeypatch):
+    state, built = _kilo_state(tmp_path, monkeypatch)
+    await ensure_taos_kilo_harness(state, "model-a", None)
+    await ensure_taos_kilo_harness(state, "model-a", None)  # cached: no rebuild
+    await ensure_taos_kilo_harness(state, "model-b", None)  # model changed: rebuild
+    assert built == ["model-a", "model-b"]

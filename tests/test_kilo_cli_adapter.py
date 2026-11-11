@@ -129,6 +129,40 @@ async def test_previous_session_is_resumed(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_first_turn_prefixes_system_prompt(tmp_path):
+    body = ('#!/bin/bash\ntest -n "$KILO_API_KEY" || exit 1\n'
+            'printf \'%s\\n\' "$@" > "$(dirname "$0")/argv"\n'
+            'echo \'{"type":"text","sessionID":"s2","part":{"type":"text","text":"pong"}}\'\n')
+    replies: list[dict] = []
+    h = KiloHarness(home=tmp_path / "home", key=SECRET, model="kilo/kilo-auto/free",
+                    binary=_fake(tmp_path, body))
+    h.write_home()
+    a = KiloCliAdapter(KiloCliConfig(harness=h, system="sys prompt"), replies.append)
+    await a.prompt("hello")
+    argv_text = (tmp_path / "argv").read_text()
+    assert "sys prompt\n\nhello" in argv_text
+    assert a.session_id == "s2"
+
+
+@pytest.mark.asyncio
+async def test_second_turn_sends_user_text_only(tmp_path):
+    body = ('#!/bin/bash\ntest -n "$KILO_API_KEY" || exit 1\n'
+            'printf \'%s\\n\' "$@" > "$(dirname "$0")/argv"\n'
+            'echo \'{"type":"text","sessionID":"s2","part":{"type":"text","text":"pong"}}\'\n')
+    replies: list[dict] = []
+    h = KiloHarness(home=tmp_path / "home", key=SECRET, model="kilo/kilo-auto/free",
+                    binary=_fake(tmp_path, body))
+    h.write_home()
+    a = KiloCliAdapter(KiloCliConfig(harness=h, system="sys prompt"), replies.append)
+    a.session_id = "s1"
+    await a.prompt("hello")
+    argv_text = (tmp_path / "argv").read_text()
+    assert "sys prompt" not in argv_text
+    argv = argv_text.split("\n")
+    assert argv[argv.index("-s") + 1] == "s1"
+
+
+@pytest.mark.asyncio
 async def test_close_is_a_noop(tmp_path):
     a = _adapter(tmp_path, _OK, [])
     await a.close()

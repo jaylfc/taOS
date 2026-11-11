@@ -1294,7 +1294,7 @@ async def test_chat_kilo_turn_runs_kilo_not_opencode(client, app, monkeypatch, t
     )
     harness.write_home()
 
-    async def fake_ensure_taos_kilo_harness(app_state):
+    async def fake_ensure_taos_kilo_harness(app_state, model, system_prompt):
         return harness
 
     monkeypatch.setattr(ta_module, "ensure_taos_kilo_harness", fake_ensure_taos_kilo_harness)

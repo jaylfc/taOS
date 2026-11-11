@@ -636,7 +636,7 @@ async def chat(request: Request, body: ChatRequest):
     use_kilo = system_agent_framework(app_state) == FRAMEWORK_KILO
     if use_kilo:
         try:
-            harness = await ensure_taos_kilo_harness(app_state)
+            harness = await ensure_taos_kilo_harness(app_state, model, system_prompt)
         except KiloBinaryNotFoundError:
             logger.error("taos-agent: kilo binary not found")
             return JSONResponse(
