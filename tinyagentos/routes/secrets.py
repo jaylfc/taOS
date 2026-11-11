@@ -161,12 +161,14 @@ async def get_self_secret(
     """
     # Verify the token holds the required scope and get the canonical_id.
     cid = await check_agent_scope(request, "secrets_read_own")
+    if not cid:
+        raise HTTPException(status_code=401, detail="agent token required")
     # Resolve the agent name from the canonical_id via config.agents.
     config = getattr(request.app.state, "config", None)
     agent_name = None
     if config is not None:
         for agent in config.agents:
-            if isinstance(agent, dict) and agent.get("registry_canonical_id") == cid:
+            if isinstance(agent, dict) and agent.get("registry_canonical_id") and agent.get("registry_canonical_id") == cid:
                 agent_name = agent.get("name")
                 break
     if agent_name is None:

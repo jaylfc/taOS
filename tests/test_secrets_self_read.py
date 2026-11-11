@@ -248,6 +248,68 @@ class TestSecretsSelfReadMembership:
         assert r.status_code == 404
 
 
+async def _get_session_client(secrets_app):
+    """Create an AsyncClient with a taos_session cookie (authenticated user)
+    but no Authorization Bearer header."""
+    from tinyagentos.auth import AuthManager
+    auth_mgr = secrets_app.state.auth
+    _record = auth_mgr.find_user("admin")
+    _uid = _record["id"] if _record else ""
+    _token = auth_mgr.create_session(user_id=_uid, long_lived=True)
+    transport = __import__("httpx").ASGITransport(app=secrets_app)
+    return __import__("httpx").AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        cookies={"taos_session": _token},
+        event_hooks={},
+    )
+
+
+@pytest.mark.asyncio
+async def test_no_agent_token_for_config_agent_without_canonical_id_returns_401(
+    secrets_app, tmp_data_dir
+):
+    """A session client (no agent Bearer token) cannot read a secret granted to
+    a config agent without registry_canonical_id. Without the fix, cid = None
+    from check_agent_scope leads to None == None matching any such agent, leak."""
+    # Write a config agent WITHOUT registry_canonical_id
+    agent = {
+        "name": "testagent",
+        "host": "",
+        "qmd_index": "testagent",
+        "color": "#888",
+    }
+    secrets_app.state.config.agents.append(agent)
+
+    # Grant the agent a secret
+    store = secrets_app.state.secrets
+    await store.add(
+        name="mysecret",
+        value="s3cr3t-v4lu3",
+        category="general",
+        description="Test secret",
+        agents=["testagent"],
+    )
+
+    # Use a session client with taos_session cookie but NO Authorization header
+    # This mirrors the 'client' fixture pattern from tests/conftest.py
+    from tinyagentos.auth import AuthManager
+    auth_mgr = secrets_app.state.auth
+    _record = auth_mgr.find_user("admin")
+    _uid = _record["id"] if _record else ""
+    _token = auth_mgr.create_session(user_id=_uid, long_lived=True)
+    transport = ASGITransport(app=secrets_app)
+    c = AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        cookies={"taos_session": _token},
+        event_hooks={},
+    )
+    r = await c.get(f"{SECRETS_SELF}/mysecret")
+    assert r.status_code == 401, f"Expected 401 but got {r.status_code}: {r.text}"
+    assert "s3cr3t-v4lu3" not in r.text, "Secret value leaked in response body"
+
+
 def test_secrets_read_own_registered_in_both_sets():
     from tinyagentos.routes.agent_auth_requests import VALID_SCOPES
     from tinyagentos.routes.agent_registry import _ALLOWED_SCOPES

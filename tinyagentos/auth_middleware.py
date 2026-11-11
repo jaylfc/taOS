@@ -589,7 +589,7 @@ def _is_agent_rotate_path(method: str, path: str) -> bool:
 # is derived from the token's canonical_id; the path name is never trusted for
 # identity.  No wildcard — exactly this one method+path pair.
 _AGENT_SECRETS_SELF_PATHS = frozenset({
-    ("GET", re.compile(r"^/api/agents/self/secrets/[^/]+")),
+    ("GET", re.compile(r"^/api/agents/self/secrets/[^/]+$")),
 })
 
 
