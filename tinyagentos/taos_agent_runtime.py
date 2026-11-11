@@ -739,6 +739,47 @@ async def ensure_taos_claude_code_harness(app_state, model: str, system_prompt: 
     return harness
 
 
+async def ensure_taos_kilo_harness(app_state) -> "KiloHarness":
+    """The Kilo harness for the taOS Agent.
+
+    Reads the kilo_api_key secret VALUE from the Secrets store at provision
+    time (it is never in the controller env) and caches the harness on
+    ``app_state.taos_kilo_harness``; rebuilt only when the key changes. Raises
+    ``KiloBinaryNotFoundError`` when ``kilo`` is missing and
+    ``KiloKeyMissingError`` without the secret.
+    """
+    from tinyagentos.kilo_runtime import (
+        KILO_API_KEY_SECRET,
+        KiloBinaryNotFoundError,
+        KiloHarness,
+        KiloKeyMissingError,
+        home_for,
+        resolve_kilo_binary,
+    )
+
+    binary = resolve_kilo_binary()
+    if binary is None:
+        raise KiloBinaryNotFoundError("kilo binary not found")
+    store = getattr(app_state, "secrets", None)
+    row = await store.get(KILO_API_KEY_SECRET) if store is not None else None
+    key = (row or {}).get("value") or ""
+    if not key:
+        raise KiloKeyMissingError(KILO_API_KEY_SECRET)
+    harness = getattr(app_state, "taos_kilo_harness", None)
+    if (
+        harness is not None
+        and harness.key == key
+        and harness.binary == binary
+    ):
+        return harness
+    harness = KiloHarness(
+        home=home_for(app_state.data_dir), key=key, binary=binary,
+    )
+    harness.write_home()
+    app_state.taos_kilo_harness = harness
+    return harness
+
+
 async def apply_framework(app_state) -> FrameworkDecision:
     """Re-decide and make the running harness match: the agent restarts, the
     controller does not. Leaving PicoClaw revokes its key; entering it stops

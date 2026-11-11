@@ -41,11 +41,13 @@ from pydantic import BaseModel
 
 from tinyagentos.adapters.opencode_adapter import OpenCodeAdapter, OpenCodeConfig
 from tinyagentos.adapters.claude_code_cli_adapter import ClaudeCodeCliAdapter, ClaudeCodeCliConfig
+from tinyagentos.adapters.kilo_cli_adapter import KiloCliAdapter, KiloCliConfig
 from tinyagentos.adapters.picoclaw_cli_adapter import PicoClawCliAdapter, PicoClawCliConfig
 from tinyagentos.adapters.hermes_api_adapter import HermesApiAdapter, HermesApiConfig
 from tinyagentos.agent_loop import AgentLoop, LoopAction
 from tinyagentos.auth_context import CurrentUser, current_user
 from tinyagentos.claude_code_runtime import ClaudeCodeBinaryNotFoundError, ClaudeCodeTokenMissingError
+from tinyagentos.kilo_runtime import KiloBinaryNotFoundError, KiloKeyMissingError
 from tinyagentos.opencode_runtime import OpenCodeBinaryNotFoundError
 from tinyagentos.picoclaw_runtime import PicoClawBinaryNotFoundError
 from tinyagentos import taos_agent_shell_profile as shell_profile
@@ -59,6 +61,7 @@ from tinyagentos.taos_agent_runtime import (
     FrameworkDecision,
     apply_framework,
     ensure_taos_claude_code_harness,
+    ensure_taos_kilo_harness,
     ensure_taos_opencode_server,
     ensure_taos_picoclaw_harness,
     opencode_gateway_problem,
@@ -632,15 +635,28 @@ async def chat(request: Request, body: ChatRequest):
 
     use_kilo = system_agent_framework(app_state) == FRAMEWORK_KILO
     if use_kilo:
-        from tinyagentos.kilo_runtime import kilo_key_present, resolve_kilo_binary
-        if resolve_kilo_binary() is None or not await kilo_key_present(app_state):
-            logger.error("taos-agent: kilo is not ready")
+        try:
+            harness = await ensure_taos_kilo_harness(app_state)
+        except KiloBinaryNotFoundError:
+            logger.error("taos-agent: kilo binary not found")
             return JSONResponse(
-                {"error": "Kilo is not ready: add a kilo_api_key secret in Secrets, make sure the kilo "
-                          "binary is installed, or switch the taOS Agent to opencode."},
+                {"error": "Kilo is not ready: make sure the kilo binary is installed, "
+                          "or switch the taOS Agent to opencode."},
                 status_code=503,
             )
-        harness = None
+        except KiloKeyMissingError:
+            logger.error("taos-agent: kilo key missing")
+            return JSONResponse(
+                {"error": "Kilo is not ready: add a kilo_api_key secret in Secrets, "
+                          "or switch the taOS Agent to opencode."},
+                status_code=503,
+            )
+        except Exception as exc:
+            logger.exception("taos-agent: kilo could not be provisioned")
+            return JSONResponse(
+                {"error": f"taOS agent runtime (kilo) failed to start: {type(exc).__name__}"},
+                status_code=503,
+            )
 
     if not (use_picoclaw or use_claude_code or use_hermes or use_kilo):
         # opencode is always given the in-process gateway (/api/llm/v1), the
@@ -703,6 +719,9 @@ async def chat(request: Request, body: ChatRequest):
     if use_claude_code:
         adapter = ClaudeCodeCliAdapter(ClaudeCodeCliConfig(harness=harness, system=system_prompt), sink)
         adapter.session_id = getattr(app_state, "taos_claude_code_session_id", None)
+    elif use_kilo:
+        adapter = KiloCliAdapter(KiloCliConfig(harness=harness, system=system_prompt), sink)
+        adapter.session_id = getattr(app_state, "taos_kilo_session_id", None)
     elif use_picoclaw:
         adapter = PicoClawCliAdapter(PicoClawCliConfig(harness=harness, system=system_prompt), sink)
     elif use_hermes:
@@ -810,6 +829,8 @@ async def chat(request: Request, body: ChatRequest):
             await adapter.prompt(text, trace_id=trace_id, attachments=attachments)
             if use_claude_code and adapter.session_id:
                 app_state.taos_claude_code_session_id = adapter.session_id
+            if use_kilo and adapter.session_id:
+                app_state.taos_kilo_session_id = adapter.session_id
             await adapter.close()
         except Exception as exc:
             logger.exception("taos-agent: drive task error")
