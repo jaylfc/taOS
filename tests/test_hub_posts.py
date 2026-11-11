@@ -346,15 +346,25 @@ async def test_concurrent_appends_do_not_orphan(store, monkeypatch):
     import asyncio as _asyncio
     from tinyagentos.hub import posts as hub_posts
 
-    results = await _asyncio.gather(
-        hub_posts.append_post(store, visibility="circle", text="one", author="racer"),
-        hub_posts.append_post(store, visibility="circle", text="two", author="racer"),
-        hub_posts.append_post(store, visibility="circle", text="three", author="racer"),
-    )
-    seqs = sorted(p["seq"] for p in results)
-    assert seqs == [1, 2, 3]
-    head = await store.get_chain_head("racer")
-    assert head["seq"] == 3
+    store_b = hub_store.HubStore(hub_store.default_db_path())
+    store_c = hub_store.HubStore(hub_store.default_db_path())
+    await store_b.init()
+    await store_c.init()
+    shared_lock = _asyncio.Lock()
+    monkeypatch.setattr(hub_posts, "_append_lock", lambda _store: shared_lock)
+    try:
+        results = await _asyncio.gather(
+            hub_posts.append_post(store, visibility="circle", text="one", author="racer"),
+            hub_posts.append_post(store_b, visibility="circle", text="two", author="racer"),
+            hub_posts.append_post(store_c, visibility="circle", text="three", author="racer"),
+        )
+        seqs = sorted(p["seq"] for p in results)
+        assert seqs == [1, 2, 3]
+        head = await store.get_chain_head("racer")
+        assert head["seq"] == 3
+    finally:
+        await store_b.close()
+        await store_c.close()
 
 
 @pytest.mark.asyncio
