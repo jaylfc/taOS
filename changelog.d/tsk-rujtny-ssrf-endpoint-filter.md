@@ -1,0 +1,2 @@
+### Fixed
+- `_safe_endpoints` now drops private (RFC1918), loopback, and link-local endpoints on first link, preventing a malicious peer from registering an internal endpoint that becomes an SSRF allowance via `known_hostports()`. Blocked suffixes (`.local`, `.onion`, `.internal`, `.home`, `.corp`, `.lan`, `.intranet`) and literal IPs in private ranges are filtered at friend-accept and handshake time.
