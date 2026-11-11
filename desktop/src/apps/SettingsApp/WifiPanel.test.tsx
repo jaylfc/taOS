@@ -166,6 +166,8 @@ describe("WifiPanel controls", () => {
     const [, toggleCall] = fetchSpy.mock.calls;
     expect(toggleCall[0]).toBe("/api/hardware/wifi/enabled");
     expect(JSON.parse(toggleCall[1]?.body as string)).toEqual({ enabled: false });
+    // After the reload, the switch reflects wifi_enabled: false.
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Wi-Fi" })).not.toBeChecked());
   });
 
   it("Disconnect button on connected row posts {iface} once and reloads", async () => {
@@ -746,6 +748,47 @@ describe("WifiPanel StrictMode", () => {
     });
     const connectCalls = fetchSpy.mock.calls.filter(call => call[0] === "/api/hardware/wifi/connect");
     expect(connectCalls.length).toBe(1);
+  });
+
+  it("StrictMode: first-effect GET resolves last; stale response is ignored", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    let resolveStale: (() => void) | undefined;
+    const staleResponse = new Promise<Response>((resolve) => {
+      resolveStale = () => resolve(
+        json({
+          available: true,
+          wifi_enabled: true,
+          devices: [{ path: "/org/freedesktop/NetworkManager/Devices/1", iface: "wlan0", state: 100 }],
+          access_points: [{ ssid: "StaleNet", strength: 99, frequency: 2412, secured: false, active: true, iface: "wlan0" }],
+        }),
+      );
+    });
+    const currentObj = {
+      available: true,
+      wifi_enabled: true,
+      devices: [{ path: "/org/freedesktop/NetworkManager/Devices/1", iface: "wlan0", state: 100 }],
+      access_points: [
+        { ssid: "ConnectedNet", strength: 80, frequency: 2437, secured: true, active: true },
+        { ssid: "OpenNet", strength: 60, frequency: 2462, secured: false, active: false },
+      ],
+    };
+    let calls = 0;
+    fetchSpy.mockImplementation(async (url: string) => {
+      calls += 1;
+      if (calls === 1) {
+        // First effect's GET resolves last.
+        return staleResponse;
+      }
+      return json(currentObj);
+    });
+
+    render(<StrictMode><WifiPanel /></StrictMode>);
+    // Second effect's GET resolves first: ConnectedNet is shown.
+    await waitFor(() => expect(screen.getByText("ConnectedNet")).toBeInTheDocument());
+    // First effect's GET eventually resolves but must not replace with StaleNet.
+    resolveStale!();
+    await waitFor(() => expect(screen.getByText("ConnectedNet")).toBeInTheDocument());
+    expect(screen.queryByText("StaleNet")).not.toBeInTheDocument();
   });
 });
 describe("WifiPanel disconnect iface", () => {
