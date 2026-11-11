@@ -81,6 +81,12 @@ class TestSecretsSelfReadAuth:
 class TestSecretsSelfReadGranted:
     async def test_granted_secret_with_scope_returns_200(self, secrets_app, tmp_data_dir):
         _cid, token = await _agent(secrets_app, "@myagent", scopes=("secrets_read_own",))
+        # Bind the token's canonical_id to a config agent named 'myagent'
+        # (this test previously relied on the display_name fallback, which is
+        # removed -- bind via registry_canonical_id instead).
+        secrets_app.state.config.agents.append(
+            {"name": "myagent", "registry_canonical_id": _cid}
+        )
 
         # Create a secret granted to this agent
         from tinyagentos.secrets import SecretsStore
@@ -248,3 +254,75 @@ def test_secrets_read_own_registered_in_both_sets():
 
     assert "secrets_read_own" in VALID_SCOPES
     assert "secrets_read_own" in _ALLOWED_SCOPES
+
+
+@pytest.mark.asyncio
+class TestSecretsSelfReadDisplayNameFallback:
+    """The registry display_name must never bind a token to a config agent's
+    granted secrets (tsk-3i54m2)."""
+
+    def _config_agent(self, app, name, **extra):
+        agent = {
+            "name": name,
+            "host": "",
+            "qmd_index": name,
+            "color": "#888",
+        }
+        agent.update(extra)
+        app.state.config.agents.append(agent)
+
+    async def _registry_identity(self, app, *, display_name, handle, origin="taos-deployed"):
+        registry = app.state.agent_registry
+        priv, _pub = app.state.agent_registry_keypair
+        rec = await registry.register(
+            framework="taosmd",
+            display_name=display_name,
+            origin=origin,
+            handle=handle,
+        )
+        cid = rec["canonical_id"]
+        await app.state.agent_grants.add_grant(cid, "secrets_read_own")
+        token = mint_registry_token(cid, priv, user_id="u", framework="taosmd")
+        return cid, token
+
+    async def test_registry_display_name_does_not_bind_secrets(self, secrets_app, tmp_data_dir):
+        """A config agent named 'victim' with NO registry_canonical_id holds a
+        granted secret 'k'; a separate registry identity whose display_name is
+        'victim' must NOT read it -- 404, body without the secret value."""
+        self._config_agent(secrets_app, "victim")
+        store = secrets_app.state.secrets
+        await store.add(
+            name="k",
+            value="s3cr3t-victim",
+            category="general",
+            description="victim secret",
+            agents=["victim"],
+        )
+
+        _cid, token = await self._registry_identity(
+            secrets_app, display_name="victim", handle="victim-attacker"
+        )
+
+        async with _bare(secrets_app) as c:
+            r = await c.get(f"{SECRETS_SELF}/k", headers=_hdr(token))
+        assert r.status_code == 404
+        assert r.json() == {"detail": "Secret not found"}
+        assert "s3cr3t-victim" not in r.text
+
+    async def test_unbound_token_404_matches_ungranted_404(self, secrets_app, tmp_data_dir):
+        """An unbound token's 404 body equals the 404 body a BOUND agent gets for
+        a secret it was not granted -- no oracle on whether the caller is bound."""
+        _cid_unbound, unbound_token = await self._registry_identity(
+            secrets_app, display_name="unbound", handle="unbound-agent"
+        )
+        cid_bound, bound_token = await self._registry_identity(
+            secrets_app, display_name="bound-agent", handle="bound-agent"
+        )
+        self._config_agent(secrets_app, "bound-agent", registry_canonical_id=cid_bound)
+
+        async with _bare(secrets_app) as c:
+            r_unbound = await c.get(f"{SECRETS_SELF}/k", headers=_hdr(unbound_token))
+            r_bound = await c.get(f"{SECRETS_SELF}/k", headers=_hdr(bound_token))
+        assert r_unbound.status_code == 404
+        assert r_bound.status_code == 404
+        assert r_unbound.json() == r_bound.json()

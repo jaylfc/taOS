@@ -14,7 +14,6 @@ from tinyagentos.auth_context import (
     require_agent_owner_or_admin,
     require_owner_or_admin,
 )
-from tinyagentos.config import slugify_agent_name
 
 # The keystore is system-global (one store, plaintext values on read), so every
 # handler is admin-or-local-token EXCEPT the two agent-scoped reads, which stay
@@ -171,19 +170,10 @@ async def get_self_secret(
                 agent_name = agent.get("name")
                 break
     if agent_name is None:
-        # Fall back to the display name from the registry record.
-        from tinyagentos.agent_registry_store import AgentRegistryStore
-        registry = getattr(request.app.state, "agent_registry", None)
-        if registry is not None:
-            record = await registry.get(cid)
-            if record is not None:
-                agent_name = record.get("display_name")
-                # Strip leading @ (handle sigil) for consistency with config
-                # agent names used in the secrets store.
-                if agent_name and agent_name.startswith("@"):
-                    agent_name = agent_name[1:]
-    if agent_name is None:
-        raise HTTPException(status_code=403, detail="agent identity could not be resolved")
+        # No config agent carries registry_canonical_id == cid, so this token
+        # is not bound to any config agent. Return the SAME body as an
+        # ungranted name so there is no oracle on whether the caller is bound.
+        raise HTTPException(status_code=404, detail="Secret not found")
     # Look up secrets granted to this agent.
     store = request.app.state.secrets
     secrets = await store.get_agent_secrets(agent_name)
