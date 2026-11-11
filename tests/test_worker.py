@@ -136,6 +136,7 @@ class TestDetectCapabilities:
         with patch("shutil.which", return_value=None):
             caps = agent.detect_capabilities(backends)
         assert "tts" in caps
+        assert "llm-chat" not in caps
         assert "asr" not in caps
 
     def test_respects_preattached_capabilities(self):
@@ -963,6 +964,92 @@ class TestDetectBackends:
         assert len(backends[0]["models"]) == 1
         assert backends[0]["models"][0]["name"] == "kokoro-model"
 
+    async def test_manifest_declared_kokoro_deduped_against_llama_swap(self):
+        """A kokoro backend declared in the worker manifest on the same port
+        as a llama-swap backend is currently NOT deduplicated against the
+        llama-swap live backend. The manifest entry creates a synthetic
+        stopped backend with url=None, which is added after the dedupe pass,
+        so both llama-swap (live) and kokoro (stopped) are reported.
+        This test documents the current behavior; see taOS #XXXX for tracking
+        whether synthetic entries should also be deduplicated."""
+        agent = WorkerAgent("http://localhost:6969")
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        # llama-swap's /v1/models response
+        mock_response.json.return_value = {
+            "data": [
+                {"id": "kokoro-model", "object": "model", "created": 1234567890}
+            ],
+            "object": "list"
+        }
+        
+        # llama-swap's /running response
+        mock_running_response = MagicMock()
+        mock_running_response.status_code = 200
+        mock_running_response.json.return_value = {
+            "running": [{"model": "kokoro-model", "state": "ready"}]
+        }
+        
+        with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            
+            async def mock_get(url):
+                if "8880" in url:
+                    # For llama-swap's /v1/models endpoint
+                    if "/v1/models" in url:
+                        return mock_response
+                    # For llama-swap's /running endpoint  
+                    if "/running" in url:
+                        return mock_running_response
+                raise Exception("not running")
+            
+            mock_client.get = AsyncMock(side_effect=mock_get)
+            mock_client_cls.return_value = mock_client
+            
+            # Manifest declares a kokoro backend on port 8880
+            manifest = {
+                "resource_id": "w1",
+                "models": [
+                    {
+                        "model_id": "kokoro-model",
+                        "capability": "tts",
+                        "software": "kokoro",
+                        "port": 8880,
+                        "vram_required_gb": 0.0,
+                        "health_url": "http://localhost:8880/health",
+                    },
+                ],
+            }
+            # TAOS_EXTRA_BACKENDS has llama-swap on the same port
+            with patch("tinyagentos.worker.worker_manifest.load_manifest",
+                       return_value=manifest):
+                with patch("os.environ.get", return_value="llama-swap=http://localhost:8880"):
+                    backends = await agent.detect_backends()
+        
+        # Current behavior: both llama-swap (live) and kokoro (synthetic stopped) are reported
+        # because synthetic entries are added after the dedupe pass
+        types = {b["type"] for b in backends}
+        assert types == {"llama-swap", "kokoro"}, f"expected both llama-swap and kokoro, got {types}"
+        assert len(backends) == 2
+        # Find the llama-swap backend
+        llama_swap = next(b for b in backends if b["type"] == "llama-swap")
+        assert llama_swap["url"] == "http://localhost:8880"
+        assert llama_swap["name"] == "llama-swap:8880"
+        assert len(llama_swap["models"]) == 1
+        assert llama_swap["models"][0]["name"] == "kokoro-model"
+        # Find the synthetic kokoro backend
+        kokoro = next(b for b in backends if b["type"] == "kokoro")
+        assert kokoro["status"] == "stopped"
+        assert kokoro["url"] is None
+        assert kokoro["name"] == "kokoro:8880"
+        # The manifest-declared model should appear in available_models
+        avail = kokoro.get("available_models", [])
+        assert len(avail) == 1
+        assert avail[0]["model_id"] == "kokoro-model"
+        assert avail[0]["status"] == "available"
+
     async def test_default_kokoro_voices_ok_models_error_returns_none(self):
         """Default kokoro candidate with /v1/audio/voices 200 but /v1/models
         raising (connection error or malformed JSON) must not raise and must
@@ -1063,6 +1150,47 @@ class TestDetectBackends:
         assert kokoro[0]["name"] == "kokoro:8880"
         assert kokoro[0]["capabilities"] == ["tts"]
         assert kokoro[0]["models"] == [{"name": "kokoro-model", "size_mb": 0}]
+
+    async def test_configured_kokoro_at_non_default_url_no_voices_route(self):
+        """A kokoro configured via TAOS_EXTRA_BACKENDS at a non-default URL
+        (e.g. :8881) must use the generic /v1/models probe (not the voices
+        check) and be included when /v1/models returns a model, even if
+        /v1/audio/voices returns 404."""
+        agent = WorkerAgent("http://localhost:6969")
+        voices_resp = MagicMock()
+        voices_resp.status_code = 404
+        models_resp = MagicMock()
+        models_resp.status_code = 200
+        models_resp.json.return_value = {
+            "data": [{"id": "kokoro-model-2", "object": "model", "created": 1234567890}],
+            "object": "list",
+        }
+
+        with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+
+            async def mock_get(url):
+                if "8881" in url:
+                    if "/v1/audio/voices" in url:
+                        return voices_resp
+                    if "/v1/models" in url:
+                        return models_resp
+                raise Exception("not running")
+
+            mock_client.get = AsyncMock(side_effect=mock_get)
+            mock_client_cls.return_value = mock_client
+
+            with patch("os.environ.get", return_value="kokoro=http://localhost:8881"):
+                backends = await agent.detect_backends()
+
+        kokoro = [b for b in backends if b["type"] == "kokoro"]
+        assert len(kokoro) == 1
+        assert kokoro[0]["url"] == "http://localhost:8881"
+        assert kokoro[0]["name"] == "kokoro:8881"
+        assert kokoro[0]["capabilities"] == ["tts"]
+        assert kokoro[0]["models"] == [{"name": "kokoro-model-2", "size_mb": 0}]
 
 
 # ---------------------------------------------------------------------------
