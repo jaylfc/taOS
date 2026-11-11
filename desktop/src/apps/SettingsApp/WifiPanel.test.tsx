@@ -125,7 +125,10 @@ describe("WifiPanel", () => {
 });
 
 describe("WifiPanel controls", () => {
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
 
   const baseResponse = {
     available: true,
@@ -568,7 +571,6 @@ describe("WifiPanel controls", () => {
     await act(async () => {
       resolveLoad!(json({ ...baseResponse, access_points: baseResponse.access_points.map(ap => ({ ...ap, active: false })) }));
     });
-    vi.useRealTimers();
   }, 15000);
 
   it("in-flight status announced via aria-live polite", async () => {
