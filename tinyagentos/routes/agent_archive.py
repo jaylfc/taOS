@@ -21,6 +21,40 @@ from tinyagentos.containers import SNAPSHOT_TIMEOUT_S
 logger = logging.getLogger(__name__)
 
 
+def _safe_archive_base(data_dir: Path, entry: dict) -> Path | None:
+    """Return resolved archive base path only if it is strictly inside data_dir/archive.
+
+    Returns None and logs a warning when archive_dir is missing, empty, absolute,
+    contains path traversal (..), or resolves outside the archive root.
+    """
+    archive_dir = entry.get("archive_dir", "")
+    archive_id = entry.get("id", "unknown")
+    if not archive_dir or not isinstance(archive_dir, str):
+        logger.warning("purge/restore: archive entry %s has missing or empty archive_dir", archive_id)
+        return None
+    # Reject absolute paths (pathlib drops left side for absolute right side)
+    if Path(archive_dir).is_absolute():
+        logger.warning("purge/restore: archive entry %s has absolute archive_dir: %s", archive_id, archive_dir)
+        return None
+    archive_root = (data_dir / "archive").resolve()
+    candidate = (data_dir / archive_dir).resolve()
+    # Must be strictly inside archive_root (not equal, and is_relative_to)
+    try:
+        if not candidate.is_relative_to(archive_root) or candidate == archive_root:
+            logger.warning(
+                "purge/restore: archive entry %s archive_dir %s escapes archive root",
+                archive_id, archive_dir,
+            )
+            return None
+    except Exception:
+        logger.warning(
+            "purge/restore: archive entry %s archive_dir %s caused resolution error",
+            archive_id, archive_dir,
+        )
+        return None
+    return candidate
+
+
 def _archive_timestamp() -> str:
     """UTC timestamp as YYYYMMDDTHHMMSS for archive naming."""
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
@@ -385,7 +419,7 @@ async def restore_archived(request: Request, archive_id: str):
         return JSONResponse({"error": "Could not resolve restore slug"}, status_code=500)
 
     data_dir = request.app.state.data_dir
-    archive_base = data_dir / entry.get("archive_dir", "")
+    archive_base = _safe_archive_base(data_dir, entry)
 
     # 1) Restore snapshot. Container must be stopped (archive left it stopped).
     snap_result = await snapshot_restore(container, snapshot_name)
@@ -469,25 +503,26 @@ async def restore_archived(request: Request, archive_id: str):
 
     # 6) Re-import chat-export.jsonl from the archive path if present.
     try:
-        chat_export_file = archive_base / "chat" / "chat-export.jsonl"
-        if chat_export_file.exists():
-            msg_store = request.app.state.chat_messages
-            imported = 0
-            try:
-                with chat_export_file.open("r", encoding="utf-8") as fh:
-                    for raw_line in fh:
-                        raw_line = raw_line.strip()
-                        if not raw_line:
-                            continue
-                        try:
-                            msg = _json.loads(raw_line)
-                            await msg_store.ensure_message(msg)
-                            imported += 1
-                        except Exception as line_exc:  # noqa: BLE001
-                            logger.warning("restore: bad export line, skipping: %s", line_exc)
-                logger.info("restore: re-imported %d messages from chat-export", imported)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("restore: chat-export read failed for %s: %s", final_slug, exc)
+        if archive_base is not None:
+            chat_export_file = archive_base / "chat" / "chat-export.jsonl"
+            if chat_export_file.exists():
+                msg_store = request.app.state.chat_messages
+                imported = 0
+                try:
+                    with chat_export_file.open("r", encoding="utf-8") as fh:
+                        for raw_line in fh:
+                            raw_line = raw_line.strip()
+                            if not raw_line:
+                                continue
+                            try:
+                                msg = _json.loads(raw_line)
+                                await msg_store.ensure_message(msg)
+                                imported += 1
+                            except Exception as line_exc:  # noqa: BLE001
+                                logger.warning("restore: bad export line, skipping: %s", line_exc)
+                    logger.info("restore: re-imported %d messages from chat-export", imported)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("restore: chat-export read failed for %s: %s", final_slug, exc)
     except Exception as exc:  # noqa: BLE001
         logger.warning("restore: chat re-import outer failed: %s", exc)
 
@@ -547,7 +582,7 @@ async def purge_archived(request: Request, archive_id: str):
         f"taos-agent-{archived_slug}" if archived_slug else ""
     )
     data_dir = request.app.state.data_dir
-    archive_base = data_dir / entry.get("archive_dir", "")
+    archive_base = _safe_archive_base(data_dir, entry)
 
     # 1) Destroy container (destroys all snapshots too in incus).
     #    "not found" is fine — container may already be gone.
@@ -570,7 +605,7 @@ async def purge_archived(request: Request, archive_id: str):
             logger.warning("purge: export path cleanup failed %s: %s", export_path, exc)
 
     # 3) Wipe archive dir (chat-export + any other host-side state).
-    if archive_base.exists():
+    if archive_base is not None and archive_base.exists():
         try:
             shutil.rmtree(archive_base, ignore_errors=True)
         except Exception:
