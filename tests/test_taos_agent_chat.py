@@ -1431,6 +1431,10 @@ async def test_chat_kilo_changed_prompt_starts_new_session(client, app, monkeypa
     assert "-s old-session" not in stderr_output, (
         f"Expected new session (no -s old-session), but capture shows: {stderr_output}"
     )
+    # The message should start with the NEW prompt "NEW PROMPT"
+    assert "NEW PROMPT" in stderr_output, (
+        f"Expected message to start with new prompt 'NEW PROMPT', capture: {stderr_output}"
+    )
 
     # --- Case 2: Unchanged prompt should resume the old session ---
     # New capture file for second call
