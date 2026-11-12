@@ -94,6 +94,7 @@ _ALLOWED_SCOPES = frozenset({
     "files_read", "files_write",
     "registry_feeds_read",
     "chat_session",
+    "secrets_read_own",
     "project_tasks",
     "project_tasks_create",
     "project_tasks_update",
