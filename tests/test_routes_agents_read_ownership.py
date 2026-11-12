@@ -419,3 +419,20 @@ class TestLocalTokenRevokeFailsClosed:
         assert (await client.post("/api/agents/archived/ghost-1/restore")).status_code == 500
         assert restorable == []
         assert any(e["id"] == "ghost-1" for e in app.state.config.archived_agents)
+
+    @pytest.mark.asyncio
+    async def test_concurrent_restores_of_one_archive_restore_it_once(self, restorable, client, app, monkeypatch):
+        import asyncio
+        import tinyagentos.containers as containers
+
+        async def yielding_restore(*args, **kwargs):
+            await asyncio.sleep(0.05)
+            return {"success": True, "output": ""}
+        monkeypatch.setattr(containers, "snapshot_restore", yielding_restore)
+        first, second = await asyncio.gather(
+            client.post("/api/agents/archived/ghost-1/restore"),
+            client.post("/api/agents/archived/ghost-1/restore"),
+        )
+        assert sorted([first.status_code, second.status_code]) == [200, 404]
+        assert [a["name"] for a in app.state.config.agents].count("ghost") == 1
+        assert len(restorable) == 1

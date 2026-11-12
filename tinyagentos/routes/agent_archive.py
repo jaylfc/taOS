@@ -7,6 +7,7 @@ agents.py; only the business logic lives here.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +18,13 @@ from tinyagentos.agent_db import find_agent
 from tinyagentos.config import save_config_locked, unique_agent_slug
 
 logger = logging.getLogger(__name__)
+
+# Serializes restores from the archive-entry lookup through the config
+# publication. Without it two restores (of one archive, or of two archives
+# wanting the same slug) both pass the lookup and unique_agent_slug, both mint
+# a local token for the same name (the second revoking the first) and both
+# append the agent. Per-process: it does not span controller workers.
+_restore_lock = asyncio.Lock()
 
 
 def _archive_timestamp() -> str:
@@ -336,6 +344,11 @@ async def archive_agent_fully(request: Request, name: str) -> dict:
 
 
 async def restore_archived(request: Request, archive_id: str):
+    async with _restore_lock:
+        return await _restore_archived(request, archive_id)
+
+
+async def _restore_archived(request: Request, archive_id: str):
     import json as _json
     from tinyagentos.containers import (
         snapshot_restore, rename_container, start_container, set_env, exec_in_container,

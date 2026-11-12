@@ -220,6 +220,7 @@ archive and purge revoke it, a new deploy under the name revokes any token still
 bound there, and restore mints a fresh one. A revoke that fails stops archive or
 purge before the entry moves (retry once the bindings file is readable), and a
 restore whose fresh token cannot be installed leaves the container stopped.
+Restores run one at a time: a second restore of the same archive answers `404`.
 `GET /api/agents/containers` follows the agent list's visibility: a member sees
 only their own agents' containers.
 
