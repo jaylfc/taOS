@@ -338,7 +338,18 @@ async def archive_agent_fully(request: Request, name: str) -> dict:
         except Exception as exc:  # noqa: BLE001
             logger.warning("archive: chat-export failed for %s: %s", slug, exc)
 
-        # 4b) Flag the channel archived with full metadata.
+    # 5) Revoke the agent's key-store key (best effort) and every LLM gateway
+    #    key bound to the agent. Both stores are local; nothing is gated on a
+    #    process. A failed local-token revoke stops here, before the config
+    #    moves the agent out of agents, so the archive can be retried.
+    try:
+        _revoke_gateway_keys(request, slug, agent_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("archive: credential revoke failed for %s: %s", slug, exc)
+        return {"error": f"archive failed: credential revoke failed: {exc}", "status_code": 500}
+
+    # 4b) Flag the channel archived with full metadata.
+    if channel_id:
         try:
             ch_store = request.app.state.chat_channels
             await ch_store.set_settings(
@@ -352,16 +363,6 @@ async def archive_agent_fully(request: Request, name: str) -> dict:
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("archive: channel flag failed for %s: %s", channel_id, exc)
-
-    # 5) Revoke the agent's key-store key (best effort) and every LLM gateway
-    #    key bound to the agent. Both stores are local; nothing is gated on a
-    #    process. A failed local-token revoke stops here, before the config
-    #    moves the agent out of agents, so the archive can be retried.
-    try:
-        _revoke_gateway_keys(request, slug, agent_id)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("archive: credential revoke failed for %s: %s", slug, exc)
-        return {"error": f"archive failed: credential revoke failed: {exc}", "status_code": 500}
     llm_key = agent.get("llm_key")
     llm_proxy = getattr(request.app.state, "llm_proxy", None)
     if llm_key and llm_proxy:
