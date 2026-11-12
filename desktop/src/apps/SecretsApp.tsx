@@ -8,6 +8,7 @@ import {
   CardTitle,
   Input,
   Label,
+  Switch,
 } from "@/components/ui";
 import { GitHubConnect } from "./secrets/GitHubConnect";
 
@@ -216,6 +217,8 @@ export function SecretsApp({ windowId: _windowId }: { windowId: string }) {
     open: false,
     editing: null,
   });
+  const [keenablePublicFallback, setKeenablePublicFallback] = useState(false);
+  const [keenableLoading, setKeenableLoading] = useState(true);
 
   const fetchSecrets = useCallback(async () => {
     // 10s timeout via AbortController so a hung backend never leaves the
@@ -258,7 +261,47 @@ export function SecretsApp({ windowId: _windowId }: { windowId: string }) {
 
   useEffect(() => {
     fetchSecrets();
+    fetchKeenablePreference();
   }, [fetchSecrets]);
+
+  const fetchKeenablePreference = useCallback(async () => {
+    try {
+      const res = await fetch("/api/preferences/broker", {
+        headers: { Accept: "application/json" },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && typeof data === "object") {
+          setKeenablePublicFallback(Boolean(data.keenable_public_fallback));
+        }
+      }
+    } catch { /* ignore */ }
+    finally {
+      setKeenableLoading(false);
+    }
+  }, []);
+
+  const handleKeenableToggle = useCallback(async (enabled: boolean) => {
+    setKeenablePublicFallback(enabled);
+    try {
+      // Read current preferences first to merge
+      const getRes = await fetch("/api/preferences/broker", {
+        headers: { Accept: "application/json" },
+      });
+      let current: Record<string, unknown> = {};
+      if (getRes.ok) {
+        const data = await getRes.json();
+        if (data && typeof data === "object") {
+          current = data;
+        }
+      }
+      await fetch("/api/preferences/broker", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...current, keenable_public_fallback: enabled }),
+      });
+    } catch { /* ignore */ }
+  }, []);
 
   const handleReveal = async (name: string) => {
     const secret = secrets.find((s) => s.name === name);
@@ -366,6 +409,33 @@ export function SecretsApp({ windowId: _windowId }: { windowId: string }) {
         <div className="p-4">
           <GitHubConnect />
         </div>
+        {!keenableLoading && (
+          <div className="px-4 pb-4">
+            <Card className="bg-shell-surface border-white/5">
+              <CardContent className="px-4 py-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <KeyRound size={18} className="text-sky-400" />
+                    <div>
+                      <p className="text-sm font-medium text-shell-text">
+                        Allow Keenable keyless search
+                      </p>
+                      <p className="text-xs text-shell-text-tertiary">
+                        Sends queries to Keenable's shared public pool when no KEENABLE_API_KEY is set
+                      </p>
+                    </div>
+                  </div>
+                  <Switch
+                    id="keenable-public-fallback"
+                    checked={keenablePublicFallback}
+                    onCheckedChange={handleKeenableToggle}
+                    aria-label="Allow Keenable keyless search"
+                  />
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        )}
         {loading ? (
           <div className="flex items-center justify-center h-full text-shell-text-tertiary text-sm">
             Loading secrets...

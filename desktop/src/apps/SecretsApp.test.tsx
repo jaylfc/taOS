@@ -227,4 +227,72 @@ describe("SecretsApp", () => {
     expect(screen.queryByText("DB_TOKEN")).toBeNull();
     expect(screen.getByText(/no secrets match this filter/i)).toBeTruthy();
   });
+
+  it("renders Keenable toggle unchecked when preference is absent", async () => {
+    const fetchMock = mockFetch({
+      "/api/secrets": { ok: true, body: [] },
+      "/api/preferences/broker": { ok: true, body: {} },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SecretsApp windowId="win-1" />);
+    await flush();
+    // Wait for keenable preference to load
+    await waitFor(() =>
+      expect(screen.getByLabelText(/allow keenable keyless search/i)).toBeTruthy(),
+    );
+    const toggle = screen.getByRole("switch", { name: /allow keenable keyless search/i });
+    expect(toggle).not.toBeChecked();
+  });
+
+  it("renders Keenable toggle checked when preference is true", async () => {
+    const fetchMock = mockFetch({
+      "/api/secrets": { ok: true, body: [] },
+      "/api/preferences/broker": { ok: true, body: { keenable_public_fallback: true } },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SecretsApp windowId="win-1" />);
+    await flush();
+    await waitFor(() =>
+      expect(screen.getByLabelText(/allow keenable keyless search/i)).toBeTruthy(),
+    );
+    const toggle = screen.getByRole("switch", { name: /allow keenable keyless search/i });
+    expect(toggle).toBeChecked();
+  });
+
+  it("toggles Keenable preference and PUTs merged object", async () => {
+    const putMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/json" },
+      json: () => Promise.resolve({ ok: true }),
+    });
+    const fetchMock = mockFetch({
+      "/api/secrets": { ok: true, body: [] },
+      "/api/preferences/broker": { ok: true, body: { other_key: "value" } },
+    });
+    // Override PUT to capture the call
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((input: string, init?: RequestInit) => {
+      if (init?.method === "PUT" && input === "/api/preferences/broker") {
+        return putMock(input, init);
+      }
+      return fetchMock(input, init);
+    }));
+
+    render(<SecretsApp windowId="win-1" />);
+    await flush();
+    await waitFor(() =>
+      expect(screen.getByLabelText(/allow keenable keyless search/i)).toBeTruthy(),
+    );
+
+    const toggle = screen.getByRole("switch", { name: /allow keenable keyless search/i });
+    expect(toggle).not.toBeChecked();
+
+    fireEvent.click(toggle);
+    await flush();
+
+    expect(putMock).toHaveBeenCalled();
+    const putCall = putMock.mock.calls[0];
+    const body = JSON.parse(putCall[1]?.body as string);
+    expect(body).toEqual({ other_key: "value", keenable_public_fallback: true });
+  });
 });
