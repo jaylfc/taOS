@@ -328,7 +328,8 @@ def _fake_containers(monkeypatch, *names):
 
     async def fake_list(prefix=""):
         return [
-            SimpleNamespace(name=f"taos-agent-{n}", status="Running", ip="10.0.0.9", memory_mb=512, cpu_cores=1)
+            SimpleNamespace(name=f"taos-agent-{n}", status="Running", ip="10.0.0.9",
+                            memory_mb=512, cpu_cores=1, project=None)
             for n in names
         ]
     monkeypatch.setattr(containers, "list_containers", fake_list)
@@ -348,6 +349,33 @@ class TestContainerListOwnership:
         _fake_containers(monkeypatch, "alpha", "orphan")
         names = [c["agent_name"] for c in (await client.get("/api/agents/containers")).json()]
         assert names == ["alpha", "orphan"]
+
+    @pytest.mark.asyncio
+    async def test_member_sees_only_their_project_container(self, owner_clients, app, monkeypatch):
+        """Two Incus projects each hold a `taos-agent-alpha`; the owner of alpha
+        (whose config records incus_project=user-1) gets exactly the user-1 row,
+        not the other project's."""
+        from types import SimpleNamespace
+        import tinyagentos.containers as containers
+
+        alice, _bob = owner_clients
+        alpha = next(a for a in app.state.config.agents if a["name"] == "alpha")
+        alpha["incus_project"] = "user-1"
+
+        async def fake_list(prefix=""):
+            return [
+                SimpleNamespace(name="taos-agent-alpha", status="Running",
+                                ip="10.0.0.11", memory_mb=512, cpu_cores=1,
+                                project="user-1"),
+                SimpleNamespace(name="taos-agent-alpha", status="Running",
+                                ip="10.0.0.22", memory_mb=512, cpu_cores=1,
+                                project="user-2"),
+            ]
+        monkeypatch.setattr(containers, "list_containers", fake_list)
+
+        rows = (await alice.get("/api/agents/containers")).json()
+        assert len(rows) == 1
+        assert rows[0]["ip"] == "10.0.0.11"
 
 
 class TestLocalTokenRevokedOnRemoval:
