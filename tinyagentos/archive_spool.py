@@ -136,15 +136,16 @@ async def record_lossless(
 async def drain_spool(archive: Any, spool_path: Path) -> None:
     """Replay spooled events through archive.record, keeping failures.
 
-    Atomically claims the spool file by renaming it to .draining, replays
-    entries from the claimed file, appends failed lines back to a fresh spool
-    file with full durability, and only then removes the .draining file.
-    A module-level lock prevents concurrent drains.
+    Atomically claims the spool file by renaming it to .draining, then to a
+    temp .replay.<pid> file for processing. Replays entries from the temp file,
+    appends failed lines back to a fresh spool file with full durability.
+    On success, removes the temp file. On append-back failure, renames the
+    temp file back to .draining for retry.
 
     No .done index is used; after any crash the .draining file is replayed in
     full (at-least-once delivery). Failed or malformed lines are appended back
     to spool.jsonl immediately as they are encountered. If any append-back
-    raises, the loop stops, .draining is kept, and a critical log is emitted
+    raises, the loop stops, .draining is restored, and a critical log is emitted
     without event content. Lines already appended back may be replayed twice.
 
     Args:
@@ -153,14 +154,15 @@ async def drain_spool(archive: Any, spool_path: Path) -> None:
     """
     async with _drain_lock:
         draining_path = spool_path.with_name(spool_path.name + ".draining")
+        replay_path = spool_path.with_name(f".replay.{os.getpid()}")
 
-        # If a .draining file exists from a crashed earlier drain, replay that first
+        # If a .draining file exists from a crashed earlier drain, use it
         if draining_path.exists():
-            replay_path = draining_path
+            os.replace(draining_path, replay_path)
         elif spool_path.exists():
-            # Atomically claim the spool file
+            # Atomically claim the spool file, then move to replay temp file
             os.replace(spool_path, draining_path)
-            replay_path = draining_path
+            os.replace(draining_path, replay_path)
         else:
             return
 
@@ -173,11 +175,17 @@ async def drain_spool(archive: Any, spool_path: Path) -> None:
                 replay_path,
                 e,
             )
+            # Restore .draining for retry
+            try:
+                os.replace(replay_path, draining_path)
+            except Exception:
+                pass
             return
 
         lines = content.splitlines()
 
-        for i, line in enumerate(lines):
+        append_back_failed = False
+        for line in lines:
             line = line.rstrip("\n")
             if not line.strip():
                 continue
@@ -194,7 +202,8 @@ async def drain_spool(archive: Any, spool_path: Path) -> None:
                         spool_path,
                         e,
                     )
-                    return
+                    append_back_failed = True
+                    break
                 continue
 
             try:
@@ -218,10 +227,21 @@ async def drain_spool(archive: Any, spool_path: Path) -> None:
                         spool_path,
                         append_e,
                     )
-                    return
+                    append_back_failed = True
+                    break
 
-        # All lines processed successfully (or no lines); remove .draining
+        if append_back_failed:
+            # Restore .draining for retry; replay_path becomes .draining
+            try:
+                os.replace(replay_path, draining_path)
+            except Exception as e:  # noqa: BLE001
+                logger.critical(
+                    "archive spool: failed to restore .draining file error=%s", e
+                )
+            return
+
+        # All lines processed successfully; remove temp replay file
         try:
-            draining_path.unlink()
+            replay_path.unlink()
         except Exception as e:  # noqa: BLE001
-            logger.warning("archive spool: failed to remove .draining file: %s", e)
+            logger.warning("archive spool: failed to remove replay file: %s", e)
