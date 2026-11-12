@@ -217,8 +217,11 @@ sees no archives and cannot restore or purge one; and
 
 **A per-agent local token dies with its agent's name.** It is bound by name, so
 archive and purge revoke it, a new deploy under the name revokes any token still
-bound there, and restore mints a fresh one. `GET /api/agents/containers` follows
-the agent list's visibility: a member sees only their own agents' containers.
+bound there, and restore mints a fresh one. A revoke that fails stops archive or
+purge before the entry moves (retry once the bindings file is readable), and a
+restore whose fresh token cannot be installed leaves the container stopped.
+`GET /api/agents/containers` follows the agent list's visibility: a member sees
+only their own agents' containers.
 
 **A configured agent's owner is its canonical id, not its name.** Deploy gives a
 repeated display name a unique config name (`helper-2`) while the registry slug

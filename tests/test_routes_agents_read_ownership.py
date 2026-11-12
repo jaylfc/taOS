@@ -347,3 +347,75 @@ class TestLocalTokenRevokedOnRemoval:
         token = app.state.auth.mint_agent_local_token("alpha")
         _revoke_gateway_keys(SimpleNamespace(app=app), "alpha", None)
         assert not app.state.auth.validate_local_token(token)
+
+
+def _corrupt_bindings(app) -> None:
+    app.state.auth._local_token_agent_path().write_text("not json")
+
+
+class TestLocalTokenRevokeFailsClosed:
+    """A local token that cannot be revoked must not be reported as revoked:
+    archive and purge stop with the agent's entry intact so they can be
+    retried, and restore never starts a container without its fresh token."""
+
+    @pytest.mark.asyncio
+    async def test_archive_keeps_the_agent_when_the_token_cannot_be_revoked(self, owner_clients, client, app, monkeypatch):
+        import tinyagentos.containers as containers
+
+        async def no_container(*args, **kwargs):
+            return None
+        monkeypatch.setattr(containers, "container_exists", no_container)
+        monkeypatch.setattr(containers, "resolve_agent_container", no_container)
+        _corrupt_bindings(app)
+        assert (await client.delete("/api/agents/alpha")).status_code == 500
+        assert any(a["name"] == "alpha" for a in app.state.config.agents)
+
+    @pytest.mark.asyncio
+    async def test_purge_keeps_the_entry_when_the_token_cannot_be_revoked(self, owner_clients, client, app, monkeypatch):
+        import tinyagentos.containers as containers
+
+        async def fake_destroy(name):
+            return {"success": True}
+        monkeypatch.setattr(containers, "destroy_container", fake_destroy)
+        _corrupt_bindings(app)
+        assert (await client.delete("/api/agents/archived/ghost-1")).status_code == 500
+        assert any(e["id"] == "ghost-1" for e in app.state.config.archived_agents)
+
+    @pytest.fixture
+    def restorable(self, owner_clients, app, monkeypatch):
+        """ghost-1 with a snapshot; returns the list of containers started."""
+        import tinyagentos.containers as containers
+
+        entry = next(e for e in app.state.config.archived_agents if e["id"] == "ghost-1")
+        entry["snapshot_name"] = "taos-archive-1"
+        started = []
+
+        async def ok(*args, **kwargs):
+            return {"success": True, "output": ""}
+
+        async def fake_start(name):
+            started.append(name)
+            return {"success": True}
+        monkeypatch.setattr(containers, "snapshot_restore", ok)
+        monkeypatch.setattr(containers, "rename_container", ok)
+        monkeypatch.setattr(containers, "start_container", fake_start)
+        monkeypatch.setattr(containers, "set_env", ok)
+        return started
+
+    @pytest.mark.asyncio
+    async def test_restore_does_not_start_when_the_token_cannot_be_installed(self, restorable, client, app, monkeypatch):
+        import tinyagentos.containers as containers
+
+        async def failing_set_env(name, key, value):
+            return {"success": False, "output": "incus config set failed"}
+        monkeypatch.setattr(containers, "set_env", failing_set_env)
+        assert (await client.post("/api/agents/archived/ghost-1/restore")).status_code == 500
+        assert restorable == []
+        assert any(e["id"] == "ghost-1" for e in app.state.config.archived_agents)
+
+    @pytest.mark.asyncio
+    async def test_restore_does_not_start_when_the_token_cannot_be_minted(self, restorable, client, app):
+        _corrupt_bindings(app)
+        assert (await client.post("/api/agents/archived/ghost-1/restore")).status_code == 500
+        assert restorable == []
+        assert any(e["id"] == "ghost-1" for e in app.state.config.archived_agents)
