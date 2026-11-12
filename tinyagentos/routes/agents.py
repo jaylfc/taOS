@@ -208,8 +208,13 @@ async def _visible_to_caller(request: Request, entries: list[dict], owner_key) -
 
     Ownership is the registry's, as in ``require_agent_owner_or_admin``, so an
     agent the registry cannot attribute is listed to admins only. *owner_key*
-    maps an entry to the id the registry is asked about.
+    maps an entry to the id the registry is asked about. A per-agent local
+    token is marked admin, so it is fenced to its own agent first; archive
+    entries carry no top-level ``name``, so it sees none of them.
     """
+    bound = getattr(request.state, "agent_name", None)
+    if bound:
+        return [e for e in entries if e.get("name") == bound]
     if getattr(request.state, "is_admin", False) or getattr(request.state, "via", None) == "local_token":
         return list(entries)
     uid = getattr(request.state, "user_id", None)
@@ -230,7 +235,13 @@ def _archived_registry_id(entry: dict) -> str:
 
 
 def _archive_owner_id(request: Request, archive_id: str) -> str:
-    """``_archived_registry_id`` of the archive entry *archive_id*, or ``""``."""
+    """``_archived_registry_id`` of the archive entry *archive_id*, or ``""``.
+
+    A per-agent local token is marked admin, which would skip the ownership
+    check, and an agent has no business restoring or purging an archive.
+    """
+    if getattr(request.state, "agent_name", None):
+        raise HTTPException(status_code=403, detail="forbidden")
     entry = next((a for a in request.app.state.config.archived_agents if a.get("id") == archive_id), None)
     return _archived_registry_id(entry) if entry else ""
 

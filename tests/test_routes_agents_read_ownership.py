@@ -243,3 +243,29 @@ class TestDedupedNameOwnership:
         assert (await alice.get("/api/agents/helper-2")).status_code == 403
         assert "helper-2" not in [a["name"] for a in (await alice.get("/api/agents")).json()]
         assert (await client.get("/api/agents/helper-2")).status_code == 200
+
+
+class TestBoundAgentToken:
+    """A per-agent local token is marked admin by the middleware, so every list
+    and archive route must fence it to its own agent before the admin bypass."""
+
+    @pytest_asyncio.fixture
+    async def beta(self, owner_clients, app):
+        _add_agent(app, "beta")
+        token = app.state.auth.mint_agent_local_token("beta")
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test",
+            headers={"Authorization": f"Bearer {token}"}, event_hooks=csrf_event_hooks(),
+        ) as c:
+            yield c
+
+    @pytest.mark.asyncio
+    async def test_list_shows_only_the_bound_agent(self, beta):
+        assert [a["name"] for a in (await beta.get("/api/agents")).json()] == ["beta"]
+        assert (await beta.get("/api/agents/archived")).json() == []
+
+    @pytest.mark.asyncio
+    async def test_cannot_restore_or_purge_archives(self, beta, app):
+        assert (await beta.post("/api/agents/archived/ghost-1/restore")).status_code == 403
+        assert (await beta.delete("/api/agents/archived/ghost-1")).status_code == 403
+        assert any(e["id"] == "ghost-1" for e in app.state.config.archived_agents)

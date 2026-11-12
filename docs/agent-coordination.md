@@ -210,7 +210,9 @@ bearer credential), not even to an admin, including the deployer result inside
 **Archived agents belong to the canonical id saved at deploy.** An archive entry's
 `id` is the agent's config id, which the registry does not know, and its slug can
 be reused, so the archived list and the restore and purge routes resolve the owner
-through `original.registry_canonical_id`. An entry without one is admin-only, and
+through `original.registry_canonical_id`. An entry without one is admin-only; a
+per-agent local token (marked admin by the middleware) lists only its own agent,
+sees no archives and cannot restore or purge one; and
 `resolve_agent_owner` (`tinyagentos/auth_context.py`) attributes an empty id to nobody.
 
 **A configured agent's owner is its canonical id, not its name.** Deploy gives a
