@@ -15,6 +15,7 @@ Security hotfix cut from beta.57.
 
 - Agent workspace files can now only be read or changed by the agent's owner, an admin, or the agent itself.
 - Agent details, exports, logs, budgets and deploy status can now only be read by the agent's owner, an admin, or the agent itself; members only see their own agents in the list; and no API read returns an agent's LLM key any more. Multi-user installs should re-mint agent keys after upgrading.
+- Archived agents are listed to, and can be restored or purged by, their owner or an admin only; an archived agent with no recorded owner is admin-only.
 
 ## [1.0.0-beta.57] - 2026-10-23
 

@@ -203,24 +203,42 @@ async def _require_agent_access(
     await require_agent_owner_or_admin(request, user, name)
 
 
-async def _visible_to_caller(request: Request, entries: list[dict], id_key: str) -> list[dict]:
+async def _visible_to_caller(request: Request, entries: list[dict], owner_key) -> list[dict]:
     """Every entry for an admin or the local token; a member sees only their own.
 
     Ownership is the registry's, as in ``require_agent_owner_or_admin``, so an
-    agent the registry cannot attribute is listed to admins only.
+    agent the registry cannot attribute is listed to admins only. *owner_key*
+    maps an entry to the id the registry is asked about.
     """
     if getattr(request.state, "is_admin", False) or getattr(request.state, "via", None) == "local_token":
         return list(entries)
     uid = getattr(request.state, "user_id", None)
     if not uid:
         return []
-    return [e for e in entries if await resolve_agent_owner(request, e.get(id_key) or "") == uid]
+    return [e for e in entries if await resolve_agent_owner(request, owner_key(e) or "") == uid]
+
+
+def _archived_registry_id(entry: dict) -> str:
+    """The registry id that owns an archive entry.
+
+    The entry ``id`` is the agent's config id, which the registry does not
+    know, and the slug can be reused by a later agent, so only the canonical
+    id saved at deploy counts. An entry without one is admin-only.
+    """
+    original = entry.get("original")
+    return (original.get("registry_canonical_id") or "") if isinstance(original, dict) else ""
+
+
+def _archive_owner_id(request: Request, archive_id: str) -> str:
+    """``_archived_registry_id`` of the archive entry *archive_id*, or ``""``."""
+    entry = next((a for a in request.app.state.config.archived_agents if a.get("id") == archive_id), None)
+    return _archived_registry_id(entry) if entry else ""
 
 
 @router.get("/api/agents")
 async def list_agents(request: Request):
     """List the configured agents the caller may see."""
-    agents = await _visible_to_caller(request, request.app.state.config.agents, "name")
+    agents = await _visible_to_caller(request, request.app.state.config.agents, lambda a: a.get("name"))
     return [_public_agent(a) for a in agents]
 
 
@@ -245,7 +263,7 @@ async def list_agent_containers(request: Request):
 @router.get("/api/agents/archived")
 async def list_archived_agents(request: Request):
     config = request.app.state.config
-    entries = await _visible_to_caller(request, config.archived_agents, "id")
+    entries = await _visible_to_caller(request, config.archived_agents, _archived_registry_id)
     return [
         {**e, "original": _public_agent(e["original"])} if isinstance(e.get("original"), dict) else e
         for e in entries
@@ -374,6 +392,8 @@ async def get_deploy_status(request: Request, name: str):
     task = deploy_tasks.get(name)
     if task is None:
         return JSONResponse({"error": f"No deploy task found for '{name}'"}, status_code=404)
+    if isinstance(task.get("result"), dict):
+        task = {**task, "result": _public_agent(task["result"])}
     return task
 
 
@@ -1570,14 +1590,14 @@ async def destroy_agent(request: Request, name: str, user: CurrentUser = Depends
 @router.post("/api/agents/archived/{archive_id}/restore")
 async def restore_archived_agent(request: Request, archive_id: str, user: CurrentUser = Depends(current_user)):
     """Restore an archived agent back to active status."""
-    await require_agent_owner_or_admin(request, user, archive_id)
+    await require_agent_owner_or_admin(request, user, _archive_owner_id(request, archive_id))
     return await agent_archive.restore_archived(request, archive_id)
 
 
 @router.delete("/api/agents/archived/{archive_id}")
 async def purge_archived_agent(request: Request, archive_id: str, user: CurrentUser = Depends(current_user)):
     """Permanently purge an archived agent."""
-    await require_agent_owner_or_admin(request, user, archive_id)
+    await require_agent_owner_or_admin(request, user, _archive_owner_id(request, archive_id))
     return await agent_archive.purge_archived(request, archive_id)
 
 

@@ -70,6 +70,10 @@ async def resolve_agent_owner(request: Request, agent_id: str) -> str | None:
     wired, or not initialised); callers must treat that as NOT owned by the
     caller, never as free-for-all.
     """
+    if not agent_id:
+        # get_by_handle("") matches every agent registered without a handle,
+        # so an empty id would resolve to whichever of them is oldest.
+        return None
     registry = getattr(request.app.state, "agent_registry", None)
     if registry is None:
         return None

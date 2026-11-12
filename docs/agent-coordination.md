@@ -204,7 +204,14 @@ delete from any agent's workspace.
 require the agent's owner or an admin, with a per-agent local token fenced to its
 own agent. A member's `GET /api/agents` and `/api/agents/archived` list only the
 agents the registry attributes to them. No read returns `llm_key` (the agent's
-bearer credential), not even to an admin; it stays in config and import re-mints it.
+bearer credential), not even to an admin, including the deployer result inside
+`/deploy-status`; it stays in config and import re-mints it.
+
+**Archived agents belong to the canonical id saved at deploy.** An archive entry's
+`id` is the agent's config id, which the registry does not know, and its slug can
+be reused, so the archived list and the restore and purge routes resolve the owner
+through `original.registry_canonical_id`. An entry without one is admin-only, and
+`resolve_agent_owner` (`tinyagentos/auth_context.py`) attributes an empty id to nobody.
 
 **`assign-agent`'s scope list is authoritative, not a delta.** It returns 200
 with `granted_scopes` echoing the request and, since taOS #2148, reconciles the

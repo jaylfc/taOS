@@ -126,3 +126,66 @@ class TestNoReadReturnsLlmKey:
         await client.get("/api/agents")
         stored = next(a for a in app.state.config.agents if a["name"] == "alpha")
         assert stored["llm_key"] == ALPHA_KEY
+
+    @pytest.mark.asyncio
+    async def test_deploy_status_carries_no_llm_key(self, owner_clients, client, app):
+        app.state.deploy_tasks["alpha"] = {
+            "status": "success", "name": "alpha", "result": {"success": True, "llm_key": ALPHA_KEY},
+        }
+        alice, _bob = owner_clients
+        for c in (alice, client):
+            resp = await c.get("/api/agents/alpha/deploy-status")
+            assert resp.status_code == 200
+            assert resp.json()["result"] == {"success": True}
+        assert app.state.deploy_tasks["alpha"]["result"]["llm_key"] == ALPHA_KEY
+
+
+class TestArchivedOwnership:
+    """An archive entry's ``id`` is the config id; the owner is found through
+    ``original.registry_canonical_id``, never the archive id or the reusable slug."""
+
+    @pytest_asyncio.fixture
+    async def archived(self, owner_clients, app):
+        alice, bob = owner_clients
+        alice_uid = app.state.auth.find_user("alice")["id"]
+        row = await app.state.agent_registry.register(
+            framework="claude-code", display_name="beta", user_id=alice_uid
+        )
+        app.state.config.archived_agents.append(
+            {"id": "a1b2c3d4e5f6", "archived_slug": "beta",
+             "original": {"name": "beta", "registry_canonical_id": row["canonical_id"]}}
+        )
+        return alice, bob
+
+    @pytest.mark.asyncio
+    async def test_owner_sees_own_archived_agent(self, archived):
+        alice, bob = archived
+        assert [e["id"] for e in (await alice.get("/api/agents/archived")).json()] == ["a1b2c3d4e5f6"]
+        assert (await bob.get("/api/agents/archived")).json() == []
+
+    @pytest.mark.asyncio
+    async def test_other_member_cannot_restore_or_purge(self, archived):
+        _alice, bob = archived
+        assert (await bob.post("/api/agents/archived/a1b2c3d4e5f6/restore")).status_code == 403
+        assert (await bob.delete("/api/agents/archived/a1b2c3d4e5f6")).status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_owner_passes_the_restore_and_purge_guard(self, archived, monkeypatch):
+        from tinyagentos.routes import agent_archive
+
+        async def _fake(request, archive_id):
+            return {"status": "ok", "id": archive_id}
+
+        monkeypatch.setattr(agent_archive, "restore_archived", _fake)
+        monkeypatch.setattr(agent_archive, "purge_archived", _fake)
+        alice, _bob = archived
+        assert (await alice.post("/api/agents/archived/a1b2c3d4e5f6/restore")).status_code == 200
+        assert (await alice.delete("/api/agents/archived/a1b2c3d4e5f6")).status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_unattributed_archive_is_admin_only(self, archived, client):
+        # alice owns registry rows with no handle; an empty owner id must not resolve to them
+        for c in archived:
+            assert (await c.post("/api/agents/archived/ghost-1/restore")).status_code == 403
+            assert "ghost-1" not in {e["id"] for e in (await c.get("/api/agents/archived")).json()}
+        assert "ghost-1" in {e["id"] for e in (await client.get("/api/agents/archived")).json()}
