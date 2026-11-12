@@ -25,7 +25,7 @@ def _archive_timestamp() -> str:
 
 
 def _revoke_gateway_keys(request: Request, slug: str, agent_id: str | None) -> None:
-    """Revoke LLM gateway keys bound to the agent (by slug and by id).
+    """Revoke LLM gateway keys bound to the agent (by slug and by id), and its local token.
 
     Legacy per-agent keys are keyed by the agent NAME (slug); gateway keys may
     be bound to either, so both are revoked.
@@ -35,6 +35,13 @@ def _revoke_gateway_keys(request: Request, slug: str, agent_id: str | None) -> N
     data_dir = request.app.state.data_dir
     for principal in {slug, agent_id} - {None, ""}:
         revoke_keys_for(principal, data_dir=data_dir)
+    # The per-agent local token too: it is bound by name, and a later deploy
+    # may take the name. Restore mints a fresh one.
+    try:
+        from tinyagentos.auth import AuthManager
+        AuthManager(data_dir).unbind_local_token_agent(slug)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("archive: local token revoke failed for %s: %s", slug, exc)
 
 
 async def archive_agent_fully(request: Request, name: str) -> dict:
@@ -391,7 +398,17 @@ async def restore_archived(request: Request, archive_id: str):
     else:
         target_container = container
 
-    # 3) Start container.
+    # 3) Re-mint the per-agent local token under the restored name before the
+    #    container starts. The archived token is bound to the old name, which
+    #    a later deploy may now hold (and whose mint revoked it).
+    try:
+        from tinyagentos.auth import AuthManager
+        local_token = AuthManager(request.app.state.data_dir).mint_agent_local_token(final_slug)
+        await set_env(target_container, "TAOS_LOCAL_TOKEN", local_token)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("restore: local token re-mint failed for %s: %s", target_container, exc)
+
+    # 3b) Start container.
     try:
         await start_container(target_container)
     except Exception as exc:  # noqa: BLE001
@@ -580,7 +597,17 @@ async def purge_archived(request: Request, archive_id: str):
     except Exception as exc:  # noqa: BLE001
         logger.warning("purge: channel/message cleanup failed: %s", exc)
 
-    # 5) Drop archived_agents entry.
+    # 5) Revoke the purged agent's local token, unless a live agent has since
+    #    taken the name (its deploy already revoked the old token).
+    original_name = (entry.get("original") or {}).get("name") or ""
+    if original_name and not any(a.get("name") == original_name for a in config.agents):
+        try:
+            from tinyagentos.auth import AuthManager
+            AuthManager(data_dir).unbind_local_token_agent(original_name)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("purge: local token revoke failed for %s: %s", original_name, exc)
+
+    # 6) Drop archived_agents entry.
     config.archived_agents = [a for a in config.archived_agents if a.get("id") != archive_id]
     await save_config_locked(config, config.config_path)
 

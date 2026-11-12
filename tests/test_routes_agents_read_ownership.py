@@ -35,7 +35,7 @@ async def owner_clients(app, client):
     row = await registry.register(framework="claude-code", display_name="alpha", user_id=alice_uid)
     _add_agent(app, "alpha", llm_key=ALPHA_KEY, registry_canonical_id=row["canonical_id"])
     app.state.config.archived_agents.append(
-        {"id": "ghost-1", "archived_slug": "ghost",
+        {"id": "ghost-1", "archived_slug": "ghost", "archive_dir": "archive/ghost-1",
          "original": {"name": "ghost", "llm_key": GHOST_KEY}}
     )
 
@@ -269,3 +269,81 @@ class TestBoundAgentToken:
         assert (await beta.post("/api/agents/archived/ghost-1/restore")).status_code == 403
         assert (await beta.delete("/api/agents/archived/ghost-1")).status_code == 403
         assert any(e["id"] == "ghost-1" for e in app.state.config.archived_agents)
+
+    @pytest.mark.asyncio
+    async def test_container_list_shows_only_the_bound_agent(self, beta, monkeypatch):
+        _fake_containers(monkeypatch, "alpha", "beta")
+        assert [c["agent_name"] for c in (await beta.get("/api/agents/containers")).json()] == ["beta"]
+
+    @pytest.mark.asyncio
+    async def test_redeploy_under_the_name_revokes_the_old_token(self, app):
+        auth = app.state.auth
+        old = auth.mint_agent_local_token("beta")
+        new = auth.mint_agent_local_token("beta")
+        assert not auth.validate_local_token(old)
+        assert auth.validate_local_token(new)
+        assert auth.get_local_token_agent(new) == "beta"
+
+
+def _fake_containers(monkeypatch, *names):
+    from types import SimpleNamespace
+    import tinyagentos.containers as containers
+
+    async def fake_list(prefix=""):
+        return [
+            SimpleNamespace(name=f"taos-agent-{n}", status="Running", ip="10.0.0.9", memory_mb=512, cpu_cores=1)
+            for n in names
+        ]
+    monkeypatch.setattr(containers, "list_containers", fake_list)
+
+
+class TestContainerListOwnership:
+
+    @pytest.mark.asyncio
+    async def test_members_see_only_their_own_containers(self, owner_clients, monkeypatch):
+        _fake_containers(monkeypatch, "alpha", "orphan")
+        alice, bob = owner_clients
+        assert [c["agent_name"] for c in (await alice.get("/api/agents/containers")).json()] == ["alpha"]
+        assert (await bob.get("/api/agents/containers")).json() == []
+
+    @pytest.mark.asyncio
+    async def test_admin_sees_every_container(self, owner_clients, client, monkeypatch):
+        _fake_containers(monkeypatch, "alpha", "orphan")
+        names = [c["agent_name"] for c in (await client.get("/api/agents/containers")).json()]
+        assert names == ["alpha", "orphan"]
+
+
+class TestLocalTokenRevokedOnRemoval:
+    """A local token is bound by name, so it must not outlive the agent: a later
+    deploy under the same name would otherwise inherit it."""
+
+    @pytest.mark.asyncio
+    async def test_purge_revokes_the_archived_agents_token(self, owner_clients, client, app, monkeypatch):
+        import tinyagentos.containers as containers
+
+        async def fake_destroy(name):
+            return {"success": True}
+        monkeypatch.setattr(containers, "destroy_container", fake_destroy)
+        token = app.state.auth.mint_agent_local_token("ghost")
+        assert (await client.delete("/api/agents/archived/ghost-1")).status_code == 200
+        assert not app.state.auth.validate_local_token(token)
+
+    @pytest.mark.asyncio
+    async def test_purge_keeps_the_token_of_a_live_agent_with_the_name(self, owner_clients, client, app, monkeypatch):
+        import tinyagentos.containers as containers
+
+        async def fake_destroy(name):
+            return {"success": True}
+        monkeypatch.setattr(containers, "destroy_container", fake_destroy)
+        _add_agent(app, "ghost")
+        token = app.state.auth.mint_agent_local_token("ghost")
+        assert (await client.delete("/api/agents/archived/ghost-1")).status_code == 200
+        assert app.state.auth.validate_local_token(token)
+
+    def test_archive_revokes_the_agents_token(self, app):
+        from types import SimpleNamespace
+        from tinyagentos.routes.agent_archive import _revoke_gateway_keys
+
+        token = app.state.auth.mint_agent_local_token("alpha")
+        _revoke_gateway_keys(SimpleNamespace(app=app), "alpha", None)
+        assert not app.state.auth.validate_local_token(token)

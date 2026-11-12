@@ -255,9 +255,16 @@ async def list_agents(request: Request):
 
 @router.get("/api/agents/containers")
 async def list_agent_containers(request: Request):
-    """List live LXC container status for all agent containers."""
+    """List live LXC container status for the agent containers the caller may see."""
     from tinyagentos.containers import list_containers
     containers = await list_containers(prefix="taos-agent-")
+    bound = getattr(request.state, "agent_name", None)
+    if bound or not (getattr(request.state, "is_admin", False) or getattr(request.state, "via", None) == "local_token"):
+        visible = {
+            a.get("name")
+            for a in await _visible_to_caller(request, request.app.state.config.agents, lambda a: a.get("name"))
+        }
+        containers = [c for c in containers if c.name.removeprefix("taos-agent-") in visible]
     return [
         {
             "name": c.name,
