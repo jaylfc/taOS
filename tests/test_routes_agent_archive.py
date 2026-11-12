@@ -310,3 +310,109 @@ class TestPurgePathTraversal:
         assert resp.json()["status"] == "purged"
         # The archive subdir should be gone
         assert not archive_subdir.exists(), "Normal archive dir was not removed!"
+
+
+@pytest.mark.asyncio
+class TestArchiveDropsDeployTask:
+    """Archiving an agent must clear any stale deploy_tasks entry for its slug."""
+
+    async def test_archive_drops_deploy_task(self, client, monkeypatch, app):
+        async def fake_stop(name, force=False):
+            return {"success": True, "output": ""}
+
+        async def fake_snapshot_create(name, snapshot_name):
+            return {"success": True, "output": ""}
+
+        async def fake_container_exists(name):
+            return True
+
+        monkeypatch.setattr("tinyagentos.containers.stop_container", fake_stop)
+        monkeypatch.setattr(
+            "tinyagentos.containers.snapshot_create", fake_snapshot_create
+        )
+        monkeypatch.setattr(
+            "tinyagentos.containers.container_exists", fake_container_exists
+        )
+
+        # Seed a stale deploy task under the agent's name.
+        app.state.deploy_tasks["test-agent"] = {
+            "status": "deployed",
+            "name": "test-agent",
+        }
+
+        resp = await client.delete("/api/agents/test-agent")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "archived"
+        assert "test-agent" not in app.state.deploy_tasks
+
+
+@pytest.mark.asyncio
+class TestRestoreDropsDeployTask:
+    """Restoring an agent must clear any stale deploy_tasks entry for the
+    restored name."""
+
+    async def test_restore_drops_deploy_task(self, client, monkeypatch, app):
+        async def fake_deploy(req):
+            return {
+                "success": True,
+                "name": req.name,
+                "ip": "10.0.0.50",
+                "llm_key": "sk-x",
+                "steps": [],
+                "container": f"taos-agent-{req.name}",
+            }
+
+        async def fake_stop(name, force=False):
+            return {"success": True, "output": ""}
+
+        async def fake_snapshot_create(name, snapshot_name):
+            return {"success": True, "output": ""}
+
+        async def fake_snapshot_restore(name, snapshot_name):
+            return {"success": True, "output": ""}
+
+        async def fake_start(name):
+            return {"success": True, "output": ""}
+
+        async def fake_set_env(name, key, value):
+            return {"success": True, "output": ""}
+
+        async def fake_exec(name, cmd, timeout=300):
+            return (0, "")
+
+        monkeypatch.setattr("tinyagentos.deployer.deploy_agent", fake_deploy)
+        monkeypatch.setattr("tinyagentos.containers.stop_container", fake_stop)
+        monkeypatch.setattr(
+            "tinyagentos.containers.snapshot_create", fake_snapshot_create
+        )
+        monkeypatch.setattr(
+            "tinyagentos.containers.snapshot_restore", fake_snapshot_restore
+        )
+        monkeypatch.setattr("tinyagentos.containers.start_container", fake_start)
+        monkeypatch.setattr("tinyagentos.containers.set_env", fake_set_env)
+        monkeypatch.setattr("tinyagentos.containers.exec_in_container", fake_exec)
+
+        async def fake_container_exists(name):
+            return True
+        monkeypatch.setattr(
+            "tinyagentos.containers.container_exists", fake_container_exists
+        )
+
+        await client.post("/api/agents/deploy", json={"name": "test-agent", "framework": "none"})
+        import asyncio
+        await asyncio.sleep(0.2)
+        await client.delete("/api/agents/test-agent")
+
+        archived = (await client.get("/api/agents/archived")).json()
+        archive_id = archived[0]["id"]
+
+        # Seed a stale deploy task under the restored name before restore.
+        app.state.deploy_tasks["test-agent"] = {
+            "status": "deployed",
+            "name": "test-agent",
+        }
+
+        resp = await client.post(f"/api/agents/archived/{archive_id}/restore")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "restored"
+        assert "test-agent" not in app.state.deploy_tasks
