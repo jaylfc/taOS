@@ -128,6 +128,218 @@ async def test_final_event_dual_writes_to_archive():
 
 
 # ---------------------------------------------------------------------------
+# final event - test that final reply idempotency dedup works even when channel
+# is unresolved or chat write fails
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_final_reply_idempotent_when_channel_unresolved():
+    """Same final reply delivered twice with channel resolution returning no
+    channel archives exactly one final record."""
+    archive = AsyncMock()
+    archive_calls = []
+
+    async def track_archive_record(event_type, **kwargs):
+        archive_calls.append({
+            "event_type": event_type,
+            "data": kwargs.get("data", {}),
+            "agent_name": kwargs.get("agent_name"),
+        })
+        return None
+
+    archive.record.side_effect = track_archive_record
+    
+    reg, tr = _make_registry(archive=archive)
+
+    # First delivery: final reply with an id, but no channel_id (resolution
+    # returns None). Archive write should succeed and mark the id as archived.
+    await reg.record_reply("test_agent", {
+        "kind": "final",
+        "trace_id": "t1",
+        "content": "Final reply text",
+        "id": "m1",
+        # deliberately no channel_id
+    })
+
+    # Second delivery: same reply_id (m1), same conditions.
+    # Dedup should prevent a second archive record.
+    await reg.record_reply("test_agent", {
+        "kind": "final",
+        "trace_id": "t1",
+        "content": "Final reply text",
+        "id": "m1",
+        # deliberately no channel_id
+    })
+
+    # Assert exactly one archive record total
+    assert len(archive_calls) == 1, f"Expected exactly 1 archive record, got {len(archive_calls)}"
+
+    # Assert the event is of type "final"
+    assert archive_calls[0]["event_type"] == "final", f"Expected event_type='final', got {archive_calls[0]['event_type']}"
+
+    # Assert the content is verbatim
+    assert archive_calls[0]["data"]["content"] == "Final reply text", f"Expected content='Final reply text', got {archive_calls[0]['data']['content']}"
+
+    # Assert reply_id is present
+    assert archive_calls[0]["data"]["reply_id"] == "m1"
+
+
+@pytest.mark.asyncio
+async def test_final_reply_idempotent_archive_then_chat_failure_then_success():
+    """Same final reply delivered twice where the chat store raises on the first
+    delivery archives exactly one final record AND the second delivery still persists
+    the chat message."""
+    archive = AsyncMock()
+    archive_calls = []
+
+    async def track_archive_record(event_type, **kwargs):
+        archive_calls.append({
+            "event_type": event_type,
+            "data": kwargs.get("data", {}),
+            "agent_name": kwargs.get("agent_name"),
+        })
+        return None
+
+    archive.record.side_effect = track_archive_record
+    
+    # Fake chat message store
+    edit_call_count = 0
+
+    class _FakeChatMessages:
+        def __init__(self):
+            self.messages = {}
+            self.states = {}
+
+        async def get_message(self, msg_id):
+            return self.messages.get(msg_id)
+
+        async def edit_message(self, msg_id, content):
+            nonlocal edit_call_count
+            edit_call_count += 1
+            if edit_call_count == 1:
+                raise RuntimeError("chat store transient failure")
+            return {"id": msg_id, "channel_id": "ch1", "content": content, "state": "complete"}
+
+        async def update_state(self, msg_id, state):
+            self.states[msg_id] = state
+
+        async def send_message(self, **kwargs):
+            channel_id = kwargs.get("channel_id", "ch1")
+            content = kwargs.get("content", "")
+            mid = content[:4] if content else "msg"
+            self.messages[channel_id] = {"id": mid, "channel_id": channel_id, "content": content, "state": "complete"}
+            mid
+
+        async def update_last_message_at(self, channel_id):
+            pass
+
+    chat_msgs = _FakeChatMessages()
+
+    class _FakeChatChannels:
+        async def list_channels(self, member_id):
+            return [{"id": "ch1", "type": "dm"}]
+
+        async def update_last_message_at(self, channel_id):
+            pass
+
+    chat_channels = _FakeChatChannels()
+
+    # Build registry directly (without using _make_registry which only takes archive)
+    from tinyagentos.bridge_session import BridgeSessionRegistry, _AgentSession
+    tr = _FakeTraceRegistry()
+    reg = BridgeSessionRegistry(
+        trace_registry=tr,
+        chat_messages=chat_msgs,
+        chat_channels=chat_channels,
+        archive=archive,
+    )
+
+    # First delivery: final reply with id and channel_id.
+    # Since there's no prior delta, pending_msg_id is None, so the code
+    # goes through the "no streaming placeholder" path (send_message).
+    await reg.record_reply("test_agent", {
+        "kind": "final",
+        "trace_id": "t2",
+        "content": "Final reply text",
+        "id": "m2",
+        "channel_id": "ch1",
+    })
+
+    # Assert exactly one archive record (archive.write succeeded, then chat raised,
+    # but dedup set was marked after successful archive.write)
+    assert len(archive_calls) == 1, f"Expected exactly 1 archive record, got {len(archive_calls)}"
+    assert archive_calls[0]["event_type"] == "final"
+
+    # Reset archive calls for second delivery check
+    archive_calls.clear()
+
+    # Second delivery: same reply_id (m2), same channel_id.
+    # Dedup should prevent a second archive record. Chat persistence should succeed
+    # on the second attempt (goes through send_message path since pending_msg_id is None).
+    await reg.record_reply("test_agent", {
+        "kind": "final",
+        "trace_id": "t2",
+        "content": "Final reply text",
+        "id": "m2",
+        "channel_id": "ch1",
+    })
+
+    # Assert exactly one archive record total (dedup prevented second archive write)
+    assert len(archive_calls) == 0, f"Expected 0 additional archive records (dedup), got {len(archive_calls)}"
+
+# Verify the chat message was persisted on the second delivery.
+    # The send_message path was used (pending_msg_id is None), so the message
+    # should be stored in the fake's messages dict with state "complete".
+    assert "ch1" in chat_msgs.messages, "Chat message should be persisted in messages dict"
+    msg = chat_msgs.messages["ch1"]
+    assert msg["state"] == "complete", f"Message state should be 'complete', got {msg['state']}"
+    assert msg["content"] == "Final reply text", f"Content should be 'Final reply text', got {msg['content']}"
+
+
+@pytest.mark.asyncio
+async def test_final_archive_reraisable_on_retry():
+    """An archive.record that raises on the first delivery is retried on the second
+    (two record calls, one success)."""
+    archive = AsyncMock()
+    
+    # Use side_effect list: first call raises RuntimeError, second returns None.
+    # Mock automatically consumes items from the list on successive calls.
+    archive.record.side_effect = [
+        RuntimeError("archive transient failure"),
+        None,
+    ]
+
+    reg, tr = _make_registry(archive=archive)
+
+    # First delivery: archive.write raises RuntimeError, caught by except
+    await reg.record_reply("test_agent", {
+        "kind": "final",
+        "trace_id": "t3",
+        "content": "Final reply text",
+        "id": "m3",
+        "channel_id": "ch1",
+    })
+
+    # Second delivery: same reply_id (m3) - dedup was NOT marked because first write
+    # failed, so the second attempt also calls archive.write (which this time succeeds)
+    # (the side_effect list provides the second item)
+    await reg.record_reply("test_agent", {
+        "kind": "final",
+        "trace_id": "t3",
+        "content": "Final reply text",
+        "id": "m3",
+        "channel_id": "ch1",
+    })
+
+    # Two record calls total: the side_effect list had 2 items, both were consumed.
+    # The first raised, the second returned None (success).
+    # Verify archive.record was called exactly twice.
+    assert archive.record.call_count == 2, (
+        f"Expected archive.record call_count == 2, got {archive.record.call_count}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Archive failure must not break the trace write
 # ---------------------------------------------------------------------------
 
