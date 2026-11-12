@@ -167,7 +167,10 @@ class TestHermesImportHappyPath:
         assert agent["status"] == "running"
         assert agent["soul_md"] == "You are an imported soul."
         assert agent["model"] == "nous/hermes-3"
-        assert agent["llm_key"] == "sk-imported"
+        # The key is persisted but never returned by a read (GHSA-v258-j222-x68c).
+        assert "llm_key" not in agent
+        stored = next(a for a in app.state.config.agents if a["name"] == slug)
+        assert stored["llm_key"] == "sk-imported"
 
         # The user-supplied secret was granted to the agent (same path deploy uses).
         granted = await app.state.secrets.get_agent_secrets(slug)
