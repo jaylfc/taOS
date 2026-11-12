@@ -1,5 +1,8 @@
 import pytest
 import asyncio
+import tempfile
+import shutil
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 
@@ -214,3 +217,96 @@ class TestArchiveSnapshotTimeout:
         # Agent must still be in config (config not mutated)
         agent_names = [a["name"] for a in config.agents]
         assert "test-agent" in agent_names
+
+
+@pytest.mark.asyncio
+class TestPurgePathTraversal:
+    """purge_archived must not escape the archive/ directory via missing or
+    malicious archive_dir values."""
+
+    def _setup_purge_test(self, app, config, archive_dir, sentinel_path):
+        """Create an archived entry with the given archive_dir and a sentinel
+        file at sentinel_path. Returns the archive_id."""
+        entry = {
+            "id": "purge-test-123",
+            "archived_at": "20260101T000000",
+            "archived_slug": "test-agent",
+            "snapshot_name": "snap-001",
+            "export_path": None,
+            "archive_dir": archive_dir,
+            "original": {"name": "test-agent", "chat_channel_id": None},
+            "container_name": "taos-agent-test-agent",
+        }
+        config.archived_agents = [entry]
+        # Ensure sentinel exists
+        sentinel_path.parent.mkdir(parents=True, exist_ok=True)
+        sentinel_path.write_text("sentinel")
+        return entry["id"]
+
+    async def _fake_destroy(self, name):
+        return {"success": True, "output": ""}
+
+    async def test_purge_missing_archive_dir_spares_data_dir(self, client, monkeypatch, app, tmp_path):
+        """archive_dir missing (empty string): data_dir sentinel must survive."""
+        config = app.state.config
+        data_dir = app.state.data_dir
+        sentinel = data_dir / "sentinel.txt"
+        archive_id = self._setup_purge_test(app, config, "", sentinel)
+
+        monkeypatch.setattr("tinyagentos.containers.destroy_container", self._fake_destroy)
+
+        resp = await client.delete(f"/api/agents/archived/{archive_id}")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "purged"
+        # Sentinel in data_dir must still exist
+        assert sentinel.exists(), "data_dir sentinel was deleted!"
+
+    async def test_purge_absolute_archive_dir_spares_outside(self, client, monkeypatch, app, tmp_path):
+        """archive_dir is absolute path outside data_dir: that outside sentinel must survive."""
+        config = app.state.config
+        outside_dir = tmp_path / "outside"
+        outside_dir.mkdir()
+        sentinel = outside_dir / "sentinel.txt"
+        archive_id = self._setup_purge_test(app, config, str(outside_dir), sentinel)
+
+        monkeypatch.setattr("tinyagentos.containers.destroy_container", self._fake_destroy)
+
+        resp = await client.delete(f"/api/agents/archived/{archive_id}")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "purged"
+        assert sentinel.exists(), "Outside sentinel was deleted!"
+
+    async def test_purge_archive_dir_with_dotdot_spares_data_dir(self, client, monkeypatch, app):
+        """archive_dir contains '..' to escape archive/: data_dir sentinel must survive."""
+        config = app.state.config
+        data_dir = app.state.data_dir
+        sentinel = data_dir / "sentinel.txt"
+        # archive/../ escapes to data_dir
+        archive_id = self._setup_purge_test(app, config, "archive/../", sentinel)
+
+        monkeypatch.setattr("tinyagentos.containers.destroy_container", self._fake_destroy)
+
+        resp = await client.delete(f"/api/agents/archived/{archive_id}")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "purged"
+        assert sentinel.exists(), "data_dir sentinel was deleted via dotdot!"
+
+    async def test_purge_normal_archive_dir_removes_subdir(self, client, monkeypatch, app):
+        """Positive control: archive/<subdir> IS removed."""
+        config = app.state.config
+        data_dir = app.state.data_dir
+        archive_subdir = data_dir / "archive" / "test-agent-20260101T000000"
+        archive_subdir.mkdir(parents=True)
+        sentinel = archive_subdir / "sentinel.txt"
+        sentinel.write_text("sentinel")
+        archive_id = self._setup_purge_test(
+            app, config, "archive/test-agent-20260101T000000", sentinel
+        )
+
+        monkeypatch.setattr("tinyagentos.containers.destroy_container", self._fake_destroy)
+
+        resp = await client.delete(f"/api/agents/archived/{archive_id}")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "purged"
+        # The archive subdir should be gone
+        assert not archive_subdir.exists(), "Normal archive dir was not removed!"

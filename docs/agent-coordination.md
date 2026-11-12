@@ -2812,6 +2812,9 @@ message. The turn's `--dir` is a git repo created once under the harness home;
 kilo's JSON-lines output is parsed for `type == "text"` events whose `part.text`
 is the reply and whose `sessionID` continues the conversation.
 
+For the kilo framework the system prompt is prefixed to the first user turn of a
+kilo session, and a changed system prompt starts a new session (CodeRabbit 4543157074).
+
 - `GET /api/taos-agent/config` and the lock screen (`/auth/lock-widgets`)
   report `framework` = the harness that RUNS the agent (never the
   preference), plus `framework_preference`, `framework_reason` and

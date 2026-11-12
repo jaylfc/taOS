@@ -739,16 +739,20 @@ async def ensure_taos_claude_code_harness(app_state, model: str, system_prompt: 
     return harness
 
 
-async def ensure_taos_kilo_harness(app_state) -> "KiloHarness":
-    """The Kilo harness for the taOS Agent.
+async def ensure_taos_kilo_harness(app_state, model: str, system_prompt: str | None) -> "KiloHarness":
+    """The Kilo harness for ``model`` and ``system_prompt``.
 
     Reads the kilo_api_key secret VALUE from the Secrets store at provision
     time (it is never in the controller env) and caches the harness on
-    ``app_state.taos_kilo_harness``; rebuilt only when the key changes. Raises
+    ``app_state.taos_kilo_harness``; rebuilt when the model or the key
+    changes. ``system_prompt`` is carried for signature parity with the other
+    harnesses: the Kilo adapter prefixes it to the first user turn, so it is
+    not stored on the harness (Kilo has no append-system-prompt flag). Raises
     ``KiloBinaryNotFoundError`` when ``kilo`` is missing and
     ``KiloKeyMissingError`` without the secret.
     """
     from tinyagentos.kilo_runtime import (
+        DEFAULT_MODEL,
         KILO_API_KEY_SECRET,
         KiloBinaryNotFoundError,
         KiloHarness,
@@ -765,15 +769,17 @@ async def ensure_taos_kilo_harness(app_state) -> "KiloHarness":
     key = (row or {}).get("value") or ""
     if not key:
         raise KiloKeyMissingError(KILO_API_KEY_SECRET)
+    model = model or DEFAULT_MODEL
     harness = getattr(app_state, "taos_kilo_harness", None)
     if (
         harness is not None
         and harness.key == key
         and harness.binary == binary
+        and harness.model == model
     ):
         return harness
     harness = KiloHarness(
-        home=home_for(app_state.data_dir), key=key, binary=binary,
+        home=home_for(app_state.data_dir), key=key, model=model, binary=binary,
     )
     harness.write_home()
     app_state.taos_kilo_harness = harness
