@@ -4,6 +4,12 @@ This module provides a zero-loss layer for the taOSmd Archive. When
 archive.record() fails for any reason, the event is appended to a JSONL spool
 file with full fidelity (no stripping, no truncation). A background drain task
 replays spooled events when the archive becomes available again.
+
+Delivery is AT-LEAST-ONCE. After a crash, the .draining file is replayed in
+full, which may cause duplicate deliveries. Callers must be idempotent or use
+an archive-side dedup key (out of scope). If append-back of a failed line
+raises, the loop stops, .draining is kept, and lines already appended back
+may be replayed twice on the next drain.
 """
 
 from __future__ import annotations
@@ -36,19 +42,40 @@ def _spool_default(obj: Any) -> dict:
     return {"__spool_type__": type(obj).__name__, "repr": repr(obj)}
 
 
+def _spool_restore(d: dict) -> Any:
+    """Object hook for json.loads to restore tagged values.
+
+    Turns {"__spool_type__":"bytes","b64":...} back into bytes,
+    "datetime" back into datetime.fromisoformat(iso),
+    "Path" back into Path(str); leaves any other tag as the dict.
+    """
+    if not isinstance(d, dict) or "__spool_type__" not in d:
+        return d
+    tag = d["__spool_type__"]
+    if tag == "bytes" and "b64" in d:
+        return base64.b64decode(d["b64"])
+    if tag == "datetime" and "iso" in d:
+        return datetime.fromisoformat(d["iso"])
+    if tag == "Path" and "str" in d:
+        return Path(d["str"])
+    return d
+
+
 def _append_spool_line(spool_path: Path, line: str) -> None:
     """Append a line to the spool file with flush and fsync for durability."""
     spool_path.parent.mkdir(parents=True, exist_ok=True)
-    # Check if file exists before opening to know whether to fsync parent
     file_existed = spool_path.exists()
-    with spool_path.open("a", encoding="utf-8") as f:
-        f.write(line + "\n")
-        f.flush()
-        os.fsync(f.fileno())
-        # If this is a newly created file, fsync the parent directory
-        if not file_existed:
-            dir_fd = os.open(spool_path.parent, os.O_RDONLY)
-            os.fsync(dir_fd)
+    dir_fd = None
+    try:
+        with spool_path.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+            if not file_existed:
+                dir_fd = os.open(spool_path.parent, os.O_RDONLY)
+                os.fsync(dir_fd)
+    finally:
+        if dir_fd is not None:
             os.close(dir_fd)
 
 
@@ -96,12 +123,12 @@ async def record_lossless(
         }
         try:
             line = json.dumps(spool_entry, ensure_ascii=False, default=_spool_default)
-            _append_spool_line(spool_path, line)
+            await asyncio.to_thread(_append_spool_line, spool_path, line)
         except Exception as spool_e:  # noqa: BLE001
             logger.critical(
-                "archive spool append failed for event_type=%s; entry=%s; error=%s",
+                "archive spool append failed for event_type=%s spool_path=%s error=%s",
                 event_type,
-                repr(spool_entry),
+                spool_path,
                 spool_e,
             )
 
@@ -114,13 +141,18 @@ async def drain_spool(archive: Any, spool_path: Path) -> None:
     file with full durability, and only then removes the .draining file.
     A module-level lock prevents concurrent drains.
 
+    No .done index is used; after any crash the .draining file is replayed in
+    full (at-least-once delivery). Failed or malformed lines are appended back
+    to spool.jsonl immediately as they are encountered. If any append-back
+    raises, the loop stops, .draining is kept, and a critical log is emitted
+    without event content. Lines already appended back may be replayed twice.
+
     Args:
         archive: The taOSmd Archive instance (must have a .record method).
         spool_path: Path to the spool JSONL file.
     """
     async with _drain_lock:
         draining_path = spool_path.with_name(spool_path.name + ".draining")
-        done_path = draining_path.with_suffix(draining_path.suffix + ".done")
 
         # If a .draining file exists from a crashed earlier drain, replay that first
         if draining_path.exists():
@@ -132,102 +164,64 @@ async def drain_spool(archive: Any, spool_path: Path) -> None:
         else:
             return
 
-        # Load progress tracking from .done file if it exists
-        processed_indices: set[int] = set()
-        if done_path.exists():
+        # Read the replay file in a thread (blocking I/O off the event loop)
+        try:
+            content = await asyncio.to_thread(replay_path.read_text, encoding="utf-8")
+        except Exception as e:  # noqa: BLE001
+            logger.critical(
+                "archive spool: failed to read replay file %s error=%s",
+                replay_path,
+                e,
+            )
+            return
+
+        lines = content.splitlines()
+
+        for i, line in enumerate(lines):
+            line = line.rstrip("\n")
+            if not line.strip():
+                continue
+
             try:
-                # Parse indices from the done file
-                for line in done_path.read_text(encoding="utf-8").splitlines():
-                    if line.strip():
-                        try:
-                            processed_indices.add(int(line.strip()))
-                        except ValueError:
-                            logger.warning("archive spool: invalid index in .done file: %s", line)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("archive spool: failed to read .done file: %s", e)
-                # If we can't read the done file, start fresh (will reprocess all)
-
-        failed_lines: list[str] = []
-        successful_count = 0
-
-        # Read the replay file line by line (not all at once)
-        with replay_path.open(encoding="utf-8") as f:
-            for i, line in enumerate(f):
-                line = line.rstrip("\n")
-                if not line.strip():
-                    continue
-                    
-                # Skip lines that have already been processed (crash recovery)
-                if i in processed_indices:
-                    continue
-
+                entry = json.loads(line, object_hook=_spool_restore)
+            except json.JSONDecodeError:
+                logger.warning("archive spool: skipping malformed line: %s", line[:100])
                 try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    logger.warning("archive spool: skipping malformed line: %s", line[:100])
-                    failed_lines.append(line)
-                    continue
-
-                try:
-                    await archive.record(
-                        entry["event_type"],
-                        entry["data"],
-                        agent_name=entry.get("agent_name"),
-                        summary=entry.get("summary"),
-                    )
-                    # Track successful processing
-                    processed_indices.add(i)
-                    successful_count += 1
+                    await asyncio.to_thread(_append_spool_line, spool_path, line)
                 except Exception as e:  # noqa: BLE001
-                    logger.error(
-                        "archive spool replay failed for event_type=%s: %s",
-                        entry.get("event_type"),
+                    logger.critical(
+                        "archive spool: append-back failed for malformed line spool_path=%s error=%s",
+                        spool_path,
                         e,
                     )
-                    failed_lines.append(line)
+                    return
+                continue
 
-        # If we had any successful records, persist progress atomically
-        if successful_count > 0:
-            # Write the updated .done file atomically
             try:
-                done_path.write_text(
-                    "\n".join(str(idx) for idx in sorted(processed_indices)) + "\n",
-                    encoding="utf-8",
+                await archive.record(
+                    entry["event_type"],
+                    entry["data"],
+                    agent_name=entry.get("agent_name"),
+                    summary=entry.get("summary"),
                 )
-                # Ensure the .done file is written to disk
-                with done_path.open("r+b") as f:
-                    os.fsync(f.fileno())
             except Exception as e:  # noqa: BLE001
-                logger.warning("archive spool: failed to write .done file: %s", e)
+                logger.error(
+                    "archive spool replay failed for event_type=%s: %s",
+                    entry.get("event_type"),
+                    e,
+                )
+                try:
+                    await asyncio.to_thread(_append_spool_line, spool_path, line)
+                except Exception as append_e:  # noqa: BLE001
+                    logger.critical(
+                        "archive spool: append-back failed spool_path=%s error=%s",
+                        spool_path,
+                        append_e,
+                    )
+                    return
 
-        # Append failed lines back to spool.jsonl with full durability
-        all_append_success = True
-        for line in failed_lines:
-            try:
-                _append_spool_line(spool_path, line)
-            except Exception as e:  # noqa: BLE001
-                logger.critical("archive spool: failed to append failed line back to spool: %s", e)
-                all_append_success = False
-
-        # Only now remove the .draining file if all append-backs succeeded
-        if all_append_success:
-            try:
-                draining_path.unlink()
-                # Also clean up the .done file since we're done with it
-                if done_path.exists():
-                    try:
-                        done_path.unlink()
-                    except Exception:  # noqa: BLE001, S110
-                        pass
-            except Exception as e:  # noqa: BLE001
-                logger.warning("archive spool: failed to remove .draining file: %s", e)
-        else:
-            # If append-back failed, keep .draining file for retry
-            # Also keep the .done file as is since we didn't process successfully
-            # Events are preserved in .draining for the next drain retry
-            logger.critical(
-                "archive spool: append-back failures - keeping .draining file for retry; events preserved for retry (failed: %d)",
-                len(failed_lines),
-            )
-            # Return early as per CR 4538090707 - don't unlink .draining when any append-back fails
-            return
+        # All lines processed successfully (or no lines); remove .draining
+        try:
+            draining_path.unlink()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("archive spool: failed to remove .draining file: %s", e)
