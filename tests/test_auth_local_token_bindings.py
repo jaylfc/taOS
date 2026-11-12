@@ -53,11 +53,11 @@ class TestBindLocalTokenAgentConcurrency:
         data = json.loads(path.read_text())
         alice_hash = hashlib.sha256("alice-token".encode()).hexdigest()
         bob_hash = hashlib.sha256("bob-token".encode()).hexdigest()
-
+    
         assert alice_hash in data, f"alice hash missing from {data}"
         assert bob_hash in data, f"bob hash missing from {data}"
-        assert data[alice_hash] == "alice"
-        assert data[bob_hash] == "bob"
+        assert data[alice_hash]["name"] == "alice"
+        assert data[bob_hash]["name"] == "bob"
 
 
 class TestBindLocalTokenAgentCorruptStore:
@@ -127,7 +127,7 @@ class TestBindLocalTokenAgentCorruptStore:
         # The original valid binding was stored correctly before corruption.
         alice_hash = hashlib.sha256("first-token".encode()).hexdigest()
         original_data = json.loads(original_content)
-        assert original_data[alice_hash] == "first"
+        assert original_data[alice_hash]["name"] == "first"
 
 
 class TestRemintRevokesPreviousToken:

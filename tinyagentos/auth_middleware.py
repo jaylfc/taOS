@@ -990,13 +990,17 @@ class AuthMiddleware(BaseHTTPMiddleware):
                         # admin before onboarding, when there is no primary
                         # user to be admin of.
                         primary = auth_mgr.get_primary_user()
-                        request.state.user_id = primary["id"] if primary else None
-                        request.state.is_admin = primary is not None
+                        if primary:
+                            request.state.user_id = primary["id"]
+                            request.state.is_admin = True
+                        else:
+                            request.state.user_id = None
+                            request.state.is_admin = False
                         request.state.via = "local_token"
-                        bound_agent = auth_mgr.get_local_token_agent(presented)
-                        if bound_agent:
+                        valid, agent = auth_mgr.resolve_local_token(presented)
+                        if valid and agent:
                             return await _call_and_record_bound_agent(
-                                request, call_next, auth_mgr, bound_agent
+                                request, call_next, auth_mgr, agent
                             )
                         return await call_next(request)
                     if presented.startswith(DEVICE_TOKEN_PREFIX):
@@ -1128,10 +1132,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     request.state.user_id = None
                     request.state.is_admin = False
                     request.state.via = "local_token"
-                bound_agent = auth_mgr.get_local_token_agent(presented)
-                if bound_agent:
+                valid, agent = auth_mgr.resolve_local_token(presented)
+                if valid and agent:
                     return await _call_and_record_bound_agent(
-                        request, call_next, auth_mgr, bound_agent
+                        request, call_next, auth_mgr, agent
                     )
                 return await call_next(request)
 # Not a valid local token; fall through to registry JWT check below
