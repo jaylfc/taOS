@@ -7,6 +7,15 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+## [1.0.0-beta.58] - 2026-11-12
+
+Security hotfix cut from beta.57.
+
+### Security
+
+- Agent workspace files can now only be read or changed by the agent's owner, an admin, or the agent itself.
+- Agent details, exports, logs, budgets and deploy status can now only be read by the agent's owner, an admin, or the agent itself; members only see their own agents in the list; and no API read returns an agent's LLM key any more. Multi-user installs should re-mint agent keys after upgrading.
+
 ## [1.0.0-beta.57] - 2026-10-23
 
 Dependency security hotfix cut from beta.56.
