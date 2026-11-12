@@ -473,3 +473,104 @@ class TestLocalTokenRevokeFailsClosed:
         assert sorted([first.status_code, second.status_code]) == [200, 404]
         assert [a["name"] for a in app.state.config.agents].count("ghost") == 1
         assert len(restorable) == 1
+
+
+class TestArchiveRestorePurgeWritesOffLoop:
+    """Blocking local-token / gateway-key writes in the archive routes must be
+    awaited via ``asyncio.to_thread`` so they never stall the event loop."""
+
+    @pytest.mark.asyncio
+    async def test_archive_restore_and_purge_route_token_writes_through_to_thread(
+        self, client, app, monkeypatch
+    ):
+        import asyncio as real_asyncio
+        from tinyagentos.config import save_config_locked
+        from tinyagentos.routes import agent_archive
+
+        calls: list[tuple[str, tuple]] = []
+        real_to_thread = real_asyncio.to_thread
+
+        def _record(fn, *args, **kwargs):
+            calls.append((fn.__name__, args))
+            return real_to_thread(fn, *args, **kwargs)
+
+        monkeypatch.setattr(agent_archive.asyncio, "to_thread", _record)
+
+        async def fake_stop(name, force=False):
+            return {"success": True, "output": ""}
+
+        async def fake_snapshot_create(name, snapshot_name):
+            return {"success": True, "output": ""}
+
+        async def fake_container_exists(name):
+            return True
+
+        async def fake_destroy(name):
+            return {"success": True, "output": ""}
+
+        async def fake_snapshot_restore(*args, **kwargs):
+            return {"success": True, "output": ""}
+
+        async def fake_set_env(*args, **kwargs):
+            return {"success": True, "output": ""}
+
+        async def fake_start(name):
+            return {"success": True}
+
+        monkeypatch.setattr("tinyagentos.containers.stop_container", fake_stop)
+        monkeypatch.setattr("tinyagentos.containers.snapshot_create", fake_snapshot_create)
+        monkeypatch.setattr(
+            "tinyagentos.containers.container_exists", fake_container_exists
+        )
+        monkeypatch.setattr("tinyagentos.containers.destroy_container", fake_destroy)
+        monkeypatch.setattr("tinyagentos.containers.snapshot_restore", fake_snapshot_restore)
+        monkeypatch.setattr("tinyagentos.containers.set_env", fake_set_env)
+        monkeypatch.setattr("tinyagentos.containers.start_container", fake_start)
+
+        # --- archive: _revoke_gateway_keys runs via to_thread ---
+        calls.clear()
+        app.state.config.agents.append(
+            {"name": "archive-me", "host": "", "qmd_index": "", "color": ""}
+        )
+        await save_config_locked(app.state.config, app.state.config.config_path)
+        token = app.state.auth.mint_agent_local_token("archive-me")
+        assert app.state.auth.validate_local_token(token) is True
+        resp = await client.delete("/api/agents/archive-me")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["status"] == "archived"
+        assert any(fn == "_revoke_gateway_keys" for fn, _ in calls), calls
+        assert not app.state.auth.validate_local_token(token)
+
+        # --- restore: mint_agent_local_token runs via to_thread ---
+        calls.clear()
+        app.state.config.archived_agents.append(
+            {
+                "id": "restore-me",
+                "archived_slug": "restore-me",
+                "snapshot_name": "taos-archive-1",
+                "archive_dir": "archive/restore-me-20260101T000000",
+                "original": {"name": "restore-me"},
+            }
+        )
+        resp = await client.post("/api/agents/archived/restore-me/restore")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["status"] == "restored"
+        assert any(fn == "mint_agent_local_token" for fn, _ in calls), calls
+
+        # --- purge: unbind_local_token_agent runs via to_thread ---
+        calls.clear()
+        app.state.config.archived_agents.append(
+            {
+                "id": "purge-me",
+                "archived_slug": "purge-me",
+                "snapshot_name": "taos-archive-1",
+                "archive_dir": "archive/purge-me-20260101T000000",
+                "original": {"name": "purge-me"},
+            }
+        )
+        token = app.state.auth.mint_agent_local_token("purge-me")
+        resp = await client.delete("/api/agents/archived/purge-me")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["status"] == "purged"
+        assert any(fn == "unbind_local_token_agent" for fn, _ in calls), calls
+        assert not app.state.auth.validate_local_token(token)
