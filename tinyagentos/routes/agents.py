@@ -203,14 +203,17 @@ async def _require_agent_access(
     await require_agent_owner_or_admin(request, user, name)
 
 
-async def _visible_to_caller(request: Request, entries: list[dict], owner_key) -> list[dict]:
+async def _visible_to_caller(
+    request: Request, entries: list[dict], owner_key, *, exact: bool = False
+) -> list[dict]:
     """Every entry for an admin or the local token; a member sees only their own.
 
     Ownership is the registry's, as in ``require_agent_owner_or_admin``, so an
     agent the registry cannot attribute is listed to admins only. *owner_key*
     maps an entry to the id the registry is asked about. A per-agent local
     token is marked admin, so it is fenced to its own agent first; archive
-    entries carry no top-level ``name``, so it sees none of them.
+    entries carry no top-level ``name``, so it sees none of them. *exact* is
+    ``resolve_agent_owner``'s: *owner_key* yields a canonical id.
     """
     bound = getattr(request.state, "agent_name", None)
     if bound:
@@ -220,7 +223,10 @@ async def _visible_to_caller(request: Request, entries: list[dict], owner_key) -
     uid = getattr(request.state, "user_id", None)
     if not uid:
         return []
-    return [e for e in entries if await resolve_agent_owner(request, owner_key(e) or "") == uid]
+    return [
+        e for e in entries
+        if await resolve_agent_owner(request, owner_key(e) or "", exact=exact) == uid
+    ]
 
 
 def _archived_registry_id(entry: dict) -> str:
@@ -281,7 +287,7 @@ async def list_agent_containers(request: Request):
 @router.get("/api/agents/archived")
 async def list_archived_agents(request: Request):
     config = request.app.state.config
-    entries = await _visible_to_caller(request, config.archived_agents, _archived_registry_id)
+    entries = await _visible_to_caller(request, config.archived_agents, _archived_registry_id, exact=True)
     return [
         {**e, "original": _public_agent(e["original"])} if isinstance(e.get("original"), dict) else e
         for e in entries
@@ -1608,14 +1614,14 @@ async def destroy_agent(request: Request, name: str, user: CurrentUser = Depends
 @router.post("/api/agents/archived/{archive_id}/restore")
 async def restore_archived_agent(request: Request, archive_id: str, user: CurrentUser = Depends(current_user)):
     """Restore an archived agent back to active status."""
-    await require_agent_owner_or_admin(request, user, _archive_owner_id(request, archive_id))
+    await require_agent_owner_or_admin(request, user, _archive_owner_id(request, archive_id), exact=True)
     return await agent_archive.restore_archived(request, archive_id)
 
 
 @router.delete("/api/agents/archived/{archive_id}")
 async def purge_archived_agent(request: Request, archive_id: str, user: CurrentUser = Depends(current_user)):
     """Permanently purge an archived agent."""
-    await require_agent_owner_or_admin(request, user, _archive_owner_id(request, archive_id))
+    await require_agent_owner_or_admin(request, user, _archive_owner_id(request, archive_id), exact=True)
     return await agent_archive.purge_archived(request, archive_id)
 
 

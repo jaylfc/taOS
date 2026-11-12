@@ -183,6 +183,28 @@ class TestArchivedOwnership:
         assert (await alice.delete("/api/agents/archived/a1b2c3d4e5f6")).status_code == 200
 
     @pytest.mark.asyncio
+    async def test_an_agent_named_after_the_canonical_id_does_not_own_the_archive(self, archived, app, monkeypatch):
+        # bob names an agent after alice's archived canonical id; the archive
+        # must still resolve to alice's registry row, not to bob's agent
+        from tinyagentos.routes import agent_archive
+
+        async def _fake(request, archive_id):
+            return {"status": "ok", "id": archive_id}
+
+        monkeypatch.setattr(agent_archive, "restore_archived", _fake)
+        monkeypatch.setattr(agent_archive, "purge_archived", _fake)
+        _alice, bob = archived
+        canonical = app.state.config.archived_agents[-1]["original"]["registry_canonical_id"]
+        bob_uid = app.state.auth.find_user("bob")["id"]
+        row = await app.state.agent_registry.register(
+            framework="claude-code", display_name="decoy", user_id=bob_uid
+        )
+        _add_agent(app, canonical, registry_canonical_id=row["canonical_id"])
+        assert "a1b2c3d4e5f6" not in {e["id"] for e in (await bob.get("/api/agents/archived")).json()}
+        assert (await bob.post("/api/agents/archived/a1b2c3d4e5f6/restore")).status_code == 403
+        assert (await bob.delete("/api/agents/archived/a1b2c3d4e5f6")).status_code == 403
+
+    @pytest.mark.asyncio
     async def test_unattributed_archive_is_admin_only(self, archived, client):
         # alice owns registry rows with no handle; an empty owner id must not resolve to them
         for c in archived:
