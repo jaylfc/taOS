@@ -175,6 +175,16 @@ class IdempotencyCache:
                 del self._entries[key]
 
 
+def _public_agent(agent: dict) -> dict:
+    """An agent dict as a read returns it: without ``llm_key``.
+
+    ``llm_key`` is the agent's bearer credential (``_resolve_agent_by_bearer``),
+    so a response carrying it lets the reader act as the agent. No UI reads it
+    and an import re-mints it, so no caller loses anything.
+    """
+    return {k: v for k, v in agent.items() if k != "llm_key"}
+
+
 @router.get("/api/agents")
 async def list_agents(request: Request, include_guests: bool = False):
     """List all configured agents.
@@ -1690,7 +1700,7 @@ async def patch_agent_persona(request: Request, slug: str, body: PersonaPatch, u
     if body.source_persona_id is not None:
         agent["source_persona_id"] = body.source_persona_id
     await save_config_locked(config, config.config_path)
-    return {"status": "ok", "agent": agent}
+    return {"status": "ok", "agent": _public_agent(agent)}
 
 
 class MemoryPatch(BaseModel):
@@ -1713,7 +1723,7 @@ async def patch_agent_memory(request: Request, slug: str, body: MemoryPatch, use
     if body.memory_mode is not None:
         agent["memory_mode"] = body.memory_mode
     await save_config_locked(config, config.config_path)
-    return {"status": "ok", "agent": agent}
+    return {"status": "ok", "agent": _public_agent(agent)}
 
 
 @router.post("/api/agents/{slug}/dismiss-migration-banner")
