@@ -217,8 +217,9 @@ through `original.registry_canonical_id`. An entry without one is admin-only, an
 repeated display name a unique config name (`helper-2`) while the registry slug
 stays `helper`, and another agent may hold the `helper-2` slug, so
 `resolve_agent_owner` maps a config name to the entry's `registry_canonical_id`
-before asking the registry. Entries without one (imported, or deployed while the
-registry was down) keep the name lookup.
+before asking the registry. An entry without one (imported, created without a
+deploy, or deployed while the registry was down) has no registry row of its own,
+so it is admin-only.
 
 **`assign-agent`'s scope list is authoritative, not a delta.** It returns 200
 with `granted_scopes` echoing the request and, since taOS #2148, reconciles the

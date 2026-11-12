@@ -232,3 +232,14 @@ class TestDedupedNameOwnership:
         assert await resolve_agent_owner(req, "helper-2") != alice_uid
         app.state.config.agents = [x for x in app.state.config.agents if x["name"] != "alpha"]
         assert await resolve_agent_owner(req, "alpha") == alice_uid  # no config entry: slug chain
+
+    @pytest.mark.asyncio
+    async def test_configured_entry_without_canonical_id_is_admin_only(self, deduped, app, client):
+        # imported and config-only agents never get a registry row, so the name
+        # can only ever match someone else's slug (alice holds helper-2's)
+        alice, _bob = deduped
+        bob_agent = next(a for a in app.state.config.agents if a["name"] == "helper-2")
+        del bob_agent["registry_canonical_id"]
+        assert (await alice.get("/api/agents/helper-2")).status_code == 403
+        assert "helper-2" not in [a["name"] for a in (await alice.get("/api/agents")).json()]
+        assert (await client.get("/api/agents/helper-2")).status_code == 200

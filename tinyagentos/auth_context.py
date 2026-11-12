@@ -78,12 +78,15 @@ async def resolve_agent_owner(request: Request, agent_id: str) -> str | None:
     # A configured agent's name is its unique config slug (``helper-2``), while
     # the registry slug comes from the display name (``helper``) and another
     # agent may hold ``helper-2``; the canonical id deploy saved is the owner.
-    # Entries without one (imported, or deployed with the registry down) keep
-    # the name lookup below.
+    # An entry without one (imported, created without deploy, or deployed with
+    # the registry down) has no registry row of its own, so its name could only
+    # match someone else's slug: nobody owns it.
     config = getattr(request.app.state, "config", None)
     for agent in getattr(config, "agents", None) or []:
         if agent.get("name") == agent_id:
-            agent_id = agent.get("registry_canonical_id") or agent_id
+            agent_id = agent.get("registry_canonical_id") or ""
+            if not agent_id:
+                return None
             break
     registry = getattr(request.app.state, "agent_registry", None)
     if registry is None:
