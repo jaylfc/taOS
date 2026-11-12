@@ -1076,6 +1076,7 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
                     taos_host=deploy_taos_host,
                     memory_mode=body.memory_mode,
                     agent_token=agent_jwt,
+                    registry_canonical_id=canonical_id,
                 ))
                 agent = find_agent(config, body.name)
                 if result.get("success"):

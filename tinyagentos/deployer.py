@@ -179,6 +179,10 @@ class DeployRequest:
     # When non-empty, injected as TAOS_AGENT_TOKEN into the container env.
     # Additive: TAOS_LOCAL_TOKEN is unchanged.
     agent_token: str = ""
+    # Non-reusable registry identity for this agent. When set, the minted
+    # per-agent local token is bound to it so a surviving token cannot fence
+    # onto a later agent that reuses the same name.
+    registry_canonical_id: str | None = None
 
 
 # Where an agent container reaches its LLM: its OWN loopback, port 4000, the
@@ -369,7 +373,9 @@ async def deploy_agent(req: DeployRequest) -> dict:
     try:
         from tinyagentos.auth import AuthManager
         auth_mgr = AuthManager(req.data_dir)
-        agent_token = auth_mgr.mint_agent_local_token(req.name)
+        agent_token = auth_mgr.mint_agent_local_token(
+            req.name, canonical_id=req.registry_canonical_id
+        )
         env["TAOS_LOCAL_TOKEN"] = agent_token
     except Exception as exc:
         logger.error("deploy %s: failed to mint agent local token: %s", req.name, exc)

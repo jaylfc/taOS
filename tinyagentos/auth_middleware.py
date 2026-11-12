@@ -101,6 +101,52 @@ async def _call_and_record_bound_agent(
     return response
 
 
+def _resolve_bound_local_token_agent(request: Request, auth_mgr, presented: str):
+    """Resolve a bound local token to the agent name it is allowed to fence.
+
+    A binding carrying a canonical id is authoritative: the current config
+    entry for the name must exist and have the same registry_canonical_id,
+    otherwise the token is rejected. A legacy name-only binding keeps the old
+    behaviour. Returns the agent name, ``False`` to reject, or ``None`` if
+    unbound.
+    """
+    get_binding = getattr(auth_mgr, "get_local_token_binding", None)
+    if callable(get_binding):
+        try:
+            binding = get_binding(presented)
+        except Exception:
+            binding = None
+        if binding is not None:
+            if (
+                isinstance(binding, tuple)
+                and len(binding) == 2
+                and isinstance(binding[0], str)
+            ):
+                bound_agent, canonical_id = binding
+                if not canonical_id:
+                    return bound_agent
+                config = getattr(request.app.state, "config", None)
+                if config is None:
+                    return False
+                try:
+                    from tinyagentos.agent_db import find_agent
+                except Exception:
+                    return False
+                agent = find_agent(config, bound_agent)
+                if not isinstance(agent, dict):
+                    return False
+                if agent.get("registry_canonical_id") != canonical_id:
+                    return False
+                return bound_agent
+            # Unknown/unexpected binding shape from a mock or reader: fall back
+            # to the name-only reader so existing callers/tests keep working.
+            try:
+                return auth_mgr.get_local_token_agent(presented)
+            except Exception:
+                return None
+    return auth_mgr.get_local_token_agent(presented)
+
+
 # /auth/pin-login is session-exempt for the same reason as /auth/login: it is
 # how a session is obtained, so requiring one would be circular. It is NOT
 # unguarded -- the route refuses any request that is not from the device's own
@@ -993,7 +1039,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
                         request.state.user_id = primary["id"] if primary else None
                         request.state.is_admin = primary is not None
                         request.state.via = "local_token"
-                        bound_agent = auth_mgr.get_local_token_agent(presented)
+                        bound_agent = _resolve_bound_local_token_agent(request, auth_mgr, presented)
+                        if bound_agent is False:
+                            return _unauthenticated(path, {"error": "Authentication required"})
                         if bound_agent:
                             return await _call_and_record_bound_agent(
                                 request, call_next, auth_mgr, bound_agent
@@ -1128,7 +1176,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     request.state.user_id = None
                     request.state.is_admin = False
                     request.state.via = "local_token"
-                bound_agent = auth_mgr.get_local_token_agent(presented)
+                bound_agent = _resolve_bound_local_token_agent(request, auth_mgr, presented)
+                if bound_agent is False:
+                    return _unauthenticated(path, {"error": "Authentication required"})
                 if bound_agent:
                     return await _call_and_record_bound_agent(
                         request, call_next, auth_mgr, bound_agent
