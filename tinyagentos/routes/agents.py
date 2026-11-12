@@ -9,7 +9,7 @@ import time
 import uuid
 from collections import OrderedDict
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
@@ -29,7 +29,13 @@ from tinyagentos.config import (
 from tinyagentos.routes import agent_archive
 from tinyagentos.routes import agent_deploy
 from tinyagentos.routes import agent_import
-from tinyagentos.auth_context import CurrentUser, current_user, require_admin, require_agent_owner_or_admin
+from tinyagentos.auth_context import (
+    CurrentUser,
+    current_user,
+    require_admin,
+    require_agent_owner_or_admin,
+    resolve_agent_owner,
+)
 logger = logging.getLogger(__name__)
 
 EXPORT_VERSION = 1
@@ -175,28 +181,111 @@ class IdempotencyCache:
                 del self._entries[key]
 
 
+def _public_agent(agent: dict) -> dict:
+    """An agent dict as a read returns it: without ``llm_key``.
+
+    ``llm_key`` is the agent's bearer credential (``_resolve_agent_by_bearer``),
+    so a response carrying it lets the reader act as the agent. No UI reads it
+    and an import re-mints it, so no caller loses anything.
+    """
+    return {k: v for k, v in agent.items() if k != "llm_key"}
+
+
+async def _require_agent_access(
+    request: Request, name: str, user: CurrentUser = Depends(current_user)
+) -> None:
+    """Only the agent's owner, an admin, or the agent itself may read it.
+
+    A per-agent local token maps to the admin user, so it is fenced to its own
+    agent first (same rule as the agent workspace routes).
+    """
+    bound = getattr(request.state, "agent_name", None)
+    if bound and bound != name:
+        raise HTTPException(status_code=403, detail="forbidden")
+    await require_agent_owner_or_admin(request, user, name)
+
+
+async def _visible_to_caller(
+    request: Request, entries: list[dict], owner_key, *, exact: bool = False
+) -> list[dict]:
+    """Every entry for an admin or the local token; a member sees only their own.
+
+    Ownership is the registry's, as in ``require_agent_owner_or_admin``, so an
+    agent the registry cannot attribute is listed to admins only. *owner_key*
+    maps an entry to the id the registry is asked about. A per-agent local
+    token is marked admin, so it is fenced to its own agent first; archive
+    entries carry no top-level ``name``, so it sees none of them. *exact* is
+    ``resolve_agent_owner``'s: *owner_key* yields a canonical id.
+    """
+    bound = getattr(request.state, "agent_name", None)
+    if bound:
+        return [e for e in entries if e.get("name") == bound]
+    if getattr(request.state, "is_admin", False) or getattr(request.state, "via", None) == "local_token":
+        return list(entries)
+    uid = getattr(request.state, "user_id", None)
+    if not uid:
+        return []
+    return [
+        e for e in entries
+        if await resolve_agent_owner(request, owner_key(e) or "", exact=exact) == uid
+    ]
+
+
+def _archived_registry_id(entry: dict) -> str:
+    """The registry id that owns an archive entry.
+
+    The entry ``id`` is the agent's config id, which the registry does not
+    know, and the slug can be reused by a later agent, so only the canonical
+    id saved at deploy counts. An entry without one is admin-only.
+    """
+    original = entry.get("original")
+    return (original.get("registry_canonical_id") or "") if isinstance(original, dict) else ""
+
+
+def _archive_owner_id(request: Request, archive_id: str) -> str:
+    """``_archived_registry_id`` of the archive entry *archive_id*, or ``""``.
+
+    A per-agent local token is marked admin, which would skip the ownership
+    check, and an agent has no business restoring or purging an archive.
+    """
+    if getattr(request.state, "agent_name", None):
+        raise HTTPException(status_code=403, detail="forbidden")
+    entry = next((a for a in request.app.state.config.archived_agents if a.get("id") == archive_id), None)
+    return _archived_registry_id(entry) if entry else ""
+
+
 @router.get("/api/agents")
 async def list_agents(request: Request, include_guests: bool = False):
-    """List all configured agents.
+    """List the configured agents the caller may see.
 
     With ``include_guests=1`` also append registry guest agents (active rows
     holding a ``chat_session`` grant) whose name does not collide with a
-    config agent. Default output is unchanged.
+    config agent. A per-agent local token sees no guests. Default output is
+    unchanged.
     """
-    agents = request.app.state.config.agents
-    if not include_guests:
+    configured = request.app.state.config.agents
+    agents = await _visible_to_caller(request, configured, lambda a: a.get("name"))
+    agents = [_public_agent(a) for a in agents]
+    if not include_guests or getattr(request.state, "agent_name", None):
         return agents
     from tinyagentos.chat.guest_agents import list_guests
-    taken = {a.get("name") for a in agents}
+    taken = {a.get("name") for a in configured}
     guests = [g for g in await list_guests(request.app.state) if g["name"] not in taken]
     return [*agents, *guests]
 
 
 @router.get("/api/agents/containers")
 async def list_agent_containers(request: Request):
-    """List live LXC container status for all agent containers."""
+    """List live LXC container status for the agent containers the caller may see."""
     from tinyagentos.containers import list_containers
     containers = await list_containers(prefix="taos-agent-")
+    bound = getattr(request.state, "agent_name", None)
+    if bound or not (getattr(request.state, "is_admin", False) or getattr(request.state, "via", None) == "local_token"):
+        visible = {
+            a.get("name")
+            for a in await _visible_to_caller(request, request.app.state.config.agents, lambda a: a.get("name"))
+        }
+        containers = [c for c in containers if c.name.removeprefix("taos-agent-") in visible]
     return [
         {
             "name": c.name,
@@ -213,7 +302,11 @@ async def list_agent_containers(request: Request):
 @router.get("/api/agents/archived")
 async def list_archived_agents(request: Request):
     config = request.app.state.config
-    return config.archived_agents
+    entries = await _visible_to_caller(request, config.archived_agents, _archived_registry_id, exact=True)
+    return [
+        {**e, "original": _public_agent(e["original"])} if isinstance(e.get("original"), dict) else e
+        for e in entries
+    ]
 
 
 def _resolve_agent_by_bearer(request: Request) -> dict | None:
@@ -331,24 +424,26 @@ def _small_context_warning(registry, model_id: str) -> str | None:
     return None
 
 
-@router.get("/api/agents/{name}/deploy-status")
+@router.get("/api/agents/{name}/deploy-status", dependencies=[Depends(_require_agent_access)])
 async def get_deploy_status(request: Request, name: str):
     """Get the background deploy task status for an agent."""
     deploy_tasks = request.app.state.deploy_tasks
     task = deploy_tasks.get(name)
     if task is None:
         return JSONResponse({"error": f"No deploy task found for '{name}'"}, status_code=404)
+    if isinstance(task.get("result"), dict):
+        task = {**task, "result": _public_agent(task["result"])}
     return task
 
 
-@router.get("/api/agents/{name}")
+@router.get("/api/agents/{name}", dependencies=[Depends(_require_agent_access)])
 async def get_agent_endpoint(request: Request, name: str):
     """Get agent details by name."""
     config = request.app.state.config
     agent = find_agent(config, name)
     if not agent:
         return JSONResponse({"error": f"Agent '{name}' not found"}, status_code=404)
-    return agent
+    return _public_agent(agent)
 
 
 @router.post("/api/agents", dependencies=[Depends(require_admin)])
@@ -1418,7 +1513,7 @@ async def restart_agent(request: Request, name: str, user: CurrentUser = Depends
     return result
 
 
-@router.get("/api/agents/{name}/logs")
+@router.get("/api/agents/{name}/logs", dependencies=[Depends(_require_agent_access)])
 async def agent_logs(request: Request, name: str, lines: int = 100):
     """Get recent journal logs from an agent's container."""
     from tinyagentos.containers import get_container_logs
@@ -1426,7 +1521,7 @@ async def agent_logs(request: Request, name: str, lines: int = 100):
     return {"name": name, "logs": logs}
 
 
-@router.get("/api/agents/{name}/export")
+@router.get("/api/agents/{name}/export", dependencies=[Depends(_require_agent_access)])
 async def export_agent(request: Request, name: str):
     """Export an agent's full config as portable JSON."""
     config = request.app.state.config
@@ -1449,7 +1544,7 @@ async def export_agent(request: Request, name: str):
 
     return {
         "version": EXPORT_VERSION,
-        "agent": {k: v for k, v in agent.items()},
+        "agent": _public_agent(agent),
         "channels": channel_export,
         "groups": group_names,
     }
@@ -1585,14 +1680,14 @@ async def destroy_agent(request: Request, name: str, user: CurrentUser = Depends
 @router.post("/api/agents/archived/{archive_id}/restore")
 async def restore_archived_agent(request: Request, archive_id: str, user: CurrentUser = Depends(current_user)):
     """Restore an archived agent back to active status."""
-    await require_agent_owner_or_admin(request, user, archive_id)
+    await require_agent_owner_or_admin(request, user, _archive_owner_id(request, archive_id), exact=True)
     return await agent_archive.restore_archived(request, archive_id)
 
 
 @router.delete("/api/agents/archived/{archive_id}")
 async def purge_archived_agent(request: Request, archive_id: str, user: CurrentUser = Depends(current_user)):
     """Permanently purge an archived agent."""
-    await require_agent_owner_or_admin(request, user, archive_id)
+    await require_agent_owner_or_admin(request, user, _archive_owner_id(request, archive_id), exact=True)
     return await agent_archive.purge_archived(request, archive_id)
 
 
@@ -1975,7 +2070,7 @@ def _budget_response(agent_name: str, rec: dict | None) -> dict:
     return {"agent": rec["agent"], "max_budget_usd": rec["max_budget_usd"], "spend_usd": rec["spend_usd"]}
 
 
-@router.get("/api/agents/{name}/budget")
+@router.get("/api/agents/{name}/budget", dependencies=[Depends(_require_agent_access)])
 async def get_agent_budget(request: Request, name: str):
     """Return an agent's LLM budget cap and current spend."""
     config = request.app.state.config

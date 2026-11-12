@@ -229,6 +229,41 @@ router-wide, and a per-agent local token may only reach its own agent's
 workspace. Before this any signed-in member could list, read, upload into or
 delete from any agent's workspace.
 
+**Agent reads are owner-only and never carry `llm_key`.** `GET /api/agents/{name}`,
+`/export`, `/logs`, `/budget` and `/deploy-status` (`tinyagentos/routes/agents.py`)
+require the agent's owner or an admin, with a per-agent local token fenced to its
+own agent. A member's `GET /api/agents` and `/api/agents/archived` list only the
+agents the registry attributes to them. No read returns `llm_key` (the agent's
+bearer credential), not even to an admin, including the deployer result inside
+`/deploy-status`; it stays in config and import re-mints it.
+
+**Archived agents belong to the canonical id saved at deploy.** An archive entry's
+`id` is the agent's config id, which the registry does not know, and its slug can
+be reused, so the archived list and the restore and purge routes resolve the owner
+through `original.registry_canonical_id`, looked up as an exact registry id (no
+configured name, slug or handle stands in for it, so an agent named after another
+agent's canonical id does not own that archive). An entry without one is admin-only; a
+per-agent local token (marked admin by the middleware) lists only its own agent,
+sees no archives and cannot restore or purge one; and
+`resolve_agent_owner` (`tinyagentos/auth_context.py`) attributes an empty id to nobody.
+
+**A per-agent local token dies with its agent's name.** It is bound by name, so
+archive and purge revoke it, a new deploy under the name revokes any token still
+bound there, and restore mints a fresh one. A revoke that fails stops archive or
+purge before the entry moves (retry once the bindings file is readable), and a
+restore whose fresh token cannot be installed leaves the container stopped.
+Restores run one at a time: a second restore of the same archive answers `404`.
+`GET /api/agents/containers` follows the agent list's visibility: a member sees
+only their own agents' containers.
+
+**A configured agent's owner is its canonical id, not its name.** Deploy gives a
+repeated display name a unique config name (`helper-2`) while the registry slug
+stays `helper`, and another agent may hold the `helper-2` slug, so
+`resolve_agent_owner` maps a config name to the entry's `registry_canonical_id`
+before asking the registry. An entry without one (imported, created without a
+deploy, or deployed while the registry was down) has no registry row of its own,
+so it is admin-only.
+
 **`assign-agent`'s scope list is authoritative, not a delta.** It returns 200
 with `granted_scopes` echoing the request and, since taOS #2148, reconciles the
 registry grants bound to that project to exactly the list you pass: a grant on
