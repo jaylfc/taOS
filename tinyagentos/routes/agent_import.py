@@ -31,6 +31,8 @@ from tinyagentos.config import (
     save_config_locked,
     unique_agent_slug,
     validate_agent_name,
+    reserve_agent_slug,
+    release_agent_slug,
 )
 
 logger = logging.getLogger(__name__)
@@ -131,128 +133,139 @@ async def import_hermes_agent(
 
     config = request.app.state.config
     try:
-        unique_slug = unique_agent_slug(config, display_name)
+        unique_slug = await reserve_agent_slug(config, display_name)
     except ValueError as e:
         _safe_unlink(tmp_path)
         return JSONResponse({"error": str(e)}, status_code=400)
 
-    # --- Parse secrets ----------------------------------------------------
-    secrets_map: dict[str, str] = {}
-    if secrets:
-        try:
-            parsed = json.loads(secrets)
-        except (ValueError, TypeError):
-            _safe_unlink(tmp_path)
-            return JSONResponse({"error": "secrets must be a JSON object"}, status_code=400)
-        if not isinstance(parsed, dict):
-            _safe_unlink(tmp_path)
-            return JSONResponse({"error": "secrets must be a JSON object"}, status_code=400)
-        secrets_map = {str(k): str(v) for k, v in parsed.items()}
-
-    # --- Register agent + create config record ----------------------------
-    import taosmd.agents as tm_agents
+    # Track whether the agent entry was successfully appended to config.agents.
+    # If not, we must release the reserved slug in the finally block.
+    agent_appended = False
     try:
-        tm_agents.register_agent(unique_slug)
-    except tm_agents.AgentExistsError:
-        pass
-    except Exception as e:
-        logger.exception("register_agent(%s) failed", unique_slug)
-        _safe_unlink(tmp_path)
-        return JSONResponse(
-            {"error": f"Could not register agent with taosmd: {e}"}, status_code=500
-        )
-
-    new_agent = normalize_agent({
-        "name": unique_slug,
-        "display_name": display_name,
-        "host": "",
-        "status": "importing",
-        "model": model,
-        "framework": SUPPORTED_IMPORT_FRAMEWORK,
-    })
-    new_agent["migrated_to_v2_personas"] = True
-    config.agents.append(new_agent)
-    await save_config_locked(config, config.config_path)
-
-    # --- Grant user-supplied secrets to the agent (same path as deploy) ---
-    # deploy_agent reads these via secrets_store.get_agent_secrets(name) and
-    # injects them into the container env, so this is the same mechanism.
-    secrets_store = getattr(request.app.state, "secrets", None)
-    if secrets_map and secrets_store is not None:
-        for sname, sval in secrets_map.items():
+        # --- Parse secrets ----------------------------------------------------
+        secrets_map: dict[str, str] = {}
+        if secrets:
             try:
-                await secrets_store.add(
-                    name=f"{unique_slug}-{sname}",
-                    value=sval,
-                    category="agent-import",
-                    description=f"Imported secret {sname} for {unique_slug}",
-                    agents=[unique_slug],
-                )
-            except Exception:
-                logger.exception("import %s: storing secret %r failed", unique_slug, sname)
+                parsed = json.loads(secrets)
+            except (ValueError, TypeError):
+                _safe_unlink(tmp_path)
+                return JSONResponse({"error": "secrets must be a JSON object"}, status_code=400)
+            if not isinstance(parsed, dict):
+                _safe_unlink(tmp_path)
+                return JSONResponse({"error": "secrets must be a JSON object"}, status_code=400)
+            secrets_map = {str(k): str(v) for k, v in parsed.items()}
 
-    deploy_tasks = request.app.state.deploy_tasks
-    deploy_tasks[unique_slug] = {"status": "importing", "name": unique_slug}
-
-    data_dir = request.app.state.data_dir
-    llm_proxy = getattr(request.app.state, "llm_proxy", None)
-
-    # Stash the host bundle path so the background task can push it.
-    _BUNDLE_PATHS[unique_slug] = tmp_path
-
-    async def _background_import():
-        from tinyagentos.deployer import deploy_agent, DeployRequest
+        # --- Register agent + create config record ----------------------------
+        import taosmd.agents as tm_agents
         try:
-            result = await deploy_agent(DeployRequest(
-                name=unique_slug,
-                framework=SUPPORTED_IMPORT_FRAMEWORK,
-                model=model,
-                data_dir=data_dir,
-                extra_config={
-                    "llm_proxy": llm_proxy,
-                    "registry": request.app.state.registry,
-                    "llm_gateway_port": llm_gateway_live_port(request.app.state),
-                    "agent_controller_port": agent_controller_live_port(request.app.state),
-                    "llm_gateway_models_problem": llm_gateway_models_check(request.app.state),
-                },
-                secrets_store=secrets_store,
-            ))
-            agent = find_agent(config, unique_slug)
-            if not result.get("success"):
+            tm_agents.register_agent(unique_slug)
+        except tm_agents.AgentExistsError:
+            pass
+        except Exception as e:
+            logger.exception("register_agent(%s) failed", unique_slug)
+            _safe_unlink(tmp_path)
+            return JSONResponse(
+                {"error": f"Could not register agent with taosmd: {e}"}, status_code=500
+            )
+
+        new_agent = normalize_agent({
+            "name": unique_slug,
+            "display_name": display_name,
+            "host": "",
+            "status": "importing",
+            "model": model,
+            "framework": SUPPORTED_IMPORT_FRAMEWORK,
+        })
+        new_agent["migrated_to_v2_personas"] = True
+        config.agents.append(new_agent)
+        await save_config_locked(config, config.config_path)
+        agent_appended = True
+
+        # --- Grant user-supplied secrets to the agent (same path as deploy) ---
+        # deploy_agent reads these via secrets_store.get_agent_secrets(name) and
+        # injects them into the container env, so this is the same mechanism.
+        secrets_store = getattr(request.app.state, "secrets", None)
+        if secrets_map and secrets_store is not None:
+            for sname, sval in secrets_map.items():
+                try:
+                    await secrets_store.add(
+                        name=f"{unique_slug}-{sname}",
+                        value=sval,
+                        category="agent-import",
+                        description=f"Imported secret {sname} for {unique_slug}",
+                        agents=[unique_slug],
+                    )
+                except Exception:
+                    logger.exception("import %s: storing secret %r failed", unique_slug, sname)
+
+        deploy_tasks = request.app.state.deploy_tasks
+        deploy_tasks[unique_slug] = {"status": "importing", "name": unique_slug}
+
+        data_dir = request.app.state.data_dir
+        llm_proxy = getattr(request.app.state, "llm_proxy", None)
+
+        # Stash the host bundle path so the background task can push it.
+        _BUNDLE_PATHS[unique_slug] = tmp_path
+
+        async def _background_import():
+            from tinyagentos.deployer import deploy_agent, DeployRequest
+            try:
+                result = await deploy_agent(DeployRequest(
+                    name=unique_slug,
+                    framework=SUPPORTED_IMPORT_FRAMEWORK,
+                    model=model,
+                    data_dir=data_dir,
+                    extra_config={
+                        "llm_proxy": llm_proxy,
+                        "registry": request.app.state.registry,
+                        "llm_gateway_port": llm_gateway_live_port(request.app.state),
+                        "agent_controller_port": agent_controller_live_port(request.app.state),
+                        "llm_gateway_models_problem": llm_gateway_models_check(request.app.state),
+                    },
+                    secrets_store=secrets_store,
+                ))
+                agent = find_agent(config, unique_slug)
+                if not result.get("success"):
+                    if agent is not None:
+                        agent["status"] = "failed"
+                    err_msg = result.get("error", "unknown error")
+                    deploy_tasks[unique_slug] = {
+                        "status": "failed", "name": unique_slug, "error": err_msg,
+                    }
+                    await _notify_failure(request, unique_slug, err_msg)
+                    return
+
+                if agent is not None:
+                    agent["host"] = result.get("ip", "")
+                    agent["llm_key"] = result.get("llm_key")
+                    await save_config_locked(config, config.config_path)
+
+                # Post-provision: push the bundle and run `hermes profile import`.
+                await _run_profile_import(request, unique_slug, agent)
+
+                if agent is not None:
+                    agent["status"] = "running"
+                deploy_tasks[unique_slug] = {
+                    "status": "success", "name": unique_slug, "result": result,
+                }
+            except Exception as exc:  # noqa: BLE001
+                agent = find_agent(config, unique_slug)
                 if agent is not None:
                     agent["status"] = "failed"
-                err_msg = result.get("error", "unknown error")
+                err_msg = str(exc)
                 deploy_tasks[unique_slug] = {
                     "status": "failed", "name": unique_slug, "error": err_msg,
                 }
                 await _notify_failure(request, unique_slug, err_msg)
-                return
-
-            if agent is not None:
-                agent["host"] = result.get("ip", "")
-                agent["llm_key"] = result.get("llm_key")
+            finally:
+                _safe_unlink(_BUNDLE_PATHS.pop(unique_slug, None))
                 await save_config_locked(config, config.config_path)
 
-            # Post-provision: push the bundle and run `hermes profile import`.
-            await _run_profile_import(request, unique_slug, agent)
-
-            if agent is not None:
-                agent["status"] = "running"
-            deploy_tasks[unique_slug] = {
-                "status": "success", "name": unique_slug, "result": result,
-            }
-        except Exception as exc:  # noqa: BLE001
-            agent = find_agent(config, unique_slug)
-            if agent is not None:
-                agent["status"] = "failed"
-            err_msg = str(exc)
-            deploy_tasks[unique_slug] = {
-                "status": "failed", "name": unique_slug, "error": err_msg,
-            }
-            await _notify_failure(request, unique_slug, err_msg)
-        finally:
-            _safe_unlink(_BUNDLE_PATHS.pop(unique_slug, None))
-            await save_config_locked(config, config.config_path)
+    finally:
+        # Release the reserved slug if the agent entry was never appended
+        # to config.agents (i.e., the create path failed before config mutation).
+        if not agent_appended:
+            release_agent_slug(unique_slug)
 
     asyncio.create_task(_background_import())
 
