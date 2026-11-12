@@ -1,3 +1,3 @@
 ### Security
 
-- Bind per-agent local tokens to the registry canonical id and reject bound tokens whose agent was replaced under the same name.
+- Bind per-agent local tokens to the registry canonical id and reject tokens when the agent is replaced under the same name.
