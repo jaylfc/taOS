@@ -721,7 +721,11 @@ async def chat(request: Request, body: ChatRequest):
         adapter.session_id = getattr(app_state, "taos_claude_code_session_id", None)
     elif use_kilo:
         adapter = KiloCliAdapter(KiloCliConfig(harness=harness, system=system_prompt), sink)
-        adapter.session_id = getattr(app_state, "taos_kilo_session_id", None)
+        saved_prompt = getattr(app_state, "taos_kilo_session_prompt", None)
+        if saved_prompt == system_prompt:
+            adapter.session_id = getattr(app_state, "taos_kilo_session_id", None)
+        else:
+            adapter.session_id = None
     elif use_picoclaw:
         adapter = PicoClawCliAdapter(PicoClawCliConfig(harness=harness, system=system_prompt), sink)
     elif use_hermes:
@@ -831,6 +835,7 @@ async def chat(request: Request, body: ChatRequest):
                 app_state.taos_claude_code_session_id = adapter.session_id
             if use_kilo and adapter.session_id:
                 app_state.taos_kilo_session_id = adapter.session_id
+                app_state.taos_kilo_session_prompt = system_prompt
             await adapter.close()
         except Exception as exc:
             logger.exception("taos-agent: drive task error")

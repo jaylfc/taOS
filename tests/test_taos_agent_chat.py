@@ -1328,6 +1328,157 @@ async def test_chat_kilo_turn_runs_kilo_not_opencode(client, app, monkeypatch, t
 
 
 # ---------------------------------------------------------------------------
+# Kilo session prompt change: changed system prompt must start a new session
+# ---------------------------------------------------------------------------
+
+_KILO_STUB_CAPTURE = r'''#!/bin/bash
+test -n "$KILO_API_KEY" || { echo "KILO_API_KEY is not set" >&2; exit 1; }
+[ -t 0 ] && { echo "stdin is a tty" >&2; exit 1; }
+# Echo the argv so the test can inspect session_id and message prefix
+echo "ARGV: $@" > "$KILO_CAPTURE_FILE"
+echo '{"type":"step_start","sessionID":"ses-new"}'
+echo '{"type":"text","sessionID":"ses-new","part":{"type":"text","text":"pong"}}'
+echo '{"type":"step_finish","sessionID":"ses-new"}"
+'''
+
+
+@pytest.mark.asyncio
+async def test_chat_kilo_changed_prompt_starts_new_session(client, app, monkeypatch, tmp_path):
+    """When the system prompt changes, a new kilo session must be started.
+
+    The bug: KiloCliAdapter prefixes the system prompt only when session_id is
+    None, but chat() restores app_state.taos_kilo_session_id on every turn and
+    saves it after the turn. After the taOS Agent persona changes, the old
+    session is resumed and the NEW system prompt never reaches kilo.
+
+    This test sets taos_kilo_session_id="old-session" with a saved
+    taos_kilo_session_prompt different from the current persona prompt, sends
+    one chat turn, and asserts the adapter received session_id=None (so the
+    stub kilo argv has no "-s old-session" and the message starts with the
+    current system prompt). Also asserts the unchanged-prompt case still
+    resumes "old-session".
+    """
+    import tinyagentos.routes.taos_agent as ta_module
+    from tinyagentos.kilo_runtime import KiloHarness
+    from tinyagentos.taos_agent_runtime import FRAMEWORK_KILO
+
+    monkeypatch.setattr(ta_module, "system_agent_framework", lambda app_state: FRAMEWORK_KILO)
+
+    # Capture file for the stub to write argv
+    capture_file = tmp_path / "capture.txt"
+
+    # Stub the kilo binary that captures argv to a file.
+    stub = tmp_path / "kilo"
+    stub.write_text(_KILO_STUB_CAPTURE.replace('$KILO_CAPTURE_FILE', str(capture_file)))
+    stub.chmod(0o755)
+
+    harness = KiloHarness(
+        home=tmp_path / "kilo-home", key="sk-kilo-test", model="kilo/kilo-auto/free",
+        binary=str(stub),
+    )
+    harness.write_home()
+
+    async def fake_ensure_taos_kilo_harness(app_state, model, system_prompt):
+        return harness
+
+    monkeypatch.setattr(ta_module, "ensure_taos_kilo_harness", fake_ensure_taos_kilo_harness)
+
+    # The opencode path must not be called at all for a kilo turn.
+    opencode_calls: list = []
+
+    async def fake_ensure_opencode_server(state, model):
+        opencode_calls.append(model)
+        return _fake_server()
+
+    monkeypatch.setattr(
+        "tinyagentos.routes.taos_agent.ensure_taos_opencode_server",
+        fake_ensure_opencode_server,
+    )
+
+    # A kilo_api_key secret is present (the readiness check reads it).
+    app.state.secrets = SimpleNamespace(get=AsyncMock(return_value={"value": "sk-kilo-test"}))
+
+    await client.patch("/api/taos-agent/settings", json={"model": "kilo/kilo-auto/free"})
+    app.state.taos_opencode_password = "testpw"
+    app.state.taos_opencode_session_id = None
+
+    # --- Case 1: Changed prompt should start a new session ---
+    # Set up old session with a DIFFERENT prompt
+    app.state.taos_kilo_session_id = "old-session"
+    app.state.taos_kilo_session_prompt = "OLD PROMPT"
+
+    # Set a persona (current prompt) that differs from the saved one
+    persona_resp = await client.put("/api/taos-agent/persona", json={"persona": "NEW PROMPT"})
+    assert persona_resp.status_code == 200, f"Persona patch failed: {persona_resp.text}"
+    assert persona_resp.json()["persona"] == "NEW PROMPT"
+
+    resp = await client.post(
+        "/api/taos-agent/chat",
+        json={"messages": [{"role": "user", "content": "ping"}]},
+    )
+    assert resp.status_code == 200
+    assert "pong" in resp.text
+    assert opencode_calls == [], "ensure_taos_opencode_server must not be called for a kilo turn"
+
+    # Read the captured argv from the file
+    stderr_output = capture_file.read_text()
+
+    # The stub should NOT have been called with "-s old-session"
+    assert "-s old-session" not in stderr_output, (
+        f"Expected new session (no -s old-session), but capture shows: {stderr_output}"
+    )
+    # The message should start with the NEW prompt "NEW PROMPT"
+    assert "NEW PROMPT" in stderr_output, (
+        f"Expected message to start with new prompt 'NEW PROMPT', capture: {stderr_output}"
+    )
+
+    # --- Case 2: Unchanged prompt should resume the old session ---
+    # New capture file for second call
+    capture_file2 = tmp_path / "capture2.txt"
+
+    # Reset the stub call count by creating a new harness with a fresh stub
+    stub2 = tmp_path / "kilo2"
+    stub2.write_text(_KILO_STUB_CAPTURE.replace('$KILO_CAPTURE_FILE', str(capture_file2)))
+    stub2.chmod(0o755)
+
+    harness2 = KiloHarness(
+        home=tmp_path / "kilo-home2", key="sk-kilo-test", model="kilo/kilo-auto/free",
+        binary=str(stub2),
+    )
+    harness2.write_home()
+
+    async def fake_ensure_taos_kilo_harness2(app_state, model, system_prompt):
+        return harness2
+
+    monkeypatch.setattr(ta_module, "ensure_taos_kilo_harness", fake_ensure_taos_kilo_harness2)
+
+    # Now the saved prompt matches the current prompt
+    app.state.taos_kilo_session_id = "old-session"
+    app.state.taos_kilo_session_prompt = "SAME PROMPT"
+
+    # Set persona to the same prompt
+    persona_resp2 = await client.put("/api/taos-agent/persona", json={"persona": "SAME PROMPT"})
+    assert persona_resp2.status_code == 200
+
+    resp2 = await client.post(
+        "/api/taos-agent/chat",
+        json={"messages": [{"role": "user", "content": "ping2"}]},
+    )
+    assert resp2.status_code == 200
+
+    stderr_output2 = capture_file2.read_text()
+
+    # The stub SHOULD have been called with "-s old-session"
+    assert "-s old-session" in stderr_output2, (
+        f"Expected resumed session with -s old-session, but capture shows: {stderr_output2}"
+    )
+    # The message should NOT have the system prompt prefixed (since it's a resume)
+    assert "SAME PROMPT" not in stderr_output2 or stderr_output2.index("SAME PROMPT") > stderr_output2.index("-s old-session"), (
+        f"Expected no prompt prefix on resume, capture: {stderr_output2}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # ensure_taos_opencode_server: legacy key re-scope failure remints locally
 # ---------------------------------------------------------------------------
 
