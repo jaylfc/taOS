@@ -209,7 +209,7 @@ class TestSecretsSelfReadMembership:
 
     async def test_case_sensitive_name_difference(self, secrets_app, tmp_data_dir):
         """A token for agent A cannot read a secret granted to agent whose name
-        differs from A's only by case."""
+        differs from A's only by case. Also verifies agent B can read its own secret (positive control)."""
         cid_a, token_a = await _agent(secrets_app, "@agent-a", scopes=("secrets_read_own",))
         cid_b, token_b = await _agent(secrets_app, "@agent-b", scopes=("secrets_read_own",))
 
@@ -234,9 +234,15 @@ class TestSecretsSelfReadMembership:
             r = await c.get(f"{SECRETS_SELF}/mysecret", headers=_hdr(token_a))
         assert r.status_code == 404
 
+        # Agent-b reads its own secret -> 200 (positive control)
+        async with _bare(secrets_app) as c:
+            r = await c.get(f"{SECRETS_SELF}/mysecret", headers=_hdr(token_b))
+        assert r.status_code == 200
+        assert r.json() == {"name": "mysecret", "value": "s3cr3t-b"}
+
     async def test_prefix_similar_name_difference(self, secrets_app, tmp_data_dir):
         """A token for agent A cannot read a secret granted to agent whose name
-        differs by a prefix from A's name."""
+        differs by a prefix from A's name. Also verifies agent can read its own secret (positive control)."""
         cid_a, token_a = await _agent(secrets_app, "@superagent", scopes=("secrets_read_own",))
         cid_b, token_b = await _agent(secrets_app, "@agent", scopes=("secrets_read_own",))
 
@@ -260,6 +266,12 @@ class TestSecretsSelfReadMembership:
         async with _bare(secrets_app) as c:
             r = await c.get(f"{SECRETS_SELF}/mysecret", headers=_hdr(token_a))
         assert r.status_code == 404
+
+        # Agent reads its own secret -> 200 (positive control)
+        async with _bare(secrets_app) as c:
+            r = await c.get(f"{SECRETS_SELF}/mysecret", headers=_hdr(token_b))
+        assert r.status_code == 200
+        assert r.json() == {"name": "mysecret", "value": "s3cr3t-plain"}
 
 
 @pytest.mark.asyncio
