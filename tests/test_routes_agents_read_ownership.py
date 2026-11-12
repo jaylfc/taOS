@@ -266,6 +266,21 @@ class TestDedupedNameOwnership:
         assert "helper-2" not in [a["name"] for a in (await alice.get("/api/agents")).json()]
         assert (await client.get("/api/agents/helper-2")).status_code == 200
 
+    @pytest.mark.asyncio
+    async def test_saved_canonical_id_without_row_does_not_fall_back(self, deduped, app, client):
+        # the saved id has no registry row; alice holds a slug spelled like it
+        alice, _bob = deduped
+        alice_uid = app.state.auth.find_user("alice")["id"]
+        ghost = "ghost-20260101-000000"
+        await app.state.agent_registry.register(
+            framework="claude-code", display_name=ghost, user_id=alice_uid
+        )
+        bob_agent = next(a for a in app.state.config.agents if a["name"] == "helper-2")
+        bob_agent["registry_canonical_id"] = ghost
+        assert (await alice.get("/api/agents/helper-2")).status_code == 403
+        assert "helper-2" not in [a["name"] for a in (await alice.get("/api/agents")).json()]
+        assert (await client.get("/api/agents/helper-2")).status_code == 200
+
 
 class TestBoundAgentToken:
     """A per-agent local token is marked admin by the middleware, so every list

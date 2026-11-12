@@ -18,7 +18,7 @@ Security hotfix cut from beta.57.
 - Archived agents are listed to, and can be restored or purged by, their owner or an admin only; an archived agent with no recorded owner is admin-only. Naming an agent after another agent's registry id no longer grants access to that agent's archive.
 - An agent's own local token lists only that agent, sees no archived agents, and can no longer restore or purge an archive.
 - The agent container list shows a member only their own agents' containers. An agent's local token is revoked when it is archived or purged, and a new deploy under the same name revokes any token still bound to it, so a reused name never inherits the old token. Restore mints a fresh one. If the token cannot be revoked, archive and purge stop with the agent's entry kept so they can be retried, and restore does not start an agent whose fresh token could not be installed. Restores run one at a time, so two restores of one archive no longer both succeed and add the agent twice.
-- Owner checks resolve an agent through the registry id saved at deploy, so an agent whose name was made unique (for example `helper-2`) belongs to its owner; an agent with no registry id (imported, or created without a deploy) is admin-only.
+- Owner checks resolve an agent through the registry id saved at deploy, so an agent whose name was made unique (for example `helper-2`) belongs to its owner; an agent with no registry id (imported, or created without a deploy) is admin-only. If that saved registry id no longer has a registry entry, the agent is admin-only too, rather than being matched to another agent whose name is spelled like the id.
 
 ## [1.0.0-beta.57] - 2026-10-23
 

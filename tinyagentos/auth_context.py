@@ -91,6 +91,9 @@ async def resolve_agent_owner(request: Request, agent_id: str, *, exact: bool = 
             agent_id = agent.get("registry_canonical_id") or ""
             if not agent_id:
                 return None
+            # Only that row owns it: with the row gone, a slug or handle
+            # spelled like the saved id is someone else's.
+            exact = True
             break
     registry = getattr(request.app.state, "agent_registry", None)
     if registry is None:
