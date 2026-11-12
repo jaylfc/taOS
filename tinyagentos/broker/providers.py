@@ -53,6 +53,16 @@ _PROVIDER_LIST: list[Provider] = [
         notes="Search API for agents.",
     ),
     Provider(
+        id="keenable",
+        display_name="Keenable",
+        kind="mcp",
+        base_url="https://api.keenable.ai",
+        auth_style="header:X-Api-Key",
+        secret_ref="KEENABLE_API_KEY",
+        default_scopes=["search", "fetch"],
+        notes="Web search and page fetch (clean markdown) for agents.",
+    ),
+    Provider(
         id="github",
         display_name="GitHub",
         kind="mcp",
