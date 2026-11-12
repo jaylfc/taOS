@@ -203,6 +203,9 @@ async def archive_agent_fully(request: Request, name: str) -> dict:
                     )
             config.agents = [a for a in config.agents if a["name"] != name]
             await save_config_locked(config, config.config_path)
+            _deploy_tasks = getattr(request.app.state, "deploy_tasks", None)
+            if _deploy_tasks is not None:
+                _deploy_tasks.pop(slug, None)
             try:
                 request.app.state.auth.unbind_local_token_agent(slug)
             except Exception as exc:  # noqa: BLE001 - best-effort revocation
@@ -229,6 +232,9 @@ async def archive_agent_fully(request: Request, name: str) -> dict:
         config.agents = [a for a in config.agents if a["name"] != name]
         config.archived_agents.append(archive_entry)
         await save_config_locked(config, config.config_path)
+        _deploy_tasks = getattr(request.app.state, "deploy_tasks", None)
+        if _deploy_tasks is not None:
+            _deploy_tasks.pop(slug, None)
         try:
             request.app.state.auth.unbind_local_token_agent(slug)
         except Exception as exc:  # noqa: BLE001 - best-effort revocation
@@ -388,6 +394,10 @@ async def archive_agent_fully(request: Request, name: str) -> dict:
     config.agents = [a for a in config.agents if a["name"] != name]
     config.archived_agents.append(archive_entry)
     await save_config_locked(config, config.config_path)
+
+    _deploy_tasks = getattr(request.app.state, "deploy_tasks", None)
+    if _deploy_tasks is not None:
+        _deploy_tasks.pop(slug, None)
 
     return {
         "status": "archived",
@@ -599,6 +609,10 @@ async def _restore_archived(request: Request, archive_id: str):
     config.archived_agents = [a for a in config.archived_agents if a.get("id") != archive_id]
     await save_config_locked(config, config.config_path)
 
+    _deploy_tasks = getattr(request.app.state, "deploy_tasks", None)
+    if _deploy_tasks is not None:
+        _deploy_tasks.pop(final_slug, None)
+
     return {
         "status": "restored",
         "id": archive_id,
@@ -731,5 +745,9 @@ async def purge_archived(request: Request, archive_id: str):
                     "purge: unbind local token for %s failed: %s",
                     archived_slug, exc,
                 )
+
+    _deploy_tasks = getattr(request.app.state, "deploy_tasks", None)
+    if _deploy_tasks is not None:
+        _deploy_tasks.pop(original_name, None)
 
     return {"status": "purged", "id": archive_id}
