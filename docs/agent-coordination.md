@@ -199,6 +199,13 @@ router-wide, and a per-agent local token may only reach its own agent's
 workspace. Before this any signed-in member could list, read, upload into or
 delete from any agent's workspace.
 
+**Agent reads are owner-only and never carry `llm_key`.** `GET /api/agents/{name}`,
+`/export`, `/logs`, `/budget` and `/deploy-status` (`tinyagentos/routes/agents.py`)
+require the agent's owner or an admin, with a per-agent local token fenced to its
+own agent. A member's `GET /api/agents` and `/api/agents/archived` list only the
+agents the registry attributes to them. No read returns `llm_key` (the agent's
+bearer credential), not even to an admin; it stays in config and import re-mints it.
+
 **`assign-agent`'s scope list is authoritative, not a delta.** It returns 200
 with `granted_scopes` echoing the request and, since taOS #2148, reconciles the
 registry grants bound to that project to exactly the list you pass: a grant on
