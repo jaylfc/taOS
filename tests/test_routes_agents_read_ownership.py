@@ -189,3 +189,46 @@ class TestArchivedOwnership:
             assert (await c.post("/api/agents/archived/ghost-1/restore")).status_code == 403
             assert "ghost-1" not in {e["id"] for e in (await c.get("/api/agents/archived")).json()}
         assert "ghost-1" in {e["id"] for e in (await client.get("/api/agents/archived")).json()}
+
+
+class TestDedupedNameOwnership:
+    """Deploy gives a repeated display name a unique config name (``helper-2``)
+    while the registry slug stays ``helper``; the owner is the config entry's
+    ``registry_canonical_id``, never whoever holds the ``helper-2`` slug."""
+
+    @pytest_asyncio.fixture
+    async def deduped(self, owner_clients, app):
+        alice, bob = owner_clients
+        uid = {u: app.state.auth.find_user(u)["id"] for u in ("alice", "bob")}
+        reg = app.state.agent_registry
+        a = await reg.register(framework="claude-code", display_name="helper", user_id=uid["alice"])
+        b = await reg.register(framework="claude-code", display_name="helper", user_id=uid["bob"])
+        # alice also holds the slug bob's config name decodes to
+        await reg.register(framework="claude-code", display_name="helper-2", user_id=uid["alice"])
+        _add_agent(app, "helper", registry_canonical_id=a["canonical_id"])
+        _add_agent(app, "helper-2", registry_canonical_id=b["canonical_id"])
+        return alice, bob
+
+    @pytest.mark.asyncio
+    async def test_owner_of_deduped_name_reads_it(self, deduped):
+        alice, bob = deduped
+        assert (await bob.get("/api/agents/helper-2")).status_code == 200
+        assert "helper-2" in [a["name"] for a in (await bob.get("/api/agents")).json()]
+
+    @pytest.mark.asyncio
+    async def test_slug_holder_does_not_own_deduped_name(self, deduped):
+        alice, _bob = deduped
+        assert (await alice.get("/api/agents/helper-2")).status_code == 403
+        assert "helper-2" not in [a["name"] for a in (await alice.get("/api/agents")).json()]
+
+    @pytest.mark.asyncio
+    async def test_name_without_config_entry_still_resolves_by_slug(self, deduped, app):
+        from types import SimpleNamespace
+        from tinyagentos.auth_context import resolve_agent_owner
+
+        req = SimpleNamespace(app=app)
+        alice_uid = app.state.auth.find_user("alice")["id"]
+        assert await resolve_agent_owner(req, "alpha") == alice_uid  # config entry, canonical id
+        assert await resolve_agent_owner(req, "helper-2") != alice_uid
+        app.state.config.agents = [x for x in app.state.config.agents if x["name"] != "alpha"]
+        assert await resolve_agent_owner(req, "alpha") == alice_uid  # no config entry: slug chain

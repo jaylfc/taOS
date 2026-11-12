@@ -213,6 +213,13 @@ be reused, so the archived list and the restore and purge routes resolve the own
 through `original.registry_canonical_id`. An entry without one is admin-only, and
 `resolve_agent_owner` (`tinyagentos/auth_context.py`) attributes an empty id to nobody.
 
+**A configured agent's owner is its canonical id, not its name.** Deploy gives a
+repeated display name a unique config name (`helper-2`) while the registry slug
+stays `helper`, and another agent may hold the `helper-2` slug, so
+`resolve_agent_owner` maps a config name to the entry's `registry_canonical_id`
+before asking the registry. Entries without one (imported, or deployed while the
+registry was down) keep the name lookup.
+
 **`assign-agent`'s scope list is authoritative, not a delta.** It returns 200
 with `granted_scopes` echoing the request and, since taOS #2148, reconciles the
 registry grants bound to that project to exactly the list you pass: a grant on

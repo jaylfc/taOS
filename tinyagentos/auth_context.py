@@ -64,8 +64,9 @@ def require_admin(request: Request) -> None:
 async def resolve_agent_owner(request: Request, agent_id: str) -> str | None:
     """Return the ``user_id`` that owns *agent_id* per the agent registry, or ``None``.
 
-    *agent_id* may be a canonical id (``slug-YYYYMMDD-HHMMSS``), a bare slug, or
-    a handle -- the three spellings routes accept for an agent. ``None`` means
+    *agent_id* may be a configured agent's name, a canonical id
+    (``slug-YYYYMMDD-HHMMSS``), a bare slug, or a handle -- the spellings routes
+    accept for an agent. ``None`` means
     the registry cannot attribute the agent to anyone (unknown id, registry not
     wired, or not initialised); callers must treat that as NOT owned by the
     caller, never as free-for-all.
@@ -74,6 +75,16 @@ async def resolve_agent_owner(request: Request, agent_id: str) -> str | None:
         # get_by_handle("") matches every agent registered without a handle,
         # so an empty id would resolve to whichever of them is oldest.
         return None
+    # A configured agent's name is its unique config slug (``helper-2``), while
+    # the registry slug comes from the display name (``helper``) and another
+    # agent may hold ``helper-2``; the canonical id deploy saved is the owner.
+    # Entries without one (imported, or deployed with the registry down) keep
+    # the name lookup below.
+    config = getattr(request.app.state, "config", None)
+    for agent in getattr(config, "agents", None) or []:
+        if agent.get("name") == agent_id:
+            agent_id = agent.get("registry_canonical_id") or agent_id
+            break
     registry = getattr(request.app.state, "agent_registry", None)
     if registry is None:
         return None
