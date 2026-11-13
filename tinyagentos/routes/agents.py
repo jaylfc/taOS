@@ -286,6 +286,20 @@ async def list_agent_containers(request: Request):
             for a in await _visible_to_caller(request, request.app.state.config.agents, lambda a: a.get("name"))
         }
         containers = [c for c in containers if c.name.removeprefix("taos-agent-") in visible]
+    # When the agent's config records the Incus project its container was
+    # created in (incus_project), keep only the container from that project;
+    # when it records none, the name match above is the whole story. Two
+    # projects can each hold a taos-agent-<name>, and name alone cannot tell
+    # them apart.
+    projects = {
+        a.get("name"): a.get("incus_project")
+        for a in request.app.state.config.agents
+    }
+    if projects:
+        containers = [
+            c for c in containers
+            if projects.get(c.name.removeprefix("taos-agent-")) in (None, getattr(c, "project", None))
+        ]
     return [
         {
             "name": c.name,
@@ -1086,6 +1100,16 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
                             agent["placement_source"] = "user"
                         agent["status"] = "running"
                         agent["llm_key"] = result.get("llm_key")
+                        # Pin the Incus project the container was created in so
+                        # GET /api/agents/containers can disambiguate a
+                        # taos-agent-<name> that lives in two projects. Only set
+                        # it when the deployer resolved one and the record does
+                        # not already carry a pin (a re-deploy must not clobber a
+                        # pin the operator moved the container to by hand).
+                        if not agent.get("incus_project"):
+                            agent_incus_project = result.get("incus_project")
+                            if agent_incus_project:
+                                agent["incus_project"] = agent_incus_project
                         # Save config now so the bootstrap endpoint can return
                         # the llm_key before we start the openclaw service.
                         await save_config_locked(config, config.config_path)

@@ -20,6 +20,7 @@ class ContainerInfo:
     ip: str | None
     memory_mb: int  # mebibytes
     cpu_cores: int
+    project: str | None = None  # incus project the instance lives in (None for non-incus backends)
 
 
 def _parse_memory(mem_str: str) -> int:
