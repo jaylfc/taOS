@@ -107,6 +107,12 @@ class TestExemptGetBearerTokens:
     def test_valid_local_token_gets_admin(self):
         mgr = _default_auth_mgr()
         mgr.validate_local_token.return_value = True
+        mgr.get_primary_user.return_value = {"id": "user-1", "is_admin": True}
+        # The removed fallback branch resolved an unbound token via
+        # get_local_token_agent; give the mock a real binding tuple so the
+        # canonical-id path sees a legacy name-only binding and fences the
+        # request to that agent (is_admin + via local_token, unchanged).
+        mgr.get_local_token_binding.return_value = ("test-bound-agent", None)
         req = _make_request(headers={"authorization": "Bearer local-secret"})
         out = _run_dispatch(req, mgr)
         assert out.state_flags["is_admin"] is True
@@ -120,6 +126,7 @@ class TestExemptGetBearerTokens:
         mgr = _default_auth_mgr()
         mgr.validate_local_token.return_value = True
         mgr.get_primary_user.return_value = None
+        mgr.get_local_token_binding.return_value = ("test-bound-agent", None)
         req = _make_request(headers={"authorization": "Bearer local-secret"})
         out = _run_dispatch(req, mgr)
         assert out.state_flags["is_admin"] is False
@@ -302,8 +309,11 @@ class TestExemptGetBearerTokens:
         mgr.get_primary_user.return_value = {"id": "user-1", "is_admin": True}
         mgr.data_dir = tmp_path
         bound_agent_name = "test-bound-agent"
-        mgr.get_local_token_agent.return_value = bound_agent_name
-        
+        # The removed fallback branch resolved an unbound token via
+        # get_local_token_agent; give the mock a real binding tuple so the
+        # canonical-id path sees a legacy name-only binding and fences the
+        # request to that agent.
+        mgr.get_local_token_binding.return_value = (bound_agent_name, None)
         req = _make_request(headers={"authorization": "Bearer local-secret"})
         # Add scope attribute for route template lookup
         req.scope = {"route": type("Route", (), {"path": "/api/cluster/workers"})()}

@@ -310,3 +310,68 @@ class TestPurgePathTraversal:
         assert resp.json()["status"] == "purged"
         # The archive subdir should be gone
         assert not archive_subdir.exists(), "Normal archive dir was not removed!"
+
+
+class TestRestorePublishesConfigBeforeContainerStart:
+    """The restored agent's local token is bound to the registry canonical id,
+    so the middleware looks up the CURRENT config entry for a canonical-bound
+    token. Before the fix, _restore_archived minted the token (step 1b), started
+    the container (step 3) and only appended the config entry at step 8, so the
+    bridge's bootstrap request during steps 3-7 answered 401.
+
+    The fix moves step 4 (key mint) and step 8 (config append) before step 3
+    (start_container), so the entry exists when the container starts.
+    """
+
+    @pytest.mark.asyncio
+    async def test_restore_publishes_config_before_container_start(self, client, monkeypatch, app):
+        from tinyagentos.agent_db import find_agent
+
+        config = app.state.config
+        entry = {
+            "id": "ghost-1",
+            "archived_at": "20260101T000000",
+            "archived_slug": "ghost",
+            "snapshot_name": "taos-archive-1",
+            "export_path": None,
+            "archive_dir": "archive/ghost-1",
+            "container_name": "taos-agent-ghost",
+            "original": {"name": "ghost", "registry_canonical_id": "cid-ghost"},
+        }
+        config.archived_agents = [entry]
+
+        async def ok(*args, **kwargs):
+            return {"success": True, "output": ""}
+
+        seen_at_start = []
+
+        async def fake_start(name):
+            # At the moment start_container is called the restored entry must
+            # already be in config.agents with the archived entry's
+            # registry_canonical_id, so the middleware can fence the bridge's
+            # bootstrap request (GET /api/openclaw/bootstrap with the token).
+            # Record rather than assert: _restore_archived swallows exceptions
+            # from start_container, so an assertion here would be invisible.
+            seen_at_start.append(find_agent(config, "ghost"))
+            return {"success": True}
+
+        monkeypatch.setattr("tinyagentos.containers.snapshot_restore", ok)
+        monkeypatch.setattr("tinyagentos.containers.rename_container", ok)
+        monkeypatch.setattr("tinyagentos.containers.start_container", fake_start)
+        monkeypatch.setattr("tinyagentos.containers.set_env", ok)
+        monkeypatch.setattr("tinyagentos.containers.exec_in_container", ok)
+
+        resp = await client.post("/api/agents/archived/ghost-1/restore")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["status"] == "restored"
+        assert seen_at_start, "start_container was never called"
+        agent_at_start = seen_at_start[0]
+        assert agent_at_start is not None, (
+            "restored config entry missing at container start: the bridge's "
+            "bootstrap request would answer 401"
+        )
+        assert (
+            agent_at_start.get("registry_canonical_id") == "cid-ghost"
+        ), "restored entry lost its canonical id"
+        assert any(a["name"] == "ghost" for a in config.agents)
+        assert not any(e["id"] == "ghost-1" for e in config.archived_agents)
