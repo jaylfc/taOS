@@ -166,3 +166,33 @@ class TestKeenableClient:
                 return {"keenable_public_fallback": True}
 
         assert await public_fallback_enabled(MockSettings()) is True
+
+    async def test_public_fallback_enabled_false_for_string_false(self):
+        """public_fallback_enabled returns False when value is string 'false'."""
+        from tinyagentos.broker.clients.keenable import public_fallback_enabled
+
+        class MockSettings:
+            async def get_preference(self, user_id, namespace):
+                return {"keenable_public_fallback": "false"}
+
+        assert await public_fallback_enabled(MockSettings()) is False
+
+    async def test_public_fallback_enabled_false_for_numeric_one(self):
+        """public_fallback_enabled returns False when value is 1 (non-boolean truthy)."""
+        from tinyagentos.broker.clients.keenable import public_fallback_enabled
+
+        class MockSettings:
+            async def get_preference(self, user_id, namespace):
+                return {"keenable_public_fallback": 1}
+
+        assert await public_fallback_enabled(MockSettings()) is False
+
+    async def test_public_fallback_enabled_true_only_for_boolean_true(self):
+        """public_fallback_enabled returns True only for boolean True, not truthy values."""
+        from tinyagentos.broker.clients.keenable import public_fallback_enabled
+
+        class MockSettings:
+            async def get_preference(self, user_id, namespace):
+                return {"keenable_public_fallback": True}
+
+        assert await public_fallback_enabled(MockSettings()) is True

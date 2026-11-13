@@ -69,12 +69,12 @@ async def public_fallback_enabled(desktop_settings) -> bool:
 
     Reads the ``keenable_public_fallback`` boolean from the ``broker``
     namespace in the user preferences store. Missing or non-dict preferences
-    return ``False``.
+    return ``False``. Only the boolean ``True`` enables the fallback.
     """
     try:
         pref = await desktop_settings.get_preference("user", "broker")
         if isinstance(pref, dict):
-            return bool(pref.get("keenable_public_fallback", False))
+            return pref.get("keenable_public_fallback") is True
     except Exception:
         pass
     return False

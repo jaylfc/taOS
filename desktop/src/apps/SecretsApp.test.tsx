@@ -295,4 +295,86 @@ describe("SecretsApp", () => {
     const body = JSON.parse(putCall[1]?.body as string);
     expect(body).toEqual({ other_key: "value", keenable_public_fallback: true });
   });
+
+  it("keeps switch checked and shows alert when PUT returns 403", async () => {
+    const putMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 403,
+      headers: { get: () => "application/json" },
+      json: () => Promise.resolve({ error: "forbidden" }),
+    });
+    const fetchMock = mockFetch({
+      "/api/secrets": { ok: true, body: [] },
+      "/api/preferences/broker": { ok: true, body: { keenable_public_fallback: true } },
+    });
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((input: string, init?: RequestInit) => {
+      if (init?.method === "PUT" && input === "/api/preferences/broker") {
+        return putMock(input, init);
+      }
+      return fetchMock(input, init);
+    }));
+
+    render(<SecretsApp windowId="win-1" />);
+    await flush();
+    await waitFor(() =>
+      expect(screen.getByLabelText(/allow keenable keyless search/i)).toBeTruthy(),
+    );
+
+    const toggle = screen.getByRole("switch", { name: /allow keenable keyless search/i });
+    expect(toggle).toBeChecked();
+
+    fireEvent.click(toggle);
+    await flush();
+
+    // Switch should remain checked (previous value)
+    expect(toggle).toBeChecked();
+    // Alert should be shown
+    expect(screen.getByRole("alert")).toBeTruthy();
+  });
+
+  it("does not send PUT when merge GET fails", async () => {
+    const putMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/json" },
+      json: () => Promise.resolve({ ok: true }),
+    });
+    const fetchMock = mockFetch({
+      "/api/secrets": { ok: true, body: [] },
+      "/api/preferences/broker": { ok: true, body: { keenable_public_fallback: false, other_key: "value" } },
+    });
+    // Override GET for the merge to return 500
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((input: string, init?: RequestInit) => {
+      if (init?.method === "PUT" && input === "/api/preferences/broker") {
+        return putMock(input, init);
+      }
+      if (input === "/api/preferences/broker" && !init?.method) {
+        // This is the merge GET - return 500
+        return Promise.resolve({
+          ok: false,
+          status: 500,
+          headers: { get: () => "application/json" },
+          json: () => Promise.resolve({ error: "server error" }),
+        });
+      }
+      return fetchMock(input, init);
+    }));
+
+    render(<SecretsApp windowId="win-1" />);
+    await flush();
+    await waitFor(() =>
+      expect(screen.getByLabelText(/allow keenable keyless search/i)).toBeTruthy(),
+    );
+
+    const toggle = screen.getByRole("switch", { name: /allow keenable keyless search/i });
+    expect(toggle).not.toBeChecked();
+
+    fireEvent.click(toggle);
+    await flush();
+
+    // PUT should not have been called
+    expect(putMock).not.toHaveBeenCalled();
+    // Alert should be shown
+    expect(screen.getByRole("alert")).toBeTruthy();
+  });
 });

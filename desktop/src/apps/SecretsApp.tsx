@@ -219,6 +219,8 @@ export function SecretsApp({ windowId: _windowId }: { windowId: string }) {
   });
   const [keenablePublicFallback, setKeenablePublicFallback] = useState(false);
   const [keenableLoading, setKeenableLoading] = useState(true);
+  const [keenableError, setKeenableError] = useState<string | null>(null);
+  const [keenableSaving, setKeenableSaving] = useState(false);
 
   const fetchSecrets = useCallback(async () => {
     // 10s timeout via AbortController so a hung backend never leaves the
@@ -273,6 +275,7 @@ export function SecretsApp({ windowId: _windowId }: { windowId: string }) {
         const data = await res.json();
         if (data && typeof data === "object") {
           setKeenablePublicFallback(Boolean(data.keenable_public_fallback));
+          setKeenableError(null);
         }
       }
     } catch { /* ignore */ }
@@ -282,26 +285,37 @@ export function SecretsApp({ windowId: _windowId }: { windowId: string }) {
   }, []);
 
   const handleKeenableToggle = useCallback(async (enabled: boolean) => {
-    setKeenablePublicFallback(enabled);
+    if (keenableSaving) return;
+    setKeenableSaving(true);
+    setKeenableError(null);
     try {
       // Read current preferences first to merge
       const getRes = await fetch("/api/preferences/broker", {
         headers: { Accept: "application/json" },
       });
-      let current: Record<string, unknown> = {};
-      if (getRes.ok) {
-        const data = await getRes.json();
-        if (data && typeof data === "object") {
-          current = data;
-        }
+      if (!getRes.ok) {
+        throw new Error("Failed to read preferences");
       }
-      await fetch("/api/preferences/broker", {
+      let current: Record<string, unknown> = {};
+      const data = await getRes.json();
+      if (data && typeof data === "object") {
+        current = data;
+      }
+      const putRes = await fetch("/api/preferences/broker", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...current, keenable_public_fallback: enabled }),
       });
-    } catch { /* ignore */ }
-  }, []);
+      if (!putRes.ok) {
+        throw new Error("Failed to save preference");
+      }
+      setKeenablePublicFallback(enabled);
+    } catch {
+      setKeenableError("Failed to save Keenable preference. The switch has been restored.");
+    } finally {
+      setKeenableSaving(false);
+    }
+  }, [keenableSaving]);
 
   const handleReveal = async (name: string) => {
     const secret = secrets.find((s) => s.name === name);
@@ -409,33 +423,39 @@ export function SecretsApp({ windowId: _windowId }: { windowId: string }) {
         <div className="p-4">
           <GitHubConnect />
         </div>
-        {!keenableLoading && (
-          <div className="px-4 pb-4">
-            <Card className="bg-shell-surface border-white/5">
-              <CardContent className="px-4 py-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <KeyRound size={18} className="text-sky-400" />
-                    <div>
-                      <p className="text-sm font-medium text-shell-text">
-                        Allow Keenable keyless search
-                      </p>
-                      <p className="text-xs text-shell-text-tertiary">
-                        Sends queries to Keenable's shared public pool when no KEENABLE_API_KEY is set
-                      </p>
+{!keenableLoading && (
+            <div className="px-4 pb-4">
+              <Card className="bg-shell-surface border-white/5">
+                <CardContent className="px-4 py-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <KeyRound size={18} className="text-sky-400" />
+                      <div>
+                        <p className="text-sm font-medium text-shell-text">
+                          Allow Keenable keyless search
+                        </p>
+                        <p className="text-xs text-shell-text-tertiary">
+                          Sends queries to Keenable's shared public pool when no KEENABLE_API_KEY is set
+                        </p>
+                      </div>
                     </div>
+                    <Switch
+                      id="keenable-public-fallback"
+                      checked={keenablePublicFallback}
+                      onCheckedChange={handleKeenableToggle}
+                      aria-label="Allow Keenable keyless search"
+                      disabled={keenableSaving}
+                    />
                   </div>
-                  <Switch
-                    id="keenable-public-fallback"
-                    checked={keenablePublicFallback}
-                    onCheckedChange={handleKeenableToggle}
-                    aria-label="Allow Keenable keyless search"
-                  />
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-        )}
+                  {keenableError && (
+                    <p className="mt-2 text-xs text-red-400" role="alert">
+                      {keenableError}
+                    </p>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+          )}
         {loading ? (
           <div className="flex items-center justify-center h-full text-shell-text-tertiary text-sm">
             Loading secrets...
