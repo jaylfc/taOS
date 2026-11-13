@@ -21,6 +21,7 @@ set -eu
 
 HERE="$(dirname "$0")"
 CONF_SRC="$HERE/etc/sway-kiosk.conf"
+DESTDIR="${TAOS_SESSION_DESTDIR:-}"  # test/staging prefix; empty on a real install
 
 [ "$(id -u)" = 0 ] || { echo "FAIL: must run as root"; exit 1; }
 [ -r "$CONF_SRC" ] || { echo "FAIL: $CONF_SRC not readable"; exit 1; }
@@ -71,30 +72,45 @@ echo "PASS: launcher installed and parses"
 # came up, the execs failed silently (a bindsym's exec output goes nowhere), and
 # the phone had no idle blanking and no power key. Anything the config names has
 # to be installed by the same script that installs the config.
-for helper in taos-kiosk-idle taos-kiosk-live taos-kiosk-shellmode; do
-    install -m 755 "$HERE/bin/$helper" "/usr/local/bin/$helper"
-    echo "installed /usr/local/bin/$helper"
+install -d -m 755 "$DESTDIR/usr/local/bin"
+for helper in "$HERE"/bin/*; do
+    [ -f "$helper" ] || continue
+    name="$(basename "$helper")"
+    install -m 755 "$helper" "$DESTDIR/usr/local/bin/$name"
+    echo "installed $DESTDIR/usr/local/bin/$name"
 done
+install -m 755 "$HERE/shell/taos-shelld.py" "$DESTDIR/usr/local/bin/taos-shelld"
+echo "installed $DESTDIR/usr/local/bin/taos-shelld"
 
 # Every path the config execs must now exist and be executable. The loop above
 # is not the check: it installs what THIS script knows about, while the config
 # is what actually gets run, so a helper added to the config and forgotten here
 # is exactly the failure this catches.
 MISSING=""
-for path in $(grep -oE '/usr/local/bin/taos-kiosk-[a-z0-9-]+' "$CONF_SRC" | sort -u); do
-    [ -x "$path" ] || MISSING="$MISSING $path"
+for path in $(grep -oE '/usr/local/bin/taos-[a-z0-9-]+' "$CONF_SRC" | sort -u); do
+    [ -x "$DESTDIR$path" ] || MISSING="$MISSING $path"
 done
 [ -z "$MISSING" ] || { echo "FAIL: sway config execs missing binaries:$MISSING"; exit 1; }
-echo "PASS: every taos-kiosk-* path named by the config is installed and executable"
+echo "PASS: every taos-* path named by the config is installed and executable"
 
 # Control: prove the grep above actually found paths. An empty list would make
 # the check pass by looking at nothing -- the same vacuous green that has bitten
 # this repo before.
-EXEC_COUNT="$(grep -coE '/usr/local/bin/taos-kiosk-[a-z0-9-]+' "$CONF_SRC" || true)"
-[ "${EXEC_COUNT:-0}" -ge 2 ] || {
-    echo "FAIL: only ${EXEC_COUNT:-0} taos-kiosk-* paths found in the config - the check above measured nothing"
+EXEC_COUNT="$(grep -coE '/usr/local/bin/taos-[a-z0-9-]+' "$CONF_SRC" || true)"
+[ "${EXEC_COUNT:-0}" -ge 3 ] || {
+    echo "FAIL: only ${EXEC_COUNT:-0} taos-* paths found in the config - the check above measured nothing"
     exit 1; }
-echo "PASS: config names $EXEC_COUNT taos-kiosk-* paths"
+echo "PASS: config names $EXEC_COUNT taos-* paths"
+
+# Install the kiosk systemd unit.
+install -d -m 755 "$DESTDIR/etc/systemd/system"
+install -m 644 "$HERE/systemd/taos-kiosk.service" "$DESTDIR/etc/systemd/system/taos-kiosk.service"
+echo "installed $DESTDIR/etc/systemd/system/taos-kiosk.service"
+# Only reload systemd on a real install (DESTDIR empty) and when systemctl exists.
+if [ -z "$DESTDIR" ] && command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload
+fi
+# 3b-end.
 
 # 3c. Audio for the KIOSK session.
 #
