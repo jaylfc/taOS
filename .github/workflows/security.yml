@@ -22,7 +22,7 @@ on:
 # did not, which only started to matter once the dev trigger was added.)
 concurrency:
   group: security-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/master' && github.ref != 'refs/heads/dev' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' && github.ref != 'refs/heads/dev' && github.ref != 'refs/heads/distro' }}
 
 permissions:
   contents: read

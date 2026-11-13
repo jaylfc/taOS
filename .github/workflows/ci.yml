@@ -2,10 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [master, dev]
+    branches: [master, dev, distro]
   pull_request:
     # cloud/main: the cloud agent's integration branch (2026-10-30); drop it when promoted.
-    branches: [master, dev, cloud/main]
+    branches: [master, dev, distro, cloud/main]
   schedule:
     # 06:00 UTC daily run keeps the 3.11 leg honest without making every
     # PR wait 14 extra minutes on it. 3.11 is consistently ~2x slower
@@ -27,7 +27,7 @@ on:
 # from cancellation: every promotion's CI (and its bundle publish) must finish.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/master' && github.ref != 'refs/heads/dev' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' && github.ref != 'refs/heads/dev' && github.ref != 'refs/heads/distro' }}
 
 jobs:
   # The test matrix runs on GitHub-hosted runners. taOS is a public repo, so

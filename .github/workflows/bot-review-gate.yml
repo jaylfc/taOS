@@ -91,7 +91,7 @@ name: Bot review gate
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
-    branches: [master, dev]
+    branches: [master, dev, distro]
   pull_request_review:
   issue_comment:
 
