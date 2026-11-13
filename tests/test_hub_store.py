@@ -155,6 +155,8 @@ class TestStoreRoundTrip:
         assert blob["data"] == data
         assert blob["size"] == len(data)
         assert blob["mime"] == "image/webp"
+        assert await store.has_blob(h)
+        assert not await store.has_blob("0" * 64)
 
     @pytest.mark.asyncio
     async def test_get_missing_returns_none(self, store):

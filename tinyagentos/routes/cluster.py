@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import re
 import subprocess
 import time
 import uuid
@@ -9,11 +11,8 @@ from dataclasses import asdict
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
-
-logger = logging.getLogger(__name__)
-
-import re
+from pydantic import BaseModel, Field, field_validator
+from pydantic.types import StrictInt
 
 from tinyagentos.cluster.capabilities import hardware_to_targets, potential_capabilities as _potential_capabilities
 from tinyagentos.cluster.optimiser import ClusterOptimiser
@@ -26,6 +25,9 @@ from tinyagentos.auth_context import require_admin
 from tinyagentos.rate_limit import MovingWindowLimiter, rate_limited_response
 from tinyagentos.routes.auth import _require_admin
 from tinyagentos.task_utils import _create_supervised_task
+from tinyagentos.trace_store import TraceWriteError
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -320,6 +322,11 @@ class MoveRequest(BaseModel):
 @router.get("/api/cluster/workers")
 async def list_workers(request: Request):
     is_admin = getattr(request.state, "is_admin", False)
+    # taOS #3227: headless callers presenting a valid local token, device
+    # token, or registry JWT on this exempt GET get the full worker view
+    # (the middleware sets headless_full_view). signing_key stays stripped
+    # for everyone -- see below.
+    full_view = is_admin or getattr(request.state, "headless_full_view", False)
     cluster = request.app.state.cluster_manager
     pairing = getattr(request.app.state, "cluster_pairing", None)
     registry = getattr(request.app.state, "registry", None)
@@ -334,7 +341,7 @@ async def list_workers(request: Request):
         # non-utf8 signing key, and (2) even when serialization didn't
         # crash, the secret has no business being on the wire.
         d.pop("signing_key", None)
-        if not is_admin:
+        if not full_view:
             result.append({
                 "name": d["name"],
                 "status": d["status"],
@@ -1316,6 +1323,43 @@ class LeaseRenewRequest(BaseModel):
     epoch: str | None = None
 
 
+_PRINCIPAL_UNSET = object()
+
+
+async def _identify_principal(request: Request) -> str | None:
+    """Return which principal authenticated the request.
+
+    Returns one of: "admin", "local", "worker", or None if not authenticated.
+    Used by report_task to bind worker HMAC callers to their identity.
+
+    The result is cached on ``request.state`` so the worker HMAC (and its
+    timestamp skew check) is verified only once per request even when both
+    ``_require_lease_access`` and ``report_task`` consult this helper.
+    """
+    cached = getattr(request.state, "_taos_principal", _PRINCIPAL_UNSET)
+    if cached is not _PRINCIPAL_UNSET:
+        return cached
+
+    result: str | None = None
+    ok, _ = _require_admin(request)
+    if ok:
+        result = "admin"
+    else:
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            presented = auth_header[7:].strip()
+            if presented and request.app.state.auth.validate_local_token(presented):
+                result = "local"
+        if result is None:
+            try:
+                await require_worker_hmac(request)
+                result = "worker"
+            except _HMACError:
+                result = None
+    request.state._taos_principal = result
+    return result
+
+
 async def _require_lease_access(request: Request) -> JSONResponse | None:
     """Gate the lease coordination endpoints.
 
@@ -1329,19 +1373,9 @@ async def _require_lease_access(request: Request) -> JSONResponse | None:
     process could list every lease id and release them, re-enabling the
     concurrent-GPU-load the lease system exists to prevent.
     """
-    ok, _ = _require_admin(request)
-    if ok:
+    principal = await _identify_principal(request)
+    if principal is not None:
         return None
-    auth_header = request.headers.get("authorization", "")
-    if auth_header.lower().startswith("bearer "):
-        presented = auth_header[7:].strip()
-        if presented and request.app.state.auth.validate_local_token(presented):
-            return None
-    try:
-        await require_worker_hmac(request)
-        return None
-    except _HMACError:
-        pass
     return JSONResponse({"error": "forbidden"}, status_code=403)
 
 
@@ -1448,6 +1482,118 @@ async def list_leases(request: Request):
             for lease in leases
         ],
         "count": len(leases),
+    }
+
+
+# ── taOS #3233: external task report / load-feedback ──────────────────────
+
+_TASK_REPORT_SLUG = "taos-cluster-tasks"
+
+
+class TaskReportRequest(BaseModel):
+    """Job outcome reported by an external scheduler.
+
+    External GPU schedulers report job outcomes here to the trace store.
+    Rows are written under slug taos-cluster-tasks and readable via GET /api/trace.
+    """
+
+    worker: str = Field(..., min_length=1, max_length=128)
+    resource_id: str = Field(..., min_length=1, max_length=128)
+    lease_id: str | None = Field(default=None, max_length=128)
+    caller: str = Field(default="", max_length=256)
+    model: str = Field(default="", max_length=256)
+    duration_s: float = Field(..., ge=0, le=86_400 * 30, allow_inf_nan=False)
+    status: str = Field(..., pattern="^(success|failure|cancelled)$")
+    tokens: dict[str, StrictInt] | None = None
+
+    @field_validator("worker", "resource_id")
+    @classmethod
+    def _strip_blank(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("must not be blank")
+        return v
+
+    @field_validator("tokens")
+    @classmethod
+    def _validate_tokens(cls, v: dict[str, StrictInt] | None) -> dict[str, StrictInt] | None:
+        if v is None:
+            return None
+        if len(v) > 16:
+            raise ValueError("tokens must have at most 16 keys")
+        for k, val in v.items():
+            if not isinstance(k, str) or not (1 <= len(k) <= 64):
+                raise ValueError("each token key must be a string of length 1..64")
+            if not (0 <= val <= 10**9):
+                raise ValueError("each token value must be an integer 0..1_000_000_000")
+        return v
+
+
+@router.post("/api/cluster/tasks/report")
+async def report_task(request: Request, body: TaskReportRequest):
+    """Record an external scheduler's job outcome in the trace store.
+
+    Authenticated like the lease endpoints (admin session, local token,
+    or worker HMAC). Writes a ``task_report`` event under the
+    ``taos-cluster-tasks`` slug.
+
+    When the caller authenticated ONLY via worker HMAC, body.worker must
+    match the x-taos-worker-name header; otherwise 403.
+    """
+    # Verify the caller identity once and reuse it for both the lease-access
+    # gate and the worker HMAC identity binding below (avoids a second HMAC
+    # verification / timestamp-skew check).
+    principal = await _identify_principal(request)
+    if principal is None:
+        return JSONResponse({"error": "unidentified caller"}, status_code=403)
+    # Identity binding for worker HMAC callers: must match body.worker
+    if principal == "worker":
+        hmac_worker = getattr(request.state, "hmac_worker_name", None)
+        if hmac_worker != body.worker:
+            return JSONResponse(
+                {"error": "worker mismatch"}, status_code=403
+            )
+
+    registry = getattr(request.app.state, "trace_registry", None)
+    if registry is None:
+        return JSONResponse(
+            {"error": "trace registry not configured"}, status_code=503
+        )
+    store = await registry.get(_TASK_REPORT_SLUG)
+    payload: dict = {
+        "worker": body.worker,
+        "resource_id": body.resource_id,
+        "caller": body.caller,
+        "status": body.status,
+    }
+    if body.lease_id:
+        # Store lease_id hash as lease_ref (first 16 hex chars of sha256)
+        lease_ref = hashlib.sha256(body.lease_id.encode()).hexdigest()[:16]
+        payload["lease_ref"] = lease_ref
+    elif body.lease_id is not None:
+        # lease_id is explicitly set to None (distinct from not provided)
+        # Don't store lease_ref in this case
+        pass
+    if body.tokens is not None:
+        payload["tokens"] = body.tokens
+    try:
+        env = await store.record(
+            "task_report",
+            model=body.model or None,
+            duration_ms=int(body.duration_s * 1000),
+            error=None if body.status == "success" else body.status,
+            payload=payload,
+            strict=True,
+        )
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except TraceWriteError:
+        return JSONResponse({"error": "trace write failed"}, status_code=503)
+    return {
+        "status": "recorded",
+        "id": env["id"],
+        "worker": body.worker,
+        "resource_id": body.resource_id,
     }
 
 

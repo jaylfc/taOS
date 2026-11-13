@@ -193,6 +193,77 @@ member row goes with it. `expires_at` is still never populated - a grant is
 revoked, not time-boxed - though an expired value is already refused at check
 time.
 
+**Agent owner checks compare unique ids, not names.** `resolve_agent_owner`
+(`tinyagentos/auth_context.py`) attributes a config agent through its
+`registry_canonical_id` only; a config agent without one is nobody's, so only an
+admin may act on it. A config agent's name is a slug any user can also mint as a
+registry display name or handle, so a name match never grants ownership. A
+registry-only agent resolves by canonical id, then handle, then a slug only when
+exactly one active row carries it. The agent desktop, agent versions and
+`GET /api/secrets/agent/{name}/github` routes use this helper instead of their
+own handle lookups.
+
+**A registry identity maps to a config agent by canonical id only.**
+`_resolve_agent_name` (`tinyagentos/routes/delegation.py`), used by delegation
+and by the memory read routes for registry-JWT callers, maps a canonical id to
+the config agent whose `registry_canonical_id` equals it. A display name or
+handle match no longer counts, so an identity named like another user's agent
+cannot delegate as it or read its memory index.
+
+**`POST /api/chat/attachments/from-path` is contained and owner-checked.** The
+`/workspaces/<owner>/...` owner segment must be a plain name under
+`agent-workspaces/` (no `.` or `..`), an `agent-workspace` source needs the
+agent's owner, an admin, or that agent's own bound token, and a project `slug`
+is authorized before any file is copied.
+
+**Path segments from requests are contained.** `POST /api/memory/catalog/index`
+accepts only real `YYYY-MM-DD` values for `date`, `start_date` and `end_date`
+(the pipeline joins the date's parts into archive and session paths); an empty
+or omitted `date` still indexes yesterday. The
+legacy `GET /api/agents/{name}/files` refuses a `name` that resolves outside
+`workspaces/`.
+
+**Agent workspaces are owner-only.** Every `/api/agents/{agent_name}/workspace/*`
+route (`tinyagentos/routes/agent_workspace.py`) runs `require_agent_owner_or_admin`
+router-wide, and a per-agent local token may only reach its own agent's
+workspace. Before this any signed-in member could list, read, upload into or
+delete from any agent's workspace.
+
+**Agent reads are owner-only and never carry `llm_key`.** `GET /api/agents/{name}`,
+`/export`, `/logs`, `/budget` and `/deploy-status` (`tinyagentos/routes/agents.py`)
+require the agent's owner or an admin, with a per-agent local token fenced to its
+own agent. A member's `GET /api/agents` and `/api/agents/archived` list only the
+agents the registry attributes to them. No read returns `llm_key` (the agent's
+bearer credential), not even to an admin, including the deployer result inside
+`/deploy-status`; it stays in config and import re-mints it.
+
+**Archived agents belong to the canonical id saved at deploy.** An archive entry's
+`id` is the agent's config id, which the registry does not know, and its slug can
+be reused, so the archived list and the restore and purge routes resolve the owner
+through `original.registry_canonical_id`, looked up as an exact registry id (no
+configured name, slug or handle stands in for it, so an agent named after another
+agent's canonical id does not own that archive). An entry without one is admin-only; a
+per-agent local token (marked admin by the middleware) lists only its own agent,
+sees no archives and cannot restore or purge one; and
+`resolve_agent_owner` (`tinyagentos/auth_context.py`) attributes an empty id to nobody.
+
+**A per-agent local token dies with its agent's name.** It is bound by name, so
+archive and purge revoke it, a new deploy under the name revokes any token still
+bound there, and restore mints a fresh one. A revoke that fails stops archive or
+purge before the entry moves (retry once the bindings file is readable), and a
+restore whose fresh token cannot be installed leaves the container stopped.
+Restores run one at a time: a second restore of the same archive answers `404`.
+`GET /api/agents/containers` follows the agent list's visibility: a member sees
+only their own agents' containers.
+
+**A configured agent's owner is its canonical id, not its name.** Deploy gives a
+repeated display name a unique config name (`helper-2`) while the registry slug
+stays `helper`, and another agent may hold the `helper-2` slug, so
+`resolve_agent_owner` maps a config name to the entry's `registry_canonical_id`
+before asking the registry. An entry without one (imported, created without a
+deploy, or deployed while the registry was down) has no registry row of its own,
+so it is admin-only.
+
 **`assign-agent`'s scope list is authoritative, not a delta.** It returns 200
 with `granted_scopes` echoing the request and, since taOS #2148, reconciles the
 registry grants bound to that project to exactly the list you pass: a grant on
@@ -204,9 +275,27 @@ claim a revocation it did not perform; a reconciliation that does not land is a
 (Before #2148 this route was additive: `scopes: []` answered
 `{"granted_scopes": []}` while the grant stayed live.)
 
+**Agent messages and usage are owner-only, and an agent sends only as
+itself.** `GET /api/agents/{name}/messages`, `.../workspace/messages/contacts`,
+`.../workspace/usage` and the legacy `.../files` listing
+(`tinyagentos/routes/workspace.py`) require the agent's owner or an admin, and
+a per-agent local token may only read its own agent. `POST
+/api/agents/{name}/messages` accepts a person who owns the recipient (or an
+admin), or a per-agent token whose `from_agent` is its own name; any other
+sender name is a 403. Before this any signed-in member could read or post into
+any agent's inbox, and an agent token could send under any name.
+
 **The SSE stream proxy requires a channel.** `GET /api/a2a/bus/stream` returns
 400 without `?channel=<thread>`; there is no all-threads mode yet, so watching
 several threads means one connection each.
+
+**First boot redirects browsers to the desktop OOBE, not `/auth/setup`.** On a
+fresh install with no user configured, a request whose `Accept` header includes
+`text/html` gets a 303 redirect to `/desktop`, where the out-of-box experience
+runs setup. `/auth/setup` remains the no-JS fallback. API callers still receive
+401 `{"error":"onboarding_required","needs_onboarding":true}`. An agent or script
+hitting an API before setup should treat `onboarding_required` as "no owner yet",
+not as an expired session.
 
 **A malformed JSON body to an auth route is a 400, not a 500.** `request.json()`
 happily parses `null`, `[]`, `1` and `"x"` - all valid JSON, none of them an
@@ -777,10 +866,15 @@ different project, and 403 when the agent lacks the `canvas_read` scope or the
   covering four routes.
 - **memory_read**: read an agent's own memory index via qmd serve.
   `GET /api/memory/browse`, `POST /api/memory/search`, `GET /api/memory/collections/{agent_name}`.
-  These routes restrict results to the calling agent's OWN memory namespace (its own
-  agent name / canonical_id) — an agent must never read another agent's memory.
+  These routes accept either a registry JWT with `memory_read` grant or a
+  bound per-agent local token (`AuthManager.mint_agent_local_token`). Both
+  credential types restrict results to the calling agent's OWN memory
+  namespace -- an agent must never read another agent's memory. The host
+  local token (unbound) retains admin access to all agent namespaces.
   The DELETE `/api/memory/chunk/{content_hash}` route stays human-only and is not
   reachable by agent tokens, even with memory_read.
+- **memory_write**: `POST /api/memory/remember` writes a memory entry into the calling agent's OWN namespace; accepts a registry JWT with a memory_write grant or a bound per-agent local token; a body `agent` naming another agent returns 403; the unbound host token and admin sessions must pass `agent`; a non-admin human session that owns the target agent is accepted.
+- **secrets_read_own**: `GET /api/agents/self/secrets/{name}` reads a single secret value granted to the calling agent. Requires an agent bearer token with the `secrets_read_own` scope. The token's canonical_id is matched against `registry_canonical_id` in `config.agents` to determine which agent's grants apply. Returns the secret's plaintext value if granted to that agent; returns 404 with `{"detail": "Secret not found"}` if the secret is unknown or not granted to the bound agent (no existence oracle). Returns 401 `{"detail": "agent token required"}` without a valid agent token. Returns 403 if the token lacks the `secrets_read_own` scope.
 
 Access is per-project: a token is authorized for a project only when the agent
 holds an active grant + membership there; a request for a project it has no
@@ -890,6 +984,13 @@ against the operator's visible project list and lets the operator confirm or
 correct the binding before minting -- so an unapproved or unseen project id is
 never trusted as a grant target.
 
+Because its text names the requested project, that notification (and the one an
+invite redeem raises in manual mode) is added once per admin user, never as a
+broadcast row every user reads; only an admin can approve it. Task lifecycle
+notifications (`task.claimed`, `task.closed`, `task.reopened`,
+`task.unquarantined`) name the task and project the same way, so they go only to
+the project's owner and each admin.
+
 ## Console-only PIN sign-in (third passthrough, narrowest)
 
 A touchscreen device with no keyboard could not sign in at all, so a PIN is an
@@ -942,6 +1043,11 @@ Every exempt path is also in `EXEMPT_PATHS`; a test asserts that containment, so
 the exemption list cannot grow past the surface that is reachable without a
 credential. Adding a route here is a security decision — anything that acts on
 an already-valid session must stay protected.
+`/auth/complete` has one such branch: an invitee may omit `invite_code` when the
+request carries their own pending session (the SPA never sees the code). That
+branch runs `session_csrf_ok()` itself, since the path exemption skips
+`verify_csrf`; reuse that helper for any future exempt-path branch that acts on
+the caller's session.
 
 Note for anyone writing tests against these routes: **`verify_csrf` runs for
 real.** It used to be no-op'd by an autouse fixture for every test file whose
@@ -1223,6 +1329,8 @@ and must not expect a 403 to distinguish "exists, not yours". Admin-only
 lifecycle routes (approve/reject/suspend/reactivate) still 403 non-admins
 before any lookup, which discloses nothing.
 
+`POST /api/agents/registry/register` mints active rows: a `taos-deployed` (or any non-`external-selfjoin`) origin requires an admin session or the host local token; `external-selfjoin` stays open to any signed-in user (rows created pending).
+
 Requested scopes are validated against the same closed `VALID_SCOPES` vocabulary
 as the consent flow. The project-bound scopes -- `project_tasks`,
 `project_tasks_create`, `project_tasks_update`, `project_lists`, `project_notes`,
@@ -1408,6 +1516,10 @@ These rules are deliberately lightweight. The goal is not process for its own
 sake; it is to let many hands move quickly on the same codebase without undoing
 each other's work.
 
+## Project creation and A2A channels
+
+Every project gets a matching A2A channel at creation time, on all three creation paths: `POST /api/projects`, the agent `create_project` skill, and `project_create` decision approval. The channel lets project members coordinate on the bus. Channel creation is idempotent (`ensure_a2a_channel`), so later membership syncs are safe.
+
 ## Agent project-creation requests (auth-request kind=project_create)
 
 An external agent that is already registered in the agent registry can request to
@@ -1465,6 +1577,46 @@ Route module `tinyagentos/routes/device_pair_requests.py`:
 
 Approval or denial of a pair request is surfaced to the user through the Decisions app;
 agents must not grant pairing directly.
+
+## Hardware controls (Wi-Fi, Bluetooth)
+
+Route module `tinyagentos/routes/hardware_wifi.py`:
+
+- `GET /api/hardware/wifi` reads Wi-Fi state and access points via NetworkManager D-Bus.
+- `POST /api/hardware/wifi/enabled` enables or disables the Wi-Fi radio.
+- `POST /api/hardware/wifi/disconnect` disconnects a Wi-Fi interface.
+- `POST /api/hardware/wifi/connect` connects to a Wi-Fi network; the PSK travels to NetworkManager over dbus-fast in-process and never on a busctl argv.
+- `POST /api/hardware/wifi/scan` triggers a Wi-Fi scan on one or all interfaces; returns 202 with the list of scanning interfaces.
+- `POST /api/hardware/wifi/forget` deletes saved 802-11-wireless profiles matching an exact SSID byte string; never calls GetSecrets.
+
+Route module `tinyagentos/routes/hardware_bluetooth.py`:
+
+- `GET /api/hardware/bluetooth` reads Bluetooth adapters and devices via BlueZ D-Bus. Each adapter includes `path`, `address`, `powered`, and `discovering`.
+- `POST /api/hardware/bluetooth/power` powers a Bluetooth adapter on or off.
+- `POST /api/hardware/bluetooth/discovery` starts or stops discovery on an adapter (`{adapter, on: bool}`). On `on=true`, calls `Adapter1.StartDiscovery` and schedules `StopDiscovery` after 60 s. On `on=false`, cancels the timer and calls `StopDiscovery`. `org.bluez.Error.InProgress` on start counts as success. D-Bus call timeouts return 504 `bluez_timeout`. StopDiscovery D-Bus errors (except `NotReady` or `Failed` with "No discovery started") return 502 `bluez_error`.
+- `POST /api/hardware/bluetooth/device` performs connect, disconnect, pair, trust, untrust, or remove on a device.
+
+All routes are admin-only via `Depends(require_admin)`. See [docs/hardware-routes.md](hardware-routes.md) for detail.
+
+## Hub chain export and blobs (social phase 0, local only)
+
+Route module `tinyagentos/routes/hub.py`. The four routes below are admin-only (a signed-in non-admin member gets `403 forbidden`); `POST /api/hub/posts` is not one of them and accepts any signed-in user:
+
+- `GET /api/hub/chain?after_seq=&limit=` returns this node's own chain page
+  (`entries`, `object` is `null` once a tombstone dropped the body), the `head`,
+  and every `tombstones` entry after `after_seq` even when the page is truncated,
+  so deletes travel ahead of content. `limit` is 1..500 and `after_seq` is
+  0..2^63-1 (anything else is a 400).
+- `GET /api/hub/blobs/{sha256}` returns a stored post image. Non-image blobs
+  are served as an `application/octet-stream` attachment; every response is
+  `nosniff` and sandboxed.
+- `GET /api/hub/timeline` returns this node's own posts (timeline). Friends-only
+  posts are only visible to admins.
+- `POST /api/hub/posts/{post_hash}/delete` deletes a post via a signed tombstone.
+  Only admins can delete posts.
+
+No peer can reach these; peer-facing hubsync routes are phase 1 of the hub
+social peer-to-peer design (pending owner review).
 
 ## Device voice routes (S6 / S6b)
 
@@ -2051,6 +2203,23 @@ where `revoked=0 OR blocked=1`, so a blocked device counts against
 and the slot frees. Deliberate: a blocked device is a retained safety valve the
 owner can still see and act on.
 
+## Cluster worker list (`GET /api/cluster/workers`)
+
+Auth-exempt. Anonymous callers get a stripped view (`name`, `status`,
+`tier_id`, `kind`). A valid bearer token on this exempt GET upgrades the
+caller to the full view: a local token authenticates as the primary user
+(admin only once a primary user exists), a device token holding
+`agents:read` gets the full worker objects without admin, and a registry
+JWT from an active agent holding an active `agents:read` grant gets them
+too. A device token without `agents:read`, a registry JWT without
+`agents:read` (e.g. one minted by deploy for a DEPLOYED agent, which carries
+owner user_id + `memory_read` only), and any invalid token, stay anonymous.
+`signing_key` is stripped for everyone.
+
+## Task report endpoint (`POST /api/cluster/tasks/report`)
+
+External GPU schedulers report job outcomes here to the trace store. Rows are written under slug taos-cluster-tasks and readable via GET /api/trace. Authenticated like lease endpoints (admin session, local token, or worker HMAC). Payload: `worker`, `resource_id`, `lease_id` (optional), `caller` (optional, default ""), `model` (optional, default ""), `duration_s`, `status` (`success`|`failure`|`cancelled`), `tokens` (optional). Stored in the trace store under the `taos-cluster-tasks` slug with kind `task_report`.
+
 ## Cluster capability + placement map (`GET /api/cluster/map`, admin-only)
 
 Route module `tinyagentos/routes/cluster_map.py`. **Admin session only**: the
@@ -2154,6 +2323,19 @@ registrations and heartbeats.
   `WorkerInfo.resources` and uses it for lease allowlist validation
   instead of the legacy backend-name grammar. Workers that omit the
   field fall back to the grammar; a warning is logged once per mismatch.
+- A worker advertises a GPU class from the hardware probe, with no backend
+  needed (taOS #3228): `gpu.type` plus the probe's usability flag --
+  `nvidia`/`cuda` with `GpuInfo.cuda` -> `gpu-cuda-0`, `amd`/`rocm` with
+  `GpuInfo.rocm` -> `gpu-rocm-0`, Apple Silicon -> `gpu-metal`. A running
+  backend is not evidence of a GPU: Ollama, vLLM, exo and mlx all serve in CPU
+  mode, and a PCI-visible NVIDIA card whose driver did not load reports no
+  CUDA runtime, so both fall back to `cpu-inference`. The live-backend filter
+  applies to `npu-rk3588` only: `detect_backends()` also emits
+  manifest-synthetic `status: "stopped"` entries for declared software that is
+  not answering, and a stopped rkllama does not advertise the NPU class -- so
+  a Pi advertises only `cpu-inference` while rkllama restarts. Without the
+  hardware check a host that cannot run a CUDA task would publish a CUDA class
+  and the `<worker>:gpu-cuda-0` lease id derived from it.
 - `POST /api/cluster/workers` (register) and `POST /api/cluster/heartbeat`
   both **echo the controller's current generation** in their response
   (`"generation"` key alongside the existing `status` field), so a worker
@@ -2338,14 +2520,16 @@ is not usable inside a container until that follow-up lands. Store:
    `{"kind": "claude-subscription", "url": "...", "prompt": "..."}`. The url
    must be `https` on an exact allowlisted host (`claude.ai`,
    `console.anthropic.com`; no subdomain, userinfo or non-443 port), else `422`:
-   a card the user taps must never open a site the agent chose. An agent may have
-   at most 3 open (non-completed, non-expired) requests at once; the 4th returns
-   `429` with detail ``too many open sign-in requests``. Returns
-   `{id, kind, status, host, expires_in_seconds}` and raises an `auth_broker`
-   notification to the agent's owner. An agent the registry cannot attribute (a
-   bound local-token agent with no registry row) gets its card sent to each
-   admin instead; the card is never a broadcast (`user_id` null). With no admin
-   to receive it, create is `409`.
+a card the user taps must never open a site the agent chose. An agent may have
+  at most one pending or code-ready (non-expired) request per kind at once; a
+  second request for the same kind returns `409` with detail
+  ``a sign-in request is already open for this agent``. Returns
+  `{id, kind, status, host, expires_in_seconds}` and raises an `auth_broker`
+  notification to the agent's owner. An agent the registry cannot attribute (a
+  bound local-token agent with no registry row) gets its card sent to each
+  admin instead; the card is never a broadcast (`user_id` null). With no admin
+to receive it, create is `409`. In addition, an agent may hold at most 3 pending or code-ready (non-expired) requests across all statuses including code_read;
+   the next one returns `429` with detail ``too many open sign-in requests``.
 2. The desktop (bell, toast, Notifications app) renders that notification as a
    sign-in card: the agent's name, the host, an **Open** button (system browser;
    Firefox on taOSmobile) and a code field. The card re-checks the same host
@@ -2384,6 +2568,15 @@ The shared host local token stays unbound: admin/system callers presenting it
 deployed before this change keep the host token until their next redeploy,
 which rotates them onto a bound per-agent token.
 
+A bound token is also fenced by **skill assignment**: `execute_skill` only runs
+a skill that is assigned to the calling agent. This guard applies equally to the
+registry-JWT deployed-agent path (`via == "registry_jwt_deployed_agent"`) and to
+a bound per-agent local token (`via == "local_token"` with
+`request.state.agent_name` set), returning `403 forbidden: skill not assigned to
+agent` before the implementation runs. The UNBOUND host local token (no
+`agent_name`), admin sessions, and `registry_jwt_native_agent` are not
+restricted by assignment -- they can run any implemented skill, as before.
+
 Blast radius: `_resolve_agent_workspace`, `_capture_tool_receipt`,
 `_check_execution_policy`, `execute_notes_list_shared_docs`, and the todo tools
 all key off the same `agent_name` string, so binding it at the credential layer
@@ -2405,9 +2598,18 @@ author field. `POST /api/chat/channels/{id}/thinking` REJECTS a mismatched slug
 (it does not override it). The auth middleware sets `request.state.agent_name`
 for bound tokens (`AuthManager.get_local_token_agent`); the routes use a
 `_bound_agent(request)` helper and override `author_id`/`slug` with that name.
-The host local token, admin sessions, session cookies, and device bearers are
-not bound, so their caller-supplied values are preserved (byte-for-byte
-compatibility with taosctl and the SPA).
+Device bearers: the author is forced to the device's user (author_id=user_id,
+    author_type="user") and the body values are ignored. Bound agents (per-agent
+    local token): author_id/author_type are forced to the bound agent's name and
+    "agent". Browser sessions (cookie auth, no bound agent, and the middleware
+    sets `request.state.via == "session"`): author_type is forced to "user";
+    author_id is accepted only if missing, equal to "user", or equal to the
+    caller's user_id (missing and "user" are both stored as the caller's
+    user_id, so edit/delete ownership matches); any other value
+    (including a non-string) returns 403
+    `{"detail": {"error": "author_id must be the caller"}}`. Every other caller (the host
+    local token with `via == "local_token"`, loopback, registry JWT variants)
+    keeps today's dev behaviour: the body author is stored as sent.
 
 ## Self-only chat session routes (`chat_session` scope)
 
@@ -2594,7 +2796,7 @@ the LiteLLM hook's 429 before anything is forwarded. Revoking, blocking or
 deleting a cluster node, and archiving an agent, revoke the keys bound to it
 in the same request.
 
-## The system taOS Agent's harness (opencode, PicoClaw on a handset, or Claude Code)
+## The system taOS Agent's harness (opencode, PicoClaw on a handset, Claude Code or Kilo)
 
 The built-in taOS Agent runs on opencode (a host `opencode serve`) on every
 host, except a taOSmobile handset, where it runs on PicoClaw (the catalog's
@@ -2602,10 +2804,15 @@ pinned 0.3.1 binary). `taos_agent_runtime.decide_framework` is the one place
 the choice is made, from two config.yaml keys:
 
 - `device.class`: `auto` (default; `hardware._detect_device_class`, which
-  reads the `taos-kiosk.service` unit), `mobile` or `desktop`;
+  reads the `taos-kiosk.service` and `plasma-mobile.service` units), `mobile` or `desktop`;
 - `taos_agent.framework`: `auto` (default; picoclaw on mobile, opencode
-  elsewhere), `opencode`, `picoclaw` or `claude_code` (operator overrides;
-  `auto` never picks `claude_code`).
+  elsewhere), `opencode`, `picoclaw`, `claude_code` or `kilo` (operator
+  overrides; `auto` never picks `claude_code` or `kilo`).
+- **Local desktop state**: `GET /api/system/local-desktop` reports `available`,
+  `enabled`, and `active` based on `taos-kiosk.service` systemd unit state. The
+  `enabled` and `active` fields can be `null` if `systemctl` times out or is
+  missing; `cat` rc 1 means absent (all false), other nonzero `cat` rc returns
+  503 `{"error":"systemctl_failed","rc":<rc>}`.
 
 PicoClaw needs the LLM gateway (on unless `TAOS_LLM_GATEWAY=0`) and a `picoclaw` binary
 (`TAOS_PICOCLAW_BIN`, PATH, `/usr/local/bin`, `/usr/bin`). Without either,
@@ -2625,6 +2832,23 @@ gateway. Without them opencode runs, with the reason exactly
 `claude_code preferred, no claude_code_oauth_token secret, using opencode`;
 a chat request while it is selected but not ready answers 503 with a plain
 message. Attachments are not supported yet.
+
+`kilo` runs one `kilo run --format json --model <provider/model> --dir <workdir>` turn per chat
+message (`tinyagentos/kilo_runtime.py`), continued with `-s <session-id>` taken from
+the previous turn's events. It signs in with the `kilo_api_key` secret, passed to the
+child only as `KILO_API_KEY` (never the controller env, never logged); the child
+gets only `HOME`, `PATH`, `LANG`, `NO_COLOR`, `TZ` and `KILO_API_KEY`. It needs
+the `kilo` binary (PATH, `/usr/local/bin/kilo`, `~/.local/bin/kilo`) and that
+secret, not the gateway. Without them opencode runs, with the reason exactly
+`kilo preferred, kilo binary not found, using opencode` or
+`kilo preferred, no kilo_api_key secret, using opencode`;
+a chat request while it is selected but not ready answers 503 with a plain
+message. The turn's `--dir` is a git repo created once under the harness home;
+kilo's JSON-lines output is parsed for `type == "text"` events whose `part.text`
+is the reply and whose `sessionID` continues the conversation.
+
+For the kilo framework the system prompt is prefixed to the first user turn of a
+kilo session, and a changed system prompt starts a new session (CodeRabbit 4543157074).
 
 - `GET /api/taos-agent/config` and the lock screen (`/auth/lock-widgets`)
   report `framework` = the harness that RUNS the agent (never the
@@ -2677,6 +2901,12 @@ credential and mints a fresh one.
 ## Peer handshake (friend-accept)
 
 The private/CGNAT endpoint allowance comes from endpoints the OTHER side supplies (directory response or handshake body), so a friend can make this node POST to a private host:port on the fixed handshake/inbox paths; loopback, link-local and metadata addresses stay blocked.
+
+A revoked peer link (paused via the per-contact kill switch) cannot be restored by the revoked peer alone. The handshake is refused with 403 "peer link revoked" unless the owner has re-initiated a friend request (REL_REQUEST_OUT edge) after the revocation. This ensures only the owner can resume a paused connection.
+
+## Collaboration kill switch (`/api/settings/collaboration`, admin-only)
+
+`GET` returns `{enabled, paused_contacts}`; `PUT` takes either field (an omitted one keeps its value) and answers 400 on a wrong type or a contact id that is not `hub:<hex>`. The state lives in `<data_dir>/collaboration.json` and is re-read on every request. While `enabled` is false, every `/api/peer` route (handshake included) answers 503 `collaboration disabled` before any bearer or signature work, the collab invite mint refuses, and neither `deliver_to_peer` nor friend-accept's outbound handshake sends anything. A paused contact gets 403 `contact paused` before its nonce is recorded and is never sent to, handshake included. A missing file means enabled; a present file that is unreadable, not UTF-8, not JSON, lacks a boolean `enabled`, or holds an invalid paused id reads as disabled. Do not flip it from an agent to get traffic through: it is the owner's stop button.
 
 ## taOS Agent action gate (pending, confirm, execute)
 

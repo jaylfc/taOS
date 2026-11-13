@@ -7,6 +7,13 @@ export interface ReactionBarProps {
   currentUserId: string | null;
   /** Called when a reaction button is clicked. */
   onToggle: (messageId: string, emoji: string) => void;
+  /**
+   * Mobile bubble variant: a compact chip row overlapping the bottom edge of
+   * the bubble it is rendered inside (the parent must be `relative`).
+   */
+  compact?: boolean;
+  /** Which bottom corner the compact row hangs from. Default "right". */
+  side?: "left" | "right";
 }
 
 /**
@@ -18,9 +25,17 @@ export function ReactionBar({
   messageId,
   currentUserId,
   onToggle,
+  compact = false,
+  side = "right",
 }: ReactionBarProps) {
   return (
-    <div className="flex flex-wrap gap-1 mt-1.5">
+    <div
+      className={
+        compact
+          ? `absolute -bottom-3 left-2 right-2 z-10 flex flex-wrap gap-1 ${side === "left" ? "justify-start" : "justify-end"}`
+          : "flex flex-wrap gap-1 mt-1.5"
+      }
+    >
       {Object.entries(reactions).map(([emoji, users]) => {
         const mine = currentUserId != null && users.includes(currentUserId);
         return (
@@ -29,6 +44,8 @@ export function ReactionBar({
             onClick={() => onToggle(messageId, emoji)}
             aria-pressed={mine}
             className={`text-[12px] rounded-full px-2 py-0.5 flex items-center gap-1 border transition-colors ${
+              compact ? "shadow-sm leading-4 " : ""
+            }${
               mine
                 ? "bg-accent-soft border-accent-line text-accent-strong"
                 : "bg-shell-surface border-shell-border hover:bg-shell-surface-hover text-shell-text-secondary"

@@ -1,0 +1,2 @@
+### Bug Fixes
+- Pending grant requests (auth_requests, agent_scope_requests) now respect per-user archive state for broadcasts. A broadcast grant request archived by one user no longer appears pinned for that user while remaining visible to others.

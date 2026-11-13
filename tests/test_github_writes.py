@@ -254,6 +254,8 @@ async def test_existing_branch_is_fast_forwarded_never_forced(http, fake):
     assert commit["parents"] == ["oldhead"]
     (patch,) = fake.bodies("PATCH", "/git/refs/heads/taos-agent/fix-weather")
     assert patch == {"sha": "newcommit", "force": False}
+    (tree_req,) = fake.bodies("POST", "/git/trees")
+    assert tree_req["base_tree"] == "basetree"
     _assert_no_destructive_calls(fake.log)
 
 

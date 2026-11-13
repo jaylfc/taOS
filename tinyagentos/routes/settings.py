@@ -156,28 +156,49 @@ def _format_size(size_bytes: int) -> str:
         return f"{size_bytes / (1024 ** 3):.2f} GB"
 
 
+def _fs_total_bytes(path: Path) -> int:
+    """Size of the filesystem holding *path* (its nearest existing ancestor)."""
+    probe = path
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    try:
+        return shutil.disk_usage(probe).total
+    except OSError:
+        return 0
+
+
 def _get_storage_stats(app) -> list[dict]:
-    """Compute storage usage for key directories."""
+    """Compute storage usage for key directories.
+
+    Each item carries ``total_bytes``, the size of the filesystem the folder
+    lives on, so the Settings panel can draw a usage bar against the disk.
+    """
     data_dir = app.state.config_path.parent
     items = []
 
-    # Models dir
-    models_dir = data_dir / "models"
+    # Models dir: where the installers put models (TAOS_MODELS_ROOT aware)
+    from tinyagentos.installers.model_paths import models_root
+
+    models_dir = models_root()
     models_bytes = _dir_size(models_dir)
     items.append({
         "label": "Models",
         "path": str(models_dir),
         "size": _format_size(models_bytes),
         "bytes": models_bytes,
+        "total_bytes": _fs_total_bytes(Path(models_dir)),
     })
 
-    # Data dir
+    # Data dir, without the models folder already counted above
     data_bytes = _dir_size(data_dir)
+    if models_dir.is_relative_to(data_dir):
+        data_bytes = max(0, data_bytes - models_bytes)
     items.append({
         "label": "Data",
         "path": str(data_dir),
         "size": _format_size(data_bytes),
         "bytes": data_bytes,
+        "total_bytes": _fs_total_bytes(Path(data_dir)),
     })
 
     # App catalog
@@ -192,6 +213,7 @@ def _get_storage_stats(app) -> list[dict]:
         "path": str(cat_path),
         "size": _format_size(cat_bytes),
         "bytes": cat_bytes,
+        "total_bytes": _fs_total_bytes(Path(cat_path)),
     })
 
     return items
@@ -722,7 +744,7 @@ async def update_status(request: Request):
     """Return current SHA, pending restart SHA, and auto-update prefs."""
     import asyncio
     from tinyagentos.restart_orchestrator import read_pending_restart
-    from tinyagentos.auto_update import PREF_NAMESPACE, DEFAULT_PREFS
+    from tinyagentos.auto_update import PREF_NAMESPACE, DEFAULT_PREFS, _ping_enabled_by_env
 
     project_dir = Path(__file__).parent.parent.parent
 
@@ -764,6 +786,7 @@ async def update_status(request: Request):
         "pending_restart_sha": pending_sha,
         "auto_check": prefs.get("check_enabled", True),
         "gpg": gpg_prefs,
+        "ping_disabled_by_env": not _ping_enabled_by_env(),
     }
 
 
@@ -1553,6 +1576,55 @@ async def put_demo_mode(request: Request):
         return JSONResponse({"error": "'enabled' must be true or false"}, status_code=400)
     write_demo_mode(request.app.state.data_dir, body["enabled"])
     return {"ok": True, "enabled": body["enabled"], "available": demo_flags_configured()}
+
+
+@router.get("/api/settings/collaboration")
+async def get_collaboration(request: Request):
+    """The collaboration kill switch: instance-wide flag plus paused contacts."""
+    from tinyagentos.collab_settings import read_collab_settings
+
+    return read_collab_settings(request.app.state.data_dir).to_dict()
+
+
+@router.put("/api/settings/collaboration")
+async def put_collaboration(request: Request):
+    """Flip the kill switch or replace the paused list. Admin-only via this router's dependency.
+
+    Either field may be omitted to keep its current value.  Pausing deletes
+    nothing: the contact row and peer link stay, and un-pausing restores service.
+    """
+    from tinyagentos import collab_settings as cs
+
+    try:
+        body = await request.json()
+    except ValueError:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "body must be an object"}, status_code=400)
+    data_dir = request.app.state.data_dir
+    async with cs.collab_write_lock:
+        current = cs.read_collab_settings(data_dir)
+        enabled = body.get("enabled", current.enabled)
+        if not isinstance(enabled, bool):
+            return JSONResponse({"error": "'enabled' must be true or false"}, status_code=400)
+        paused_in = body.get("paused_contacts", current.paused_contacts)
+        if not isinstance(paused_in, list) or not all(isinstance(p, str) for p in paused_in):
+            return JSONResponse(
+                {"error": "'paused_contacts' must be a list of contact ids"}, status_code=400,
+            )
+        paused: list[str] = []
+        seen: set[str] = set()
+        for raw in paused_in:
+            try:
+                cid = cs.normalise_contact_id(raw)
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
+            if cid not in seen:
+                seen.add(cid)
+                paused.append(cid)
+        settings = cs.CollabSettings(enabled=enabled, paused_contacts=paused)
+        await asyncio.to_thread(cs.write_collab_settings, data_dir, settings)
+    return settings.to_dict()
 
 
 @router.get("/api/settings/memory-url")

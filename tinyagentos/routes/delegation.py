@@ -49,31 +49,23 @@ async def _resolve_agent_name(request: Request, ref: str) -> str | None:
     """Resolve *ref* to the config agent slug (the identity used everywhere
     else for policy grants, task assignee_id, A2A membership, board audit).
 
-    Accepts either the slug itself or a registry canonical_id: a canonical_id
-    is looked up in the agent registry and its display_name/handle matched
-    back to a config agent. Returns None if *ref* does not resolve.
+    Accepts either the slug itself or a registry canonical_id. A canonical_id
+    maps ONLY to the config agent whose ``registry_canonical_id`` is that id:
+    a registry display name or handle is not unique, and matching it against
+    config agent names let any identity whose name collides with another
+    user's agent act as that agent (and read its memory index). The canonical
+    id match runs first, so a config agent named like another identity's
+    canonical id cannot claim it. Returns None if *ref* does not resolve.
     """
     if not ref:
         return None
     config = request.app.state.config
+    for agent in config.agents:
+        if agent.get("registry_canonical_id") == ref:
+            return agent["name"]
     agent = find_agent(config, ref)
     if agent is not None:
         return agent["name"]
-
-    registry = getattr(request.app.state, "agent_registry", None)
-    if registry is None or getattr(registry, "_db", None) is None:
-        # Not wired/initialised in this deployment -- fall back to "not
-        # found via registry" rather than raising, since the common case
-        # (a plain config-agent slug) never needs the registry at all.
-        return None
-    record = await registry.get(ref)
-    if record is None:
-        return None
-    for candidate in (record.get("display_name"), (record.get("handle") or "").lstrip("@")):
-        if candidate:
-            agent = find_agent(config, candidate)
-            if agent is not None:
-                return agent["name"]
     return None
 
 

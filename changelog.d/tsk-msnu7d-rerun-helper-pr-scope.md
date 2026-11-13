@@ -1,0 +1,2 @@
+### Fixed
+- `rerun_failed_bot_review_runs.py` now scopes failed-run selection to the current PR number, so a closed PR's failed run on a shared head SHA is no longer re-run and cannot repaint the open PR red.

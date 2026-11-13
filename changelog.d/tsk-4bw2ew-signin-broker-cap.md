@@ -1,0 +1,2 @@
+### Fixed
+- Sign-in broker now allows only one open request per agent per kind. A second `POST /api/auth-broker/requests` for the same agent and kind while the first is pending returns `409` with detail "a sign-in request is already open for this agent" and raises no notification.

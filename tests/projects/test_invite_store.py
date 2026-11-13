@@ -92,6 +92,69 @@ async def test_mint_enforces_pending_cap(store):
         )
 
 
+@pytest.mark.asyncio
+async def test_project_pending_cap_ignores_expired_invites(store):
+    """RED test for tsk-locxod: 10 project invites minted with ttl_secs=60,
+    backdated past expiry with a direct UPDATE (the way existing tests do it,
+    e.g. test_get_sweeps_expired), must NOT block the 11th mint.  Expiry is lazy
+    -- a pending row only flips to status='expired' when read -- so the cap must
+    filter on expires_ts > now rather than status alone."""
+    ids = []
+    for _ in range(10):
+        result = await store.mint(
+            project_id="prj-expire-cap",
+            scopes=[],
+            approval_mode="auto",
+            check_interval_secs=1800,
+            created_by="u",
+            ttl_secs=60,
+        )
+        ids.append(result["record"]["invite_id"])
+    # Backdate every invite past expiry; none of them has been read, so their
+    # status is still 'pending' but their TTL has lapsed.
+    for iid in ids:
+        await store._db.execute(
+            "UPDATE project_invites SET expires_ts = ? WHERE invite_id = ?",
+            (time.time() - 1, iid),
+        )
+    await store._db.commit()
+    # The 11th mint must succeed -- the expired-but-never-touched invites no
+    # longer count against the pending cap.
+    result = await store.mint(
+        project_id="prj-expire-cap",
+        scopes=[],
+        approval_mode="auto",
+        check_interval_secs=1800,
+        created_by="u",
+        ttl_secs=60,
+    )
+    assert result["record"]["project_id"] == "prj-expire-cap"
+
+
+@pytest.mark.asyncio
+async def test_project_pending_cap_still_blocks_unexpired(store):
+    """Control: 10 UNEXPIRED pending invites still make the 11th raise
+    InvitePendingCapError -- the new expires_ts filter must not gut the cap."""
+    for _ in range(10):
+        await store.mint(
+            project_id="prj-live-cap",
+            scopes=[],
+            approval_mode="auto",
+            check_interval_secs=1800,
+            created_by="u",
+            ttl_secs=60,
+        )
+    with pytest.raises(InvitePendingCapError):
+        await store.mint(
+            project_id="prj-live-cap",
+            scopes=[],
+            approval_mode="auto",
+            check_interval_secs=1800,
+            created_by="u",
+            ttl_secs=60,
+        )
+
+
 # ---------------------------------------------------------------------------
 # OS-level (project-less) mint
 # ---------------------------------------------------------------------------
@@ -150,6 +213,39 @@ async def test_os_level_pending_cap_uses_is_null(store):
             check_interval_secs=1800,
             created_by="u",
         )
+
+
+@pytest.mark.asyncio
+async def test_os_level_pending_cap_ignores_expired_invites(store):
+    """RED test for tsk-locxod: 10 OS-level invites minted with ttl_secs=60,
+    backdated past expiry with a direct UPDATE, must NOT block the 11th mint.
+    Same lazy-expiry reasoning as the project-scoped variant."""
+    ids = []
+    for _ in range(10):
+        result = await store.mint(
+            project_id=None,
+            scopes=[],
+            approval_mode="auto",
+            check_interval_secs=1800,
+            created_by="u",
+            ttl_secs=60,
+        )
+        ids.append(result["record"]["invite_id"])
+    for iid in ids:
+        await store._db.execute(
+            "UPDATE project_invites SET expires_ts = ? WHERE invite_id = ?",
+            (time.time() - 1, iid),
+        )
+    await store._db.commit()
+    result = await store.mint(
+        project_id=None,
+        scopes=[],
+        approval_mode="auto",
+        check_interval_secs=1800,
+        created_by="u",
+        ttl_secs=60,
+    )
+    assert result["record"]["project_id"] is None
 
 
 @pytest.mark.asyncio

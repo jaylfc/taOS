@@ -1,0 +1,1 @@
+- Hub: your own post chain and post images can now be read back through the local API, laying the groundwork for friends' boxes to sync posts later.

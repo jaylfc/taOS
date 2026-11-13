@@ -493,11 +493,16 @@ def test_install_script_is_syntactically_valid() -> None:
 # --- worker-side resource contract ----------------------------------------
 
 
+def _hw(gpu_type: str, cuda: bool = False, rocm: bool = False) -> dict:
+    """Build a minimal hardware dict for _collect_resources."""
+    return {"gpu": {"type": gpu_type, "cuda": cuda, "rocm": rocm}}
+
+
 def test_worker_reports_gpu_metal_on_apple_silicon(monkeypatch: pytest.MonkeyPatch) -> None:
     from tinyagentos.worker.agent import _collect_resources
 
     monkeypatch.delenv("TAOS_WORKER_RESOURCES", raising=False)
-    resources = _collect_resources([{"type": "mlx"}], "apple")
+    resources = _collect_resources([{"type": "mlx"}], _hw("apple"))
     assert "gpu-metal" in resources
     assert "gpu-cuda-0" not in resources, "Apple Silicon is not a CUDA device"
     assert resources[0] == "cpu-inference"
@@ -507,12 +512,12 @@ def test_worker_keeps_gpu_cuda_for_non_apple(monkeypatch: pytest.MonkeyPatch) ->
     from tinyagentos.worker.agent import _collect_resources
 
     monkeypatch.delenv("TAOS_WORKER_RESOURCES", raising=False)
-    assert _collect_resources([{"type": "ollama"}], "cuda") == [
+    assert _collect_resources([{"type": "ollama"}], _hw("nvidia", cuda=True)) == [
         "cpu-inference",
         "gpu-cuda-0",
     ]
-    assert _collect_resources([], "none") == ["cpu-inference"]
-    assert _collect_resources([{"type": "rkllama"}], "none") == [
+    assert _collect_resources([], _hw("none")) == ["cpu-inference"]
+    assert _collect_resources([{"type": "rkllama"}], _hw("none")) == [
         "cpu-inference",
         "npu-rk3588",
     ]
@@ -528,21 +533,25 @@ def test_intel_mac_ollama_does_not_advertise_cuda(monkeypatch: pytest.MonkeyPatc
     from tinyagentos.worker.agent import _collect_resources
 
     monkeypatch.delenv("TAOS_WORKER_RESOURCES", raising=False)
-    assert _collect_resources([{"type": "ollama"}], "", "darwin") == ["cpu-inference"]
-    assert _collect_resources([{"type": "mlx"}], "", "darwin") == ["cpu-inference"]
+    assert _collect_resources([{"type": "ollama"}], _hw(""), "darwin") == ["cpu-inference"]
+    assert _collect_resources([{"type": "mlx"}], _hw(""), "darwin") == ["cpu-inference"]
     # The same backend on Linux still gets the CUDA class -- but only when the
-    # hardware gpu_type actually indicates a CUDA GPU (taOS #3228). An empty
-    # gpu_type must not fabricate a gpu-* resource.
-    assert _collect_resources([{"type": "ollama"}], "cuda", "linux") == [
+    # hardware probe reports a usable CUDA device (#3242). A PCI-visible card
+    # with no loaded driver (cuda flag unset) must not fabricate a gpu-*
+    # resource, and an empty gpu_type must not either.
+    assert _collect_resources([{"type": "ollama"}], _hw("nvidia", cuda=True), "linux") == [
         "cpu-inference",
         "gpu-cuda-0",
     ]
-    assert _collect_resources([{"type": "ollama"}], "", "linux") == [
+    assert _collect_resources([{"type": "ollama"}], _hw("nvidia"), "linux") == [
+        "cpu-inference",
+    ]
+    assert _collect_resources([{"type": "ollama"}], _hw(""), "linux") == [
         "cpu-inference",
     ]
     # And the installer's own Darwin classes still land.
     monkeypatch.setenv("TAOS_WORKER_RESOURCES", "cpu-inference")
-    assert _collect_resources([{"type": "ollama"}], "", "darwin") == ["cpu-inference"]
+    assert _collect_resources([{"type": "ollama"}], _hw(""), "darwin") == ["cpu-inference"]
 
 
 def test_worker_unions_installer_detected_resources(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -550,7 +559,7 @@ def test_worker_unions_installer_detected_resources(monkeypatch: pytest.MonkeyPa
     from tinyagentos.worker.agent import _collect_resources
 
     monkeypatch.setenv("TAOS_WORKER_RESOURCES", "gpu-metal,cpu-inference")
-    resources = _collect_resources([], "apple")
+    resources = _collect_resources([], {"gpu": {"type": "apple"}})
     assert resources == ["cpu-inference", "gpu-metal"]
 
     monkeypatch.setenv("TAOS_WORKER_RESOURCES", " gpu-metal , ")
@@ -579,8 +588,11 @@ def test_both_resource_call_sites_share_the_gpu_extraction() -> None:
     """No attribute-vs-dict drift between the register and heartbeat paths."""
     source = (REPO_ROOT / "tinyagentos" / "worker" / "agent.py").read_text()
     assert "getattr(hw.gpu" not in source, "the attribute path was the drift risk"
-    # One definition plus exactly two call sites.
-    assert source.count("_gpu_type(") == 3
+    # _collect_resources takes the hardware dict and extracts gpu_type
+    # internally (one definition + one internal call); both call sites
+    # pass the hardware dict, so there is no second extraction to drift.
+    assert source.count("_gpu_type(") == 2
+    assert source.count("_collect_resources(") == 3  # def + 2 call sites
 
 
 def test_install_script_and_worker_agree_on_the_env_var() -> None:

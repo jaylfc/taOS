@@ -21,7 +21,7 @@ export function TaosAssistantWindow({ windowId }: { windowId: string }) {
     <div className="h-full w-full flex flex-col bg-shell-bg-deep">
       <div className="flex items-center gap-2 px-4 py-3 border-b border-white/5 shrink-0 select-none">
         <span className="text-xs text-shell-text-secondary font-medium tracking-wide uppercase">
-          taOS agent
+          taOS Agent
         </span>
         <div className="ml-auto flex items-center gap-1">
           <button

@@ -261,6 +261,15 @@ FRAMEWORKS: dict[str, dict] = {
             {"name": "help", "description": "Show Claude Code help"},
         ],
     },
+    "kilo": {
+        "id": "kilo",
+        "name": "Kilo",
+        "description": "Kilo CLI as the taOS Agent harness (kilo/kilo), signed in with a `kilo_api_key` secret stored in Secrets",
+        "verification_status": "experimental",
+        "slash_commands": [
+            {"name": "help", "description": "Show Kilo help"},
+        ],
+    },
     "shibaclaw": {
         "id": "shibaclaw",
         "name": "ShibaClaw",
@@ -277,6 +286,19 @@ FRAMEWORKS: dict[str, dict] = {
         "verification_status": "experimental",
         "slash_commands": [
             {"name": "help", "description": "Show ZeroClaw help"},
+        ],
+    },
+    "deer-flow": {
+        "id": "deer-flow",
+        "name": "DeerFlow",
+        "description": "DeerFlow LangGraph SuperAgent (bytedance/deer-flow) -- taOS bridge to /api/runs/wait on :8001",
+        "verification_status": "experimental",
+        "slash_commands": [
+            {"name": "help", "description": "Show DeerFlow help"},
+        ],
+        "shortcuts": [
+            {"kind": "container-terminal", "label": "Container shell",
+             "icon": "terminal", "requires_capability": "agent.shell"},
         ],
     },
     "thclaws": {

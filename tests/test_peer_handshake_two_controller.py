@@ -435,3 +435,433 @@ async def test_deliver_to_peer_skips_link_without_outbound_token(nodes):
         await client.aclose()
     assert ok is False
     assert seen.get("urls", []) == []
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for tsk-gevaej: repeat handshake must not rewrite endpoints
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_repeat_handshake_keeps_recorded_endpoints(nodes):
+    """A repeat handshake with new endpoints must not overwrite the stored ones."""
+    a, b = nodes
+    await _record_request_out(a, b)
+
+    # First handshake with legitimate CGNAT endpoint
+    env1 = _handshake_envelope(b, a, endpoints=["http://100.64.0.9:6969"])
+    resp1 = await _post_handshake(a, env1)
+    assert resp1.status_code == 200, resp1.text
+
+    link1 = await a.app.state.contacts_store.get_peer_link(b.contact_id)
+    assert link1 is not None
+    urls1 = [e.get("url") if isinstance(e, dict) else e for e in link1["endpoints"]]
+    assert urls1 == ["http://100.64.0.9:6969"], f"first handshake: {urls1}"
+
+    # Second handshake (fresh nonce) with different endpoint — must be ignored
+    env2 = _handshake_envelope(b, a, endpoints=["http://10.0.0.5:22"])
+    resp2 = await _post_handshake(a, env2)
+    assert resp2.status_code == 200, resp2.text
+
+    link2 = await a.app.state.contacts_store.get_peer_link(b.contact_id)
+    assert link2 is not None
+    urls2 = [e.get("url") if isinstance(e, dict) else e for e in link2["endpoints"]]
+    assert urls2 == ["http://100.64.0.9:6969"], f"second handshake overwrote: {urls2}"
+
+
+@pytest.mark.asyncio
+async def test_handshake_drops_malformed_endpoints(nodes):
+    """Malformed endpoint entries must be dropped; only valid http/https dicts kept."""
+    a, b = nodes
+    await _record_request_out(a, b)
+
+    # Mix of invalid entries and one valid endpoint
+    bad_endpoints = [
+        5,
+        {"kind": "hub"},
+        {"url": 7},
+        "ftp://x.example/",
+        "file:///etc/passwd",
+        "http://100.64.0.9:6969",
+    ]
+    env = _handshake_envelope(b, a, endpoints=bad_endpoints)
+    resp = await _post_handshake(a, env)
+    assert resp.status_code == 200, resp.text
+
+    link = await a.app.state.contacts_store.get_peer_link(b.contact_id)
+    assert link is not None
+    urls = [e.get("url") if isinstance(e, dict) else e for e in link["endpoints"]]
+    # Only the valid http/https dict entry should be kept
+    assert urls == ["http://100.64.0.9:6969"], f"malformed not filtered: {urls}"
+
+
+@pytest.mark.asyncio
+async def test_rehandshake_after_revoke_keeps_recorded_endpoints(nodes):
+    """After revocation, a fresh handshake must not overwrite the original endpoints."""
+    a, b = nodes
+    await _record_request_out(a, b)
+
+    # First handshake
+    env1 = _handshake_envelope(b, a, endpoints=["http://100.64.0.9:6969"])
+    resp1 = await _post_handshake(a, env1)
+    assert resp1.status_code == 200, resp1.text
+
+    link1 = await a.app.state.contacts_store.get_peer_link(b.contact_id)
+    assert link1 is not None
+    urls1 = [e.get("url") if isinstance(e, dict) else e for e in link1["endpoints"]]
+    assert urls1 == ["http://100.64.0.9:6969"], f"first handshake: {urls1}"
+
+    # Revoke the peer link (but friend edge stays)
+    await a.app.state.contacts_store.revoke_peer_link(b.contact_id)
+
+    # Second handshake after revoke with different endpoint — must be ignored
+    env2 = _handshake_envelope(b, a, endpoints=["http://10.0.0.5:22"])
+    resp2 = await _post_handshake(a, env2)
+    # 200 if re-handshake allowed, 403 if blocked — either way endpoints unchanged
+    assert resp2.status_code in (200, 403), resp2.text
+
+    link2 = await a.app.state.contacts_store.get_peer_link(b.contact_id)
+    assert link2 is not None
+    urls2 = [e.get("url") if isinstance(e, dict) else e for e in link2["endpoints"]]
+    assert urls2 == ["http://100.64.0.9:6969"], f"rehandshake after revoke overwrote: {urls2}"
+
+
+@pytest.mark.asyncio
+async def test_rehandshake_after_kill_switch_is_refused(nodes):
+    """A revoked peer link must not be restored by the revoked peer's own re-handshake."""
+    a, b = nodes
+    await _record_request_out(a, b)
+
+    # First handshake
+    env1 = _handshake_envelope(b, a, inbound_token="b" * 64, endpoints=["http://100.64.0.9:6969"])
+    resp1 = await _post_handshake(a, env1)
+    assert resp1.status_code == 200, resp1.text
+
+    link1 = await a.app.state.contacts_store.get_peer_link(b.contact_id)
+    assert link1 is not None
+    assert link1["revoked_at"] is None
+    original_inbound_token_hash = link1["inbound_token_hash"]
+
+    # Owner pauses the contact (kill_switch_per_contact -> revoke_peer_link)
+    await a.app.state.contacts_store.revoke_peer_link(b.contact_id)
+
+    # Remove the original REL_REQUEST_OUT edge to simulate that the owner
+    # has NOT re-initiated a friend request after the revoke.
+    # (In a real scenario, accept_friend_request would consume the request edge.)
+    from tinyagentos.hub import relationships
+    hub_store = await _hub_store(a)
+    await hub_store.delete_relationship(b.fingerprint, relationships.REL_REQUEST_OUT)
+
+    link_revoked = await a.app.state.contacts_store.get_peer_link(b.contact_id)
+    assert link_revoked is not None
+    assert link_revoked["revoked_at"] is not None
+    assert link_revoked["inbound_token_hash"] == original_inbound_token_hash
+
+    # Revoked peer attempts a fresh handshake with a new nonce and new token
+    env2 = _handshake_envelope(b, a, inbound_token="c" * 64, endpoints=["http://10.0.0.5:22"])
+    resp2 = await _post_handshake(a, env2)
+    assert resp2.status_code == 403, resp2.text
+    assert resp2.json().get("detail") == "peer link revoked"
+
+    # Peer link must still be revoked with original token unchanged
+    link_after = await a.app.state.contacts_store.get_peer_link(b.contact_id)
+    assert link_after is not None
+    assert link_after["revoked_at"] is not None
+    assert link_after["inbound_token_hash"] == original_inbound_token_hash
+    assert link_after["outbound_token"] == link1["outbound_token"]
+
+
+@pytest.mark.asyncio
+async def test_empty_handshake_link_recovers(nodes):
+    """Link stored with [] then a handshake advertising a valid endpoint;
+    stored becomes the valid one."""
+    a, b = nodes
+    await _record_request_out(a, b)
+
+    # First handshake with only invalid endpoints (should store [])
+    bad_endpoints = [
+        {"url": "http://peer.example:notaport"},
+        {"url": "http://peer.example:99999"},
+    ]
+    env1 = _handshake_envelope(b, a, endpoints=bad_endpoints)
+    resp1 = await _post_handshake(a, env1)
+    assert resp1.status_code == 200, resp1.text
+
+    link1 = await a.app.state.contacts_store.get_peer_link(b.contact_id)
+    assert link1 is not None
+    urls1 = [e.get("url") if isinstance(e, dict) else e for e in link1["endpoints"]]
+    assert urls1 == [], f"first handshake should have empty endpoints: {urls1}"
+
+    # Second handshake with valid endpoint — should recover
+    env2 = _handshake_envelope(b, a, endpoints=["http://100.64.0.9:6969"])
+    resp2 = await _post_handshake(a, env2)
+    assert resp2.status_code == 200, resp2.text
+
+    link2 = await a.app.state.contacts_store.get_peer_link(b.contact_id)
+    assert link2 is not None
+    urls2 = [e.get("url") if isinstance(e, dict) else e for e in link2["endpoints"]]
+    assert urls2 == ["http://100.64.0.9:6969"], f"recovery failed: {urls2}"
+
+
+@pytest.mark.asyncio
+async def test_rehandshake_after_revoke_allowed_when_owner_requested_again(nodes):
+    """A revoked peer link CAN be restored if the owner re-initiates a friend request."""
+    a, b = nodes
+    await _record_request_out(a, b)
+
+    # First handshake
+    env1 = _handshake_envelope(b, a, inbound_token="b" * 64, endpoints=["http://100.64.0.9:6969"])
+    resp1 = await _post_handshake(a, env1)
+    assert resp1.status_code == 200, resp1.text
+
+    link1 = await a.app.state.contacts_store.get_peer_link(b.contact_id)
+    assert link1 is not None
+    assert link1["revoked_at"] is None
+    original_inbound_token_hash = link1["inbound_token_hash"]
+
+    # Owner pauses the contact (kill_switch_per_contact -> revoke_peer_link)
+    await a.app.state.contacts_store.revoke_peer_link(b.contact_id)
+
+    # Remove the original REL_REQUEST_OUT edge
+    from tinyagentos.hub import relationships
+    hub_store = await _hub_store(a)
+    await hub_store.delete_relationship(b.fingerprint, relationships.REL_REQUEST_OUT)
+
+    link_revoked = await a.app.state.contacts_store.get_peer_link(b.contact_id)
+    assert link_revoked is not None
+    assert link_revoked["revoked_at"] is not None
+
+    # Owner re-initiates a friend request (adds REL_REQUEST_OUT again)
+    await hub_store.put_relationship(b.fingerprint, relationships.REL_REQUEST_OUT)
+
+    # Revoked peer attempts a fresh handshake with a new nonce and new token
+    env2 = _handshake_envelope(b, a, inbound_token="c" * 64, endpoints=["http://10.0.0.5:22"])
+    resp2 = await _post_handshake(a, env2)
+    assert resp2.status_code == 200, resp2.text
+
+    # Peer link must be restored (revoked_at cleared, new inbound token)
+    link_after = await a.app.state.contacts_store.get_peer_link(b.contact_id)
+    assert link_after is not None
+    assert link_after["revoked_at"] is None
+    assert link_after["inbound_token_hash"] != original_inbound_token_hash
+    assert link_after["outbound_token"] == "c" * 64
+
+
+@pytest.mark.asyncio
+async def test_friend_accept_restores_revoked_link_with_request_out(nodes, monkeypatch):
+    """Friend-accept on a revoked peer link restores it when REL_REQUEST_OUT exists.
+
+    Mirrors the direct-handshake re-request tests but exercises the
+    ``accept_friend_request`` route: the directory accept returns the peer's
+    identity, the route calls ``_try_handshake``, and the revoked link is
+    restored because REL_REQUEST_OUT is present.
+    """
+    a, b = nodes
+    await _record_request_out(a, b)
+    await _hub_store(b)
+    _patch_directory(monkeypatch, a)
+    seen: dict = {}
+    _route_delivery_to(monkeypatch, a, seen)
+
+    # Create a single authenticated client for both accepts
+    auth = b.app.state.auth
+    with node_env(b.data_dir):
+        auth.setup_user("admin", "Test Admin", "", "testpass")
+        rec = auth.find_user("admin")
+        token = auth.create_session(user_id=rec["id"] if rec else "", long_lived=True)
+    client = AsyncClient(
+        transport=ASGITransport(app=b.asgi),
+        base_url=f"http://{b.name}",
+        cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
+    )
+
+    async def _accept_with_client(rid: str) -> httpx.Response:
+        from unittest import mock
+        from tinyagentos import task_utils
+        from tinyagentos.routes import hub as hub_routes
+
+        deferred: list = []
+
+        def _defer(coro, task_set):
+            assert task_set is hub_routes._BACKGROUND_TASKS
+            deferred.append(coro)
+
+        with mock.patch.object(task_utils, "_create_supervised_task", _defer):
+            resp = await client.post(f"/api/hub/friends/requests/{rid}/accept", json={})
+        with node_env(b.data_dir):
+            for coro in deferred:
+                await coro
+        return resp
+
+    # First accept -> handshake completes
+    resp1 = await _accept_with_client("rid-1")
+    assert resp1.status_code == 200, resp1.text
+    assert resp1.json()["state"] == "accepted"
+
+    link1 = await a.app.state.contacts_store.get_peer_link(b.contact_id)
+    assert link1 is not None
+    assert link1["revoked_at"] is None
+    original_inbound_token_hash = link1["inbound_token_hash"]
+
+    # Owner pauses the contact (revokes peer link)
+    await a.app.state.contacts_store.revoke_peer_link(b.contact_id)
+
+    # Remove the original REL_REQUEST_OUT edge (consumed by first accept)
+    from tinyagentos.hub import relationships
+    hub_store = await _hub_store(a)
+    await hub_store.delete_relationship(b.fingerprint, relationships.REL_REQUEST_OUT)
+
+    link_revoked = await a.app.state.contacts_store.get_peer_link(b.contact_id)
+    assert link_revoked is not None
+    assert link_revoked["revoked_at"] is not None
+
+    # Owner re-initiates a friend request (adds REL_REQUEST_OUT again)
+    await hub_store.put_relationship(b.fingerprint, relationships.REL_REQUEST_OUT)
+
+    # Second accept -> handshake should restore the revoked link
+    resp2 = await _accept_with_client("rid-2")
+    assert resp2.status_code == 200, resp2.text
+    assert resp2.json()["state"] == "accepted"
+
+    # Peer link must be restored (revoked_at cleared, new inbound token)
+    link_after = await a.app.state.contacts_store.get_peer_link(b.contact_id)
+    assert link_after is not None
+    assert link_after["revoked_at"] is None
+    assert link_after["inbound_token_hash"] != original_inbound_token_hash
+
+    await client.aclose()
+
+
+# ---------------------------------------------------------------------------
+# tsk-ru647l: check-then-write revoke race
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_handshake_revoke_during_handshake_is_403(nodes, monkeypatch):
+    """A revoke committed between the revoked_at check and the write is honoured.
+
+    The old code read ``existing.revoked_at`` up front, then awaited
+    ``record_nonce``, ``hub.get_author``, ``store.add_contact`` and only then
+    called ``establish_peer_link``, which cleared ``revoked_at`` unconditionally.
+    A revoke committed in that window was silently overwritten and the link
+    came back live.  ``establish_peer_link`` now re-checks ``revoked_at`` inside
+    the same statement, so the link stays revoked and the handshake is refused.
+    """
+    from tinyagentos.hub import store as hub_store
+
+    a, b = nodes
+    await _record_request_out(a, b)
+    await _hub_store(a)
+
+    env1 = _handshake_envelope(b, a, inbound_token="b" * 64, endpoints=["http://100.64.0.9:6969"])
+    resp1 = await _post_handshake(a, env1)
+    assert resp1.status_code == 200, resp1.text
+
+    original_hash = (await a.app.state.contacts_store.get_peer_link(b.contact_id))["inbound_token_hash"]
+    original_outbound = "b" * 64
+
+    real_get_author = hub_store.HubStore.get_author
+
+    async def revoking_get_author(self, fingerprint):
+        author = await real_get_author(self, fingerprint)
+        # Revoke committed AFTER the initial revoked_at check passes.
+        await a.app.state.contacts_store.revoke_peer_link(b.contact_id)
+        return author
+
+    monkeypatch.setattr(hub_store.HubStore, "get_author", revoking_get_author)
+
+    env2 = _handshake_envelope(b, a, inbound_token="c" * 64, endpoints=["http://10.0.0.5:22"])
+    resp2 = await _post_handshake(a, env2)
+    assert resp2.status_code == 403, resp2.text
+    assert resp2.json().get("detail") == "peer link revoked"
+
+    link_after = await a.app.state.contacts_store.get_peer_link(b.contact_id)
+    assert link_after is not None
+    assert link_after["revoked_at"] is not None
+    assert link_after["inbound_token_hash"] == original_hash
+    assert link_after["outbound_token"] == original_outbound
+
+
+@pytest.mark.asyncio
+async def test_handshake_refused_write_revokes_contact_status(nodes, monkeypatch):
+    """A refused link write during handshake marks the contact as revoked."""
+    from tinyagentos.hub import store as hub_store
+
+    a, b = nodes
+    await _record_request_out(a, b)
+    await _hub_store(a)
+
+    env1 = _handshake_envelope(b, a, inbound_token="b" * 64, endpoints=["http://100.64.0.9:6969"])
+    resp1 = await _post_handshake(a, env1)
+    assert resp1.status_code == 200, resp1.text
+
+    real_get_author = hub_store.HubStore.get_author
+
+    async def revoking_get_author(self, fingerprint):
+        author = await real_get_author(self, fingerprint)
+        await a.app.state.contacts_store.revoke_peer_link(b.contact_id)
+        return author
+
+    monkeypatch.setattr(hub_store.HubStore, "get_author", revoking_get_author)
+
+    env2 = _handshake_envelope(b, a, inbound_token="c" * 64, endpoints=["http://10.0.0.5:22"])
+    resp2 = await _post_handshake(a, env2)
+    assert resp2.status_code == 403, resp2.text
+    assert resp2.json().get("detail") == "peer link revoked"
+
+    contact = await a.app.state.contacts_store.get_contact(b.contact_id)
+    assert contact is not None
+    assert contact["status"] == "revoked"
+    link_after = await a.app.state.contacts_store.get_peer_link(b.contact_id)
+    assert link_after["revoked_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_owner_re_request_reestablishes_revoked_link_only_if_same_revocation(nodes, monkeypatch):
+    """The owner re-request path re-establishes a revoked link ONLY if the
+    revocation observed at read time is still the current one.
+
+    A revoke that lands between the check and the write (a newer revocation)
+    prevents the restore, returning 403.  This prevents a block that lands
+    during the handshake from being silently undone.
+    """
+    from tinyagentos.hub import store as hub_store
+    from tinyagentos.hub import relationships
+
+    a, b = nodes
+    await _record_request_out(a, b)
+    hub = await _hub_store(a)
+
+    env1 = _handshake_envelope(b, a, inbound_token="b" * 64, endpoints=["http://100.64.0.9:6969"])
+    resp1 = await _post_handshake(a, env1)
+    assert resp1.status_code == 200, resp1.text
+
+    original_hash = (await a.app.state.contacts_store.get_peer_link(b.contact_id))["inbound_token_hash"]
+
+    # Owner pauses the contact, then re-initiates the friend request.
+    await a.app.state.contacts_store.revoke_peer_link(b.contact_id)
+    await hub.delete_relationship(b.fingerprint, relationships.REL_REQUEST_OUT)
+    await hub.put_relationship(b.fingerprint, relationships.REL_REQUEST_OUT)
+
+    real_get_author = hub_store.HubStore.get_author
+
+    async def revoking_get_author(self, fingerprint):
+        author = await real_get_author(self, fingerprint)
+        await a.app.state.contacts_store.revoke_peer_link(b.contact_id)
+        return author
+
+    monkeypatch.setattr(hub_store.HubStore, "get_author", revoking_get_author)
+
+    env2 = _handshake_envelope(b, a, inbound_token="c" * 64, endpoints=["http://10.0.0.5:22"])
+    resp2 = await _post_handshake(a, env2)
+    # A newer revocation landed during the handshake -- restore is refused.
+    assert resp2.status_code == 403, resp2.text
+
+    # The peer link must still be revoked (the newer revocation stands).
+    link_after = await a.app.state.contacts_store.get_peer_link(b.contact_id)
+    assert link_after is not None
+    assert link_after["revoked_at"] is not None
+    # The inbound token hash must be unchanged (no restore happened).
+    assert link_after["inbound_token_hash"] == original_hash

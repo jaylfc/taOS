@@ -7,6 +7,10 @@ set -euo pipefail
 
 log() { echo "[$(date -u +%H:%M:%S)] hermes-install: $*"; }
 
+# Pin Hermes to a known tag; bumps go via a card + smoke test
+HERMES_TAG="${HERMES_TAG:-v2026.8.31}"
+HERMES_COMMIT="${HERMES_COMMIT:-29112bef099274229cadff79cdff7bf7b99c4b77}"
+
 AGENT_NAME="${TAOS_AGENT_NAME:?TAOS_AGENT_NAME required}"
 LLM_KEY="${LITELLM_API_KEY:?LITELLM_API_KEY required}"
 BRIDGE_URL="${TAOS_BRIDGE_URL:?TAOS_BRIDGE_URL required}"
@@ -39,7 +43,7 @@ find_hermes() {
 HERMES_BIN="$(find_hermes || true)"
 if [ -z "$HERMES_BIN" ]; then
     log "hermes not present -- running Hermes installer (--skip-setup)"
-    curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --skip-setup
+    curl -fsSL "https://raw.githubusercontent.com/NousResearch/hermes-agent/${HERMES_TAG}/scripts/install.sh" | bash -s -- --skip-setup --commit "$HERMES_COMMIT"
     HERMES_BIN="$(find_hermes || true)"
 else
     log "hermes already installed (base image) -- skipping installer"
@@ -271,18 +275,31 @@ async def post_reply(client: httpx.AsyncClient, reply_url: str, token: str,
                      msg_id: str, trace_id: str, content: str, cid=None) -> bool:
     body = {"kind": "final", "id": msg_id, "trace_id": trace_id, "content": content}
     if cid: body["channel_id"] = cid
-    try:
-        resp = await client.post(reply_url, json=body,
-                                  headers={"Content-Type": "application/json",
-                                           "Authorization": f"Bearer {token}"},
-                                  timeout=30)
-        if resp.status_code >= 400:
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            resp = await client.post(reply_url, json=body, headers=headers, timeout=30)
+            if 200 <= resp.status_code < 300:
+                return True
+            if (resp.status_code == 429 or 500 <= resp.status_code < 600) and attempt < MAX_RETRIES:
+                log.warning("reply POST %s (attempt %d/%d), retry in %.1fs",
+                            resp.status_code, attempt, MAX_RETRIES, 1.0 * attempt)
+                await asyncio.sleep(1.0 * attempt)
+                continue
             log.warning("reply POST %s: %s", resp.status_code, resp.text[:300])
             return False
-        return True
-    except Exception as e:
-        log.warning("reply POST failed: %s", e)
-        return False
+        except httpx.TransportError as e:
+            if attempt < MAX_RETRIES:
+                log.warning("reply POST error %s (attempt %d/%d), retry in %.1fs",
+                            e, attempt, MAX_RETRIES, 1.0 * attempt)
+                await asyncio.sleep(1.0 * attempt)
+                continue
+            log.warning("reply POST failed: %s", e)
+            return False
+        except Exception as e:
+            log.warning("reply POST failed: %s", e)
+            return False
+    return False
 
 
 async def handle_user_message(client: httpx.AsyncClient, evt: dict, channel: dict,
@@ -464,5 +481,5 @@ done
 
 systemctl enable --now taos-hermes-bridge.service
 mkdir -p /opt/taos
-echo "hermes-0.1" > /opt/taos/framework.version
+echo "hermes-${HERMES_TAG}" > /opt/taos/framework.version
 log "done"

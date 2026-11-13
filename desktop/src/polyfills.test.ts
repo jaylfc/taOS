@@ -1,247 +1,124 @@
-import { describe, it, expect, vi } from "vitest";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { installAbortSignalTimeout } from "./polyfills";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-const originalHasOwn = Object.hasOwn;
-const originalStructuredClone = globalThis.structuredClone;
-const originalAt = Array.prototype.at;
-
-function getAtPolyfillFromSource(): typeof Array.prototype.at {
-  const polyfillsPath = join(__dirname, "polyfills.ts");
-  const source = readFileSync(polyfillsPath, "utf-8");
-
-  const match = source.match(
-    /if \(typeof Array\.prototype\.at === "undefined"\) \{[\s\S]*?Object\.defineProperty\(Array\.prototype, "at", \{\s*value: (function at\(this: unknown, index: number\): unknown \{[\s\S]*?\n\s*\})\s*,/
-  );
-
-  if (!match) {
-    throw new Error("Could not extract at polyfill from polyfills.ts");
-  }
-
-  let fnSource = match[1];
-  fnSource = fnSource.replace(/\(this: unknown, index: number\): unknown/, "(index)");
-  fnSource = fnSource.replace(/(\w+) as \w+/g, "$1");
-  return new Function("return " + fnSource)() as typeof Array.prototype.at;
-}
-
-function deleteGlobalHasOwn() {
+function deleteGlobalAbortTimeout() {
   try {
-    delete (Object as any).hasOwn;
+    delete (AbortSignal as any).timeout;
   } catch {
     // ignore
   }
 }
 
-function deleteGlobalStructuredClone() {
-  try {
-    delete (globalThis as any).structuredClone;
-  } catch {
-    // ignore
-  }
+function restoreGlobalAbortTimeout() {
+  deleteGlobalAbortTimeout();
 }
 
-function deleteGlobalAt() {
-  try {
-    delete (Array.prototype as any).at;
-  } catch {
-    // ignore
-  }
-}
-
-function restoreGlobals() {
-  if (originalHasOwn !== undefined) {
-    Object.hasOwn = originalHasOwn;
-  } else {
-    deleteGlobalHasOwn();
-  }
-  if (originalStructuredClone !== undefined) {
-    globalThis.structuredClone = originalStructuredClone;
-  } else {
-    deleteGlobalStructuredClone();
-  }
-  if (originalAt !== undefined) {
-    Array.prototype.at = originalAt;
-  } else {
-    deleteGlobalAt();
-  }
-}
-
-async function testWithPolyfill<T>(
-  name: string,
-  setup: () => void,
-  testFn: (polyfillRefs?: { at?: typeof Array.prototype.at }) => T | Promise<T>
-): Promise<T> {
-  setup();
-  vi.resetModules();
-  try {
-    await import("./polyfills");
-    const atPolyfill = Array.prototype.at;
-    if (originalAt !== undefined) {
-      Array.prototype.at = originalAt;
-    }
-    return await testFn({ at: atPolyfill });
-  } finally {
-    restoreGlobals();
-  }
-}
-
-describe("polyfills", () => {
-  it("Object.hasOwn polyfill exists and works", async () => {
-    await testWithPolyfill("Object.hasOwn", deleteGlobalHasOwn, () => {
-      expect(typeof Object.hasOwn).toBe("function");
-      expect(Object.hasOwn({ a: 1 }, "a")).toBe(true);
-      expect(Object.hasOwn({ a: 1 }, "b")).toBe(false);
-      const obj = Object.create({ inherited: true });
-      obj.own = true;
-      expect(Object.hasOwn(obj, "own")).toBe(true);
-      expect(Object.hasOwn(obj, "inherited")).toBe(false);
-    });
+describe("AbortSignal.timeout polyfill", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    deleteGlobalAbortTimeout();
+    installAbortSignalTimeout(1000);
   });
 
-  it("Array.prototype.at polyfill exists and works", () => {
-    const atPolyfill = getAtPolyfillFromSource();
-    expect(typeof atPolyfill).toBe("function");
-    expect(atPolyfill).not.toBe(originalAt);
-
-    const arr = [1, 2, 3];
-    expect(atPolyfill.call(arr, 0)).toBe(1);
-    expect(atPolyfill.call(arr, -1)).toBe(3);
-    expect(atPolyfill.call(arr, -2)).toBe(2);
-    expect(atPolyfill.call(arr, 5)).toBeUndefined();
-    expect(atPolyfill.call(arr, -5)).toBeUndefined();
-
-    const arrayLike = { 0: "a", 1: "b", 2: "c", length: 3 };
-    expect(atPolyfill.call(arrayLike, 0)).toBe("a");
-    expect(atPolyfill.call(arrayLike, -1)).toBe("c");
+  afterEach(() => {
+    restoreGlobalAbortTimeout();
+    vi.useRealTimers();
   });
 
-  it("globalThis.structuredClone polyfill exists and works", async () => {
-    await testWithPolyfill("structuredClone", deleteGlobalStructuredClone, () => {
-      expect(typeof globalThis.structuredClone).toBe("function");
+  it("should exist and abort after the delay", () => {
+    expect(typeof AbortSignal.timeout).toBe("function");
 
-      const original: any = {
-        name: "test",
-        date: new Date("2024-01-01T00:00:00Z"),
-        map: new Map([["key", "value"]]),
-        nested: { value: 42 },
-      };
-      original.cycle = original;
+    const s = AbortSignal.timeout(50);
+    expect(s.aborted).toBe(false);
 
-      const cloned = globalThis.structuredClone(original);
+    vi.advanceTimersByTime(50);
 
-      expect(cloned).not.toBe(original);
-      expect(cloned.name).toBe("test");
-      expect(cloned.date).toBeInstanceOf(Date);
-      expect(cloned.date.getTime()).toBe(original.date.getTime());
-      expect(cloned.map).toBeInstanceOf(Map);
-      expect(cloned.map.get("key")).toBe("value");
-      expect(cloned.map).not.toBe(original.map);
-      expect(cloned.nested).not.toBe(original.nested);
-      expect(cloned.nested.value).toBe(42);
-      expect(cloned.cycle).toBe(cloned);
-    });
+    expect(s.aborted).toBe(true);
+    expect((s.reason as DOMException).name).toBe("TimeoutError");
   });
 
-  it("structuredClone throws DataCloneError for functions", async () => {
-    await testWithPolyfill("structuredClone throws on function", deleteGlobalStructuredClone, () => {
-      try {
-        globalThis.structuredClone(() => {});
-        throw new Error("Expected to throw");
-      } catch (e: any) {
-        expect(e.name).toBe("DataCloneError");
-      }
-    });
+  it("throws TypeError for negative delay", () => {
+    expect(() => AbortSignal.timeout(-1)).toThrow(TypeError);
+    expect(() => AbortSignal.timeout(-1)).toThrow("non-negative finite number");
   });
 
-  it("structuredClone throws DataCloneError for symbols", async () => {
-    await testWithPolyfill("structuredClone throws on symbol", deleteGlobalStructuredClone, () => {
-      try {
-        globalThis.structuredClone(Symbol("test"));
-        throw new Error("Expected to throw");
-      } catch (e: any) {
-        expect(e.name).toBe("DataCloneError");
-      }
-    });
+  it("throws TypeError for NaN delay", () => {
+    expect(() => AbortSignal.timeout(NaN)).toThrow(TypeError);
   });
 
-  it("structuredClone copies typed array subarray with independent buffer", async () => {
-    await testWithPolyfill("structuredClone typed array subarray", deleteGlobalStructuredClone, () => {
-      const original = new Uint16Array([1, 2, 3, 4]).subarray(1, 3);
-      const cloned = globalThis.structuredClone(original);
-
-      expect(cloned).toBeInstanceOf(Uint16Array);
-      expect(cloned.length).toBe(2);
-      expect(cloned[0]).toBe(2);
-      expect(cloned[1]).toBe(3);
-
-      cloned[0] = 9;
-      expect(original[0]).toBe(2);
-    });
+  it("throws TypeError for Infinity delay", () => {
+    expect(() => AbortSignal.timeout(Infinity)).toThrow(TypeError);
+    expect(() => AbortSignal.timeout(-Infinity)).toThrow(TypeError);
   });
 
-  it("structuredClone copies DataView with independent buffer", async () => {
-    await testWithPolyfill("structuredClone DataView", deleteGlobalStructuredClone, () => {
-      const buffer = new ArrayBuffer(4);
-      const view = new DataView(buffer);
-      view.setUint8(0, 1);
-      view.setUint8(1, 2);
-      view.setUint8(2, 3);
-      view.setUint8(3, 4);
-
-      const cloned = globalThis.structuredClone(view);
-
-      expect(cloned).toBeInstanceOf(DataView);
-      expect(cloned.byteLength).toBe(4);
-      expect(cloned.getUint8(0)).toBe(1);
-      expect(cloned.getUint8(1)).toBe(2);
-      expect(cloned.getUint8(2)).toBe(3);
-      expect(cloned.getUint8(3)).toBe(4);
-
-      cloned.setUint8(0, 99);
-      expect(view.getUint8(0)).toBe(1);
-    });
+  it("throws TypeError for delay > Number.MAX_SAFE_INTEGER", () => {
+    expect(() => AbortSignal.timeout(Number.MAX_SAFE_INTEGER + 1)).toThrow(TypeError);
+    expect(() => AbortSignal.timeout(Number.MAX_SAFE_INTEGER + 100)).toThrow(TypeError);
   });
 
-  it("Array.prototype.at uses ToIntegerOrInfinity and handles edge cases", () => {
-    const atPolyfill = getAtPolyfillFromSource();
-    expect(typeof atPolyfill).toBe("function");
-    expect(atPolyfill).not.toBe(originalAt);
-
-    const arr = [10, 20, 30];
-    expect(atPolyfill.call(arr, 1.5)).toBe(20);
-    expect(atPolyfill.call(arr)).toBe(10);
-    expect(atPolyfill.call(arr, -1)).toBe(30);
-    expect(atPolyfill.call([], 0)).toBeUndefined();
-    expect(atPolyfill.call(arr, Infinity)).toBeUndefined();
-    expect(atPolyfill.call(arr, -Infinity)).toBeUndefined();
-    expect(atPolyfill.call(arr, NaN)).toBe(10);
+  it("accepts Number.MAX_SAFE_INTEGER as valid delay", () => {
+    const s = AbortSignal.timeout(Number.MAX_SAFE_INTEGER);
+    expect(s.aborted).toBe(false);
   });
 
-  it("does not replace existing native Object.hasOwn", async () => {
-    Object.hasOwn = originalHasOwn;
-    const nativeHasOwn = Object.hasOwn;
-    vi.resetModules();
-    await import("./polyfills");
-    expect(Object.hasOwn).toBe(nativeHasOwn);
+  it("aborts exactly at the requested time for chained timeout (1500 ms)", () => {
+    const s = AbortSignal.timeout(1500);
+    expect(s.aborted).toBe(false);
+
+    vi.advanceTimersByTime(1499);
+    expect(s.aborted).toBe(false);
+
+    vi.advanceTimersByTime(1);
+    expect(s.aborted).toBe(true);
+    expect((s.reason as DOMException).name).toBe("TimeoutError");
   });
 
-  it("does not replace existing native Array.prototype.at", async () => {
-    Array.prototype.at = originalAt;
-    const nativeAt = Array.prototype.at;
-    vi.resetModules();
-    await import("./polyfills");
-    expect(Array.prototype.at).toBe(nativeAt);
+  it("aborts exactly at the requested time for chained timeout (3500 ms)", () => {
+    const s = AbortSignal.timeout(3500);
+    expect(s.aborted).toBe(false);
+
+    vi.advanceTimersByTime(3499);
+    expect(s.aborted).toBe(false);
+
+    vi.advanceTimersByTime(1);
+    expect(s.aborted).toBe(true);
+    expect((s.reason as DOMException).name).toBe("TimeoutError");
   });
 
-  it("does not replace existing native globalThis.structuredClone", async () => {
-    globalThis.structuredClone = originalStructuredClone;
-    const nativeStructuredClone = globalThis.structuredClone;
-    vi.resetModules();
-    await import("./polyfills");
-    expect(globalThis.structuredClone).toBe(nativeStructuredClone);
+  it("aborts exactly at the requested time for short timeout (50 ms)", () => {
+    const s = AbortSignal.timeout(50);
+    expect(s.aborted).toBe(false);
+
+    vi.advanceTimersByTime(49);
+    expect(s.aborted).toBe(false);
+
+    vi.advanceTimersByTime(1);
+    expect(s.aborted).toBe(true);
+    expect((s.reason as DOMException).name).toBe("TimeoutError");
+  });
+
+  it("timeout(0) is not aborted synchronously and fires after timer advance", () => {
+    const s = AbortSignal.timeout(0);
+    expect(s.aborted).toBe(false);
+
+    const listener = vi.fn();
+    s.addEventListener("abort", listener);
+
+    expect(listener).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(0);
+
+    expect(s.aborted).toBe(true);
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not replace existing native AbortSignal.timeout", () => {
+    deleteGlobalAbortTimeout();
+    const stubTimeout = vi.fn();
+    (AbortSignal as any).timeout = stubTimeout;
+
+    installAbortSignalTimeout();
+
+    expect(AbortSignal.timeout).toBe(stubTimeout);
   });
 });

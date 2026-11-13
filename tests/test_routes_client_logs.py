@@ -76,15 +76,13 @@ async def test_rate_limited_post_carries_retry_after(client, monkeypatch):
 
     monkeypatch.setattr(
         "tinyagentos.routes.client_logs._post_limiter",
-        RateLimiter(capacity=1, refill_per_second=0.5),
+        RateLimiter(capacity=1, refill_per_second=0.5, clock=lambda: 1000.0),
     )
     await client.post("/api/client-logs", json={"level": "error", "message": "flood"})
     blocked = await client.post("/api/client-logs", json={"level": "error", "message": "flood"})
     assert blocked.status_code == 429
-    # 1 token at 0.5/s is 2 seconds away, rounded up -- but if the first post
-    # took close to a second, the elapsed time can round the wait down to 1.
-    retry_after = int(blocked.headers["retry-after"])
-    assert retry_after in (1, 2)
+    # Clock is frozen so 1 token at 0.5/s is exactly 2 seconds away.
+    assert int(blocked.headers["retry-after"]) == 2
 
 
 @pytest.mark.asyncio

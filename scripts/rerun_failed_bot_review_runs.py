@@ -34,6 +34,9 @@ Selection is narrow on purpose, because a wider net is worse than no net:
   - ONLY conclusion=failure. Nothing to fix otherwise.
   - ONLY event=pull_request. The pull_request_review run is the one doing the
     re-running; re-running it would be a self-trigger loop.
+  - ONLY runs whose pull_requests include this PR. A run with an empty or
+    missing pull_requests list belongs to a closed or different PR; re-running
+    it would turn a green PR red for an unrelated reason.
 
 Failure is best-effort: a refused re-run POST logs a warning and exits 0. The
 run doing the healing is itself a required check, so failing it here would
@@ -135,6 +138,7 @@ def select_failed_runs(
     runs: list[dict],
     head_sha: str,
     *,
+    pr_number: int,
     workflow_name: str = WORKFLOW_NAME,
     event: str = RERUN_EVENT,
 ) -> list[dict]:
@@ -144,7 +148,8 @@ def select_failed_runs(
       - name == workflow_name   (this workflow and no other),
       - head_sha == head_sha    (the SHA branch protection evaluates),
       - event == event          (the pre-review trigger, never this run),
-      - conclusion == "failure" (a red verdict is the only thing to fix).
+      - conclusion == "failure" (a red verdict is the only thing to fix),
+      - pr_number is in the run's pull_requests list (only THIS PR's runs).
     """
     selected = [
         r for r in runs
@@ -153,6 +158,7 @@ def select_failed_runs(
         and r.get("event") == event
         and r.get("conclusion") == FAILED_CONCLUSION
         and isinstance(r.get("id"), int)
+        and pr_number in {p.get("number") for p in (r.get("pull_requests") or []) if isinstance(p, dict)}
     ]
     return sorted(selected, key=lambda r: r["id"])
 
@@ -201,6 +207,12 @@ def main(argv: list[str] | None = None) -> int:
              "SHA there is no scope to select in, and a re-run of the whole "
              "workflow would be wrong.",
     )
+    parser.add_argument(
+        "--pr", type=int, default=None,
+        help="PR number to scope the re-run selection (default: $PR_NUMBER). "
+             "Required: without a PR number a closed PR's failed run on the "
+             "same SHA would be re-run and repaint the open PR red.",
+    )
     parser.add_argument("--owner", default=None, help="Repo owner")
     parser.add_argument("--repo", default=None, help="Repo name")
     parser.add_argument(
@@ -214,6 +226,27 @@ def main(argv: list[str] | None = None) -> int:
         print(
             "error: --head-sha (or $PR_HEAD) is required; refusing to re-run "
             "without a SHA to scope the selection",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+
+    pr_number = args.pr
+    if pr_number is None:
+        env_pr = os.environ.get("PR_NUMBER")
+        if env_pr:
+            try:
+                pr_number = int(env_pr)
+            except ValueError:
+                print(
+                    "error: $PR_NUMBER is not a valid integer; refusing to "
+                    "re-run without a PR number to scope the selection",
+                    file=sys.stderr,
+                )
+                return EXIT_USAGE
+    if pr_number is None:
+        print(
+            "error: --pr (or $PR_NUMBER) is required; refusing to re-run "
+            "without a PR number to scope the selection",
             file=sys.stderr,
         )
         return EXIT_USAGE
@@ -239,15 +272,15 @@ def main(argv: list[str] | None = None) -> int:
         )
         return EXIT_OK
 
-    selected = select_failed_runs(extract_workflow_runs(payload), head_sha)
+    selected = select_failed_runs(extract_workflow_runs(payload), head_sha, pr_number=pr_number)
     if not selected:
-        print(f"no failed {WORKFLOW_NAME} {RERUN_EVENT} runs on {head_sha}; nothing to re-run")
+        print(f"no failed {WORKFLOW_NAME} {RERUN_EVENT} runs on {head_sha} for PR {pr_number}; nothing to re-run")
         return EXIT_OK
 
     for run in selected:
         run_id = run["id"]
         if rerun_failed_jobs(owner, repo, run, token):
-            print(f"re-running failed jobs of {WORKFLOW_NAME} run {run_id} on {head_sha}")
+            print(f"re-running failed jobs of {WORKFLOW_NAME} run {run_id} on {head_sha} for PR {pr_number}")
         else:
             # Best effort by design: this run is itself a required check, so a
             # refused re-run must not turn it red and re-block the PR.

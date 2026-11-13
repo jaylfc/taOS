@@ -1,0 +1,2 @@
+### Fixed
+- Fixed race condition in Wi-Fi and Bluetooth settings panels where stale API responses could overwrite newer data. Under React StrictMode or when a slow request overlapped with the 10s refresh interval, an older response could restore old access points, adapters, devices, or errors. Both panels now use a sequence counter (`seq`) and an `active` flag to ignore results from superseded or cleaned-up effect runs.

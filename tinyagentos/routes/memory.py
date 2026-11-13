@@ -24,19 +24,53 @@ The headers are built by ``build_trace_context_headers()``.
 from __future__ import annotations
 
 import logging
+import uuid
+from datetime import datetime, UTC
 from pathlib import Path
 
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
+from tinyagentos.agent_db import find_agent
 from tinyagentos.agent_token_auth import check_agent_scope
+from tinyagentos.auth_context import current_user, require_agent_owner_or_admin
 from tinyagentos.otel.trace_context import build_trace_context_headers
 from tinyagentos.routes.delegation import _resolve_agent_name
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+class RememberRequest(BaseModel):
+    text: str
+    agent: str | None = None
+    title: str | None = None
+
+    @field_validator("text")
+    @classmethod
+    def _validate_text(cls, v: str) -> str:
+        stripped = v.strip()
+        if not stripped:
+            raise ValueError("text must not be empty after stripping")
+        if len(stripped) > 8000:
+            raise ValueError("text must be at most 8000 characters after stripping")
+        return stripped
+
+
+def _local_token_caller(request: Request) -> tuple[bool, str | None]:
+    """Check if the request is from a bound local token.
+
+    Returns (True, agent_name) when request.state.via == "local_token" and
+    request.state.agent_name is set (bound agent token).
+    Returns (True, None) when request.state.via == "local_token" but no
+    agent_name is bound (host/unbound token).
+    Returns (False, None) otherwise.
+    """
+    if getattr(request.state, "via", None) == "local_token":
+        return True, getattr(request.state, "agent_name", None)
+    return False, None
 
 
 class SearchRequest(BaseModel):
@@ -105,19 +139,29 @@ async def memory_browse(
     conversation_id: str | None = None,
 ):
     """Browse memory chunks via qmd serve GET /browse."""
-    # Check if this is a registry-JWT agent request (not a human session)
-    agent_canonical_id = await check_agent_scope(request, "memory_read")
-    
-    # For registry-JWT agents, restrict to own namespace
-    if agent_canonical_id is not None:
-        # If an agent name was provided in the query, ensure it matches the calling agent's own
-        # First resolve the canonical_id to the config agent name
-        agent_config_name = await _resolve_agent_name(request, agent_canonical_id) or agent_canonical_id
+    # Check for local token FIRST (before check_agent_scope which treats any Bearer as registry JWT)
+    is_local, bound_agent = _local_token_caller(request)
+    if is_local:
+        if bound_agent is not None:
+            # Bound agent: fence to own namespace
+            if agent is not None and agent != bound_agent:
+                raise HTTPException(status_code=403, detail="Agent can only browse its own memory")
+            agent = bound_agent
+        # Unbound (host) token: keep existing admin behaviour (agent param respected as-is)
+    else:
+        # Registry JWT path
+        agent_canonical_id = await check_agent_scope(request, "memory_read")
         
-        if agent is not None and agent != agent_config_name:
-            raise HTTPException(status_code=403, detail="Agent can only browse its own memory")
-        # Use the resolved config agent name for the agent namespace
-        agent = agent_config_name
+        # For registry-JWT agents, restrict to own namespace
+        if agent_canonical_id is not None:
+            # If an agent name was provided in the query, ensure it matches the calling agent's own
+            # First resolve the canonical_id to the config agent name
+            agent_config_name = await _resolve_agent_name(request, agent_canonical_id) or agent_canonical_id
+            
+            if agent is not None and agent != agent_config_name:
+                raise HTTPException(status_code=403, detail="Agent can only browse its own memory")
+            # Use the resolved config agent name for the agent namespace
+            agent = agent_config_name
     
     http_client = request.app.state.http_client
     params: dict = {"limit": limit, "offset": offset}
@@ -186,23 +230,33 @@ async def memory_search(request: Request, body: SearchRequest):
 
     If ``agent`` is set, searches that agent's per-agent index. Without
     an ``agent``, searches the default (user) index. Cross-agent search
-    is intentionally not supported here — agents do not share memory.
+    is intentionally not supported here -- agents do not share memory.
     Aggregating across agents is a separate concern that belongs in a
     future ``/api/memory/all`` endpoint, gated by user permission.
     """
-    # Check if this is a registry-JWT agent request (not a human session)
-    agent_canonical_id = await check_agent_scope(request, "memory_read")
-    
-    # For registry-JWT agents, restrict to own namespace
-    if agent_canonical_id is not None:
-        # If an agent name was provided in the body, ensure it matches the calling agent's own
-        # First resolve the canonical_id to the config agent name
-        agent_config_name = await _resolve_agent_name(request, agent_canonical_id) or agent_canonical_id
+    # Check for local token FIRST (before check_agent_scope which treats any Bearer as registry JWT)
+    is_local, bound_agent = _local_token_caller(request)
+    if is_local:
+        if bound_agent is not None:
+            # Bound agent: fence to own namespace
+            if body.agent is not None and body.agent != bound_agent:
+                raise HTTPException(status_code=403, detail="Agent can only search its own memory")
+            body.agent = bound_agent
+        # Unbound (host) token: keep existing admin behaviour (body.agent respected as-is)
+    else:
+        # Registry JWT path
+        agent_canonical_id = await check_agent_scope(request, "memory_read")
         
-        if body.agent is not None and body.agent != agent_config_name:
-            raise HTTPException(status_code=403, detail="Agent can only search its own memory")
-        # Use the resolved config agent name for the agent namespace
-        body.agent = agent_config_name
+        # For registry-JWT agents, restrict to own namespace
+        if agent_canonical_id is not None:
+            # If an agent name was provided in the body, ensure it matches the calling agent's own
+            # First resolve the canonical_id to the config agent name
+            agent_config_name = await _resolve_agent_name(request, agent_canonical_id) or agent_canonical_id
+            
+            if body.agent is not None and body.agent != agent_config_name:
+                raise HTTPException(status_code=403, detail="Agent can only search its own memory")
+            # Use the resolved config agent name for the agent namespace
+            body.agent = agent_config_name
     
     db_path = _agent_db_path(request, body.agent)
     search_fn = _qmd_vsearch if body.mode == "semantic" else _qmd_search
@@ -227,19 +281,29 @@ async def memory_collections(
     request: Request, agent_name: str, conversation_id: str | None = None,
 ):
     """List memory collections for an agent via qmd serve GET /collections."""
-    # Check if this is a registry-JWT agent request (not a human session)
-    agent_canonical_id = await check_agent_scope(request, "memory_read")
-    
-    # For registry-JWT agents, restrict to own namespace
-    if agent_canonical_id is not None:
-        # First resolve the canonical_id to the config agent name
-        agent_config_name = await _resolve_agent_name(request, agent_canonical_id) or agent_canonical_id
+    # Check for local token FIRST (before check_agent_scope which treats any Bearer as registry JWT)
+    is_local, bound_agent = _local_token_caller(request)
+    if is_local:
+        if bound_agent is not None:
+            # Bound agent: fence to own namespace
+            if agent_name != bound_agent:
+                raise HTTPException(status_code=403, detail="Agent can only access its own collections")
+            agent_name = bound_agent
+        # Unbound (host) token: keep existing admin behaviour (agent_name path param respected as-is)
+    else:
+        # Registry JWT path
+        agent_canonical_id = await check_agent_scope(request, "memory_read")
         
-        # Ensure the agent is requesting collections for itself only
-        if agent_name != agent_config_name:
-            raise HTTPException(status_code=403, detail="Agent can only access its own collections")
-        # Use the resolved config agent name
-        agent_name = agent_config_name
+        # For registry-JWT agents, restrict to own namespace
+        if agent_canonical_id is not None:
+            # First resolve the canonical_id to the config agent name
+            agent_config_name = await _resolve_agent_name(request, agent_canonical_id) or agent_canonical_id
+            
+            # Ensure the agent is requesting collections for itself only
+            if agent_name != agent_config_name:
+                raise HTTPException(status_code=403, detail="Agent can only access its own collections")
+            # Use the resolved config agent name
+            agent_name = agent_config_name
     
     http_client = request.app.state.http_client
     params: dict = {"dbPath": _agent_db_path(request, agent_name)}
@@ -263,11 +327,20 @@ async def memory_delete_chunk(
     Routes to the per-agent index when ``agent`` is set, otherwise to
     the default user index.
     """
-    # For registry-JWT agents, DELETE is not allowed even with memory_read
-    # This route remains human-only as per the spec
-    agent_canonical_id = await check_agent_scope(request, "memory_read")
-    if agent_canonical_id is not None:
-        raise HTTPException(status_code=403, detail="Memory deletion is human-only")
+    # Check for local token FIRST (before check_agent_scope which treats any Bearer as registry JWT)
+    is_local, bound_agent = _local_token_caller(request)
+    if is_local:
+        if bound_agent is not None:
+            # Bound agent: DELETE is not allowed (same as JWT agent)
+            raise HTTPException(status_code=403, detail="Memory deletion is human-only")
+        # Unbound (host) token: keep existing admin behaviour
+    else:
+        # Registry JWT path
+        # For registry-JWT agents, DELETE is not allowed even with memory_read
+        # This route remains human-only as per the spec
+        agent_canonical_id = await check_agent_scope(request, "memory_read")
+        if agent_canonical_id is not None:
+            raise HTTPException(status_code=403, detail="Memory deletion is human-only")
     
     http_client = request.app.state.http_client
     payload: dict = {"hash": content_hash, "dbPath": _agent_db_path(request, agent)}
@@ -281,3 +354,116 @@ async def memory_delete_chunk(
     except Exception as e:
         logger.warning("qmd /delete-chunk failed: %s", e)
         return JSONResponse({"status": "error", "message": str(e)}, status_code=502)
+
+
+@router.post("/api/memory/remember")
+async def memory_remember(request: Request, body: RememberRequest):
+    """Write a memory entry via qmd serve POST /ingest.
+
+    Caller resolution (in order):
+    a) Bound local token: body.agent must match bound agent or be omitted.
+    b) Registry JWT with memory_write scope: body.agent must match resolved agent or be omitted.
+    c) Human/admin session or unbound host token: body.agent is REQUIRED.
+    """
+    # a) Check for bound local token FIRST
+    is_local, bound_agent = _local_token_caller(request)
+    if is_local:
+        if bound_agent is not None:
+            # Bound agent: fence to own namespace
+            if body.agent is not None and body.agent != bound_agent:
+                raise HTTPException(status_code=403, detail="Agent can only write its own memory")
+            agent = bound_agent
+        else:
+            # Unbound (host) token: falls through to (c)
+            agent = None
+    else:
+        # b) Registry JWT path
+        agent_canonical_id = await check_agent_scope(request, "memory_write")
+        if agent_canonical_id is not None:
+            # FIRST: look for config agent whose registry_canonical_id matches the caller's
+            # canonical_id (same idiom as branch c already uses). This handles the case where
+            # the config agent's name differs from the registry display_name/handle slug.
+            agent_config_name = None
+            for a in request.app.state.config.agents:
+                if a.get("registry_canonical_id") == agent_canonical_id:
+                    agent_config_name = a["name"]
+                    break
+            # FALLBACK: if no config agent with matching registry_canonical_id, use the
+            # existing _resolve_agent_name logic (maps by display_name/handle slug).
+            if agent_config_name is None:
+                agent_config_name = await _resolve_agent_name(request, agent_canonical_id) or agent_canonical_id
+            if body.agent is not None and body.agent != agent_config_name:
+                raise HTTPException(status_code=403, detail="Agent can only write its own memory")
+            # Verify the config agent's registry_canonical_id matches the caller's canonical_id
+            # Fails closed: config agent must exist and its registry_canonical_id must equal the caller's canonical_id
+            config_agent = find_agent(request.app.state.config, agent_config_name)
+            if config_agent is None or config_agent.get("registry_canonical_id") != agent_canonical_id:
+                raise HTTPException(status_code=403, detail="Agent can only write its own memory")
+            agent = agent_config_name
+        else:
+            # c) Human/admin session or unbound host token (no valid scope)
+            agent = None
+
+    # c) Human/admin session or unbound host token: body.agent REQUIRED
+    if agent is None:
+        if not (body.agent or "").strip():
+            raise HTTPException(status_code=400, detail="agent is required")
+        raw = body.agent.strip()
+        # Resolve the target config agent FIRST, before authorizing, so the
+        # owner check runs against the agent that will actually receive the
+        # write. find_agent matches by config name; fall back to the config
+        # agent whose registry_canonical_id equals the raw value.
+        target = find_agent(request.app.state.config, raw)
+        if target is None:
+            for a in request.app.state.config.agents:
+                if a.get("registry_canonical_id") == raw:
+                    target = a
+                    break
+        # If nothing resolved, return 404 before any write
+        if target is None:
+            raise HTTPException(status_code=404, detail="unknown agent")
+        # For human/admin sessions (not unbound host token), verify agent
+        # ownership against the resolved target.
+        # - If target has a registry_canonical_id: authorize against that id.
+        # - If target has NO registry_canonical_id: admin only (config-only
+        #   agent cannot be attributed by the registry; non-admins are
+        #   forbidden).
+        if getattr(request.state, "via", None) != "local_token":
+            user = current_user(request)
+            if target.get("registry_canonical_id"):
+                await require_agent_owner_or_admin(
+                    request, user, target["registry_canonical_id"]
+                )
+            else:
+                if not user.is_admin:
+                    raise HTTPException(status_code=403, detail="forbidden")
+        # Write with the resolved config agent name
+        agent = target["name"]
+
+    # Write through shared qmd serve /ingest (same pattern as import_data.py)
+    http_client = request.app.state.http_client
+    timestamp = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    # Compute dbPath inside a try that catches OSError (e.g. disk full, permission
+    # denied). _agent_db_path raises HTTPException for invalid agent names (400)
+    # which must still propagate; only OSError is caught here and mapped to 502.
+    try:
+        db_path = _agent_db_path(request, agent)
+    except OSError as exc:
+        logger.warning("agent db path error: %s", exc)
+        return JSONResponse({"stored": False, "error": "memory store unavailable"}, status_code=502)
+    payload = {
+        "body": body.text,
+        "path": f"remember/{timestamp}-{uuid.uuid4().hex[:8]}.md",
+        "title": body.title or "remembered",
+        "collection": "remember",
+        "dbPath": db_path,
+    }
+    try:
+        resp = await http_client.post(
+            f"{_qmd_base(request)}/ingest", json=payload, timeout=30,
+        )
+        resp.raise_for_status()
+        return {"stored": True, "agent": agent}
+    except Exception as exc:
+        logger.warning("qmd /ingest failed: %s", exc)
+        return JSONResponse({"stored": False, "error": "memory store unavailable"}, status_code=502)

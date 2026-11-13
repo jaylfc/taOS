@@ -516,12 +516,18 @@ Run `curl -fsSL https://raw.githubusercontent.com/jaylfc/taOS/master/scripts/ins
 | `/home/<user>/.cache/qmd/index.sqlite` | User memory index (taOSmd knowledge base for personal notes). Per-agent indexes live separately under `data/agent-memory/{name}/index.sqlite`. |
 | Ports listened on | **6969** (controller HTTP API + web UI), **6970** (browser-proxy second-origin, `TAOS_BROWSER_PROXY_PORT`), **6974** (device TLS listener, `TAOS_DEVICE_TLS_PORT`), **7832** (qmd embedding service), **7838** (LLM gateway agent listener, loopback only) |
 | Env vars set | `TAOS_SPA_DIR=$INSTALL_DIR/static/desktop` (points the controller at the staged desktop bundle for non-editable `pip install .` users) |
+| Local desktop (optional) | Asked during install, or `TAOS_DESKTOP=local` / `TAOS_DESKTOP=headless` for unattended installs. `local` runs `scripts/kiosk-setup.sh` and enables `taos-kiosk.service`, so the machine boots into the taOS desktop. Default: headless. |
+| Desktop launcher | On a machine that already has a desktop (and local desktop not chosen), adds a taOS entry to the app menu. Remove with `sudo taos desktop launcher remove`. |
 | OS packages added | python3 + venv + pip, git, curl, ca-certificates, libtorrent-rasterbar (model torrent mesh), Node.js 22 (qmd + SPA build), sqlite3, libsqlcipher (encrypted secrets), vulkan-tools (hardware detection) |
 | User accounts created | None for the LLM layer any more. Everything runs as the user who ran the installer. Older installs may still have a `litellm` Postgres role and database from before LiteLLM was removed; nothing uses them now. |
 
 ### Hailo-10H install (`scripts/install-hailo.sh`)
 
 Installs `hailo-ollama` (the Hailo-10H LLM runtime) at a pinned ref, listening on port **7836** (port 8000 is the Django slot in taOS port hygiene and is already probed as a llama-cpp/vllm candidate). Before installing, the script checks for a pre-existing upstream hailo-ollama (something answering `GET /api/tags` on `0.0.0.0:8000`, Hailo's own default). If one is found it reports plainly what was detected and exits, leaving the existing instance untouched rather than silently building a second server that would compete for the accelerator and go unseen by taOS.
+
+### llama.cpp install (`scripts/install-llama-cpp.sh`)
+
+Installs the taOS default local LLM backend (router mode) on port **7835**, serving chat, embeddings, and rerank from one process. On musl-arm64 (Alpine, postmarketOS) it builds from source; OpenRC is supported alongside systemd and macOS launchd.
 
 ### Worker install (`scripts/install-worker.sh`)
 

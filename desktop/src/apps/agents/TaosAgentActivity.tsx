@@ -86,12 +86,12 @@ export function TaosAgentActivity() {
   if (events.length === 0) {
     return (
       <p className="text-xs text-shell-text-tertiary">
-        Nothing yet. Pull requests, issues and fixes the taOS agent makes for you show up here.
+        Nothing yet. Pull requests, issues and fixes the taOS Agent makes for you show up here.
       </p>
     );
   }
   return (
-    <ul aria-label="taOS agent activity" className="flex flex-col divide-y divide-white/5">
+    <ul aria-label="taOS Agent activity" className="flex flex-col divide-y divide-white/5">
       {events.map((e) => {
         const url = str(e.payload.url);
         return (

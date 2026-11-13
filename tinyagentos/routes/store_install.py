@@ -16,7 +16,7 @@ from dataclasses import asdict
 from pathlib import Path
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
 from tinyagentos.agent_image import (
@@ -25,6 +25,7 @@ from tinyagentos.agent_image import (
     base_image_url_for_alias,
     ensure_image_present,
 )
+from tinyagentos.auth_context import require_admin
 from tinyagentos.catalog.resolver import (
     DeviceCapability,
     ResolveErr,
@@ -202,6 +203,46 @@ async def _resolve_host(target_remote: str | None) -> str:
     except Exception:
         logger.warning("_resolve_host: failed to look up remote %r", target_remote)
     return target_remote
+
+
+async def _record_install_location(request: Request, app_id: str, manifest, version: str,
+                                   location_kind: str, location_ref: str) -> None:
+    """Write a row to install_registry (the container-first source of truth).
+
+    Best-effort: a missing or failing store never breaks the install path.
+    """
+    store = getattr(request.app.state, "install_registry", None)
+    if store is None:
+        return
+    try:
+        await store.record(
+            item_id=app_id,
+            item_kind=str(getattr(manifest, "type", "") or "app"),
+            version=str(version or ""),
+            location_kind=location_kind,
+            location_ref=location_ref,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("install_registry write failed for %s", app_id, exc_info=True)
+
+
+async def forget_install_location(request: Request, app_id: str, location_kind: str,
+                                   location_ref: str) -> None:
+    """Remove install_registry rows for a local host uninstall.
+
+    Best-effort: a missing or failing store never breaks the uninstall path.
+    Only deletes rows matching the given location_kind and location_ref.
+    """
+    store = getattr(request.app.state, "install_registry", None)
+    if store is None:
+        return
+    try:
+        rows = await store.list(item_id=app_id, location_ref=location_ref)
+        for row in rows:
+            if row.get("location_kind") == location_kind:
+                await store.delete(row["id"])
+    except Exception:  # noqa: BLE001
+        logger.warning("install_registry delete failed for %s", app_id, exc_info=True)
 
 
 def _get_current_user(request: Request) -> dict | None:
@@ -466,7 +507,8 @@ async def _legacy_install(request: Request, body: dict, app_id: str | None, targ
         return JSONResponse({"ok": True, "app_id": app_id, "status": "installed", "rkllama_url": rkllama_url, **result})
 
     if backend == "lxc":
-        admin_password = body.get("admin_password", "")
+        inputs = body.get("inputs") if isinstance(body.get("inputs"), dict) else {}
+        admin_password = body.get("admin_password", "") or inputs.get("admin_password", "")
         if not admin_password:
             return JSONResponse(
                 {"error": "admin_password is required for LXC installs"}, status_code=400
@@ -518,6 +560,13 @@ async def _legacy_install(request: Request, body: dict, app_id: str | None, targ
             version = body.get("version") or (getattr(manifest, "version", "") if manifest else "")
             registry.mark_installed(app_id, version)
         resp_target = _target_remote or "local"
+        await _record_install_location(
+            request, app_id, manifest,
+            body.get("version") or (getattr(manifest, "version", "") if manifest else ""),
+            "legacy_lxc",
+            f"{_target_remote}:{result.get('container') or 'taos-svc-' + app_id}"
+            if _target_remote else result.get("container") or f"taos-svc-{app_id}",
+        )
         return JSONResponse({"ok": True, "app_id": app_id, "status": "installed", "target_remote": resp_target, **result})
 
     # script — host-side backend/plugin manifests (e.g. ollama, rkllama,
@@ -560,6 +609,17 @@ async def _legacy_install(request: Request, body: dict, app_id: str | None, targ
         if registry is not None:
             version = body.get("version") or (getattr(manifest, "version", "") if manifest else "")
             registry.mark_installed(app_id, version)
+        # Record the install location for script installs. Script-backed services
+        # are host-level systemd units installed via sudo on THIS controller
+        # (the install.sh runs here, not on an incus remote), so the row is
+        # always "local" regardless of any requested target_remote (#4132
+        # follow-up: a requested remote was leaking into the row).
+        await _record_install_location(
+            request, app_id, manifest,
+            body.get("version") or (getattr(manifest, "version", "") if manifest else ""),
+            "host",
+            "local",
+        )
         return JSONResponse({"ok": True, "app_id": app_id, "status": "installed", **inst_result})
 
     # docker / pip — actually run the installer.
@@ -713,6 +773,16 @@ async def _legacy_install(request: Request, body: dict, app_id: str | None, targ
     if registry is not None:
         version = body.get("version") or (getattr(manifest, "version", "") if manifest else "")
         registry.mark_installed(app_id, version)
+    # download / huggingface / ollama install models and assets, not running
+    # apps -- they get no install_registry row (the model's own backend owns
+    # "where it lives"). See #4132 follow-up.
+    if backend not in ("download", "huggingface", "ollama"):
+        await _record_install_location(
+            request, app_id, manifest,
+            body.get("version") or (getattr(manifest, "version", "") if manifest else ""),
+            "host",
+            "local",
+        )
     return JSONResponse({"ok": True, "app_id": app_id, "status": "installed"})
 
 
@@ -745,7 +815,7 @@ async def install_progress_by_id(request: Request, install_id: str):
     return JSONResponse(entry.to_dict())
 
 
-@router.post("/api/store/install-v2")
+@router.post("/api/store/install-v2", dependencies=[Depends(require_admin)])
 async def install_app(request: Request):
     """Resolver-driven install. Chains backend → model in one user click.
 
@@ -799,6 +869,16 @@ async def install_app(request: Request):
                 },
                 status_code=400,
             )
+
+    raw_inputs = body.get("inputs")
+    if raw_inputs is not None and not (
+        isinstance(raw_inputs, dict)
+        and all(isinstance(k, str) and isinstance(v, str) for k, v in raw_inputs.items())
+    ):
+        return JSONResponse(
+            {"error": "inputs must be an object of string values", "reason": "invalid_inputs"},
+            status_code=400,
+        )
 
     # Progress store — opened up here so both legacy and v2 paths can
     # tag work-in-flight that the frontend polls for. Importing here
@@ -1152,7 +1232,7 @@ async def store_signing_pubkey(request: Request):
     return JSONResponse({"public_key_pem": pub_pem.decode()})
 
 
-@router.post("/api/store/uninstall-v2")
+@router.post("/api/store/uninstall-v2", dependencies=[Depends(require_admin)])
 async def uninstall_app(request: Request):
     body = await request.json()
     app_id = body.get("app_id", "")
@@ -1217,6 +1297,14 @@ async def uninstall_app(request: Request):
     await store.remove_runtime_location(app_id)
     if registry is not None:
         registry.mark_uninstalled(app_id)
+    # Remove the install_registry row for local host installs (docker/pip/script).
+    # LXC installs use location_kind="legacy_lxc" and are not removed here.
+    # Remote installs (runtime_host != 127.0.0.1) are not removed here either,
+    # since one app may be installed on several remotes and we cannot yet
+    # tell which one was removed.
+    is_local = (_runtime_loc is None) or (_runtime_loc.get("runtime_host") in (None, "", "127.0.0.1"))
+    if backend != "lxc" and is_local:
+        await forget_install_location(request, app_id, "host", "local")
     resp: dict = {"ok": removed, "app_id": app_id, "status": "uninstalled" if removed else "not_installed"}
     return JSONResponse(resp)
 

@@ -39,7 +39,7 @@ from tinyagentos.auth import (
 )
 from tinyagentos.atomic_io import atomic_write_text
 from tinyagentos.demo_mode import demo_env
-from tinyagentos.middleware.csrf import verify_csrf
+from tinyagentos.middleware.csrf import session_csrf_ok, verify_csrf
 from tinyagentos.routes.onscreen_keyboard import OSK_SCRIPT, osk_assets
 from tinyagentos.taos_agent_runtime import system_agent_framework
 
@@ -2563,6 +2563,9 @@ _PIN_PANEL_SCRIPT = r"""
   var toPin   = document.getElementById("use-pin");
   var nextUrl = pinPanel.getAttribute("data-next") || "/desktop";
   var user    = pinPanel.getAttribute("data-username") || "";
+  var pinLengthAttr = pinPanel.getAttribute("data-pin-length");
+  var pinLength = pinLengthAttr ? parseInt(pinLengthAttr, 10) : NaN;
+  if (isNaN(pinLength)) pinLength = null;
   var busy    = false;
 
   function paint() {
@@ -2573,22 +2576,7 @@ _PIN_PANEL_SCRIPT = r"""
     }
   }
 
-  input.addEventListener("input", function () {
-    // Digits only: the keypad cannot produce anything else, but a physical
-    // keyboard can, and a stray letter would fail server-side validation with
-    // a confusing "incorrect PIN".
-    input.value = input.value.replace(/\D/g, "");
-    paint();
-    err.textContent = "";
-  });
-
-  function fail(msg) {
-    err.textContent = msg;
-    input.value = "";
-    paint();
-  }
-
-  submit.addEventListener("click", function () {
+  function tryPin() {
     if (busy) return;
     var pin = input.value;
     if (pin.length < 4) { fail("Enter your PIN."); return; }
@@ -2621,7 +2609,38 @@ _PIN_PANEL_SCRIPT = r"""
       busy = false;
       fail("Could not reach taOS. Check the connection and try again.");
     });
+  }
+
+  input.addEventListener("input", function () {
+    // Digits only: the keypad cannot produce anything else, but a physical
+    // keyboard can, and a stray letter would fail server-side validation with
+    // a confusing "incorrect PIN".
+    input.value = input.value.replace(/\D/g, "");
+    paint();
+    err.textContent = "";
+    if (pinLength && input.value.length === pinLength) {
+      tryPin();
+    }
   });
+
+  input.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      tryPin();
+    }
+  });
+
+  function fail(msg) {
+    err.textContent = msg;
+    input.value = "";
+    paint();
+  }
+
+  if (submit) {
+    submit.addEventListener("click", function () {
+      tryPin();
+    });
+  }
 
   function swap(showPin) {
     pinPanel.hidden = !showPin;
@@ -2697,7 +2716,7 @@ _KEYPAD_HTML = """
 """
 
 
-def _pin_panel_html(next_url: str, keypad: bool = False) -> str:
+def _pin_panel_html(next_url: str, keypad: bool = False, pin_length: int | None = None) -> str:
     """The PIN entry panel, shown only when the request is console-local.
 
     Rendered HIDDEN. /auth/pin-panel.js reveals it (and hides the password
@@ -2712,25 +2731,32 @@ def _pin_panel_html(next_url: str, keypad: bool = False) -> str:
     osk_attr = "" if keypad else 'data-osk-submit="pin-submit"'
     keypad_html = _KEYPAD_HTML if keypad else ""
 
+    pin_len_attr = f' data-pin-length="{int(pin_length)}"' if pin_length is not None else ""
+    if pin_length is not None:
+        dots_html = "\n        " + "".join('<span class="pin-dot"></span>' for _ in range(int(pin_length)))
+    else:
+        dots_html = "\n        <span class=\"pin-dot\"></span><span class=\"pin-dot\"></span>\n        <span class=\"pin-dot\"></span><span class=\"pin-dot\"></span>"
+
+    submit_html = "" if pin_length is not None else '      <button type="button" id="pin-submit">Sign in with PIN</button>\n'
+    if pin_length is not None:
+        osk_attr = ""
+
     # No username is sent with a PIN: this panel is only ever rendered for a
     # single-user store, because AuthManager.has_pin(None) refuses to guess
     # which account a PIN belongs to on a multi-user one.
     return f"""
-    <div class="pin-panel" id="pin-panel" data-next="{safe_next}" data-username="" hidden>
+    <div class="pin-panel" id="pin-panel" data-next="{safe_next}" data-username=""{pin_len_attr} hidden>
       <label class="field">
         <span>PIN</span>
         <input type="password" id="pin-input" inputmode="{osk_mode}" autocomplete="off"
                {osk_attr} aria-describedby="pin-error"
                maxlength="12" required>
       </label>
-      <div class="pin-dots" id="pin-dots" aria-hidden="true">
-        <span class="pin-dot"></span><span class="pin-dot"></span>
-        <span class="pin-dot"></span><span class="pin-dot"></span>
+      <div class="pin-dots" id="pin-dots" aria-hidden="true">{dots_html}
       </div>
       <p class="error" id="pin-error" role="alert"></p>
       {keypad_html}
-      <button type="button" id="pin-submit">Sign in with PIN</button>
-      <button type="button" class="method-switch" id="use-password">
+{submit_html}      <button type="button" class="method-switch" id="use-password">
         Use my password instead
       </button>
     </div>
@@ -8595,6 +8621,7 @@ def _login_page(
     next_url: str = "",
     pin_available: bool = False,
     unlock_method: str | None = None,
+    pin_length: int | None = None,
 ) -> str:
     """The sign-in page.
 
@@ -8602,6 +8629,11 @@ def _login_page(
     install (see login_page); it turns the page into the lock screen and picks
     how that screen opens. ``pin_available=True`` alone is the older spelling of
     ``unlock_method="pin"``.
+
+    ``pin_length`` is the known PIN length, passed in by ``login_page`` (which
+    already has the ``AuthManager`` in scope). It drives the auto-submit keypad
+    and the dot count; when it is ``None`` the panel renders a submit button
+    instead, because nothing on the page knows how long the PIN is.
     """
     if unlock_method is None and pin_available:
         unlock_method = "pin"
@@ -8626,7 +8658,8 @@ def _login_page(
     # pin_available is already console-only, so the lock screen never reaches a
     # LAN browser: off-console this page stays exactly the card it has always been.
     lock_screen = unlock_method is not None
-    pin_panel = _pin_panel_html(next_url, keypad=lock_screen) if pin_available else ""
+    pin_len = pin_length
+    pin_panel = _pin_panel_html(next_url, keypad=lock_screen, pin_length=pin_len) if pin_available else ""
     pin_switch = (
         '<button type="button" class="method-switch" id="use-pin">Use my PIN instead</button>'
         if pin_available else ""
@@ -8839,6 +8872,7 @@ async def login_page(request: Request, error: str = "", next: str = ""):
         multi_user=auth_mgr.is_multi_user(),
         next_url=safe_next,
         unlock_method=unlock_method,
+        pin_length=auth_mgr.pin_length() if unlock_method == "pin" else None,
     ))
 
 
@@ -13292,7 +13326,9 @@ async def auth_setup(request: Request):
 async def complete_invite(request: Request):
     """Invited user completes their account setup.
 
-    Body: ``{username, invite_code, full_name, email, password, auto_login?}``
+    Body: ``{username, invite_code, full_name, email, password, auto_login?}``.
+    ``invite_code`` may be omitted when the request carries the invitee's
+    own pending session (the one ``/auth/login`` opened with the code).
     """
     auth_mgr = request.app.state.auth
     client_ip = request.client.host if request.client else "unknown"
@@ -13313,6 +13349,22 @@ async def complete_invite(request: Request):
     full_name = (body.get("full_name") or "").strip()
     email = (body.get("email") or "").strip()
     password = body.get("password") or ""
+
+    # The SPA never sees the code: the invitee signed in with it, and
+    # /auth/status does not return it. Their own pending session stands in
+    # for it. Any other session (another invitee, an admin) does not, and a
+    # code that IS supplied must still match. This path is CSRF-exempt as a
+    # credential route, so acting on the session needs the CSRF check here.
+    if username and not invite_code:
+        session_user = auth_mgr.session_user_for_request(request)
+        if (
+            session_user
+            and session_user.get("pending")
+            and session_user.get("username") == username
+            and session_csrf_ok(request, request.cookies.get("taos_session", ""))
+        ):
+            record = auth_mgr.find_user(username)
+            invite_code = (record or {}).get("pending_invite") or ""
 
     if not username or not invite_code:
         return JSONResponse({"error": "username and invite_code are required"}, status_code=400)
@@ -13348,7 +13400,8 @@ async def complete_invite(request: Request):
 async def auth_status(request: Request):
     """Single endpoint the UI calls to decide what to render.
 
-    Returns ``{configured, authenticated, user, multi_user, needs_onboarding}``.
+    Returns ``{configured, authenticated, user, multi_user, needs_onboarding,
+    store_error, pin_available, pin_offered}``.
     """
     auth_mgr = request.app.state.auth
     configured = auth_mgr.is_configured()
@@ -13400,6 +13453,14 @@ async def auth_status(request: Request):
         except AuthStoreCorruptError:
             pin_available = False
 
+    # Whether first-run setup should offer a PIN field: the same console-only
+    # rule the HTML setup page applies at render time. No PIN exists yet, so
+    # this tells a LAN browser nothing; the setup POST still refuses a PIN
+    # off-console on its own.
+    pin_offered = (
+        not configured and store_error is None and _request_is_console(request)
+    )
+
     return JSONResponse({
         "configured": configured,
         "authenticated": authenticated,
@@ -13408,6 +13469,7 @@ async def auth_status(request: Request):
         "needs_onboarding": needs_onboarding,
         "store_error": store_error,
         "pin_available": pin_available,
+        "pin_offered": pin_offered,
     })
 
 

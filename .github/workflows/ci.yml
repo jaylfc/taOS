@@ -4,7 +4,8 @@ on:
   push:
     branches: [master, dev]
   pull_request:
-    branches: [master, dev]
+    # cloud/main: the cloud agent's integration branch (2026-10-30); drop it when promoted.
+    branches: [master, dev, cloud/main]
   schedule:
     # 06:00 UTC daily run keeps the 3.11 leg honest without making every
     # PR wait 14 extra minutes on it. 3.11 is consistently ~2x slower

@@ -44,6 +44,7 @@ WORKFLOW = REPO_ROOT / ".github" / "workflows" / "bot-review-gate.yml"
 
 HEAD_SHA = "086d66476" + "0" * 31
 OTHER_SHA = "e7e93b2af" + "0" * 31
+PR_NUMBER = 3394
 
 
 def _load_helper():
@@ -72,7 +73,7 @@ def _invocations(step):
     ]
 
 
-def _run(run_id, *, name, head_sha, conclusion, event, status="completed"):
+def _run(run_id, *, name, head_sha, conclusion, event, status="completed", prs=()):
     """One entry of the Actions `workflow_runs` list."""
     return {
         "id": run_id,
@@ -81,6 +82,7 @@ def _run(run_id, *, name, head_sha, conclusion, event, status="completed"):
         "conclusion": conclusion,
         "event": event,
         "status": status,
+        "pull_requests": [{"number": n} for n in prs],
     }
 
 
@@ -90,26 +92,26 @@ def _run(run_id, *, name, head_sha, conclusion, event, status="completed"):
 PAYLOAD_RUNS = [
     # the stale failure that pins the PR on BLOCKED -- must be selected
     _run(37080299756, name="Bot review gate", head_sha=HEAD_SHA,
-         conclusion="failure", event="pull_request"),
+         conclusion="failure", event="pull_request", prs=(PR_NUMBER,)),
     # the pull_request_review run doing the re-running -- must never re-run itself
     _run(37080574868, name="Bot review gate", head_sha=HEAD_SHA,
-         conclusion="success", event="pull_request_review"),
+         conclusion="success", event="pull_request_review", prs=(PR_NUMBER,)),
     # same workflow, already green -- nothing to fix
     _run(37080299000, name="Bot review gate", head_sha=HEAD_SHA,
-         conclusion="success", event="pull_request"),
+         conclusion="success", event="pull_request", prs=(PR_NUMBER,)),
     # same workflow, still in flight -- not a verdict, and it is this run
     _run(37080299111, name="Bot review gate", head_sha=HEAD_SHA,
-         conclusion=None, event="pull_request_review", status="in_progress"),
+         conclusion=None, event="pull_request_review", status="in_progress", prs=(PR_NUMBER,)),
     # a DIFFERENT workflow's failure on the same SHA -- not ours to touch
     _run(37080299222, name="Changelog fragment gate", head_sha=HEAD_SHA,
-         conclusion="failure", event="pull_request"),
+         conclusion="failure", event="pull_request", prs=(PR_NUMBER,)),
     # a failure on a DIFFERENT head SHA -- must not be re-run under this PR
     _run(37080299333, name="Bot review gate", head_sha=OTHER_SHA,
-         conclusion="failure", event="pull_request"),
+         conclusion="failure", event="pull_request", prs=(PR_NUMBER,)),
     # a failed review-event run of this workflow -- the re-run must target the
     # pull_request event only, never re-trigger itself in a loop
     _run(37080299444, name="Bot review gate", head_sha=HEAD_SHA,
-         conclusion="failure", event="pull_request_review"),
+         conclusion="failure", event="pull_request_review", prs=(PR_NUMBER,)),
 ]
 
 
@@ -120,7 +122,7 @@ class TestRunSelection:
     """
 
     def test_selects_only_failed_same_sha_pull_request_runs_of_this_workflow(self, helper) -> None:
-        selected = helper.select_failed_runs(PAYLOAD_RUNS, HEAD_SHA)
+        selected = helper.select_failed_runs(PAYLOAD_RUNS, HEAD_SHA, pr_number=PR_NUMBER)
         assert [r["id"] for r in selected] == [37080299756], (
             "selection must be exactly the failed pull_request run of this "
             "workflow on the same head SHA; got "
@@ -128,25 +130,25 @@ class TestRunSelection:
         )
 
     def test_drops_a_failure_on_another_head_sha(self, helper) -> None:
-        selected = helper.select_failed_runs(PAYLOAD_RUNS, HEAD_SHA)
+        selected = helper.select_failed_runs(PAYLOAD_RUNS, HEAD_SHA, pr_number=PR_NUMBER)
         assert OTHER_SHA not in {r["head_sha"] for r in selected}
 
     def test_drops_other_workflows_failures(self, helper) -> None:
-        selected = helper.select_failed_runs(PAYLOAD_RUNS, HEAD_SHA)
+        selected = helper.select_failed_runs(PAYLOAD_RUNS, HEAD_SHA, pr_number=PR_NUMBER)
         assert all(r["name"] == "Bot review gate" for r in selected)
 
     def test_drops_non_failure_conclusions(self, helper) -> None:
-        selected = helper.select_failed_runs(PAYLOAD_RUNS, HEAD_SHA)
+        selected = helper.select_failed_runs(PAYLOAD_RUNS, HEAD_SHA, pr_number=PR_NUMBER)
         assert all(r["conclusion"] == "failure" for r in selected)
 
     def test_drops_the_review_run_being_executed(self, helper) -> None:
         # Re-running the pull_request_review run that is doing the re-running
         # is a self-trigger loop; the selection is pull_request-event only.
-        selected = helper.select_failed_runs(PAYLOAD_RUNS, HEAD_SHA)
+        selected = helper.select_failed_runs(PAYLOAD_RUNS, HEAD_SHA, pr_number=PR_NUMBER)
         assert all(r["event"] == "pull_request" for r in selected)
 
     def test_empty_when_nothing_failed(self, helper) -> None:
-        assert helper.select_failed_runs([], HEAD_SHA) == []
+        assert helper.select_failed_runs([], HEAD_SHA, pr_number=PR_NUMBER) == []
 
     def test_payload_extraction_reads_workflow_runs_key(self, helper) -> None:
         """GET /actions/runs wraps the list in {"workflow_runs": [...]}; a
@@ -154,6 +156,19 @@ class TestRunSelection:
         'nothing to re-run' while the stale FAILURE survives."""
         payload = {"total_count": len(PAYLOAD_RUNS), "workflow_runs": PAYLOAD_RUNS}
         assert helper.extract_workflow_runs(payload) == PAYLOAD_RUNS
+
+    def test_drops_a_closed_or_other_prs_run_on_the_shared_sha(self, helper) -> None:
+        """A failed run on the same SHA but from a different PR (or a closed PR
+        with empty pull_requests) must NOT be selected. Re-running someone
+        else's failure is the bug this task fixes."""
+        runs = PAYLOAD_RUNS + [
+            _run(40286476582, name="Bot review gate", head_sha=HEAD_SHA,
+                 conclusion="failure", event="pull_request", prs=()),
+            _run(40286476583, name="Bot review gate", head_sha=HEAD_SHA,
+                 conclusion="failure", event="pull_request", prs=(3996,)),
+        ]
+        selected = helper.select_failed_runs(runs, HEAD_SHA, pr_number=PR_NUMBER)
+        assert [r["id"] for r in selected] == [37080299756]
 
 
 class TestRerunFailedJobs:
@@ -164,7 +179,7 @@ class TestRerunFailedJobs:
         with patch.object(helper, "_api_get", return_value=payload) as get, \
                 patch.object(helper, "_api_mutate", return_value=True) as mutate:
             rc = helper.main([
-                "--head-sha", HEAD_SHA, "--owner", "jaylfc", "--repo", "taOS",
+                "--head-sha", HEAD_SHA, "--pr", str(PR_NUMBER), "--owner", "jaylfc", "--repo", "taOS",
             ])
         assert rc == 0
 
@@ -187,7 +202,7 @@ class TestRerunFailedJobs:
         with patch.object(helper, "_api_get", return_value=payload), \
                 patch.object(helper, "_api_mutate", return_value=False):
             rc = helper.main([
-                "--head-sha", HEAD_SHA, "--owner", "jaylfc", "--repo", "taOS",
+                "--head-sha", HEAD_SHA, "--pr", str(PR_NUMBER), "--owner", "jaylfc", "--repo", "taOS",
             ])
         assert rc == 0
 
@@ -195,14 +210,14 @@ class TestRerunFailedJobs:
         with patch.object(helper, "_api_get", return_value=None), \
                 patch.object(helper, "_api_mutate", return_value=True) as mutate:
             rc = helper.main([
-                "--head-sha", HEAD_SHA, "--owner", "jaylfc", "--repo", "taOS",
+                "--head-sha", HEAD_SHA, "--pr", str(PR_NUMBER), "--owner", "jaylfc", "--repo", "taOS",
             ])
         assert rc == 0
         assert mutate.call_count == 0
 
     def test_main_requires_a_head_sha(self, helper) -> None:
         with patch.object(helper, "_api_get", return_value={"workflow_runs": []}) as get:
-            rc = helper.main(["--owner", "jaylfc", "--repo", "taOS"])
+            rc = helper.main(["--pr", str(PR_NUMBER), "--owner", "jaylfc", "--repo", "taOS"])
         assert rc != 0
         assert get.call_count == 0
 
@@ -240,8 +255,13 @@ class TestWorkflowWiring:
         ]
         assert len(invocations) == 1, invocations
         assert "--head-sha" in invocations[0], invocations[0]
+        assert "--pr" in invocations[0], invocations[0]
         assert "PR_HEAD" in step.get("env", {}), (
             "the re-run step passes --head-sha but does not bind PR_HEAD; the "
+            "flag expands to empty and nothing is selected"
+        )
+        assert "PR_NUMBER" in step.get("env", {}), (
+            "the re-run step passes --pr but does not bind PR_NUMBER; the "
             "flag expands to empty and nothing is selected"
         )
 
@@ -348,4 +368,23 @@ class TestWorkflowStructure:
         assert rerun_job.get("needs") == "bot-review-gate", (
             "reconcile-stale-runs must depend on bot-review-gate so it only "
             f"runs after the gate has passed; got needs: {rerun_job.get('needs')!r}"
+        )
+
+    def test_stub_comment_rerun_tolerates_already_running(self) -> None:
+        spec = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+        jobs = spec["jobs"]
+        stub_job = jobs.get("re-run-on-stub-comment")
+        assert stub_job is not None, (
+            "expected a re-run-on-stub-comment job; "
+            f"found jobs: {list(jobs)}"
+        )
+        steps = stub_job.get("steps", [])
+        assert len(steps) == 1, f"expected exactly one step; got {len(steps)}"
+        run_text = steps[0].get("run", "")
+        assert "status=completed" in run_text, (
+            "runs query must include status=completed to avoid selecting "
+            f"in-progress runs; run text:\n{run_text}"
+        )
+        assert "already running" in run_text, (
+            "run must handle the 'already running' race case; run text:\n{run_text}"
         )

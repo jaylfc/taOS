@@ -22,10 +22,28 @@ export async function safeFetch<T>(url: string, fallback: T): Promise<T> {
 /*  ProgressBar                                                        */
 /* ------------------------------------------------------------------ */
 
-export function ProgressBar({ value, max }: { value: number; max: number }) {
+export function ProgressBar({
+  value,
+  max,
+  label,
+  valueText,
+}: {
+  value: number;
+  max: number;
+  label?: string;
+  valueText?: string;
+}) {
   const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0;
   return (
-    <div className="h-2 w-full rounded-full bg-white/5" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
+    <div
+      className="h-2 w-full rounded-full bg-white/5"
+      role="progressbar"
+      aria-label={label}
+      aria-valuetext={valueText}
+      aria-valuenow={pct}
+      aria-valuemin={0}
+      aria-valuemax={100}
+    >
       <div
         className="h-full rounded-full bg-sky-500 transition-all"
         style={{ width: `${pct}%` }}

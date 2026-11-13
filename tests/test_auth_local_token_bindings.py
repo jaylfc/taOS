@@ -178,3 +178,16 @@ class TestUnbindLocalTokenAgent:
         mgr.mint_agent_local_token("agent-a")
         mgr.unbind_local_token_agent("agent-a")
         assert mgr.validate_local_token(host_token) is True
+
+    def test_unbind_revokes_every_token_for_the_name_only(self, tmp_path):
+        mgr = AuthManager(tmp_path)
+        mgr.bind_local_token_agent("a1", "alice")
+        mgr.bind_local_token_agent("a2", "alice")
+        mgr.bind_local_token_agent("b1", "bob")
+        assert mgr.unbind_local_token_agent("alice") == 2
+        assert not mgr.validate_local_token("a1")
+        assert not mgr.validate_local_token("a2")
+        assert mgr.validate_local_token("b1")
+
+    def test_unbind_without_a_bindings_file_is_a_noop(self, tmp_path):
+        assert AuthManager(tmp_path).unbind_local_token_agent("alice") == 0

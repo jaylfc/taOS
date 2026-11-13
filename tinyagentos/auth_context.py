@@ -61,24 +61,64 @@ def require_admin(request: Request) -> None:
     raise HTTPException(status_code=403, detail="forbidden")
 
 
-async def resolve_agent_owner(request: Request, agent_id: str) -> str | None:
+async def resolve_agent_owner(request: Request, agent_id: str, *, exact: bool = False) -> str | None:
     """Return the ``user_id`` that owns *agent_id* per the agent registry, or ``None``.
 
-    *agent_id* may be a canonical id (``slug-YYYYMMDD-HHMMSS``), a bare slug, or
-    a handle -- the three spellings routes accept for an agent. ``None`` means
-    the registry cannot attribute the agent to anyone (unknown id, registry not
-    wired, or not initialised); callers must treat that as NOT owned by the
-    caller, never as free-for-all.
+    *agent_id* may be a configured agent's name, a canonical id
+    (``slug-YYYYMMDD-HHMMSS``), a bare slug, or a handle -- the spellings routes
+    accept for an agent. ``None`` means the registry cannot attribute the agent
+    to anyone (unknown id, registry not wired, or not initialised); callers must
+    treat that as NOT owned by the caller, never as free-for-all.
+
+    Ownership is compared on UNIQUE keys only. A configured agent is attributed
+    through its ``registry_canonical_id`` and nothing else: its name is a slug
+    any user can also mint as a registry display name or handle, so resolving
+    the name by slug or handle would authorise that user against somebody
+    else's agent. A configured agent with no ``registry_canonical_id``, or whose
+    identity is not active, is nobody's.
+    A name that is not a configured agent resolves by canonical id, then by
+    handle (unique among active rows), then by slug only when exactly one
+    active row carries it; an ambiguous slug attributes nobody.
+
+    With *exact*, *agent_id* is a canonical id and only the registry row with
+    that id counts: no configured name, slug or handle may stand in for it
+    (an archive's canonical id can equal another agent's configured name).
     """
+    if not agent_id:
+        # get_by_handle("") matches every agent registered without a handle,
+        # so an empty id would resolve to whichever of them is oldest.
+        return None
+    # A configured agent's name is its unique config slug (``helper-2``), while
+    # the registry slug comes from the display name (``helper``) and another
+    # agent may hold ``helper-2``; the canonical id deploy saved is the owner.
+    # An entry without one (imported, created without deploy, or deployed with
+    # the registry down) has no registry row of its own, so its name could only
+    # match someone else's slug: nobody owns it.
+    config = getattr(request.app.state, "config", None)
+    configured = False
+    for agent in [] if exact else getattr(config, "agents", None) or []:
+        if agent.get("name") == agent_id:
+            agent_id = agent.get("registry_canonical_id") or ""
+            if not agent_id:
+                return None
+            # Only that row owns it: with the row gone, a slug or handle
+            # spelled like the saved id is someone else's.
+            exact = True
+            configured = True
+            break
     registry = getattr(request.app.state, "agent_registry", None)
     if registry is None:
         return None
     try:
         record = await registry.get(agent_id)
-        if record is None:
-            record = await registry.get_by_slug(agent_id)
-        if record is None:
+        # A suspended or revoked identity keeps its config entry and its
+        # secrets; its owner must not keep access through them.
+        if configured and record is not None and record.get("status") != "active":
+            record = None
+        if record is None and not exact:
             record = await registry.get_by_handle(agent_id)
+        if record is None and not exact and await registry.count_by_slug(agent_id) == 1:
+            record = await registry.get_by_slug(agent_id)
     except RuntimeError:  # store not initialised
         return None
     if record is None:
@@ -87,7 +127,7 @@ async def resolve_agent_owner(request: Request, agent_id: str) -> str | None:
 
 
 async def require_agent_owner_or_admin(
-    request: Request, user: CurrentUser, agent_id: str
+    request: Request, user: CurrentUser, agent_id: str, *, exact: bool = False
 ) -> None:
     """403 unless *user* is an admin or the registry says it owns *agent_id*.
 
@@ -97,7 +137,7 @@ async def require_agent_owner_or_admin(
     """
     if user.is_admin:
         return
-    owner = await resolve_agent_owner(request, agent_id)
+    owner = await resolve_agent_owner(request, agent_id, exact=exact)
     if owner is None:
         raise HTTPException(status_code=403, detail="forbidden")
     require_owner_or_admin(user, owner)

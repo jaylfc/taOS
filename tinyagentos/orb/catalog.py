@@ -6,8 +6,22 @@ import os
 from .frames import OrbError
 from .image import BLOCK, TAOS_INDEX, check_image
 from .protocol import Extent
+from .catalog_sig import CatalogKindInvalid
 
 # ------------------------------------------------------------------ catalog (SPEC-orb-store.md s11) ----
+# Firmware catalog kinds: None (legacy, no kind field) or "orb-firmware"
+FIRMWARE_KINDS = (None, "orb-firmware")
+
+
+def check_firmware_kind(doc: dict) -> None:
+    """Raise CatalogKindInvalid if doc's kind is not a firmware catalog kind."""
+    if not isinstance(doc, dict):
+        raise OrbError("catalog is not a JSON object")
+    kind = doc.get("kind")
+    if kind not in FIRMWARE_KINDS:
+        raise CatalogKindInvalid("catalog kind %r is not a firmware catalog" % kind)
+
+
 class Catalog:
     def __init__(self, apps=None, base="."):
         self.apps = apps or {}
@@ -27,6 +41,7 @@ def load_catalog(path):
             raw = json.load(f)
     except (OSError, ValueError) as e:
         raise OrbError("cannot read the catalog %s: %s" % (path, e))
+    check_firmware_kind(raw)
     base = os.path.dirname(os.path.abspath(path))
 
     def resolve(fn):

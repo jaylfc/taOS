@@ -2,13 +2,35 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+
+from tinyagentos.auth_context import (
+    CurrentUser,
+    current_user,
+    require_agent_owner_or_admin,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+async def _require_agent_access(
+    request: Request, name: str, user: CurrentUser = Depends(current_user)
+) -> None:
+    """Only the agent's owner, an admin, or the agent itself may read its data.
+
+    A per-agent local token maps to the admin user, so the owner check alone
+    would let agent A read agent B's messages; a bound token is fenced to its
+    own agent first. Runs before any lookup, so an unknown agent and someone
+    else's agent both answer 403.
+    """
+    bound = getattr(request.state, "agent_name", None)
+    if bound and bound != name:
+        raise HTTPException(status_code=403, detail="forbidden")
+    await require_agent_owner_or_admin(request, user, name)
 
 
 class SendMessageRequest(BaseModel):
@@ -26,7 +48,7 @@ class SendMessageRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-@router.get("/api/agents/{name}/workspace/messages/contacts")
+@router.get("/api/agents/{name}/workspace/messages/contacts", dependencies=[Depends(_require_agent_access)])
 async def api_agent_contacts(request: Request, name: str):
     """List agents this agent has communicated with + unread counts."""
     msg_store = request.app.state.agent_messages
@@ -34,7 +56,7 @@ async def api_agent_contacts(request: Request, name: str):
     return contacts
 
 
-@router.get("/api/agents/{name}/messages")
+@router.get("/api/agents/{name}/messages", dependencies=[Depends(_require_agent_access)])
 async def api_agent_messages(request: Request, name: str, limit: int = 50, depth: int = 2):
     msg_store = request.app.state.agent_messages
     messages = await msg_store.get_messages(name, limit=limit, depth=depth)
@@ -42,7 +64,20 @@ async def api_agent_messages(request: Request, name: str, limit: int = 50, depth
 
 
 @router.post("/api/agents/{name}/messages")
-async def api_send_message(request: Request, name: str, body: SendMessageRequest):
+async def api_send_message(
+    request: Request,
+    name: str,
+    body: SendMessageRequest,
+    user: CurrentUser = Depends(current_user),
+):
+    # An agent may message any agent, but only under its own name; a person
+    # may message only an agent they own (or any agent, as an admin).
+    bound = getattr(request.state, "agent_name", None)
+    if bound:
+        if body.from_agent != bound:
+            raise HTTPException(status_code=403, detail="forbidden")
+    else:
+        await require_agent_owner_or_admin(request, user, name)
     msg_store = request.app.state.agent_messages
     msg_id = await msg_store.send(
         from_agent=body.from_agent,
@@ -67,7 +102,7 @@ async def api_send_message(request: Request, name: str, body: SendMessageRequest
 # ---------------------------------------------------------------------------
 
 
-@router.get("/api/agents/{name}/workspace/usage")
+@router.get("/api/agents/{name}/workspace/usage", dependencies=[Depends(_require_agent_access)])
 async def api_agent_usage(request: Request, name: str):
     """Get LLM usage stats for an agent's virtual key."""
     # Read from taOS's own key + budget stores: works with LiteLLM stopped.
@@ -93,11 +128,16 @@ async def api_agent_usage(request: Request, name: str):
 
 
 # Keep legacy files endpoint for backward compatibility
-@router.get("/api/agents/{name}/files")
+@router.get("/api/agents/{name}/files", dependencies=[Depends(_require_agent_access)])
 async def api_agent_files(request: Request, name: str):
     """List files in agent's workspace directory (legacy endpoint)."""
     data_dir = request.app.state.config_path.parent
-    workspace_dir = data_dir / "workspaces" / name
+    base = (data_dir / "workspaces").resolve()
+    workspace_dir = (base / name).resolve()
+    # ``name`` comes from the URL: "..", or an encoded slash, must not turn the
+    # listing into one of the data dir or anything above it.
+    if workspace_dir == base or not workspace_dir.is_relative_to(base):
+        return JSONResponse({"error": "invalid agent name"}, status_code=400)
     if not workspace_dir.exists():
         return []
     files = []

@@ -327,10 +327,11 @@ async def restart_status(request: Request):
 # runs as the unprivileged `taos` user and must not be able to manage arbitrary
 # system services just to offer a UI toggle.
 #
-# AVAILABILITY IS THE DEVICE GATE. `taos-kiosk.service` only exists on a device
-# provisioned as a taOS handset, so `available: false` everywhere else and the
-# frontend hides the app rather than shipping a button that cannot work. This
-# is deliberately a capability probe, not a hardcoded device list.
+# AVAILABILITY IS THE DEVICE GATE. A taOS handset has BOTH taos-kiosk.service
+# (the taOS shell) AND plasma-mobile.service (the Plasma Mobile fallback). A
+# desk runs the kiosk unit only, so `available: false` there and the frontend
+# hides the app rather than shipping a button that cannot work. This is
+# deliberately a capability probe, not a hardcoded device list.
 
 _SESSION_UNITS = {"kiosk": "taos-kiosk.service", "plasma": "plasma-mobile.service"}
 
@@ -357,8 +358,9 @@ async def _session_mode_state() -> dict:
     # `is-active` exits non-zero for inactive units, so the OUTPUT is the signal
     # and rc is not. An unknown unit reports "inactive" too, so availability is
     # probed separately with `cat`, which fails only when the unit is absent.
-    cat_rc, _ = await _systemctl("cat", _SESSION_UNITS["kiosk"])
-    available = cat_rc == 0
+    kiosk_cat_rc, _ = await _systemctl("cat", _SESSION_UNITS["kiosk"])
+    plasma_cat_rc, _ = await _systemctl("cat", _SESSION_UNITS["plasma"])
+    available = kiosk_cat_rc == 0 and plasma_cat_rc == 0
     _, plasma_state = await _systemctl("is-active", _SESSION_UNITS["plasma"])
     if kiosk_state == "active":
         current = "kiosk"
@@ -380,6 +382,41 @@ async def get_session_mode():
     switch at all. Open to any authenticated caller: it is a read of local
     service state that the UI needs before deciding to render the control."""
     return await _session_mode_state()
+
+
+@router.get("/api/system/local-desktop", dependencies=[Depends(require_admin)])
+async def get_local_desktop():
+    """Report the local desktop state: available, enabled, and active based on
+    taos-kiosk.service systemd unit state.
+
+    Reads via `systemctl cat`, `systemctl is-enabled`, and `systemctl is-active`.
+    Admin only.  Unit absent => all false (is-enabled/is-active are NOT called).
+    enabled/active may be null if systemctl times out or is missing.
+    """
+    # availability: unit must exist (cat succeeds)
+    cat_rc, _ = await _systemctl("cat", "taos-kiosk.service")
+    if cat_rc == 1:
+        return {"available": False, "enabled": False, "active": False}
+    if cat_rc != 0:
+        return JSONResponse(
+            {"error": "systemctl_failed", "rc": cat_rc}, status_code=503
+        )
+
+    # enabled: is-enabled output must be exactly "enabled"
+    en_rc, en_out = await _systemctl("is-enabled", "taos-kiosk.service")
+    if en_rc in (124, 127):
+        enabled = None
+    else:
+        enabled = en_rc == 0 and en_out.strip() == "enabled"
+
+    # active: is-active output must be exactly "active"
+    ac_rc, ac_out = await _systemctl("is-active", "taos-kiosk.service")
+    if ac_rc in (124, 127):
+        active = None
+    else:
+        active = ac_rc == 0 and ac_out.strip() == "active"
+
+    return {"available": True, "enabled": enabled, "active": active}
 
 
 @router.post("/api/system/session-mode", dependencies=[Depends(require_admin)])

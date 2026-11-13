@@ -42,6 +42,14 @@ afterAll(() => {
 });
 
 describe("built sw.js is a self-contained classic worker", () => {
+  it("carries the same build id as version.json", () => {
+    // The running SPA polls version.json and offers a reload when it differs
+    // from the id baked into its bundle, so the two must be one value.
+    const { version } = JSON.parse(readFileSync(path.join(outDir, "version.json"), "utf8"));
+    expect(version).toMatch(/\./);
+    expect(sw).toContain(version);
+  });
+
   it("is the real worker, not an empty stub", () => {
     expect(sw).toContain("taos-static-");
     expect(sw).toContain("notificationclick");

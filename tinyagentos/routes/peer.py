@@ -19,10 +19,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from tinyagentos.collab_settings import read_collab_settings
 from tinyagentos.contacts_store import generate_peer_token
 from tinyagentos.hub import relationships
 from tinyagentos.hub.identity import fingerprint as _fingerprint
@@ -33,6 +33,7 @@ from tinyagentos.peer import (
     verify_envelope_signature,
 )
 from tinyagentos.rate_limit import MovingWindowLimiter, retry_after_headers
+from tinyagentos.routes.hub import _safe_endpoints
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +123,29 @@ async def _authenticate_peer(request: Request) -> str:
     return contact_id
 
 
+async def _collab_enabled_dep(request: Request) -> None:
+    """Router-level dependency: 503 while the collaboration kill switch is off.
+
+    Runs BEFORE ``_peer_auth_dep``, so a disabled instance does no bearer
+    lookup and no signature work for any caller.  The switch is read from
+    disk on every request so a flip in Settings is immediate.
+
+    Routes outside ``router`` (the handshake route) call this directly.
+    """
+    if not read_collab_settings(request.app.state.data_dir).enabled:
+        raise HTTPException(status_code=503, detail="collaboration disabled")
+
+
+def _raise_if_contact_paused(request: Request, contact_id: str) -> None:
+    """403 when *contact_id* is in the kill switch's paused list.
+
+    Call it once the caller's contact_id is known and before any nonce is
+    recorded, so a paused contact cannot burn nonces.
+    """
+    if read_collab_settings(request.app.state.data_dir).is_paused(contact_id):
+        raise HTTPException(status_code=403, detail="contact paused")
+
+
 async def _peer_auth_dep(request: Request) -> str:
     """Router-level dependency: authenticate EVERY /api/peer route.
 
@@ -131,12 +155,15 @@ async def _peer_auth_dep(request: Request) -> str:
     so route handlers can read it directly.
     """
     contact_id = await _authenticate_peer(request)
+    _raise_if_contact_paused(request, contact_id)
     request.state.peer_contact_id = contact_id
     return contact_id
 
 
-# Apply the dependency to the router now that _peer_auth_dep is defined.
+# Apply the dependencies to the router now that both are defined.  The kill
+# switch goes first so it precedes the bearer lookup.
 router.dependencies.append(Depends(_peer_auth_dep))
+router.dependencies.insert(0, Depends(_collab_enabled_dep))
 
 
 def _reject_legacy_row(contact_id: str, contact_rec: dict) -> None:
@@ -204,8 +231,9 @@ async def peer_handshake(body: PeerEnvelope, request: Request):
     if store is None:
         raise HTTPException(status_code=503, detail="peer channel not available")
 
-    # Kill-switch hook point (card 5): a peer-channel off switch goes here,
-    # before any work is done for an unauthenticated caller.
+    # Collaboration kill switch: before any work is done for an
+    # unauthenticated caller.
+    await _collab_enabled_dep(request)
 
     _enforce_size_cap(request, body.envelope)
     envelope = body.envelope
@@ -230,6 +258,7 @@ async def peer_handshake(body: PeerEnvelope, request: Request):
     except (TypeError, ValueError):
         raise HTTPException(status_code=403, detail="invalid signing key")
     contact_id = f"hub:{fp}"
+    _raise_if_contact_paused(request, contact_id)
     if envelope.get("from") != contact_id:
         raise HTTPException(
             status_code=403, detail="from does not match the signing key fingerprint",
@@ -243,7 +272,7 @@ async def peer_handshake(body: PeerEnvelope, request: Request):
     if not verify_envelope_signature(envelope, signing_pubkey):
         raise HTTPException(status_code=403, detail="invalid signature")
 
-    from tinyagentos.routes.hub import _get_store, _normalize_endpoints
+    from tinyagentos.routes.hub import _get_store
 
     hub = await _get_store(request)
     if await hub.has_edge(fp, relationships.REL_BLOCK) or not (
@@ -259,6 +288,16 @@ async def peer_handshake(body: PeerEnvelope, request: Request):
             headers=retry_after_headers(_handshake_limiter.retry_after(fp)),
         )
 
+    existing = await store.get_peer_link(contact_id)
+    restore_revoked_at = None
+    if existing is not None and existing.get("revoked_at") is not None:
+        if not await hub.has_edge(fp, relationships.REL_REQUEST_OUT):
+            raise HTTPException(status_code=403, detail="peer link revoked")
+        # Owner re-request path: the owner re-initiated the friendship, so
+        # restoring the revoked link is intentional.  Pass the exact timestamp
+        # we observed so a newer revocation is not silently cleared.
+        restore_revoked_at = existing.get("revoked_at")
+
     if not await store.record_nonce(envelope["nonce"], contact_id, "handshake"):
         raise HTTPException(status_code=409, detail="nonce replay detected")
 
@@ -273,12 +312,43 @@ async def peer_handshake(body: PeerEnvelope, request: Request):
         peer_fingerprint=fp,
     )
     our_token = generate_peer_token()
-    await store.establish_peer_link(
+
+    # If a peer link already exists (live or revoked), keep its recorded
+    # endpoints.  A repeat handshake must not allow the sender to rewrite the
+    # SSRF allowance.  Only on first handshake do we accept endpoints from the
+    # envelope, and even then only valid http/https entries with a hostname.
+    if existing is not None:
+        pinned = _safe_endpoints(existing.get("endpoints") or [])
+        if pinned:
+            endpoints = pinned
+        else:
+            endpoints = _safe_endpoints(hs.get("endpoints"))
+    else:
+        endpoints = _safe_endpoints(hs.get("endpoints"))
+
+    # The check above and this write are not atomic: a revoke committed in this
+    # window used to be silently overwritten, because establish_peer_link cleared
+    # revoked_at unconditionally.  establish_peer_link re-checks revoked_at inside
+    # the same statement, so a link revoked after the check is not written.
+    written = await store.establish_peer_link(
         contact_id=contact_id,
         inbound_token=our_token,
         outbound_token=their_token,
-        endpoints=_normalize_endpoints(hs.get("endpoints")),
+        endpoints=endpoints,
+        restore_revoked_at=restore_revoked_at,
+        keep_existing_endpoints=True,
     )
+    if not written:
+        # add_contact above commits the contact as active; a revoke that lands
+        # during the handshake leaves that row active for a revoked peer unless
+        # we restore the revoked status on the refused path.
+        try:
+            await store.set_contact_status(contact_id, "revoked")
+        except Exception:
+            logger.warning(
+                "peer handshake: set_contact_status revoked failed for %s", contact_id,
+            )
+        raise HTTPException(status_code=403, detail="peer link revoked")
     if not await hub.has_edge(fp, relationships.REL_FRIEND):
         from tinyagentos.hub import identity
 

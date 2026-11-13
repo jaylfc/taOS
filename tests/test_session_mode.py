@@ -72,6 +72,40 @@ async def test_switch_refused_on_a_device_without_the_kiosk(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_desk_with_kiosk_but_no_plasma_is_unavailable(monkeypatch):
+    """A desk with only taos-kiosk.service must report available=False and 404 on switch."""
+    started: list[str] = []
+
+    async def fake(*args):
+        if args[0] == "start":
+            started.append(args[-1])
+            return 0, ""
+        if args[0] == "cat":
+            unit = args[-1]
+            if unit == "taos-kiosk.service":
+                return 0, "# taos-kiosk.service"
+            if unit == "plasma-mobile.service":
+                return 1, "No files found"
+        return 3, "inactive"
+
+    monkeypatch.setattr(system_routes, "_systemctl", fake)
+    state = await system_routes._session_mode_state()
+    assert state["available"] is False
+    assert state["current"] == "unknown"
+
+    class _Req:
+        async def body(self):
+            return b'{"mode":"plasma"}'
+
+        async def json(self):
+            return {"mode": "plasma"}
+
+    resp = await system_routes.set_session_mode(_Req())
+    assert resp.status_code == 404
+    assert started == [], "must not start a unit when plasma service is absent"
+
+
+@pytest.mark.asyncio
 async def test_unknown_mode_rejected_before_any_unit_is_touched(monkeypatch):
     started: list[str] = []
 

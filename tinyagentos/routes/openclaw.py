@@ -44,6 +44,8 @@ def _validate_bearer(request: Request) -> tuple[bool, str | None]:
     token = _bearer_token(request)
     if not token:
         return False, None
+    if getattr(request.state, "via", None) == "registry_jwt_deployed_agent":
+        return True, token
     auth_mgr = getattr(request.app.state, "auth", None)
     if auth_mgr is None:
         return False, None
@@ -81,6 +83,12 @@ async def bootstrap(request: Request, agent: str | None = None):
             {"error": "agent query parameter required"},
             status_code=400,
         )
+
+    via = getattr(request.state, "via", None)
+    if via == "registry_jwt_deployed_agent":
+        expected = getattr(request.state, "agent_name", None)
+        if expected and agent != expected:
+            return JSONResponse({"error": "forbidden: agent does not match credential"}, status_code=403)
 
     config = getattr(request.app.state, "config", None)
     agent_dict = _find_agent(config, agent) if config else None
@@ -182,6 +190,12 @@ async def events_stream(request: Request, agent: str):
     if not valid:
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
+    via = getattr(request.state, "via", None)
+    if via == "registry_jwt_deployed_agent":
+        expected = getattr(request.state, "agent_name", None)
+        if expected and agent != expected:
+            return JSONResponse({"error": "forbidden: agent does not match credential"}, status_code=403)
+
     registry = getattr(request.app.state, "bridge_sessions", None)
     if registry is None:
         return JSONResponse(
@@ -219,6 +233,12 @@ async def reply_ingest(request: Request, agent: str):
     valid, _ = _validate_bearer(request)
     if not valid:
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+    via = getattr(request.state, "via", None)
+    if via == "registry_jwt_deployed_agent":
+        expected = getattr(request.state, "agent_name", None)
+        if expected and agent != expected:
+            return JSONResponse({"error": "forbidden: agent does not match credential"}, status_code=403)
 
     registry = getattr(request.app.state, "bridge_sessions", None)
     if registry is None:

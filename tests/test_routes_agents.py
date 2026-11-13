@@ -527,7 +527,10 @@ class TestDeployPersistence:
         agent = detail.json()
         assert agent["model"] == "test-model"
         assert agent["framework"] == "none"
-        assert agent["llm_key"] == "sk-test"
+        # The key is persisted but never returned by a read (GHSA-v258-j222-x68c).
+        assert "llm_key" not in agent
+        stored = next(a for a in app.state.config.agents if a["name"] == "persistent")
+        assert stored["llm_key"] == "sk-test"
         assert agent["status"] == "running"
         assert agent["id"]
 
@@ -1563,6 +1566,126 @@ class TestOrphanAgentDeletion:
 
         archived_after = (await client.get("/api/agents/archived")).json()
         assert archived_after == []
+
+    async def test_orphan_hard_delete_unbinds_local_token(
+        self, client, app, tmp_data_dir, monkeypatch
+    ):
+        """Hard-delete orphan (no chat, no trace) revokes the agent's local token."""
+        async def _no_container(name):
+            return False
+        monkeypatch.setattr("tinyagentos.containers.container_exists", _no_container)
+
+        async def fake_stop(name, force=False):
+            raise AssertionError("stop_container should not be called for orphans")
+
+        async def fake_snapshot_create(name, snapshot_name):
+            raise AssertionError("snapshot_create should not be called for orphans")
+
+        monkeypatch.setattr("tinyagentos.containers.stop_container", fake_stop)
+        monkeypatch.setattr("tinyagentos.containers.snapshot_create", fake_snapshot_create)
+
+        token = app.state.auth.mint_agent_local_token("test-agent")
+        assert app.state.auth.validate_local_token(token) is True
+        assert app.state.auth.get_local_token_agent(token) == "test-agent"
+
+        resp = await client.delete("/api/agents/test-agent")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "deleted"
+
+        assert app.state.auth.validate_local_token(token) is False
+        assert app.state.auth.get_local_token_agent(token) is None
+
+    async def test_orphan_tombstone_unbinds_local_token(
+        self, client, app, tmp_data_dir, monkeypatch
+    ):
+        """Tombstone orphan (trace dir exists) revokes the agent's local token."""
+        async def _no_container(name):
+            return False
+        monkeypatch.setattr("tinyagentos.containers.container_exists", _no_container)
+
+        trace_dir = tmp_data_dir / "trace" / "test-agent"
+        trace_dir.mkdir(parents=True, exist_ok=True)
+        (trace_dir / "2026-04-17T13.db").write_text("")
+
+        token = app.state.auth.mint_agent_local_token("test-agent")
+        assert app.state.auth.validate_local_token(token) is True
+        assert app.state.auth.get_local_token_agent(token) == "test-agent"
+
+        resp = await client.delete("/api/agents/test-agent")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "archived"
+        assert data["snapshot_name"] is None
+
+        assert app.state.auth.validate_local_token(token) is False
+        assert app.state.auth.get_local_token_agent(token) is None
+
+    async def test_orphan_hard_delete_unbind_failure_falls_back(
+        self, client, app, tmp_data_dir, monkeypatch
+    ):
+        """Hard-delete orphan continues when unbinding the local token fails."""
+        async def _no_container(name):
+            return False
+        monkeypatch.setattr("tinyagentos.containers.container_exists", _no_container)
+
+        async def fake_stop(name, force=False):
+            raise AssertionError("stop_container should not be called for orphans")
+
+        async def fake_snapshot_create(name, snapshot_name):
+            raise AssertionError("snapshot_create should not be called for orphans")
+
+        monkeypatch.setattr("tinyagentos.containers.stop_container", fake_stop)
+        monkeypatch.setattr("tinyagentos.containers.snapshot_create", fake_snapshot_create)
+
+        calls = {"count": 0}
+
+        def raise_unbind(_name):
+            calls["count"] += 1
+            raise RuntimeError("unbind failed")
+
+        monkeypatch.setattr(app.state.auth, "unbind_local_token_agent", raise_unbind)
+
+        resp = await client.delete("/api/agents/test-agent")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "deleted"
+        assert calls["count"] == 1
+
+        config = load_config(tmp_data_dir / "config.yaml")
+        assert not any(a["name"] == "test-agent" for a in config.agents)
+
+    async def test_orphan_tombstone_unbind_failure_falls_back(
+        self, client, app, tmp_data_dir, monkeypatch
+    ):
+        """Tombstone orphan continues when unbinding the local token fails."""
+        async def _no_container(name):
+            return False
+        monkeypatch.setattr("tinyagentos.containers.container_exists", _no_container)
+
+        trace_dir = tmp_data_dir / "trace" / "test-agent"
+        trace_dir.mkdir(parents=True, exist_ok=True)
+        (trace_dir / "2026-04-17T13.db").write_text("")
+
+        calls = {"count": 0}
+
+        def raise_unbind(_name):
+            calls["count"] += 1
+            raise RuntimeError("unbind failed")
+
+        monkeypatch.setattr(app.state.auth, "unbind_local_token_agent", raise_unbind)
+
+        resp = await client.delete("/api/agents/test-agent")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "archived"
+        assert data["snapshot_name"] is None
+        assert calls["count"] == 1
+
+        config = load_config(tmp_data_dir / "config.yaml")
+        assert not any(a["name"] == "test-agent" for a in config.agents)
+        tombstones = [a for a in config.archived_agents if a.get("archived_slug") == "test-agent"]
+        assert len(tombstones) == 1
 
 
 @pytest.mark.asyncio

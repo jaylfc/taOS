@@ -169,6 +169,23 @@ class ContactsStore(BaseStore):
         if stale:
             await self._db.commit()
 
+        # Register a deterministic SQLite function that mirrors the predicate
+        # the routes use to filter endpoints before establish_peer_link
+        # (tinyagentos.routes.hub._safe_endpoints).  The keep-existing decision
+        # in establish_peer_link is made INSIDE the atomic UPDATE statement, so
+        # it must be expressible in SQL; this function lets the CASE ask "does
+        # the stored list hold any usable endpoint?" without reading the row
+        # outside the statement (a read-then-write would reintroduce the race
+        # the single-statement design exists to avoid).  Imported lazily: this
+        # module is imported by routes.hub at module load, so a top-level import
+        # would be circular.
+        await self._db.create_function(
+            "_has_usable_endpoint",
+            1,
+            _endpoint_list_has_usable_endpoint,
+            deterministic=True,
+        )
+
     async def _hub_username_unique_index_exists(self) -> bool:
         """True when the legacy UNIQUE auto-index on hub_username still exists."""
         for idx in await (
@@ -185,6 +202,22 @@ class ContactsStore(BaseStore):
                 if cols == ["hub_username"]:
                     return True
         return False
+
+    async def _ensure_usable_endpoint_fn(self) -> None:
+        """Register the SQL helper used by establish_peer_link's keep-existing CASE.
+
+        Idempotent: SQLite allows re-registering a function with the same name,
+        so this is safe to call on every establish_peer_link even though the
+        connection registers it once in ``_post_init``.
+        """
+        if self._db is None:
+            return
+        await self._db.create_function(
+            "_has_usable_endpoint",
+            1,
+            _endpoint_list_has_usable_endpoint,
+            deterministic=True,
+        )
 
     # ------------------------------------------------------------------
     # contacts
@@ -334,28 +367,79 @@ class ContactsStore(BaseStore):
         inbound_token: str,
         outbound_token: str,
         endpoints: list[str] | None = None,
-    ) -> None:
+        restore_revoked_at: float | None = None,
+        keep_existing_endpoints: bool = False,
+    ) -> bool:
         """Create a peer link row.  Called after the handshake completes.
 
         ``inbound_token`` is the plaintext token WE minted for them (hashed at
         rest); ``outbound_token`` is the token THEY minted for us.
-        """
+
+        The check and the write happen in ONE statement, so a revoke committed
+        between a prior ``revoked_at`` read and this call cannot be silently
+        overwritten: when ``restore_revoked_at`` is None and a row already exists
+        with ``revoked_at`` NOT NULL, the UPDATE arm's WHERE clause filters it
+        out, the row is left revoked, and this returns False.  When the row is
+        new or still live, the write applies and this returns True.
+
+        ``restore_revoked_at`` is only for the owner re-request / re-accept path,
+        where the owner has explicitly re-initiated the friendship and the revoked
+        link is meant to be restored.  Only the exact revocation timestamp the
+        caller observed may be cleared -- a newer revocation that lands after the
+        read is preserved.
+
+        Note: restore matching is by ``revoked_at`` float equality and relies on
+        distinct ``time.time()`` values per revoke.  If two revokes happened to
+        produce the same timestamp (extremely unlikely but theoretically
+        possible), the later revoke could be cleared unintentionally.
+
+        ``keep_existing_endpoints``: when True, the ON CONFLICT DO UPDATE arm
+        keeps the stored endpoints only when they are non-empty AND hold at
+        least one usable endpoint (an entry the routes' ``_safe_endpoints``
+        predicate would accept — http/https with a hostname and a parseable
+        port).  When the stored list is empty or holds only unusable entries
+        it takes the new ones (``excluded.endpoints``).  When False, always
+        overwrites with the new ones.  Default False keeps every other caller
+        unchanged.
+
+        The decision is made INSIDE the atomic UPDATE statement via the
+        registered SQLite function ``_has_usable_endpoint`` (see ``_post_init``),
+        so a concurrently written valid list is preserved and a list that
+        holds only unusable entries is never kept forever: there is no read
+        of ``peer_links.endpoints`` outside the statement, so no read-then-write
+        race.
+"""
+        await self._ensure_usable_endpoint_fn()
         now = time.time()
         eps_json = _json_dumps(endpoints or [])
-        await self._db.execute(
-            """INSERT INTO peer_links
+        if keep_existing_endpoints:
+            endpoints_clause = (
+                "endpoints = CASE WHEN peer_links.endpoints IS NULL "
+                "OR _has_usable_endpoint(peer_links.endpoints) = 0 "
+                "THEN excluded.endpoints ELSE peer_links.endpoints END, "
+            )
+        else:
+            endpoints_clause = "endpoints = excluded.endpoints, "
+        set_clause = (
+            f"inbound_token_hash = excluded.inbound_token_hash, "
+            f"outbound_token = excluded.outbound_token, "
+            f"{endpoints_clause}"
+            f"established_at = excluded.established_at, "
+            f"revoked_at = NULL"
+        )
+        cursor = await self._db.execute(
+            f"""INSERT INTO peer_links
                (contact_id, inbound_token_hash, outbound_token, endpoints,
                 established_at)
                VALUES (?, ?, ?, ?, ?)
                ON CONFLICT(contact_id) DO UPDATE SET
-                 inbound_token_hash = excluded.inbound_token_hash,
-                 outbound_token = excluded.outbound_token,
-                 endpoints = excluded.endpoints,
-                 established_at = excluded.established_at,
-                 revoked_at = NULL""",
-            (contact_id, _hash_token(inbound_token), outbound_token, eps_json, now),
+                 {set_clause}
+               WHERE peer_links.revoked_at IS NULL OR (? IS NOT NULL AND peer_links.revoked_at = ?)""",
+            (contact_id, _hash_token(inbound_token), outbound_token, eps_json, now,
+             restore_revoked_at, restore_revoked_at),
         )
         await self._db.commit()
+        return (cursor.rowcount or 0) > 0
 
     async def set_outbound_token(self, contact_id: str, token: str, expected_inbound_token: str | None = None) -> bool:
         """Store the token THEY minted for us, from a verified handshake reply.
@@ -512,3 +596,25 @@ def _json_dumps(obj) -> str:
 def _json_loads(s: str):
     import json
     return json.loads(s)
+
+
+def _endpoint_list_has_usable_endpoint(raw_json: str) -> int:
+    """Return 1 when the stored endpoints JSON holds at least one usable endpoint.
+
+    Reuses the predicate the routes apply before establish_peer_link
+    (``tinyagentos.routes.hub._safe_endpoints``) so the keep-existing decision
+    inside the atomic UPDATE statement is made on the same notion of "usable"
+    the handshake already uses.  ``raw_json`` is the raw peer_links.endpoints
+    text; any value that is not valid JSON or not a list is treated as empty.
+    """
+    if not raw_json:
+        return 0
+    try:
+        import json
+        endpoints = json.loads(raw_json)
+    except (ValueError, TypeError):
+        return 0
+    if not isinstance(endpoints, list):
+        return 0
+    from tinyagentos.routes.hub import _safe_endpoints
+    return 1 if _safe_endpoints(endpoints) else 0

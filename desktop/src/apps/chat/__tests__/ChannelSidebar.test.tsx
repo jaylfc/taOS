@@ -112,6 +112,20 @@ describe("ChannelSidebar — desktop", () => {
     expect(screen.getByText("Deploy an agent to start chatting")).toBeInTheDocument();
   });
 
+  it("a setup note replaces the empty state and drops Open Agents while busy", () => {
+    render(<ChannelSidebar {...buildProps({ allEmpty: true, emptyNote: { title: "Setting up your assistant", detail: "Soon.", tone: "busy" } })} />);
+    expect(screen.getByText("Setting up your assistant")).toBeInTheDocument();
+    expect(screen.getByText("Soon.")).toBeInTheDocument();
+    expect(screen.queryByText("Deploy an agent to start chatting")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Open Agents/i })).not.toBeInTheDocument();
+  });
+
+  it("an error note keeps Open Agents", () => {
+    render(<ChannelSidebar {...buildProps({ allEmpty: true, emptyNote: { title: "Your assistant isn't ready", detail: "Failed.", tone: "error" } })} />);
+    expect(screen.getByText("Failed.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Open Agents/i })).toBeInTheDocument();
+  });
+
   it("renders 'Open Agents' button in empty state and calls onOpenAgentsApp on click", () => {
     const onOpenAgentsApp = vi.fn();
     render(<ChannelSidebar {...buildProps({ allEmpty: true, onOpenAgentsApp })} />);
@@ -309,6 +323,76 @@ describe("ChannelSidebar — mobile", () => {
       <ChannelSidebar {...buildProps({ isMobile: true, allEmpty: true })} />,
     );
     expect(screen.getByText("No conversations yet")).toBeInTheDocument();
+  });
+
+  it("on mobile a setup note is announced: status while busy, alert on error", () => {
+    const { unmount } = render(
+      <ChannelSidebar {...buildProps({ isMobile: true, allEmpty: true, emptyNote: { title: "Setting up your assistant", detail: "Soon.", tone: "busy" } })} />,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("Setting up your assistantSoon.");
+    expect(screen.queryByRole("button", { name: /Open Agents/i })).not.toBeInTheDocument();
+    unmount();
+    render(
+      <ChannelSidebar {...buildProps({ isMobile: true, allEmpty: true, emptyNote: { title: "Your assistant isn't ready", detail: "Failed.", tone: "error" } })} />,
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("Failed.");
+    expect(screen.getByRole("button", { name: /Open Agents/i })).toBeInTheDocument();
+  });
+
+  it("on mobile with other channels present, an error emptyNote is announced above the list as alert", () => {
+    const ch = makeChannel({ id: "ch-1", name: "general" });
+    const sections = [makeSection("Topics", [ch])];
+    render(
+      <ChannelSidebar
+        {...buildProps({
+          isMobile: true,
+          allEmpty: false,
+          sections,
+          emptyNote: {
+            title: "Your assistant isn't ready",
+            detail: "The deploy failed.",
+            tone: "error",
+          },
+        })}
+      />,
+    );
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toContain("Your assistant isn't ready");
+    expect(alert.textContent).toContain("The deploy failed.");
+  });
+
+  it("on mobile with other channels present, a busy emptyNote is announced as status", () => {
+    const ch = makeChannel({ id: "ch-1", name: "general" });
+    const sections = [makeSection("Topics", [ch])];
+    render(
+      <ChannelSidebar
+        {...buildProps({
+          isMobile: true,
+          allEmpty: false,
+          sections,
+          emptyNote: { title: "Setting up your assistant", detail: "Soon.", tone: "busy" },
+        })}
+      />,
+    );
+    expect(screen.getByRole("status").textContent).toContain("Setting up your assistant");
+    expect(screen.getByRole("status").textContent).toContain("Soon.");
+  });
+
+  it("on mobile with other channels present and no emptyNote, no live region is rendered", () => {
+    const ch = makeChannel({ id: "ch-1", name: "general" });
+    const sections = [makeSection("Topics", [ch])];
+    render(
+      <ChannelSidebar {...buildProps({ isMobile: true, allEmpty: false, sections })} />,
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.getByText("general")).toBeInTheDocument();
+  });
+
+  it("on mobile the plain empty state is not a live region", () => {
+    render(<ChannelSidebar {...buildProps({ isMobile: true, allEmpty: true })} />);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("calls onOpenAgentsApp from mobile empty state", () => {

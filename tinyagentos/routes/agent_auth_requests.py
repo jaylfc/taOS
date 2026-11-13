@@ -40,7 +40,7 @@ from tinyagentos.agent_registry_store import (
 from tinyagentos.agent_token_auth import check_agent_identity, check_agent_identity_claims
 from tinyagentos.auth_context import CurrentUser, current_user, require_owner_or_admin
 from tinyagentos.base_store import PendingCapExceeded
-from tinyagentos.notification_labels import project_label
+from tinyagentos.notification_labels import admin_user_ids, project_label
 from tinyagentos.routes.projects import _free_suggestions
 
 logger = logging.getLogger(__name__)
@@ -64,6 +64,10 @@ VALID_SCOPES = frozenset({
     # Self-only chat session: drain the agent's OWN chat events and post its
     # OWN replies (/api/agents/self/chat/*). Identity comes from the token.
     "chat_session",
+    # Self-only secrets read: read ONLY secrets granted to the agent named by
+    # the verified token (/api/agents/self/secrets/{name}). Identity comes from
+    # the token; grants no list/write/delete.
+    "secrets_read_own",
     # Least-privilege kanban access: task read + lifecycle + comments for the
     # agent's OWN project only (bound by the token's project_id claim). Does NOT
     # grant task create, member management, or project lifecycle.
@@ -114,6 +118,8 @@ VALID_SCOPES = frozenset({
     "project_lists",
     # Memory access: read an agent's own memory index.
     "memory_read",
+    # Memory access: write to an agent's own memory namespace.
+    "memory_write",
 })
 
 
@@ -493,28 +499,40 @@ async def _handle_project_create_request(
         await store._db.commit()
         raise
 
+    # The row names the requested project, and only an admin can decide it,
+    # so address it to each admin instead of broadcasting it to every user.
     notifs = getattr(request.app.state, "notifications", None)
     if notifs is not None:
-        try:
-            await notifs.add(
-                title="Project creation request",
-                message=(
-                    f"{from_agent} requests to create project "
-                    f"'{body.requested_name}' ({body.requested_slug})"
-                ),
-                level="info",
-                source="auth_requests",
-                data={
-                    "request_id": record["id"],
-                    "identity_claim": from_agent,
-                    "framework": body.framework,
-                    "requested_name": body.requested_name,
-                    "requested_slug": body.requested_slug,
-                    "purpose": body.purpose or body.reason,
-                },
-            )
-        except Exception:
-            pass
+        webhook_sent = False
+        # Reuse the admins resolved for the Decision above: a second listing
+        # that failed would leave the request with no alert at all.
+        for admin_id in [u["id"] for u in admins if u.get("id")]:
+            try:
+                await notifs.add(
+                    title="Project creation request",
+                    message=(
+                        f"{from_agent} requests to create project "
+                        f"'{body.requested_name}' ({body.requested_slug})"
+                    ),
+                    level="info",
+                    source="auth_requests",
+                    data={
+                        "request_id": record["id"],
+                        "identity_claim": from_agent,
+                        "framework": body.framework,
+                        "requested_name": body.requested_name,
+                        "requested_slug": body.requested_slug,
+                        "purpose": body.purpose or body.reason,
+                    },
+                    user_id=admin_id,
+                    webhook=not webhook_sent,
+                )
+                webhook_sent = True
+            except Exception:
+                logger.warning(
+                    "project create notification for %s failed", admin_id,
+                    exc_info=True,
+                )
 
     return JSONResponse(
         {"request_id": record["id"], "status": "pending", "decision_id": decision["id"], "proof_status": proof_status}
@@ -639,27 +657,37 @@ async def create_auth_request(request: Request, body: CreateAuthRequest):
                 if record.get("project_id")
                 else ""
             )
-            await notifs.add(
-                title="Access request",
-                message=f"{record['identity_claim']} is requesting {', '.join(scopes)}{on_project}{' ' + _human_duration(record.get('duration_secs')) if record.get('duration_secs') else ''}",
-                level="info",
-                source="auth_requests",
-                data={
-                    "request_id": record["id"],
-                    "identity_claim": record["identity_claim"],
-                    "framework": record["framework"],
-                    "requested_scopes": list(scopes),
-                    # Carry the requested project_id to the consent UI so the
-                    # approve screen can preselect and label it. The id is NOT
-                    # trusted as a binding here -- the operator still picks from
-                    # the projects they can see -- but without it the dropdown is
-                    # blank and the approver cannot tell what they are consenting
-                    # to (#tsk-flc5sp).
-                    "project_id": record.get("project_id"),
-                    "duration_secs": record.get("duration_secs"),
-                    "human_duration": _human_duration(record.get("duration_secs")),
-                },
-            )
+            # Only an admin may approve, and the text names the project, so it
+            # goes to each admin rather than to every user (tsk-g7w4yu). One
+            # failed write must not skip the remaining admins, and only the
+            # first row posts to webhooks so a webhook sees the request once.
+            for i, admin_id in enumerate(admin_user_ids(request.app.state)):
+                try:
+                    await notifs.add(
+                        title="Access request",
+                        message=f"{record['identity_claim']} is requesting {', '.join(scopes)}{on_project}{' ' + _human_duration(record.get('duration_secs')) if record.get('duration_secs') else ''}",
+                        level="info",
+                        source="auth_requests",
+                        user_id=admin_id,
+                        webhook=i == 0,
+                        data={
+                            "request_id": record["id"],
+                            "identity_claim": record["identity_claim"],
+                            "framework": record["framework"],
+                            "requested_scopes": list(scopes),
+                            # Carry the requested project_id to the consent UI so the
+                            # approve screen can preselect and label it. The id is NOT
+                            # trusted as a binding here -- the operator still picks from
+                            # the projects they can see -- but without it the dropdown is
+                            # blank and the approver cannot tell what they are consenting
+                            # to (#tsk-flc5sp).
+                            "project_id": record.get("project_id"),
+                            "duration_secs": record.get("duration_secs"),
+                            "human_duration": _human_duration(record.get("duration_secs")),
+                        },
+                    )
+                except Exception:
+                    logger.warning("access-request notification to %s failed", admin_id, exc_info=True)
         except Exception:
             pass
 
@@ -1857,6 +1885,20 @@ _SCOPE_FILES_SCOPES = _FILES_SCOPES
 _SCOPE_PROJECT_SCOPES = _PROJECT_SCOPES
 
 
+def _scope_request_audience(app_state, record: dict) -> list[str]:
+    """Ids of the users who may decide a scope request for *record*: the
+    agent's owner, then every admin (the approve/deny routes allow exactly
+    these). Empty when nobody can be resolved, so nothing is broadcast."""
+    ids: list[str] = []
+    owner = record.get("user_id")
+    if owner:
+        ids.append(owner)
+    for uid in admin_user_ids(app_state):
+        if uid not in ids:
+            ids.append(uid)
+    return ids
+
+
 async def _authorize_scope_request_creation(
     request: Request, canonical_id: str, record: dict
 ) -> None:
@@ -1973,18 +2015,34 @@ async def create_scope_request(
                         project = None
                 name = (project or {}).get("name")
                 where = f"project {name or project_id}"
-            await notifs.add(
-                title="Scope request",
-                message=f"{handle} is requesting {', '.join(scopes)} on {where}",
-                level="info",
-                source="agent_scope_requests",
-                data={
-                    "request_id": rec["id"],
-                    "canonical_id": canonical_id,
-                    "requested_scopes": list(scopes),
-                    "project_id": rec.get("project_id"),
-                },
-            )
+            # The row names the agent and the project, so address it to the
+            # users who can decide it (approve is owner/admin only) instead of
+            # broadcasting it to every user on the instance.
+            # One row per recipient, but one external webhook post per request.
+            webhook_sent = False
+            for recipient in _scope_request_audience(request.app.state, record):
+                try:
+                    await notifs.add(
+                        title="Scope request",
+                        message=f"{handle} is requesting {', '.join(scopes)} on {where}",
+                        level="info",
+                        source="agent_scope_requests",
+                        data={
+                            "request_id": rec["id"],
+                            "canonical_id": canonical_id,
+                            "requested_scopes": list(scopes),
+                            "project_id": rec.get("project_id"),
+                        },
+                        user_id=recipient,
+                        webhook=not webhook_sent,
+                    )
+                    webhook_sent = True
+                except Exception:
+                    # One failed write must not skip the remaining recipients.
+                    logger.warning(
+                        "scope request notification for %s failed", recipient,
+                        exc_info=True,
+                    )
         except Exception:
             pass
 

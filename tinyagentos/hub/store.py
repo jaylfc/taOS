@@ -282,6 +282,11 @@ class HubStore(BaseStore):
             return None
         return {"hash": row[0], "size": row[1], "mime": row[2], "data": row[3]}
 
+    async def has_blob(self, blob_hash: str) -> bool:
+        """True when a blob with *blob_hash* is stored, without reading its bytes."""
+        cur = await self._db.execute("SELECT 1 FROM hub_blobs WHERE hash = ?", (blob_hash,))
+        return await cur.fetchone() is not None
+
     # ---------------------------------------------------------------- authors
     async def upsert_author(
         self,
@@ -483,6 +488,44 @@ class HubStore(BaseStore):
         rows = await cur.fetchall()
         return [_row(cur.description, r) for r in rows]
 
+    async def list_chain_range(
+        self, author: str, *, after_seq: int = 0, limit: int = 100
+    ) -> list[dict]:
+        """Chain entries for ``author`` with ``seq > after_seq``, oldest first.
+
+        Each entry carries its index fields plus ``object``: the full signed
+        object while its body is stored, or ``None`` once a tombstone dropped it.
+        This is the shape a peer pulls (design hub-social-p2p-architecture).
+        """
+        cur = await self._db.execute(
+            "SELECT c.author, c.seq, c.hash, c.prev_hash, c.type, c.target, o.body "
+            "FROM hub_chain c LEFT JOIN hub_objects o ON o.hash = c.hash "
+            "WHERE c.author = ? AND c.seq > ? ORDER BY c.seq ASC LIMIT ?",
+            (author, after_seq, limit),
+        )
+        out = []
+        for author_, seq, h, prev, typ, target, body in await cur.fetchall():
+            out.append({
+                "author": author_, "seq": seq, "hash": h, "prev_hash": prev,
+                "type": typ, "target": target,
+                "object": json.loads(body) if body is not None else None,
+            })
+        return out
+
+    async def list_tombstones(self, author: str, *, after_seq: int = 0) -> list[dict]:
+        """Every signed tombstone for ``author`` with ``seq > after_seq``.
+
+        Returned in full regardless of any range limit so deletes travel ahead
+        of content: a reader that pulls a truncated range still learns every
+        newer delete (design "Delete propagation").
+        """
+        cur = await self._db.execute(
+            "SELECT o.body FROM hub_chain c JOIN hub_objects o ON o.hash = c.hash "
+            "WHERE c.author = ? AND c.seq > ? AND c.type = 'tombstone' ORDER BY c.seq ASC",
+            (author, after_seq),
+        )
+        return [json.loads(row[0]) for row in await cur.fetchall()]
+
     async def list_posts(self, author: str) -> list[dict]:
         """The author's own posts that still have a body, in chain (seq) order.
 
@@ -513,6 +556,26 @@ class HubStore(BaseStore):
         """Delete a blob from ``hub_blobs`` (tombstone drops cached media)."""
         await self._db.execute("DELETE FROM hub_blobs WHERE hash = ?", (blob_hash,))
         await self._db.commit()
+
+    async def blob_referenced(self, blob_hash: str, *, exclude: str | None = None) -> bool:
+        """True if any stored post other than ``exclude`` attaches ``blob_hash``.
+
+        Blobs are content addressed, so two posts carrying the same image share
+        one blob row; a tombstone may only drop the blob once no live post still
+        references it. ``instr`` narrows candidates cheaply; the attachment list
+        is then checked exactly, so a hash that merely appears in post text does
+        not keep a blob alive.
+        """
+        cur = await self._db.execute(
+            "SELECT hash, body FROM hub_objects "
+            "WHERE type = 'post' AND hash != ? AND instr(body, ?) > 0",
+            (exclude or "", blob_hash),
+        )
+        for _h, body in await cur.fetchall():
+            for att in json.loads(body).get("attachments") or []:
+                if isinstance(att, dict) and att.get("blob") == blob_hash:
+                    return True
+        return False
 
     # ---------------------------------------------------------------- profiles
     async def get_profile(self, author: str) -> dict | None:

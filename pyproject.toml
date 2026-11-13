@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tinyagentos"
-version = "1.0.0-beta.56"
+version = "1.0.0-beta.58"
 description = "Self-hosted AI agent memory system for low-power hardware"
 license = { file = "LICENSE" }
 # Upper-capped at <3.15 because the proxy extra's litellm (pinned
@@ -80,6 +80,8 @@ dependencies = [
     # relicence or CVE reached users without tripping any gate. Declared here so
     # it goes through the lockfile like everything else.
     "yt-dlp>=2025.1.15",
+    # needed by the hardware Wi-Fi connect route (PSK over the system bus in-process, never on a busctl argv).
+    "dbus-fast>=5.0.22; sys_platform == 'linux'",
     "pypdf>=6.17",
 ]
 

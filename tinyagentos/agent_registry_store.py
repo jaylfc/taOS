@@ -552,6 +552,23 @@ def mint_canonical_id(slug: str, ts: datetime) -> str:
     return f"{slug}-{date_part}-{time_part}"
 
 
+def _slug_globs(slug: str) -> tuple[str, str]:
+    """GLOB patterns for the canonical ids minted from *slug*.
+
+    mint_canonical_id yields ``{slug}-{YYYYMMDD}-{HHMMSS}`` and, on a
+    same-second slug collision, a ``-{2hex}`` suffix. Both shapes are matched
+    exactly (no trailing wildcard), so slug ``alpha`` does not match the id of
+    an agent whose own slug is ``alpha-20260101-120000-x``.
+    """
+    base = (
+        f"{slug}-"
+        "[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]"
+        "-"
+        "[0-9][0-9][0-9][0-9][0-9][0-9]"
+    )
+    return base, base + "-[0-9a-f][0-9a-f]"
+
+
 _RESERVED_PREFIXES = ("user-", "human-", "admin-", "taos-")
 
 
@@ -766,6 +783,155 @@ class AgentRegistryStore(BaseStore):
             ).fetchone()
             return _row_to_dict(row)
 
+    async def adopt(
+        self,
+        *,
+        canonical_id: str,
+        framework: str,
+        created_ts: str,
+        display_name: str = "",
+        user_id: str = "",
+        origin: str = "taos-deployed",
+        handle: str = "",
+        role: Optional[str] = None,
+        title: Optional[str] = None,
+        reports_to: Optional[str] = None,
+        capabilities: Optional[list[str]] = None,
+        status: str = "active",
+        revoked_at: Optional[float] = None,
+        allow_reserved: bool = False,
+    ) -> dict:
+        """Adopt an existing canonical_id byte-for-byte on this device.
+
+        Account-device-sync S1: a canonical_id is minted ONCE by the first
+        device and ADOPTED byte-for-byte by every device that joins the
+        account, with no migration of the id format. This path persists the
+        given id verbatim -- it never mints, never appends a collision
+        suffix, and never rewrites ``created_ts``.
+
+        Idempotent re-adopt: if a row with this canonical_id already exists
+        and its ``framework`` and ``handle`` match the arguments, that row is
+        returned unchanged and NO write occurs. If the id already belongs to
+        a different agent (different framework or handle) this raises
+        ``ValueError`` -- the existing row is never updated.
+
+        ``allow_reserved`` bypasses the reserved-prefix guard. It exists for
+        the internal taOS Agent adopt path, which legitimately names agents
+        under the reserved ``taos-`` prefix; it is deliberately a keyword the
+        HTTP layer never populates from a request body, so external callers
+        cannot reach it.
+
+        Raises ``RuntimeError`` if the store is not initialised, ``ValueError``
+        on a malformed id, a reserved prefix, an unknown status, a collision
+        with a different agent, or a handle already held by another active
+        agent.
+        """
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised - call init() first")
+
+        if not re.fullmatch(
+            r"[a-z0-9][a-z0-9-]*-[0-9]{8}-[0-9]{6}(-[0-9a-f]{2,})?",
+            canonical_id,
+        ):
+            raise ValueError(f"adopt: malformed canonical_id {canonical_id!r}")
+
+        if not allow_reserved:
+            slug = re.sub(
+                r"-[0-9]{8}-[0-9]{6}(-[0-9a-f]{2,})?$", "", canonical_id
+            )
+            _check_reserved_prefix(slug, display_name)
+
+        if status not in VALID_STATUSES:
+            raise ValueError(
+                f"unknown status {status!r}; valid: {sorted(VALID_STATUSES)}"
+            )
+
+        if reports_to is not None and reports_to == canonical_id:
+            raise ValueError("an agent cannot report to itself")
+
+        if status != "revoked" and revoked_at is not None:
+            raise ValueError(
+                "adopt: revoked_at may only be set when status is 'revoked'"
+            )
+
+        async with self._write_lock:
+            capabilities = capabilities or []
+            caps_json = json.dumps(capabilities)
+
+            existing = await (
+                await self._db.execute(
+                    "SELECT * FROM agent_registry WHERE canonical_id = ?",
+                    (canonical_id,),
+                )
+            ).fetchone()
+            if existing is not None:
+                rec = _row_to_dict(existing)
+                if (
+                    rec.get("framework") == framework
+                    and rec.get("handle") == handle
+                ):
+                    return rec
+                raise ValueError(
+                    f"adopt: canonical_id {canonical_id!r} already belongs to a "
+                    f"different agent"
+                )
+
+            if handle:
+                want = _slugify(handle)
+                holder = None
+                if want:
+                    cursor = await self._db.execute(
+                        "SELECT * FROM agent_registry WHERE handle != '' "
+                        "AND status = ? ORDER BY id",
+                        ("active",),
+                    )
+                    rows = await cursor.fetchall()
+                    for row in rows:
+                        rec = _row_to_dict(row)
+                        if _slugify(rec.get("handle") or "") == want:
+                            holder = rec
+                            break
+                if holder is not None and holder.get("canonical_id") != canonical_id:
+                    raise ValueError(
+                        f"adopt: handle {handle!r} is already owned by another "
+                        f"active agent ({holder.get('canonical_id')})"
+                    )
+
+            try:
+                revoked_value = None
+                if status == "revoked":
+                    revoked_value = (
+                        revoked_at if revoked_at is not None else time.time()
+                    )
+                await self._db.execute(
+                    """
+                    INSERT INTO agent_registry
+                        (canonical_id, display_name, framework, user_id, origin,
+                         handle, role, title, reports_to, capabilities, created_ts, status,
+                         revoked_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        canonical_id, display_name, framework, user_id, origin,
+                        handle, role, title, reports_to, caps_json, created_ts, status,
+                        revoked_value,
+                    ),
+                )
+                await self._db.commit()
+            except aiosqlite.IntegrityError as exc:
+                await self._db.rollback()
+                raise ValueError(
+                    f"adopt: could not persist canonical_id {canonical_id!r}"
+                ) from exc
+
+            row = await (
+                await self._db.execute(
+                    "SELECT * FROM agent_registry WHERE canonical_id = ?",
+                    (canonical_id,),
+                )
+            ).fetchone()
+            return _row_to_dict(row)
+
     # ------------------------------------------------------------------
     # Read
     # ------------------------------------------------------------------
@@ -826,28 +992,42 @@ class AgentRegistryStore(BaseStore):
         # a caller-supplied string must not reach the matcher.
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", slug or ""):
             return None
-        # mint_canonical_id yields {slug}-{YYYYMMDD}-{HHMMSS} (and, on a
-        # same-second slug collision, a -{2hex} suffix). GLOBing the 8-6 digit
-        # tail pins the slug to its own canonical-id boundary.
-        pattern = (
-            f"{slug}-"
-            "[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]"
-            "-"
-            "[0-9][0-9][0-9][0-9][0-9][0-9]"
-            "*"
-        )
+        pattern, suffixed = _slug_globs(slug)
         if status is None:
             cursor = await self._db.execute(
-                "SELECT * FROM agent_registry WHERE canonical_id GLOB ? ORDER BY id LIMIT 1",
-                (pattern,),
+                "SELECT * FROM agent_registry WHERE (canonical_id GLOB ? OR canonical_id GLOB ?)"
+                " ORDER BY id LIMIT 1",
+                (pattern, suffixed),
             )
         else:
             cursor = await self._db.execute(
-                "SELECT * FROM agent_registry WHERE canonical_id GLOB ? AND status = ? ORDER BY id LIMIT 1",
-                (pattern, status),
+                "SELECT * FROM agent_registry WHERE (canonical_id GLOB ? OR canonical_id GLOB ?)"
+                " AND status = ? ORDER BY id LIMIT 1",
+                (pattern, suffixed, status),
             )
         row = await cursor.fetchone()
         return _row_to_dict(row) if row else None
+
+    async def count_by_slug(self, slug: str, *, status: str = "active") -> int:
+        """How many entries with *status* decode to *slug* (same match as get_by_slug).
+
+        A slug is not unique: two users can each register ``alpha`` and get
+        distinct canonical ids. Owner checks that accept a bare slug use this
+        to refuse the ambiguous case instead of silently taking the oldest row.
+        """
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", slug or ""):
+            return 0
+        pattern, suffixed = _slug_globs(slug)
+        row = await (
+            await self._db.execute(
+                "SELECT COUNT(*) FROM agent_registry"
+                " WHERE (canonical_id GLOB ? OR canonical_id GLOB ?) AND status = ?",
+                (pattern, suffixed, status),
+            )
+        ).fetchone()
+        return int(row[0]) if row else 0
 
     async def get_by_handle(self, handle: str, *, status: str = "active") -> Optional[dict]:
         """Return the oldest entry with *handle* and *status*, or ``None``.

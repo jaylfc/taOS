@@ -339,9 +339,12 @@ async def test_v2_messages_before_is_not_forwarded_as_since(client):
         resp = await client.get("/api/chat/v2/channels/coord/messages?before=1234.5")
     assert resp.status_code == 400, resp.text
     assert resp.json() == BEFORE_400
-    for call in mock_bus.call_args_list:
-        params = call.kwargs.get("params") or {}
-        assert params.get("since") != 1234.5, "before leaked into the bus since cursor"
+    # The bus should be called with since=None (not the before value)
+    mock_bus.assert_awaited_once()
+    call = mock_bus.call_args
+    params = call.kwargs.get("params") or {}
+    # Contract: since must be None/absent when before is used
+    assert params.get("since") is None, "before leaked into the bus since cursor"
 
 
 @pytest.mark.asyncio

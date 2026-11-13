@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from tinyagentos.agent_token_auth import check_agent_scope
 from tinyagentos.auth_context import (
     CurrentUser,
     current_user,
@@ -75,16 +76,11 @@ async def get_agent_github_grants(
     permissions extracted from the encrypted secret value.
 
     Requires a valid session cookie — unauthenticated callers receive 401.
-    Only the agent's owner or an admin may read its grants (403 otherwise).
+    Only the agent's owner or an admin may read its grants (403 otherwise). An
+    agent the registry cannot attribute is readable by an admin only, the same
+    rule as the plaintext secrets route above.
     """
-    registry = getattr(request.app.state, "agent_registry", None)
-    if registry is not None:
-        try:
-            agent = await registry.get_by_handle(agent_name)
-        except RuntimeError:
-            agent = None
-        if agent is not None:
-            require_owner_or_admin(user, agent["user_id"])
+    await require_agent_owner_or_admin(request, user, agent_name)
     store = request.app.state.secrets
     installations = await store.get_agent_github_installations(agent_name)
     return installations
@@ -148,3 +144,43 @@ async def delete_secret(request: Request, name: str):
     if not deleted:
         return JSONResponse({"error": "Secret not found"}, status_code=404)
     return {"status": "deleted"}
+
+
+@router.get("/api/agents/self/secrets/{name}")
+async def get_self_secret(
+    request: Request,
+    name: str,
+):
+    """Return a secret value if it is granted to the agent named by the verified
+    token AND the token carries the ``secrets_read_own`` scope.
+
+    The agent name is resolved from the token's canonical_id -- never from the
+    path parameter ``name``.  If the secret is not granted to that agent, or the
+    name is unknown, a 404 is returned with an identical body (no existence
+    oracle).  Missing ``secrets_read_own`` scope yields 403.
+    """
+    # Verify the token holds the required scope and get the canonical_id.
+    cid = await check_agent_scope(request, "secrets_read_own")
+    if not cid:
+        raise HTTPException(status_code=401, detail="agent token required")
+    # Resolve the agent name from the canonical_id via config.agents.
+    config = getattr(request.app.state, "config", None)
+    agent_name = None
+    if config is not None:
+        for agent in config.agents:
+            if isinstance(agent, dict) and agent.get("registry_canonical_id") and agent.get("registry_canonical_id") == cid:
+                agent_name = agent.get("name")
+                break
+    if agent_name is None:
+        # No config agent carries registry_canonical_id == cid, so this token
+        # is not bound to any config agent. Return the SAME body as an
+        # ungranted name so there is no oracle on whether the caller is bound.
+        raise HTTPException(status_code=404, detail="Secret not found")
+    # Look up secrets granted to this agent.
+    store = request.app.state.secrets
+    secrets = await store.get_agent_secrets(agent_name)
+    # Find the requested secret by name; return 404 if not granted or unknown.
+    for s in secrets:
+        if s["name"] == name:
+            return {"name": s["name"], "value": s["value"]}
+    raise HTTPException(status_code=404, detail="Secret not found")

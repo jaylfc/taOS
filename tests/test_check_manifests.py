@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from unittest.mock import patch, mock_open
 
 import yaml
 
@@ -116,6 +117,47 @@ def test_unparseable_yaml_is_an_error(tmp_path: Path) -> None:
     assert any("not valid YAML" in e for e in errors)
 
 
+def test_service_manifest_os_error_reported(tmp_path: Path) -> None:
+    """An OSError when reading a service manifest (e.g. permission denied)
+    must be reported as an error, not silently skipped."""
+    d = tmp_path / "services" / "unreadable"
+    d.mkdir(parents=True)
+    (d / "manifest.yaml").write_text("id: unreadable\nlifecycle: {auto_manage: true}")
+
+    with patch("pathlib.Path.read_text", side_effect=OSError("Permission denied")):
+        errors = check_manifests.lint_managed(tmp_path)
+
+    assert any("could not be read (OSError)" in e for e in errors)
+    assert any("unreadable" in e for e in errors)
+
+
+def test_service_manifest_unicode_error_reported(tmp_path: Path) -> None:
+    """A UnicodeError when reading a service manifest must be reported
+    as an error, not silently skipped."""
+    d = tmp_path / "services" / "bad-encoding"
+    d.mkdir(parents=True)
+    (d / "manifest.yaml").write_text("id: bad-encoding\nlifecycle: {auto_manage: true}")
+
+    with patch("pathlib.Path.read_text", side_effect=UnicodeDecodeError("utf-8", b"", 0, 1, "invalid")):
+        errors = check_manifests.lint_managed(tmp_path)
+
+    assert any("could not be read (UnicodeDecodeError)" in e for e in errors)
+    assert any("bad-encoding" in e for e in errors)
+
+
+def test_model_manifest_os_error_reported(tmp_path: Path) -> None:
+    """An OSError when reading a model manifest must be reported as an error."""
+    d = tmp_path / "models" / "unreadable-model"
+    d.mkdir(parents=True)
+    (d / "manifest.yaml").write_text("id: unreadable-model\nfamily: test")
+
+    with patch("pathlib.Path.read_text", side_effect=OSError("Permission denied")):
+        warns, errors = check_manifests.lint_model_fields(tmp_path)
+
+    assert any("could not be read (OSError)" in e for e in errors)
+    assert any("unreadable-model" in e for e in errors)
+
+
 def test_unit_without_service_suffix_is_flagged(tmp_path: Path) -> None:
     m = _managed_ok()
     m["lifecycle"]["unit"] = "rkllama"  # missing .service
@@ -153,3 +195,310 @@ def test_real_catalog_is_clean() -> None:
     root = Path(__file__).resolve().parent.parent / "app-catalog"
     errors = check_manifests.lint_managed(root)
     assert errors == [], "real catalog failed managed-lint:\n" + "\n".join(errors)
+
+
+# --- #148 Phase 0: model capability-field lint (warn-only) ---
+
+def _model_ok(mid: str = "qwen3-8b") -> dict:
+    return {
+        "id": mid,
+        "name": mid,
+        "type": "model",
+        "version": "1.0.0",
+        "family": "qwen3",
+        "min_context": 4096,
+        "max_context": 131072,
+        "variants": [
+            {
+                "id": "q4",
+                "format": "gguf",
+                "size_mb": 5000,
+                "vram_floor_mb": 6000,
+                "approx_tok_s_by_profile": {"gaming-pc-nvidia": 45.0},
+            }
+        ],
+    }
+
+
+def _write_model(root: Path, mid: str, manifest: dict) -> None:
+    d = root / "models" / mid
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "manifest.yaml").write_text(yaml.safe_dump(manifest))
+
+
+def test_model_fields_complete_passes(tmp_path: Path) -> None:
+    _write_model(tmp_path, "qwen3-8b", _model_ok())
+    warns, errors = check_manifests.lint_model_fields(tmp_path)
+    assert warns == []
+    assert errors == []
+
+
+def test_model_fields_missing_family_warns(tmp_path: Path) -> None:
+    m = _model_ok()
+    del m["family"]
+    _write_model(tmp_path, "qwen3-8b", m)
+    warns, errors = check_manifests.lint_model_fields(tmp_path)
+    assert any("family" in w for w in warns)
+    assert errors == []
+
+
+def test_model_fields_missing_context_warns(tmp_path: Path) -> None:
+    m = _model_ok()
+    del m["min_context"]
+    del m["max_context"]
+    _write_model(tmp_path, "qwen3-8b", m)
+    warns, errors = check_manifests.lint_model_fields(tmp_path)
+    assert any("min_context" in w for w in warns)
+    assert errors == []
+
+
+def test_model_fields_missing_envelope_warns(tmp_path: Path) -> None:
+    m = _model_ok()
+    del m["variants"][0]["vram_floor_mb"]
+    del m["variants"][0]["approx_tok_s_by_profile"]
+    _write_model(tmp_path, "qwen3-8b", m)
+    warns, errors = check_manifests.lint_model_fields(tmp_path)
+    assert any("envelope" in w for w in warns)
+    assert errors == []
+
+
+def test_model_fields_non_model_skipped(tmp_path: Path) -> None:
+    _write(tmp_path, "rkllama", _managed_ok())
+    # lint_model_fields only looks under models/, so the service manifest
+    # is invisible to it.
+    warns, errors = check_manifests.lint_model_fields(tmp_path)
+    assert warns == []
+    assert errors == []
+
+
+def test_malformed_model_yaml_is_an_error(tmp_path: Path) -> None:
+    """Unparseable model YAML must be reported, not silently skipped.
+
+    lint_managed scans only services/, so a ``continue`` here left the gate
+    printing "clean" over a model manifest nothing could read.
+    """
+    d = tmp_path / "models" / "broken"
+    d.mkdir(parents=True)
+    (d / "manifest.yaml").write_text("id: broken\nfamily: {: bad")
+    warns, errors = check_manifests.lint_model_fields(tmp_path)
+    assert any("not valid YAML" in e for e in errors)
+    assert any("broken" in e for e in errors)
+
+
+def test_non_mapping_model_yaml_is_an_error(tmp_path: Path) -> None:
+    d = tmp_path / "models" / "listy"
+    d.mkdir(parents=True)
+    (d / "manifest.yaml").write_text("- id: listy\n")
+    warns, errors = check_manifests.lint_model_fields(tmp_path)
+    assert any("top-level is not a mapping" in e for e in errors)
+
+
+def test_main_fails_the_gate_on_malformed_model(tmp_path: Path) -> None:
+    """The gate must exit non-zero when a model manifest is malformed."""
+    d = tmp_path / "models" / "broken"
+    d.mkdir(parents=True)
+    (d / "manifest.yaml").write_text("id: broken\nfamily: {: bad")
+    assert check_manifests.main(["managed-lint", "--root", str(tmp_path)]) == 1
+
+def test_binary_manifest_unicode_decode_error(tmp_path: Path) -> None:
+    """A model manifest with binary bytes b"\xff\xfe" must be reported as unreadable."""
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "broken-model").mkdir()
+    (models_dir / "broken-model" / "manifest.yaml").write_bytes(b"\xff\xfe")
+    
+    import io
+    import sys
+    from contextlib import redirect_stderr
+    _stderr = io.StringIO()
+    with redirect_stderr(_stderr):
+        exit_code = check_manifests.main(["managed-lint", "--root", str(tmp_path)])
+    stderr = _stderr.getvalue()
+    assert exit_code == 1, f"Expected exit code 1, got {exit_code}"
+    assert "could not be read (UnicodeDecodeError)" in stderr, f"Expected error message in stderr, got: {stderr}"
+
+
+def test_fifteen_model_warns_capped(capsys) -> None:
+    """15 model manifests missing 'family' print count + first 10 warnings only."""
+    from pathlib import Path
+    import yaml
+    import tempfile
+
+    tmp = Path(tempfile.mkdtemp())
+    models_dir = tmp / "models"
+    models_dir.mkdir()
+
+    # Create 15 model manifests missing 'family' but with min_context/max_context
+    for i in range(15):
+        mid = f"model-{i:02d}"
+        (m_dir := models_dir / mid).mkdir()
+        (m_dir / "manifest.yaml").write_text(yaml.safe_dump({
+            "id": mid,
+            "name": mid,
+            "type": "model",
+            "version": "1.0.0",
+            "min_context": 4096,
+            "max_context": 131072,
+        }))
+
+    
+    exit_code = check_manifests.main(["managed-lint", "--root", str(tmp)])
+    assert exit_code == 0  # exits 0 when warnings are non-fatal
+
+    output = capsys.readouterr().err
+    lines = output.splitlines()
+    assert any(line == "15 model capability field warnings" for line in lines)
+    # Count warn: lines - should be exactly 10
+    warn_lines = [l for l in lines if l.startswith("  warn:")]
+    assert len(warn_lines) == 10, f"Expected 10 warn lines, got {len(warn_lines)}"
+    # Non-verbose prints only the first ten warnings, then a hidden notice.
+    assert any("(more warnings hidden" in l for l in lines), "missing hidden-warnings notice"
+    # The first ten warnings are for model-00 through model-09, in order.
+    warning_texts = [l.replace("  warn: ", "") for l in warn_lines]
+    expected_prefixes = [f"model-{i:02d}: missing 'family'" for i in range(10)]
+    assert all(t.startswith(p) for t, p in zip(warning_texts, expected_prefixes)), warning_texts
+    assert len(warning_texts) == len(set(warning_texts)), "Duplicate warning texts found"
+
+
+def test_fifteen_model_warns_verbose(capsys) -> None:
+    """Same 15 manifests with --verbose print all 15 warn lines exactly once."""
+    from pathlib import Path
+    import yaml
+    import tempfile
+
+    tmp = Path(tempfile.mkdtemp())
+    models_dir = tmp / "models"
+    models_dir.mkdir()
+
+    # Create 15 model manifests missing 'family' but with min_context/max_context
+    for i in range(15):
+        mid = f"model-{i:02d}"
+        (m_dir := models_dir / mid).mkdir()
+        (m_dir / "manifest.yaml").write_text(yaml.safe_dump({
+            "id": mid,
+            "name": mid,
+            "type": "model",
+            "version": "1.0.0",
+            "min_context": 4096,
+            "max_context": 131072,
+        }))
+
+    
+    exit_code = check_manifests.main(["managed-lint", "--root", str(tmp), "--verbose"])
+    assert exit_code == 0  # exits 0 when warnings are non-fatal
+
+    output = capsys.readouterr().err
+    # Count warn: lines - should be exactly 15
+    warn_lines = [l for l in output.splitlines() if l.startswith("  warn:")]
+    assert len(warn_lines) == 15, f"Expected 15 warn lines, got {len(warn_lines)}"
+    # Each warning text should appear exactly once
+    warning_texts = [l.replace("  warn: ", "") for l in warn_lines]
+    assert len(warning_texts) == len(set(warning_texts)), "Duplicate warning texts found"
+
+
+def test_model_missing_family_and_context_counts_both_warnings(capsys) -> None:
+    """One manifest missing both 'family' and context fields produces two warnings;
+    the summary line reflects the total count."""
+    from pathlib import Path
+    import yaml
+    import tempfile
+
+    tmp = Path(tempfile.mkdtemp())
+    models_dir = tmp / "models"
+    models_dir.mkdir()
+
+    # One model manifest missing both 'family' and min_context/max_context
+    mid = "model-missing-both"
+    (m_dir := models_dir / mid).mkdir()
+    (m_dir / "manifest.yaml").write_text(yaml.safe_dump({
+        "id": mid,
+        "name": mid,
+        "type": "model",
+        "version": "1.0.0",
+        "variants": [
+            {"id": "q4", "format": "gguf", "size_mb": 5000, "vram_floor_mb": 6000}
+        ],
+    }))
+
+    exit_code = check_manifests.main(["managed-lint", "--root", str(tmp)])
+    assert exit_code == 0
+
+    output = capsys.readouterr().err
+    lines = output.splitlines()
+    # Summary line should show 2 warnings (1 for family, 1 for context)
+    assert any(line == "2 model capability field warnings" for line in lines)
+    # Both warning texts should be present
+    warn_lines = [l for l in lines if l.startswith("  warn:")]
+    assert len(warn_lines) == 2
+    warning_texts = [l.replace("  warn: ", "") for l in warn_lines]
+    assert any("family" in w for w in warning_texts)
+    assert any("min_context" in w for w in warning_texts)
+
+
+def test_model_single_context_field_no_warning(capsys) -> None:
+    """A manifest with only min_context OR only max_context (not both missing)
+    should NOT warn about missing context fields."""
+    from pathlib import Path
+    import yaml
+    import tempfile
+
+    tmp = Path(tempfile.mkdtemp())
+    models_dir = tmp / "models"
+    models_dir.mkdir()
+
+    # Model with only min_context (no max_context, no family)
+    mid = "model-only-min-context"
+    (m_dir := models_dir / mid).mkdir()
+    (m_dir / "manifest.yaml").write_text(yaml.safe_dump({
+        "id": mid,
+        "name": mid,
+        "type": "model",
+        "version": "1.0.0",
+        "min_context": 4096,
+        "variants": [
+            {"id": "q4", "format": "gguf", "size_mb": 5000, "vram_floor_mb": 6000}
+        ],
+    }))
+
+    exit_code = check_manifests.main(["managed-lint", "--root", str(tmp)])
+    assert exit_code == 0
+
+    output = capsys.readouterr().err
+    lines = output.splitlines()
+    # Should only warn about missing family (1 warning), not about context
+    assert any(line == "1 model capability field warnings" for line in lines)
+    warn_lines = [l for l in lines if l.startswith("  warn:")]
+    assert len(warn_lines) == 1
+    warning_texts = [l.replace("  warn: ", "") for l in warn_lines]
+    assert any("family" in w for w in warning_texts)
+    assert not any("min_context" in w or "max_context" in w for w in warning_texts)
+
+    # Model with only max_context (no min_context, no family)
+    tmp2 = Path(tempfile.mkdtemp())
+    models_dir2 = tmp2 / "models"
+    models_dir2.mkdir()
+
+    mid2 = "model-only-max-context"
+    (m_dir2 := models_dir2 / mid2).mkdir()
+    (m_dir2 / "manifest.yaml").write_text(yaml.safe_dump({
+        "id": mid2,
+        "name": mid2,
+        "type": "model",
+        "version": "1.0.0",
+        "max_context": 131072,
+        "variants": [
+            {"id": "q4", "format": "gguf", "size_mb": 5000, "vram_floor_mb": 6000}
+        ],
+    }))
+
+    exit_code = check_manifests.main(["managed-lint", "--root", str(tmp2)])
+    assert exit_code == 0
+
+    output = capsys.readouterr().err
+    lines = output.splitlines()
+    assert any(line == "1 model capability field warnings" for line in lines)
+    warn_lines = [l for l in lines if l.startswith("  warn:")]
+    assert len(warn_lines) == 1
+    warning_texts = [l.replace("  warn: ", "") for l in warn_lines]
+    assert any("family" in w for w in warning_texts)
+    assert not any("min_context" in w or "max_context" in w for w in warning_texts)

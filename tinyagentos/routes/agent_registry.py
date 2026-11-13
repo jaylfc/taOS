@@ -33,7 +33,7 @@ from pydantic import BaseModel, field_validator
 
 from tinyagentos.agent_registry_store import TOKEN_STORAGE_GUIDANCE, mint_registry_token
 from tinyagentos.agent_token_auth import check_agent_scope
-from tinyagentos.auth_context import CurrentUser, current_user
+from tinyagentos.auth_context import CurrentUser, current_user, require_admin
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +94,7 @@ _ALLOWED_SCOPES = frozenset({
     "files_read", "files_write",
     "registry_feeds_read",
     "chat_session",
+    "secrets_read_own",
     "project_tasks",
     "project_tasks_create",
     "project_tasks_update",
@@ -105,6 +106,8 @@ _ALLOWED_SCOPES = frozenset({
     "observatory_control",
     "notifications_write",
     "memory_read",
+    # Memory access: write to an agent's own memory namespace.
+    "memory_write",
 })
 
 
@@ -265,6 +268,14 @@ async def register_agent(
     """
     store = _get_store(request)
     private_pem, _public_pem = _get_keypair(request)
+
+    # Minting an active (taos-deployed or any non-external-selfjoin) identity
+    # is privileged: only an admin session or the host local token may do it.
+    # external-selfjoin rows are created pending and need consent, so they stay
+    # open to any signed-in user.
+    _effective_origin = body.origin or "taos-deployed"
+    if _effective_origin != "external-selfjoin":
+        require_admin(request)
 
     try:
         record = await store.register(

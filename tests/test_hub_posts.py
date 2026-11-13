@@ -183,6 +183,52 @@ class TestTombstone:
         with pytest.raises(ValueError):
             await posts.delete_post(store, "nonexistent-hash")
 
+    @pytest.mark.asyncio
+    async def test_delete_keeps_blob_still_referenced_by_another_post(self, store, data_dir):
+        # Blobs are content addressed, so the same image posted twice is ONE blob.
+        # Deleting one of the posts must not break the other.
+        blob = b"\x89PNG\r\n\x1a\n shared png bytes"
+        h = await store.put_blob(blob, mime="image/png")
+        att = [{"blob": h, "size": len(blob), "mime": "image/png"}]
+        first = await posts.append_post(store, visibility="public", text="a", attachments=att)
+        second = await posts.append_post(store, visibility="public", text="b", attachments=att)
+
+        await posts.delete_post(store, hub_store.object_hash(first))
+        assert await store.get_blob(h) is not None
+        assert await store.get_object(hub_store.object_hash(second)) is not None
+
+        # Once the last referencing post is gone, the blob goes too.
+        await posts.delete_post(store, hub_store.object_hash(second))
+        assert await store.get_blob(h) is None
+
+    @pytest.mark.asyncio
+    async def test_delete_refuses_a_post_this_node_did_not_author(self, store, data_dir):
+        # Only the origin may delete. A foreign post held locally (a friend's post
+        # once caching lands) must not be tombstoned onto this node's chain.
+        own = await posts.append_post(store, visibility="public", text="mine")
+        foreign = {
+            **posts.build_post(visibility="public", text="theirs", author="f" * 64),
+            "seq": 1,
+            "sig": "00" * 64,
+        }
+        foreign_hash = await store.put_object(foreign)
+        own_head = await store.get_chain_head(identity.signing_fingerprint())
+
+        with pytest.raises(ValueError):
+            await posts.delete_post(store, foreign_hash)
+
+        assert await store.get_object(foreign_hash) is not None
+        head = await store.get_chain_head(identity.signing_fingerprint())
+        assert head == own_head
+        assert head["hash"] == hub_store.object_hash(own)
+
+    @pytest.mark.asyncio
+    async def test_delete_refuses_a_non_post_object(self, store, data_dir):
+        p = await posts.append_post(store, visibility="public", text="x")
+        tomb = await posts.delete_post(store, hub_store.object_hash(p))
+        with pytest.raises(ValueError):
+            await posts.delete_post(store, hub_store.object_hash(tomb))
+
 
 class TestImageIngest:
     def _make_exif_jpeg(self) -> bytes:
@@ -223,6 +269,72 @@ class TestImageIngest:
             posts.ingest_image(b"this is not an image", "text/plain")
 
 
+import gc
+
+
+@pytest.mark.asyncio
+async def test_append_lock_weakref_cleanup(store, data_dir):
+    """_append_lock uses WeakKeyDictionary so GC of a store removes its lock.
+
+    Regression: id(store)-keyed dict reused lock after GC when a new store
+    got the same id() as a GC'd one, causing RuntimeError on a different
+    event loop.
+    """
+    # Clear the module-level dict so other tests don't leak in.
+    posts._append_locks.clear()
+
+    s = hub_store.HubStore(hub_store.default_db_path())
+    await s.init()
+    # First lock: create and immediately delete
+    posts._append_lock(s)
+    # Close the store so its aiosqlite worker thread exits cleanly.
+    await s.close()
+    # Delete strong reference; WeakKeyDictionary should reclaim the lock.
+    del s
+    gc.collect()
+    # After GC the weakref key is gone, so the dict should be empty.
+    assert len(posts._append_locks) == 0, (
+        f"Expected empty dict after GC, got {len(posts._append_locks)}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_append_lock_distinct_stores_get_distinct_locks(store, data_dir):
+    """Two live distinct stores must get two distinct locks."""
+    posts._append_locks.clear()
+
+    s1 = hub_store.HubStore(hub_store.default_db_path())
+    s2 = hub_store.HubStore(hub_store.default_db_path())
+    await s1.init()
+    await s2.init()
+    try:
+        lock1 = posts._append_lock(s1)
+        lock2 = posts._append_lock(s2)
+        assert lock1 is not lock2, (
+            "Different stores must get different locks"
+        )
+    finally:
+        await s1.close()
+        await s2.close()
+
+
+@pytest.mark.asyncio
+async def test_append_lock_same_store_twice(store, data_dir):
+    """The same store called twice must return the same lock."""
+    posts._append_locks.clear()
+
+    s = hub_store.HubStore(hub_store.default_db_path())
+    await s.init()
+    try:
+        lock1 = posts._append_lock(s)
+        lock2 = posts._append_lock(s)
+        assert lock1 is lock2, (
+            "Same store called twice must return the same lock"
+        )
+    finally:
+        await s.close()
+
+
 @pytest.mark.asyncio
 async def test_concurrent_appends_do_not_orphan(store, monkeypatch):
     """Two racing appends must both land on the chain with distinct seqs.
@@ -234,12 +346,61 @@ async def test_concurrent_appends_do_not_orphan(store, monkeypatch):
     import asyncio as _asyncio
     from tinyagentos.hub import posts as hub_posts
 
-    results = await _asyncio.gather(
-        hub_posts.append_post(store, visibility="circle", text="one", author="racer"),
-        hub_posts.append_post(store, visibility="circle", text="two", author="racer"),
-        hub_posts.append_post(store, visibility="circle", text="three", author="racer"),
+    store_b = hub_store.HubStore(hub_store.default_db_path())
+    store_c = hub_store.HubStore(hub_store.default_db_path())
+    await store_b.init()
+    await store_c.init()
+    shared_lock = _asyncio.Lock()
+    monkeypatch.setattr(hub_posts, "_append_lock", lambda _store: shared_lock)
+    try:
+        results = await _asyncio.gather(
+            hub_posts.append_post(store, visibility="circle", text="one", author="racer"),
+            hub_posts.append_post(store_b, visibility="circle", text="two", author="racer"),
+            hub_posts.append_post(store_c, visibility="circle", text="three", author="racer"),
+        )
+        seqs = sorted(p["seq"] for p in results)
+        assert seqs == [1, 2, 3]
+        head = await store.get_chain_head("racer")
+        assert head["seq"] == 3
+    finally:
+        await store_b.close()
+        await store_c.close()
+
+
+@pytest.mark.asyncio
+async def test_delete_racing_a_post_of_the_same_blob_leaves_no_dangling_reference(store, data_dir):
+    """A post never ends up referencing a blob that a racing delete dropped.
+
+    The shared-blob check and the drop ran outside the append lock, so a post
+    of the same image appended between them was stored pointing at a blob the
+    delete then removed.
+    """
+    import asyncio as _asyncio
+
+    blob = b"\x89PNG\r\n\x1a\n raced png bytes"
+    h = await store.put_blob(blob, mime="image/png")
+    att = [{"blob": h, "size": len(blob), "mime": "image/png"}]
+    first = await posts.append_post(store, visibility="public", text="a", attachments=att)
+
+    real_drop_blob = store.drop_blob
+    checked = _asyncio.Event()
+
+    async def slow_drop_blob(blob_hash):
+        checked.set()
+        await _asyncio.sleep(0.05)
+        await real_drop_blob(blob_hash)
+
+    store.drop_blob = slow_drop_blob
+
+    async def racing_post():
+        await checked.wait()
+        try:
+            return await posts.append_post(store, visibility="public", text="b", attachments=att)
+        except ValueError:
+            return None
+
+    _tomb, second = await _asyncio.gather(
+        posts.delete_post(store, hub_store.object_hash(first)), racing_post()
     )
-    seqs = sorted(p["seq"] for p in results)
-    assert seqs == [1, 2, 3]
-    head = await store.get_chain_head("racer")
-    assert head["seq"] == 3
+    if second is not None:
+        assert await store.get_blob(h) is not None, "stored post references a dropped blob"

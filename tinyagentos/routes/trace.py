@@ -54,6 +54,8 @@ async def post_trace(request: Request, body: TraceIn):
         return JSONResponse({"error": f"unknown kind {body.kind!r}"}, status_code=400)
     if body.kind in SERVER_ONLY_KINDS:
         return JSONResponse({"error": f"kind {body.kind!r} is written by taOS only"}, status_code=400)
+    if body.kind == "task_report":
+        return JSONResponse({"error": "kind 'task_report' is written by taOS only"}, status_code=400)
     agent_name = getattr(request.state, "agent_name", None) or body.agent_name
     safe_slug = _safe_slug(agent_name)
     if not agent_name or safe_slug == "_system":

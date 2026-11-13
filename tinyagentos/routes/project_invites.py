@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field, field_validator
 from tinyagentos.agent_registry_store import _slugify, agent_slug_or_fallback
 from tinyagentos.auth_context import CurrentUser, current_user, require_owner_or_admin
 from tinyagentos.auth_middleware import rate_limit_ok, rate_limit_retry_after
-from tinyagentos.notification_labels import project_label
+from tinyagentos.notification_labels import admin_user_ids, project_label
 from tinyagentos.projects.invite_store import (
     InviteAlreadyRedeemedError,
     InviteExpiredError,
@@ -53,6 +53,10 @@ class MintOsInviteIn(BaseModel):
     approval_mode: str = Field(default="auto", pattern="^(auto|manual)$")
     check_interval_secs: int = Field(default=1800, ge=60)
     display_name: str | None = Field(default=None, max_length=64)
+    # How long the invite stays redeemable. Omitted means the store default
+    # (1 hour). Capped at 24 hours: the PIN is the security gate, expiry is
+    # hygiene, but an indefinitely live link is not a state we want.
+    ttl_secs: int | None = Field(default=None, ge=60, le=86400)
 
     @field_validator("display_name")
     @classmethod
@@ -985,6 +989,7 @@ async def mint_os_invite(
             check_interval_secs=payload.check_interval_secs,
             created_by=user.user_id,
             display_name=payload.display_name,
+            ttl_secs=payload.ttl_secs,
         )
     except InvitePendingCapError as exc:
         return JSONResponse({"error": str(exc)}, status_code=429)
@@ -1100,6 +1105,16 @@ async def mint_collab_invite(
         return JSONResponse({"error": "project not found"}, status_code=404)
     require_owner_or_admin(user, project["user_id"])
 
+    # ---- collaboration kill switch: nothing goes out while off or paused ----
+    from tinyagentos.collab_settings import outbound_refusal
+
+    refusal = outbound_refusal(request.app.state.data_dir, payload.contact_id)
+    if refusal is not None:
+        return JSONResponse(
+            {"error": refusal},
+            status_code=503 if refusal == "collaboration disabled" else 403,
+        )
+
     # ---- validate contact exists and is active ----
     if contacts_store is None:
         return JSONResponse(
@@ -1182,6 +1197,7 @@ async def mint_collab_invite(
                 delivery_error = "peer handshake incomplete: no token for contact"
             elif not await deliver_to_peer(
                 contacts_store, payload.contact_id, "/api/peer/inbox", envelope,
+                data_dir=request.app.state.data_dir,
             ):
                 delivery_error = (
                     "failed to deliver invite envelope to any peer endpoint"
@@ -1464,19 +1480,29 @@ def _notify_pending_invite(request: Request, record: dict) -> None:
                 if project_id
                 else ""
             )
-            await notifs.add(
-                title="Access request",
-                message=f"{record['identity_claim']} is requesting {', '.join(scopes)}{on_project}",
-                level="info",
-                source="auth_requests",
-                data={
-                    "request_id": record["id"],
-                    "identity_claim": record["identity_claim"],
-                    "framework": record["framework"],
-                    "requested_scopes": list(scopes),
-                    "project_id": project_id,
-                },
-            )
+            # Only an admin may approve, and the text names the project, so it
+            # goes to each admin rather than to every user (tsk-g7w4yu). One
+            # failed write must not skip the remaining admins, and only the
+            # first row posts to webhooks so a webhook sees the request once.
+            for i, admin_id in enumerate(admin_user_ids(request.app.state)):
+                try:
+                    await notifs.add(
+                        title="Access request",
+                        message=f"{record['identity_claim']} is requesting {', '.join(scopes)}{on_project}",
+                        level="info",
+                        source="auth_requests",
+                        user_id=admin_id,
+                        webhook=i == 0,
+                        data={
+                            "request_id": record["id"],
+                            "identity_claim": record["identity_claim"],
+                            "framework": record["framework"],
+                            "requested_scopes": list(scopes),
+                            "project_id": project_id,
+                        },
+                    )
+                except Exception:
+                    logger.warning("invite access-request notification to %s failed", admin_id, exc_info=True)
 
         asyncio.create_task(_add())
     except Exception:  # noqa: BLE001

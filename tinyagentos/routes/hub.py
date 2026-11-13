@@ -12,8 +12,8 @@ here talks to a peer.
 Slice 2 surfaces the node's own profile: render it and create/update it with a
 version bump. Slice 3 adds the social-graph surface: signed follow and
 cache-grant statements (stored locally; caching itself is a later slice), the
-friend-request send/accept/decline flows that broker through the directory,
-and the local block/mute operations. Every response carries an explicit ``state``
+friend-request send/accept/decline flows that broker through the directory, and
+the local block/mute operations. Every response carries an explicit ``state``
 so the app can render the standard degrade states (design "Client resilience")
 without guessing:
 
@@ -27,13 +27,16 @@ dependency (401), exactly like every other local app route.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
+import re
+import urllib.parse
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, Request, HTTPException
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from tinyagentos import peer as peer_channel
@@ -124,11 +127,108 @@ def _normalize_endpoints(endpoints) -> list:
     ]
 
 
+def _safe_endpoints(raw) -> list[dict]:
+    """Filter endpoints to only valid http/https dict entries with a hostname.
+
+    Takes the output of _normalize_endpoints and keeps only dict entries whose
+    'url' is a string with scheme 'http' or 'https' and a truthy hostname.
+    Everything else (ints, dicts without url, non-http schemes, etc.) is dropped.
+
+    Additionally, drops endpoints whose hostname resolves to a private (RFC1918),
+    loopback, link-local, CGNAT (RFC6598), or otherwise non-public address.
+    This prevents a malicious peer from registering an internal endpoint that
+    would become an SSRF allowance via known_hostports().
+    """
+    normalized = _normalize_endpoints(raw)
+    kept = []
+    for e in normalized:
+        if not isinstance(e, dict):
+            continue
+        url = e.get("url")
+        if not isinstance(url, str):
+            continue
+        try:
+            parts = urllib.parse.urlsplit(url)
+        except (ValueError, TypeError):
+            continue
+        if parts.scheme not in ("http", "https"):
+            continue
+        if not parts.hostname:
+            continue
+        # Validate port: unparseable or out-of-range ports drop the entry
+        try:
+            _ = parts.port
+        except ValueError:
+            continue
+
+        # Check if hostname is a literal IP in a blocked range
+        host = parts.hostname.strip().lower()
+        if _is_blocked_host(host):
+            continue
+
+        kept.append(e)
+    return kept
+
+
+# Hostname-suffix blocklist (mirrors SSRF guard in desktop_browser/ssrf.py)
+_BLOCKED_HOST_SUFFIXES = (
+    ".local",     # mDNS / Bonjour
+    ".onion",     # Tor hidden services
+    ".internal",  # common internal alias
+    ".home",      # IETF reserved for residential networks
+    ".corp",      # common enterprise internal alias
+    ".lan",       # common home-network alias
+    ".intranet",  # common enterprise alias
+)
+
+# Networks that are blocked even as literal IPs (RFC1918, loopback, link-local)
+# CGNAT (100.64.0.0/10) is NOT blocked here because the project's A2A bus uses it.
+# The SSRF guard blocks CGNAT by default but allows it for known_hostports.
+_BLOCKED_IP_NETWORKS = (
+    ipaddress.ip_network("127.0.0.0/8"),       # loopback
+    ipaddress.ip_network("169.254.0.0/16"),    # link-local (IPv4)
+    ipaddress.ip_network("10.0.0.0/8"),        # RFC1918 class A
+    ipaddress.ip_network("172.16.0.0/12"),     # RFC1918 class B
+    ipaddress.ip_network("192.168.0.0/16"),    # RFC1918 class C
+    ipaddress.ip_network("::1/128"),           # IPv6 loopback
+    ipaddress.ip_network("fe80::/10"),         # IPv6 link-local
+    ipaddress.ip_network("fc00::/7"),          # IPv6 unique-local (RFC4193)
+    ipaddress.ip_network("fec0::/10"),         # deprecated IPv6 site-local
+)
+
+
+def _is_blocked_host(host: str) -> bool:
+    """Return True if *host* is a blocked hostname or literal IP."""
+    # Explicit localhost
+    if host == "localhost":
+        return True
+
+    # Blocked suffixes (catch .local, .onion, etc. before DNS resolution)
+    for suffix in _BLOCKED_HOST_SUFFIXES:
+        if host.endswith(suffix):
+            return True
+
+    # Try parsing as a literal IP address
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        # Not a literal IP; we can't verify without DNS resolution.
+        # The SSRF guard will validate resolved addresses at connection time.
+        return False
+
+    # Check if the literal IP falls in any blocked network
+    for net in _BLOCKED_IP_NETWORKS:
+        if ip in net:
+            return True
+
+    return False
+
+
 async def _try_handshake(
     request: Request,
     directory_resp: dict,
     peer_fingerprint: str,
-) -> None:
+) -> Optional[Response]:
     """Establish a peer channel on friend-accept (collab A2).
 
     Extracts the peer's Ed25519/X25519 pubkeys and advertised endpoints
@@ -155,6 +255,13 @@ async def _try_handshake(
         # skip the handshake rather than key on a mutable name.
         return
     contact_id = f"hub:{peer_fingerprint}"
+
+    from tinyagentos.collab_settings import outbound_refusal
+
+    refusal = outbound_refusal(request.app.state.data_dir, contact_id)
+    if refusal is not None:
+        logger.info("friend-accept handshake skipped for %s: %s", contact_id, refusal)
+        return
 
     # Pubkeys: directory first, then local hub_authors cache.
     ed25519_pub = directory_resp.get("signing_pubkey") or ""
@@ -195,7 +302,25 @@ async def _try_handshake(
             return
 
         display_name = directory_resp.get("display_name") or username
-        endpoints = _normalize_endpoints(directory_resp.get("endpoints"))
+        existing = await contacts_store.get_peer_link(contact_id)
+        if existing is not None:
+            pinned = _safe_endpoints(existing.get("endpoints") or [])
+            if pinned:
+                endpoints = pinned
+            else:
+                endpoints = _safe_endpoints(directory_resp.get("endpoints"))
+        else:
+            endpoints = _safe_endpoints(directory_resp.get("endpoints"))
+
+        # Read the existing peer link BEFORE add_contact so we capture the
+        # revocation state that existed at the start of the handshake.
+        existing_link = await contacts_store.get_peer_link(contact_id)
+        observed_revoked_at = existing_link.get("revoked_at") if existing_link else None
+
+        # Re-check the block edge after reading the link.  A block that lands
+        # between the initial guard and this point must be honoured.
+        if peer_fingerprint and await store.has_edge(peer_fingerprint, relationships.REL_BLOCK):
+            return
 
         # Create/refresh the contact row (trust-on-first-use key pinning).
         await contacts_store.add_contact(
@@ -214,16 +339,59 @@ async def _try_handshake(
         # signed handshake_reply arrives, and left empty if it never does.
         outbound_token = ""
 
-        await contacts_store.establish_peer_link(
+        # Restore only the revocation we observed.  A newer revocation that
+        # lands after our read (e.g. from a concurrent block) will not be
+        # cleared because the UPDATE arm requires an exact timestamp match.
+        written = await contacts_store.establish_peer_link(
             contact_id=contact_id,
             inbound_token=inbound_token,
             outbound_token=outbound_token,
             endpoints=endpoints,
+            restore_revoked_at=observed_revoked_at,
+            keep_existing_endpoints=True,
         )
+        if not written:
+            logger.warning(
+                "friend-accept handshake: peer link revoked, not restored for %s",
+                contact_id,
+            )
+            # If a block edge now exists, ensure the contact status reflects it.
+            # add_contact resets status to active, so we must re-apply blocked.
+            if peer_fingerprint and await store.has_edge(peer_fingerprint, relationships.REL_BLOCK):
+                try:
+                    await contacts_store.set_contact_status(contact_id, "blocked")
+                except Exception:
+                    logger.warning(
+                        "friend-accept handshake: set_contact_status blocked failed for %s",
+                        contact_id,
+                    )
+            # The directory/local friendship was already accepted above; only the
+            # peer handshake was refused, so report acceptance with a refused
+            # handshake while leaving the link revoked.
+            return JSONResponse(
+                {"state": "accepted", "handshake": "refused", "peer": peer_fingerprint},
+                status_code=200,
+            )
         logger.info(
             "friend-accept handshake: contact=%s endpoints=%s",
             contact_id, endpoints,
         )
+
+        # Final block check: a block that commits after the re-check but before
+        # or during establish_peer_link must be honoured. On the first handshake
+        # path (no pre-existing link) the INSERT arm has no WHERE clause, so it
+        # always writes and the not-written block handling never runs. This
+        # re-check closes that window.
+        if peer_fingerprint and await store.has_edge(peer_fingerprint, relationships.REL_BLOCK):
+            await contacts_store.revoke_peer_link(contact_id)
+            try:
+                await contacts_store.set_contact_status(contact_id, "blocked")
+            except Exception:
+                logger.warning(
+                    "friend-accept handshake: set_contact_status blocked failed for %s",
+                    contact_id,
+                )
+            return JSONResponse({"state": "rejected"}, status_code=403)
 
         # Deliver the token to their POST /api/peer/handshake.  The SSRF
         # allowance is built from the peer link just stored, never from the
@@ -239,6 +407,7 @@ async def _try_handshake(
             encryption_pubkey="",
         )
         known_endpoints = peer_channel.known_hostports(link_endpoints)
+        data_dir = request.app.state.data_dir
 
         # Only the network exchange runs in the background; everything it
         # needs is captured as locals above (never ``request``).
@@ -247,6 +416,7 @@ async def _try_handshake(
                 envelope,
                 link_endpoints,
                 known_endpoints=known_endpoints,
+                data_dir=data_dir,
             )
             their_token = peer_channel.verify_handshake_reply(
                 reply, handshake=envelope, sender_ed25519_pub=ed25519_pub,
@@ -309,6 +479,8 @@ async def put_own_profile(
     keypair) so publishing a profile is the natural first act. The new version is
     one past the current profile's, keeping the highest-version-wins invariant.
     """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     # Mint the identity if this is the node's first hub action.
     identity.load_or_create()
     store = await _get_store(request)
@@ -347,6 +519,8 @@ async def follow_peer(
     target need not approve it (they can block). The signed statement is stored
     locally as an out-follow and is what this node later publishes to peers.
     """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     identity.load_or_create()
     store = await _get_store(request)
     fingerprint = identity.signing_fingerprint()
@@ -378,6 +552,8 @@ async def grant_cache(
     ahead of the cache engine. ``quota_hint`` is the suggested per-friend budget
     in bytes (defaults to a few hundred MB per design open-question 4).
     """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     identity.load_or_create()
     store = await _get_store(request)
     fingerprint = identity.signing_fingerprint()
@@ -421,6 +597,8 @@ async def send_friend_request(
     view can show the pending state; the directory's own response (e.g. a request
     id) passes through verbatim.
     """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     identity.load_or_create()
     store = await _get_store(request)
     fingerprint = identity.signing_fingerprint()
@@ -485,6 +663,8 @@ async def accept_friend_request(
     an accepted edge (design: presence requires "an accepted edge"). The peer
     fingerprint comes from the directory response when present, else the body.
     """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     upstream = await _forward_to(request, "POST", f"/api/hub/requests/{rid}/accept")
     if upstream.status_code < 200 or upstream.status_code >= 300:
         return JSONResponse(
@@ -513,7 +693,9 @@ async def accept_friend_request(
     # When the directory omits these fields, we fall back to the locally cached
     # hub_authors record (populated during the friend-request flow).
     if peer:
-        await _try_handshake(request, resp, peer)
+        handshake_response = await _try_handshake(request, resp, peer)
+        if handshake_response is not None:
+            return handshake_response
 
     return {"state": "accepted", "peer": peer, "directory": resp}
 
@@ -525,6 +707,8 @@ async def decline_friend_request(
     user: CurrentUser = Depends(current_user),
 ):
     """Decline a brokered friend request; record it locally as declined."""
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     upstream = await _forward_to(request, "POST", f"/api/hub/requests/{rid}/decline")
     if upstream.status_code < 200 or upstream.status_code >= 300:
         return JSONResponse(
@@ -560,6 +744,8 @@ async def block_peer(
     server-side accepted edge (no more presence visibility or hints either way);
     that directory call is best-effort and its result never blocks the local op.
     """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     store = await _get_store(request)
     # A social action implies this node has an identity (its fingerprint is the
     # local party in every relationship), so mint it if this is the first act.
@@ -621,6 +807,10 @@ async def block_peer(
                     )
         except Exception:
             logger.exception("hub block: contacts-store cascade failed for %s", peer)
+            return JSONResponse(
+                {"state": "block-incomplete", "peer": peer},
+                status_code=500,
+            )
 
     return {"state": "blocked", "peer": peer, "severed": severed}
 
@@ -633,6 +823,8 @@ async def mute_peer(
 ):
     """Mute a peer locally: stop rendering, keep the edge (design "block and mute
     are local + circle operations"; mute is the local-only subset)."""
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     identity.load_or_create()
     store = await _get_store(request)
     await store.put_relationship(body.peer_fingerprint, relationships.REL_MUTE)
@@ -646,6 +838,8 @@ async def unmute_peer(
     user: CurrentUser = Depends(current_user),
 ):
     """Unmute a previously muted peer (local-only operation)."""
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     identity.load_or_create()
     store = await _get_store(request)
     await store.delete_relationship(body.peer_fingerprint, relationships.REL_MUTE)
@@ -763,6 +957,8 @@ async def create_post(
     post is chain-positioned and signed before it lands in the store, so it is
     self-verifying the moment it is created.
     """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     identity.load_or_create()
     store = await _get_store(request)
     attachments: list[dict] = []
@@ -810,6 +1006,8 @@ async def own_timeline(
     ``no-identity`` before the node has minted a hub identity, else ``ok`` with
     the posts. The timeline works fully offline from the local store.
     """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     if not identity.exists():
         return {"state": "no-identity"}
     store = await _get_store(request)
@@ -832,6 +1030,8 @@ async def delete_post_route(
     so the chain stays verifiable. Best-effort: a peer that later pulls will see
     the tombstone and drop its copy too. Returns the tombstone statement.
     """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     identity.load_or_create()
     store = await _get_store(request)
     try:
@@ -839,3 +1039,78 @@ async def delete_post_route(
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=404)
     return {"state": "ok", "tombstone": tomb}
+
+
+_CHAIN_PAGE_MAX = 500
+_SQLITE_INT_MAX = 2**63 - 1
+_BLOB_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+@router.get("/api/hub/chain")
+async def own_chain(
+    request: Request,
+    after_seq: int = 0,
+    limit: int = 100,
+    user: CurrentUser = Depends(current_user),
+):
+    """This node's own chain from ``after_seq``, with every newer tombstone.
+
+    Phase 0 of docs/design/hub-social-p2p-architecture.md: the exact payload a
+    peer will later pull, served locally only. ``entries`` is a page of chain
+    entries (``object`` is ``None`` once a tombstone dropped the body);
+    ``tombstones`` lists every tombstone after ``after_seq`` even when
+    ``entries`` is truncated, so deletes travel ahead of content. ``head`` is
+    the latest chain entry, so a reader knows how far the chain goes.
+    """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
+    # SQLite integers are signed 64-bit; a larger cursor would raise
+    # OverflowError (a 500) when bound into the query.
+    if not 0 <= after_seq <= _SQLITE_INT_MAX or not 1 <= limit <= _CHAIN_PAGE_MAX:
+        return JSONResponse(
+            {"error": f"after_seq must be 0..{_SQLITE_INT_MAX} and limit 1..{_CHAIN_PAGE_MAX}"},
+            status_code=400,
+        )
+    if not identity.exists():
+        return {"state": "no-identity"}
+    store = await _get_store(request)
+    author = identity.signing_fingerprint()
+    head = await store.get_chain_head(author)
+    return {
+        "state": "ok",
+        "author": author,
+        "head": {"seq": head["seq"], "hash": head["hash"]} if head else None,
+        "entries": await store.list_chain_range(author, after_seq=after_seq, limit=limit),
+        "tombstones": await store.list_tombstones(author, after_seq=after_seq),
+    }
+
+
+@router.get("/api/hub/blobs/{blob_hash}")
+async def get_blob(
+    blob_hash: str,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    """Raw bytes of a stored blob (an ingested post image), by content address.
+
+    Blobs are re-encoded images (``posts.ingest_image``), so anything not
+    stored as ``image/*`` is served as an opaque download. The response is
+    sandboxed and never sniffed, so a blob cannot run as a page on this origin.
+    """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
+    if not _BLOB_HASH_RE.match(blob_hash):
+        return JSONResponse({"error": "invalid blob hash"}, status_code=400)
+    store = await _get_store(request)
+    blob = await store.get_blob(blob_hash)
+    if blob is None:
+        return JSONResponse({"error": "blob not found"}, status_code=404)
+    mime = blob.get("mime") or ""
+    headers = {
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "default-src 'none'; sandbox",
+    }
+    if not mime.startswith("image/") or mime == "image/svg+xml":
+        mime = "application/octet-stream"
+        headers["Content-Disposition"] = "attachment"
+    return Response(content=blob["data"], media_type=mime, headers=headers)

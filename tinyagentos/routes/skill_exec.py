@@ -53,7 +53,7 @@ def _is_admin_or_local_token(request: Request) -> bool:
     if getattr(request.state, "is_admin", False):
         return True
     via = getattr(request.state, "via", None)
-    return via == "local_token" or via == "registry_jwt_native_agent"
+    return via == "local_token" or via == "registry_jwt_native_agent" or via == "registry_jwt_deployed_agent"
 
 
 # ---------------------------------------------------------------------------
@@ -765,6 +765,28 @@ async def execute_skill(skill_id: str, request: Request):
         return JSONResponse(
             {"error": f"Skill {skill_id} not found"}, status_code=404
         )
+
+    # Deployed-agent assignment guard: a deployed agent may only execute skills
+    # assigned to it. This applies to BOTH the registry-JWT deployed-agent path
+    # (via == "registry_jwt_deployed_agent") and a per-agent BOUND local token
+    # (via == "local_token" with request.state.agent_name set, i.e. the token is
+    # bound to a single agent at deploy time). The same check body is reused for
+    # both: reject any skill not in the agent's assigned set with a 403.
+    # An UNBOUND local token (via == "local_token", no agent_name -- the host/CLI
+    # token), admin sessions, and registry_jwt_native_agent stay unrestricted.
+    via = getattr(request.state, "via", None)
+    credential_agent = getattr(request.state, "agent_name", None)
+    if (
+        via == "registry_jwt_deployed_agent"
+        or (via == "local_token" and credential_agent)
+    ):
+        if credential_agent:
+            assigned = await skill_store.get_agent_skills(credential_agent)
+            assigned_ids = {s["id"] for s in assigned}
+            if skill_id not in assigned_ids:
+                return JSONResponse(
+                    {"error": "forbidden: skill not assigned to agent"}, status_code=403
+                )
 
     impl = SKILL_IMPLEMENTATIONS.get(skill_id)
     if not impl:

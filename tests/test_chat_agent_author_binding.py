@@ -211,18 +211,18 @@ class TestChatAgentAuthorBinding:
         assert resp.status_code == 403
 
     async def test_bound_agent_cannot_stream_into_user_message_with_its_name(self, client, app):
-        """Host token posts a message with author_id=\"agent-a\", author_type=\"user\";
+        """A message with author_id="agent-a", author_type="user" exists;
         agent-a's bound token delta -> 403."""
         ch = await _create_channel_dm(app)
-        async with _host_token_client(app) as c:
-            resp = await c.post("/api/chat/messages", json={
-                "channel_id": ch["id"],
-                "author_id": "agent-a",
-                "author_type": "user",
-                "content": "host-spoofed message",
-            })
-        assert resp.status_code == 200
-        msg = resp.json()
+        msg_store = app.state.chat_messages
+        # Create message directly (bypassing HTTP author validation)
+        msg = await msg_store.send_message(
+            channel_id=ch["id"],
+            author_id="agent-a",
+            author_type="user",
+            content="host-spoofed message",
+            state="streaming",
+        )
         async with _bound_client(app, "agent-a") as c:
             resp = await c.post(
                 f"/api/chat/messages/{msg['id']}/delta",

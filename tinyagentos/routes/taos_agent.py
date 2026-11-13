@@ -41,10 +41,13 @@ from pydantic import BaseModel
 
 from tinyagentos.adapters.opencode_adapter import OpenCodeAdapter, OpenCodeConfig
 from tinyagentos.adapters.claude_code_cli_adapter import ClaudeCodeCliAdapter, ClaudeCodeCliConfig
+from tinyagentos.adapters.kilo_cli_adapter import KiloCliAdapter, KiloCliConfig
 from tinyagentos.adapters.picoclaw_cli_adapter import PicoClawCliAdapter, PicoClawCliConfig
+from tinyagentos.adapters.hermes_api_adapter import HermesApiAdapter, HermesApiConfig
 from tinyagentos.agent_loop import AgentLoop, LoopAction
 from tinyagentos.auth_context import CurrentUser, current_user
 from tinyagentos.claude_code_runtime import ClaudeCodeBinaryNotFoundError, ClaudeCodeTokenMissingError
+from tinyagentos.kilo_runtime import KiloBinaryNotFoundError, KiloKeyMissingError
 from tinyagentos.opencode_runtime import OpenCodeBinaryNotFoundError
 from tinyagentos.picoclaw_runtime import PicoClawBinaryNotFoundError
 from tinyagentos import taos_agent_shell_profile as shell_profile
@@ -52,16 +55,20 @@ from tinyagentos.taos_agent_runtime import (
     DEVICE_CLASS_CHOICES,
     FRAMEWORK_CHOICES,
     FRAMEWORK_CLAUDE_CODE,
+    FRAMEWORK_HERMES,
+    FRAMEWORK_KILO,
     FRAMEWORK_PICOCLAW,
     FrameworkDecision,
     apply_framework,
     ensure_taos_claude_code_harness,
+    ensure_taos_kilo_harness,
     ensure_taos_opencode_server,
     ensure_taos_picoclaw_harness,
     opencode_gateway_problem,
     provision_picoclaw,
     system_agent_framework,
 )
+from tinyagentos.hermes_runtime import hermes_api_url, hermes_key_present, HERMES_API_KEY_SECRET
 from tinyagentos.task_utils import _create_supervised_task
 
 logger = logging.getLogger(__name__)
@@ -175,7 +182,7 @@ class PersonaUpdate(BaseModel):
 
 class FrameworkUpdate(BaseModel):
     framework: str | None = None
-    """taos_agent.framework: "auto" | "opencode" | "picoclaw" | "claude_code"."""
+    """taos_agent.framework: "auto" | "opencode" | "picoclaw" | "claude_code" | "hermes"."""
     device_class: str | None = None
     """device.class: "auto" | "mobile" | "desktop"."""
 
@@ -601,7 +608,57 @@ async def chat(request: Request, body: ChatRequest):
                 status_code=503,
             )
 
-    if not (use_picoclaw or use_claude_code):
+    use_hermes = system_agent_framework(app_state) == FRAMEWORK_HERMES
+    if use_hermes:
+        # Read the hermes_api_key secret (same lookup hermes_key_present uses).
+        store = getattr(app_state, "secrets", None)
+        if store is None:
+            return JSONResponse(
+                {"error": "Hermes is not ready: add a hermes_api_key secret (the api_server's API_SERVER_KEY) in Secrets, or switch the taOS Agent to opencode."},
+                status_code=503,
+            )
+        try:
+            row = await store.get(HERMES_API_KEY_SECRET)
+        except Exception:
+            logger.warning("taos-agent: could not read the secrets store")
+            return JSONResponse(
+                {"error": "Hermes is not ready: add a hermes_api_key secret (the api_server's API_SERVER_KEY) in Secrets, or switch the taOS Agent to opencode."},
+                status_code=503,
+            )
+        key = (row or {}).get("value") or ""
+        if not key:
+            return JSONResponse(
+                {"error": "Hermes is not ready: add a hermes_api_key secret (the api_server's API_SERVER_KEY) in Secrets, or switch the taOS Agent to opencode."},
+                status_code=503,
+            )
+        harness = None
+
+    use_kilo = system_agent_framework(app_state) == FRAMEWORK_KILO
+    if use_kilo:
+        try:
+            harness = await ensure_taos_kilo_harness(app_state, model, system_prompt)
+        except KiloBinaryNotFoundError:
+            logger.error("taos-agent: kilo binary not found")
+            return JSONResponse(
+                {"error": "Kilo is not ready: make sure the kilo binary is installed, "
+                          "or switch the taOS Agent to opencode."},
+                status_code=503,
+            )
+        except KiloKeyMissingError:
+            logger.error("taos-agent: kilo key missing")
+            return JSONResponse(
+                {"error": "Kilo is not ready: add a kilo_api_key secret in Secrets, "
+                          "or switch the taOS Agent to opencode."},
+                status_code=503,
+            )
+        except Exception as exc:
+            logger.exception("taos-agent: kilo could not be provisioned")
+            return JSONResponse(
+                {"error": f"taOS agent runtime (kilo) failed to start: {type(exc).__name__}"},
+                status_code=503,
+            )
+
+    if not (use_picoclaw or use_claude_code or use_hermes or use_kilo):
         # opencode is always given the in-process gateway (/api/llm/v1), the
         # only LLM path since LiteLLM removal 2b-2a. When it cannot serve the
         # model, say so up front instead of starting a server that will only
@@ -616,7 +673,7 @@ async def chat(request: Request, body: ChatRequest):
 
     # Ensure the host opencode server is running.
     try:
-        server = None if (use_picoclaw or use_claude_code) else await ensure_taos_opencode_server(request.app.state, model)
+        server = None if (use_picoclaw or use_claude_code or use_hermes or use_kilo) else await ensure_taos_opencode_server(request.app.state, model)
     except OpenCodeBinaryNotFoundError as exc:
         # The binary genuinely isn't reachable (not on PATH, not at the
         # installer's default location) — a clear install instruction, not a
@@ -662,8 +719,26 @@ async def chat(request: Request, body: ChatRequest):
     if use_claude_code:
         adapter = ClaudeCodeCliAdapter(ClaudeCodeCliConfig(harness=harness, system=system_prompt), sink)
         adapter.session_id = getattr(app_state, "taos_claude_code_session_id", None)
+    elif use_kilo:
+        adapter = KiloCliAdapter(KiloCliConfig(harness=harness, system=system_prompt), sink)
+        saved_prompt = getattr(app_state, "taos_kilo_session_prompt", None)
+        if saved_prompt == system_prompt:
+            adapter.session_id = getattr(app_state, "taos_kilo_session_id", None)
+        else:
+            adapter.session_id = None
     elif use_picoclaw:
         adapter = PicoClawCliAdapter(PicoClawCliConfig(harness=harness, system=system_prompt), sink)
+    elif use_hermes:
+        history = [m for m in body.messages[:-1] if m.get("role") in ("user", "assistant")]
+        adapter = HermesApiAdapter(
+            HermesApiConfig(
+                url=hermes_api_url(app_state),
+                key=key,
+                system=system_prompt,
+                history=history,
+            ),
+            sink,
+        )
     else:
         cfg = OpenCodeConfig(
             base_url=server.base_url,
@@ -749,7 +824,7 @@ async def chat(request: Request, body: ChatRequest):
     async def _drive() -> None:
         try:
             await adapter.ensure_session()
-            if not (use_picoclaw or use_claude_code):
+            if not (use_picoclaw or use_claude_code or use_hermes or use_kilo):
                 app_state.taos_opencode_session_id = adapter.session_id
                 # Keep the per-agent session cache in sync (agent-as-a-model path).
                 sess = getattr(app_state, "taos_opencode_sessions", None)
@@ -758,6 +833,9 @@ async def chat(request: Request, body: ChatRequest):
             await adapter.prompt(text, trace_id=trace_id, attachments=attachments)
             if use_claude_code and adapter.session_id:
                 app_state.taos_claude_code_session_id = adapter.session_id
+            if use_kilo and adapter.session_id:
+                app_state.taos_kilo_session_id = adapter.session_id
+                app_state.taos_kilo_session_prompt = system_prompt
             await adapter.close()
         except Exception as exc:
             logger.exception("taos-agent: drive task error")

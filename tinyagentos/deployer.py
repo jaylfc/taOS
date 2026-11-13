@@ -175,6 +175,10 @@ class DeployRequest:
     # (taOSmd only). Injected as TAOS_MEMORY_MODE so the framework runtime
     # can honour it at turn boundaries without a separate config push.
     memory_mode: str = "both"
+    # Registry JWT for the deployed agent (owner user_id + memory_read only).
+    # When non-empty, injected as TAOS_AGENT_TOKEN into the container env.
+    # Additive: TAOS_LOCAL_TOKEN is unchanged.
+    agent_token: str = ""
 
 
 # Where an agent container reaches its LLM: its OWN loopback, port 4000, the
@@ -375,6 +379,10 @@ async def deploy_agent(req: DeployRequest) -> dict:
             "steps": steps,
         }
     env["TAOS_TRACE_URL"] = f"http://{req.taos_host}:{req.taos_port}/api/trace"
+
+    # Registry JWT for the deployed agent (additive; TAOS_LOCAL_TOKEN unchanged).
+    if req.agent_token:
+        env["TAOS_AGENT_TOKEN"] = req.agent_token
 
     # Agent-bridge shared token (issue #672 — defense-in-depth auth guard).
     # Generate a per-deployment secret so only the controller (which knows

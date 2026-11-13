@@ -166,16 +166,26 @@ class ProjectInviteStore(BaseStore):
         # project, OS-level (project_id IS NULL) invites are capped as a group.
         # SQL ``= NULL`` never matches, so branch on IS NULL to keep the cap live
         # for OS-level invites too.
+        #
+        # Expiry is lazy: a pending row only flips to status='expired' when
+        # someone reads that invite. An invite nobody ever opens stays
+        # 'pending' forever, so the cap counts only invites that are still
+        # within their TTL (expires_ts > now). After 10 abandoned-but-never-
+        # opened invites every new mint used to return 429 with no way out.
+        now = _now()
         if project_id is None:
             cursor = await self._db.execute(
                 "SELECT COUNT(*) FROM project_invites "
-                "WHERE project_id IS NULL AND status = 'pending'",
+                "WHERE project_id IS NULL AND status = 'pending' "
+                "AND expires_ts > ?",
+                (now,),
             )
         else:
             cursor = await self._db.execute(
                 "SELECT COUNT(*) FROM project_invites "
-                "WHERE project_id = ? AND status = 'pending'",
-                (project_id,),
+                "WHERE project_id = ? AND status = 'pending' "
+                "AND expires_ts > ?",
+                (project_id, now),
             )
         row = await cursor.fetchone()
         pending_count = row[0] if row else 0
@@ -194,7 +204,6 @@ class ProjectInviteStore(BaseStore):
 
         pin = self._generate_pin()
         pin_hash = hashlib.sha256(pin.encode()).hexdigest()
-        now = _now()
         if ttl_secs is not None and ttl_secs <= 0:
             raise ValueError("ttl_secs must be positive")
         expires_ts = now + (ttl_secs if ttl_secs is not None else _EXPIRY_SECS)

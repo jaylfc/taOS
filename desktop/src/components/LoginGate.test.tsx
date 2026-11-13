@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { LoginGate } from "./LoginGate";
 
 function signedOut() {
@@ -95,6 +95,94 @@ describe("LoginGate hands sign-in to the server page", () => {
     await waitFor(() =>
       expect(sessionStorage.getItem("taos.login-redirected")).toBeNull(),
     );
+  });
+
+  it("renders invite completion for an invited user and posts /auth/complete", async () => {
+    // /auth/status never carries the invite code, so the screen must not need
+    // one to enter invite mode; the server takes the pending session instead.
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      if (String(input) === "/auth/complete") {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200, headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(
+        JSON.stringify({
+          configured: true,
+          authenticated: true,
+          needs_onboarding: true,
+          multi_user: true,
+          user: { username: "invitee" },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    render(<LoginGate><div>the desktop shell</div></LoginGate>);
+
+    expect(await screen.findByRole("heading", { name: "Complete your account" })).toBeInTheDocument();
+    expect(screen.getByText("invitee")).toHaveAttribute("aria-readonly", "true");
+
+    fireEvent.change(screen.getByLabelText("Full name"), { target: { value: "In Vitee" } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.change(await screen.findByLabelText("Password"), { target: { value: "invitepass" } });
+    fireEvent.change(screen.getByLabelText("Verify password"), { target: { value: "invitepass" } });
+    fireEvent.click(screen.getByRole("button", { name: "Activate account" }));
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([u]) => String(u) === "/auth/complete")).toBe(true),
+    );
+    const [, init] = fetchMock.mock.calls.find(([u]) => String(u) === "/auth/complete")!;
+    const body = JSON.parse(String(init?.body));
+    expect(body.username).toBe("invitee");
+    expect(body).not.toHaveProperty("invite_code");
+    expect(fetchMock.mock.calls.some(([u]) => String(u) === "/auth/setup")).toBe(false);
+  });
+
+  it("resumes first-run setup for the owner when progress says it is unfinished", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      if (String(input) === "/api/preferences/onboarding") {
+        return new Response(
+          JSON.stringify({ in_progress: true, step: "taos-account", completed: [], skipped: [] }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response(
+        JSON.stringify({ configured: true, authenticated: true, user: { username: "ada", is_admin: true } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    render(<LoginGate><div>the desktop shell</div></LoginGate>);
+    expect(await screen.findByRole("heading", { name: "Your taOS account" })).toBeInTheDocument();
+    expect(screen.queryByText("the desktop shell")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["no saved progress", () => new Response("{}", { status: 200 })],
+    ["finished progress", () => new Response(JSON.stringify({ in_progress: false, step: "done" }), { status: 200 })],
+    ["an unreadable record", () => new Response("nope", { status: 500 })],
+  ])("an existing install with %s goes straight to the desktop", async (_label, progress) => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) =>
+      String(input) === "/api/preferences/onboarding"
+        ? progress()
+        : new Response(
+            JSON.stringify({ configured: true, authenticated: true, user: { username: "ada", is_admin: true } }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+    );
+    render(<LoginGate><div>the desktop shell</div></LoginGate>);
+    expect(await screen.findByText("the desktop shell")).toBeInTheDocument();
+  });
+
+  it("a non-owner never reads setup progress", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({ configured: true, authenticated: true, user: { username: "bo", is_admin: false } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<LoginGate><div>the desktop shell</div></LoginGate>);
+    expect(await screen.findByText("the desktop shell")).toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([u]) => String(u) === "/api/preferences/onboarding")).toBe(false);
   });
 
   it("clears the loop guard once a session exists", async () => {
