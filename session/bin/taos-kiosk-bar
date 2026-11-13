@@ -1,0 +1,18 @@
+#!/bin/sh
+# Start the nav bar (waybar), replacing a previous copy.
+#
+# exec_always re-runs this on every `swaymsg reload`; a second waybar would
+# stack a second bar. The previous one is dropped by PID, checked against its
+# name (not `pkill -f`, which matches the shell doing the matching).
+set -eu
+RUN="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+PIDFILE="$RUN/taos-kiosk-bar.pid"
+if [ -r "$PIDFILE" ]; then
+    old="$(cat "$PIDFILE" 2>/dev/null || true)"
+    if [ -n "$old" ] && [ "$(cat "/proc/$old/comm" 2>/dev/null)" = waybar ]; then
+        kill "$old" 2>/dev/null || true
+    fi
+fi
+waybar -c /etc/taos/waybar/config.jsonc -s /etc/taos/waybar/style.css \
+    >"$RUN/taos-kiosk-bar.log" 2>&1 &
+echo "$!" > "$PIDFILE"
