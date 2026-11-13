@@ -80,6 +80,9 @@ xorriso -osirrox on -indev "$NETINST_ISO" -extract / "$TREE"
 log "Making tree writable..."
 chmod -R u+w "$TREE"
 
+# Copy preseed.cfg to the tree so it's accessible during injection
+cp "$SCRIPT_DIR/preseed.cfg" "$TREE/preseed.cfg"
+
 # Function to inject preseed.cfg into an initrd.gz
 inject_preseed() {
     local initrd_gz="$1"
@@ -89,7 +92,8 @@ inject_preseed() {
     log "Injecting preseed.cfg into $(basename "$initrd_gz")..."
     gunzip -f "$initrd_gz"
     local initrd="${initrd_gz%.gz}"
-    echo "preseed.cfg" | cpio -H newc -o -A -F "$initrd"
+    # preseed.cfg is at the root of the extracted tree
+    (cd "$TREE" && echo "preseed.cfg" | cpio -H newc -o -A -F "$initrd")
     gzip -f "$initrd"
 }
 
@@ -105,8 +109,6 @@ cp "$SCRIPT_DIR/taos-firstboot.service" "$TREE/taos/taos-firstboot.service"
 
 log "Regenerating md5sum.txt..."
 cd "$TREE"
-find . -type f ! -name "md5sum.txt" ! -name "isolinux.bin" ! -name "boot.cat" ! -path "./isolinux/*" -print0 2>/dev/null | xargs -0 md5sum > md5sum.txt 2>/dev/null || true
-# Also include isolinux files if they exist
 find . -type f ! -name "md5sum.txt" -print0 2>/dev/null | xargs -0 md5sum > md5sum.txt 2>/dev/null || true
 
 log "Repacking ISO..."

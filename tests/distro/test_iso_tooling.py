@@ -3,9 +3,11 @@
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
+import pytest
 from pathlib import Path
 
 
@@ -178,8 +180,8 @@ class TestBuildIsoScript:
             capture_output=True,
             text=True,
         )
-        # Should fail with exit code 2 and mention xorriso
-        # Note: This might need adjustment based on actual implementation
+        assert result.returncode == 2, f"Expected exit code 2, got {result.returncode}"
+        assert "xorriso" in result.stderr.lower(), f"Error message should mention xorriso: {result.stderr}"
 
     def test_builds_iso_with_xorriso(self, tmp_path):
         """If xorriso is installed, build a fake netinst and verify output."""
@@ -233,9 +235,11 @@ class TestBuildIsoScript:
         assert (extract_dir / "taos" / "install.sh").exists(), "Output ISO should contain /taos/install.sh"
 
         # Verify initrd.gz contains preseed.cfg in cpio
-        # This is a simplified check - in reality we'd extract and verify
-
-
-# Import shutil and pytest at the top
-import shutil
-import pytest
+        initrd_gz = extract_dir / "install.amd" / "initrd.gz"
+        assert initrd_gz.exists(), "initrd.gz should exist in output ISO"
+        # Extract and check cpio contents
+        initrd_extract = tmp_path / "initrd_extract"
+        initrd_extract.mkdir()
+        subprocess.run(["gunzip", "-c", str(initrd_gz)], stdout=open(initrd_extract / "initrd", "wb"), check=True)
+        subprocess.run(["cpio", "-id", "-H", "newc", "-F", str(initrd_extract / "initrd")], cwd=initrd_extract, check=True)
+        assert (initrd_extract / "preseed.cfg").exists(), "preseed.cfg should be in initrd.gz cpio archive"
