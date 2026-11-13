@@ -5,6 +5,7 @@ import json
 import logging
 import logging.handlers
 import re
+import secrets
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -138,13 +139,24 @@ def _resolve_bound_local_token_agent(request: Request, auth_mgr, presented: str)
                 if agent.get("registry_canonical_id") != canonical_id:
                     return False
                 return bound_agent
-            # Unknown/unexpected binding shape from a mock or reader: fall back
-            # to the name-only reader so existing callers/tests keep working.
+            # A binding whose shape is not the canonical tuple is not usable:
+            # it names no agent the middleware can fence, so refuse it.
+            return False
+        # No binding entry for this token: it is unbound. The host's own
+        # unbound local token is the one binding-less credential that still
+        # passes (today's behaviour); any other unbound token fails closed.
+        own_token_path = getattr(auth_mgr, "local_token_path", None)
+        if callable(own_token_path):
             try:
-                return auth_mgr.get_local_token_agent(presented)
-            except Exception:
-                return None
-    return auth_mgr.get_local_token_agent(presented)
+                own_path = own_token_path()
+                if own_path.exists():
+                    own = own_path.read_text().strip()
+                    if secrets.compare_digest(presented, own):
+                        return None
+            except Exception:  # noqa: BLE001
+                return False
+        return False
+    return None
 
 
 # /auth/pin-login is session-exempt for the same reason as /auth/login: it is
