@@ -1809,7 +1809,7 @@ async def patch_agent_persona(request: Request, slug: str, body: PersonaPatch, u
     if body.source_persona_id is not None:
         agent["source_persona_id"] = body.source_persona_id
     await save_config_locked(config, config.config_path)
-    return {"status": "ok", "agent": agent}
+    return {"status": "ok", "agent": _public_agent(agent)}
 
 
 class MemoryPatch(BaseModel):
@@ -1832,7 +1832,7 @@ async def patch_agent_memory(request: Request, slug: str, body: MemoryPatch, use
     if body.memory_mode is not None:
         agent["memory_mode"] = body.memory_mode
     await save_config_locked(config, config.config_path)
-    return {"status": "ok", "agent": agent}
+    return {"status": "ok", "agent": _public_agent(agent)}
 
 
 @router.post("/api/agents/{slug}/dismiss-migration-banner")
