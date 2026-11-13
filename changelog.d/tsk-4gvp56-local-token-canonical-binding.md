@@ -4,4 +4,4 @@
 
 ### Fixed
 
-- The canonical-id binding caused a restore regression: `_restore_archived` minted the bound local token, started the container and restarted the bridge before the config entry was appended, so the restored bridge's bootstrap request answered 401; the config entry is now appended before `start_container`, and a validated local token with no usable binding entry fails closed to 401 instead of falling through to unbound primary-user admin (the host's own unbound local token still passes).
+- The canonical-id binding caused a restore regression: `_restore_archived` minted the bound local token, started the container and restarted the bridge before the config entry was appended, so the restored bridge's bootstrap request answered 401; the config entry is now appended before `start_container`, and a validated local token with no usable binding entry fails closed to 401 instead of falling through to unbound primary-user admin (the host's own unbound local token still passes). Fix-forward of in-house review #4304: the canonical-id binding itself was correct, so this PR keeps it and only closes the two regressions it introduced.
