@@ -1,0 +1,15 @@
+[Unit]
+Description=taOS first-boot installer (local desktop)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=!/var/lib/taos/firstboot.done
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/taos-firstboot
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
