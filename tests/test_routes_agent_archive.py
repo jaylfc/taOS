@@ -310,3 +310,70 @@ class TestPurgePathTraversal:
         assert resp.json()["status"] == "purged"
         # The archive subdir should be gone
         assert not archive_subdir.exists(), "Normal archive dir was not removed!"
+
+
+@pytest.mark.asyncio
+class TestArchiveChannelFlagAfterRevoke:
+    async def test_channel_not_archived_when_revoke_fails(self, client, monkeypatch):
+        app = client._transport.app
+        config = app.state.config
+        auth = app.state.auth
+
+        # Create a chat channel and link it to the agent.
+        channel = await app.state.chat_channels.create_channel(
+            name="dm-test-agent",
+            type="dm",
+            created_by="test-user",
+            members=[],
+        )
+        channel_id = channel["id"]
+
+        agent = next(a for a in config.agents if a["name"] == "test-agent")
+        agent["chat_channel_id"] = channel_id
+        from tinyagentos.config import save_config_locked
+        await save_config_locked(config, config.config_path)
+
+        token = auth.mint_agent_local_token("test-agent")
+        assert auth.validate_local_token(token) is True
+
+        async def fake_container_exists(name):
+            return True
+
+        async def fake_stop(name, force=False):
+            return {"success": True, "output": ""}
+
+        async def fake_snapshot_create(name, snapshot_name):
+            return {"success": True, "output": ""}
+
+        def failing_revoke(request, slug, agent_id):
+            raise RuntimeError("revoke boom")
+
+        monkeypatch.setattr(
+            "tinyagentos.containers.container_exists", fake_container_exists
+        )
+        monkeypatch.setattr("tinyagentos.containers.stop_container", fake_stop)
+        monkeypatch.setattr(
+            "tinyagentos.containers.snapshot_create", fake_snapshot_create
+        )
+        monkeypatch.setattr(
+            "tinyagentos.routes.agent_archive._revoke_gateway_keys",
+            failing_revoke,
+        )
+
+        resp = await client.delete("/api/agents/test-agent")
+
+        assert resp.status_code == 500
+        assert "credential revoke failed" in resp.json().get("error", "")
+
+        # Agent must still be in config (archive not completed).
+        assert any(a["name"] == "test-agent" for a in config.agents)
+        # Archive entry must not have been created.
+        assert not any(
+            e.get("archived_slug") == "test-agent"
+            for e in getattr(config, "archived_agents", [])
+        )
+
+        # Channel must not be flagged archived.
+        ch = await app.state.chat_channels.get_channel(channel_id)
+        settings = (ch or {}).get("settings") or {}
+        assert settings.get("archived") is not True

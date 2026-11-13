@@ -527,7 +527,10 @@ class TestDeployPersistence:
         agent = detail.json()
         assert agent["model"] == "test-model"
         assert agent["framework"] == "none"
-        assert agent["llm_key"] == "sk-test"
+        # The key is persisted but never returned by a read (GHSA-v258-j222-x68c).
+        assert "llm_key" not in agent
+        stored = next(a for a in app.state.config.agents if a["name"] == "persistent")
+        assert stored["llm_key"] == "sk-test"
         assert agent["status"] == "running"
         assert agent["id"]
 

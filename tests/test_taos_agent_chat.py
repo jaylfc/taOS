@@ -1338,7 +1338,7 @@ test -n "$KILO_API_KEY" || { echo "KILO_API_KEY is not set" >&2; exit 1; }
 echo "ARGV: $@" > "$KILO_CAPTURE_FILE"
 echo '{"type":"step_start","sessionID":"ses-new"}'
 echo '{"type":"text","sessionID":"ses-new","part":{"type":"text","text":"pong"}}'
-echo '{"type":"step_finish","sessionID":"ses-new"}"
+echo '{"type":"step_finish","sessionID":"ses-new"}'
 '''
 
 
@@ -1418,6 +1418,12 @@ async def test_chat_kilo_changed_prompt_starts_new_session(client, app, monkeypa
     )
     assert resp.status_code == 200
     assert "pong" in resp.text
+
+    # Successful turn must not carry an error frame.
+    items = _parse_ndjson(resp.text)
+    error_items = [i for i in items if "error" in i]
+    assert len(error_items) == 0
+
     assert opencode_calls == [], "ensure_taos_opencode_server must not be called for a kilo turn"
 
     # Read the captured argv from the file
@@ -1466,6 +1472,11 @@ async def test_chat_kilo_changed_prompt_starts_new_session(client, app, monkeypa
     )
     assert resp2.status_code == 200
 
+    # Successful turn must not carry an error frame.
+    items2 = _parse_ndjson(resp2.text)
+    error_items2 = [i for i in items2 if "error" in i]
+    assert len(error_items2) == 0
+
     stderr_output2 = capture_file2.read_text()
 
     # The stub SHOULD have been called with "-s old-session"
@@ -1473,7 +1484,7 @@ async def test_chat_kilo_changed_prompt_starts_new_session(client, app, monkeypa
         f"Expected resumed session with -s old-session, but capture shows: {stderr_output2}"
     )
     # The message should NOT have the system prompt prefixed (since it's a resume)
-    assert "SAME PROMPT" not in stderr_output2 or stderr_output2.index("SAME PROMPT") > stderr_output2.index("-s old-session"), (
+    assert "SAME PROMPT" not in stderr_output2, (
         f"Expected no prompt prefix on resume, capture: {stderr_output2}"
     )
 
