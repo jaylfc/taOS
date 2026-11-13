@@ -1,0 +1,3 @@
+### Fixed
+
+- `GET /api/agents/containers` no longer returns another member's container when two Incus projects each hold a `taos-agent-<name>`: `ContainerInfo` now carries the instance's `project` from the `--all-projects` listing, `list_agent_containers` keeps only the container whose project matches the agent's recorded `incus_project` (falling back to a name match when none is recorded), and the deployer now resolves and saves the container's Incus project on the agent's config entry at deploy time.
