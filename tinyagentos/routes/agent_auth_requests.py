@@ -1258,7 +1258,8 @@ async def add_agent_to_project(
     path passes ``now + duration_secs``), or ``None`` for an unbounded grant.
 
     When adding an agent to a project, this function checks for existing
-    deferred grants (project_id=None) with an expires_at. If found:
+    deferred PROJECT grants (project_id=None, scope in _PROJECT_SCOPES) with an
+    expires_at. If found:
     - It inherits that expires_at for the new project-bound grant
     - It refuses the binding if the deferred grant has expired (4xx, no grant row written)
     - Never lengthens: if both a stored bound and a request bound exist, keeps the earlier one
@@ -1278,7 +1279,7 @@ async def add_agent_to_project(
 
     candidates = [
         g for g in deferred_grants
-        if g.get("project_id") is None and g.get("expires_at")
+        if g.get("project_id") is None and g.get("expires_at") and g.get("scope") in _PROJECT_SCOPES
     ]
     live = [g for g in candidates if datetime.fromisoformat(g["expires_at"]) > now_dt]
     deferred_grant_with_expiry = None
