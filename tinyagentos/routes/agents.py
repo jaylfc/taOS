@@ -501,22 +501,25 @@ async def add_agent(request: Request, body: AgentCreate):
             return JSONResponse(err, status_code=400)
 
         try:
-            unique_slug = unique_agent_slug(config, display_name)
+            unique_slug = await reserve_agent_slug(config, display_name)
         except ValueError as e:
             err = {"error": str(e)}
             if scoped_key and idempotency_cache is not None:
                 idempotency_cache.set(scoped_key, 400, err)
             return JSONResponse(err, status_code=400)
 
-        agent = body.model_dump()
-        agent["name"] = unique_slug
-        agent["display_name"] = display_name
-        config.agents.append(agent)
-        await save_config_locked(config, config.config_path)
-        result = {"status": "created", "name": unique_slug, "display_name": display_name}
-        if scoped_key and idempotency_cache is not None:
-            idempotency_cache.set(scoped_key, 200, result)
-        return result
+        try:
+            agent = body.model_dump()
+            agent["name"] = unique_slug
+            agent["display_name"] = display_name
+            config.agents.append(agent)
+            await save_config_locked(config, config.config_path)
+            result = {"status": "created", "name": unique_slug, "display_name": display_name}
+            if scoped_key and idempotency_cache is not None:
+                idempotency_cache.set(scoped_key, 200, result)
+            return result
+        finally:
+            release_agent_slug(unique_slug)
     finally:
         # No-op when set() already fired; unblocks waiters on unexpected exceptions.
         if scoped_key and idempotency_cache is not None:
@@ -754,218 +757,230 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
             if scoped_key and idempotency_cache is not None:
                 idempotency_cache.set(scoped_key, 400, {"error": name_error})
             return JSONResponse({"error": name_error}, status_code=400)
-        # Derive a container-safe slug and ensure uniqueness
+
+        # Reserve a unique slug for this create path.
         try:
-            unique_slug = unique_agent_slug(config, display_name)
+            unique_slug = await reserve_agent_slug(config, display_name)
         except ValueError as e:
             err = {"error": str(e)}
             if scoped_key and idempotency_cache is not None:
                 idempotency_cache.set(scoped_key, 400, err)
             return JSONResponse(err, status_code=400)
-        # Rewrite body.name to the unique slug; the original user-entered name
-        # is preserved as display_name for the UI.
-        body.name = unique_slug
-        # Validate framework against catalog and check RAM headroom.
-        fw_err = agent_deploy.validate_framework_and_ram(request, body)
-        if fw_err is not None:
-            if scoped_key and idempotency_cache is not None:
-                idempotency_cache.set(scoped_key, fw_err.status_code, json.loads(fw_err.body))
-            return fw_err
 
-        # ------------------------------------------------------------------
-        # Cross-worker deploy routing (task #176 stub)
-        # ------------------------------------------------------------------
-        routed = agent_deploy.resolve_deploy_routing(request, body)
-        if routed is not None:
-            if scoped_key and idempotency_cache is not None:
-                idempotency_cache.set(scoped_key, routed.status_code, json.loads(routed.body))
-            return routed
+        # Track whether the agent entry was successfully appended to config.agents.
+        # If not, we must release the reserved slug in the finally block.
+        agent_appended = False
+        try:
+            # Rewrite body.name to the unique slug; the original user-entered name
+            # is preserved as display_name for the UI.
+            body.name = unique_slug
+            # Validate framework against catalog and check RAM headroom.
+            fw_err = agent_deploy.validate_framework_and_ram(request, body)
+            if fw_err is not None:
+                if scoped_key and idempotency_cache is not None:
+                    idempotency_cache.set(scoped_key, fw_err.status_code, json.loads(fw_err.body))
+                return fw_err
 
-        # Explicit target_worker pin: create the agent container ON that
-        # worker's nested incus (remote deploy) rather than locally. Resolves
-        # the controller callback host (Tailscale IP) and prefetches the base.
-        deploy_remote, deploy_taos_host, remote_err = await agent_deploy.configure_remote_deploy(request, body)
-        if remote_err is not None:
-            if scoped_key and idempotency_cache is not None:
-                idempotency_cache.set(scoped_key, remote_err.status_code, json.loads(remote_err.body))
-            return remote_err
+            # ------------------------------------------------------------------
+            # Cross-worker deploy routing (task #176 stub)
+            # ------------------------------------------------------------------
+            routed = agent_deploy.resolve_deploy_routing(request, body)
+            if routed is not None:
+                if scoped_key and idempotency_cache is not None:
+                    idempotency_cache.set(scoped_key, routed.status_code, json.loads(routed.body))
+                return routed
 
-        data_dir = request.app.state.data_dir
+            # Explicit target_worker pin: create the agent container ON that
+            # worker's nested incus (remote deploy) rather than locally. Resolves
+            # the controller callback host (Tailscale IP) and prefetches the base.
+            deploy_remote, deploy_taos_host, remote_err = await agent_deploy.configure_remote_deploy(request, body)
+            if remote_err is not None:
+                if scoped_key and idempotency_cache is not None:
+                    idempotency_cache.set(scoped_key, remote_err.status_code, json.loads(remote_err.body))
+                return remote_err
 
-        # Self-heal deferred taOSmd model downloads.
-        # If the user deferred model pulls during setup and now deploys an
-        # agent with taOSmd memory (memory_config None or matching the
-        # deferred default), start the pull before the agent is marked ready.
-        # If we cannot start the pull (no registry / offline) return 409
-        # so the caller knows the agent cannot have memory search until the
-        # downloads complete.
-        self_heal_setup_task_id = None
-        if body.memory_plugin == "taosmd" and body.memory_mode != "framework":
-            default_data = _read_taosmd_default(data_dir)
-            if default_data and default_data.get("models_skipped"):
-                agent_cfg = body.memory_config or {}
-                if not body.memory_config or (
-                    agent_cfg.get("device_id") == default_data.get("device_id")
-                    and agent_cfg.get("tier_id") == default_data.get("tier_id")
-                ):
-                    registry = getattr(request.app.state, "registry", None)
-                    if registry is None:
-                        err_body = {
-                            "error": (
-                                "Cannot deploy with taOSmd memory: deferred model downloads "
-                                "require the model registry. Complete memory setup first."
-                            )
-                        }
-                        if scoped_key and idempotency_cache is not None:
-                            idempotency_cache.set(scoped_key, 409, err_body)
-                        return JSONResponse(err_body, status_code=409)
+            data_dir = request.app.state.data_dir
 
-                    tier_id = default_data.get("tier_id", "standard")
-                    from tinyagentos.routes.taosmd import MEMORY_TIERS, _run_setup, _tasks
-                    tier_cfg = MEMORY_TIERS.get(tier_id)
-                    if tier_cfg is not None:
-                        tasks = _tasks(request)
-                        existing_task_id = getattr(request.app.state, "taosmd_selfheal_task_id", None)
-                        reuse = False
-                        if existing_task_id is not None:
-                            existing_task = tasks.get(existing_task_id)
-                            if existing_task is not None and existing_task.get("state") not in {"done", "failed"}:
-                                task_id = existing_task_id
-                                self_heal_setup_task_id = task_id
-                                reuse = True
-
-                        if not reuse:
-                            request.app.state.taosmd_selfheal_task_id = None
-                            task_id = str(uuid.uuid4())
-                            tasks[task_id] = {
-                                "state": "pending",
-                                "progress_pct": 0,
-                                "message": "Queued…",
-                                "error": None,
-                            }
-                            asyncio.create_task(
-                                _run_setup(
-                                    tasks,
-                                    task_id,
-                                    default_data.get("device_id", "local"),
-                                    tier_id,
-                                    tier_cfg,
-                                    registry=registry,
-                                    hardware_profile=getattr(request.app.state, "hardware_profile", None),
-                                    backends=list(getattr(config, "backends", []) or []) if config else [],
-                                    skip_models=False,
-                                    data_dir=data_dir,
+            # Self-heal deferred taOSmd model downloads.
+            # If the user deferred model pulls during setup and now deploys an
+            # agent with taOSmd memory (memory_config None or matching the
+            # deferred default), start the pull before the agent is marked ready.
+            # If we cannot start the pull (no registry / offline) return 409
+            # so the caller knows the agent cannot have memory search until the
+            # downloads complete.
+            self_heal_setup_task_id = None
+            if body.memory_plugin == "taosmd" and body.memory_mode != "framework":
+                default_data = _read_taosmd_default(data_dir)
+                if default_data and default_data.get("models_skipped"):
+                    agent_cfg = body.memory_config or {}
+                    if not body.memory_config or (
+                        agent_cfg.get("device_id") == default_data.get("device_id")
+                        and agent_cfg.get("tier_id") == default_data.get("tier_id")
+                    ):
+                        registry = getattr(request.app.state, "registry", None)
+                        if registry is None:
+                            err_body = {
+                                "error": (
+                                    "Cannot deploy with taOSmd memory: deferred model downloads "
+                                    "require the model registry. Complete memory setup first."
                                 )
-                            )
-                            request.app.state.taosmd_selfheal_task_id = task_id
-                            self_heal_setup_task_id = task_id
+                            }
+                            if scoped_key and idempotency_cache is not None:
+                                idempotency_cache.set(scoped_key, 409, err_body)
+                            return JSONResponse(err_body, status_code=409)
 
-        # Register the agent with taOSmd BEFORE mutating config so a failure
-        # here aborts cleanly with no half-state. Skipped for memory_mode='framework'
-        # because that mode explicitly opts out of taOSmd.
-        if body.memory_mode != "framework":
-            try:
-                request.app.state.taosmd_agent_registry.register_agent(unique_slug)
-            except tm_agents.AgentExistsError:
-                pass  # idempotent — agent already registered, proceed normally
-            except Exception as e:
-                logger.exception("register_agent(%s) failed", unique_slug)
-                err_body = {"error": f"Could not register agent with taosmd: {e}"}
-                if scoped_key and idempotency_cache is not None:
-                    idempotency_cache.set(scoped_key, 500, err_body)
-                return JSONResponse(err_body, status_code=500)
+                        tier_id = default_data.get("tier_id", "standard")
+                        from tinyagentos.routes.taosmd import MEMORY_TIERS, _run_setup, _tasks
+                        tier_cfg = MEMORY_TIERS.get(tier_id)
+                        if tier_cfg is not None:
+                            tasks = _tasks(request)
+                            existing_task_id = getattr(request.app.state, "taosmd_selfheal_task_id", None)
+                            reuse = False
+                            if existing_task_id is not None:
+                                existing_task = tasks.get(existing_task_id)
+                                if existing_task is not None and existing_task.get("state") not in {"done", "failed"}:
+                                    task_id = existing_task_id
+                                    self_heal_setup_task_id = task_id
+                                    reuse = True
 
-        # Register the agent in the agent registry, minting a canonical_id.
-        # Every deploy creates a NEW agent entry (slugs are made unique above),
-        # so every deploy mints a fresh identity. Never reuse another config
-        # entry's canonical_id by display_name: display names are not unique,
-        # and two agents sharing a canonical identity would cross-wire token
-        # subjects and memory namespaces.
-        ar = getattr(request.app.state, "agent_registry", None)
-        canonical_id = None
-        agent_jwt = ""
-        grants_store_for_deploy = None
-        if ar is not None and getattr(ar, "_db", None) is not None:
-            try:
-                user_id = getattr(request.state, "user_id", None) or ""
-                rec = await ar.register(
-                    framework=body.framework,
-                    display_name=display_name,
-                    user_id=user_id,
-                )
-                canonical_id = rec.get("canonical_id")
-                # Add memory_read grant for the deployed agent.
+                            if not reuse:
+                                request.app.state.taosmd_selfheal_task_id = None
+                                task_id = str(uuid.uuid4())
+                                tasks[task_id] = {
+                                    "state": "pending",
+                                    "progress_pct": 0,
+                                    "message": "Queued…",
+                                    "error": None,
+                                }
+                                asyncio.create_task(
+                                    _run_setup(
+                                        tasks,
+                                        task_id,
+                                        default_data.get("device_id", "local"),
+                                        tier_id,
+                                        tier_cfg,
+                                        registry=registry,
+                                        hardware_profile=getattr(request.app.state, "hardware_profile", None),
+                                        backends=list(getattr(config, "backends", []) or []) if config else [],
+                                        skip_models=False,
+                                        data_dir=data_dir,
+                                    )
+                                )
+                                request.app.state.taosmd_selfheal_task_id = task_id
+                                self_heal_setup_task_id = task_id
+
+            # Register the agent with taOSmd BEFORE mutating config so a failure
+            # here aborts cleanly with no half-state. Skipped for memory_mode='framework'
+            # because that mode explicitly opts out of taOSmd.
+            if body.memory_mode != "framework":
                 try:
-                    grants_store_for_deploy = _get_grants_store(request)
-                    await grants_store_for_deploy.add_grant(canonical_id, "memory_read")
-                    grant_succeeded = True
+                    request.app.state.taosmd_agent_registry.register_agent(unique_slug)
+                except tm_agents.AgentExistsError:
+                    pass  # idempotent — agent already registered, proceed normally
                 except Exception as e:
-                    logger.warning("Failed to add memory_read grant for %s: %s", canonical_id, e)
-                    grant_succeeded = False
-                if grant_succeeded and canonical_id is not None:
-                    # Mint registry JWT for the deployed agent.
+                    logger.exception("register_agent(%s) failed", unique_slug)
+                    err_body = {"error": f"Could not register agent with taosmd: {e}"}
+                    if scoped_key and idempotency_cache is not None:
+                        idempotency_cache.set(scoped_key, 500, err_body)
+                    return JSONResponse(err_body, status_code=500)
+
+            # Register the agent in the agent registry, minting a canonical_id.
+            # Every deploy creates a NEW agent entry (slugs are made unique above),
+            # so every deploy mints a fresh identity. Never reuse another config
+            # entry's canonical_id by display_name: display names are not unique,
+            # and two agents sharing a canonical identity would cross-wire token
+            # subjects and memory namespaces.
+            ar = getattr(request.app.state, "agent_registry", None)
+            canonical_id = None
+            agent_jwt = ""
+            grants_store_for_deploy = None
+            if ar is not None and getattr(ar, "_db", None) is not None:
+                try:
+                    user_id = getattr(request.state, "user_id", None) or ""
+                    rec = await ar.register(
+                        framework=body.framework,
+                        display_name=display_name,
+                        user_id=user_id,
+                    )
+                    canonical_id = rec.get("canonical_id")
+                    # Add memory_read grant for the deployed agent.
                     try:
-                        private_pem, _public_pem = _get_keypair(request)
-                        agent_jwt = mint_registry_token(
-                            canonical_id,
-                            private_pem,
-                            user_id=user_id,
-                            framework=body.framework,
-                        )
+                        grants_store_for_deploy = _get_grants_store(request)
+                        await grants_store_for_deploy.add_grant(canonical_id, "memory_read")
+                        grant_succeeded = True
                     except Exception as e:
-                        logger.warning("Failed to mint registry token for %s: %s", canonical_id, e)
+                        logger.warning("Failed to add memory_read grant for %s: %s", canonical_id, e)
+                        grant_succeeded = False
+                    if grant_succeeded and canonical_id is not None:
+                        # Mint registry JWT for the deployed agent.
+                        try:
+                            private_pem, _public_pem = _get_keypair(request)
+                            agent_jwt = mint_registry_token(
+                                canonical_id,
+                                private_pem,
+                                user_id=user_id,
+                                framework=body.framework,
+                            )
+                        except Exception as e:
+                            logger.warning("Failed to mint registry token for %s: %s", canonical_id, e)
+                            agent_jwt = ""
+                    else:
                         agent_jwt = ""
-                else:
-                    agent_jwt = ""
-            except ValueError as e:
-                # Reserved-prefix names are a user error, not a server fault.
-                err_body = {"error": str(e)}
-                if scoped_key and idempotency_cache is not None:
-                    idempotency_cache.set(scoped_key, 400, err_body)
-                return JSONResponse(err_body, status_code=400)
-            except Exception as e:
-                logger.exception("agent_registry.register(%s) failed", unique_slug)
-                err_body = {"error": f"Could not register agent in registry: {e}"}
-                if scoped_key and idempotency_cache is not None:
-                    idempotency_cache.set(scoped_key, 500, err_body)
-                return JSONResponse(err_body, status_code=500)
+                except ValueError as e:
+                    # Reserved-prefix names are a user error, not a server fault.
+                    err_body = {"error": str(e)}
+                    if scoped_key and idempotency_cache is not None:
+                        idempotency_cache.set(scoped_key, 400, err_body)
+                    return JSONResponse(err_body, status_code=400)
+                except Exception as e:
+                    logger.exception("agent_registry.register(%s) failed", unique_slug)
+                    err_body = {"error": f"Could not register agent in registry: {e}"}
+                    if scoped_key and idempotency_cache is not None:
+                        idempotency_cache.set(scoped_key, 500, err_body)
+                    return JSONResponse(err_body, status_code=500)
 
-        # Add agent entry immediately with deploying status. qmd_url has
-        # been removed from the agent schema — every agent reads and writes
-        # through the shared host qmd.service, addressed by agent name and
-        # the bind-mounted per-agent SQLite at /memory. See
-        # docs/design/framework-agnostic-runtime.md.
-        from tinyagentos.config import normalize_agent
-        emoji = (body.emoji or "").strip() or None
-        new_agent = normalize_agent({
-            "name": body.name,
-            "display_name": display_name,
-            "host": "",
-            "color": body.color,
-            "emoji": emoji,
-            "status": "deploying",
-            "can_read_user_memory": body.can_read_user_memory,
-            "on_worker_failure": body.on_worker_failure,
-            "fallback_models": [m for m in body.fallback_models if m],
-            "model": body.model,
-            "framework": body.framework,
-        })
-        # Apply persona fields to the agent record.
-        new_agent["soul_md"] = body.soul_md
-        new_agent["agent_md"] = body.agent_md
-        new_agent["memory_plugin"] = body.memory_plugin
-        new_agent["memory_config"] = body.memory_config
-        new_agent["memory_mode"] = body.memory_mode
-        new_agent["source_persona_id"] = body.source_persona_id
-        new_agent["migrated_to_v2_personas"] = True
-        new_agent["registry_canonical_id"] = canonical_id
-        # Apply KV-cache quantisation choices from the deploy wizard.
-        new_agent["kv_cache_quant_k"] = body.kv_cache_quant_k
-        new_agent["kv_cache_quant_v"] = body.kv_cache_quant_v
-        new_agent["kv_cache_quant_boundary_layers"] = body.kv_cache_quant_boundary_layers
+            # Add agent entry immediately with deploying status. qmd_url has
+            # been removed from the agent schema — every agent reads and writes
+            # through the shared host qmd.service, addressed by agent name and
+            # the bind-mounted per-agent SQLite at /memory. See
+            # docs/design/framework-agnostic-runtime.md.
+            from tinyagentos.config import normalize_agent
+            emoji = (body.emoji or "").strip() or None
+            new_agent = normalize_agent({
+                "name": body.name,
+                "display_name": display_name,
+                "host": "",
+                "color": body.color,
+                "emoji": emoji,
+                "status": "deploying",
+                "can_read_user_memory": body.can_read_user_memory,
+                "on_worker_failure": body.on_worker_failure,
+                "fallback_models": [m for m in body.fallback_models if m],
+                "model": body.model,
+                "framework": body.framework,
+            })
+            # Apply persona fields to the agent record.
+            new_agent["soul_md"] = body.soul_md
+            new_agent["agent_md"] = body.agent_md
+            new_agent["memory_plugin"] = body.memory_plugin
+            new_agent["memory_config"] = body.memory_config
+            new_agent["memory_mode"] = body.memory_mode
+            new_agent["source_persona_id"] = body.source_persona_id
+            new_agent["migrated_to_v2_personas"] = True
+            new_agent["registry_canonical_id"] = canonical_id
+            # Apply KV-cache quantisation choices from the deploy wizard.
+            new_agent["kv_cache_quant_k"] = body.kv_cache_quant_k
+            new_agent["kv_cache_quant_v"] = body.kv_cache_quant_v
+            new_agent["kv_cache_quant_boundary_layers"] = body.kv_cache_quant_boundary_layers
 
-        config.agents.append(new_agent)
-        await save_config_locked(config, config.config_path)
+            config.agents.append(new_agent)
+            await save_config_locked(config, config.config_path)
+            agent_appended = True
+        finally:
+            # Release the reserved slug if the agent entry was never appended
+            # to config.agents (i.e., the create path failed before config mutation).
+            if not agent_appended:
+                release_agent_slug(unique_slug)
 
         # Write to user persona library if requested.
         if body.save_to_library:

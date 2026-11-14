@@ -15,7 +15,7 @@ from pathlib import Path
 from fastapi import Request
 
 from tinyagentos.agent_db import find_agent
-from tinyagentos.config import save_config_locked, unique_agent_slug
+from tinyagentos.config import save_config_locked, unique_agent_slug, reserve_agent_slug, release_agent_slug
 from tinyagentos.containers import SNAPSHOT_TIMEOUT_S
 
 logger = logging.getLogger(__name__)
@@ -437,177 +437,188 @@ async def _restore_archived(request: Request, archive_id: str):
     # before that field existed.
     container = entry.get("container_name") or f"taos-agent-{desired_slug}"
 
-    # Resolve slug collisions with currently-live agents.
+    # Reserve a unique slug for this restore path. This prevents concurrent
+    # deploy/import/restore paths from picking the same name.
     try:
-        final_slug = unique_agent_slug(config, desired_slug)
+        final_slug = await reserve_agent_slug(config, desired_slug)
     except ValueError:
         from fastapi.responses import JSONResponse
         return JSONResponse({"error": "Could not resolve restore slug"}, status_code=500)
 
-    data_dir = request.app.state.data_dir
-    archive_base = _safe_archive_base(data_dir, entry)
-
-    # 1) Restore snapshot. Container must be stopped (archive left it stopped).
-    snap_result = await snapshot_restore(container, snapshot_name)
-    if not snap_result.get("success"):
-        out = (snap_result.get("output") or "").strip()
-        from fastapi.responses import JSONResponse
-        return JSONResponse(
-            {
-                "error": (
-                    f"restore failed: snapshot_restore {container}/{snapshot_name} "
-                    f"failed: {out or 'unknown error'}"
-                ),
-            },
-            status_code=500,
-        )
-
-    # 1b) Re-mint the per-agent local token under the restored name before the
-    #     container starts. The archived token is bound to the old name, which
-    #     a later deploy may now hold (and whose mint revoked it). Done before
-    #     the rename (the env is instance config, which a rename keeps) so a
-    #     failure leaves the container stopped under the name the archive entry
-    #     records, and the restore can be retried.
+    # Track whether the agent entry was successfully appended to config.agents.
+    # If not, we must release the reserved slug in the finally block.
+    agent_appended = False
     try:
-        from tinyagentos.auth import AuthManager
-        local_token = AuthManager(request.app.state.data_dir).mint_agent_local_token(final_slug)
-        env_result = await set_env(container, "TAOS_LOCAL_TOKEN", local_token)
-        if not env_result.get("success"):
-            raise RuntimeError(
-                f"set_env TAOS_LOCAL_TOKEN failed: {env_result.get('output') or 'unknown error'}"
+        data_dir = request.app.state.data_dir
+        archive_base = _safe_archive_base(data_dir, entry)
+
+        # 1) Restore snapshot. Container must be stopped (archive left it stopped).
+        snap_result = await snapshot_restore(container, snapshot_name)
+        if not snap_result.get("success"):
+            out = (snap_result.get("output") or "").strip()
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                {
+                    "error": (
+                        f"restore failed: snapshot_restore {container}/{snapshot_name} "
+                        f"failed: {out or 'unknown error'}"
+                    ),
+                },
+                status_code=500,
             )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("restore: local token re-mint failed for %s: %s", container, exc)
-        from fastapi.responses import JSONResponse
-        return JSONResponse(
-            {"error": f"restore failed: local token re-mint failed: {exc}"},
-            status_code=500,
-        )
 
-    # 2) Rename if the slug changed (collision resolution).
-    rename_ok = True
-    target_container = f"taos-agent-{final_slug}"
-    if final_slug != desired_slug:
+        # 1b) Re-mint the per-agent local token under the restored name before the
+        #     container starts. The archived token is bound to the old name, which
+        #     a later deploy may now hold (and whose mint revoked it). Done before
+        #     the rename (the env is instance config, which a rename keeps) so a
+        #     failure leaves the container stopped under the name the archive entry
+        #     records, and the restore can be retried.
         try:
-            rename_result = await rename_container(container, target_container)
-            rename_ok = rename_result.get("success", False)
-            if not rename_ok:
-                logger.warning(
-                    "restore: rename %s -> %s failed: %s",
-                    container, target_container, rename_result.get("output", ""),
-                )
-        except Exception as exc:  # noqa: BLE001
-            rename_ok = False
-            logger.warning("restore: rename failed: %s", exc)
-    else:
-        target_container = container
-
-    # 3) Start container.
-    try:
-        await start_container(target_container)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("restore: start_container failed for %s: %s", target_container, exc)
-
-    # 4) Mint a new key in the local key store.
-    llm_proxy = getattr(request.app.state, "llm_proxy", None)
-    new_key = None
-    if llm_proxy:
-        # Scoped to the models the agent had when archived (the default alias
-        # when it had none), as a deploy would scope it.
-        restore_models = [
-            m for m in [original.get("model"), *(original.get("fallback_models") or [])] if m
-        ]
-        try:
-            new_key = await llm_proxy.create_agent_key(final_slug, models=restore_models or None)
-        except Exception:
-            pass
-
-    # 5) Update openclaw env in the restored container with the new key.
-    #    Uses incus config set environment.OPENAI_API_KEY=<new> so the
-    #    value persists in the container's config and does not require a
-    #    bind-mounted file. Also restart openclaw.service if present.
-    if new_key is not None:
-        try:
-            # LITELLM_API_KEY first: the framework units read that name.
-            await set_env(target_container, "LITELLM_API_KEY", new_key)
-            env_result = await set_env(target_container, "OPENAI_API_KEY", new_key)
+            from tinyagentos.auth import AuthManager
+            local_token = AuthManager(request.app.state.data_dir).mint_agent_local_token(final_slug)
+            env_result = await set_env(container, "TAOS_LOCAL_TOKEN", local_token)
             if not env_result.get("success"):
-                logger.warning(
-                    "restore: set_env OPENAI_API_KEY failed for %s: %s",
-                    target_container, env_result.get("output", ""),
+                raise RuntimeError(
+                    f"set_env TAOS_LOCAL_TOKEN failed: {env_result.get('output') or 'unknown error'}"
                 )
-            else:
-                # Best-effort: restart openclaw.service if it is present.
-                try:
-                    await exec_in_container(
-                        target_container,
-                        ["systemctl", "restart", "openclaw.service"],
-                        timeout=30,
-                    )
-                except Exception:
-                    pass
         except Exception as exc:  # noqa: BLE001
-            logger.warning("restore: env key update failed for %s: %s", target_container, exc)
+            logger.warning("restore: local token re-mint failed for %s: %s", container, exc)
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                {"error": f"restore failed: local token re-mint failed: {exc}"},
+                status_code=500,
+            )
 
-    # 6) Re-import chat-export.jsonl from the archive path if present.
-    try:
-        if archive_base is not None:
-            chat_export_file = archive_base / "chat" / "chat-export.jsonl"
-            if chat_export_file.exists():
-                msg_store = request.app.state.chat_messages
-                imported = 0
-                try:
-                    with chat_export_file.open("r", encoding="utf-8") as fh:
-                        for raw_line in fh:
-                            raw_line = raw_line.strip()
-                            if not raw_line:
-                                continue
-                            try:
-                                msg = _json.loads(raw_line)
-                                await msg_store.ensure_message(msg)
-                                imported += 1
-                            except Exception as line_exc:  # noqa: BLE001
-                                logger.warning("restore: bad export line, skipping: %s", line_exc)
-                    logger.info("restore: re-imported %d messages from chat-export", imported)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("restore: chat-export read failed for %s: %s", final_slug, exc)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("restore: chat re-import outer failed: %s", exc)
+        # 2) Rename if the slug changed (collision resolution).
+        rename_ok = True
+        target_container = f"taos-agent-{final_slug}"
+        if final_slug != desired_slug:
+            try:
+                rename_result = await rename_container(container, target_container)
+                rename_ok = rename_result.get("success", False)
+                if not rename_ok:
+                    logger.warning(
+                        "restore: rename %s -> %s failed: %s",
+                        container, target_container, rename_result.get("output", ""),
+                    )
+            except Exception as exc:  # noqa: BLE001
+                rename_ok = False
+                logger.warning("restore: rename failed: %s", exc)
+        else:
+            target_container = container
 
-    # 7) Unflag all channels where archived_agent_id matches this archive entry.
-    agent_id_to_unflag = entry.get("id")
-    try:
-        ch_store = request.app.state.chat_channels
-        channel_id = original.get("chat_channel_id")
-        if channel_id:
-            await ch_store.set_settings(channel_id, {"archived": False})
-        all_channels = await ch_store.list_channels(archived=True)
-        for ch in all_channels:
-            ch_settings = ch.get("settings") or {}
-            if ch_settings.get("archived_agent_id") == agent_id_to_unflag:
-                await ch_store.set_settings(ch["id"], {"archived": False})
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("restore: channel unflag failed: %s", exc)
+        # 3) Start container.
+        try:
+            await start_container(target_container)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("restore: start_container failed for %s: %s", target_container, exc)
 
-    # 8) Move config entry from archived_agents back to agents.
-    restored = dict(original)
-    restored["name"] = final_slug
-    restored["status"] = "stopped"
-    restored["host"] = ""
-    if new_key is not None:
-        restored["llm_key"] = new_key
-    config.agents.append(restored)
-    config.archived_agents = [a for a in config.archived_agents if a.get("id") != archive_id]
-    await save_config_locked(config, config.config_path)
+        # 4) Mint a new key in the local key store.
+        llm_proxy = getattr(request.app.state, "llm_proxy", None)
+        new_key = None
+        if llm_proxy:
+            # Scoped to the models the agent had when archived (the default alias
+            # when it had none), as a deploy would scope it.
+            restore_models = [
+                m for m in [original.get("model"), *(original.get("fallback_models") or [])] if m
+            ]
+            try:
+                new_key = await llm_proxy.create_agent_key(final_slug, models=restore_models or None)
+            except Exception:
+                pass
 
-    return {
-        "status": "restored",
-        "id": archive_id,
-        "name": final_slug,
-        "display_name": restored.get("display_name", final_slug),
-        "container_renamed": rename_ok,
-        "new_llm_key": new_key is not None,
-    }
+        # 5) Update openclaw env in the restored container with the new key.
+        #    Uses incus config set environment.OPENAI_API_KEY=<new> so the
+        #    value persists in the container's config and does not require a
+        #    bind-mounted file. Also restart openclaw.service if present.
+        if new_key is not None:
+            try:
+                # LITELLM_API_KEY first: the framework units read that name.
+                await set_env(target_container, "LITELLM_API_KEY", new_key)
+                env_result = await set_env(target_container, "OPENAI_API_KEY", new_key)
+                if not env_result.get("success"):
+                    logger.warning(
+                        "restore: set_env OPENAI_API_KEY failed for %s: %s",
+                        target_container, env_result.get("output", ""),
+                    )
+                else:
+                    # Best-effort: restart openclaw.service if it is present.
+                    try:
+                        await exec_in_container(
+                            target_container,
+                            ["systemctl", "restart", "openclaw.service"],
+                            timeout=30,
+                        )
+                    except Exception:
+                        pass
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("restore: env key update failed for %s: %s", target_container, exc)
+
+        # 6) Re-import chat-export.jsonl from the archive path if present.
+        try:
+            if archive_base is not None:
+                chat_export_file = archive_base / "chat" / "chat-export.jsonl"
+                if chat_export_file.exists():
+                    msg_store = request.app.state.chat_messages
+                    imported = 0
+                    try:
+                        with chat_export_file.open("r", encoding="utf-8") as fh:
+                            for raw_line in fh:
+                                raw_line = raw_line.strip()
+                                if not raw_line:
+                                    continue
+                                try:
+                                    msg = _json.loads(raw_line)
+                                    await msg_store.ensure_message(msg)
+                                    imported += 1
+                                except Exception as line_exc:  # noqa: BLE001
+                                    logger.warning("restore: bad export line, skipping: %s", line_exc)
+                        logger.info("restore: re-imported %d messages from chat-export", imported)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("restore: chat-export read failed for %s: %s", final_slug, exc)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("restore: chat re-import outer failed: %s", exc)
+
+        # 7) Unflag all channels where archived_agent_id matches this archive entry.
+        agent_id_to_unflag = entry.get("id")
+        try:
+            ch_store = request.app.state.chat_channels
+            channel_id = original.get("chat_channel_id")
+            if channel_id:
+                await ch_store.set_settings(channel_id, {"archived": False})
+            all_channels = await ch_store.list_channels(archived=True)
+            for ch in all_channels:
+                ch_settings = ch.get("settings") or {}
+                if ch_settings.get("archived_agent_id") == agent_id_to_unflag:
+                    await ch_store.set_settings(ch["id"], {"archived": False})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("restore: channel unflag failed: %s", exc)
+
+        # 8) Move config entry from archived_agents back to agents.
+        restored = dict(original)
+        restored["name"] = final_slug
+        restored["status"] = "stopped"
+        restored["host"] = ""
+        if new_key is not None:
+            restored["llm_key"] = new_key
+        config.agents.append(restored)
+        config.archived_agents = [a for a in config.archived_agents if a.get("id") != archive_id]
+        await save_config_locked(config, config.config_path)
+        agent_appended = True
+
+        return {
+            "status": "restored",
+            "id": archive_id,
+            "name": final_slug,
+            "display_name": restored.get("display_name", final_slug),
+            "container_renamed": rename_ok,
+            "new_llm_key": new_key is not None,
+        }
+    finally:
+        # Release the reserved slug if the agent entry was never appended
+        # to config.agents (i.e., the restore path failed before config mutation).
+        if not agent_appended:
+            release_agent_slug(final_slug)
 
 
 async def purge_archived(request: Request, archive_id: str):

@@ -50,6 +50,45 @@ DEFAULT_CONFIG = {
 
 _config_lock = asyncio.Lock()
 
+# Module-level set of agent names that are reserved (in-flight create paths).
+# Prevents two concurrent create paths from picking the same slug.
+_reserved_agent_slugs: set[str] = set()
+_reserved_slugs_lock = asyncio.Lock()
+
+
+async def reserve_agent_slug(config: "AppConfig", display_name: str) -> str:
+    """Reserve a unique agent slug for an in-flight create path.
+
+    Computes a unique slug via ``unique_agent_slug`` while also treating
+    currently-reserved names as taken. The reserved slug is added to the
+    module-level set so concurrent callers see it as occupied.
+
+    Callers must call ``release_agent_slug`` in a ``finally`` block once the
+    agent entry is appended to ``config.agents`` or the create path fails.
+    """
+    async with _reserved_slugs_lock:
+        slug = slugify_agent_name(display_name)
+        unique_slug = slug
+        suffix = 2
+        # Treat both existing config.agents and currently-reserved names as taken.
+        while any(a.get("name") == unique_slug for a in config.agents) or unique_slug in _reserved_agent_slugs:
+            tail = f"-{suffix}"
+            unique_slug = slug[: MAX_AGENT_SLUG_LEN - len(tail)].rstrip("-") + tail
+            suffix += 1
+            if suffix > 100:
+                raise ValueError("Could not generate a unique agent slug")
+        _reserved_agent_slugs.add(unique_slug)
+        return unique_slug
+
+
+def release_agent_slug(name: str) -> None:
+    """Release a previously reserved agent slug.
+
+    Safe to call multiple times; does nothing if the name was not reserved.
+    """
+    _reserved_agent_slugs.discard(name)
+
+
 DEFAULT_ARCHIVE_CONFIG = {
     # Where completed archive snapshots (and optional tarballs) live.
     # "pool:" means the snapshot lives in-pool alongside the container —
