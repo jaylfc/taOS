@@ -376,12 +376,97 @@ class TestAccelDetection:
             cpu=SimpleNamespace(arch="arm64"),
         )
         import tinyagentos.installers.llamacpp_installer as llamacpp
+        import tinyagentos.installers.mlx_installer as mlx
         import tinyagentos.routes.setup as setup_routes
 
         monkeypatch.setattr(llamacpp, "llamacpp_is_running", lambda: False)
         monkeypatch.setattr(setup_routes, "_llamacpp_probe_cache", (0.0, False))
+        monkeypatch.setattr(mlx, "mlx_server_is_running", lambda *a, **k: False)
+        monkeypatch.setattr(setup_routes, "_mlx_probe_cache", (0.0, False))
         resp = await client.get("/api/setup/status")
-        assert resp.json()["accel"] == "metal"
+        data = resp.json()
+        assert data["accel"] == "metal"
+        assert data["default_backend_running"] is False
+
+    async def test_accel_metal_fails_closed_when_a_probe_raises(
+        self, client, app, monkeypatch
+    ):
+        """A probe that raises must leave the step unsatisfied, not 500 the
+        checklist route (Kilo on #3351)."""
+        from types import SimpleNamespace
+
+        app.state.hardware_profile = SimpleNamespace(
+            npu=SimpleNamespace(type="none"),
+            gpu=SimpleNamespace(type="apple", cuda=False, rocm=False),
+            cpu=SimpleNamespace(arch="arm64"),
+        )
+        import tinyagentos.installers.llamacpp_installer as llamacpp
+        import tinyagentos.installers.mlx_installer as mlx
+        import tinyagentos.routes.setup as setup_routes
+
+        monkeypatch.setattr(llamacpp, "llamacpp_is_running", lambda: False)
+        monkeypatch.setattr(setup_routes, "_llamacpp_probe_cache", (0.0, False))
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("mlx runtime exploded")
+
+        monkeypatch.setattr(mlx, "mlx_server_is_running", _boom)
+        monkeypatch.setattr(setup_routes, "_mlx_probe_cache", (0.0, False))
+
+        resp = await client.get("/api/setup/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["accel"] == "metal"
+        assert data["default_backend_running"] is False
+
+    async def test_accel_metal_is_satisfied_by_the_mlx_backend_alone(
+        self, client, app, monkeypatch
+    ):
+        """Apple Silicon runs llama.cpp (Metal) or MLX: with only the MLX server
+        up the step is done (taOS #329), not "backend missing"."""
+        from types import SimpleNamespace
+
+        app.state.hardware_profile = SimpleNamespace(
+            npu=SimpleNamespace(type="none"),
+            gpu=SimpleNamespace(type="apple", cuda=False, rocm=False),
+            cpu=SimpleNamespace(arch="arm64"),
+        )
+        import tinyagentos.installers.llamacpp_installer as llamacpp
+        import tinyagentos.installers.mlx_installer as mlx
+        import tinyagentos.routes.setup as setup_routes
+
+        monkeypatch.setattr(llamacpp, "llamacpp_is_running", lambda: False)
+        monkeypatch.setattr(setup_routes, "_llamacpp_probe_cache", (0.0, False))
+        monkeypatch.setattr(mlx, "mlx_server_is_running", lambda *a, **k: True)
+        monkeypatch.setattr(setup_routes, "_mlx_probe_cache", (0.0, False))
+        resp = await client.get("/api/setup/status")
+        data = resp.json()
+        assert data["accel"] == "metal"
+        assert data["default_backend_running"] is True
+
+    async def test_accel_cuda_never_consults_the_mlx_probe(
+        self, client, app, monkeypatch
+    ):
+        """The MLX short-circuit belongs to the metal branch only."""
+        from types import SimpleNamespace
+
+        app.state.hardware_profile = SimpleNamespace(
+            npu=SimpleNamespace(type="none"),
+            gpu=SimpleNamespace(type="nvidia", cuda=True, rocm=False),
+            cpu=SimpleNamespace(arch="x86_64"),
+        )
+        import tinyagentos.installers.llamacpp_installer as llamacpp
+        import tinyagentos.installers.mlx_installer as mlx
+        import tinyagentos.routes.setup as setup_routes
+
+        monkeypatch.setattr(llamacpp, "llamacpp_is_running", lambda: False)
+        monkeypatch.setattr(setup_routes, "_llamacpp_probe_cache", (0.0, False))
+        monkeypatch.setattr(mlx, "mlx_server_is_running", lambda *a, **k: True)
+        monkeypatch.setattr(setup_routes, "_mlx_probe_cache", (0.0, False))
+        resp = await client.get("/api/setup/status")
+        data = resp.json()
+        assert data["accel"] == "cuda"
+        assert data["default_backend_running"] is False
 
     async def test_accel_cpu_on_x86_with_no_gpu(self, client, app, monkeypatch):
         from types import SimpleNamespace
