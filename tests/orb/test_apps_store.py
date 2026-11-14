@@ -84,11 +84,22 @@ def test_validate_relative_url_accepted():
     "x#y",
     "",
     "//[",
+    "%2e%2e/x",
+    "a/..%2fx",
+    "a/%2E%2E/x",
+    ".hidden/x",
+    "a//b",
 ])
 def test_validate_relative_url_refused(bad_url):
     """Various bad relative URLs raise DesktopManifestInvalid."""
     with pytest.raises(apps_store.DesktopManifestInvalid):
         apps_store.validate_relative_url(bad_url)
+
+
+def test_validate_relative_url_accepted_more():
+    """Accept specific allowed paths."""
+    assert apps_store.validate_relative_url("openharness/1.0.0/oh-linux-x64.zip") == "openharness/1.0.0/oh-linux-x64.zip"
+    assert apps_store.validate_relative_url("x.zip") == "x.zip"
 
 
 # ------------------------------------------------------------------ resolve_url ----
@@ -177,7 +188,16 @@ def test_validate_manifest_bad_url_names_app_version_platform():
     assert manifest["apps"][0]["id"] in msg and v["version"] in msg and plat in msg
 
 
-def test_validate_manifest_firmware_shaped_no_kind_raises_kind_error():
+def test_validate_manifest_yanked_null_refused_no_yanked_ok():
+    """yanked: null refused; version with no yanked key still validates."""
+    manifest = make_valid_manifest()
+    manifest["apps"][0]["versions"][0]["yanked"] = None
+    with pytest.raises(apps_store.DesktopManifestInvalid):
+        apps_store.validate_manifest(manifest)
+
+    manifest2 = make_valid_manifest()
+    manifest2["apps"][0]["versions"][0].pop("yanked")
+    apps_store.validate_manifest(manifest2)
     """Firmware-shaped doc without kind raises DesktopManifestKindError."""
     manifest = {
         "serial": 1,
