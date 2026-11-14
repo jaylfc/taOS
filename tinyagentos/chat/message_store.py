@@ -251,6 +251,18 @@ class ChatMessageStore(BaseStore):
                 return None
             return _parse(row, cursor.description)
 
+    async def find_message_by_metadata(
+        self, channel_id: str, key: str, value: str
+    ) -> dict | None:
+        async with self._db.execute(
+            "SELECT * FROM chat_messages WHERE channel_id = ? AND json_extract(metadata, ?) = ? LIMIT 1",
+            (channel_id, f"$.{key}", value),
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            return _parse(row, cursor.description)
+
     async def get_messages(
         self,
         channel_id: str,
