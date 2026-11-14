@@ -825,6 +825,14 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await archive.init()
         app.state.archive = archive
 
+        # Drain any spooled archive events from previous runs
+        from tinyagentos.archive_spool import drain_spool
+        spool_path = data_dir / "archive" / "spool.jsonl"
+        try:
+            await drain_spool(archive, spool_path)
+        except Exception:
+            logger.exception("archive spool drain failed at startup")
+
         # BrowserApp v2 stores. Cookie store uses a per-install random
         # key persisted in data_dir; PR 5+ will replace this with a
         # per-user Argon2-derived key bound to the login password.
@@ -1019,6 +1027,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         auth_manager.get_local_token()
         logger.info("local auth token path: %s", _local_token_path)
         channel_hub_router.set_archive(archive)  # Wire archive for zero-loss channel message capture
+        channel_hub_router.set_data_dir(data_dir)
         # channel_hub_connectors, deploy_tasks, and idempotency_cache are
         # already set by the eager section; do not create new instances here.
         app.state.todo_store = todo_store
@@ -1275,6 +1284,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             chat_channels=chat_channels,
             chat_hub=chat_hub,
             archive=getattr(app.state, "archive", None),
+            data_dir=data_dir,
         )
         app.state.bridge_sessions._router = app.state.agent_chat_router
         app.state.bridge_sessions._guest_outbox = guest_outbox
@@ -1569,6 +1579,27 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         _create_supervised_task(run_startup_reconcile(app.state), app.state._background_tasks)
         from tinyagentos.agent_controller_listener import run_startup_reconcile as _agent_ctl_reconcile
         _create_supervised_task(_agent_ctl_reconcile(app.state), app.state._background_tasks)
+
+        # Archive spool drain — replay any failed writes every 5 minutes
+        async def _archive_spool_drain_loop(app: FastAPI) -> None:
+            import asyncio as _asyncio
+            archive = getattr(app.state, "archive", None)
+            if archive is None:
+                return
+            data_dir = getattr(app.state, "data_dir", None)
+            if data_dir is None:
+                return
+            spool_path = data_dir / "archive" / "spool.jsonl"
+            while True:
+                try:
+                    await _asyncio.sleep(300)  # 5 minutes
+                    await drain_spool(archive, spool_path)
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    logger.warning("archive spool drain loop error: %s", e)
+
+        _create_supervised_task(_archive_spool_drain_loop(app), app.state._background_tasks)
 
         app.state._startup_complete = True
         logger.info("startup complete — accepting requests")

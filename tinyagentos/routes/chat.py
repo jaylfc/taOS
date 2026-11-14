@@ -16,6 +16,7 @@ from tinyagentos.auth_context import (
 )
 from tinyagentos.chat.reactions import maybe_trigger_semantic
 from tinyagentos.device_auth import current_user_or_device
+from tinyagentos.archive_spool import record_lossless
 
 router = APIRouter()
 
@@ -470,21 +471,22 @@ async def post_message(request: Request, user: CurrentUser = Depends(current_use
     # Auto-archive every message for the zero-loss layer
     archive = getattr(request.app.state, "archive", None)
     if archive:
-        try:
-            await archive.record(
-                "conversation",
-                {
-                    "content": content,
-                    "channel_id": channel_id,
-                    "message_id": message.get("id"),
-                    "author_id": body["author_id"],
-                    "author_type": body.get("author_type", "agent"),
-                },
-                agent_name=body["author_id"] if body.get("author_type") == "agent" else None,
-                summary=content[:100],
-            )
-        except Exception:
-            pass  # Never block chat for archive failures
+        data_dir = Path(getattr(request.app.state, "data_dir", _resolve_chat_data_dir()))
+        spool_path = data_dir / "archive" / "spool.jsonl"
+        await record_lossless(
+            archive,
+            "conversation",
+            {
+                "content": content,
+                "channel_id": channel_id,
+                "message_id": message.get("id"),
+                "author_id": body["author_id"],
+                "author_type": body.get("author_type", "agent"),
+            },
+            agent_name=body["author_id"] if body.get("author_type") == "agent" else None,
+            summary=content[:100],
+            spool_path=spool_path,
+        )
 
     router_svc = getattr(request.app.state, "agent_chat_router", None)
     if _http_channel is not None:
