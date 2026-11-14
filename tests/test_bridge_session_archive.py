@@ -1,4 +1,4 @@
-"""Tests: archive dual-write for tool_call / tool_result / error / reasoning events in BridgeSessionRegistry."""
+"""Tests: archive dual-write for tool_call / tool_result / error / reasoning / final events in BridgeSessionRegistry."""
 from __future__ import annotations
 
 import asyncio
@@ -95,6 +95,36 @@ async def test_tool_result_dual_writes_to_archive():
     assert kwargs["event_type"] == "tool_result"
     assert kwargs["agent_name"] == "atlas"
     assert kwargs["data"]["tool"] == "file_write"
+
+
+# ---------------------------------------------------------------------------
+# final dual-write
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_final_event_dual_writes_to_archive():
+    archive = AsyncMock()
+    reg, tr = _make_registry(archive=archive)
+
+    await reg.record_reply("atlas", {
+        "kind": "final",
+        "trace_id": "t9",
+        "content": "Final reply text",
+    })
+
+    # Trace store still called
+    assert len(tr._store.events) == 1
+    assert tr._store.events[0]["kind"] == "message_out"
+
+    # Archive receives
+    archive.record.assert_called_once()
+    kwargs = archive.record.call_args.kwargs
+    assert kwargs["event_type"] == "final"
+    assert kwargs["agent_name"] == "atlas"
+    assert kwargs["data"]["content"] == "Final reply text"
+    assert kwargs["data"]["trace_id"] == "t9"
+    # reply_id should be None since we didn't provide one
+    assert kwargs["data"].get("reply_id") is None
 
 
 # ---------------------------------------------------------------------------
@@ -211,7 +241,6 @@ async def test_archive_failure_on_error_does_not_break_trace():
 
     assert len(tr._store.events) == 1
 
-
 @pytest.mark.asyncio
 async def test_archive_failure_on_reasoning_does_not_break_trace():
     archive = AsyncMock()
@@ -226,3 +255,60 @@ async def test_archive_failure_on_reasoning_does_not_break_trace():
     })
 
     assert len(tr._store.events) == 1
+
+
+# ---------------------------------------------------------------------------
+# final event - test that final reply text appears in exactly one archive record
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_final_event_archive_single_record_verbatim():
+    """Test that the bridge reply's final text reaches the taOSmd archive verbatim exactly once."""
+    archive = AsyncMock()
+    
+    # Track all archive.record calls to verify exactly one
+    archive_calls = []
+    
+    async def track_archive_record(event_type, **kwargs):
+        archive_calls.append({
+            "event_type": event_type,
+            "data": kwargs.get("data", {}),
+            "agent_name": kwargs.get("agent_name"),
+        })
+        return None
+    
+    archive.record.side_effect = track_archive_record
+    
+    reg, tr = _make_registry(archive=archive)
+    
+    # Drive a bridge session through to a final event
+    # Use channel_id to trigger the chat.py path (but verify chat.py doesn't archive)
+    await reg.record_reply("test_agent", {
+        "kind": "final",
+        "trace_id": "t1",
+        "content": "Final reply text",
+        "id": "m1",
+        "channel_id": "ch1",
+    })
+    
+    # Assert that archive.record was called exactly once
+    # Requirement: "the bridge reply's final text reaches the taOSmd archive verbatim exactly once"
+    assert len(archive_calls) == 1, f"Expected exactly 1 archive record, got {len(archive_calls)}"
+    
+    # Assert that the event is of type "final"
+    # Requirement: "Do not archive individual `delta` fragments. The final text is their concatenation."
+    assert archive_calls[0]["event_type"] == "final", f"Expected event_type='final', got {archive_calls[0]['event_type']}"
+    
+    # Assert that the content is verbatim (byte-identical)
+    assert archive_calls[0]["data"]["content"] == "Final reply text", f"Expected content='Final reply text', got {archive_calls[0]['data']['content']}"
+    
+    # Assert other fields are present
+    assert archive_calls[0]["data"]["trace_id"] == "t1"
+    assert archive_calls[0]["data"]["reply_id"] == "m1"
+    assert archive_calls[0]["agent_name"] == "test_agent"
+    
+    # Requirement: "make sure it is not ALSO archived via chat.py (no duplicates)"
+    # The archive_calls should only contain the final event from bridge_session.py,
+    # not any "conversation" events from chat.py
+    event_types = [call["event_type"] for call in archive_calls]
+    assert "conversation" not in event_types, f"Final text should not be archived via chat.py (conversation events found: {event_types})"

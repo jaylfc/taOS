@@ -488,6 +488,21 @@ class BridgeSessionRegistry:
                     channel_id=channel_id,
                     payload={"content": final_content},
                 )
+            if self._archive is not None:
+                try:
+                    await self._archive.record(
+                        event_type="final",
+                        data={
+                            "content": final_content,
+                            "trace_id": trace_id,
+                            "reply_id": reply_id,
+                            "channel_id": channel_id,
+                        },
+                        agent_name=slug,
+                        summary=final_content[:120] if final_content else "",
+                    )
+                except Exception:
+                    logger.exception("archive dual-write failed (final)")
 
             persisted = None
             if channel_id:
