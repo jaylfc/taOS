@@ -274,12 +274,15 @@ export function SecretsApp({ windowId: _windowId }: { windowId: string }) {
       if (res.ok) {
         const data = await res.json();
         if (data && typeof data === "object") {
-          setKeenablePublicFallback(Boolean(data.keenable_public_fallback));
+          setKeenablePublicFallback(data.keenable_public_fallback === true);
           setKeenableError(null);
         }
+      } else {
+        throw new Error("Failed to load preference");
       }
-    } catch { /* ignore */ }
-    finally {
+    } catch {
+      setKeenableError("Could not load Keenable preference");
+    } finally {
       setKeenableLoading(false);
     }
   }, []);
@@ -423,7 +426,7 @@ export function SecretsApp({ windowId: _windowId }: { windowId: string }) {
         <div className="p-4">
           <GitHubConnect />
         </div>
-{!keenableLoading && (
+        {!keenableLoading && (
             <div className="px-4 pb-4">
               <Card className="bg-shell-surface border-white/5">
                 <CardContent className="px-4 py-3">
@@ -444,13 +447,23 @@ export function SecretsApp({ windowId: _windowId }: { windowId: string }) {
                       checked={keenablePublicFallback}
                       onCheckedChange={handleKeenableToggle}
                       aria-label="Allow Keenable keyless search"
-                      disabled={keenableSaving}
+                      disabled={keenableSaving || !!keenableError}
                     />
                   </div>
                   {keenableError && (
-                    <p className="mt-2 text-xs text-red-400" role="alert">
-                      {keenableError}
-                    </p>
+                    <div className="mt-2 flex items-center gap-2">
+                      <p className="text-xs text-red-400" role="alert">
+                        {keenableError}
+                      </p>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={fetchKeenablePreference}
+                        aria-label="Retry loading Keenable preference"
+                      >
+                        Retry
+                      </Button>
+                    </div>
                   )}
                 </CardContent>
               </Card>
