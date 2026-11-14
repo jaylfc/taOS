@@ -470,7 +470,10 @@ async def _restore_archived(request: Request, archive_id: str):
     #     records, and the restore can be retried.
     try:
         from tinyagentos.auth import AuthManager
-        local_token = AuthManager(request.app.state.data_dir).mint_agent_local_token(final_slug)
+        restored_canonical_id = original.get("registry_canonical_id")
+        local_token = AuthManager(request.app.state.data_dir).mint_agent_local_token(
+            final_slug, canonical_id=restored_canonical_id
+        )
         env_result = await set_env(container, "TAOS_LOCAL_TOKEN", local_token)
         if not env_result.get("success"):
             raise RuntimeError(
