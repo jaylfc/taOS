@@ -1,8 +1,11 @@
 """Tests for tinyagentos/orb/catalog_fetch."""
 import base64
+import gzip
 import hashlib
 import json
 import pytest
+import threading
+import time
 from pathlib import Path
 
 import httpx
@@ -403,8 +406,9 @@ async def test_fetch_sends_accept_encoding_identity(tmp_path, test_key, keys_dic
 
 @pytest.mark.asyncio
 async def test_compressed_response_rejected_before_reading_body(tmp_path, test_key, keys_dict):
-    """A server that ignores Accept-Encoding: identity and returns gzip content
-    is rejected before the body is read, so no cache file is written."""
+    """A server that ignores Accept-Encoding: identity and returns real gzip
+    content is rejected before the body is accepted into the cache, so no
+    cache file is written."""
     private_key, _, _ = test_key
     catalog = {"serial": 1, "apps": [{"id": "app1", "name": "App1", "versions": []}]}
     catalog_bytes = json.dumps(catalog).encode("utf-8")
@@ -415,7 +419,7 @@ async def test_compressed_response_rejected_before_reading_body(tmp_path, test_k
 
     def handler(request: httpx.Request):
         if request.url.path.endswith("/catalog.json"):
-            return httpx.Response(200, content=catalog_bytes,
+            return httpx.Response(200, content=gzip.compress(catalog_bytes),
                                   headers={"Content-Encoding": "gzip"})
         if request.url.path.endswith("/catalog.json.sig"):
             return httpx.Response(200, content=sig_bytes)
@@ -424,7 +428,7 @@ async def test_compressed_response_rejected_before_reading_body(tmp_path, test_k
     transport = httpx.MockTransport(handler)
     from tinyagentos.orb import catalog_fetch
 
-    with pytest.raises(CatalogFetchError):
+    with pytest.raises(CatalogFetchError, match="compressed response"):
         await catalog_fetch.fetch_catalog(
             "https://example.com/",
             cache_dir,
@@ -683,3 +687,59 @@ def test_accept_and_cache_refuses_desktop_kind_before_any_work(tmp_path, test_ke
     assert not state_path.exists()
     assert not (cache_dir / "catalog.json").exists()
     assert not (cache_dir / "catalog.json.sig").exists()
+
+
+def test_accept_and_cache_serializes_concurrent_writes(tmp_path, test_key, keys_dict, monkeypatch):
+    """Two concurrent _accept_and_cache calls (serial 1 then serial 2) must not
+    interleave cache writes: the older write must not land last and leave the
+    cache behind the recorded serial."""
+    from tinyagentos import atomic_io
+    from tinyagentos.orb import catalog_fetch
+
+    private_key, _, _ = test_key
+    catalog1_bytes = json.dumps({"serial": 1, "apps": [{"id": "app1"}]}).encode("utf-8")
+    sig1_bytes = sign_catalog(private_key, catalog1_bytes)
+    catalog2_bytes = json.dumps({"serial": 2, "apps": [{"id": "app2"}]}).encode("utf-8")
+    sig2_bytes = sign_catalog(private_key, catalog2_bytes)
+
+    cache_dir = tmp_path / "cache"
+    state_path = tmp_path / "state.json"
+
+    first_cache_write = {"done": False}
+    first_started = threading.Event()
+    call_lock = threading.Lock()
+    original_write = atomic_io.atomic_write_bytes
+
+    def sleeping_write(path, data, **kwargs):
+        # Delay the first cache write so the later serial wins the cache.
+        if Path(path).name == "catalog.json":
+            with call_lock:
+                should_sleep = not first_cache_write["done"]
+                if should_sleep:
+                    first_cache_write["done"] = True
+                    first_started.set()
+            if should_sleep:
+                time.sleep(0.05)
+        return original_write(path, data, **kwargs)
+
+    monkeypatch.setattr("tinyagentos.atomic_io.atomic_write_bytes", sleeping_write)
+
+    errors = []
+
+    def run(catalog_bytes, sig_bytes):
+        try:
+            catalog_fetch._accept_and_cache(catalog_bytes, sig_bytes, state_path, keys_dict, cache_dir)
+        except Exception as e:  # noqa: BLE001 - surface thread errors to the main thread
+            errors.append(e)
+
+    t1 = threading.Thread(target=run, args=(catalog1_bytes, sig1_bytes))
+    t2 = threading.Thread(target=run, args=(catalog2_bytes, sig2_bytes))
+    t1.start()
+    assert first_started.wait(timeout=10), "serial 1 never reached its first cache write"
+    t2.start()  # serial 2 started second, while serial 1 is mid-write
+    t1.join()
+    t2.join()
+    assert not errors, errors
+    # serial 2 started second but must win the cache
+    assert (cache_dir / "catalog.json").read_bytes() == catalog2_bytes
+    catalog_fetch.load_cached_catalog(cache_dir, state_path, keys=keys_dict)
