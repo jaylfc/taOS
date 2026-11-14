@@ -179,3 +179,135 @@ class TestSecretsEncryption:
         resp = await client.get("/api/secrets/reencrypt-test")
         assert resp.status_code == 200
         assert resp.json()["value"] == "updated-value"
+
+
+class TestWriteOnceSecrets:
+    """write_once pins a secret's value so it cannot silently rotate.
+
+    Rotation for the taosmd archive key is a NEW secret name (new key id),
+    never an in-place value change.  Metadata edits still work, and an
+    explicit force=true admin query is required to delete one.
+    """
+
+    @pytest.mark.asyncio
+    async def test_create_write_once(self, client):
+        """A secret created with write_once=true is flagged on read-back."""
+        await client.post("/api/secrets", json={
+            "name": "Pinned-Key",
+            "value": "pinned-value-1",
+            "category": "credentials",
+            "description": "must not rotate",
+            "agents": [],
+            "write_once": True,
+        })
+        resp = await client.get("/api/secrets/Pinned-Key")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["write_once"] is True
+        assert data["value"] == "pinned-value-1"
+
+    @pytest.mark.asyncio
+    async def test_put_value_refused_and_stored_value_unchanged(self, client):
+        """PUT on a write_once secret 409s and leaves the pinned value intact."""
+        await client.post("/api/secrets", json={
+            "name": "Pinned-Key",
+            "value": "pinned-value-1",
+            "category": "credentials",
+            "description": "",
+            "agents": [],
+            "write_once": True,
+        })
+        resp = await client.put("/api/secrets/Pinned-Key", json={
+            "value": "pinned-value-2",
+        })
+        assert resp.status_code == 409
+        assert "write_once" in resp.json()["error"].lower()
+        # Read it back: the value is still the original.
+        detail = await client.get("/api/secrets/Pinned-Key")
+        assert detail.status_code == 200
+        assert detail.json()["value"] == "pinned-value-1"
+
+    @pytest.mark.asyncio
+    async def test_put_description_only_succeeds(self, client):
+        """Metadata edits on a write_once secret still return 200."""
+        await client.post("/api/secrets", json={
+            "name": "Pinned-Key",
+            "value": "pinned-value-1",
+            "category": "credentials",
+            "description": "old desc",
+            "agents": [],
+            "write_once": True,
+        })
+        resp = await client.put("/api/secrets/Pinned-Key", json={
+            "description": "new desc",
+        })
+        assert resp.status_code == 200
+        detail = await client.get("/api/secrets/Pinned-Key")
+        assert detail.json()["description"] == "new desc"
+        assert detail.json()["value"] == "pinned-value-1"
+
+    @pytest.mark.asyncio
+    async def test_delete_without_force_refused(self, client):
+        """DELETE of a write_once secret 409s and the secret stays present."""
+        await client.post("/api/secrets", json={
+            "name": "Pinned-Key",
+            "value": "pinned-value-1",
+            "category": "credentials",
+            "description": "",
+            "agents": [],
+            "write_once": True,
+        })
+        resp = await client.delete("/api/secrets/Pinned-Key")
+        assert resp.status_code == 409
+        assert "write_once" in resp.json()["error"].lower()
+        still = await client.get("/api/secrets/Pinned-Key")
+        assert still.status_code == 200
+        assert still.json()["value"] == "pinned-value-1"
+
+    @pytest.mark.asyncio
+    async def test_delete_with_force_removes(self, client):
+        """DELETE with force=true removes a write_once secret."""
+        await client.post("/api/secrets", json={
+            "name": "Pinned-Key",
+            "value": "pinned-value-1",
+            "category": "credentials",
+            "description": "",
+            "agents": [],
+            "write_once": True,
+        })
+        resp = await client.delete("/api/secrets/Pinned-Key?force=true")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "deleted"
+        gone = await client.get("/api/secrets/Pinned-Key")
+        assert gone.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_non_write_once_behaves_as_before(self, client):
+        """A secret created without write_once accepts a value PUT (200)."""
+        await client.post("/api/secrets", json={
+            "name": "Mutable-Key",
+            "value": "original",
+            "category": "general",
+            "description": "",
+            "agents": [],
+        })
+        resp = await client.put("/api/secrets/Mutable-Key", json={
+            "value": "rotated",
+        })
+        assert resp.status_code == 200
+        detail = await client.get("/api/secrets/Mutable-Key")
+        assert detail.json()["value"] == "rotated"
+        assert detail.json()["write_once"] is False
+
+    @pytest.mark.asyncio
+    async def test_write_once_default_false(self, client):
+        """write_once defaults to false, so nothing existing changes."""
+        await client.post("/api/secrets", json={
+            "name": "Default-Key",
+            "value": "v",
+            "category": "general",
+            "description": "",
+            "agents": [],
+        })
+        detail = await client.get("/api/secrets/Default-Key")
+        assert detail.json()["write_once"] is False
