@@ -10,10 +10,9 @@ no per-route guard of their own.
 from __future__ import annotations
 
 import time
-from typing import Optional
+from typing import Optional, Union
 
 from fastapi import APIRouter, Request
-from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 
@@ -194,7 +193,9 @@ async def _keenable_fetch(request: Request, body: KeenableFetchRequest) -> dict:
     return await _keenable_call(request, "fetch", body=body)
 
 
-async def _keenable_call(request: Request, action: str, body) -> dict:
+async def _keenable_call(
+    request: Request, action: str, body: Union[KeenableSearchRequest, KeenableFetchRequest]
+) -> dict:
     is_local, agent_name = _local_token_caller(request)
     if not is_local or agent_name is None:
         return JSONResponse({"error": "agent token required"}, status_code=403)
