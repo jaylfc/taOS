@@ -66,7 +66,7 @@ export async function loadPrivacy(): Promise<Privacy> {
 
   const labels = providers.ok && Array.isArray(providers.data)
     ? (providers.data as { type?: string }[])
-        .map((p) => (p?.type && CLOUD_PROVIDER_META[p.type]?.url ? CLOUD_PROVIDER_META[p.type]!.label : null))
+        .map((p) => (p?.type && CLOUD_PROVIDER_META[p.type] ? CLOUD_PROVIDER_META[p.type]!.label : null))
         .filter((l): l is string => l !== null)
     : [];
 
