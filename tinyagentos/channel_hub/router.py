@@ -1,8 +1,10 @@
 from __future__ import annotations
 import logging
 import httpx
+from pathlib import Path
 from tinyagentos.adapters.retry_policy import ROUTER_TIMEOUT_SECONDS
 from tinyagentos.channel_hub.message import IncomingMessage, OutgoingMessage, parse_inline_hints
+from tinyagentos.archive_spool import record_lossless
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +37,10 @@ class MessageRouter:
     def set_archive(self, archive) -> None:
         """Set the archive store for zero-loss message capture."""
         self._archive = archive
+
+    def set_data_dir(self, data_dir: Path) -> None:
+        """Set the data directory for spool file path."""
+        self._data_dir = data_dir
 
     async def route_message(self, agent_name: str, message: IncomingMessage) -> OutgoingMessage | None:
         port = self._agent_ports.get(agent_name)
@@ -98,33 +104,72 @@ class MessageRouter:
         archive = getattr(self, "_archive", None)
         if not archive:
             return
-        try:
-            if isinstance(message, IncomingMessage):
-                await archive.record(
-                    "conversation",
-                    {
-                        "content": message.text,
-                        "from_id": message.from_id,
-                        "from_name": message.from_name,
-                        "platform": message.platform,
-                        "channel_id": message.channel_id,
-                        "direction": "inbound",
-                        "message_id": message.id,
-                    },
-                    agent_name=agent_name,
-                    summary=f"[{message.platform}] {message.from_name}: {message.text[:80]}",
-                )
-            elif isinstance(message, OutgoingMessage):
-                await archive.record(
-                    "conversation",
-                    {
-                        "content": message.content,
-                        "platform": platform,
-                        "channel_id": channel_id,
-                        "direction": "outbound",
-                    },
-                    agent_name=agent_name,
-                    summary=f"[{platform}→] {message.content[:80]}",
-                )
-        except Exception:
-            pass  # Never block message routing for archive failures
+        data_dir = getattr(self, "_data_dir", None)
+        if data_dir is None:
+            # Fallback: try to resolve from app context if available, but don't block
+            logger.debug("archive spool: data_dir not set on MessageRouter, skipping spool")
+            # Still try to record without spooling as a best effort
+            try:
+                if isinstance(message, IncomingMessage):
+                    await archive.record(
+                        "conversation",
+                        {
+                            "content": message.text,
+                            "from_id": message.from_id,
+                            "from_name": message.from_name,
+                            "platform": message.platform,
+                            "channel_id": message.channel_id,
+                            "direction": "inbound",
+                            "message_id": message.id,
+                        },
+                        agent_name=agent_name,
+                        summary=f"[{message.platform}] {message.from_name}: {message.text[:80]}",
+                    )
+                elif isinstance(message, OutgoingMessage):
+                    await archive.record(
+                        "conversation",
+                        {
+                            "content": message.content,
+                            "platform": platform,
+                            "channel_id": channel_id,
+                            "direction": "outbound",
+                        },
+                        agent_name=agent_name,
+                        summary=f"[{platform}→] {message.content[:80]}",
+                    )
+            except Exception:
+                pass  # Never block message routing for archive failures
+            return
+
+        spool_path = data_dir / "archive" / "spool.jsonl"
+        if isinstance(message, IncomingMessage):
+            await record_lossless(
+                archive,
+                "conversation",
+                {
+                    "content": message.text,
+                    "from_id": message.from_id,
+                    "from_name": message.from_name,
+                    "platform": message.platform,
+                    "channel_id": message.channel_id,
+                    "direction": "inbound",
+                    "message_id": message.id,
+                },
+                agent_name=agent_name,
+                summary=f"[{message.platform}] {message.from_name}: {message.text[:80]}",
+                spool_path=spool_path,
+            )
+        elif isinstance(message, OutgoingMessage):
+            await record_lossless(
+                archive,
+                "conversation",
+                {
+                    "content": message.content,
+                    "platform": platform,
+                    "channel_id": channel_id,
+                    "direction": "outbound",
+                },
+                agent_name=agent_name,
+                summary=f"[{platform}→] {message.content[:80]}",
+                spool_path=spool_path,
+            )

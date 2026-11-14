@@ -25,10 +25,12 @@ import logging
 import time
 import uuid
 from collections import OrderedDict
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, AsyncIterator
 
 from tinyagentos.prompt_assembly import assemble_system_prompt
+from tinyagentos.archive_spool import record_lossless
 
 logger = logging.getLogger(__name__)
 
@@ -138,8 +140,10 @@ class BridgeSessionRegistry:
         chat_messages   — ChatMessageStore   (app.state.chat_messages)
         chat_channels   — ChatChannelStore   (app.state.chat_channels)
         chat_hub        — ChatHub            (app.state.chat_hub)
+        archive         — Archive            (app.state.archive)
+        data_dir        — Path               (app.state.data_dir) for spool file
 
-    All four are optional so unit tests can inject fakes or None.
+    All are optional so unit tests can inject fakes or None.
     """
 
     def __init__(
@@ -149,12 +153,14 @@ class BridgeSessionRegistry:
         chat_channels=None,
         chat_hub=None,
         archive=None,
+        data_dir: Path | None = None,
     ) -> None:
         self._trace_registry = trace_registry
         self._chat_messages = chat_messages
         self._chat_channels = chat_channels
         self._chat_hub = chat_hub
         self._archive = archive
+        self._data_dir = data_dir
         self._sessions: dict[str, _AgentSession] = {}
         self._lock = asyncio.Lock()
         self._router = None
@@ -570,8 +576,11 @@ class BridgeSessionRegistry:
                     },
                 )
             if self._archive is not None:
-                try:
-                    await self._archive.record(
+                data_dir = self._data_dir
+                if data_dir is not None:
+                    spool_path = data_dir / "archive" / "spool.jsonl"
+                    await record_lossless(
+                        self._archive,
                         event_type="tool_call",
                         data={
                             "tool": tool_name,
@@ -580,9 +589,23 @@ class BridgeSessionRegistry:
                         },
                         agent_name=slug,
                         summary=tool_name,
+                        spool_path=spool_path,
                     )
-                except Exception:
-                    logger.exception("archive dual-write failed (tool_call)")
+                else:
+                    logger.debug("archive spool: data_dir not set on BridgeSessionRegistry, skipping spool for tool_call")
+                    try:
+                        await self._archive.record(
+                            event_type="tool_call",
+                            data={
+                                "tool": tool_name,
+                                "args": body.get("args") or {},
+                                "trace_id": trace_id,
+                            },
+                            agent_name=slug,
+                            summary=tool_name,
+                        )
+                    except Exception:
+                        logger.exception("archive dual-write failed (tool_call)")
 
         elif kind == "tool_result":
             channel_id = body.get("channel_id") or await self._resolve_channel(slug)
@@ -600,8 +623,11 @@ class BridgeSessionRegistry:
                     },
                 )
             if self._archive is not None:
-                try:
-                    await self._archive.record(
+                data_dir = self._data_dir
+                if data_dir is not None:
+                    spool_path = data_dir / "archive" / "spool.jsonl"
+                    await record_lossless(
+                        self._archive,
                         event_type="tool_result",
                         data={
                             "tool": tool_name,
@@ -611,9 +637,24 @@ class BridgeSessionRegistry:
                         },
                         agent_name=slug,
                         summary=tool_name,
+                        spool_path=spool_path,
                     )
-                except Exception:
-                    logger.exception("archive dual-write failed (tool_result)")
+                else:
+                    logger.debug("archive spool: data_dir not set on BridgeSessionRegistry, skipping spool for tool_result")
+                    try:
+                        await self._archive.record(
+                            event_type="tool_result",
+                            data={
+                                "tool": tool_name,
+                                "result": body.get("result"),
+                                "success": body.get("success", True),
+                                "trace_id": trace_id,
+                            },
+                            agent_name=slug,
+                            summary=tool_name,
+                        )
+                    except Exception:
+                        logger.exception("archive dual-write failed (tool_result)")
 
             # Attach a read-only decision content block to the in-flight chat
             # message when the agent raises a decision via the request_decision
@@ -655,8 +696,11 @@ class BridgeSessionRegistry:
                     payload={"stage": "openclaw", "message": error_text},
                 )
             if self._archive is not None:
-                try:
-                    await self._archive.record(
+                data_dir = self._data_dir
+                if data_dir is not None:
+                    spool_path = data_dir / "archive" / "spool.jsonl"
+                    await record_lossless(
+                        self._archive,
                         event_type="error",
                         data={
                             "error": error_text,
@@ -664,9 +708,22 @@ class BridgeSessionRegistry:
                         },
                         agent_name=slug,
                         summary=error_text,
+                        spool_path=spool_path,
                     )
-                except Exception:
-                    logger.exception("archive dual-write failed (error)")
+                else:
+                    logger.debug("archive spool: data_dir not set on BridgeSessionRegistry, skipping spool for error")
+                    try:
+                        await self._archive.record(
+                            event_type="error",
+                            data={
+                                "error": error_text,
+                                "trace_id": trace_id,
+                            },
+                            agent_name=slug,
+                            summary=error_text,
+                        )
+                    except Exception:
+                        logger.exception("archive dual-write failed (error)")
             # Set any pending message to error state.
             pending_msg_id = session.pop_pending_msg(trace_id)
             if pending_msg_id and self._chat_messages:
@@ -690,8 +747,11 @@ class BridgeSessionRegistry:
                     payload={"text": content},
                 )
             if self._archive is not None:
-                try:
-                    await self._archive.record(
+                data_dir = self._data_dir
+                if data_dir is not None:
+                    spool_path = data_dir / "archive" / "spool.jsonl"
+                    await record_lossless(
+                        self._archive,
                         event_type="reasoning",
                         data={
                             "text": content,
@@ -699,9 +759,22 @@ class BridgeSessionRegistry:
                         },
                         agent_name=slug,
                         summary=content[:120] if content else "",
+                        spool_path=spool_path,
                     )
-                except Exception:
-                    logger.exception("archive dual-write failed (reasoning)")
+                else:
+                    logger.debug("archive spool: data_dir not set on BridgeSessionRegistry, skipping spool for reasoning")
+                    try:
+                        await self._archive.record(
+                            event_type="reasoning",
+                            data={
+                                "text": content,
+                                "trace_id": trace_id,
+                            },
+                            agent_name=slug,
+                            summary=content[:120] if content else "",
+                        )
+                    except Exception:
+                        logger.exception("archive dual-write failed (reasoning)")
         # "delta" without a matching kind is silently ignored.
 
     async def _resolve_channel(self, slug: str) -> str | None:
