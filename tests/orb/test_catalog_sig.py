@@ -458,9 +458,15 @@ def test_reset_state_then_serial_1_accepted(keys_dict, test_key, tmp_path):
 
 
 # CATALOG_KEYS tests
-def test_CATALOG_KEYS_is_empty_dict():
-    """CATALOG_KEYS is an empty dict by default."""
-    assert catalog_sig.CATALOG_KEYS == {}
+def test_CATALOG_KEYS_pins_first_release_key():
+    """CATALOG_KEYS pins the first real Ed25519 catalog signing key."""
+    assert len(catalog_sig.CATALOG_KEYS) == 1
+    assert "5d6c3911431ce43a" in catalog_sig.CATALOG_KEYS
+    assert list(catalog_sig.CATALOG_KEYS.keys()) == ["5d6c3911431ce43a"]
+    value = catalog_sig.CATALOG_KEYS["5d6c3911431ce43a"]
+    decoded = base64.b64decode(value, validate=True)
+    assert len(decoded) == 32
+    assert catalog_sig.key_id_for(decoded) == "5d6c3911431ce43a"
 
 
 # verify_catalog uses CATALOG_KEYS when keys=None
@@ -469,7 +475,7 @@ def test_verify_catalog_keys_none_uses_CATALOG_KEYS(test_key):
     private_key, _, _ = test_key
     catalog_bytes = b'{"serial": 1}'
     sig_bytes = sign_catalog(private_key, catalog_bytes)
-    # CATALOG_KEYS is empty, so should raise CatalogKeyUnknown
+    # the test key is not pinned in CATALOG_KEYS, so CatalogKeyUnknown
     with pytest.raises(catalog_sig.CatalogKeyUnknown):
         catalog_sig.verify_catalog(catalog_bytes, sig_bytes, None)
 

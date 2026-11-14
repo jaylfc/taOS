@@ -41,7 +41,9 @@ class CatalogInvalid(OrbError):
     """Catalog is not a JSON object or expires is not ISO 8601."""
 
 
-CATALOG_KEYS: dict[str, str] = {}
+CATALOG_KEYS: dict[str, str] = {
+    "5d6c3911431ce43a": "V5+TR1xx0TRfip2o1tq+zWBzK4dToujxJ33WAwUDGRA=",
+}
 
 
 def key_id_for(public_key_raw: bytes) -> str:
