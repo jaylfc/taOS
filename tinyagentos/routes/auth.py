@@ -2625,6 +2625,13 @@ _PIN_PANEL_SCRIPT = r"""
 
   input.addEventListener("keydown", function (e) {
     if (e.key === "Enter") {
+      // When the PIN length is known, Enter is not a submit until the typed
+      // digits fill the field -- otherwise a stray tap on the keypad's Enter
+      // key submits a partial PIN. When the length is unknown, Enter submits
+      // whatever was typed, as it always has.
+      if (pinLength && input.value.length !== pinLength) {
+        return;
+      }
       e.preventDefault();
       tryPin();
     }
@@ -12988,7 +12995,10 @@ async def pin_login(request: Request):
     if record is not None and effective_unlock_method(record) != "pin":
         return JSONResponse({"error": "PIN sign-in is not available"}, status_code=404)
 
-    ok, user_record = auth_mgr.check_pin(pin, username=username)
+    # Verifying the PIN hashes off the event loop, the way the password path
+    # does (check_password -> verify_and_maybe_rehash runs argon2). A PIN
+    # attempt costs the same work and pin-login is on the lock-screen hot path.
+    ok, user_record = await asyncio.to_thread(auth_mgr.check_pin, pin, username=username)
     if not ok or user_record is None:
         _pin_limiter.record_failure(limiter_key)
         return JSONResponse({"error": "incorrect PIN"}, status_code=401)
