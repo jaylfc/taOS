@@ -200,8 +200,29 @@ async def _require_agent_access(
     agent first (same rule as the agent workspace routes).
     """
     bound = getattr(request.state, "agent_name", None)
-    if bound and bound != name:
-        raise HTTPException(status_code=403, detail="forbidden")
+    if bound:
+        # Get the bound agent's record from config
+        config = request.app.state.config
+        bound_agent = find_agent(config, bound)
+        if bound_agent:
+            bound_canonical_id = bound_agent.get("registry_canonical_id")
+            
+            # Find the requested agent
+            target_agent = find_agent(config, name)
+            if target_agent:
+                target_canonical_id = target_agent.get("registry_canonical_id")
+                
+                # Compare canonical_id when both have one, otherwise compare name
+                if bound_canonical_id and target_canonical_id:
+                    if bound_canonical_id != target_canonical_id:
+                        raise HTTPException(status_code=403, detail="forbidden")
+                elif bound_canonical_id != target_canonical_id:
+                    if bound != name:
+                        raise HTTPException(status_code=403, detail="forbidden")
+        else:
+            # Bound agent not in config, fall back to name comparison
+            if bound != name:
+                raise HTTPException(status_code=403, detail="forbidden")
     await require_agent_owner_or_admin(request, user, name)
 
 
@@ -219,7 +240,22 @@ async def _visible_to_caller(
     """
     bound = getattr(request.state, "agent_name", None)
     if bound:
-        return [e for e in entries if e.get("name") == bound]
+        config = request.app.state.config
+        bound_agent = find_agent(config, bound)
+        if bound_agent:
+            bound_canonical_id = bound_agent.get("registry_canonical_id")
+            # Return entries that match by canonical_id when available, otherwise by name
+            result = []
+            for e in entries:
+                entry_canonical_id = owner_key(e)
+                if bound_canonical_id and entry_canonical_id:
+                    if bound_canonical_id == entry_canonical_id:
+                        result.append(e)
+                elif e.get("name") == bound:
+                    result.append(e)
+            return result
+        else:
+            return [e for e in entries if e.get("name") == bound]
     if getattr(request.state, "is_admin", False) or getattr(request.state, "via", None) == "local_token":
         return list(entries)
     uid = getattr(request.state, "user_id", None)
