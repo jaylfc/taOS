@@ -47,7 +47,7 @@ class TestKeenableClient:
         route = respx.post(f"{KEENABLE_SEARCH_URL}/public").mock(
             return_value=Response(200, json={"results": []})
         )
-        assert await keenable_search("", "hello") == []
+        assert await keenable_search("", "hello", allow_public=True) == []
         req = route.calls[0].request
         assert req.headers["X-Keenable-Title"] == KEENABLE_APP_TITLE
         assert "X-API-Key" not in req.headers
@@ -74,4 +74,125 @@ class TestKeenableClient:
     async def test_fetch_non_200_raises(self):
         respx.get(f"{KEENABLE_FETCH_URL}/public").mock(return_value=Response(500, text="boom"))
         with pytest.raises(RuntimeError, match="500"):
+            await keenable_fetch("", "https://example.com", allow_public=True)
+
+    @respx.mock
+    async def test_empty_key_default_raises(self):
+        """Empty key with default allow_public=False should raise without HTTP call."""
+        with pytest.raises(RuntimeError, match="Keenable API key not set and public fallback is off"):
+            await keenable_search("", "hello")
+        # No HTTP call should have been made
+        assert len(respx.calls) == 0
+
+    @respx.mock
+    async def test_empty_key_allow_public_true_uses_public_endpoint(self):
+        """Empty key with allow_public=True should use /public endpoint."""
+        route = respx.post(f"{KEENABLE_SEARCH_URL}/public").mock(
+            return_value=Response(200, json={"results": [{"title": "t", "url": "https://example.com"}]})
+        )
+        results = await keenable_search("", "hello", allow_public=True)
+        assert results == [{"title": "t", "url": "https://example.com"}]
+        req = route.calls[0].request
+        assert req.headers["X-Keenable-Title"] == KEENABLE_APP_TITLE
+        assert "X-API-Key" not in req.headers
+
+    @respx.mock
+    async def test_non_empty_key_ignores_allow_public(self):
+        """Non-empty key should use keyed endpoint regardless of allow_public."""
+        route = respx.post(KEENABLE_SEARCH_URL).mock(
+            return_value=Response(200, json={"results": [{"title": "t", "url": "https://example.com"}]})
+        )
+        results = await keenable_search("secret-key", "hello", allow_public=True)
+        assert results == [{"title": "t", "url": "https://example.com"}]
+        req = route.calls[0].request
+        assert req.headers["X-API-Key"] == "secret-key"
+        assert "X-Keenable-Title" not in req.headers
+
+    @respx.mock
+    async def test_fetch_empty_key_default_raises(self):
+        """Empty key with default allow_public=False should raise without HTTP call for fetch."""
+        with pytest.raises(RuntimeError, match="Keenable API key not set and public fallback is off"):
             await keenable_fetch("", "https://example.com")
+        assert len(respx.calls) == 0
+
+    @respx.mock
+    async def test_fetch_empty_key_allow_public_true_uses_public_endpoint(self):
+        """Empty key with allow_public=True should use /public endpoint for fetch."""
+        route = respx.get(f"{KEENABLE_FETCH_URL}/public").mock(
+            return_value=Response(200, json={"url": "https://example.com/", "title": "Example", "content": "# Hi"})
+        )
+        page = await keenable_fetch("", "https://example.com", allow_public=True)
+        assert page["content"] == "# Hi"
+        req = route.calls[0].request
+        assert req.headers["X-Keenable-Title"] == KEENABLE_APP_TITLE
+        assert "X-API-Key" not in req.headers
+
+    async def test_public_fallback_enabled_false_when_missing(self):
+        """public_fallback_enabled returns False when preference is missing."""
+        from tinyagentos.broker.clients.keenable import public_fallback_enabled
+
+        class MockSettings:
+            async def get_preference(self, user_id, namespace):
+                return {}
+
+        assert await public_fallback_enabled(MockSettings()) is False
+
+    async def test_public_fallback_enabled_false_when_not_dict(self):
+        """public_fallback_enabled returns False when preference is not a dict."""
+        from tinyagentos.broker.clients.keenable import public_fallback_enabled
+
+        class MockSettings:
+            async def get_preference(self, user_id, namespace):
+                return "not a dict"
+
+        assert await public_fallback_enabled(MockSettings()) is False
+
+    async def test_public_fallback_enabled_false_when_key_missing(self):
+        """public_fallback_enabled returns False when key is missing from dict."""
+        from tinyagentos.broker.clients.keenable import public_fallback_enabled
+
+        class MockSettings:
+            async def get_preference(self, user_id, namespace):
+                return {"other_key": True}
+
+        assert await public_fallback_enabled(MockSettings()) is False
+
+    async def test_public_fallback_enabled_true_when_set(self):
+        """public_fallback_enabled returns True when keenable_public_fallback is True."""
+        from tinyagentos.broker.clients.keenable import public_fallback_enabled
+
+        class MockSettings:
+            async def get_preference(self, user_id, namespace):
+                return {"keenable_public_fallback": True}
+
+        assert await public_fallback_enabled(MockSettings()) is True
+
+    async def test_public_fallback_enabled_false_for_string_false(self):
+        """public_fallback_enabled returns False when value is string 'false'."""
+        from tinyagentos.broker.clients.keenable import public_fallback_enabled
+
+        class MockSettings:
+            async def get_preference(self, user_id, namespace):
+                return {"keenable_public_fallback": "false"}
+
+        assert await public_fallback_enabled(MockSettings()) is False
+
+    async def test_public_fallback_enabled_false_for_numeric_one(self):
+        """public_fallback_enabled returns False when value is 1 (non-boolean truthy)."""
+        from tinyagentos.broker.clients.keenable import public_fallback_enabled
+
+        class MockSettings:
+            async def get_preference(self, user_id, namespace):
+                return {"keenable_public_fallback": 1}
+
+        assert await public_fallback_enabled(MockSettings()) is False
+
+    async def test_public_fallback_enabled_true_only_for_boolean_true(self):
+        """public_fallback_enabled returns True only for boolean True, not truthy values."""
+        from tinyagentos.broker.clients.keenable import public_fallback_enabled
+
+        class MockSettings:
+            async def get_preference(self, user_id, namespace):
+                return {"keenable_public_fallback": True}
+
+        assert await public_fallback_enabled(MockSettings()) is True
