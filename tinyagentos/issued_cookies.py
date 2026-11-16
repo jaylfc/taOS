@@ -7,13 +7,17 @@ one importable set, because the alternative was tried and failed -- four proxies
 each carried a private hand-written list, and between them those lists named
 two of the five cookies below. The other three leaked.
 
-Why a DENY-list and not an allow-list: an allow-list is unimplementable here.
-Upstream's cookie names appear nowhere in this repo -- ``account_proxy`` relays
-upstream ``Set-Cookie`` verbatim (see ``_rewrite_set_cookie``) and never
-enumerates one. You cannot allow-list names you do not know. What this origin
-issues, by contrast, is knowable and finite, and
-``tests/test_proxy_cookie_isolation.py`` mechanically asserts this set covers
-every ``set_cookie`` call in the package.
+Why a DENY-list for service_proxy, userspace_apps and shortcut_proxy: those
+backends set and read cookies under names this repo cannot enumerate, so the
+only workable rule is "strip what taOS itself issues". What this origin issues
+is knowable and finite, and ``tests/test_proxy_cookie_isolation.py``
+mechanically asserts this set covers every ``set_cookie`` call in the package.
+
+``account_proxy`` does NOT use this set. It namespaces taos.my cookies under
+``taosmy_`` and forwards only ``taosmy_*`` cookies upstream (an allow-list), so
+a cookie this origin issues can never leak to taos.my even if it is missing
+here. The namespace also fixes a name collision: taos.my's session cookie is
+``taos_session``, the same name as ours.
 
 ADDING A COOKIE? Add it here too. The drift guard in that test file will fail
 until you do -- that is deliberate, and it is the check whose absence caused

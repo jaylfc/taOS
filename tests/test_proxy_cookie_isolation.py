@@ -54,11 +54,12 @@ def _assert_no_taos_cookie_survives(relayed: str | None) -> None:
 
 
 def test_account_proxy_denies_every_taos_cookie():
-    """account_proxy -> taos.my. Its docstring claimed 'only the cookies that
-    belong upstream are forwarded'; it forwarded everything but taos_session."""
-    _assert_no_taos_cookie_survives(
-        account_proxy._strip_local_session_cookie(_BROWSER_HEADER)
-    )
+    """account_proxy -> taos.my is an ALLOW-list: only ``taosmy_*`` cookies go
+    upstream (prefix stripped), so no taOS-issued cookie can leak, whatever its
+    name. The header below holds every taOS cookie plus a namespaced upstream
+    one, which must be the only thing that survives."""
+    header = _BROWSER_HEADER + "; taosmy_upstream_sess=keepme"
+    assert account_proxy._upstream_cookie_header(header) == "upstream_sess=keepme"
 
 
 def test_service_proxy_denies_every_taos_cookie():
@@ -81,7 +82,6 @@ def test_shortcut_proxy_denies_every_taos_cookie():
 @pytest.mark.parametrize(
     "strip",
     [
-        pytest.param(account_proxy._strip_local_session_cookie, id="account_proxy"),
         pytest.param(service_proxy._strip_taos_cookies, id="service_proxy"),
         pytest.param(userspace_apps._strip_taos_session_cookie, id="userspace_apps"),
     ],

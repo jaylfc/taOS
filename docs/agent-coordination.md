@@ -1073,16 +1073,17 @@ the full rules.
 taOS forwards requests to three different kinds of upstream — the taos.my
 account service, container-backed userspace apps, and shortcut targets — through
 four proxy modules. **None of them may relay a cookie this origin issued.**
+(`account_proxy` achieves this with an allow-list instead: see below.)
 
 | module | upstream |
 | --- | --- |
-| `routes/account_proxy.py` | taos.my account service |
+| `routes/account_proxy.py` | taos.my account service (allow-list, not this set) |
 | `routes/service_proxy.py` | local services |
 | `routes/userspace_apps.py` | container app backends |
 | `routes/shortcut_proxy.py` | shortcut targets |
 
 The deny-list lives in **`tinyagentos/issued_cookies.py`** as
-`TAOS_ISSUED_COOKIES`, and all four import it. Do not restate it locally: each
+`TAOS_ISSUED_COOKIES`, and the three deny-list proxies import it. Do not restate it locally: each
 proxy used to carry its own hand-written copy, and between them those four
 copies named **two** of the five cookies taOS issues. The other three —
 `csrf_token`, `taos_browser` (an httponly session id bound to a `user_id`) and
@@ -1091,10 +1092,15 @@ copies named **two** of the five cookies taOS issues. The other three —
 origin-wide secret whose only job is proving same-origin, so relaying it hands
 an upstream exactly what satisfies `verify_csrf`.
 
-It is a deny-list rather than an allow-list because an allow-list is not
-writable here: upstream's cookie names appear nowhere in this repo —
-`account_proxy` relays upstream `Set-Cookie` verbatim (`_rewrite_set_cookie`)
-and never enumerates one. What *this* origin issues is knowable and finite.
+It is a deny-list for those three because an allow-list is not writable there:
+their backends' cookie names appear nowhere in this repo. What *this* origin
+issues is knowable and finite.
+
+`account_proxy` is the exception and is an allow-list: taos.my's cookies are
+namespaced under `taosmy_` on this origin (`_rewrite_set_cookie` prefixes every
+relayed name; `_upstream_cookie_header` forwards only `taosmy_*` cookies, prefix
+stripped). The namespace is required, not cosmetic: taos.my's session cookie is
+also called `taos_session`, so relaying it verbatim overwrote the local session.
 
 **Adding a cookie anywhere in the package means adding it to
 `TAOS_ISSUED_COOKIES`.** Two guards in `tests/test_proxy_cookie_isolation.py`
