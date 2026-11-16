@@ -220,10 +220,21 @@ async def _forward_to(
             upstream = await http.request(
                 method, base + path, content=body, headers=headers
             )
-    except httpx.HTTPError:
+    except httpx.HTTPError as exc:
+        logger.warning(
+            "account proxy: %s %s unreachable (%s)", method, path.split("?", 1)[0], type(exc).__name__
+        )
         return JSONResponse(
             {"error": "account service unreachable"}, status_code=503
         )
+    # Status and content type only: never the body, the query string or a cookie.
+    logger.info(
+        "account proxy: %s %s -> %s %s",
+        method,
+        path.split("?", 1)[0],
+        upstream.status_code,
+        upstream.headers.get("content-type", "-"),
+    )
     # Relay the upstream body + content-type verbatim (do not assume JSON), so
     # error pages, redirects, and non-JSON bodies pass through unmangled.
     resp = Response(
