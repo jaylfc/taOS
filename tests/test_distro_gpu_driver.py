@@ -393,14 +393,15 @@ def test_setup_sh_step4_text():
     text = SETUP.read_text()
     assert "Step 4: GPU drivers" in text
     assert "taos-gpu driver install nvidia" in text and "TAOS_NVIDIA_DRIVER" in text
-    assert text.rstrip().endswith("taos-gpu driver status")
+    step4 = text[text.index("# Step 4"):text.index("# Step 5")]
+    assert step4.rstrip().endswith("taos-gpu driver status")
     assert text.index("Step 3") < text.index("Step 4")
 
 
 def step4_calls(tmp_path, shell, nvidia_driver, has_nvidia=True):
     text = SETUP.read_text()
     script = tmp_path / "step4.sh"
-    script.write_text("set -eu\n" + text[text.index("# Step 4"):])
+    script.write_text("set -eu\n" + text[text.index("# Step 4"):text.index("# Step 5")])
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
     log = tmp_path / "calls.log"

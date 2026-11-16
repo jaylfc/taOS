@@ -2,3 +2,4 @@ interest-noawait /usr/lib/os-release
 interest-noawait /usr/lib/os-release.debian
 interest-noawait /etc/issue
 interest-noawait /etc/issue.net
+interest-noawait /etc/update-motd.d/05-taos

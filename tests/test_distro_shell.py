@@ -98,7 +98,7 @@ def test_logo_is_plain_ascii():
     raw.decode("ascii")
     assert b"\t" not in raw
     lines = raw.decode().splitlines()
-    assert 5 <= len(lines) <= 10
+    assert 5 <= len(lines) <= 7
     assert max(len(l) for l in lines) <= 48
 
 
@@ -114,7 +114,7 @@ def test_motd_renders_with_and_without_colour(tmp_path: Path):
     res = _motd({"OS_RELEASE": str(osrel), "TERM": "xterm-256color"})
     assert res.returncode == 0
     assert "taOS (Debian 13 trixie base)" in res.stdout
-    assert "\x1b[1;38;5;" in res.stdout
+    assert "\x1b[1;38;5;141m" in res.stdout
     for label in ("Hostname", "Uptime", "Load", "Memory", "Disk /", "IPv4", "taOS service"):
         assert label in res.stdout
     plain = _motd({"OS_RELEASE": str(osrel), "TERM": "dumb"})
@@ -151,3 +151,89 @@ def test_setup_sh_step2():
     assert "/etc/adduser.conf" in text and "DSHELL" in text
     assert "/etc/default/useradd" in text and "SHELL" in text
     assert "taos-shell_" in text
+
+
+def _fake_net(tmp_path: Path, ifaces: dict[str, tuple[str, str]]) -> Path:
+    net = tmp_path / "net"
+    net.mkdir()
+    for name, (oper, carrier) in ifaces.items():
+        d = net / name
+        d.mkdir()
+        (d / "operstate").write_text(oper + "\n")
+        (d / "carrier").write_text(carrier + "\n")
+    return net
+
+
+def _ipv4_row(res: subprocess.CompletedProcess) -> str:
+    for line in res.stdout.splitlines():
+        if line.strip().startswith("IPv4"):
+            return line.split(None, 1)[1].strip()
+    raise AssertionError(res.stdout)
+
+
+def test_motd_ipv4_states(tmp_path: Path):
+    base = {"TERM": "dumb"}
+    got = _motd({**base, "TAOS_MOTD_IP4": "192.0.2.7"})
+    assert _ipv4_row(got) == "192.0.2.7"
+    for name, ifaces, want in (
+        ("up", {"lo": ("unknown", "1"), "eth0": ("up", "1")}, "connecting..."),
+        ("carrier", {"lo": ("unknown", "1"), "eth0": ("down", "1")}, "connecting..."),
+        ("down", {"lo": ("unknown", "1"), "eth0": ("down", "0")}, "offline"),
+        ("none", {"lo": ("unknown", "1")}, "offline"),
+    ):
+        d = tmp_path / name
+        d.mkdir()
+        res = _motd({**base, "TAOS_MOTD_IP4": "", "TAOS_MOTD_SYSNET": str(_fake_net(d, ifaces))})
+        assert _ipv4_row(res) == want, name
+
+
+def test_motd_single_block_footer():
+    res = _motd({"TERM": "dumb", "TAOS_MOTD_IP4": "192.0.2.7"})
+    assert "Kernel " in res.stdout
+    assert "Free software, no warranty. Licences: /usr/share/doc/*/copyright" in res.stdout
+
+
+def test_uname_motd_diverted_and_restored():
+    pre = (PKG / "DEBIAN/preinst").read_text()
+    post = (PKG / "DEBIAN/postrm").read_text()
+    assert "/etc/update-motd.d/10-uname" in pre
+    assert "dpkg-divert --package taos-shell --no-rename" in pre and "--add" in pre
+    assert "/etc/update-motd.d/10-uname" in post and "--remove" in post
+    assert 'mv -f "$f.debian" "$f"' in post
+
+
+def test_setup_sh_console_font_and_step5():
+    _sh_n(SETUP)
+    text = SETUP.read_text()
+    assert 'FONTFACE' in text and 'Terminus' in text
+    assert 'FONTSIZE' in text and '16x32' in text
+    assert "console-setup" in text and "setupcon --save" in text
+    assert "TAOS_DRM_SYSFS" in text
+    assert "Step 5: tools (taos-tools)" in text and "taos-tools_" in text
+
+
+def _probe(tmp_path: Path, conns: dict[str, tuple[str, str]]) -> int:
+    for name, (status, modes) in conns.items():
+        d = tmp_path / name
+        d.mkdir()
+        (d / "status").write_text(status + "\n")
+        (d / "modes").write_text(modes)
+    func = subprocess.run(["sed", "-n", "/^display_max_height()/,/^}/p", str(SETUP)],
+                          capture_output=True, text=True, check=True).stdout
+    assert func
+    res = subprocess.run(["sh", "-c", func + "\ndisplay_max_height"],
+                         env={"PATH": "/usr/bin:/bin", "TAOS_DRM_SYSFS": str(tmp_path)},
+                         capture_output=True, text=True)
+    assert res.returncode == 0, res.stderr
+    return int(res.stdout.strip())
+
+
+def test_display_height_probe(tmp_path: Path):
+    (tmp_path / "y").mkdir()
+    assert _probe(tmp_path / "y", {
+        "card0-DP-1": ("connected", "3840x1200\n1920x1080\n"),
+        "card0-HDMI-A-1": ("connected", "1920x1080\n"),
+        "card0-DP-2": ("disconnected", "7680x4320\n"),
+    }) == 1200
+    (tmp_path / "z").mkdir()
+    assert _probe(tmp_path / "z", {}) == 0

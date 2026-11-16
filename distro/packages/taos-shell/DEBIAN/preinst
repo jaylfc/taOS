@@ -1,0 +1,17 @@
+#!/bin/sh
+set -e
+# The login shows one block: the taOS motd. Divert Debian's uname motd script
+# (owned by base-files) so base-files upgrades write to <path>.debian, which
+# run-parts skips. Copy first, register the diversion with --no-rename, then
+# drop the live copy.
+if [ "$1" = install ] || [ "$1" = upgrade ]; then
+    f=/etc/update-motd.d/10-uname
+    if [ ! -e "$f.debian" ] && [ -e "$f" ]; then
+        cp -a "$f" "$f.debian"
+    fi
+    if [ -d /etc/update-motd.d ]; then
+        dpkg-divert --package taos-shell --no-rename --divert "$f.debian" --add "$f" >/dev/null
+        rm -f "$f"
+    fi
+fi
+exit 0

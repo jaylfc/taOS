@@ -109,3 +109,26 @@ def test_package_builds_with_maintainer_scripts(tmp_path: Path):
     preinst = (PKG / "DEBIAN/preinst").read_text()
     for path in ("/usr/lib/os-release", "/etc/issue", "/etc/issue.net"):
         assert path in preinst
+
+
+def test_motd_empty_when_dynamic_motd_present(root: Path):
+    (root / "etc/update-motd.d").mkdir()
+    dyn = root / "etc/update-motd.d/05-taos"
+    dyn.write_text("#!/bin/sh\n")
+    dyn.chmod(0o755)
+    assert _apply(root).returncode == 0
+    assert (root / "etc/motd").read_text() == ""
+    assert (root / "etc/motd.debian").read_text() == "Debian stock motd\n"
+    assert _apply(root).returncode == 0
+    assert (root / "etc/motd.debian").read_text() == "Debian stock motd\n"
+
+
+def test_motd_static_when_dynamic_motd_not_executable(root: Path):
+    (root / "etc/update-motd.d").mkdir()
+    (root / "etc/update-motd.d/05-taos").write_text("#!/bin/sh\n")
+    assert _apply(root).returncode == 0
+    assert "taOS comes with ABSOLUTELY NO WARRANTY" in (root / "etc/motd").read_text()
+
+
+def test_triggers_watch_dynamic_motd():
+    assert "/etc/update-motd.d/05-taos" in (PKG / "DEBIAN/triggers").read_text()

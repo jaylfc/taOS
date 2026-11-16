@@ -1,0 +1,12 @@
+Package: taos-tools
+Version: 0.1.0
+Architecture: all
+Maintainer: jaylfc <jaylfc25@gmail.com>
+Priority: optional
+Section: utils
+Depends: grim, fbcat
+Description: taOS command line tools
+ taos-screenshot captures what is on the machine's screen to a PNG: the
+ Wayland session (sway) with grim when one is running, else the text console
+ framebuffer. Useful for remote support and for agents that need to see the
+ screen.
