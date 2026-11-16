@@ -6,14 +6,21 @@ describe("AccountSection", () => {
   afterEach(() => { vi.restoreAllMocks(); });
   beforeEach(() => { vi.restoreAllMocks(); });
 
-  it("shows the sign-in / create-account form when signed out (401)", async () => {
+  it("shows 'Not connected' and the sign-in form when no account session exists", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(null, { status: 401 }),
     );
-    render(<AccountSection />);
+    const { container } = render(<AccountSection />);
+    expect(await screen.findByText("Not connected")).toBeInTheDocument();
     expect(await screen.findByLabelText("Email")).toBeInTheDocument();
     expect(screen.getByLabelText("Password")).toBeInTheDocument();
-    expect(screen.getByText("Create account")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Sign in" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Create account" })).toBeInTheDocument();
+    expect(screen.getByText("Connecting lets your devices share one account.")).toBeInTheDocument();
+    const text = container.textContent ?? "";
+    expect(text).not.toContain("subdomain");
+    expect(text).not.toContain("reserved");
+    expect(text).not.toContain("\u2014");
   });
 
   it("shows an unavailable state when the account service cannot be reached", async () => {
@@ -25,10 +32,7 @@ describe("AccountSection", () => {
     expect(screen.getByText("Retry")).toBeInTheDocument();
   });
 
-  it("shows the signed-in view with email + taOSgo status", async () => {
-    // URL-aware with a fresh Response per call: a shared Response instance has a
-    // single-use body, which the local /auth/status probe would consume before
-    // the cloud fetch reads it.
+  it("shows the signed-in account with name, username, email and Disconnect, and no form", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
       if (String(input).includes("/auth/status")) {
         return Promise.resolve(new Response(null, { status: 401 }));
@@ -39,16 +43,23 @@ describe("AccountSection", () => {
             user_id: "u1",
             email: "jay@example.com",
             taosgo: { status: "none" },
+            username: "jay",
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         ),
       );
     });
-    render(<AccountSection />);
+    const { container } = render(<AccountSection />);
+    expect(await screen.findByText("jay")).toBeInTheDocument();
+    expect((await screen.findAllByText("@jay")).length).toBeGreaterThanOrEqual(1);
     expect(await screen.findByText("jay@example.com")).toBeInTheDocument();
-    expect(screen.getByText("taOSgo")).toBeInTheDocument();
-    expect(screen.getByText("Not subscribed")).toBeInTheDocument();
-    expect(screen.getByText("Start 7-day free trial")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Disconnect" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Email")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Password")).not.toBeInTheDocument();
+    const text = container.textContent ?? "";
+    expect(text).not.toContain("subdomain");
+    expect(text).not.toContain("reserved");
+    expect(text).not.toContain("\u2014");
   });
 
   it("surfaces a backend error message on failed sign-in", async () => {
@@ -75,9 +86,9 @@ describe("AccountSection", () => {
     fireEvent.change(screen.getByLabelText("Password"), {
       target: { value: "password1" },
     });
-    // Two controls read "Sign in" (the mode tab and the submit button); the
-    // submit is the last one.
-    fireEvent.click(screen.getAllByRole("button", { name: "Sign in" }).at(-1)!);
+    // The submit button is the only control still named "Sign in"; the mode
+    // tabs are tabs, not buttons.
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
     await waitFor(() =>
       expect(screen.getByText("Invalid credentials")).toBeInTheDocument(),
     );
@@ -126,42 +137,17 @@ describe("AccountSection", () => {
       );
     });
     render(<AccountSection />);
-    expect(await screen.findByText("@jay")).toBeInTheDocument();
+    expect((await screen.findAllByText("@jay")).length).toBeGreaterThanOrEqual(1);
     expect(
-      screen.getByText(/People use @username to find you/i),
+      await screen.findByText(/People use @username to find you/i),
     ).toBeInTheDocument();
     expect(screen.queryByText("jay.taos.my")).not.toBeInTheDocument();
   });
 
-  it("renders the claimed subdomain list with active and grace badges", async () => {
-    vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
-      if (String(input).includes("/auth/status")) {
-        return Promise.resolve(new Response(null, { status: 401 }));
-      }
-      return Promise.resolve(
-        new Response(
-          JSON.stringify({
-            user_id: "u1",
-            email: "jay@example.com",
-            taosgo: { status: "active" },
-            username: "jay",
-            subdomains: [
-              { id: "s1", account_id: "u1", name: "mybiz", status: "active" },
-              { id: "s2", account_id: "u1", name: "old", status: "grace" },
-            ],
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      );
-    });
-    render(<AccountSection />);
-    expect(await screen.findByText("mybiz.taos.my")).toBeInTheDocument();
-    expect(screen.getByText("old.taos.my")).toBeInTheDocument();
-    expect(screen.getAllByText("Active").length).toBeGreaterThan(0);
-    expect(screen.getByText("Grace")).toBeInTheDocument();
-  });
-
-  it("disables the claim UI when not subscribed", async () => {
+  it("shows the signed-in view with email + taOSgo status", async () => {
+    // URL-aware with a fresh Response per call: a shared Response instance has a
+    // single-use body, which the local /auth/status probe would consume before
+    // the cloud fetch reads it.
     vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
       if (String(input).includes("/auth/status")) {
         return Promise.resolve(new Response(null, { status: 401 }));
@@ -172,66 +158,16 @@ describe("AccountSection", () => {
             user_id: "u1",
             email: "jay@example.com",
             taosgo: { status: "none" },
-            username: "jay",
-            subdomains: [],
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         ),
       );
     });
     render(<AccountSection />);
-    const input = await screen.findByLabelText("Subdomain name");
-    expect(input).toBeDisabled();
-    expect(screen.getByText(/Claiming a subdomain is part of taOSgo/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Claim" })).toBeDisabled();
-  });
-
-  it("shows inline availability and claims a subdomain", async () => {
-    vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
-      const url = String(input);
-      if (url.includes("/auth/status")) {
-        return Promise.resolve(new Response(null, { status: 401 }));
-      }
-      if (url.includes("/subdomains/check")) {
-        return Promise.resolve(
-          new Response(JSON.stringify({ available: true }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-        );
-      }
-      if (url.includes("/subdomains/claim")) {
-        return Promise.resolve(
-          new Response(
-            JSON.stringify({
-              id: "s9",
-              account_id: "u1",
-              name: "mybiz",
-              status: "active",
-            }),
-            { status: 200, headers: { "Content-Type": "application/json" } },
-          ),
-        );
-      }
-      return Promise.resolve(
-        new Response(
-          JSON.stringify({
-            user_id: "u1",
-            email: "jay@example.com",
-            taosgo: { status: "active" },
-            username: "jay",
-            subdomains: [],
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      );
-    });
-    render(<AccountSection />);
-    const input = await screen.findByLabelText("Subdomain name");
-    fireEvent.change(input, { target: { value: "mybiz" } });
-    expect(await screen.findByText("Available")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Claim" }));
-    expect(await screen.findByText("mybiz.taos.my")).toBeInTheDocument();
+    expect(await screen.findByText("jay@example.com")).toBeInTheDocument();
+    expect(screen.getByText("taOSgo")).toBeInTheDocument();
+    expect(screen.getByText("Not subscribed")).toBeInTheDocument();
+    expect(screen.getByText("Start 7-day free trial")).toBeInTheDocument();
   });
 
   it("shows the local 'this device' identity from /auth/status", async () => {
