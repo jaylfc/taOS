@@ -1,0 +1,14 @@
+Package: taos-gpu
+Version: 0.1.0
+Architecture: all
+Maintainer: jaylfc <jaylfc25@gmail.com>
+Priority: optional
+Section: admin
+Depends: udev
+Description: taOS display GPU policy: NVIDIA cards are compute only by default
+ Provides the taos-gpu command. It reads sysfs, picks the GPU that drives the
+ display (an integrated GPU by default, never a discrete NVIDIA card while an
+ integrated GPU exists), and generates a udev rule exposing it as
+ /dev/dri/taos-display, a compositor session environment file and a modprobe
+ config that keeps nouveau and nvidia-drm off the display. The display GPU can
+ be chosen at install time and switched later with taos-gpu set-display.

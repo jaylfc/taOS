@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+case "$1" in
+    configure)
+        mkdir -p /etc/taos
+        if [ ! -e /etc/taos/gpu.conf ]; then
+            printf 'DISPLAY_GPU=auto\n' > /etc/taos/gpu.conf
+        fi
+        /usr/bin/taos-gpu apply || true
+        ;;
+esac
+exit 0
