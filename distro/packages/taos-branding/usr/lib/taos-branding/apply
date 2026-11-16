@@ -1,0 +1,40 @@
+#!/bin/sh
+# Regenerate the taOS identity files from Debian's diverted originals.
+# Idempotent. ROOT lets tests run it against a scratch tree.
+set -eu
+ROOT="${ROOT:-}"
+SHARE="$ROOT/usr/share/taos-branding"
+src="$ROOT/usr/lib/os-release.debian"
+dst="$ROOT/usr/lib/os-release"
+
+if [ ! -f "$src" ]; then
+    echo "taos-branding: $src missing (divert not in place); leaving identity unchanged" >&2
+    exit 1
+fi
+
+# Keep every Debian key that tools parse (ID, VERSION_ID, VERSION_CODENAME,
+# DEBIAN_VERSION_FULL); replace only the human-facing and URL keys.
+codename=$(sed -n 's/^VERSION_CODENAME=//p' "$src" | tr -d '"')
+version_id=$(sed -n 's/^VERSION_ID=//p' "$src" | tr -d '"')
+tmp="$dst.taos-tmp"
+{
+    echo 'PRETTY_NAME="taOS (Debian '"$version_id"' '"$codename"' base)"'
+    echo 'NAME="taOS"'
+    grep -v -E '^(PRETTY_NAME|NAME|HOME_URL|SUPPORT_URL|BUG_REPORT_URL|VARIANT|VARIANT_ID)=' "$src"
+    echo 'VARIANT="taOS"'
+    echo 'VARIANT_ID=taos'
+    echo 'HOME_URL="https://taos.my/"'
+    echo 'SUPPORT_URL="https://github.com/jaylfc/taOS"'
+    echo 'BUG_REPORT_URL="https://github.com/jaylfc/taOS/issues"'
+} > "$tmp"
+chmod 0644 "$tmp"
+mv -f "$tmp" "$dst"
+
+install -m 0644 "$SHARE/issue" "$ROOT/etc/issue"
+install -m 0644 "$SHARE/issue.net" "$ROOT/etc/issue.net"
+
+# /etc/motd belongs to no package; keep Debian's once so removal can restore it.
+if [ -f "$ROOT/etc/motd" ] && [ ! -f "$ROOT/etc/motd.debian" ] && ! cmp -s "$ROOT/etc/motd" "$SHARE/motd"; then
+    cp -p "$ROOT/etc/motd" "$ROOT/etc/motd.debian"
+fi
+install -m 0644 "$SHARE/motd" "$ROOT/etc/motd"

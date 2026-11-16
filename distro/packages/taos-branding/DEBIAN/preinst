@@ -1,0 +1,15 @@
+#!/bin/sh
+set -e
+# Divert Debian's identity files so a base-files upgrade writes to
+# <path>.debian and never overwrites the taOS versions. base-files is
+# Essential, so never rename: copy first, keeping the real path present at
+# every moment, then register the diversion with --no-rename.
+if [ "$1" = install ] || [ "$1" = upgrade ]; then
+    for f in /usr/lib/os-release /etc/issue /etc/issue.net; do
+        if [ ! -e "$f.debian" ]; then
+            cp -a "$f" "$f.debian"
+        fi
+        dpkg-divert --package taos-branding --no-rename --divert "$f.debian" --add "$f" >/dev/null
+    done
+fi
+exit 0

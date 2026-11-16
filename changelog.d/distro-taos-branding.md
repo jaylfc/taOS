@@ -1,0 +1,1 @@
+- Desktop distro step 1: `taos-branding` package and `distro/setup.sh`; a Debian 13 install now identifies as taOS (ID stays debian).

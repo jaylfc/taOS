@@ -1,0 +1,15 @@
+#!/bin/sh
+set -e
+case "$1" in
+    configure)
+        /usr/lib/taos-branding/apply
+        # GRUB_DISTRIBUTOR reads NAME from os-release; refresh the menu entry.
+        if command -v update-grub >/dev/null 2>&1 && [ -f /boot/grub/grub.cfg ]; then
+            update-grub >/dev/null 2>&1 || echo "taos-branding: update-grub failed; menu still says Debian until it runs" >&2
+        fi
+        ;;
+    triggered)
+        /usr/lib/taos-branding/apply
+        ;;
+esac
+exit 0
