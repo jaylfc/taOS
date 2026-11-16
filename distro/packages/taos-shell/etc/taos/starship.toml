@@ -1,0 +1,91 @@
+# taOS starship prompt. Plain unicode/ASCII only: works on the Linux console
+# and in any terminal without a Nerd Font. Override per user with
+# STARSHIP_CONFIG=~/.config/starship.toml.
+#
+# taOS palette
+#   violet  #a78bfa   user, directory accents
+#   cyan    #22d3ee   host, python
+#   pink    #f472b6   git, prompt character
+#   amber   #fbbf24   command duration
+#   red     #f87171   errors
+#   green   #4ade80   success
+#   grey    #6b7280   frames, time
+
+"$schema" = 'https://starship.rs/config-schema.json'
+
+palette = "taos"
+add_newline = true
+
+format = """
+[┌](grey) $username[@](grey)$hostname $directory$git_branch$git_status$python$cmd_duration
+[└](grey) $status$character"""
+
+right_format = "$time"
+
+[palettes.taos]
+violet = "#a78bfa"
+cyan = "#22d3ee"
+pink = "#f472b6"
+amber = "#fbbf24"
+red = "#f87171"
+green = "#4ade80"
+grey = "#6b7280"
+
+[username]
+show_always = true
+style_user = "bold violet"
+style_root = "bold red"
+format = "[$user]($style)"
+
+[hostname]
+ssh_only = false
+style = "bold cyan"
+format = "[$hostname]($style)"
+
+[directory]
+style = "bold violet"
+truncation_length = 3
+truncate_to_repo = true
+truncation_symbol = ".../"
+read_only = " (ro)"
+format = "[$path]($style)[$read_only](red) "
+
+[git_branch]
+symbol = "git:"
+style = "bold pink"
+format = "[$symbol$branch]($style) "
+
+[git_status]
+style = "pink"
+format = '([\[$all_status$ahead_behind\]]($style) )'
+ahead = "+$count"
+behind = "-$count"
+diverged = "+$ahead_count/-$behind_count"
+
+[python]
+style = "cyan"
+symbol = "py "
+format = '[(${symbol}${pyenv_prefix}(${version} )(\($virtualenv\) ))]($style)'
+
+[cmd_duration]
+min_time = 2000
+style = "amber"
+format = "[took $duration]($style) "
+
+[status]
+disabled = false
+style = "bold red"
+symbol = "x "
+success_symbol = ""
+format = "[$symbol$status]($style) "
+
+[character]
+success_symbol = "[>](bold green)"
+error_symbol = "[>](bold red)"
+vimcmd_symbol = "[<](bold pink)"
+
+[time]
+disabled = false
+time_format = "%H:%M"
+style = "grey"
+format = "[$time]($style)"

@@ -1,0 +1,5 @@
+#!/bin/sh
+set -e
+# Nothing to do: all files are shipped by this package. Changing users' login
+# shells is done by distro/setup.sh, never by a maintainer script.
+exit 0

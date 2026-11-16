@@ -1,0 +1,40 @@
+// taOS fastfetch config. Run `fastfetch` or the `fetch` alias.
+// Per-user override: ~/.config/fastfetch/config.jsonc
+{
+    "$schema": "https://github.com/fastfetch-cli/fastfetch/raw/dev/doc/json_schema.json",
+    "logo": {
+        "type": "file",
+        "source": "/usr/share/taos-shell/logo.txt",
+        "color": {
+            "1": "38;5;141"
+        },
+        "padding": {
+            "top": 1,
+            "right": 3
+        }
+    },
+    "display": {
+        "color": {
+            "keys": "38;5;51",
+            "title": "38;5;213",
+            "separator": "38;5;99"
+        }
+    },
+    "modules": [
+        "title",
+        "separator",
+        "os",
+        "host",
+        "kernel",
+        "uptime",
+        "packages",
+        "shell",
+        "terminal",
+        "cpu",
+        "gpu",
+        "memory",
+        "disk",
+        "localip",
+        "break"
+    ]
+}

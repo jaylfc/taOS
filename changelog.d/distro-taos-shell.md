@@ -1,0 +1,1 @@
+- Desktop distro step 2: `taos-shell` package; zsh with a colourful starship prompt, fastfetch config and a taOS logo login motd for every user.
