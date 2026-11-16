@@ -372,7 +372,7 @@ def test_package_builds(tmp_path: Path):
     assert "./usr/bin/taos-gpu" in listing
     info = subprocess.run(["dpkg-deb", "-I", str(deb)], check=True,
                           capture_output=True, text=True).stdout
-    assert "Depends: udev" in info and "Version: 0.1.0" in info
+    assert "Depends: udev" in info and "Version: 0.2.0" in info
 
 
 def test_setup_sh_step3():
@@ -381,7 +381,7 @@ def test_setup_sh_step3():
     assert "taos-gpu_" in text
     assert 'taos-gpu set-display "$TAOS_DISPLAY_GPU"' in text
     assert "[ -t 0 ]" in text and "Display GPU [auto]:" in text
-    assert text.rstrip().endswith("taos-gpu status")
+    assert "taos-gpu status" in text
     # steps 1 and 2 untouched
     assert "taos-branding_" in text and "taos-shell_" in text
 

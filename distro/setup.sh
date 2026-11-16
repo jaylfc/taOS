@@ -61,3 +61,18 @@ elif [ -t 0 ] && [ "$(taos-gpu list | wc -l)" -gt 1 ] \
     fi
 fi
 taos-gpu status
+
+# Step 4: GPU drivers. An NVIDIA GPU gets NVIDIA's official driver from NVIDIA's
+# own apt repo by default (compute profile unless it drives the display).
+# TAOS_NVIDIA_DRIVER=open keeps the open-source driver, =skip does nothing.
+# Idempotent: a second run neither re-downloads the keyring nor re-imports the key.
+if taos-gpu list | grep -q '  NVIDIA  '; then
+    case "${TAOS_NVIDIA_DRIVER:-official}" in
+        skip) echo "setup.sh: TAOS_NVIDIA_DRIVER=skip, leaving the NVIDIA driver alone" ;;
+        open)
+            taos-gpu driver set nvidia open
+            ;;
+        *) taos-gpu driver install nvidia ;;
+    esac
+fi
+taos-gpu driver status
