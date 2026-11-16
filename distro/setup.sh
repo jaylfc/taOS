@@ -3,6 +3,7 @@
 # (trixie) install into taOS. The amd64 ISO runs this same script. Idempotent:
 # safe to re-run after every pull. Run as root from a checkout of this repo.
 set -eu
+export DEBIAN_FRONTEND=noninteractive
 here=$(cd "$(dirname "$0")" && pwd)
 if [ "$(id -u)" -ne 0 ]; then
     echo "setup.sh: run as root (sudo $0)" >&2
