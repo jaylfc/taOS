@@ -17,7 +17,12 @@ import logging
 import httpx
 from fastapi import APIRouter, Request, WebSocket
 from fastapi.responses import RedirectResponse, StreamingResponse
-from tinyagentos.issued_cookies import TAOS_ISSUED_COOKIES
+from tinyagentos.issued_cookies import (
+    TAOS_ISSUED_COOKIES,
+    is_controller_owned_cookie,
+    relay_set_cookies,
+    strip_controller_cookies,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -59,10 +64,13 @@ def _strip_taos_cookies(cookie_header: str) -> str:
     try:
         jar.load(cookie_header)
     except Exception:
-        return cookie_header
-    for name in _STRIPPED_COOKIES:
+        # Never pass the raw header on a parse error: filter it textually.
+        return strip_controller_cookies(cookie_header)
+    for name in [k for k in jar if is_controller_owned_cookie(k)]:
         jar.pop(name, None)
-    return "; ".join(f"{k}={m.value}" for k, m in jar.items())
+    # Second, textual pass: a quoted value can carry ';' and re-serialising it
+    # would otherwise inject a cookie the parse never saw as a name.
+    return strip_controller_cookies("; ".join(f"{k}={m.value}" for k, m in jar.items()))
 
 
 def _filter_headers(headers: dict) -> dict:
@@ -139,7 +147,11 @@ async def service_proxy(app_id: str, path: str, request: Request):
     except httpx.TimeoutException:
         return _json_error(f"Upstream {app_id} timed out", 504)
 
-    resp_headers = _filter_headers(dict(upstream_resp.headers))
+    # Set-Cookie is relayed separately (below), one header line each and minus
+    # any controller-owned name; dict() would merge them into one broken line.
+    resp_headers = _filter_headers(
+        {k: v for k, v in upstream_resp.headers.items() if k.lower() != "set-cookie"}
+    )
 
     # Rewrite Location headers so redirects stay within /apps/{app_id}/.
     # - Absolute upstream URLs (http://<host>:<port>/foo)  → /apps/{app_id}/foo
@@ -163,12 +175,14 @@ async def service_proxy(app_id: str, path: str, request: Request):
             resp_headers["location"] = f"/apps/{app_id}{loc_header}"
 
     from starlette.background import BackgroundTask
-    return StreamingResponse(
+    response = StreamingResponse(
         upstream_resp.aiter_bytes(),
         status_code=upstream_resp.status_code,
         headers=resp_headers,
         background=BackgroundTask(upstream_resp.aclose),
     )
+    relay_set_cookies(response, upstream_resp.headers)
+    return response
 
 
 # ---------------------------------------------------------------------------

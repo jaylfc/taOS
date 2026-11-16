@@ -18,7 +18,12 @@ from typing import Any, Optional
 import httpx
 from fastapi import APIRouter, HTTPException, Query, Request, WebSocket
 from fastapi.responses import RedirectResponse, StreamingResponse
-from tinyagentos.issued_cookies import TAOS_ISSUED_COOKIES
+from tinyagentos.issued_cookies import (
+    TAOS_ISSUED_COOKIES,
+    is_controller_owned_cookie,
+    relay_set_cookies,
+    strip_controller_cookies,
+)
 
 from tinyagentos.shortcuts.tickets import validate_ticket, _GLOBAL_JTI_TRACKER
 from tinyagentos.cluster.worker_registry import get_local_worker
@@ -106,11 +111,19 @@ def _filter_proxy_headers(headers: dict[str, str]) -> dict[str, str]:
             try:
                 jar.load(v)
             except Exception:
-                filtered[k] = v
+                # Never pass the raw header on a parse error: filter it textually.
+                stripped = strip_controller_cookies(v)
+                if stripped:
+                    filtered[k] = stripped
                 continue
-            for name in _STRIPPED_PROXY_COOKIES:
+            for name in [ck for ck in jar if is_controller_owned_cookie(ck)]:
                 jar.pop(name, None)
-            stripped = "; ".join(f"{ck}={m.value}" for ck, m in jar.items())
+            # Second, textual pass: a quoted value can carry ';' and
+            # re-serialising it would otherwise inject a cookie the parse
+            # never saw as a name.
+            stripped = strip_controller_cookies(
+                "; ".join(f"{ck}={m.value}" for ck, m in jar.items())
+            )
             if stripped:
                 filtered[k] = stripped
             # If all cookies were controller-owned, drop the header entirely.
@@ -284,15 +297,21 @@ async def proxy_dashboard(
             504,
         )
 
-    resp_headers = _filter_proxy_headers(dict(upstream_resp.headers))
+    # Set-Cookie is relayed separately (below), one header line each and minus
+    # any controller-owned name; dict() would merge them into one broken line.
+    resp_headers = _filter_proxy_headers(
+        {k: v for k, v in upstream_resp.headers.items() if k.lower() != "set-cookie"}
+    )
 
     from starlette.background import BackgroundTask
-    return StreamingResponse(
+    response = StreamingResponse(
         upstream_resp.aiter_bytes(),
         status_code=upstream_resp.status_code,
         headers=resp_headers,
         background=BackgroundTask(upstream_resp.aclose),
     )
+    relay_set_cookies(response, upstream_resp.headers)
+    return response
 
 
 def _json_error(message: str, status_code: int):
