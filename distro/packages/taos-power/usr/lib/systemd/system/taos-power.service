@@ -1,0 +1,26 @@
+[Unit]
+Description=taOS power: optional CPU tune and low wake-up latency hold
+Documentation=file:///usr/share/doc/taos-power/
+
+[Service]
+# Type=simple with no RemainAfterExit: when the tune is off (the default) the
+# holder exits 0 at once and the unit ends inactive (dead), never failed. When
+# the tune is on, the holder keeps /dev/cpu_dma_latency open for the life of
+# the unit, which is exactly what a PM QoS request needs. A oneshot plus a
+# second hold unit would give the same result with two units to manage.
+Type=simple
+ExecStartPre=/usr/bin/taos-power apply --boot
+ExecStart=/usr/lib/taos-power/latency-hold
+RuntimeDirectory=taos-power
+RuntimeDirectoryPreserve=yes
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+PrivateTmp=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictRealtime=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

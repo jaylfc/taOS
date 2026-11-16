@@ -1,0 +1,18 @@
+#!/bin/sh
+set -e
+case "$1" in
+    remove|purge)
+        rm -f /etc/systemd/logind.conf.d/50-taos-power.conf \
+              /etc/systemd/sleep.conf.d/50-taos-power.conf
+        if [ "$1" = purge ]; then
+            rm -f /etc/taos/power.conf
+        fi
+        rm -rf /run/taos-power
+        if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+            systemctl daemon-reload >/dev/null 2>&1 || true
+            # HUP re-reads logind.conf.d without ending sessions; never restart logind.
+            systemctl kill -s HUP systemd-logind >/dev/null 2>&1 || true
+        fi
+        ;;
+esac
+exit 0

@@ -1,0 +1,1 @@
+- Desktop distro step 6: `taos-power` package; a taOS machine never suspends or hibernates by default (`always-on`, `battery` keeps suspend allowed), with an optional off-by-default CPU performance tune.

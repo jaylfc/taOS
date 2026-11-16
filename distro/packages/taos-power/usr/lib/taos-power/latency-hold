@@ -1,0 +1,47 @@
+#!/bin/sh
+# latency-hold: hold a CPU PM QoS latency request for as long as it runs.
+# Linux Documentation/power/pm_qos_interface.rst, "From user space": "To
+# register the default PM QoS target for the CPU latency QoS, the process must
+# open /dev/cpu_dma_latency. As long as the device node is held open that
+# process has a registered request on the parameter." and "To remove the user
+# mode request for a target value simply close the device node." So this MUST
+# be a long-running process; the value is an s32 written to the open node.
+#
+# Whether and what to hold is decided by 'taos-power hold-value' (empty when
+# the tune is off, the profile is not always-on, or LATENCY_US=0), so there is
+# one place that resolves the profile. Empty means exit 0 at once.
+# Overridable for tests: TAOS_POWER_BIN, TAOS_POWER_DMA_LATENCY (default
+# /dev/cpu_dma_latency), TAOS_POWER_RUNDIR (default /run/taos-power).
+set -eu
+BIN=${TAOS_POWER_BIN:-/usr/bin/taos-power}
+DEV=${TAOS_POWER_DMA_LATENCY:-/dev/cpu_dma_latency}
+RUNDIR=${TAOS_POWER_RUNDIR:-/run/taos-power}
+PIDFILE="$RUNDIR/latency-hold.pid"
+
+val=$("$BIN" hold-value) || { echo "latency-hold: cannot resolve the taos-power setting" >&2; exit 1; }
+[ -n "$val" ] || exit 0
+[ -e "$DEV" ] || { echo "latency-hold: $DEV does not exist on this kernel" >&2; exit 1; }
+
+# Open the node first (O_WRONLY), then one 4 byte little-endian write.
+exec 3>"$DEV"
+fmt=$(printf '\\%03o\\%03o\\%03o\\%03o' $((val & 255)) $(((val >> 8) & 255)) $(((val >> 16) & 255)) $(((val >> 24) & 255)))
+# shellcheck disable=SC2059
+printf "$fmt" >&3
+
+mkdir -p "$RUNDIR"
+echo "$$ $val" > "$PIDFILE"
+child=""
+stop() {
+    [ -z "$child" ] || kill "$child" 2>/dev/null || true
+    rm -f "$PIDFILE"
+    exit 0
+}
+trap stop TERM INT HUP
+# The sleeper must not inherit fd 3, or it would keep the request alive after
+# this shell exits.
+sleep infinity 3>&- &
+child=$!
+wait "$child" || true
+rm -f "$PIDFILE"
+echo "latency-hold: sleeper ended unexpectedly" >&2
+exit 1

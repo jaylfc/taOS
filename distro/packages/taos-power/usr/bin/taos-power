@@ -1,0 +1,463 @@
+#!/bin/sh
+# taos-power: a taOS machine does not sleep by default. POSIX sh. Roots are
+# overridable for tests:
+#   SYSFS_ROOT (default /sys), ETC_ROOT (default /etc),
+#   TAOS_POWER_RUNDIR (default /run/taos-power), TAOS_POWER_SYSTEMD_DIR
+#   (default /run/systemd/system, where "systemd is running" is probed),
+#   TAOS_POWER_NO_APPLY=1 skips every external command (systemctl),
+#   TAOS_POWER_LATENCY_US overrides LATENCY_US from power.conf.
+#
+# power.conf (KEY=VALUE, only ever edited by this tool):
+#   PROFILE=always-on|battery   suspend policy
+#   TUNE=off|performance        optional CPU tune (default off)
+#   LATENCY_US=<n>              PM QoS latency while TUNE=performance (default 100, 0 = no hold)
+# Battery detection: a class/power_supply entry of type Battery whose scope
+# file, if present, is not Device (Device = a peripheral such as a mouse).
+set -eu
+
+SYSFS_ROOT=${SYSFS_ROOT:-/sys}
+if [ -n "${ETC_ROOT:-}" ]; then
+    TEST_MODE=1
+else
+    TEST_MODE=0
+    ETC_ROOT=/etc
+fi
+CONF="$ETC_ROOT/taos/power.conf"
+LOGIND_DROPIN="$ETC_ROOT/systemd/logind.conf.d/50-taos-power.conf"
+SLEEP_DROPIN="$ETC_ROOT/systemd/sleep.conf.d/50-taos-power.conf"
+RUNDIR=${TAOS_POWER_RUNDIR:-/run/taos-power}
+MARKER="$RUNDIR/tuned"
+PIDFILE="$RUNDIR/latency-hold.pid"
+SD_DIR=${TAOS_POWER_SYSTEMD_DIR:-/run/systemd/system}
+CPU="$SYSFS_ROOT/devices/system/cpu"
+DEFAULT_LATENCY=100
+DRY=0
+CHANGED=0
+nl='
+'
+
+usage() {
+    cat <<USAGE
+Usage: taos-power <command>
+  status [--json]            profile, tune, battery, suspend policy, CPU and idle states
+  set <always-on|battery>    choose the suspend policy, then apply
+  tune <off|performance>     optional CPU tune (performance governor + low wake-up latency)
+  set-latency <microseconds> PM QoS latency used by the tune (0 disables the hold)
+  apply [--boot] [--dry-run] regenerate the drop-ins and the CPU tune (--boot: CPU only)
+  --help                     show this help
+Profiles: always-on never suspends or hibernates (default without a battery);
+battery allows suspend and changes nothing (default with a battery).
+USAGE
+}
+
+die() { echo "taos-power: $1" >&2; exit "${2:-1}"; }
+warn() { echo "taos-power: $1" >&2; }
+
+need_root() {
+    if [ "$TEST_MODE" -eq 0 ] && [ "$(id -u)" -ne 0 ]; then
+        die "must be run as root" 1
+    fi
+}
+
+show_cmd() {
+    printf '+'
+    for a in "$@"; do
+        case $a in
+            ''|*[!A-Za-z0-9_./:=@%+,-]*) printf " '%s'" "$a" ;;
+            *) printf ' %s' "$a" ;;
+        esac
+    done
+    printf '\n'
+}
+
+# The one place external commands run.
+run() {
+    if [ "${TAOS_POWER_NO_APPLY:-0}" = 1 ]; then return 0; fi
+    if [ "$DRY" -eq 1 ]; then show_cmd "$@"; return 0; fi
+    "$@"
+}
+
+systemd_up() { [ -d "$SD_DIR" ] && command -v systemctl >/dev/null 2>&1; }
+
+# ---------------------------------------------------------------- config
+
+conf_get() { # key -> value (empty when unset)
+    if [ -r "$CONF" ]; then
+        sed -n "s/^$1=//p" "$CONF" | tail -n 1
+    fi
+}
+
+write_atomic() { # path; stdin -> path. Sets CHANGED=1 if the content differs.
+    dest=$1
+    tmp="$dest.tmp.$$"
+    if [ "$DRY" -eq 0 ]; then mkdir -p "$(dirname "$dest")"; fi
+    if [ "$DRY" -eq 1 ]; then tmp=$(mktemp); fi
+    cat > "$tmp"
+    if [ -f "$dest" ] && cmp -s "$tmp" "$dest"; then
+        rm -f "$tmp"
+        CHANGED=0
+    elif [ "$DRY" -eq 1 ]; then
+        rm -f "$tmp"
+        echo "+ write $dest"
+        CHANGED=1
+    else
+        mv -f "$tmp" "$dest"
+        CHANGED=1
+    fi
+}
+
+conf_set() { # key value: rewrite KEY=VALUE in place, preserving other lines
+    found=0
+    out=""
+    if [ -r "$CONF" ]; then
+        while IFS= read -r line || [ -n "$line" ]; do
+            case $line in
+                "$1="*)
+                    if [ "$found" -eq 0 ]; then out="$out$1=$2$nl"; found=1; fi
+                    ;;
+                *) out="$out$line$nl" ;;
+            esac
+        done < "$CONF"
+    fi
+    if [ "$found" -eq 0 ]; then out="$out$1=$2$nl"; fi
+    mkdir -p "$(dirname "$CONF")"
+    printf '%s' "$out" | write_atomic "$CONF"
+}
+
+# ---------------------------------------------------------------- state
+
+battery_present() {
+    for d in "$SYSFS_ROOT"/class/power_supply/*; do
+        [ -r "$d/type" ] || continue
+        [ "$(cat "$d/type")" = Battery ] || continue
+        scope=""
+        if [ -r "$d/scope" ]; then scope=$(cat "$d/scope"); fi
+        [ "$scope" != Device ] || continue
+        return 0
+    done
+    return 1
+}
+
+# Sets BATT, DEFAULT_PROFILE, DEFAULT_WHY, PROFILE, PROFILE_SRC, TUNE, EFFTUNE, LATENCY.
+resolve() {
+    if battery_present; then
+        BATT=1
+        DEFAULT_PROFILE=battery
+        DEFAULT_WHY="a battery is present"
+    else
+        BATT=0
+        DEFAULT_PROFILE=always-on
+        DEFAULT_WHY="no battery is present, a taOS machine does not sleep"
+    fi
+    raw=$(conf_get PROFILE)
+    case $raw in
+        always-on|battery) PROFILE=$raw; PROFILE_SRC=config ;;
+        "") PROFILE=$DEFAULT_PROFILE; PROFILE_SRC=default ;;
+        *)
+            warn "ignoring invalid PROFILE=$raw in $CONF"
+            PROFILE=$DEFAULT_PROFILE; PROFILE_SRC=default
+            ;;
+    esac
+    raw=$(conf_get TUNE)
+    case $raw in
+        performance) TUNE=performance ;;
+        off|"") TUNE=off ;;
+        *) warn "ignoring invalid TUNE=$raw in $CONF"; TUNE=off ;;
+    esac
+    # The battery profile changes nothing, so the tune only applies to always-on.
+    EFFTUNE=off
+    if [ "$PROFILE" = always-on ] && [ "$TUNE" = performance ]; then EFFTUNE=performance; fi
+    raw=${TAOS_POWER_LATENCY_US:-$(conf_get LATENCY_US)}
+    case $raw in
+        ""|*[!0-9]*) LATENCY=$DEFAULT_LATENCY ;;
+        *) LATENCY=$((raw + 0)) ;;
+    esac
+}
+
+# ---------------------------------------------------------------- apply
+
+put() { # file value: write a sysfs value, honouring --dry-run
+    if [ "$DRY" -eq 1 ]; then echo "+ write $2 > $1"; return 0; fi
+    if ! { printf '%s\n' "$2" > "$1"; } 2>/dev/null; then
+        warn "cannot write $2 to $1"
+        return 1
+    fi
+}
+
+mark() { # remember what the tune changed so 'tune off' can undo it
+    [ "$DRY" -eq 1 ] && return 0
+    mkdir -p "$RUNDIR"
+    printf '%s\n' "$1" >> "$MARKER"
+}
+
+has_word() { case " $1 " in *" $2 "*) return 0 ;; esac; return 1; }
+
+tune_on() {
+    for d in "$CPU"/cpu[0-9]*/cpufreq; do
+        [ -d "$d" ] || continue
+        f="$d/energy_performance_preference"
+        if [ -e "$f" ]; then
+            av="$d/energy_performance_available_preferences"
+            if [ -r "$av" ] && ! has_word "$(cat "$av")" performance; then continue; fi
+            cur=$(cat "$f" 2>/dev/null || true)
+            [ "$cur" != performance ] || continue
+            if put "$f" performance; then mark "epp|$f|$cur"; fi
+        else
+            g="$d/scaling_governor"
+            av="$d/scaling_available_governors"
+            [ -e "$g" ] && [ -r "$av" ] || continue
+            has_word "$(cat "$av")" performance || continue
+            cur=$(cat "$g" 2>/dev/null || true)
+            [ "$cur" != performance ] || continue
+            if put "$g" performance; then mark "gov|$g|$cur"; fi
+        fi
+    done
+}
+
+# Undo only what tune_on changed in this boot (recorded in the marker).
+# EPP goes back to balance_performance when the CPU lists it, else it is left
+# alone until the next boot; a governor goes back to its previous value.
+tune_off() {
+    [ -r "$MARKER" ] || return 0
+    while IFS='|' read -r kind path prev; do
+        [ -n "$path" ] || continue
+        cur=$(cat "$path" 2>/dev/null || true)
+        [ "$cur" = performance ] || continue
+        case $kind in
+            epp)
+                av="$(dirname "$path")/energy_performance_available_preferences"
+                if [ -r "$av" ] && has_word "$(cat "$av")" balance_performance; then
+                    put "$path" balance_performance || true
+                fi
+                ;;
+            gov)
+                if [ -n "$prev" ]; then put "$path" "$prev" || true; fi
+                ;;
+        esac
+    done < "$MARKER"
+    if [ "$DRY" -eq 0 ]; then rm -f "$MARKER"; fi
+}
+
+drop() { # remove a generated file
+    [ -e "$1" ] || return 0
+    if [ "$DRY" -eq 1 ]; then echo "+ rm $1"; else rm -f "$1"; fi
+    CHANGED=1
+}
+
+gen_dropins() {
+    chg=0
+    if [ "$PROFILE" = always-on ]; then
+        write_atomic "$LOGIND_DROPIN" <<'DROP'
+# Generated by taos-power. Do not edit; use 'taos-power set'.
+[Login]
+HandleSuspendKey=ignore
+HandleHibernateKey=ignore
+HandleLidSwitch=ignore
+HandleLidSwitchExternalPower=ignore
+HandleLidSwitchDocked=ignore
+IdleAction=ignore
+DROP
+        [ "$CHANGED" -eq 0 ] || chg=1
+        write_atomic "$SLEEP_DROPIN" <<'DROP'
+# Generated by taos-power. Do not edit; use 'taos-power set'.
+[Sleep]
+AllowSuspend=no
+AllowHibernation=no
+AllowSuspendThenHibernate=no
+AllowHybridSleep=no
+DROP
+        [ "$CHANGED" -eq 0 ] || chg=1
+    else
+        CHANGED=0
+        drop "$LOGIND_DROPIN"
+        [ "$CHANGED" -eq 0 ] || chg=1
+        CHANGED=0
+        drop "$SLEEP_DROPIN"
+        [ "$CHANGED" -eq 0 ] || chg=1
+    fi
+    CHANGED=$chg
+}
+
+cmd_apply() {
+    boot=0
+    DRY=0
+    for a in "$@"; do
+        case $a in
+            --boot) boot=1 ;;
+            --dry-run) DRY=1 ;;
+            *) usage >&2; exit 2 ;;
+        esac
+    done
+    [ "$DRY" -eq 1 ] || need_root
+    resolve
+    chg=0
+    if [ "$boot" -eq 0 ]; then
+        gen_dropins
+        chg=$CHANGED
+    fi
+    if [ "$EFFTUNE" = performance ]; then tune_on; else tune_off; fi
+    if [ "$boot" -eq 0 ]; then
+        if [ "$chg" -eq 1 ] && { systemd_up || [ "$DRY" -eq 1 ]; }; then
+            # HUP makes logind re-read its config without ending sessions.
+            run systemctl kill -s HUP systemd-logind || warn "could not signal systemd-logind"
+        fi
+        if systemd_up || [ "$DRY" -eq 1 ]; then
+            run systemctl restart taos-power.service || warn "could not restart taos-power.service"
+        fi
+        echo "taos-power: profile $PROFILE, tune $EFFTUNE"
+    fi
+}
+
+# ---------------------------------------------------------------- commands
+
+cmd_set() {
+    need_root
+    p=${1:-}
+    case $p in
+        always-on|battery) ;;
+        *) die "usage: taos-power set <always-on|battery>" 2 ;;
+    esac
+    if [ "$p" = always-on ] && battery_present; then
+        warn "warning: this machine has a battery; always-on keeps it from ever suspending"
+    fi
+    conf_set PROFILE "$p"
+    cmd_apply
+}
+
+cmd_tune() {
+    need_root
+    t=${1:-}
+    case $t in
+        off|performance) ;;
+        *) die "usage: taos-power tune <off|performance>" 2 ;;
+    esac
+    resolve
+    if [ "$t" = performance ] && [ "$PROFILE" != always-on ]; then
+        warn "warning: the $PROFILE profile changes nothing, so the tune stays inactive until the profile is always-on"
+    fi
+    conf_set TUNE "$t"
+    cmd_apply
+}
+
+cmd_set_latency() {
+    need_root
+    v=${1:-}
+    case $v in
+        ""|*[!0-9]*) die "usage: taos-power set-latency <microseconds>" 2 ;;
+    esac
+    [ "${#v}" -le 10 ] && [ "$v" -le 2147483647 ] || die "latency out of range (max 2147483647)" 2
+    conf_set LATENCY_US "$((v + 0))"
+    cmd_apply
+}
+
+json_str() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+jbool() { if [ "$1" -eq 1 ]; then echo true; else echo false; fi; }
+
+holder_state() { # sets HOLD_RUNNING (0/1) and HOLD_VALUE
+    HOLD_RUNNING=0
+    HOLD_VALUE=""
+    [ -r "$PIDFILE" ] || return 0
+    read -r hpid hval < "$PIDFILE" || return 0
+    case $hpid in ""|*[!0-9]*) return 0 ;; esac
+    [ -r "/proc/$hpid/cmdline" ] || return 0
+    if tr '\0' ' ' < "/proc/$hpid/cmdline" | grep -q latency-hold; then
+        HOLD_RUNNING=1
+        HOLD_VALUE=$hval
+    fi
+}
+
+cmd_status() {
+    json=0
+    [ "${1:-}" = "--json" ] && json=1
+    resolve
+    sleep_ok=1
+    if [ -r "$SLEEP_DROPIN" ] && grep -q '^AllowSuspend=no$' "$SLEEP_DROPIN"; then sleep_ok=0; fi
+    c0="$CPU/cpu0/cpufreq"
+    epp=""; gov=""
+    if [ -r "$c0/energy_performance_preference" ]; then epp=$(cat "$c0/energy_performance_preference"); fi
+    if [ -r "$c0/scaling_governor" ]; then gov=$(cat "$c0/scaling_governor"); fi
+    holder_state
+    reqv=null
+    [ "$HOLD_RUNNING" -eq 0 ] || reqv=$HOLD_VALUE
+    idle="$CPU/cpu0/cpuidle"
+    if [ "$json" -eq 1 ]; then
+        if [ -n "$epp" ]; then ej="\"$(json_str "$epp")\""; else ej=null; fi
+        if [ -n "$gov" ]; then gj="\"$(json_str "$gov")\""; else gj=null; fi
+        printf '{"profile": "%s", "profile_source": "%s", "default_profile": "%s", "default_reason": "%s", ' \
+            "$PROFILE" "$PROFILE_SRC" "$DEFAULT_PROFILE" "$(json_str "$DEFAULT_WHY")"
+        printf '"tune": "%s", "tune_active": %s, "battery": %s, "suspend_allowed": %s, ' \
+            "$TUNE" "$(jbool "$([ "$EFFTUNE" = performance ] && echo 1 || echo 0)")" "$(jbool "$BATT")" "$(jbool "$sleep_ok")"
+        printf '"cpu0": {"energy_performance_preference": %s, "governor": %s}, ' "$ej" "$gj"
+        printf '"latency_us": %s, "latency_request_us": %s, "holder_running": %s, "idle_states": [' \
+            "$LATENCY" "$reqv" "$(jbool "$HOLD_RUNNING")"
+        sep=""
+        i=0
+        while [ -d "$idle/state$i" ]; do
+            n=$(cat "$idle/state$i/name" 2>/dev/null || echo "?")
+            l=$(cat "$idle/state$i/latency" 2>/dev/null || echo 0)
+            x=$(cat "$idle/state$i/disable" 2>/dev/null || echo 0)
+            case $l in ""|*[!0-9]*) l=0 ;; esac
+            dj=false; [ "$x" = 1 ] && dj=true
+            printf '%s{"state": "state%s", "name": "%s", "latency_us": %s, "disabled": %s}' \
+                "$sep" "$i" "$(json_str "$n")" "$l" "$dj"
+            sep=", "
+            i=$((i + 1))
+        done
+        printf ']}\n'
+        return 0
+    fi
+    if [ "$PROFILE_SRC" = default ]; then
+        echo "profile: $PROFILE (default: $DEFAULT_WHY)"
+    else
+        echo "profile: $PROFILE (set in power.conf; default would be $DEFAULT_PROFILE)"
+    fi
+    if [ "$EFFTUNE" = performance ]; then
+        echo "tune: performance"
+    elif [ "$TUNE" = performance ]; then
+        echo "tune: performance (inactive: needs the always-on profile)"
+    else
+        echo "tune: off"
+    fi
+    if [ "$BATT" -eq 1 ]; then echo "battery: yes"; else echo "battery: no"; fi
+    if [ "$sleep_ok" -eq 1 ]; then echo "suspend: allowed"; else echo "suspend: blocked"; fi
+    echo "cpu0: epp=${epp:-n/a} governor=${gov:-n/a}"
+    if [ "$HOLD_RUNNING" -eq 1 ]; then
+        echo "latency: ${HOLD_VALUE} us requested (holder running)"
+    else
+        echo "latency: no request held (configured ${LATENCY} us, used only by the tune)"
+    fi
+    i=0
+    found=0
+    while [ -d "$idle/state$i" ]; do
+        n=$(cat "$idle/state$i/name" 2>/dev/null || echo "?")
+        l=$(cat "$idle/state$i/latency" 2>/dev/null || echo 0)
+        x=$(cat "$idle/state$i/disable" 2>/dev/null || echo 0)
+        dt=enabled; [ "$x" = 1 ] && dt=disabled
+        [ "$found" -eq 1 ] || echo "idle states:"
+        found=1
+        echo "  state$i  $n  exit latency ${l} us  $dt"
+        i=$((i + 1))
+    done
+    [ "$found" -eq 1 ] || echo "idle states: none exposed"
+}
+
+cmd_hold_value() { # for latency-hold: the value to hold, empty for nothing
+    resolve
+    if [ "$EFFTUNE" = performance ] && [ "$LATENCY" -gt 0 ]; then echo "$LATENCY"; fi
+}
+
+cmd_default_profile() { resolve; echo "$DEFAULT_PROFILE"; }
+
+cmd=${1:-}
+[ $# -gt 0 ] && shift
+case "$cmd" in
+    status) cmd_status "$@" ;;
+    set) cmd_set "$@" ;;
+    tune) cmd_tune "$@" ;;
+    set-latency) cmd_set_latency "$@" ;;
+    apply) cmd_apply "$@" ;;
+    hold-value) cmd_hold_value ;;
+    default-profile) cmd_default_profile ;;
+    --help|-h|help) usage ;;
+    *) usage >&2; exit 2 ;;
+esac
