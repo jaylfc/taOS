@@ -1,0 +1,20 @@
+#!/bin/sh
+set -e
+case "$1" in
+    configure)
+        mkdir -p /etc/taos
+        if [ ! -e /etc/taos/power.conf ]; then
+            profile=$(/usr/bin/taos-power default-profile 2>/dev/null || echo always-on)
+            printf 'PROFILE=%s\nTUNE=off\n' "$profile" > /etc/taos/power.conf
+        fi
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl enable taos-power.service >/dev/null 2>&1 || true
+            if [ -d /run/systemd/system ]; then
+                systemctl daemon-reload >/dev/null 2>&1 || true
+            fi
+        fi
+        # apply restarts the unit (so it starts now) and HUPs logind when systemd runs.
+        /usr/bin/taos-power apply || true
+        ;;
+esac
+exit 0

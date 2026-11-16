@@ -109,3 +109,12 @@ taos-gpu driver status
 
 # Step 5: tools (taos-tools): taos-screenshot for the Wayland session or console.
 apt-get install -y --reinstall "$here"/dist/taos-tools_*_all.deb
+
+# Step 6: power (taos-power). A taOS machine does not sleep by default (it
+# serves models to other devices); a battery machine keeps suspend allowed.
+# TAOS_POWER_PROFILE=always-on|battery chooses non-interactively.
+apt-get install -y --reinstall "$here"/dist/taos-power_*_all.deb
+if [ -n "${TAOS_POWER_PROFILE:-}" ]; then
+    taos-power set "$TAOS_POWER_PROFILE"
+fi
+taos-power status

@@ -1,0 +1,16 @@
+Package: taos-power
+Version: 0.1.0
+Architecture: all
+Maintainer: jaylfc <jaylfc25@gmail.com>
+Priority: optional
+Section: admin
+Depends: systemd
+Description: taOS power policy: a taOS machine does not sleep by default
+ Provides the taos-power command. A taOS machine is a server (it serves models
+ to phones and other devices), so the always-on profile, the default on any
+ machine without a battery, never suspends or hibernates: it writes logind and
+ sleep.conf drop-ins that ignore the power key, lid switch and idle action and
+ disallow every sleep mode. The battery profile, the default when a battery is
+ present, allows suspend and changes nothing. An optional, off by default CPU
+ tune (taos-power tune performance) sets the performance governor and holds a
+ low PM QoS wake-up latency request while the taos-power unit runs.
