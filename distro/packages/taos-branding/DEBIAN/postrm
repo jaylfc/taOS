@@ -1,0 +1,18 @@
+#!/bin/sh
+set -e
+if [ "$1" = remove ] || [ "$1" = purge ] || [ "$1" = abort-install ]; then
+    for f in /usr/lib/os-release /etc/issue /etc/issue.net; do
+        # mv is atomic, so the real path is never missing.
+        if [ -e "$f.debian" ]; then
+            mv -f "$f.debian" "$f"
+        fi
+        dpkg-divert --package taos-branding --no-rename --divert "$f.debian" --remove "$f" >/dev/null
+    done
+    if [ -f /etc/motd.debian ]; then
+        mv -f /etc/motd.debian /etc/motd
+    fi
+    if [ "$1" != abort-install ] && command -v update-grub >/dev/null 2>&1 && [ -f /boot/grub/grub.cfg ]; then
+        update-grub >/dev/null 2>&1 || true
+    fi
+fi
+exit 0

@@ -1,0 +1,14 @@
+Package: taos-branding
+Version: 0.1.0
+Architecture: all
+Maintainer: jaylfc <jaylfc25@gmail.com>
+Priority: optional
+Section: misc
+Depends: base-files
+Description: taOS identity for a Debian base
+ Makes the system identify as taOS: os-release NAME and PRETTY_NAME, the
+ console login banner (/etc/issue, /etc/issue.net), the motd and the GRUB
+ menu entry. ID stays "debian" so Debian tooling and third-party installers
+ keep working; VARIANT_ID=taos marks the derivative. Debian's own files are
+ diverted, regenerated from on every base-files update, and restored on
+ removal.
