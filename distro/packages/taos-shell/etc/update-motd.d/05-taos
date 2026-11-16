@@ -17,14 +17,8 @@ else
     reset=""; key=""; dim=""; esc=""
 fi
 
-# Logo: top-to-bottom 256-colour gradient, violet to cyan. Full-block glyphs
-# when the system locale is UTF-8 (the Linux console font has the full block
-# but not half blocks), a plain '#' version otherwise or with TAOS_MOTD_ASCII=1.
+# Logo: top-to-bottom 256-colour gradient, violet to cyan.
 logo="$share/logo.txt"
-locale_file="${TAOS_MOTD_LOCALE_FILE:-/etc/default/locale}"
-utf8=0
-if [ -r "$locale_file" ] && grep -qi 'utf-\{0,1\}8' "$locale_file"; then utf8=1; fi
-if [ "${TAOS_MOTD_ASCII:-0}" = 1 ] || [ "$utf8" = 0 ]; then logo="$share/logo-ascii.txt"; fi
 if [ -r "$logo" ]; then
     n=0
     while IFS= read -r line; do
@@ -32,7 +26,7 @@ if [ -r "$logo" ]; then
             case $n in
                 0) c=141 ;; 1) c=135 ;; 2) c=99 ;; 3) c=63 ;; 4) c=39 ;; 5) c=45 ;; *) c=51 ;;
             esac
-            printf '%s[38;5;%sm%s%s\n' "$esc" "$c" "$line" "$reset"
+            printf '%s[1;38;5;%sm%s%s\n' "$esc" "$c" "$line" "$reset"
         else
             printf '%s\n' "$line"
         fi

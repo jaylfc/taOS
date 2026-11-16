@@ -93,27 +93,13 @@ def test_fastfetch_config_is_json():
         assert mod in cfg["modules"]
 
 
-def test_logo_files_match_and_fit():
-    blocks = (SHARE / "logo.txt").read_text(encoding="utf-8").splitlines()
-    ascii_ = (SHARE / "logo-ascii.txt").read_bytes()
-    ascii_.decode("ascii")
-    assert b"\t" not in ascii_ and b"`" not in ascii_
-    # Only the full block (in the Linux console font) and spaces: no half blocks.
-    assert set("".join(blocks)) <= {"\u2588", " "}
-    assert [l.replace("\u2588", "#") for l in blocks] == ascii_.decode().splitlines()
-    assert 5 <= len(blocks) <= 7
-    assert max(len(l) for l in blocks) <= 48
-
-
-def test_motd_uses_ascii_logo_without_utf8_locale(tmp_path):
-    loc = tmp_path / "locale"
-    loc.write_text('LANG="C"\n')
-    out = _motd({"TERM": "dumb", "TAOS_MOTD_LOCALE_FILE": str(loc)}).stdout
-    assert "##" in out and "\u2588" not in out
-    loc.write_text('LANG="en_GB.UTF-8"\n')
-    out = _motd({"TERM": "dumb", "TAOS_MOTD_LOCALE_FILE": str(loc)}).stdout
-    assert "\u2588" in out
-    assert "your agents, your hardware" in out
+def test_logo_is_plain_ascii():
+    raw = (SHARE / "logo.txt").read_bytes()
+    raw.decode("ascii")
+    assert b"\t" not in raw
+    lines = raw.decode().splitlines()
+    assert 5 <= len(lines) <= 7
+    assert max(len(l) for l in lines) <= 48
 
 
 def _motd(env_extra: dict[str, str]) -> subprocess.CompletedProcess:
@@ -128,7 +114,7 @@ def test_motd_renders_with_and_without_colour(tmp_path: Path):
     res = _motd({"OS_RELEASE": str(osrel), "TERM": "xterm-256color"})
     assert res.returncode == 0
     assert "taOS (Debian 13 trixie base)" in res.stdout
-    assert "\x1b[38;5;141m" in res.stdout
+    assert "\x1b[1;38;5;141m" in res.stdout
     for label in ("Hostname", "Uptime", "Load", "Memory", "Disk /", "IPv4", "taOS service"):
         assert label in res.stdout
     plain = _motd({"OS_RELEASE": str(osrel), "TERM": "dumb"})
