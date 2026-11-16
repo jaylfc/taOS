@@ -4,6 +4,8 @@
 #   SYSFS_ROOT (default /sys), ETC_ROOT (default /etc),
 #   TAOS_GPU_NO_APPLY=1 skips udevadm and update-initramfs.
 #
+# GPUs come from PCI class 0x03xxxx devices (so driverless cards stay listed)
+# plus non-PCI class/drm cards (platform, kind integrated).
 # Kind rule: "integrated" = vendor Intel, or AMD with boot_vga=1 on PCI bus 00;
 # everything else is "discrete". Compute-only = every GPU except the display GPU.
 set -eu
@@ -43,28 +45,52 @@ GPUS=""
 DISP=""
 CHANGED=0
 
+# Fill CONN (comma list) with connected connectors of card <name>; <extra> is
+# the card dir under the device (drm/<card>) when there is one.
+add_conn() {
+    cname=$1
+    cextra=$2
+    for c in "$SYSFS_ROOT"/class/drm/"$cname"-* "$SYSFS_ROOT/class/drm/$cname/$cname"-* "$cextra/$cname"-*; do
+        [ -e "$c" ] || continue
+        [ "$(cat "$c/status" 2>/dev/null)" = connected ] || continue
+        cn=${c##*/}
+        cn=${cn#"$cname"-}
+        case ",$CONN," in *",$cn,"*) continue ;; esac
+        CONN="${CONN:+$CONN,}$cn"
+    done
+}
+
+vendor_name() { # vendor id -> display name
+    case "$1" in
+        0x8086) echo Intel ;;
+        0x1002) echo AMD ;;
+        0x10de) echo NVIDIA ;;
+        *) echo "$1" ;;
+    esac
+}
+
+driver_of() { # device dir -> driver name or none
+    if [ -L "$1/driver" ]; then
+        basename "$(readlink "$1/driver")"
+    else
+        echo none
+    fi
+}
+
 # Fill GPUS with one record per GPU: pci|vendor|driver|kind|boot|connectors(comma)
+# Pass 1 walks PCI display-class devices (class 0x03xxxx), so a card with no
+# driver bound (and so no class/drm node) is still listed. Pass 2 adds
+# non-PCI GPUs (ARM boards) found only through class/drm.
 scan() {
     GPUS=""
-    for d in "$SYSFS_ROOT"/class/drm/card[0-9]*; do
-        [ -e "$d" ] || continue
-        name=${d##*/}
-        case "$name" in *-*) continue ;; esac
-        dev="$d/device"
+    for dev in "$SYSFS_ROOT"/bus/pci/devices/*; do
         [ -e "$dev" ] || continue
-        pci=$(basename "$(readlink -f "$dev")")
-        case "$GPUS" in *"$pci|"*) continue ;; esac
+        pci=${dev##*/}
+        cls=$(cat "$dev/class" 2>/dev/null || echo "")
+        case "$cls" in 0x03*) ;; *) continue ;; esac
         vid=$(cat "$dev/vendor" 2>/dev/null || echo unknown)
-        case "$vid" in
-            0x8086) ven=Intel ;;
-            0x1002) ven=AMD ;;
-            0x10de) ven=NVIDIA ;;
-            *) ven=$vid ;;
-        esac
-        drv=none
-        if [ -L "$dev/driver" ]; then
-            drv=$(basename "$(readlink "$dev/driver")")
-        fi
+        ven=$(vendor_name "$vid")
+        drv=$(driver_of "$dev")
         boot=$(cat "$dev/boot_vga" 2>/dev/null || echo 0)
         [ "$boot" = 1 ] || boot=0
         kind=discrete
@@ -73,17 +99,33 @@ scan() {
         elif [ "$ven" = AMD ] && [ "$boot" = 1 ]; then
             case "$pci" in ????:00:*) kind=integrated ;; esac
         fi
-        # Connectors live beside the card in class/drm, or inside it.
-        conn=""
-        for c in "$SYSFS_ROOT"/class/drm/"$name"-* "$d/$name"-*; do
-            [ -e "$c" ] || continue
-            [ "$(cat "$c/status" 2>/dev/null)" = connected ] || continue
-            cn=${c##*/}
-            cn=${cn#"$name"-}
-            case ",$conn," in *",$cn,"*) continue ;; esac
-            conn="${conn:+$conn,}$cn"
+        CONN=""
+        for card in "$dev"/drm/card[0-9]*; do
+            [ -e "$card" ] || continue
+            cname=${card##*/}
+            case "$cname" in *-*) continue ;; esac
+            add_conn "$cname" "$card"
         done
-        GPUS="$GPUS$pci|$ven|$drv|$kind|$boot|$conn$nl"
+        GPUS="$GPUS$pci|$ven|$drv|$kind|$boot|$CONN$nl"
+    done
+    for d in "$SYSFS_ROOT"/class/drm/card[0-9]*; do
+        [ -e "$d" ] || continue
+        name=${d##*/}
+        case "$name" in *-*) continue ;; esac
+        dev="$d/device"
+        [ -e "$dev" ] || continue
+        pci=$(basename "$(readlink -f "$dev")")
+        case "$nl$GPUS" in *"$nl$pci|"*) continue ;; esac
+        drv=$(driver_of "$dev")
+        CONN=""
+        for d2 in "$SYSFS_ROOT"/class/drm/card[0-9]*; do
+            [ -e "$d2" ] || continue
+            n2=${d2##*/}
+            case "$n2" in *-*) continue ;; esac
+            [ "$(basename "$(readlink -f "$d2/device")")" = "$pci" ] || continue
+            add_conn "$n2" "$d2"
+        done
+        GPUS="$GPUS$pci|platform|$drv|integrated|0|$CONN$nl"
     done
 }
 
@@ -112,10 +154,12 @@ EOF
     fi
     # auto: (1) integrated with a connected connector, (2) any integrated,
     # (3) boot_vga GPU, (4) first GPU. Never a discrete card while an
-    # integrated one exists.
+    # integrated one exists, and never a GPU with no driver bound (it cannot
+    # drive a screen).
     for rule in 1 2 3 4; do
         while IFS='|' read -r pci ven drv kind boot conn; do
             [ -n "$pci" ] || continue
+            [ "$drv" != none ] || continue
             case $rule in
                 1) [ "$kind" = integrated ] && [ -n "$conn" ] || continue ;;
                 2) [ "$kind" = integrated ] || continue ;;
@@ -203,7 +247,7 @@ EOF
     if [ -n "$DISP" ]; then
         echo "display: $DISP ($(vendor_of "$DISP"))"
     else
-        echo "display: none (no GPU found)"
+        echo "display: none (no GPU with a display driver found)"
     fi
     echo "compute-only: ${comp:-none}" | tr ',' ' '
 }
@@ -228,7 +272,11 @@ cmd_apply() {
     scan
     resolve
     if [ -z "$DISP" ]; then
-        echo "taos-gpu: no GPU found, nothing to configure"
+        if [ -z "$GPUS" ]; then
+            echo "taos-gpu: no GPU found, nothing to configure"
+        else
+            echo "taos-gpu: no GPU with a display driver loaded, nothing to configure"
+        fi
         return 0
     fi
     rules="$ETC_ROOT/udev/rules.d/61-taos-display-gpu.rules"
@@ -294,7 +342,12 @@ cmd_set_display() {
         scan
         ok=0
         while IFS='|' read -r pci ven drv kind boot conn; do
-            if [ "$pci" = "$want" ]; then ok=1; fi
+            if [ "$pci" = "$want" ]; then
+                ok=1
+                if [ "$drv" = none ]; then
+                    echo "taos-gpu: warning: $want has no display driver loaded; it cannot drive a screen until one is" >&2
+                fi
+            fi
         done <<EOF
 $GPUS
 EOF

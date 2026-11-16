@@ -22,9 +22,10 @@ RTX3060 = "0000:02:00.0"
 SHELLS = ["sh"] + (["/bin/dash"] if Path("/bin/dash").exists() else [])
 
 
-def _card(n, pci, vendor, driver, boot, connectors=None):
+def _card(n, pci, vendor, driver, boot, connectors=None, cls="0x030000"):
+    """n=None means no class/drm node (driverless card); driver=None means unbound."""
     return dict(n=n, pci=pci, vendor=vendor, driver=driver, boot=boot,
-                connectors=connectors or {})
+                connectors=connectors or {}, cls=cls)
 
 
 def default_cards():
@@ -35,15 +36,31 @@ def default_cards():
     ]
 
 
+def post_blacklist_cards():
+    return [
+        _card(0, INTEL, "0x8086", "i915", 1, {"HDMI-A-1": "connected"}),
+        _card(None, RTX3090, "0x10de", None, 0),
+        _card(None, RTX3060, "0x10de", None, 0),
+    ]
+
+
 def make_sysfs(root: Path, cards) -> Path:
     for c in cards:
         dev = root / "devices" / "pci0000:00" / c["pci"]
         dev.mkdir(parents=True, exist_ok=True)
         (dev / "vendor").write_text(c["vendor"] + "\n")
+        (dev / "class").write_text(c["cls"] + "\n")
         (dev / "boot_vga").write_text(f"{c['boot']}\n")
-        drv = root / "bus" / "pci" / "drivers" / c["driver"]
-        drv.mkdir(parents=True, exist_ok=True)
-        (dev / "driver").symlink_to(drv)
+        if c["driver"]:
+            drv = root / "bus" / "pci" / "drivers" / c["driver"]
+            drv.mkdir(parents=True, exist_ok=True)
+            (dev / "driver").symlink_to(drv)
+        bus = root / "bus" / "pci" / "devices"
+        bus.mkdir(parents=True, exist_ok=True)
+        (bus / c["pci"]).symlink_to(dev)
+        if c["n"] is None:
+            continue
+        (dev / "drm" / f"card{c['n']}").mkdir(parents=True)
         card = root / "class" / "drm" / f"card{c['n']}"
         card.mkdir(parents=True, exist_ok=True)
         (card / "device").symlink_to(dev)
@@ -52,6 +69,21 @@ def make_sysfs(root: Path, cards) -> Path:
             conn.mkdir()
             (conn / "status").write_text(status + "\n")
     (root / "class" / "drm").mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def make_platform_sysfs(root: Path, name="display-subsystem", driver="rockchip-drm") -> Path:
+    dev = root / "devices" / "platform" / name
+    dev.mkdir(parents=True)
+    drv = root / "bus" / "platform" / "drivers" / driver
+    drv.mkdir(parents=True)
+    (dev / "driver").symlink_to(drv)
+    card = root / "class" / "drm" / "card0"
+    card.mkdir(parents=True)
+    (card / "device").symlink_to(dev)
+    conn = root / "class" / "drm" / "card0-HDMI-A-1"
+    conn.mkdir()
+    (conn / "status").write_text("connected\n")
     return root
 
 
@@ -224,6 +256,7 @@ def test_apply_twice_is_byte_identical(full):
 
 def test_empty_sysfs_writes_nothing(env):
     (env["sysfs"] / "class" / "drm").mkdir(parents=True)
+    (env["sysfs"] / "bus" / "pci" / "devices").mkdir(parents=True)
     res = run(env, "list")
     assert res.returncode == 0 and res.stdout == ""
     assert json.loads(run(env, "list", "--json").stdout) == []
@@ -231,6 +264,69 @@ def test_empty_sysfs_writes_nothing(env):
     assert res.returncode == 0 and "no GPU" in res.stdout
     assert snapshot(env) == {}
     assert run(env, "status").returncode == 0
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_post_blacklist_driverless_nvidia_stay_listed(env, shell):
+    make_sysfs(env["sysfs"], post_blacklist_cards())
+    lines = run(env, "list", shell=shell).stdout.strip().splitlines()
+    assert len(lines) == 3
+    assert lines[0].startswith(INTEL) and "[display]" in lines[0]
+    for line, pci in ((lines[1], RTX3090), (lines[2], RTX3060)):
+        assert line.startswith(pci) and "NVIDIA" in line and "none" in line
+        assert "[display]" not in line
+    data = json.loads(run(env, "list", "--json", shell=shell).stdout)
+    assert [d["driver"] for d in data] == ["i915", "none", "none"]
+    out = run(env, "status", shell=shell).stdout
+    assert f"display: {INTEL}" in out
+    assert f"compute-only: {RTX3090} {RTX3060}" in out
+    assert run(env, "apply", shell=shell).returncode == 0
+    assert "blacklist nouveau" in files(env)["mod"].read_text()
+
+
+def test_auto_never_selects_driverless_gpu(env):
+    make_sysfs(env["sysfs"], [
+        _card(None, RTX3090, "0x10de", None, 1),
+        _card(1, RTX3060, "0x10de", "nvidia", 0),
+    ])
+    assert json.loads(run(env, "status", "--json").stdout)["display"] == RTX3060
+    other = env["sysfs"].parent / "sys2"
+    make_sysfs(other, [_card(None, RTX3090, "0x10de", None, 1)])
+    js = json.loads(run({**env, "sysfs": other}, "status", "--json").stdout)
+    assert js["display"] is None and js["compute_only"] == [RTX3090]
+
+
+def test_set_display_driverless_warns(env):
+    make_sysfs(env["sysfs"], post_blacklist_cards())
+    res = run(env, "set-display", RTX3090)
+    assert res.returncode == 0, res.stderr
+    assert "no display driver" in res.stderr
+    assert json.loads(run(env, "status", "--json").stdout)["display"] == RTX3090
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_platform_only_gpu(env, shell):
+    make_platform_sysfs(env["sysfs"])
+    data = json.loads(run(env, "list", "--json", shell=shell).stdout)
+    assert data == [{"pci": "display-subsystem", "vendor": "platform",
+                     "driver": "rockchip-drm", "kind": "integrated", "boot_vga": False,
+                     "connected": ["HDMI-A-1"], "display": True}]
+    assert run(env, "apply", shell=shell).returncode == 0
+    assert 'KERNELS=="display-subsystem"' in files(env)["rules"].read_text()
+
+
+def test_platform_card_not_duplicated_next_to_pci(env):
+    make_sysfs(env["sysfs"], [_card(0, INTEL, "0x8086", "i915", 1)])
+    assert len(json.loads(run(env, "list", "--json").stdout)) == 1
+
+
+def test_non_display_pci_class_ignored(env):
+    make_sysfs(env["sysfs"], [
+        _card(0, INTEL, "0x8086", "i915", 1),
+        _card(None, "0000:03:00.0", "0x8086", "e1000e", 0, cls="0x020000"),
+    ])
+    data = json.loads(run(env, "list", "--json").stdout)
+    assert [d["pci"] for d in data] == [INTEL]
 
 
 def test_usage_and_unknown(full):
