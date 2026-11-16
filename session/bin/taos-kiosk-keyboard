@@ -108,6 +108,28 @@ VCSS="$(printf '%s\n' "$RES" | sed -n 2p)"
 MCSS="$(printf '%s\n' "$RES" | sed -n 3p)"
 [ -r "$VCSS" ] && [ -r "$MCSS" ] || { echo "taos-kiosk-keyboard: resolved css unreadable" >&2; exit 1; }
 
+# Two instances started together would both read the old pid before either
+# wrote the pidfile, leaving one keyboard running and unrecorded. Serialize
+# stop_old + pidfile write with an atomic mkdir lock. Waits up to ~5s; if the
+# lock is still held then, it is treated as stale and taken over (no age
+# check). Released before exec, so squeekboard inherits nothing from it.
+LOCK="$XDG_RUNTIME_DIR/taos-keyboard.lock"
+LOCKED=0
+unlock() { [ "$LOCKED" = 1 ] && rmdir "$LOCK" 2>/dev/null; LOCKED=0; return 0; }
+_i=0
+until mkdir "$LOCK" 2>/dev/null; do
+    if [ "$_i" -ge 50 ]; then
+        rmdir "$LOCK" 2>/dev/null || true
+        mkdir "$LOCK" 2>/dev/null || true
+        break
+    fi
+    sleep 0.1 2>/dev/null || sleep 1
+    _i=$((_i + 1))
+done
+LOCKED=1
+trap unlock EXIT
+trap 'exit 1' INT TERM HUP
+
 stop_old
 mkdir -p "$KDIR/gtk-3.0"
 cat "$VCSS" "$MCSS" > "$KDIR/gtk-3.0/gtk.css.$$"
@@ -127,6 +149,8 @@ if [ -z "${WAYLAND_DISPLAY:-}" ]; then
 fi
 
 echo "$$" > "$PIDFILE"
+unlock
+trap - EXIT INT TERM HUP
 XDG_CONFIG_HOME="$KDIR"
 export XDG_CONFIG_HOME
 exec "$BIN"

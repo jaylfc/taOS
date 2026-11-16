@@ -138,11 +138,14 @@ chmod -R a+rX /usr/share/taos/themes
 install -d -m 755 -o taos /var/lib/taos/session
 echo "installed taos-session and the theme packages"
 
+# The keyboard wrapper is inert without the sway drop-in, and `taos-session
+# keyboard on` refuses to run without it, so it is always installed.
+install -m 755 "$HERE/bin/taos-kiosk-keyboard" /usr/local/bin/taos-kiosk-keyboard
+sh -n /usr/local/bin/taos-kiosk-keyboard || { echo "FAIL: installed taos-kiosk-keyboard is not valid sh"; exit 1; }
+
 # 3b3. The system keyboard, only when asked for.
 if [ "$KEYBOARD" = 1 ]; then
     pkg_install squeekboard
-    install -m 755 "$HERE/bin/taos-kiosk-keyboard" /usr/local/bin/taos-kiosk-keyboard
-    sh -n /usr/local/bin/taos-kiosk-keyboard || { echo "FAIL: installed taos-kiosk-keyboard is not valid sh"; exit 1; }
     # The same candidates taos-kiosk-keyboard probes: Alpine's /usr/sbin is a
     # symlink to /usr/bin, Debian's is not.
     SQUEEKBOARD=""

@@ -25,6 +25,8 @@ DROPIN_DIR="${TAOS_SWAY_DROPIN_DIR:-/etc/taos/sway.d}"
 DROPIN="$DROPIN_DIR/50-keyboard.conf"
 SESSION_USER="${TAOS_SESSION_USER:-taos}"
 KEYBOARD_BIN="${TAOS_KIOSK_KEYBOARD:-/usr/local/bin/taos-kiosk-keyboard}"
+# Same default as taos-kiosk-keyboard (a test keeps the two equal).
+BIN_DIRS="${TAOS_KEYBOARD_BIN_DIRS:-/usr/bin /usr/local/bin /usr/sbin}"
 FB_ID="taos-default"
 FB_VARIANT="dark"
 
@@ -104,8 +106,10 @@ try:
     k = d["keyboard"]
     rels = [k["metrics"], k[v]]
     for r in rels:
-        if (not isinstance(r, str) or not r or r.startswith("/")
-                or ".." in r.split("/")):
+        # The result is read back line by line: a newline (or any other
+        # non-printable) would smuggle a second path past the ".." check.
+        if (not isinstance(r, str) or not r or not r.isprintable()
+                or r.startswith("/") or ".." in r.split("/")):
             print("ERR unsafe keyboard path in theme.json")
             sys.exit(0)
     print("OK"); print(rels[0]); print(rels[1])
@@ -119,8 +123,8 @@ except Exception as e:
     _m="$(printf '%s\n' "$_out" | sed -n 2p)"
     _c="$(printf '%s\n' "$_out" | sed -n 3p)"
     for _f in "$_dir/$_m" "$_dir/$_c"; do
-        if [ ! -r "$_f" ]; then
-            T_WHY="missing or unreadable $_f"
+        if [ ! -f "$_f" ] || [ ! -r "$_f" ]; then
+            T_WHY="missing, unreadable or not a regular file: $_f"
             return 1
         fi
     done
@@ -169,10 +173,22 @@ cmd_resolve() {
 cmd_theme() {
     [ "$#" -eq 2 ] || usage
     resolve "$1" "$2"
-    mkdir -p "$STATE_DIR"
-    _tmp="$STATE_DIR/.theme.$$"
-    printf '%s %s\n' "$R_ID" "$R_VARIANT" > "$_tmp"
-    mv -f "$_tmp" "$STATE_DIR/theme"
+    # The state dir is writable by the session user, so as root the write and
+    # the rename run AS that user: a symlink planted there cannot redirect a
+    # root write. Root never creates the dir. Values go in as arguments.
+    if [ "$(id -u)" = 0 ]; then
+        as_user sh -c '[ -d "$1" ] && [ -w "$1" ]' taos-session "$STATE_DIR" 2>/dev/null || {
+            echo "taos-session: state dir $STATE_DIR is missing or not writable by $SESSION_USER" >&2
+            exit 1
+        }
+    else
+        mkdir -p "$STATE_DIR"
+    fi
+    as_user sh -c 'umask 022; _t="$1/.theme.$$"; printf "%s %s\n" "$2" "$3" > "$_t" && mv -f "$_t" "$1/theme"' \
+        taos-session "$STATE_DIR" "$R_ID" "$R_VARIANT" || {
+        echo "taos-session: cannot write $STATE_DIR/theme" >&2
+        exit 1
+    }
     echo "taos-session: theme $R_ID $R_VARIANT"
     as_user gsettings set org.gnome.desktop.interface color-scheme "prefer-$R_VARIANT" 2>/dev/null || true
     # The keyboard reads its css only at start. Restart it only on a device
@@ -208,6 +224,19 @@ cmd_keyboard() {
     [ -w "$_w" ] || { echo "taos-session: cannot write $DROPIN_DIR (keyboard on|off must run as root)" >&2; exit 1; }
     case "$1" in
         on)
+            # Refuse before writing anything if the keyboard could not start.
+            [ -x "$KEYBOARD_BIN" ] || {
+                echo "taos-session: keyboard wrapper $KEYBOARD_BIN is missing or not executable (run install-session.sh --keyboard)" >&2
+                exit 1
+            }
+            _have=""
+            for _d in $BIN_DIRS; do
+                [ -x "$_d/squeekboard" ] && _have=1 && break
+            done
+            [ -n "$_have" ] || {
+                echo "taos-session: no squeekboard binary in: $BIN_DIRS (run install-session.sh --keyboard)" >&2
+                exit 1
+            }
             set_keyboard_gsetting true
             mkdir -p "$DROPIN_DIR"
             printf 'exec_always /usr/local/bin/taos-kiosk-keyboard\n' > "$DROPIN.$$"

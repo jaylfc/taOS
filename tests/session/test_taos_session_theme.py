@@ -50,6 +50,14 @@ def env(tmp_path):
         '  get) cat "%s/$3" 2>/dev/null || echo false ;;\n'
         'esac\n' % (log, store, store))
     os.chmod(bindir / "gsettings", 0o755)
+    # A keyboard wrapper and a squeekboard binary that `keyboard on` can find.
+    wrapper = tmp_path / "taos-kiosk-keyboard"
+    wrapper.write_text("#!/bin/sh\nexit 0\n")
+    os.chmod(wrapper, 0o755)
+    sqdir = tmp_path / "sqbin"
+    sqdir.mkdir()
+    (sqdir / "squeekboard").write_text("#!/bin/sh\nexit 0\n")
+    os.chmod(sqdir / "squeekboard", 0o755)
     pkgs = tmp_path / "pkgs"
     pkgs.mkdir()
     # The real default package, copied so a test can break its copy.
@@ -59,7 +67,8 @@ def env(tmp_path):
              TAOS_THEME_PATH=str(pkgs),
              TAOS_SESSION_STATE_DIR=str(tmp_path / "state"),
              TAOS_SWAY_DROPIN_DIR=str(tmp_path / "sway.d"),
-             TAOS_KIOSK_KEYBOARD=str(tmp_path / "nokeyboard"),
+             TAOS_KIOSK_KEYBOARD=str(wrapper),
+             TAOS_KEYBOARD_BIN_DIRS=str(sqdir),
              XDG_RUNTIME_DIR=str(tmp_path / "run"))
     e.pop("GS_MEMORY", None)
     e.update(pkgs=pkgs, tmp=tmp_path, gslog=log)
@@ -244,8 +253,14 @@ def _as_root(env):
         'done\n'
         '[ "$user" = taos ] || { echo "su: wrong user $user" >&2; exit 1; }\n'
         'exec /bin/sh -c "$cmd" "$@"\n')
+    # Log every su call so a test can see what went through it.
+    su = (bindir / "su").read_text().replace(
+        "#!/bin/sh\n", '#!/bin/sh\necho "$*" >> "%s"\n' % (env["tmp"] / "su.log"), 1)
+    (bindir / "su").write_text(su)
     for n in ("id", "su"):
         os.chmod(bindir / n, 0o755)
+    # As root the script does not create the state dir; the session user owns it.
+    (env["tmp"] / "state").mkdir(exist_ok=True)
 
 
 def test_as_root_the_restart_flag_reaches_the_keyboard_not_su(env):
@@ -290,3 +305,98 @@ def test_keyboard_on_off_says_it_needs_root_when_it_cannot_write(env):
     finally:
         os.chmod(ro, 0o755)
     assert run(env, "keyboard", "on").returncode == 0  # control: a writable dir works
+
+
+def test_theme_json_keyboard_path_with_a_newline_is_rejected(env):
+    """The validated paths come back line by line: a newline in one smuggled a
+    second path past the ".." check."""
+    d = make_theme(env["pkgs"], "smuggle")
+    (env["pkgs"] / "canary.css").write_text("/* canary */\n")
+    meta = json.loads((d / "theme.json").read_text())
+    meta["keyboard"]["metrics"] = "keyboard/metrics.css\n../canary.css"
+    (d / "theme.json").write_text(json.dumps(meta))
+    r = run(env, "resolve-theme", "smuggle", "dark")
+    assert r.returncode == 3, r.stderr
+    assert "unsafe keyboard path" in r.stderr
+    assert r.stdout.splitlines()[0] == "taos-default dark"
+    assert "canary" not in r.stdout
+    # Control: the same package with a clean path is applied.
+    meta["keyboard"]["metrics"] = "keyboard/metrics.css"
+    (d / "theme.json").write_text(json.dumps(meta))
+    r = run(env, "resolve-theme", "smuggle", "dark")
+    assert r.returncode == 0 and r.stdout.splitlines()[0] == "smuggle dark", r.stderr
+
+
+def test_a_css_path_naming_a_directory_is_rejected(env):
+    d = make_theme(env["pkgs"], "dirvariant", skip=("light",))
+    (d / "keyboard" / "light.css").mkdir()
+    r = run(env, "resolve-theme", "dirvariant", "light")
+    assert r.returncode == 3, r.stderr
+    assert "light.css" in r.stderr
+    assert r.stdout.splitlines()[0] == "taos-default dark"
+    # Control: the dark variant of the same package is a regular file.
+    assert run(env, "resolve-theme", "dirvariant", "dark").returncode == 0
+
+
+def test_as_root_the_state_file_is_written_through_su(env):
+    """Root must not write into the session-user-owned state dir itself: the
+    write and the rename go through su. This cannot prove file ownership (the
+    stub su runs as the test user); it proves the route."""
+    _as_root(env)
+    sulog = env["tmp"] / "su.log"
+    r = run(env, "theme", "taos-default", "light")
+    assert r.returncode == 0, r.stderr
+    assert state(env) == "taos-default light\n"
+    hits = [l for l in sulog.read_text().splitlines()
+            if str(env["tmp"] / "state") in l and "taos-default light" in l]
+    assert hits, sulog.read_text()
+    # Control: a non-root run writes the same file without any su call.
+    sulog.unlink()
+    (env["tmp"] / "bin" / "id").unlink()
+    (env["tmp"] / "bin" / "su").unlink()
+    r = run(env, "theme", "taos-default", "dark")
+    assert r.returncode == 0 and state(env) == "taos-default dark\n"
+    assert not sulog.exists()
+
+
+def test_as_root_a_missing_state_dir_fails_before_the_keyboard_is_touched(env):
+    _as_root(env)
+    marker = env["tmp"] / "restarted"
+    kb = env["tmp"] / "fake-keyboard"
+    kb.write_text('#!/bin/sh\necho "$*" > "%s"\n' % marker)
+    os.chmod(kb, 0o755)
+    assert run(env, "keyboard", "on").returncode == 0
+    (env["tmp"] / "state").rmdir()
+    r = run(env, "theme", "taos-default", "light", TAOS_KIOSK_KEYBOARD=str(kb))
+    assert r.returncode == 1 and "state dir" in r.stderr, r.stderr
+    assert not marker.exists() and state(env) is None
+    # Control: with the dir present the same call succeeds and restarts.
+    (env["tmp"] / "state").mkdir()
+    r = run(env, "theme", "taos-default", "light", TAOS_KIOSK_KEYBOARD=str(kb))
+    assert r.returncode == 0, r.stderr
+    assert marker.exists()
+
+
+def test_keyboard_on_refuses_when_the_wrapper_is_missing(env):
+    dropin = env["tmp"] / "sway.d" / "50-keyboard.conf"
+    r = run(env, "keyboard", "on", TAOS_KIOSK_KEYBOARD=str(env["tmp"] / "absent"))
+    assert r.returncode == 1 and "--keyboard" in r.stderr and "wrapper" in r.stderr, r.stderr
+    assert not dropin.exists()
+    assert not env["gslog"].exists()
+    # Control: with the wrapper present it succeeds.
+    assert run(env, "keyboard", "on").returncode == 0 and dropin.exists()
+
+
+def test_keyboard_on_refuses_when_no_squeekboard_exists(env):
+    dropin = env["tmp"] / "sway.d" / "50-keyboard.conf"
+    empty = env["tmp"] / "empty"
+    empty.mkdir()
+    r = run(env, "keyboard", "on", TAOS_KEYBOARD_BIN_DIRS=str(empty))
+    assert r.returncode == 1 and "squeekboard" in r.stderr and "--keyboard" in r.stderr, r.stderr
+    assert not dropin.exists()
+    assert not env["gslog"].exists()
+    # `off` needs neither.
+    assert run(env, "keyboard", "off", TAOS_KEYBOARD_BIN_DIRS=str(empty),
+               TAOS_KIOSK_KEYBOARD=str(env["tmp"] / "absent")).returncode == 0
+    # Control: with a squeekboard in the list it succeeds.
+    assert run(env, "keyboard", "on").returncode == 0 and dropin.exists()

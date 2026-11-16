@@ -216,3 +216,88 @@ def test_no_runtime_dir_variable_falls_back_to_the_users_own(env):
     assert "/run/user/987654" in r.stderr and "unset" not in r.stderr, r.stderr
     assert not out.exists()
     assert start(e).returncode == 0  # control: with the variable it starts
+
+
+def _default_bin_dirs(path):
+    m = re.search(r'TAOS_KEYBOARD_BIN_DIRS:-([^}]*)\}', path.read_text())
+    assert m, path
+    return m.group(1)
+
+
+def test_both_scripts_probe_the_same_default_squeekboard_dirs():
+    a = _default_bin_dirs(WRAPPER)
+    assert a == _default_bin_dirs(BIN / "taos-session")
+    # Control: the extractor reads a real, non-empty list.
+    assert a.split() and all(d.startswith("/") for d in a.split())
+
+
+def test_installer_installs_the_wrapper_unconditionally():
+    lines = (ROOT / "session" / "install-session.sh").read_text().splitlines()
+    wrapper = [i for i, l in enumerate(lines)
+               if re.match(r"install -m 755 .*bin/taos-kiosk-keyboard\b", l)]
+    assert len(wrapper) == 1, "wrapper install is missing or indented inside a block"
+    # Control: the squeekboard package install is still inside the guard.
+    pkg = [i for i, l in enumerate(lines) if re.match(r"\s+pkg_install squeekboard\b", l)]
+    assert len(pkg) == 1
+
+
+def _spawn(e, extra=None):
+    ee = {k: v for k, v in e.items() if k != "_extra"}
+    return subprocess.Popen([str(WRAPPER)], env=ee)
+
+
+def _alive_stubs(pids_file):
+    alive = []
+    for tok in pids_file.read_text().split():
+        # A killed child of the test is a zombie until reaped: not alive.
+        try:
+            state = pathlib.Path("/proc/%s/stat" % tok).read_text().rsplit(")", 1)[1].split()[0]
+        except FileNotFoundError:
+            continue
+        if state != "Z":
+            alive.append(int(tok))
+    return alive
+
+
+def test_two_simultaneous_starts_leave_exactly_one_recorded_keyboard(env):
+    e, tmp, out = env
+    pids = tmp / "pids"
+    (tmp / "sqbin" / "squeekboard").write_text(
+        '#!/bin/sh\necho "$$" >> "%s"\nwhile :; do sleep 1; done\n' % pids)
+    pidfile = pathlib.Path(e["XDG_RUNTIME_DIR"]) / "taos-keyboard.pid"
+    procs = [_spawn(e), _spawn(e)]
+    try:
+        for _ in range(100):
+            if pids.exists() and len(pids.read_text().split()) >= 2:
+                break
+            time.sleep(0.1)
+        time.sleep(1)
+        alive = _alive_stubs(pids)
+        assert len(alive) == 1, alive
+        assert pidfile.read_text().strip() == str(alive[0])
+        assert not (pathlib.Path(e["XDG_RUNTIME_DIR"]) / "taos-keyboard.lock").exists()
+    finally:
+        for p in procs:
+            p.kill()
+        if pids.exists():
+            for tok in pids.read_text().split():
+                try:
+                    os.kill(int(tok), 9)
+                except ProcessLookupError:
+                    pass
+
+
+def test_a_stale_lock_does_not_hang_the_wrapper(env):
+    e, tmp, out = env
+    lock = pathlib.Path(e["XDG_RUNTIME_DIR"]) / "taos-keyboard.lock"
+    lock.mkdir()
+    t0 = time.time()
+    r = start(e)
+    assert r.returncode == 0, r.stderr
+    assert time.time() - t0 < 15
+    assert out.exists() and not lock.exists()
+    # Control: with no stale lock it starts at once.
+    out.unlink()
+    t0 = time.time()
+    assert start(e).returncode == 0 and out.exists()
+    assert time.time() - t0 < 4
