@@ -288,6 +288,8 @@ def test_two_simultaneous_starts_leave_exactly_one_recorded_keyboard(env):
 
 
 def test_a_stale_lock_does_not_hang_the_wrapper(env):
+    """A lock whose owner is gone is taken over: one with no owner recorded
+    after a second, and one naming a pid that is not running."""
     e, tmp, out = env
     lock = pathlib.Path(e["XDG_RUNTIME_DIR"]) / "taos-keyboard.lock"
     lock.mkdir()
@@ -296,8 +298,42 @@ def test_a_stale_lock_does_not_hang_the_wrapper(env):
     assert r.returncode == 0, r.stderr
     assert time.time() - t0 < 15
     assert out.exists() and not lock.exists()
-    # Control: with no stale lock it starts at once.
+    out.unlink()
+    lock.mkdir()
+    dead = subprocess.Popen(["true"])
+    dead.wait()
+    (lock / "pid").write_text("%d\n" % dead.pid)
+    t0 = time.time()
+    r = start(e)
+    assert r.returncode == 0, r.stderr
+    assert time.time() - t0 < 10
+    assert out.exists() and not lock.exists()
+    # Control: with no lock at all it starts at once.
     out.unlink()
     t0 = time.time()
     assert start(e).returncode == 0 and out.exists()
     assert time.time() - t0 < 4
+
+
+def test_a_lock_held_by_a_live_process_is_never_taken_over(env):
+    """Taking a lock over on elapsed time alone let two starts into the
+    section, and let the first remove the second's lock on its way out."""
+    e, tmp, out = env
+    lock = pathlib.Path(e["XDG_RUNTIME_DIR"]) / "taos-keyboard.lock"
+    lock.mkdir()
+    holder = subprocess.Popen(["sleep", "30"])
+    try:
+        (lock / "pid").write_text("%d\n" % holder.pid)
+        p = subprocess.Popen([str(WRAPPER)], env={k: v for k, v in e.items() if k != "_extra"},
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        time.sleep(7)   # longer than the old 5 s takeover
+        assert p.poll() is None, "the wrapper did not wait for the live holder"
+        assert not out.exists(), "squeekboard was started while another start held the lock"
+        assert (lock / "pid").read_text() == "%d\n" % holder.pid
+        # Control: once the holder is gone the waiting start goes through.
+        holder.kill(); holder.wait()
+        p.wait(timeout=15)
+        assert p.returncode == 0 and out.exists() and not lock.exists()
+    finally:
+        if holder.poll() is None:
+            holder.kill()

@@ -110,23 +110,61 @@ MCSS="$(printf '%s\n' "$RES" | sed -n 3p)"
 
 # Two instances started together would both read the old pid before either
 # wrote the pidfile, leaving one keyboard running and unrecorded. Serialize
-# stop_old + pidfile write with an atomic mkdir lock. Waits up to ~5s; if the
-# lock is still held then, it is treated as stale and taken over (no age
-# check). Released before exec, so squeekboard inherits nothing from it.
+# stop_old + pidfile write with an atomic mkdir lock that records its owner.
+# A lock is taken over only when its owner is no longer running (or never
+# recorded itself within a second); a live holder is waited for, up to 30 s,
+# and then this start gives up rather than enter the section unlocked.
+# Released before exec, so squeekboard inherits nothing from it.
 LOCK="$XDG_RUNTIME_DIR/taos-keyboard.lock"
 LOCKED=0
-unlock() { [ "$LOCKED" = 1 ] && rmdir "$LOCK" 2>/dev/null; LOCKED=0; return 0; }
+unlock() {
+    if [ "$LOCKED" = 1 ]; then
+        _o=""
+        read -r _o < "$LOCK/pid" 2>/dev/null || true
+        # Only our own lock: a later holder's must not be removed.
+        if [ "$_o" = "$$" ]; then
+            rm -f "$LOCK/pid"
+            rmdir "$LOCK" 2>/dev/null || true
+        fi
+    fi
+    LOCKED=0
+    return 0
+}
 _i=0
-until mkdir "$LOCK" 2>/dev/null; do
-    if [ "$_i" -ge 50 ]; then
-        rmdir "$LOCK" 2>/dev/null || true
-        mkdir "$LOCK" 2>/dev/null || true
+_nopid=0
+while :; do
+    if mkdir "$LOCK" 2>/dev/null; then
+        echo "$$" > "$LOCK/pid"
+        LOCKED=1
         break
+    fi
+    _h=""
+    read -r _h < "$LOCK/pid" 2>/dev/null || true
+    case "$_h" in
+        ''|*[!0-9]*)
+            # No owner recorded yet: either it is between mkdir and the write,
+            # or it died there. Give it a second before calling it dead.
+            _nopid=$((_nopid + 1))
+            if [ "$_nopid" -ge 10 ]; then
+                rm -f "$LOCK/pid"; rmdir "$LOCK" 2>/dev/null || true
+                _nopid=0
+            fi
+            ;;
+        *)
+            _nopid=0
+            if ! kill -0 "$_h" 2>/dev/null; then
+                rm -f "$LOCK/pid"; rmdir "$LOCK" 2>/dev/null || true
+                continue
+            fi
+            ;;
+    esac
+    if [ "$_i" -ge 300 ]; then
+        echo "taos-kiosk-keyboard: another start (pid ${_h:-unknown}) still holds $LOCK after 30 s, giving up" >&2
+        exit 1
     fi
     sleep 0.1 2>/dev/null || sleep 1
     _i=$((_i + 1))
 done
-LOCKED=1
 trap unlock EXIT
 trap 'exit 1' INT TERM HUP
 

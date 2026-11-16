@@ -33,6 +33,18 @@ def make_theme(base, tid, variants=("dark", "light"), skip=(), listed=None):
     return d
 
 
+def _nonroot_id(bindir):
+    """The suite must behave the same whoever runs it: `id -u` always answers a
+    non-root uid unless a test installs the root stub (see _as_root)."""
+    (bindir / "id").write_text(
+        '#!/bin/sh\n'
+        'case "$*" in\n'
+        '  "-u") echo 54321 ;;\n'
+        '  *) exec /usr/bin/id "$@" ;;\n'
+        'esac\n')
+    os.chmod(bindir / "id", 0o755)
+
+
 @pytest.fixture()
 def env(tmp_path):
     bindir = tmp_path / "bin"
@@ -50,6 +62,7 @@ def env(tmp_path):
         '  get) cat "%s/$3" 2>/dev/null || echo false ;;\n'
         'esac\n' % (log, store, store))
     os.chmod(bindir / "gsettings", 0o755)
+    _nonroot_id(bindir)
     # A keyboard wrapper and a squeekboard binary that `keyboard on` can find.
     wrapper = tmp_path / "taos-kiosk-keyboard"
     wrapper.write_text("#!/bin/sh\nexit 0\n")
@@ -300,6 +313,10 @@ def test_keyboard_on_off_says_it_needs_root_when_it_cannot_write(env):
     ro.mkdir()
     os.chmod(ro, 0o555)
     try:
+        if os.access(ro, os.W_OK):
+            # root, or CAP_DAC_OVERRIDE: mode 0555 stops nothing, so there is
+            # no unwritable directory to refuse.
+            pytest.skip("this runner can write a 0555 directory")
         r = run(env, "keyboard", "on", TAOS_SWAY_DROPIN_DIR=str(ro / "sway.d"))
         assert r.returncode == 1 and "must run as root" in r.stderr, r.stderr
     finally:
@@ -352,7 +369,7 @@ def test_as_root_the_state_file_is_written_through_su(env):
     assert hits, sulog.read_text()
     # Control: a non-root run writes the same file without any su call.
     sulog.unlink()
-    (env["tmp"] / "bin" / "id").unlink()
+    _nonroot_id(env["tmp"] / "bin")
     (env["tmp"] / "bin" / "su").unlink()
     r = run(env, "theme", "taos-default", "dark")
     assert r.returncode == 0 and state(env) == "taos-default dark\n"
