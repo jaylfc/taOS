@@ -1,0 +1,13 @@
+Package: taos-shell
+Version: 0.1.0
+Architecture: all
+Maintainer: jaylfc <jaylfc25@gmail.com>
+Priority: optional
+Section: shells
+Depends: zsh, zsh-autosuggestions, zsh-syntax-highlighting, starship, fastfetch, fzf, zoxide, eza, bat, ripgrep, fd-find, btop
+Description: taOS terminal experience: zsh, starship prompt, fastfetch, login motd
+ A colourful zsh setup for every user out of the box: shared history,
+ completion, autosuggestions, syntax highlighting, fzf and zoxide, modern
+ ls/cat aliases, a starship prompt that needs no Nerd Font, a fastfetch
+ config with the taOS logo, and a login motd with a gradient taOS logo and a
+ short system summary. Nothing here edits another package's conffiles.

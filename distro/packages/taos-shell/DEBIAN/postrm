@@ -1,0 +1,4 @@
+#!/bin/sh
+set -e
+# Nothing to undo: no diversions and no edits to other packages' files.
+exit 0

@@ -1,0 +1,72 @@
+# taOS zsh configuration. Sourced from /etc/skel/.zshrc; edit your own
+# ~/.zshrc for personal changes, this file is replaced on package upgrades.
+# Every external tool is guarded so a missing one never breaks the shell.
+
+# --- history: big, shared between sessions, deduplicated -------------------
+HISTFILE="${HISTFILE:-$HOME/.zsh_history}"
+HISTSIZE=100000
+SAVEHIST=100000
+setopt SHARE_HISTORY INC_APPEND_HISTORY EXTENDED_HISTORY
+setopt HIST_IGNORE_ALL_DUPS HIST_IGNORE_SPACE HIST_REDUCE_BLANKS HIST_SAVE_NO_DUPS
+
+# --- shell behaviour --------------------------------------------------------
+setopt AUTO_CD INTERACTIVE_COMMENTS NO_BEEP PROMPT_SUBST
+bindkey -e   # emacs keys
+
+# --- completion: menu select, case-insensitive ------------------------------
+autoload -Uz compinit
+mkdir -p "${XDG_CACHE_HOME:-$HOME/.cache}/zsh" 2>/dev/null
+compinit -d "${XDG_CACHE_HOME:-$HOME/.cache}/zsh/zcompdump"
+zstyle ':completion:*' menu select
+zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}' 'r:|[._-]=* r:|=*' 'l:|=* r:|=*'
+zstyle ':completion:*' list-colors "${(s.:.)LS_COLORS}"
+zstyle ':completion:*' group-name ''
+zstyle ':completion:*:descriptions' format '%F{141}-- %d --%f'
+
+# --- up/down: search history for what is already typed ----------------------
+autoload -Uz up-line-or-beginning-search down-line-or-beginning-search
+zle -N up-line-or-beginning-search
+zle -N down-line-or-beginning-search
+bindkey '^[[A' up-line-or-beginning-search
+bindkey '^[OA' up-line-or-beginning-search
+bindkey '^[[B' down-line-or-beginning-search
+bindkey '^[OB' down-line-or-beginning-search
+
+# --- fzf: Ctrl-R history, Ctrl-T files, Alt-C directories ------------------
+if command -v fzf >/dev/null 2>&1; then
+    [ -f /usr/share/doc/fzf/examples/key-bindings.zsh ] && . /usr/share/doc/fzf/examples/key-bindings.zsh
+    [ -f /usr/share/doc/fzf/examples/completion.zsh ] && . /usr/share/doc/fzf/examples/completion.zsh
+    export FZF_DEFAULT_OPTS="${FZF_DEFAULT_OPTS:---height 40% --layout=reverse --border --color=fg+:#22d3ee,hl:#a78bfa,hl+:#f472b6,pointer:#f472b6,prompt:#a78bfa,info:#22d3ee}"
+fi
+
+# --- zoxide: smarter cd ------------------------------------------------------
+if command -v zoxide >/dev/null 2>&1; then
+    eval "$(zoxide init zsh)"
+fi
+
+# --- aliases -----------------------------------------------------------------
+if command -v eza >/dev/null 2>&1; then
+    alias ls='eza --icons=never --group-directories-first'
+    alias ll='eza -l --icons=never --group-directories-first --git'
+    alias la='eza -la --icons=never --group-directories-first --git'
+    alias lt='eza --tree --level=2 --icons=never --group-directories-first'
+fi
+command -v batcat >/dev/null 2>&1 && alias cat='batcat --paging=never'
+command -v fdfind >/dev/null 2>&1 && alias fd='fdfind'
+alias grep='grep --color=auto'
+command -v fastfetch >/dev/null 2>&1 && alias fetch='fastfetch'
+
+# --- autosuggestions and syntax highlighting ---------------------------------
+if [ -f /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh ]; then
+    . /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh
+    ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=244'
+fi
+if [ -f /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ]; then
+    . /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+fi
+
+# --- prompt: starship, taOS palette ------------------------------------------
+if command -v starship >/dev/null 2>&1; then
+    export STARSHIP_CONFIG=${STARSHIP_CONFIG:-/etc/taos/starship.toml}
+    eval "$(starship init zsh)"
+fi
