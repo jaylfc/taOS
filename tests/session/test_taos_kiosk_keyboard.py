@@ -206,3 +206,22 @@ def test_restart_asks_sway_to_start_it_when_a_compositor_is_there(env):
             break
         time.sleep(0.1)
     assert out.exists()
+
+
+def test_no_runtime_dir_variable_falls_back_to_the_users_own(env):
+    """The controller service calls this with no XDG_RUNTIME_DIR. It must use
+    /run/user/<uid>, and when that does not exist say which dir is missing
+    rather than die on the unset variable. `id` is stubbed so the test never
+    touches the real runtime dir of whoever runs it."""
+    e, tmp, out = env
+    stub = tmp / "idbin"
+    stub.mkdir()
+    (stub / "id").write_text('#!/bin/sh\necho 987654\n')
+    os.chmod(stub / "id", 0o755)
+    e2 = {k: v for k, v in e.items() if k != "XDG_RUNTIME_DIR"}
+    e2["PATH"] = "%s:%s" % (stub, e["PATH"])
+    r = start(e2)
+    assert r.returncode == 1, r.stderr
+    assert "/run/user/987654" in r.stderr and "unset" not in r.stderr, r.stderr
+    assert not out.exists()
+    assert start(e).returncode == 0  # control: with the variable it starts

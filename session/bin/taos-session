@@ -10,7 +10,8 @@
 # keyboard wrapper calls it instead of repeating the rules. It prints three
 # lines: "<id> <variant>", the variant css path, the metrics css path. With no
 # arguments it reads the persisted choice. Exit 0 = as asked, 3 = fell back to
-# taos-default dark (with a warning on stderr), 1 = nothing usable.
+# taos-default dark (with a warning on stderr), 1 = nothing usable. `theme`
+# also exits 4 when the theme was recorded but the keyboard did not restart.
 #
 # A theme is applied whole or not at all: a package that lists a variant but
 # lacks one of its files is rejected and the fallback is applied instead.
@@ -49,6 +50,16 @@ as_user() {
             'export XDG_RUNTIME_DIR="$1" DBUS_SESSION_BUS_ADDRESS="unix:path=$1/bus"; shift; exec "$@"' \
             taos-session "$_rd" "$@"
     else
+        # Already the session user, possibly from outside the session (the
+        # controller service has neither variable): point at the user's own bus.
+        if [ -z "${XDG_RUNTIME_DIR:-}" ] && [ -d "/run/user/$(id -u)" ]; then
+            XDG_RUNTIME_DIR="/run/user/$(id -u)"
+            export XDG_RUNTIME_DIR
+        fi
+        if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && [ -S "${XDG_RUNTIME_DIR:-/nonexistent}/bus" ]; then
+            DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+            export DBUS_SESSION_BUS_ADDRESS
+        fi
         "$@"
     fi
 }
@@ -167,7 +178,12 @@ cmd_theme() {
     # The keyboard reads its css only at start. Restart it only on a device
     # that opted in; a theme change must not switch a keyboard on.
     if [ -f "$DROPIN" ] && [ -x "$KEYBOARD_BIN" ]; then
-        as_user "$KEYBOARD_BIN" --restart || echo "taos-session: keyboard restart failed (not in a session?)" >&2
+        # A recorded theme the keyboard is not showing is a half-applied
+        # theme: say so and fail, never exit 0.
+        as_user "$KEYBOARD_BIN" --restart || {
+            echo "taos-session: theme recorded but the keyboard restart FAILED; it still shows the previous theme" >&2
+            exit 4
+        }
     fi
     [ "$R_FELL" = 0 ] || exit 3
 }
@@ -185,6 +201,11 @@ set_keyboard_gsetting() {
 
 cmd_keyboard() {
     [ "$#" -eq 1 ] || usage
+    # The drop-in lives in /etc: this subcommand needs root (or whoever owns
+    # the drop-in directory). Say so instead of dying on a bare mkdir or rm.
+    _w="$DROPIN_DIR"
+    [ -d "$_w" ] || _w="$(dirname "$DROPIN_DIR")"
+    [ -w "$_w" ] || { echo "taos-session: cannot write $DROPIN_DIR (keyboard on|off must run as root)" >&2; exit 1; }
     case "$1" in
         on)
             set_keyboard_gsetting true

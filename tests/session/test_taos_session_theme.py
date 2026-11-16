@@ -262,3 +262,31 @@ def test_as_root_the_restart_flag_reaches_the_keyboard_not_su(env):
     assert "unrecognized option" not in r.stderr, r.stderr
     assert "keyboard restart failed" not in r.stderr, r.stderr
     assert marker.exists() and marker.read_text() == "--restart\n"
+
+
+def test_a_failed_keyboard_restart_is_never_exit_0(env):
+    """Measured on the handset: called as the session user from outside the
+    session, the restart failed, the state file said light, the keyboard stayed
+    dark, and the command exited 0."""
+    kb = env["tmp"] / "fake-keyboard"
+    kb.write_text('#!/bin/sh\nexit 1\n')
+    os.chmod(kb, 0o755)
+    assert run(env, "keyboard", "on").returncode == 0
+    r = run(env, "theme", "taos-default", "light", TAOS_KIOSK_KEYBOARD=str(kb))
+    assert r.returncode == 4, (r.returncode, r.stderr)
+    assert "restart FAILED" in r.stderr
+    # Control: the same call with a keyboard that restarts is exit 0.
+    kb.write_text('#!/bin/sh\nexit 0\n')
+    assert run(env, "theme", "taos-default", "light", TAOS_KIOSK_KEYBOARD=str(kb)).returncode == 0
+
+
+def test_keyboard_on_off_says_it_needs_root_when_it_cannot_write(env):
+    ro = env["tmp"] / "ro"
+    ro.mkdir()
+    os.chmod(ro, 0o555)
+    try:
+        r = run(env, "keyboard", "on", TAOS_SWAY_DROPIN_DIR=str(ro / "sway.d"))
+        assert r.returncode == 1 and "must run as root" in r.stderr, r.stderr
+    finally:
+        os.chmod(ro, 0o755)
+    assert run(env, "keyboard", "on").returncode == 0  # control: a writable dir works

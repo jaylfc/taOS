@@ -20,7 +20,13 @@ case "${1:-}" in
 esac
 [ "$#" -le 1 ] || usage
 
-: "${XDG_RUNTIME_DIR:?taos-kiosk-keyboard: XDG_RUNTIME_DIR unset}"
+# A caller outside the session (the controller service, a root shell) has no
+# XDG_RUNTIME_DIR; the session user's is always /run/user/<uid>.
+if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
+    XDG_RUNTIME_DIR="/run/user/$(id -u)"
+    export XDG_RUNTIME_DIR
+fi
+[ -d "$XDG_RUNTIME_DIR" ] || { echo "taos-kiosk-keyboard: no runtime dir $XDG_RUNTIME_DIR (no session for this user?)" >&2; exit 1; }
 SELF="$0"
 PIDFILE="$XDG_RUNTIME_DIR/taos-keyboard.pid"
 KDIR="$XDG_RUNTIME_DIR/taos-keyboard"
