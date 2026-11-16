@@ -1,0 +1,1 @@
+- Desktop distro step 3: `taos-gpu` package; the display GPU follows a policy (integrated by default, switchable with `taos-gpu set-display`) and NVIDIA cards stay compute only.

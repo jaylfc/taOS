@@ -1,0 +1,20 @@
+#!/bin/sh
+set -e
+case "$1" in
+    remove|purge)
+        rm -f /etc/udev/rules.d/61-taos-display-gpu.rules \
+              /etc/taos/session.env.d/10-gpu.env \
+              /etc/modprobe.d/taos-gpu.conf
+        if [ "$1" = purge ]; then
+            rm -f /etc/taos/gpu.conf
+        fi
+        if command -v udevadm >/dev/null 2>&1; then
+            udevadm control --reload >/dev/null 2>&1 || true
+            udevadm trigger --subsystem-match=drm >/dev/null 2>&1 || true
+        fi
+        if command -v update-initramfs >/dev/null 2>&1; then
+            update-initramfs -u >/dev/null 2>&1 || true
+        fi
+        ;;
+esac
+exit 0

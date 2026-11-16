@@ -45,3 +45,19 @@ set_key() { # file key value
 }
 set_key /etc/adduser.conf DSHELL "$zsh_bin"
 set_key /etc/default/useradd SHELL "$zsh_bin"
+
+# Step 3: display GPU (taos-gpu). NVIDIA cards stay compute only by default.
+apt-get install -y --reinstall "$here"/dist/taos-gpu_*_all.deb
+if [ -n "${TAOS_DISPLAY_GPU:-}" ]; then
+    taos-gpu set-display "$TAOS_DISPLAY_GPU"
+elif [ -t 0 ] && [ "$(taos-gpu list | wc -l)" -gt 1 ] \
+        && taos-gpu status | grep -q '^policy: auto$'; then
+    taos-gpu list
+    printf 'Display GPU [auto]: '
+    ans=""
+    read -r ans || ans=""
+    if [ -n "$ans" ] && [ "$ans" != auto ]; then
+        taos-gpu set-display "$ans" || echo "setup.sh: keeping display GPU on auto" >&2
+    fi
+fi
+taos-gpu status

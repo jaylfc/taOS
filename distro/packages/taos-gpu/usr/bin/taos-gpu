@@ -1,0 +1,316 @@
+#!/bin/sh
+# taos-gpu: choose which GPU drives the display; NVIDIA cards stay compute only
+# by default. POSIX sh, reads sysfs only. Roots are overridable for tests:
+#   SYSFS_ROOT (default /sys), ETC_ROOT (default /etc),
+#   TAOS_GPU_NO_APPLY=1 skips udevadm and update-initramfs.
+#
+# Kind rule: "integrated" = vendor Intel, or AMD with boot_vga=1 on PCI bus 00;
+# everything else is "discrete". Compute-only = every GPU except the display GPU.
+set -eu
+
+SYSFS_ROOT=${SYSFS_ROOT:-/sys}
+if [ -n "${ETC_ROOT:-}" ]; then
+    TEST_MODE=1
+else
+    TEST_MODE=0
+    ETC_ROOT=/etc
+fi
+CONF="$ETC_ROOT/taos/gpu.conf"
+
+usage() {
+    cat <<USAGE
+Usage: taos-gpu <command>
+  list [--json]            list GPUs and mark the display GPU
+  status [--json]          show the policy, display GPU and compute-only GPUs
+  set-display <auto|PCI>   choose the display GPU (PCI address from 'list'), then apply
+  apply                    regenerate udev rule, session env and modprobe config
+  --help                   show this help
+Changes take effect after a reboot.
+USAGE
+}
+
+die() { echo "taos-gpu: $1" >&2; exit "${2:-1}"; }
+
+need_root() {
+    if [ "$TEST_MODE" -eq 0 ] && [ "$(id -u)" -ne 0 ]; then
+        die "must be run as root" 1
+    fi
+}
+
+nl='
+'
+GPUS=""
+DISP=""
+CHANGED=0
+
+# Fill GPUS with one record per GPU: pci|vendor|driver|kind|boot|connectors(comma)
+scan() {
+    GPUS=""
+    for d in "$SYSFS_ROOT"/class/drm/card[0-9]*; do
+        [ -e "$d" ] || continue
+        name=${d##*/}
+        case "$name" in *-*) continue ;; esac
+        dev="$d/device"
+        [ -e "$dev" ] || continue
+        pci=$(basename "$(readlink -f "$dev")")
+        case "$GPUS" in *"$pci|"*) continue ;; esac
+        vid=$(cat "$dev/vendor" 2>/dev/null || echo unknown)
+        case "$vid" in
+            0x8086) ven=Intel ;;
+            0x1002) ven=AMD ;;
+            0x10de) ven=NVIDIA ;;
+            *) ven=$vid ;;
+        esac
+        drv=none
+        if [ -L "$dev/driver" ]; then
+            drv=$(basename "$(readlink "$dev/driver")")
+        fi
+        boot=$(cat "$dev/boot_vga" 2>/dev/null || echo 0)
+        [ "$boot" = 1 ] || boot=0
+        kind=discrete
+        if [ "$ven" = Intel ]; then
+            kind=integrated
+        elif [ "$ven" = AMD ] && [ "$boot" = 1 ]; then
+            case "$pci" in ????:00:*) kind=integrated ;; esac
+        fi
+        # Connectors live beside the card in class/drm, or inside it.
+        conn=""
+        for c in "$SYSFS_ROOT"/class/drm/"$name"-* "$d/$name"-*; do
+            [ -e "$c" ] || continue
+            [ "$(cat "$c/status" 2>/dev/null)" = connected ] || continue
+            cn=${c##*/}
+            cn=${cn#"$name"-}
+            case ",$conn," in *",$cn,"*) continue ;; esac
+            conn="${conn:+$conn,}$cn"
+        done
+        GPUS="$GPUS$pci|$ven|$drv|$kind|$boot|$conn$nl"
+    done
+}
+
+# Read DISPLAY_GPU from gpu.conf without sourcing it.
+policy() {
+    p=""
+    if [ -r "$CONF" ]; then
+        p=$(sed -n 's/^DISPLAY_GPU=//p' "$CONF" | tail -n 1)
+    fi
+    echo "${p:-auto}"
+}
+
+# Set DISP to the resolved display GPU PCI address (empty when no GPUs).
+resolve() {
+    DISP=""
+    [ -n "$GPUS" ] || return 0
+    pol=$(policy)
+    if [ "$pol" != auto ]; then
+        while IFS='|' read -r pci ven drv kind boot conn; do
+            [ -n "$pci" ] || continue
+            if [ "$pci" = "$pol" ]; then DISP=$pci; return 0; fi
+        done <<EOF
+$GPUS
+EOF
+        echo "taos-gpu: configured GPU $pol not found, using auto" >&2
+    fi
+    # auto: (1) integrated with a connected connector, (2) any integrated,
+    # (3) boot_vga GPU, (4) first GPU. Never a discrete card while an
+    # integrated one exists.
+    for rule in 1 2 3 4; do
+        while IFS='|' read -r pci ven drv kind boot conn; do
+            [ -n "$pci" ] || continue
+            case $rule in
+                1) [ "$kind" = integrated ] && [ -n "$conn" ] || continue ;;
+                2) [ "$kind" = integrated ] || continue ;;
+                3) [ "$boot" = 1 ] || continue ;;
+            esac
+            DISP=$pci
+            return 0
+        done <<EOF
+$GPUS
+EOF
+    done
+}
+
+vendor_of() { # pci -> vendor name
+    while IFS='|' read -r pci ven drv kind boot conn; do
+        if [ "$pci" = "$1" ]; then echo "$ven"; return 0; fi
+    done <<EOF
+$GPUS
+EOF
+}
+
+json_arr() { # comma list -> JSON array of strings
+    out=""
+    oldifs=$IFS
+    IFS=,
+    for item in $1; do
+        out="${out:+$out, }\"$item\""
+    done
+    IFS=$oldifs
+    printf '[%s]' "$out"
+}
+
+cmd_list() {
+    json=0
+    [ "${1:-}" = "--json" ] && json=1
+    scan
+    resolve
+    if [ "$json" -eq 1 ]; then
+        printf '['
+        sep=""
+        while IFS='|' read -r pci ven drv kind boot conn; do
+            [ -n "$pci" ] || continue
+            b=false; [ "$boot" = 1 ] && b=true
+            d=false; [ "$pci" = "$DISP" ] && d=true
+            printf '%s{"pci": "%s", "vendor": "%s", "driver": "%s", "kind": "%s", "boot_vga": %s, "connected": %s, "display": %s}' \
+                "$sep" "$pci" "$ven" "$drv" "$kind" "$b" "$(json_arr "$conn")" "$d"
+            sep=", "
+        done <<EOF
+$GPUS
+EOF
+        printf ']\n'
+        return 0
+    fi
+    while IFS='|' read -r pci ven drv kind boot conn; do
+        [ -n "$pci" ] || continue
+        mark=""
+        [ "$pci" = "$DISP" ] && mark="  [display]"
+        printf '%s  %s  %s  %s  boot_vga=%s  connected=%s%s\n' \
+            "$pci" "$ven" "$drv" "$kind" "$boot" "${conn:--}" "$mark"
+    done <<EOF
+$GPUS
+EOF
+}
+
+cmd_status() {
+    json=0
+    [ "${1:-}" = "--json" ] && json=1
+    scan
+    resolve
+    pol=$(policy)
+    comp=""
+    while IFS='|' read -r pci ven drv kind boot conn; do
+        [ -n "$pci" ] || continue
+        [ "$pci" = "$DISP" ] || comp="${comp:+$comp,}$pci"
+    done <<EOF
+$GPUS
+EOF
+    if [ "$json" -eq 1 ]; then
+        if [ -n "$DISP" ]; then dj="\"$DISP\""; else dj=null; fi
+        printf '{"policy": "%s", "display": %s, "compute_only": %s}\n' \
+            "$pol" "$dj" "$(json_arr "$comp")"
+        return 0
+    fi
+    echo "policy: $pol"
+    if [ -n "$DISP" ]; then
+        echo "display: $DISP ($(vendor_of "$DISP"))"
+    else
+        echo "display: none (no GPU found)"
+    fi
+    echo "compute-only: ${comp:-none}" | tr ',' ' '
+}
+
+# write_atomic <path>: stdin -> path via temp + mv. Sets CHANGED=1 if content differs.
+write_atomic() {
+    dest=$1
+    mkdir -p "$(dirname "$dest")"
+    tmp="$dest.tmp.$$"
+    cat > "$tmp"
+    if [ -f "$dest" ] && cmp -s "$tmp" "$dest"; then
+        rm -f "$tmp"
+        CHANGED=0
+    else
+        mv -f "$tmp" "$dest"
+        CHANGED=1
+    fi
+}
+
+cmd_apply() {
+    need_root
+    scan
+    resolve
+    if [ -z "$DISP" ]; then
+        echo "taos-gpu: no GPU found, nothing to configure"
+        return 0
+    fi
+    rules="$ETC_ROOT/udev/rules.d/61-taos-display-gpu.rules"
+    envf="$ETC_ROOT/taos/session.env.d/10-gpu.env"
+    modf="$ETC_ROOT/modprobe.d/taos-gpu.conf"
+
+    write_atomic "$rules" <<EOF
+# Generated by taos-gpu. Do not edit; use 'taos-gpu set-display'.
+SUBSYSTEM=="drm", KERNEL=="card[0-9]*", KERNELS=="$DISP", SYMLINK+="dri/taos-display"
+EOF
+    write_atomic "$envf" <<EOF
+WLR_DRM_DEVICES=/dev/dri/taos-display
+EOF
+    has_nv=0
+    while IFS='|' read -r pci ven drv kind boot conn; do
+        if [ "$ven" = NVIDIA ]; then has_nv=1; fi
+    done <<EOF
+$GPUS
+EOF
+    if [ "$has_nv" -eq 0 ]; then
+        write_atomic "$modf" <<EOF
+# Generated by taos-gpu. No NVIDIA GPU present, nothing to configure.
+EOF
+    elif [ "$(vendor_of "$DISP")" = NVIDIA ]; then
+        write_atomic "$modf" <<EOF
+# Generated by taos-gpu. An NVIDIA GPU drives the display.
+options nvidia-drm modeset=1
+EOF
+    else
+        write_atomic "$modf" <<EOF
+# Generated by taos-gpu. NVIDIA cards are compute only: keep them off the
+# display. The proprietary driver still loads for CUDA.
+blacklist nouveau
+options nouveau modeset=0
+options nvidia-drm modeset=0
+EOF
+    fi
+    mod_changed=$CHANGED
+
+    if [ "${TAOS_GPU_NO_APPLY:-0}" != 1 ]; then
+        if command -v udevadm >/dev/null 2>&1; then
+            udevadm control --reload >/dev/null 2>&1 || true
+            udevadm trigger --subsystem-match=drm >/dev/null 2>&1 || true
+        fi
+        if [ "$mod_changed" -eq 1 ]; then
+            if command -v update-initramfs >/dev/null 2>&1; then
+                update-initramfs -u >/dev/null 2>&1 || true
+            else
+                echo "taos-gpu: no update-initramfs here; rebuild your initramfs if your base needs it"
+            fi
+        fi
+    fi
+    echo "taos-gpu: display GPU is $DISP"
+    if [ "$mod_changed" -eq 1 ]; then echo "taos-gpu: reboot required"; fi
+    return 0
+}
+
+cmd_set_display() {
+    [ $# -eq 1 ] || die "usage: taos-gpu set-display <auto|PCI address>" 2
+    need_root
+    want=$1
+    if [ "$want" != auto ]; then
+        scan
+        ok=0
+        while IFS='|' read -r pci ven drv kind boot conn; do
+            if [ "$pci" = "$want" ]; then ok=1; fi
+        done <<EOF
+$GPUS
+EOF
+        [ "$ok" -eq 1 ] || die "'$want' is not a listed GPU (see 'taos-gpu list')" 2
+    fi
+    printf 'DISPLAY_GPU=%s\n' "$want" | write_atomic "$CONF"
+    cmd_apply
+}
+
+cmd=${1:-}
+[ $# -gt 0 ] && shift
+case "$cmd" in
+    list) cmd_list "$@" ;;
+    status) cmd_status "$@" ;;
+    set-display) cmd_set_display "$@" ;;
+    apply) cmd_apply ;;
+    --help|-h|help) usage ;;
+    *) usage >&2; exit 2 ;;
+esac
