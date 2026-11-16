@@ -1,0 +1,213 @@
+#!/bin/sh
+# taos-session -- per-device session settings: the theme and the system keyboard.
+#
+#   taos-session theme <theme-id> <dark|light>   apply a theme package
+#   taos-session keyboard <on|off>               opt the device in or out of the
+#                                                system on-screen keyboard
+#   taos-session resolve-theme [<id> <variant>]  print what would be applied
+#
+# resolve-theme is the ONE place a theme is looked up and validated; the
+# keyboard wrapper calls it instead of repeating the rules. It prints three
+# lines: "<id> <variant>", the variant css path, the metrics css path. With no
+# arguments it reads the persisted choice. Exit 0 = as asked, 3 = fell back to
+# taos-default dark (with a warning on stderr), 1 = nothing usable.
+#
+# A theme is applied whole or not at all: a package that lists a variant but
+# lacks one of its files is rejected and the fallback is applied instead.
+set -eu
+LC_ALL=C
+export LC_ALL
+
+THEME_PATH="${TAOS_THEME_PATH:-/var/lib/taos/themes:/usr/share/taos/themes}"
+STATE_DIR="${TAOS_SESSION_STATE_DIR:-/var/lib/taos/session}"
+DROPIN_DIR="${TAOS_SWAY_DROPIN_DIR:-/etc/taos/sway.d}"
+DROPIN="$DROPIN_DIR/50-keyboard.conf"
+SESSION_USER="${TAOS_SESSION_USER:-taos}"
+KEYBOARD_BIN="${TAOS_KIOSK_KEYBOARD:-/usr/local/bin/taos-kiosk-keyboard}"
+FB_ID="taos-default"
+FB_VARIANT="dark"
+
+usage() {
+    cat >&2 <<'USAGE'
+usage: taos-session theme <theme-id> <dark|light>
+       taos-session keyboard <on|off>
+       taos-session resolve-theme [<theme-id> <dark|light>]
+USAGE
+    exit 2
+}
+
+# Run a command as the session user. As root, go through su and point it at
+# that user's session bus: without a bus gsettings falls back to an in-memory
+# backend and "succeeds" while storing nothing, which is why callers read back.
+as_user() {
+    if [ "$(id -u)" = 0 ] && [ "$SESSION_USER" != root ] && id "$SESSION_USER" >/dev/null 2>&1; then
+        _rd="/run/user/$(id -u "$SESSION_USER")"
+        # `--` before the user: busybox su permutes its arguments, so without it
+        # an argument such as --restart is read as an option of su itself
+        # ("su: unrecognized option: restart", measured on the handset).
+        su -s /bin/sh -- "$SESSION_USER" -c \
+            'export XDG_RUNTIME_DIR="$1" DBUS_SESSION_BUS_ADDRESS="unix:path=$1/bus"; shift; exec "$@"' \
+            taos-session "$_rd" "$@"
+    else
+        "$@"
+    fi
+}
+
+# try_theme <id> <variant>: 0 and T_CSS/T_METRICS set, or 1 and T_WHY set.
+# Nothing is built from the id until it matches the whitelist.
+try_theme() {
+    T_WHY=""
+    T_CSS=""
+    T_METRICS=""
+    case "$1" in
+        ''|-*|*[!a-z0-9-]*) T_WHY="invalid theme id '$1'"; return 1 ;;
+    esac
+    case "$2" in
+        dark|light) ;;
+        *) T_WHY="invalid variant '$2'"; return 1 ;;
+    esac
+    _dir=""
+    _old_ifs=$IFS
+    IFS=:
+    set -f
+    for _d in $THEME_PATH; do
+        if [ -n "$_d" ] && [ -d "$_d/$1" ]; then
+            _dir="$_d/$1"
+            break
+        fi
+    done
+    IFS=$_old_ifs
+    set +f
+    [ -n "$_dir" ] || { T_WHY="theme '$1' not found in $THEME_PATH"; return 1; }
+    [ -r "$_dir/theme.json" ] || { T_WHY="missing $_dir/theme.json"; return 1; }
+    # python3 is a hard dependency of taOS; a sh JSON parser would be fragile.
+    # Any parse error is reported as an invalid theme, never as a crash.
+    _out="$(python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    v = sys.argv[2]
+    if v not in d["variants"]:
+        print("ERR variant %s is not listed in theme.json" % v)
+        sys.exit(0)
+    k = d["keyboard"]
+    rels = [k["metrics"], k[v]]
+    for r in rels:
+        if (not isinstance(r, str) or not r or r.startswith("/")
+                or ".." in r.split("/")):
+            print("ERR unsafe keyboard path in theme.json")
+            sys.exit(0)
+    print("OK"); print(rels[0]); print(rels[1])
+except Exception as e:
+    print("ERR theme.json invalid (%s)" % type(e).__name__)
+' "$_dir/theme.json" "$2" 2>/dev/null)" || _out="ERR theme.json could not be read"
+    case "$_out" in
+        OK*) ;;
+        *) T_WHY="$_dir: ${_out#ERR }"; return 1 ;;
+    esac
+    _m="$(printf '%s\n' "$_out" | sed -n 2p)"
+    _c="$(printf '%s\n' "$_out" | sed -n 3p)"
+    for _f in "$_dir/$_m" "$_dir/$_c"; do
+        if [ ! -r "$_f" ]; then
+            T_WHY="missing or unreadable $_f"
+            return 1
+        fi
+    done
+    T_METRICS="$_dir/$_m"
+    T_CSS="$_dir/$_c"
+    return 0
+}
+
+# resolve <id> <variant>: sets R_ID R_VARIANT R_CSS R_METRICS R_FELL.
+resolve() {
+    R_FELL=0
+    if try_theme "$1" "$2"; then
+        R_ID=$1; R_VARIANT=$2
+    else
+        echo "taos-session: theme '$1' ($2) not applied: $T_WHY; falling back to $FB_ID $FB_VARIANT" >&2
+        R_FELL=1
+        try_theme "$FB_ID" "$FB_VARIANT" || {
+            echo "taos-session: fallback $FB_ID $FB_VARIANT is also unusable: $T_WHY" >&2
+            exit 1
+        }
+        R_ID=$FB_ID; R_VARIANT=$FB_VARIANT
+    fi
+    R_CSS=$T_CSS
+    R_METRICS=$T_METRICS
+}
+
+cmd_resolve() {
+    if [ "$#" -eq 2 ]; then
+        resolve "$1" "$2"
+    elif [ "$#" -eq 0 ]; then
+        _sid=""; _sv=""
+        if [ -r "$STATE_DIR/theme" ]; then
+            read -r _sid _sv _ < "$STATE_DIR/theme" || true
+            resolve "$_sid" "$_sv"
+        else
+            # Nothing chosen yet: the default is the answer, not a fallback.
+            resolve "$FB_ID" "$FB_VARIANT"
+        fi
+    else
+        usage
+    fi
+    printf '%s %s\n%s\n%s\n' "$R_ID" "$R_VARIANT" "$R_CSS" "$R_METRICS"
+    [ "$R_FELL" = 0 ] || exit 3
+}
+
+cmd_theme() {
+    [ "$#" -eq 2 ] || usage
+    resolve "$1" "$2"
+    mkdir -p "$STATE_DIR"
+    _tmp="$STATE_DIR/.theme.$$"
+    printf '%s %s\n' "$R_ID" "$R_VARIANT" > "$_tmp"
+    mv -f "$_tmp" "$STATE_DIR/theme"
+    echo "taos-session: theme $R_ID $R_VARIANT"
+    as_user gsettings set org.gnome.desktop.interface color-scheme "prefer-$R_VARIANT" 2>/dev/null || true
+    # The keyboard reads its css only at start. Restart it only on a device
+    # that opted in; a theme change must not switch a keyboard on.
+    if [ -f "$DROPIN" ] && [ -x "$KEYBOARD_BIN" ]; then
+        as_user "$KEYBOARD_BIN" --restart || echo "taos-session: keyboard restart failed (not in a session?)" >&2
+    fi
+    [ "$R_FELL" = 0 ] || exit 3
+}
+
+set_keyboard_gsetting() {
+    as_user gsettings set org.gnome.desktop.a11y.applications screen-keyboard-enabled "$1" || true
+    # A separate invocation: a write to the memory backend reads back fine
+    # inside the process that made it.
+    _got="$(as_user gsettings get org.gnome.desktop.a11y.applications screen-keyboard-enabled 2>/dev/null || true)"
+    if [ "$_got" != "$1" ]; then
+        echo "taos-session: screen-keyboard-enabled reads back '${_got:-nothing}', wanted '$1' for $SESSION_USER (no session bus?)" >&2
+        exit 1
+    fi
+}
+
+cmd_keyboard() {
+    [ "$#" -eq 1 ] || usage
+    case "$1" in
+        on)
+            set_keyboard_gsetting true
+            mkdir -p "$DROPIN_DIR"
+            printf 'exec_always /usr/local/bin/taos-kiosk-keyboard\n' > "$DROPIN.$$"
+            mv -f "$DROPIN.$$" "$DROPIN"
+            echo "taos-session: keyboard on"
+            ;;
+        off)
+            rm -f "$DROPIN"
+            set_keyboard_gsetting false
+            echo "taos-session: keyboard off"
+            ;;
+        *) usage ;;
+    esac
+}
+
+[ "$#" -ge 1 ] || usage
+sub=$1
+shift
+case "$sub" in
+    theme) cmd_theme "$@" ;;
+    keyboard) cmd_keyboard "$@" ;;
+    resolve-theme) cmd_resolve "$@" ;;
+    *) usage ;;
+esac

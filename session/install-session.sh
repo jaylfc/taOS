@@ -19,19 +19,47 @@
 # failure mode: worst case it is missing and we are back to today's black.
 set -eu
 
+# --keyboard opts this device in to the system on-screen keyboard (squeekboard).
+# Without it nothing keyboard-related is installed or enabled.
+KEYBOARD=0
+for arg in "$@"; do
+    case "$arg" in
+        --keyboard) KEYBOARD=1 ;;
+        *) echo "usage: $0 [--keyboard]" >&2; exit 2 ;;
+    esac
+done
+
 HERE="$(dirname "$0")"
 CONF_SRC="$HERE/etc/sway-kiosk.conf"
 
 [ "$(id -u)" = 0 ] || { echo "FAIL: must run as root"; exit 1; }
 [ -r "$CONF_SRC" ] || { echo "FAIL: $CONF_SRC not readable"; exit 1; }
 
+# Install a package with whichever package manager this distro has: apk
+# (Alpine, postmarketOS) or apt (Debian).
+pkg_install() {
+    if command -v apk >/dev/null 2>&1; then
+        if apk info -e "$1" >/dev/null 2>&1; then
+            echo "$1 already installed"
+        else
+            echo "installing $1..."
+            apk add "$1"
+        fi
+    elif command -v apt-get >/dev/null 2>&1; then
+        if dpkg -s "$1" >/dev/null 2>&1; then
+            echo "$1 already installed"
+        else
+            echo "installing $1..."
+            apt-get install -y "$1"
+        fi
+    else
+        echo "FAIL: neither apk nor apt-get found, cannot install $1"
+        exit 1
+    fi
+}
+
 # 1. swaybg. It is a separate package from sway.
-if ! apk info -e swaybg >/dev/null 2>&1; then
-    echo "installing swaybg..."
-    apk add swaybg
-else
-    echo "swaybg already installed"
-fi
+pkg_install swaybg
 
 # The kiosk runs with PATH=/usr/local/bin:/usr/bin (read from the live process
 # environ), so a swaybg that landed only in /usr/sbin would be invisible to it
@@ -96,6 +124,49 @@ EXEC_COUNT="$(grep -coE '/usr/local/bin/taos-kiosk-[a-z0-9-]+' "$CONF_SRC" || tr
     exit 1; }
 echo "PASS: config names $EXEC_COUNT taos-kiosk-* paths"
 
+# 3b2. Session settings: the theme/keyboard command, theme packages and the
+#      keyboard layouts. All inert until a device opts in to the keyboard.
+TAOS_UID="$(id -u taos)"
+install -m 755 "$HERE/bin/taos-session" /usr/local/bin/taos-session
+sh -n /usr/local/bin/taos-session || { echo "FAIL: installed taos-session is not valid sh"; exit 1; }
+install -d -m 755 /usr/share/taos/themes /usr/share/taos/keyboard/layouts
+cp -R "$HERE/themes/." /usr/share/taos/themes/
+cp -R "$HERE/keyboard/layouts/." /usr/share/taos/keyboard/layouts/
+chmod -R a+rX /usr/share/taos/themes /usr/share/taos/keyboard
+# /var/lib/taos may already exist with another owner: create it if missing,
+# never re-own it. Only the session directory belongs to the session user.
+[ -d /var/lib/taos ] || install -d -m 755 /var/lib/taos
+install -d -m 755 -o taos /var/lib/taos/session
+echo "installed taos-session, themes and keyboard layouts"
+
+# 3b3. The system keyboard, only when asked for.
+if [ "$KEYBOARD" = 1 ]; then
+    pkg_install squeekboard
+    install -m 755 "$HERE/bin/taos-kiosk-keyboard" /usr/local/bin/taos-kiosk-keyboard
+    sh -n /usr/local/bin/taos-kiosk-keyboard || { echo "FAIL: installed taos-kiosk-keyboard is not valid sh"; exit 1; }
+    # The same candidates taos-kiosk-keyboard probes: Alpine's /usr/sbin is a
+    # symlink to /usr/bin, Debian's is not.
+    SQUEEKBOARD=""
+    for c in /usr/bin/squeekboard /usr/local/bin/squeekboard /usr/sbin/squeekboard; do
+        [ -x "$c" ] && SQUEEKBOARD="$c" && break
+    done
+    [ -n "$SQUEEKBOARD" ] || {
+        echo "FAIL: squeekboard not found in /usr/bin, /usr/local/bin or /usr/sbin"; exit 1; }
+    echo "PASS: squeekboard reachable at $SQUEEKBOARD"
+    # Writes the sway drop-in and the screen-keyboard-enabled gsetting, then
+    # reads the gsetting back and fails if it did not stick.
+    /usr/local/bin/taos-session keyboard on || {
+        echo "FAIL: taos-session keyboard on failed (is the taos session running, with a user bus?)"; exit 1; }
+    # The drop-in, not the main config, names this helper, so the check in 3b
+    # does not cover it.
+    for path in $(grep -oE '/usr/local/bin/taos-kiosk-[a-z0-9-]+' /etc/taos/sway.d/50-keyboard.conf | sort -u); do
+        [ -x "$path" ] || { echo "FAIL: keyboard drop-in names missing $path"; exit 1; }
+    done
+    echo "PASS: keyboard drop-in installed and its helper is executable"
+else
+    echo "system keyboard not requested (pass --keyboard to install it)"
+fi
+
 # 3c. Audio for the KIOSK session.
 #
 # MEASURED, because the symptom is misleading: PipeWire answers
@@ -117,7 +188,7 @@ id taos | grep -q '(audio)' && echo "PASS: taos is in the audio group" || {
 
 # Lingering so the session manager is not torn down between logins.
 loginctl enable-linger taos >/dev/null 2>&1 || true
-su taos -s /bin/sh -c     'XDG_RUNTIME_DIR=/run/user/999 systemctl --user enable pipewire.socket pipewire.service wireplumber.service'     >/dev/null 2>&1 || true
+su taos -s /bin/sh -c "XDG_RUNTIME_DIR=/run/user/$TAOS_UID systemctl --user enable pipewire.socket pipewire.service wireplumber.service" >/dev/null 2>&1 || true
 echo "enabled pipewire + wireplumber for the kiosk session"
 
 # 3d. Chromium's own prompts stay out of the kiosk.
