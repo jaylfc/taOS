@@ -125,19 +125,18 @@ EXEC_COUNT="$(grep -coE '/usr/local/bin/taos-kiosk-[a-z0-9-]+' "$CONF_SRC" || tr
 echo "PASS: config names $EXEC_COUNT taos-kiosk-* paths"
 
 # 3b2. Session settings: the theme/keyboard command, theme packages and the
-#      keyboard layouts. All inert until a device opts in to the keyboard.
+#      theme packages. Inert until a device opts in to the keyboard.
 TAOS_UID="$(id -u taos)"
 install -m 755 "$HERE/bin/taos-session" /usr/local/bin/taos-session
 sh -n /usr/local/bin/taos-session || { echo "FAIL: installed taos-session is not valid sh"; exit 1; }
-install -d -m 755 /usr/share/taos/themes /usr/share/taos/keyboard/layouts
+install -d -m 755 /usr/share/taos/themes
 cp -R "$HERE/themes/." /usr/share/taos/themes/
-cp -R "$HERE/keyboard/layouts/." /usr/share/taos/keyboard/layouts/
-chmod -R a+rX /usr/share/taos/themes /usr/share/taos/keyboard
+chmod -R a+rX /usr/share/taos/themes
 # /var/lib/taos may already exist with another owner: create it if missing,
 # never re-own it. Only the session directory belongs to the session user.
 [ -d /var/lib/taos ] || install -d -m 755 /var/lib/taos
 install -d -m 755 -o taos /var/lib/taos/session
-echo "installed taos-session, themes and keyboard layouts"
+echo "installed taos-session and the theme packages"
 
 # 3b3. The system keyboard, only when asked for.
 if [ "$KEYBOARD" = 1 ]; then

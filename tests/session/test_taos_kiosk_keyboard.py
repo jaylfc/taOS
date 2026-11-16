@@ -25,10 +25,10 @@ def env(tmp_path):
     sq = tmp_path / "sqbin"
     sq.mkdir()
     out = tmp_path / "sq.env"
-    # Stub squeekboard: record the two variables it was started with, and the
+    # Stub squeekboard: record the config dir it was started with, and the
     # gtk.css it would read, then exit.
     (sq / "squeekboard").write_text(
-        '#!/bin/sh\n{ echo "CFG=$XDG_CONFIG_HOME"; echo "LAYOUTS=$SQUEEKBOARD_KEYBOARDSDIR"; '
+        '#!/bin/sh\n{ echo "CFG=$XDG_CONFIG_HOME"; '
         'cat "$XDG_CONFIG_HOME/gtk-3.0/gtk.css"; } > "%s"\n' % out)
     os.chmod(sq / "squeekboard", 0o755)
     pkgs = tmp_path / "pkgs"
@@ -43,8 +43,7 @@ def env(tmp_path):
              XDG_RUNTIME_DIR=str(run),
              TAOS_THEME_PATH=str(pkgs),
              TAOS_SESSION_STATE_DIR=str(tmp_path / "state"),
-             TAOS_KEYBOARD_BIN_DIRS=str(sq),
-             SQUEEKBOARD_KEYBOARDSDIR="/layouts/test")
+             TAOS_KEYBOARD_BIN_DIRS=str(sq))
     e.pop("XDG_CONFIG_HOME", None)
     e.pop("WAYLAND_DISPLAY", None)
     e.pop("SWAYSOCK", None)
@@ -71,19 +70,11 @@ def test_gtk_css_is_variant_then_metrics_and_env_is_set(env, variant):
     cfg = e["XDG_RUNTIME_DIR"] + "/taos-keyboard"
     lines = out.read_text().splitlines()
     assert lines[0] == "CFG=" + cfg
-    assert lines[1] == "LAYOUTS=/layouts/test"
     want = ((DEFAULT_PKG / "keyboard" / (variant + ".css")).read_text()
             + (DEFAULT_PKG / "keyboard" / "metrics.css").read_text())
-    assert "\n".join(lines[2:]) + "\n" == want
+    assert "\n".join(lines[1:]) + "\n" == want
     link = pathlib.Path(cfg) / "dconf"
     assert os.readlink(link) == e["HOME"] + "/.config/dconf"
-
-
-def test_layouts_dir_defaults_to_the_installed_path(env):
-    e, tmp, out = env
-    del e["SQUEEKBOARD_KEYBOARDSDIR"]
-    assert start(e).returncode == 0
-    assert "LAYOUTS=/usr/share/taos/keyboard/layouts" in out.read_text().splitlines()
 
 
 def test_no_squeekboard_exits_1_with_a_message(env):
@@ -106,7 +97,7 @@ def test_missing_theme_in_state_falls_back_loudly(env):
     r = start(e)
     assert r.returncode == 0
     assert "no-such-theme" in r.stderr and "falling back" in r.stderr
-    css = "\n".join(out.read_text().splitlines()[2:]) + "\n"
+    css = "\n".join(out.read_text().splitlines()[1:]) + "\n"
     assert css.startswith((DEFAULT_PKG / "keyboard" / "dark.css").read_text())
     # Control: a state naming a real theme warns about nothing.
     out.unlink()
