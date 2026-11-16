@@ -1,4 +1,12 @@
 #!/bin/sh
 set -e
-# Nothing to undo: no diversions and no edits to other packages' files.
+# Restore Debian's uname motd script and drop the diversion.
+if [ "$1" = remove ] || [ "$1" = purge ] || [ "$1" = abort-install ]; then
+    f=/etc/update-motd.d/10-uname
+    if [ -e "$f.debian" ]; then
+        # mv is atomic, so the real path is never half-written.
+        mv -f "$f.debian" "$f"
+    fi
+    dpkg-divert --package taos-shell --no-rename --divert "$f.debian" --remove "$f" >/dev/null
+fi
 exit 0

@@ -1,0 +1,92 @@
+#!/bin/sh
+# taos-screenshot: capture what is on the machine's screen to a PNG.
+# Wayland session (sway) -> grim; text console -> framebuffer grab.
+# Usage: taos-screenshot [--json] [--output NAME] [file.png]
+# Env (tests): TAOS_SHOT_RUNDIR (default /run/user), TAOS_SHOT_FB (default /dev/fb0).
+set -u
+rundir=${TAOS_SHOT_RUNDIR:-/run/user}
+fb=${TAOS_SHOT_FB:-/dev/fb0}
+json=0
+output=""
+out=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --json) json=1 ;;
+        --output)
+            if [ $# -lt 2 ]; then echo "taos-screenshot: --output needs a name" >&2; exit 1; fi
+            output=$2; shift ;;
+        -h|--help)
+            echo "usage: taos-screenshot [--json] [--output NAME] [file.png]"; exit 0 ;;
+        --) shift; [ $# -gt 0 ] && out=$1; break ;;
+        -*) echo "taos-screenshot: unknown option $1" >&2; exit 1 ;;
+        *) out=$1 ;;
+    esac
+    shift
+done
+[ -n "$out" ] || out="/tmp/taos-screenshot-$(date -u +%Y%m%dT%H%M%SZ).png"
+
+sock=""
+for d in "$rundir"/*; do
+    [ -d "$d" ] || continue
+    for s in "$d"/wayland-[0-9]*; do
+        case "$s" in *.lock) continue ;; esac
+        if [ -S "$s" ]; then sock=$s; break 2; fi
+    done
+done
+
+source=""
+# A stale file at the target must not pass the "was it created" check.
+rm -f "$out" 2>/dev/null || true
+if [ -n "$sock" ] && command -v grim >/dev/null 2>&1; then
+    source=wayland
+    uid=$(stat -c %u "$sock")
+    sockdir=$(dirname "$sock")
+    sockname=$(basename "$sock")
+    if [ "$(id -u)" = "$uid" ]; then
+        XDG_RUNTIME_DIR=$sockdir WAYLAND_DISPLAY=$sockname \
+            grim ${output:+-o "$output"} "$out" >/dev/null 2>&1
+    else
+        user=$(getent passwd "$uid" | cut -d: -f1)
+        if [ -z "$user" ] || ! command -v runuser >/dev/null 2>&1; then
+            echo "taos-screenshot: cannot run as the owner of $sock (run as root or as that user)" >&2
+            exit 1
+        fi
+        # Let the session user write the file, then hand it back to us.
+        runuser -u "$user" -- env XDG_RUNTIME_DIR="$sockdir" WAYLAND_DISPLAY="$sockname" \
+            grim ${output:+-o "$output"} "$out" >/dev/null 2>&1
+    fi
+elif [ -e "$fb" ] && command -v fbgrab >/dev/null 2>&1; then
+    source=console
+    if [ -n "$output" ]; then
+        echo "taos-screenshot: --output is ignored on the console" >&2
+    fi
+    fbgrab -d "$fb" "$out" >/dev/null 2>&1
+else
+    echo "taos-screenshot: no Wayland session and no usable framebuffer grabber (need grim for sway, fbgrab for the console)" >&2
+    exit 1
+fi
+
+if [ ! -s "$out" ]; then
+    echo "taos-screenshot: capture failed, no image was written to $out" >&2
+    exit 1
+fi
+chmod 0644 "$out" 2>/dev/null || true
+
+if [ "$json" = 1 ]; then
+    w=""; h=""
+    # PNG: 8 byte signature, IHDR length+type (8), then big-endian width, height.
+    dims=$(dd if="$out" bs=1 skip=16 count=8 2>/dev/null | od -An -tu1 | tr -s ' \n' '  ')
+    set -- $dims
+    if [ $# -eq 8 ] && [ "$(dd if="$out" bs=1 skip=12 count=4 2>/dev/null)" = IHDR ]; then
+        w=$(( ($1 << 24) + ($2 << 16) + ($3 << 8) + $4 ))
+        h=$(( ($5 << 24) + ($6 << 16) + ($7 << 8) + $8 ))
+    fi
+    esc=$(printf '%s' "$out" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    if [ -n "$w" ] && [ "$w" -gt 0 ] && [ "$h" -gt 0 ]; then
+        printf '{"path": "%s", "source": "%s", "width": %s, "height": %s}\n' "$esc" "$source" "$w" "$h"
+    else
+        printf '{"path": "%s", "source": "%s"}\n' "$esc" "$source"
+    fi
+else
+    echo "$out ($source)"
+fi

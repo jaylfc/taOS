@@ -56,14 +56,33 @@ mem=$(awk '/^MemTotal:/{t=$2} /^MemAvailable:/{a=$2} END{if(t>0) printf "%.1f / 
 disk=$(df -P -h / 2>/dev/null | awk 'NR==2{print $3 " / " $2 " (" $5 ")"}')
 [ -n "$disk" ] || disk="?"
 
-ip=""
-if command -v ip >/dev/null 2>&1; then
-    ip=$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n 1)
+# IPv4: no network calls. TAOS_MOTD_IP4 overrides the lookup and TAOS_MOTD_SYSNET
+# points at a fake /sys/class/net (both for tests).
+if [ -n "${TAOS_MOTD_IP4+x}" ]; then
+    ip=$TAOS_MOTD_IP4
+else
+    ip=""
+    if command -v ip >/dev/null 2>&1; then
+        ip=$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n 1)
+    fi
+    if [ -z "$ip" ] && command -v hostname >/dev/null 2>&1; then
+        ip=$(hostname -I 2>/dev/null | cut -d' ' -f1)
+    fi
 fi
-if [ -z "$ip" ] && command -v hostname >/dev/null 2>&1; then
-    ip=$(hostname -I 2>/dev/null | cut -d' ' -f1)
+if [ -z "$ip" ]; then
+    # No address yet: the link may still be coming up (DHCP runs after login
+    # starts), so tell "connecting" apart from truly offline.
+    ip="offline"
+    sysnet=${TAOS_MOTD_SYSNET:-/sys/class/net}
+    for n in "$sysnet"/*; do
+        [ -e "$n" ] || continue
+        [ "${n##*/}" = lo ] && continue
+        st=""; ca=""
+        [ -r "$n/operstate" ] && read -r st < "$n/operstate" 2>/dev/null
+        [ -r "$n/carrier" ] && read -r ca < "$n/carrier" 2>/dev/null
+        if [ "$st" = up ] || [ "$ca" = 1 ]; then ip="connecting..."; break; fi
+    done
 fi
-[ -n "$ip" ] || ip="none"
 
 svc="not installed"
 for u in /etc/systemd/system /usr/lib/systemd/system /lib/systemd/system; do
@@ -81,5 +100,7 @@ row "Memory" "$mem"
 row "Disk /" "$disk"
 row "IPv4" "$ip"
 row "taOS service" "$svc"
-printf '\n'
+kern=$(cat /proc/sys/kernel/osrelease 2>/dev/null || echo unknown)
+printf '\n  %sKernel %s%s\n' "$dim" "$kern" "$reset"
+printf '  %sFree software, no warranty. Licences: /usr/share/doc/*/copyright%s\n\n' "$dim" "$reset"
 exit 0

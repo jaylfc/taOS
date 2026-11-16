@@ -18,6 +18,8 @@ echo "setup.sh: now running $PRETTY_NAME"
 
 # Step 2: shell (taos-shell): zsh, starship prompt, fastfetch, taOS motd.
 apt-get install -y --reinstall "$here"/dist/taos-shell_*_all.deb
+# The static /etc/motd depends on whether the dynamic motd exists; refresh it.
+/usr/lib/taos-branding/apply
 
 # Existing human users: zsh login shell and the taOS ~/.zshrc if they have none.
 zsh_bin=/usr/bin/zsh
@@ -45,6 +47,34 @@ set_key() { # file key value
 }
 set_key /etc/adduser.conf DSHELL "$zsh_bin"
 set_key /etc/default/useradd SHELL "$zsh_bin"
+
+# Console font: the default is unreadably small on a high resolution display.
+# Height of the largest connected display, from the first (native) mode of each
+# connected DRM connector. TAOS_DRM_SYSFS points at a fake sysfs in tests.
+display_max_height() {
+    best=0
+    for c in "${TAOS_DRM_SYSFS:-/sys/class/drm}"/card*-*; do
+        [ -r "$c/status" ] && [ -r "$c/modes" ] || continue
+        [ "$(cat "$c/status")" = connected ] || continue
+        mode=$(head -n 1 "$c/modes")
+        h=${mode#*x}
+        h=$(printf '%s' "$h" | tr -cd '0-9')
+        [ -n "$h" ] || continue
+        [ "$h" -gt "$best" ] && best=$h
+    done
+    echo "$best"
+}
+if [ "$(display_max_height)" -ge 1100 ]; then
+    apt-get install -y console-setup
+    cs=/etc/default/console-setup
+    before=$(cksum < "$cs" 2>/dev/null || echo none)
+    set_key "$cs" FONTFACE '"Terminus"'
+    set_key "$cs" FONTSIZE '"16x32"'
+    after=$(cksum < "$cs")
+    if [ "$before" != "$after" ]; then
+        setupcon --save || echo "setup.sh: setupcon failed (not on a console?); font applies at next boot" >&2
+    fi
+fi
 
 # Step 3: display GPU (taos-gpu). NVIDIA cards stay compute only by default.
 apt-get install -y --reinstall "$here"/dist/taos-gpu_*_all.deb
@@ -76,3 +106,6 @@ if taos-gpu list | grep -q '  NVIDIA  '; then
     esac
 fi
 taos-gpu driver status
+
+# Step 5: tools (taos-tools): taos-screenshot for the Wayland session or console.
+apt-get install -y --reinstall "$here"/dist/taos-tools_*_all.deb

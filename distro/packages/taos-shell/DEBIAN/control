@@ -1,5 +1,5 @@
 Package: taos-shell
-Version: 0.1.0
+Version: 0.2.0
 Architecture: all
 Maintainer: jaylfc <jaylfc25@gmail.com>
 Priority: optional
@@ -10,4 +10,5 @@ Description: taOS terminal experience: zsh, starship prompt, fastfetch, login mo
  completion, autosuggestions, syntax highlighting, fzf and zoxide, modern
  ls/cat aliases, a starship prompt that needs no Nerd Font, a fastfetch
  config with the taOS logo, and a login motd with a gradient taOS logo and a
- short system summary. Nothing here edits another package's conffiles.
+ short system summary (the login shows this one block instead of Debian's
+ uname line). Debian's 10-uname motd script is diverted and restored on removal.

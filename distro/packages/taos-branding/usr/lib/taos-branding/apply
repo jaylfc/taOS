@@ -34,7 +34,15 @@ install -m 0644 "$SHARE/issue" "$ROOT/etc/issue"
 install -m 0644 "$SHARE/issue.net" "$ROOT/etc/issue.net"
 
 # /etc/motd belongs to no package; keep Debian's once so removal can restore it.
-if [ -f "$ROOT/etc/motd" ] && [ ! -f "$ROOT/etc/motd.debian" ] && ! cmp -s "$ROOT/etc/motd" "$SHARE/motd"; then
+if [ -f "$ROOT/etc/motd" ] && [ ! -f "$ROOT/etc/motd.debian" ] && ! cmp -s "$ROOT/etc/motd" "$SHARE/motd" && [ -s "$ROOT/etc/motd" ]; then
     cp -p "$ROOT/etc/motd" "$ROOT/etc/motd.debian"
 fi
-install -m 0644 "$SHARE/motd" "$ROOT/etc/motd"
+# When the taOS dynamic motd (taos-shell) is installed it carries the notice,
+# so the static /etc/motd is empty and the login shows a single block.
+if [ -x "$ROOT/etc/update-motd.d/05-taos" ]; then
+    : > "$ROOT/etc/motd.taos-tmp"
+    chmod 0644 "$ROOT/etc/motd.taos-tmp"
+    mv -f "$ROOT/etc/motd.taos-tmp" "$ROOT/etc/motd"
+else
+    install -m 0644 "$SHARE/motd" "$ROOT/etc/motd"
+fi

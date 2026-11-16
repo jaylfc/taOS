@@ -13,6 +13,7 @@ Packages live under `packages/<name>/` as plain dpkg-deb trees;
 | 2 | taos-shell | zsh for every user (autosuggestions, syntax highlighting, fzf, zoxide, eza/bat aliases), colourful starship prompt with no Nerd Font needed, fastfetch config, gradient taOS logo in the login motd. setup.sh switches existing and new users to zsh. |
 | 3 | taos-gpu | `taos-gpu` command: picks the display GPU (integrated by default, NVIDIA cards compute only), generates the /dev/dri/taos-display udev rule, the sway session env and the nouveau/nvidia-drm modprobe config. Choose at install with `TAOS_DISPLAY_GPU` or the prompt. |
 | 4 | taos-gpu (driver) | `taos-gpu driver`: official vendor GPU drivers. An NVIDIA GPU gets NVIDIA's official driver from NVIDIA's own apt repo by default; `TAOS_NVIDIA_DRIVER=open` keeps the open-source driver, `skip` leaves it alone. AMD and Intel use the in-kernel driver with Mesa. Handles the Secure Boot key enrollment. |
+| 5 | taos-tools | `taos-screenshot [--json] [--output NAME] [file.png]`: grabs the Wayland session with grim, else the console framebuffer with fbgrab. Prints the path (or one JSON object with source, width and height). |
 
 ## Display GPU
 
@@ -41,6 +42,8 @@ taOS offers official vendor drivers next to the open-source ones. Policy:
 `--dry-run` prints every command it would run. The NVIDIA keyring package is checked against a pinned SHA256 before it is installed. `--branch` pins apt to one driver branch (`nvidia-driver-pinning-<branch>`). From branch 615 NVIDIA only ships open kernel modules; the open modules need a Turing or newer card, older cards need an older branch with `--kernel closed`.
 
 Secure Boot: the driver is built locally (DKMS) and signed with a key made on your machine, which the firmware must trust once. If Secure Boot is on, the install queues that key and prints a one-time password (also saved in `/etc/taos/mok-enroll-password`). On the next reboot a blue "Perform MOK management" screen appears: choose Enroll MOK, Continue, Yes, type the password, then Reboot. If you skip the screen the NVIDIA driver will not load. With Secure Boot off nothing is needed.
+
+`taos-screenshot` exits 1 with a clear message when there is neither a Wayland session nor a framebuffer, and never prints a path that was not written. On a display 1100 px or taller, setup.sh also sets the console font to Terminus 16x32.
 
 The older `os-build/` tree (Armbian per-board images) predates this and is
 not used by the desktop distro.
