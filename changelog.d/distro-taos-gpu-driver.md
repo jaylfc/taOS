@@ -1,0 +1,1 @@
+- taos-gpu 0.2.0: `taos-gpu driver` installs the official NVIDIA driver from NVIDIA's own apt repo by default (compute profile, Secure Boot key enrollment), with open source as the opt-out; distro/setup.sh step 4.
