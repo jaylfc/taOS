@@ -1,0 +1,5 @@
+error: expected `|`
+ --> tests/closure_compiletest/18-closure-async-no-move.rs:4:33
+  |
+4 |     closure!(#[strong] v, async {println!("foo");});
+  |                                 ^

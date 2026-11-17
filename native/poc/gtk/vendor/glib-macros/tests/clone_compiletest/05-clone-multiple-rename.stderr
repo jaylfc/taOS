@@ -1,0 +1,5 @@
+error: multiple `rename_to` properties are not allowed
+ --> tests/clone_compiletest/05-clone-multiple-rename.rs:4:36
+  |
+4 |     clone!(#[strong(rename_to = x, rename_to = y)] self.v, move || {});
+  |                                    ^^^^^^^^^^^^^

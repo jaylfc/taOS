@@ -1,0 +1,3 @@
+FROM alpine:edge
+RUN apk add --no-cache build-base pkgconf rust cargo wayland-dev wayland-protocols \
+    gtk4.0-dev libadwaita-dev gtk4-layer-shell-dev

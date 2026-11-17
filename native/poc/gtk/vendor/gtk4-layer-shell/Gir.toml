@@ -1,0 +1,19 @@
+[options]
+library = "Gtk4LayerShell"
+version = "1.0"
+target_path = "."
+min_cfg_version = "1.0"
+work_mode = "normal"
+girs_directories = ["../gir-files", ".."]
+generate_safety_asserts = true
+deprecate_by_min_version = true
+single_version_file = true
+
+generate = [
+    "Gtk4LayerShell.Edge",
+    "Gtk4LayerShell.Layer",
+    "Gtk4LayerShell.KeyboardMode",
+    "Gtk4LayerShell.*",
+]
+
+manual = ["Gtk.Window", "Gdk.Monitor"]

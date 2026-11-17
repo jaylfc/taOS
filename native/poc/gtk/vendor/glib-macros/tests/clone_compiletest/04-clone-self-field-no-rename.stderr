@@ -1,0 +1,5 @@
+error: capture attribute for an expression requires usage of the `rename_to` attribute property
+ --> tests/clone_compiletest/04-clone-self-field-no-rename.rs:4:12
+  |
+4 |     clone!(#[strong] self.v, move |x| {});
+  |            ^^^^^^^^^

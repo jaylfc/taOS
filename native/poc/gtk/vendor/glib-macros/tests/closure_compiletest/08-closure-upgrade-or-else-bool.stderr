@@ -1,0 +1,5 @@
+error: expected `|`
+ --> tests/closure_compiletest/08-closure-upgrade-or-else-bool.rs:4:44
+  |
+4 |     closure!(#[weak] v, #[upgrade_or_else] false, move || {});
+  |                                            ^^^^^

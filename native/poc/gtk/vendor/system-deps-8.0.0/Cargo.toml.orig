@@ -1,0 +1,89 @@
+[workspace]
+members = ["meta"]
+exclude = ["target"]
+
+[workspace.package]
+version = "8.0.0"
+authors = [
+    "Guillaume Desmottes <guillaume.desmottes@collabora.com>",
+    "Josh Triplett <josh@joshtriplett.org>",
+]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/gdesmott/system-deps"
+description = "Discover and configure system dependencies from declarative dependencies in Cargo.toml"
+keywords = [
+    "pkg-config",
+    "build-dependencies",
+    "build-depends",
+    "manifest",
+    "metadata",
+]
+edition = "2018"
+rust-version = "1.78.0"
+documentation = "https://docs.rs/system-deps/"
+
+[workspace.dependencies]
+system-deps-meta = { path = "./meta", version = "8.0.0" }
+assert_matches = "1.5"
+attohttpc = "0.29"
+cargo_metadata = "0.20"
+# allow cfg-expr between 0.17 and 0.20 to keep MSRV lower
+cfg-expr = { version = ">= 0.17, < 0.21", features = ["targets"] }
+flate2 = "1.1"
+heck = "0.5"
+# TODO: switch to upstream `inno` once the `extract` feature lands there;
+# then this can become a plain `version = "..."` entry from crates.io.
+inno = { version = "0.5.0", default-features = false, features = ["extract"] }
+itertools = "0.14"
+junction = "2"
+lzma-rust2 = "0.16"
+pkg-config = "0.3.25"
+pkg-extractor = "0.1.3"
+serde = "1.0"
+sha256 = "1.6"
+tar = "0.4"
+tiny_http = "0.12"
+toml = { version = "1", default-features = false, features = ["parse", "std"] }
+version-compare = "0.2"
+which = "8"
+zip = { version = "2.4", default-features = false, features = ["aes-crypto", "bzip2", "deflate64", "deflate", "lzma", "time", "zstd"] }
+
+[package]
+name = "system-deps"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description.workspace = true
+keywords.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+documentation.workspace = true
+readme = "README.md"
+
+[dependencies]
+system-deps-meta = { workspace = true, optional = true }
+pkg-config.workspace = true
+toml.workspace = true
+version-compare.workspace = true
+heck.workspace = true
+cfg-expr.workspace = true
+which = { workspace = true, optional = true }
+
+[build-dependencies]
+system-deps-meta = { workspace = true, optional = true }
+
+[dev-dependencies]
+system-deps-meta = { workspace = true, features = ["test"] }
+itertools.workspace = true
+assert_matches.workspace = true
+tiny_http.workspace = true
+
+[features]
+default = []
+binary = ["system-deps-meta/binary", "dep:which", "toml/serde"]
+gz = ["system-deps-meta/gz"]
+xz = ["system-deps-meta/xz"]
+zip = ["system-deps-meta/zip"]
+pkg = ["system-deps-meta/pkg"]
+inno = ["system-deps-meta/inno"]

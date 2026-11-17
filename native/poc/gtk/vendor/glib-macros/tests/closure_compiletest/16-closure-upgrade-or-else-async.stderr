@@ -1,0 +1,5 @@
+error: `upgrade_or_else` closure needs to be a non-async closure
+ --> tests/closure_compiletest/16-closure-upgrade-or-else-async.rs:4:33
+  |
+4 |     closure!(#[upgrade_or_else] async || lol, #[strong] v, move || {println!("foo");});
+  |                                 ^^^^^^^^^^^^

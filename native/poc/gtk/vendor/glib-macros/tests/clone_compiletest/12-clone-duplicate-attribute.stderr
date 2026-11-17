@@ -1,0 +1,5 @@
+error: variable capture attributes must be followed by an identifier
+ --> tests/clone_compiletest/12-clone-duplicate-attribute.rs:4:21
+  |
+4 |     clone!(#[strong]#[strong] v, move || {});
+  |                     ^^^^^^^^^

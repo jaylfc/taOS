@@ -1,0 +1,5 @@
+error: closures need to capture variables by move. Please add the `move` keyword
+ --> tests/clone_compiletest/02-clone-no-move.rs:4:34
+  |
+4 |     clone!(#[weak] a, #[weak] b, |x| {});
+  |                                  ^^^^^^

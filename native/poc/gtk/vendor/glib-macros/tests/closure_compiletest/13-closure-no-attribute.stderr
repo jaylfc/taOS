@@ -1,0 +1,5 @@
+error: expected `|`
+ --> tests/closure_compiletest/13-closure-no-attribute.rs:4:14
+  |
+4 |     closure!(v, move || {});
+  |              ^

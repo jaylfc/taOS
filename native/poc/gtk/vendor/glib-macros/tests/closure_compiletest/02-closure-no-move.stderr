@@ -1,0 +1,5 @@
+error: closures need to capture variables by move. Please add the `move` keyword
+ --> tests/closure_compiletest/02-closure-no-move.rs:4:36
+  |
+4 |     closure!(#[weak] a, #[weak] b, |x| {});
+  |                                    ^^^^^^

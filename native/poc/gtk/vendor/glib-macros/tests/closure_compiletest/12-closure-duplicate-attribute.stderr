@@ -1,0 +1,5 @@
+error: variable capture attributes must be followed by an identifier
+ --> tests/closure_compiletest/12-closure-duplicate-attribute.rs:4:23
+  |
+4 |     closure!(#[strong]#[strong] v, move || {});
+  |                       ^^^^^^^^^

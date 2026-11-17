@@ -1,0 +1,5 @@
+error: `upgrade_or_else` closure must not have any parameters
+ --> tests/closure_compiletest/15-closure-upgrade-or-else-with-param.rs:4:33
+  |
+4 |     closure!(#[upgrade_or_else] |x| lol, #[strong] v, move || {println!("foo");});
+  |                                 ^^^^^^^

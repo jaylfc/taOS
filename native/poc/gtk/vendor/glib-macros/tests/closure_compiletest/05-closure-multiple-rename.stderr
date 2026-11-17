@@ -1,0 +1,5 @@
+error: multiple `rename_to` properties are not allowed
+ --> tests/closure_compiletest/05-closure-multiple-rename.rs:4:38
+  |
+4 |     closure!(#[strong(rename_to = x, rename_to = y)] self.v, move || {});
+  |                                      ^^^^^^^^^^^^^

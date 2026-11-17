@@ -1,0 +1,14 @@
+[options]
+library = "Gtk4LayerShell"
+version = "1.0"
+target_path = "."
+min_cfg_version = "1.0"
+work_mode = "sys"
+girs_directories = ["../gir-files", ".."]
+single_version_file = true
+
+external_libraries = ["GLib"]
+
+[external_libraries]
+gdk4 = "Gdk"
+gtk4 = "Gtk"

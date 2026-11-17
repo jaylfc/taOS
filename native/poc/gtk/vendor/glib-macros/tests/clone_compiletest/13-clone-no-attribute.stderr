@@ -1,0 +1,5 @@
+error: only closures and async blocks are supported
+ --> tests/clone_compiletest/13-clone-no-attribute.rs:4:12
+  |
+4 |     clone!(v, move || {});
+  |            ^

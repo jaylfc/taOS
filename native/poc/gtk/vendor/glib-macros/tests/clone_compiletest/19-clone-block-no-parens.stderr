@@ -1,0 +1,5 @@
+error: only closures and async blocks are supported
+ --> tests/clone_compiletest/19-clone-block-no-parens.rs:4:25
+  |
+4 |     clone!(#[strong] v, {println!("foo");});
+  |                         ^^^^^^^^^^^^^^^^^^

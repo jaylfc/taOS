@@ -1,0 +1,7 @@
+error: expected a closure or async block
+ --> tests/clone_compiletest/01-clone-empty.rs:4:5
+  |
+4 |     clone!();
+  |     ^^^^^^^^
+  |
+  = note: this error originates in the macro `clone` (in Nightly builds, run with -Z macro-backtrace for more info)

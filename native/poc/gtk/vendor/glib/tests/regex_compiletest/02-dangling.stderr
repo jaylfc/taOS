@@ -1,0 +1,18 @@
+error[E0505]: cannot move out of `s` because it is borrowed
+  --> tests/regex_compiletest/02-dangling.rs:14:10
+   |
+ 9 |     let s = glib::GString::from("hello");
+   |         - binding `s` declared here
+10 |     let match_info = r
+11 |         .match_(s.as_gstr(), glib::RegexMatchFlags::empty())
+   |                 - borrow of `s` occurs here
+...
+14 |     drop(s);
+   |          ^ move out of `s` occurs here
+15 | }
+   | - borrow might be used here, when `match_info` is dropped and runs the `Drop` code for type `MatchInfo`
+   |
+help: consider cloning the value if the performance cost is acceptable
+   |
+11 |         .match_(s.clone().as_gstr(), glib::RegexMatchFlags::empty())
+   |                  ++++++++

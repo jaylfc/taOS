@@ -1,0 +1,5 @@
+error: watch variable captures are not supported
+ --> tests/clone_compiletest/11-clone-watch.rs:4:12
+  |
+4 |     clone!(#[watch] v, move || {});
+  |            ^^^^^^^^

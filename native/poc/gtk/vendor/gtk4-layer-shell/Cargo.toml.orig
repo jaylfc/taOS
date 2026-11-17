@@ -1,0 +1,37 @@
+[package]
+name = "gtk4-layer-shell"
+version = "0.8.1"
+description = "Safe gir-generated wrapper for gtk4-layer-shell"
+repository = "https://github.com/pentamassiv/gtk4-layer-shell-gir/tree/main/gtk4-layer-shell"
+documentation = "https://docs.rs/gtk4-layer-shell/"
+keywords = ["gtk4", "gtk4-layer-shell", "wayland", "gir", "wrapper"]
+categories = ["api-bindings", "gui"]
+exclude = ["examples"]
+authors.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--generate-link-to-definition"]
+
+[features]
+default = []
+v1_3 = ["gtk4-layer-shell-sys/v1_3"]
+
+[dependencies]
+libc.workspace = true
+bitflags.workspace = true
+glib.workspace = true
+glib-sys.workspace = true
+gdk.workspace = true
+gtk.workspace = true
+gtk4-layer-shell-sys.workspace = true
+
+[dev-dependencies]
+gio.workspace = true
+libadwaita.workspace = true
+
+[target.'cfg(docsrs)'.dependencies]
+gdk = { workspace = true, features = ["gl", "v4_16"] }

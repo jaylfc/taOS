@@ -1,0 +1,5 @@
+error: expected `|`
+ --> tests/clone_compiletest/08-clone-upgrade-or-else-bool.rs:4:42
+  |
+4 |     clone!(#[weak] v, #[upgrade_or_else] false, move || {});
+  |                                          ^^^^^

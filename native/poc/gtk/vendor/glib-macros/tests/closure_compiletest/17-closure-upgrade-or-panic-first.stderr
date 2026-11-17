@@ -1,0 +1,5 @@
+error: upgrade failure attribute must not be followed by any other attributes. Found 1 more attribute
+ --> tests/closure_compiletest/17-closure-upgrade-or-panic-first.rs:4:34
+  |
+4 |     closure!(#[upgrade_or_panic] #[strong] v, move || {println!("foo");});
+  |                                  ^^^^^^^^^

@@ -1,0 +1,8 @@
+FROM debian:trixie
+RUN printf 'Types: deb\nURIs: http://deb.debian.org/debian\nSuites: trixie-backports\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n' > /etc/apt/sources.list.d/backports.sources \
+ && apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    build-essential pkg-config libwayland-dev wayland-protocols \
+    libgtk-4-dev libadwaita-1-dev libgtk4-layer-shell-dev ca-certificates \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends -t trixie-backports rustc cargo \
+ && rm -rf /var/lib/apt/lists/*

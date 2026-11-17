@@ -1,0 +1,5 @@
+error: unsupported attribute `yolo`: only `watch`, `strong`, `weak`, `weak_allow_none`, `to_owned`, `upgrade_or`, `upgrade_or_else`, `upgrade_or_default` and `upgrade_or_panic` are supported
+ --> tests/closure_compiletest/10-closure-unsupported-attribute.rs:4:14
+  |
+4 |     closure!(#[yolo] v, move || {});
+  |              ^^^^^^^

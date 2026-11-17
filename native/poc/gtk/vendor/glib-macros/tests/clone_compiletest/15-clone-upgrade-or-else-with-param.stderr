@@ -1,0 +1,5 @@
+error: `upgrade_or_else` closure must not have any parameters
+ --> tests/clone_compiletest/15-clone-upgrade-or-else-with-param.rs:4:31
+  |
+4 |     clone!(#[upgrade_or_else] |x| lol, #[strong] v, move || {println!("foo");});
+  |                               ^^^^^^^

@@ -1,0 +1,34 @@
+error[E0597]: `s` does not live long enough
+  --> tests/regex_compiletest/04-nonstatic-value.rs:15:17
+   |
+13 |     let s = glib::GString::from("hello");
+   |         - binding `s` declared here
+14 |     let match_info = r
+15 |         .match_(s.as_gstr(), glib::RegexMatchFlags::empty())
+   |                 ^ borrowed value does not live long enough
+...
+18 |     let v: glib::Value = match_info.to_value();
+   |                          --------------------- argument requires that `s` is borrowed for `'static`
+...
+22 | }
+   | - `s` dropped here while still borrowed
+
+error[E0505]: cannot move out of `s` because it is borrowed
+  --> tests/regex_compiletest/04-nonstatic-value.rs:20:10
+   |
+13 |     let s = glib::GString::from("hello");
+   |         - binding `s` declared here
+14 |     let match_info = r
+15 |         .match_(s.as_gstr(), glib::RegexMatchFlags::empty())
+   |                 - borrow of `s` occurs here
+...
+18 |     let v: glib::Value = match_info.to_value();
+   |                          --------------------- argument requires that `s` is borrowed for `'static`
+19 |     drop(match_info);
+20 |     drop(s);
+   |          ^ move out of `s` occurs here
+   |
+help: consider cloning the value if the performance cost is acceptable
+   |
+15 |         .match_(s.clone().as_gstr(), glib::RegexMatchFlags::empty())
+   |                  ++++++++

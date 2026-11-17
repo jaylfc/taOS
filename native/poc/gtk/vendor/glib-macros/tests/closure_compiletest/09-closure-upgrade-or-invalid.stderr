@@ -1,0 +1,5 @@
+error: unexpected token in attribute
+ --> tests/closure_compiletest/09-closure-upgrade-or-invalid.rs:4:37
+  |
+4 |     closure!(#[weak] v, #[upgrade_or(abort)] move || {});
+  |                                     ^

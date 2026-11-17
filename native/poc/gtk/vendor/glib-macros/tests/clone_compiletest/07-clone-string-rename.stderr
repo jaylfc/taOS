@@ -1,0 +1,5 @@
+error: expected identifier
+ --> tests/clone_compiletest/07-clone-string-rename.rs:4:33
+  |
+4 |     clone!(#[strong(rename_to = "a")] self.v, move || {});
+  |                                 ^^^

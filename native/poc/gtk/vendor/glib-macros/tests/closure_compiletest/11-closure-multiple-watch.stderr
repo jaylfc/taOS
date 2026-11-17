@@ -1,0 +1,5 @@
+error: only one `watch` capture is allowed per closure
+ --> tests/closure_compiletest/11-closure-multiple-watch.rs:4:26
+  |
+4 |     closure!(#[watch] v, #[watch] v, move || {});
+  |                          ^^^^^^^^

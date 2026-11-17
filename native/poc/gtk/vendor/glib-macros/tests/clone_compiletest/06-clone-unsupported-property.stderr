@@ -1,0 +1,5 @@
+error: unsupported capture attribute property `stronk`: only `rename_to` is supported
+ --> tests/clone_compiletest/06-clone-unsupported-property.rs:4:21
+  |
+4 |     clone!(#[strong(stronk)] self.v, move || {});
+  |                     ^^^^^^

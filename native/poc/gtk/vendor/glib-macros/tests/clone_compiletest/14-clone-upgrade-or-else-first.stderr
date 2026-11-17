@@ -1,0 +1,5 @@
+error: upgrade failure attribute must not be followed by any other attributes. Found 1 more attribute
+ --> tests/clone_compiletest/14-clone-upgrade-or-else-first.rs:4:39
+  |
+4 |     clone!(#[upgrade_or_else] || lol, #[strong] v, move || {println!("foo");});
+  |                                       ^^^^^^^^^

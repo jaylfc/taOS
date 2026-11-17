@@ -1,0 +1,7 @@
+prefix=./src/tests
+libdir=${prefix}/lib
+
+Name: Test Link Files Library
+Description: A fake library to test link_files with absolute paths.
+Version: 1.2.3
+Libs: ${libdir}/libteststatic.a

@@ -1,0 +1,5 @@
+error: capture attribute for `self` requires usage of the `rename_to` attribute property
+ --> tests/closure_compiletest/03-closure-self-no-rename.rs:4:14
+  |
+4 |     closure!(#[strong] self, move |x| {});
+  |              ^^^^^^^^^

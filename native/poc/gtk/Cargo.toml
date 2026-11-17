@@ -1,0 +1,21 @@
+[package]
+name = "taos-poc-gtk"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+
+[[bin]]
+name = "taos-poc-gtk"
+path = "src/main.rs"
+
+[dependencies]
+gtk = { package = "gtk4", version = "=0.11.5", features = ["v4_18"] }
+adw = { package = "libadwaita", version = "=0.9.2", features = ["v1_7"] }
+# do NOT enable "v1_3": Debian trixie ships the C library at 1.0.4
+gtk4-layer-shell = "=0.8.1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+strip = true

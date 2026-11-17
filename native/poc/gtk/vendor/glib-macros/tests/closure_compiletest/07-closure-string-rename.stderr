@@ -1,0 +1,5 @@
+error: expected identifier
+ --> tests/closure_compiletest/07-closure-string-rename.rs:4:35
+  |
+4 |     closure!(#[strong(rename_to = "a")] self.v, move || {});
+  |                                   ^^^

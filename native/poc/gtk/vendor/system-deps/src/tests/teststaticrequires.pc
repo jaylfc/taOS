@@ -1,0 +1,9 @@
+prefix=./src/tests
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib/
+
+Name: Test Library
+Description: A fake library requiring another one, to test pkg-config.
+Version: 1.2.3
+Requires.private: teststaticlib
+Libs: -L${libdir} -ltestrequires

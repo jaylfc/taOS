@@ -1,0 +1,5 @@
+error: async blocks need to capture variables by move. Please add the `move` keyword
+ --> tests/clone_compiletest/18-clone-async-no-move.rs:4:25
+  |
+4 |     clone!(#[strong] v, async {println!("foo");});
+  |                         ^^^^^^^^^^^^^^^^^^^^^^^^

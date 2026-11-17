@@ -1,0 +1,5 @@
+error: `upgrade_or_else` closure needs to be a non-async closure
+ --> tests/clone_compiletest/16-clone-upgrade-or-else-async.rs:4:31
+  |
+4 |     clone!(#[upgrade_or_else] async || lol, #[strong] v, move || {println!("foo");});
+  |                               ^^^^^^^^^^^^

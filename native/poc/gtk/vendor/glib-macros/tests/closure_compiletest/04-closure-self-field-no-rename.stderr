@@ -1,0 +1,5 @@
+error: capture attribute for an expression requires usage of the `rename_to` attribute property
+ --> tests/closure_compiletest/04-closure-self-field-no-rename.rs:4:14
+  |
+4 |     closure!(#[strong] self.v, move |x| {});
+  |              ^^^^^^^^^

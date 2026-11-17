@@ -1,0 +1,5 @@
+error: capture attribute for `self` requires usage of the `rename_to` attribute property
+ --> tests/clone_compiletest/03-clone-self-no-rename.rs:4:12
+  |
+4 |     clone!(#[strong] self, move |x| {});
+  |            ^^^^^^^^^
