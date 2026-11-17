@@ -17,6 +17,7 @@ import logging
 import httpx
 from fastapi import APIRouter, Request, WebSocket
 from fastapi.responses import RedirectResponse, StreamingResponse
+
 from tinyagentos.issued_cookies import TAOS_ISSUED_COOKIES
 
 logger = logging.getLogger(__name__)
@@ -58,7 +59,7 @@ def _strip_taos_cookies(cookie_header: str) -> str:
     jar = SimpleCookie()
     try:
         jar.load(cookie_header)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return cookie_header
     for name in _STRIPPED_COOKIES:
         jar.pop(name, None)
@@ -140,6 +141,9 @@ async def service_proxy(app_id: str, path: str, request: Request):
         return _json_error(f"Upstream {app_id} timed out", 504)
 
     resp_headers = _filter_headers(dict(upstream_resp.headers))
+    # CSP sandbox for direct top-level navigation to /apps/{id}/: enforce an
+    # opaque origin (no allow-same-origin) while allowing scripts/forms/popups.
+    resp_headers["Content-Security-Policy"] = "sandbox allow-scripts allow-forms allow-popups"
 
     # Rewrite Location headers so redirects stay within /apps/{app_id}/.
     # - Absolute upstream URLs (http://<host>:<port>/foo)  → /apps/{app_id}/foo

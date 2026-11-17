@@ -44,7 +44,7 @@ describe("ServiceAppWindow", () => {
     const sandbox = iframe.getAttribute("sandbox") ?? "";
     expect(sandbox).toContain("allow-scripts");
     expect(sandbox).toContain("allow-forms");
-    expect(sandbox).toContain("allow-same-origin");
+    expect(sandbox).not.toContain("allow-same-origin");
     expect(sandbox).toContain("allow-popups");
     expect(sandbox).toContain("allow-downloads");
 
