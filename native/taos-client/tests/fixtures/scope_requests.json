@@ -1,0 +1,1 @@
+{"requests": [{"id": "sr_1", "canonical_id": "agent-a", "requested_scopes": ["files_write"], "project_id": "prj_1", "reason": "write notes", "status": "pending", "granted_scopes": null, "created_ts": 1760000000.0, "decided_ts": null, "deny_reason": null, "agent_display_name": "Agent A"}]}

@@ -1,0 +1,2 @@
+{"id": "dec_1", "from_agent": "agent-a", "question": "Which database?", "type": "single_select", "options": [], "priority": "blocking", "status": "answered",
+ "answer": {"value": "pg", "answered_by": "usr_1", "answered_at": 1760000600.0, "source": "in_app", "other_value": null, "note": null}, "created_at": 1760000000.25, "notes": []}

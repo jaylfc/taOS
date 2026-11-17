@@ -1,0 +1,7 @@
+{"models": [
+  {"id": "qwen-7b", "name": "Qwen 7B", "version": "1", "description": "chat model", "capabilities": ["chat"], "hardware_tiers": {}, "compatibility": "yellow", "has_downloaded_variant": false,
+   "variants": [{"id": "q4", "size_mb": 4200, "format": "gguf", "downloaded": false, "compatibility": "yellow", "sha256": "x"}, {"id": "q2", "size_mb": 2600, "format": "gguf", "downloaded": false, "compatibility": "green"}]},
+  {"id": "mystery", "name": "Mystery", "description": null, "capabilities": [], "compatibility": "purple", "variants": [{"id": "v", "size_mb": null, "format": "bin"}]}
+ ],
+ "downloaded_files": [{"filename": "qwen-7b-q4.gguf", "size_mb": 4200.5, "format": "gguf", "path": "/data/models/qwen-7b-q4.gguf", "model_id": "qwen-7b", "relative_path": "qwen-7b-q4.gguf"}],
+ "hardware_profile_id": "arm64-cpu-16gb"}

@@ -1,0 +1,1 @@
+{"loaded": [{"name": "qwen3:4b", "backend": "ollama-local", "backend_type": "ollama", "backend_url": "http://x", "purpose": "chat", "size_mb": 2600, "vram_mb": 0, "ram_mb": 2600, "expires_at": null, "details": {}}, {"name": "m2", "backend": "llama-swap", "size_mb": null, "vram_mb": null, "ram_mb": null}]}
