@@ -17,6 +17,7 @@ import logging
 import httpx
 from fastapi import APIRouter, Request, WebSocket
 from fastapi.responses import RedirectResponse, StreamingResponse
+
 from tinyagentos.issued_cookies import TAOS_ISSUED_COOKIES
 
 logger = logging.getLogger(__name__)
@@ -161,6 +162,10 @@ async def service_proxy(app_id: str, path: str, request: Request):
             elif ui_path and ui_path != "/" and loc_header == ui_path.rstrip("/"):
                 loc_header = "/"
             resp_headers["location"] = f"/apps/{app_id}{loc_header}"
+
+    # Add CSP sandbox directive to isolate the proxied app even on direct navigation.
+    # No allow-same-origin: the framed document gets an opaque origin.
+    resp_headers["content-security-policy"] = "sandbox allow-scripts allow-forms allow-popups"
 
     from starlette.background import BackgroundTask
     return StreamingResponse(

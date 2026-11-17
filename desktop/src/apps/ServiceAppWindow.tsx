@@ -29,7 +29,7 @@ export function ServiceAppWindow({ windowId }: Props) {
       src={url}
       title={displayName}
       className="w-full h-full border-0"
-      sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-downloads"
+      sandbox="allow-scripts allow-forms allow-popups allow-downloads"
       allow="clipboard-write; fullscreen"
     />
   );

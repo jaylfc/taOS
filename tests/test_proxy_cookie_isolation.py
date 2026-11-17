@@ -225,3 +225,80 @@ def test_the_scanner_resolves_a_name_held_in_a_constant(tmp_path):
         "held_as_a_literal",
         "held_as_a_kwarg",
     }
+
+
+# ---------------------------------------------------------------------------
+# Service proxy CSP sandbox header
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_service_proxy_csp_has_sandbox_without_allow_same_origin(tmp_path):
+    """GET through /apps/{app_id}/ returns CSP with sandbox directive but no allow-same-origin.
+
+    The proxy must add 'Content-Security-Policy: sandbox allow-scripts allow-forms allow-popups'
+    (no allow-same-origin) so a direct top-level navigation to the app URL is isolated too.
+    """
+    from tinyagentos.app import create_app
+    from httpx import AsyncClient, ASGITransport
+
+    app = create_app(data_dir=tmp_path)
+
+    # Initialise stores
+    store = app.state.metrics
+    if store._db is not None:
+        await store.close()
+    await store.init()
+    await app.state.qmd_client.init()
+
+    installed_apps = app.state.installed_apps
+    if installed_apps._db is not None:
+        await installed_apps.close()
+    await installed_apps.init()
+
+    app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
+    rec = app.state.auth.find_user("admin")
+    token = app.state.auth.create_session(
+        user_id=rec["id"] if rec else "", long_lived=True
+    )
+
+    # Install a test app and give it a runtime location
+    await installed_apps.install("testapp", "1.0")
+    await installed_apps.update_runtime_location("testapp", host="127.0.0.1", port=13000)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url="http://test", cookies={"taos_session": token}
+    ) as client:
+        # Mock the upstream HTTP client to return a simple response
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {"content-type": "text/html"}
+
+        async def _iter():
+            yield b"<html>test</html>"
+
+        mock_resp.aiter_bytes = _iter
+        mock_resp.aclose = AsyncMock()
+
+        mock_client = MagicMock()
+        mock_client.build_request = MagicMock(return_value=MagicMock(url="http://127.0.0.1:13000/"))
+        mock_client.send = AsyncMock(return_value=mock_resp)
+
+        with patch("tinyagentos.routes.service_proxy._http_client", mock_client):
+            resp = await client.get("/apps/testapp/")
+
+        assert resp.status_code == 200
+        csp = resp.headers.get("content-security-policy", "").lower()
+        assert "sandbox" in csp, f"CSP missing sandbox directive: {csp}"
+        assert "allow-scripts" in csp, f"CSP missing allow-scripts: {csp}"
+        assert "allow-forms" in csp, f"CSP missing allow-forms: {csp}"
+        assert "allow-popups" in csp, f"CSP missing allow-popups: {csp}"
+        assert "allow-same-origin" not in csp, f"CSP must not contain allow-same-origin: {csp}"
+
+    await installed_apps.close()
+    await store.close()
+    await app.state.qmd_client.close()
+    await app.state.http_client.aclose()
