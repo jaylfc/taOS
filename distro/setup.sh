@@ -118,3 +118,9 @@ if [ -n "${TAOS_POWER_PROFILE:-}" ]; then
     taos-power set "$TAOS_POWER_PROFILE"
 fi
 taos-power status
+
+# Step 7: wallpapers (taos-wallpapers): the approved taOS wallpaper set, dark and
+# light, pre-rendered for desktop, ultrawide and phone. `taos-wallpaper path`
+# prints the file for a size; the compositor session picks it up from there.
+apt-get install -y --reinstall "$here"/dist/taos-wallpapers_*_all.deb
+taos-wallpaper list
