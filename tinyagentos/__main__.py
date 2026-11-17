@@ -20,6 +20,10 @@ GRACEFUL_SHUTDOWN_SECS = 5
 
 
 def main() -> None:
+    # Configure logging as early as possible so all start paths (single-port,
+    # dual-port, factory, test client) get the same format and level.
+    configure_logging()
+
     env_host = os.environ.get("TAOS_HOST")
     env_port = os.environ.get("TAOS_PORT")
     env_data_dir = os.environ.get("TAOS_DATA_DIR")
@@ -97,8 +101,6 @@ def main() -> None:
         if hasattr(app, "state"):
             app.state.browser_proxy_port = 0
         import uvicorn
-
-        configure_logging()
 
         # backlog=128 -- see issue #323. Keeps the kernel accept queue from
         # silently growing into the thousands if the event loop ever wedges.

@@ -7,15 +7,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
-
 import yaml
 
 logger = logging.getLogger(__name__)
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi import HTTPException, Depends
 
 
 class _CacheAwareStaticFiles(StaticFiles):
@@ -58,85 +56,106 @@ class _CacheAwareStaticFiles(StaticFiles):
             )
         return response
 
-from tinyagentos.auth import AuthManager
-from tinyagentos.auth_context import current_user, require_owner_or_admin
-from tinyagentos.backend_fallback import BackendFallback
-from tinyagentos.capabilities import CapabilityChecker
-from tinyagentos.cluster.manager import ClusterManager
-from tinyagentos.vram_reservation import VramReservationManager
-from tinyagentos.cluster.router import TaskRouter
-from tinyagentos.config import auto_register_from_manifest, load_config, save_config, save_config_locked
-from tinyagentos.lifecycle_manager import LifecycleManager
-from tinyagentos.channels import ChannelStore
-from tinyagentos.download_manager import DownloadManager
-from tinyagentos.metrics import MetricsStore
-from tinyagentos.notifications import NotificationStore
-from tinyagentos.notifications_push import NotificationPushStore
-from tinyagentos.coding_workspaces import CodingWorkspaceStore
-from tinyagentos.install_registry import InstallRegistryStore
-from tinyagentos.app_containers import AppContainersStore
-from tinyagentos.store_submissions import StoreSubmissionStore
-from tinyagentos.qmd_client import QmdClient
-from tinyagentos.backend_adapters import check_backend_health
-from tinyagentos.benchmark import BenchmarkStore
-from tinyagentos.installation_state import InstallationState
-from tinyagentos.scheduler import BackendCatalog, HistoryStore, ScoreCache, TaskScheduler
-from tinyagentos.scheduler.discovery import build_scheduler as build_resource_scheduler
-from tinyagentos.scheduler.gpu_arbiter import GpuArbiter
-from tinyagentos.torrent_settings import TorrentSettingsStore
-from tinyagentos.relationships import RelationshipManager
-from tinyagentos.github_identities import GitHubIdentitiesStore
-from tinyagentos.github_app_installations import GitHubAppInstallations
-from tinyagentos.broker import BrokerService, BrokerStore
-from tinyagentos.broker.store import default_broker_path
-from tinyagentos.secrets import SecretsStore
-from tinyagentos.mail_store import MailAccountStore
-from tinyagentos.training import TrainingManager
-from tinyagentos.conversion import ConversionManager
-from tinyagentos.agent_messages import AgentMessageStore
-from tinyagentos.shared_folders import SharedFolderManager
-from tinyagentos.streaming import StreamingSessionStore
-from tinyagentos.expert_agents import ExpertAgentStore
-from tinyagentos.app_orchestrator import AppOrchestrator
-from tinyagentos.computer_use import ComputerUseManager
-from tinyagentos.webhook_notifier import WebhookNotifier
-from tinyagentos.llm_proxy import LLMProxy
-from tinyagentos.agent_image import ensure_all_base_images_present as _ensure_agent_images_present
+from tinyagentos.agent_image import (
+    ensure_all_base_images_present as _ensure_agent_images_present,
+)
 from tinyagentos.agent_image import is_prefetch_enabled as _is_prefetch_enabled
 from tinyagentos.agent_image import register_prefetch_endpoint
+from tinyagentos.agent_messages import AgentMessageStore
+from tinyagentos.app_containers import AppContainersStore
+from tinyagentos.app_orchestrator import AppOrchestrator
+from tinyagentos.auth import AuthManager
+from tinyagentos.auth_context import current_user, require_owner_or_admin
 from tinyagentos.auto_update import AutoUpdateService
-from tinyagentos.restart_orchestrator import RestartOrchestrator, apply_pending_restart_check, resume_agents_from_notes
-from tinyagentos.channel_hub.router import MessageRouter
-from tinyagentos.channel_hub.adapter_manager import AdapterManager
-from tinyagentos.chat.message_store import ChatMessageStore
-from tinyagentos.chat.channel_store import ChatChannelStore
-from tinyagentos.chat.peer_outbox import PeerOutboxStore
-from tinyagentos.chat.hub import ChatHub
-from tinyagentos.chat.canvas import CanvasStore
-from tinyagentos.desktop_settings import DesktopSettingsStore
-from tinyagentos.feedback_store import FeedbackStore
-from tinyagentos.client_log_store import ClientLogStore
-from tinyagentos.user_memory import UserMemoryStore
-from tinyagentos.user_personas import UserPersonaStore
-from tinyagentos.installed_apps import InstalledAppsStore
-from tinyagentos.skills import SkillStore
-from tinyagentos.office_docs import OfficeDocStore
-from tinyagentos.contacts_store import ContactsStore
-from tinyagentos.web_sites import WebSiteStore
-from tinyagentos.music_songs import SongStore
-from tinyagentos.lora_store import LoraStore
-from tinyagentos.design_docs import DesignStore
-from tinyagentos.knowledge_store import KnowledgeStore
-from tinyagentos.knowledge_ingest import IngestPipeline
-from tinyagentos.knowledge_categories import CategoryEngine
-from tinyagentos.knowledge_monitor import MonitorService
+from tinyagentos.backend_adapters import check_backend_health
+from tinyagentos.backend_fallback import BackendFallback
+from tinyagentos.benchmark import BenchmarkStore
 from tinyagentos.bluez_bus import close_system_bus
+from tinyagentos.broker import BrokerService, BrokerStore
+from tinyagentos.broker.store import default_broker_path
+from tinyagentos.capabilities import CapabilityChecker
+from tinyagentos.channel_hub.adapter_manager import AdapterManager
+from tinyagentos.channel_hub.router import MessageRouter
+from tinyagentos.channels import ChannelStore
+from tinyagentos.chat.canvas import CanvasStore
+from tinyagentos.chat.channel_store import ChatChannelStore
+from tinyagentos.chat.hub import ChatHub
+from tinyagentos.chat.message_store import ChatMessageStore
+from tinyagentos.chat.peer_outbox import PeerOutboxStore
+from tinyagentos.client_log_store import ClientLogStore
+from tinyagentos.cluster.manager import ClusterManager
+from tinyagentos.cluster.router import TaskRouter
+from tinyagentos.coding_workspaces import CodingWorkspaceStore
+from tinyagentos.computer_use import ComputerUseManager
+from tinyagentos.config import (
+    auto_register_from_manifest,
+    load_config,
+    save_config,
+    save_config_locked,
+)
+from tinyagentos.contacts_store import ContactsStore
+from tinyagentos.conversion import ConversionManager
+from tinyagentos.design_docs import DesignStore
+from tinyagentos.desktop_settings import DesktopSettingsStore
+from tinyagentos.download_manager import DownloadManager
+from tinyagentos.expert_agents import ExpertAgentStore
+from tinyagentos.feedback_store import FeedbackStore
+from tinyagentos.frameworks import (
+    FRAMEWORKS,
+    FrameworkManifestError,
+    validate_framework_manifest,
+)
+from tinyagentos.github_app_installations import GitHubAppInstallations
+from tinyagentos.github_identities import GitHubIdentitiesStore
+from tinyagentos.install_registry import InstallRegistryStore
+from tinyagentos.installation_state import InstallationState
+from tinyagentos.installed_apps import InstalledAppsStore
+from tinyagentos.knowledge_categories import CategoryEngine
+from tinyagentos.knowledge_ingest import IngestPipeline
+from tinyagentos.knowledge_monitor import MonitorService
+from tinyagentos.knowledge_store import KnowledgeStore
+from tinyagentos.lifecycle_manager import LifecycleManager
+from tinyagentos.llm_proxy import LLMProxy
+from tinyagentos.logging_config import configure_logging
+from tinyagentos.lora_store import LoraStore
+from tinyagentos.mail_store import MailAccountStore
 from tinyagentos.mcp import MCPServerStore, MCPSupervisor
 from tinyagentos.mcp.marketplace import (
     MCPMarketplace,
     MCPRegistry,
 )
-from tinyagentos.frameworks import FRAMEWORKS, FrameworkManifestError, validate_framework_manifest
+from tinyagentos.metrics import MetricsStore
+from tinyagentos.music_songs import SongStore
+from tinyagentos.notifications import NotificationStore
+from tinyagentos.notifications_push import NotificationPushStore
+from tinyagentos.office_docs import OfficeDocStore
+from tinyagentos.qmd_client import QmdClient
+from tinyagentos.relationships import RelationshipManager
+from tinyagentos.restart_orchestrator import (
+    RestartOrchestrator,
+    apply_pending_restart_check,
+    resume_agents_from_notes,
+)
+from tinyagentos.scheduler import (
+    BackendCatalog,
+    HistoryStore,
+    ScoreCache,
+    TaskScheduler,
+)
+from tinyagentos.scheduler.discovery import build_scheduler as build_resource_scheduler
+from tinyagentos.scheduler.gpu_arbiter import GpuArbiter
+from tinyagentos.secrets import SecretsStore
+from tinyagentos.shared_folders import SharedFolderManager
+from tinyagentos.skills import SkillStore
+from tinyagentos.store_submissions import StoreSubmissionStore
+from tinyagentos.streaming import StreamingSessionStore
+from tinyagentos.torrent_settings import TorrentSettingsStore
+from tinyagentos.training import TrainingManager
+from tinyagentos.user_memory import UserMemoryStore
+from tinyagentos.user_personas import UserPersonaStore
+from tinyagentos.vram_reservation import VramReservationManager
+from tinyagentos.web_sites import WebSiteStore
+from tinyagentos.webhook_notifier import WebhookNotifier
 
 PROJECT_DIR = Path(__file__).parent.parent
 
@@ -176,11 +195,14 @@ def resolve_data_dir(data_dir: Path | None = None) -> Path:
 _STARTUP_EXEMPT_PATHS = frozenset({"/api/health", "/api/version", "/setup"})
 _STARTUP_EXEMPT_PREFIXES = ("/static/", "/desktop/", "/chat-pwa/", "/ws/", "/auth/", "/setup/", "/shortcut/")
 
-from tinyagentos.task_utils import _create_supervised_task, cancel_and_wait  # noqa: E402
-from tinyagentos.routes import device_state  # noqa: E402
+from tinyagentos.routes import device_state
+from tinyagentos.task_utils import (
+    _create_supervised_task,
+    cancel_and_wait,
+)
 
 
-def _resolve_browser_cookie_key(data_dir: "Path") -> str:
+def _resolve_browser_cookie_key(data_dir: Path) -> str:
     """Resolve the SQLCipher key for the browser cookie store.
 
     Precedence:
@@ -220,8 +242,12 @@ def _resolve_browser_cookie_key(data_dir: "Path") -> str:
 
 
 def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) -> FastAPI:
-    from tinyagentos.registry import AppRegistry
+    # Configure logging for all start paths (factory, test client, python -m tinyagentos).
+    # Idempotent: safe to call multiple times.
+    configure_logging()
+
     from tinyagentos.hardware import get_hardware_profile
+    from tinyagentos.registry import AppRegistry
 
     data_dir = resolve_data_dir(data_dir)
     # Root the process-global taosmd agent registry at the app's resolved
@@ -344,7 +370,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         catalog_dir=catalog_dir, installed_path=installed_path, signing_key=None,
     )
 
-    from tinyagentos.agent_registry_store import AgentRegistryStore, load_or_create_signing_keypair
+    from tinyagentos.agent_registry_store import (
+        AgentRegistryStore,
+        load_or_create_signing_keypair,
+    )
 
     agent_registry_store = AgentRegistryStore(data_dir / "agent_registry.db")
     agent_registry_keypair = load_or_create_signing_keypair(data_dir)
@@ -418,8 +447,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     score_cache = ScoreCache(benchmark_store, poll_interval_seconds=15.0)
     scheduler_history_store = HistoryStore(data_dir / "scheduler_history.db")
 
-    from tinyagentos.council.role_registry import RoleRegistry
     from tinyagentos.council.member_store import MemberStore
+    from tinyagentos.council.role_registry import RoleRegistry
     council_role_registry = RoleRegistry(data_dir / "council.db")
     council_member_store = MemberStore(data_dir / "council.db")
 
@@ -477,14 +506,16 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     peer_outbox_store = PeerOutboxStore(data_dir / "peer_outbox.db")
     from tinyagentos.chat.guest_outbox import GuestOutbox, prune_loop
     guest_outbox = GuestOutbox(data_dir / "guest_outbox.db")
-    from tinyagentos.projects.project_store import ProjectStore
-    from tinyagentos.projects.task_store import ProjectTaskStore
+    from tinyagentos.projects.canvas.snapshotter import CanvasSnapshotter
+    from tinyagentos.projects.canvas.store import (
+        ProjectCanvasStore as ProjectCanvasStoreImpl,
+    )
+    from tinyagentos.projects.doc_review_store import DocReviewStore
     from tinyagentos.projects.element_store import ProjectElementStore
     from tinyagentos.projects.events import ProjectEventBroker
-    from tinyagentos.projects.canvas.store import ProjectCanvasStore as ProjectCanvasStoreImpl
-    from tinyagentos.projects.canvas.snapshotter import CanvasSnapshotter
-    from tinyagentos.projects.doc_review_store import DocReviewStore
     from tinyagentos.projects.invite_store import ProjectInviteStore
+    from tinyagentos.projects.project_store import ProjectStore
+    from tinyagentos.projects.task_store import ProjectTaskStore
     project_store = ProjectStore(data_dir / "projects.db")
     project_invite_store = ProjectInviteStore(data_dir / "project_invites.db")
     project_event_broker = ProjectEventBroker()
@@ -512,7 +543,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     doc_review_store = DocReviewStore(data_dir / "projects.db")
     from tinyagentos.projects.notes_store import ProjectNotesStore
     project_notes_store = ProjectNotesStore(data_dir / "projects.db")
-    from tinyagentos.projects.lists_store import ProjectListsStore, ProjectListEntriesStore
+    from tinyagentos.projects.lists_store import (
+        ProjectListEntriesStore,
+        ProjectListsStore,
+    )
     project_lists_store = ProjectListsStore(data_dir / "projects.db")
     project_list_entries_store = ProjectListEntriesStore(data_dir / "projects.db")
     from tinyagentos.decisions.decision_store import DecisionStore
@@ -549,8 +583,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     installed_apps = InstalledAppsStore(data_dir / "installed_apps.db")
     feedback_store = FeedbackStore(data_dir / "feedback.db")
     client_log_store = ClientLogStore(data_dir / "client_logs.db")
-    from tinyagentos.userspace.store import UserspaceAppStore
     from tinyagentos.userspace.data_store import UserspaceDataStore
+    from tinyagentos.userspace.store import UserspaceAppStore
     userspace_apps = UserspaceAppStore(data_dir / "userspace_apps.db")
     userspace_data = UserspaceDataStore(data_dir / "userspace_data.db")
     office_docs = OfficeDocStore(data_dir / "office_docs.db")
@@ -808,8 +842,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # host_hardware on app.state, and fold existing agent_browsers profiles
         # into the unified session store (idempotent on each restart).
         try:
-            from tinyagentos.services.mdns_publisher import _detect_primary_ipv4
             from tinyagentos.browser_sessions import wire_browser_runtime
+            from tinyagentos.services.mdns_publisher import _detect_primary_ipv4
             _host_ips = _detect_primary_ipv4()
             _host_ip = _host_ips[0] if _host_ips else "127.0.0.1"
             await wire_browser_runtime(
@@ -835,8 +869,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # call PRAGMA rekey to re-encrypt existing DB with the per-user
         # key, or wipe browser_cookies.sqlite3 and accept one-time logout.
         from tinyagentos.routes.desktop_browser.store import (
-            BrowserStore,
             BrowserCookieStore,
+            BrowserStore,
         )
         browser_store = BrowserStore(data_dir / "browser.sqlite3")
         await browser_store.init()
@@ -850,11 +884,16 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await browser_cookie_store.init()
         app.state.browser_cookie_store = browser_cookie_store
 
-        from tinyagentos.routes.desktop_browser.copilot_ws import CopilotTicketStore, CopilotHub
+        from tinyagentos.routes.desktop_browser.copilot_ws import (
+            CopilotHub,
+            CopilotTicketStore,
+        )
         app.state.copilot_ticket_store = CopilotTicketStore()
         app.state.copilot_hub = CopilotHub()
 
-        from tinyagentos.routes.desktop_browser.vapid import load_or_create_vapid_keypair
+        from tinyagentos.routes.desktop_browser.vapid import (
+            load_or_create_vapid_keypair,
+        )
         app.state.vapid_keypair = load_or_create_vapid_keypair(data_dir)
 
         await benchmark_store.init()
@@ -1163,9 +1202,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await cluster_manager.start()
         # Enroll this controller as the 'local' cluster worker so route-layer
         # code (get_local_worker) picks up the in-memory signing key.
+        from dataclasses import asdict as _asdict
+
         from tinyagentos.cluster.local_worker import enroll_local_worker
         from tinyagentos.cluster.worker_registry import set_active_manager
-        from dataclasses import asdict as _asdict
         _bind_port = config.server.get("port", 6969)
         # Give the local worker the controller's own hardware + backends so the
         # Cluster view shows the host's real CPU/RAM/NPU and loaded backends.
@@ -1243,8 +1283,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # SpanStoreRegistry is created here (lifespan) and stored on app.state
         # so both the /v1/traces receiver route and the /otel-spans read route
         # share the same registry instance.
-        from tinyagentos.otel.receiver import setup_receiver
         from tinyagentos.otel.emitter import OTelEmitter
+        from tinyagentos.otel.receiver import setup_receiver
         _span_registry = setup_receiver(app.state, data_dir)
         # Wire the emitter into each AgentTraceStore so record() → emit() works.
         # Emitter points at this process's own /v1/traces route (same port as the
@@ -1361,8 +1401,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # Disk quota monitor — build and attach to app state so the route
         # handler can reuse the same instance (preserves in-memory last_state).
         try:
+            from tinyagentos.containers.backend import (
+                get_backend as _get_container_backend,
+            )
             from tinyagentos.disk_quota import DiskQuotaMonitor
-            from tinyagentos.containers.backend import get_backend as _get_container_backend
             _dq_backend = _get_container_backend()
             app.state.disk_quota_monitor = DiskQuotaMonitor(config, _dq_backend, notif_store)
         except Exception:
@@ -1423,7 +1465,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         from tinyagentos.agent_heartbeat import agent_heartbeat_loop
         _create_supervised_task(agent_heartbeat_loop(app.state), app.state._background_tasks)
 
-        from tinyagentos.projects.dispatcher import DispatcherService, dispatcher_tick_loop
+        from tinyagentos.projects.dispatcher import (
+            DispatcherService,
+            dispatcher_tick_loop,
+        )
         app.state.dispatcher_service = DispatcherService(app.state)
         _create_supervised_task(dispatcher_tick_loop(app.state), app.state._background_tasks)
 
@@ -1517,8 +1562,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # best-effort: keypair-load failure disables push but never blocks
         # startup, and the sender itself is dispatched off-loop inside add().
         try:
-            from tinyagentos.routes.desktop_browser.vapid import load_or_create_vapid_keypair
-            from tinyagentos.notifications_push import send_web_push, send_device_push
+            from tinyagentos.notifications_push import send_device_push, send_web_push
+            from tinyagentos.routes.desktop_browser.vapid import (
+                load_or_create_vapid_keypair,
+            )
 
             app.state.notif_vapid_keypair = load_or_create_vapid_keypair(
                 data_dir, filename="notif_vapid.pem"
@@ -1567,7 +1614,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # go back to). A no-op unless __main__ recorded the listener port.
         from tinyagentos.llm_gateway.cutover import run_startup_reconcile
         _create_supervised_task(run_startup_reconcile(app.state), app.state._background_tasks)
-        from tinyagentos.agent_controller_listener import run_startup_reconcile as _agent_ctl_reconcile
+        from tinyagentos.agent_controller_listener import (
+            run_startup_reconcile as _agent_ctl_reconcile,
+        )
         _create_supervised_task(_agent_ctl_reconcile(app.state), app.state._background_tasks)
 
         app.state._startup_complete = True
@@ -1785,7 +1834,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     from tinyagentos.auth import AuthStoreCorruptError
 
     @app.exception_handler(AuthStoreCorruptError)
-    async def _account_store_unreadable(request, exc):  # noqa: ANN001
+    async def _account_store_unreadable(request, exc):
         logger.error("account store unreadable serving %s: %s", request.url.path, exc)
         return JSONResponse(
             {
@@ -1830,8 +1879,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     # the lifespan has finished initialising app state.  Added last so it is
     # outermost (Starlette wraps in reverse add_middleware order) and runs
     # before auth, preventing partially-constructed state from reaching routes.
-    from starlette.middleware.base import BaseHTTPMiddleware
     from fastapi.responses import JSONResponse as _JSONResponse
+    from starlette.middleware.base import BaseHTTPMiddleware
 
     class _StartupGuardMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request, call_next):
@@ -1943,7 +1992,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.todo_store = todo_store
     app.state.coding_session_store = coding_session_store
     app.state.container_request_store = container_request_store
-    from tinyagentos.containers.provisioning_policy import PolicyConfig, ProvisioningPolicy
+    from tinyagentos.containers.provisioning_policy import (
+        PolicyConfig,
+        ProvisioningPolicy,
+    )
     app.state.provisioning_policy = ProvisioningPolicy(
         PolicyConfig.from_app_config(config)
     )
