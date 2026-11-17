@@ -1,0 +1,10 @@
+[source.crates-io]
+replace-with = "vendored-sources"
+[source.vendored-sources]
+directory = "vendor"
+[net]
+offline = true
+
+# Only affects dependency resolution (cargo >= 1.84): prefer versions whose rust-version fits ours.
+[resolver]
+incompatible-rust-versions = "fallback"

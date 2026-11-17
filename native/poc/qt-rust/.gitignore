@@ -1,0 +1,5 @@
+# Reproduced by ./vendor.sh from Cargo.lock; one vendored crate carries a
+# package-lock.json that the repo commit hook refuses.
+vendor/
+target/
+out/

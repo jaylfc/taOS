@@ -1,0 +1,2 @@
+FROM poc-qt-alpine
+RUN apk add --no-cache rust cargo

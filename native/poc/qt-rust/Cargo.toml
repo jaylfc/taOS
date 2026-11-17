@@ -1,0 +1,22 @@
+[package]
+name = "taos-poc-qt-rust"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+build = "build.rs"
+
+[[bin]]
+name = "taos-poc-qt-rust"
+path = "src/main.rs"
+
+[dependencies]
+cxx = "1"
+cxx-qt = "=0.10.0"
+cxx-qt-lib = { version = "=0.10.0", features = ["qt_gui", "qt_qml"] }
+
+[build-dependencies]
+cxx-qt-build = { version = "=0.10.0" }
+
+[profile.release]
+opt-level = 2
+strip = true
