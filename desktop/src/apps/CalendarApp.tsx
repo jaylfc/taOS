@@ -27,40 +27,52 @@ function getFirstDayOfWeek(year: number, month: number) {
   return day === 0 ? 6 : day - 1;
 }
 
+function formatDateKey(d: Date): string {
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+}
+
 export function CalendarApp({ windowId: _windowId }: { windowId: string }) {
   const today = new Date();
   const [viewYear, setViewYear] = useState(today.getFullYear());
   const [viewMonth, setViewMonth] = useState(today.getMonth());
+  const [selectedKey, setSelectedKey] = useState(formatDateKey(today));
 
   const daysInMonth = getDaysInMonth(viewYear, viewMonth);
   const startOffset = getFirstDayOfWeek(viewYear, viewMonth);
 
   const prevDays = getDaysInMonth(
     viewMonth === 0 ? viewYear - 1 : viewYear,
-    viewMonth === 0 ? 11 : viewMonth - 1
+    viewMonth === 0 ? 11 : viewMonth - 1,
   );
 
-  const cells: { day: number; current: boolean; isToday: boolean }[] = [];
+  const cells: { day: number; current: boolean; isToday: boolean; key: string }[] = [];
 
   // Leading days from previous month
   for (let i = startOffset - 1; i >= 0; i--) {
-    cells.push({ day: prevDays - i, current: false, isToday: false });
+    const d = new Date(
+      viewMonth === 0 ? viewYear - 1 : viewYear,
+      viewMonth === 0 ? 11 : viewMonth - 1,
+      prevDays - i,
+    );
+    cells.push({ day: prevDays - i, current: false, isToday: false, key: formatDateKey(d) });
   }
 
   // Current month days
   for (let d = 1; d <= daysInMonth; d++) {
+    const date = new Date(viewYear, viewMonth, d);
     const isToday =
       d === today.getDate() &&
       viewMonth === today.getMonth() &&
       viewYear === today.getFullYear();
-    cells.push({ day: d, current: true, isToday });
+    cells.push({ day: d, current: true, isToday, key: formatDateKey(date) });
   }
 
   // Trailing days to fill last row
   const remaining = 7 - (cells.length % 7);
   if (remaining < 7) {
     for (let d = 1; d <= remaining; d++) {
-      cells.push({ day: d, current: false, isToday: false });
+      const date = new Date(viewYear, viewMonth, daysInMonth + d);
+      cells.push({ day: d, current: false, isToday: false, key: formatDateKey(date) });
     }
   }
 
@@ -85,7 +97,15 @@ export function CalendarApp({ windowId: _windowId }: { windowId: string }) {
   function goToday() {
     setViewYear(today.getFullYear());
     setViewMonth(today.getMonth());
+    setSelectedKey(formatDateKey(today));
   }
+
+  function onDaySelect(key: string) {
+    setSelectedKey(key);
+  }
+
+  const selectedDate = new Date(selectedKey);
+  const heading = `${MONTHS[selectedDate.getMonth()]} ${selectedDate.getDate()}, ${selectedDate.getFullYear()}`;
 
   return (
     <div className="flex flex-col h-full bg-shell-bg-deep text-shell-text select-none p-4 gap-4">
@@ -129,26 +149,50 @@ export function CalendarApp({ windowId: _windowId }: { windowId: string }) {
 
       {/* Day grid */}
       <div className="grid grid-cols-7 flex-1 gap-px">
-        {cells.map((cell, i) => (
-          <div
-            key={i}
-            className={`flex items-start justify-center pt-2 rounded-lg text-sm transition-colors ${
-              cell.current
-                ? "text-shell-text hover:bg-shell-surface"
-                : "text-shell-text-tertiary"
-            }`}
-          >
-            <span
-              className={`w-8 h-8 flex items-center justify-center rounded-full ${
-                cell.isToday
-                  ? "bg-accent text-white font-semibold"
-                  : ""
+        {cells.map((cell) => {
+          const selected = cell.key === selectedKey;
+          return (
+            <div
+              key={cell.key}
+              className={`flex items-start justify-center pt-2 rounded-lg text-sm transition-colors ${
+                cell.current
+                  ? "text-shell-text hover:bg-shell-surface"
+                  : "text-shell-text-tertiary"
               }`}
             >
-              {cell.day}
-            </span>
-          </div>
-        ))}
+              <button
+                type="button"
+                onClick={() => onDaySelect(cell.key)}
+                aria-selected={selected}
+                aria-label={`${heading} ${cell.current ? "" : "(other month)"}${
+                  cell.isToday ? ", today" : ""
+                }`}
+                className={`relative h-8 w-8 flex items-center justify-center rounded-full text-sm font-medium transition-colors ${
+                  selected
+                    ? "bg-accent text-white"
+                    : cell.isToday
+                      ? "bg-accent/20 text-accent"
+                      : cell.current
+                        ? "text-shell-text hover:bg-white/[0.06]"
+                        : "text-shell-text-tertiary"
+                }`}
+              >
+                {cell.day}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Day panel / agenda — shows for the selected date, even with no events */}
+      <div
+        id="calendar-day-panel"
+        role="tabpanel"
+        aria-label={`Agenda for ${heading}`}
+        className="shrink-0 border-t border-white/5 pt-3"
+      >
+        <h3 className="text-sm font-semibold mb-2">{heading}</h3>
+        <p className="text-xs text-shell-text-tertiary">No events.</p>
       </div>
     </div>
   );

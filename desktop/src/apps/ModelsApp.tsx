@@ -244,6 +244,7 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
   const [downloaded, setDownloaded] = useState<DownloadedModel[]>([]);
   const [available, setAvailable] = useState<AvailableModel[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [source, setSource] = useState<SourceFilter>("all");
   const [subFilter, setSubFilter] = useState<string | null>(null);
@@ -275,6 +276,22 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
     // union (controller + workers + cloud) is ready in a single state flip.
     const workersPromise = fetchClusterWorkers();
     const providersPromise = fetchCloudProviders();
+
+    // Commit helper: applies state only when this is still the latest call,
+    // so a stale response can never clobber a fresher one (see fetchSeqRef).
+    let errMsg: string | null = null;
+    const commit = (
+      downloadedList: DownloadedModel[],
+      availableList: AvailableModel[],
+      fallback: boolean,
+      err: string | null,
+    ) => {
+      if (seq !== fetchSeqRef.current) return;
+      setDownloaded(downloadedList);
+      setAvailable(availableList);
+      setIsFallback(fallback);
+      setError(err);
+    };
 
     try {
       const res = await fetch("/api/models", {
@@ -373,20 +390,20 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
             };
           });
 
-          // A newer fetchModels() call has already started (or finished) —
-          // committing this stale response would clobber fresher state, e.g.
-          // flipping a just-completed download back to "not installed".
-          if (seq !== fetchSeqRef.current) return;
-          setDownloaded(downloadedList);
-          setAvailable(availableList);
-          setIsFallback(false);
-          setLoading(false);
+          commit(downloadedList, availableList, false, null);
           return;
         }
+        // Ok but not JSON — treat as a failure and fall through.
+        errMsg = "Unexpected response from /api/models";
+      } else {
+        // Non-ok response: surface the error state with a Retry instead of
+        // leaving the spinner up or silently showing sample data.
+        errMsg = `Request failed (${res.status})`;
       }
-    } catch {
-      /* fall through */
+    } catch (e) {
+      errMsg = e instanceof Error ? e.message : "Failed to load models";
     }
+
     // /api/models failed — still try to surface cluster workers + cloud so the
     // user can at least see remote-hosted models.
     try {
@@ -400,30 +417,43 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
       const cloudList = cloudProvidersToAggregated(providers).map(
         aggregatedToDownloaded,
       );
-      if (seq !== fetchSeqRef.current) return;
       if (workerList.length > 0 || cloudList.length > 0) {
-        setDownloaded([...workerList, ...cloudList]);
-        setAvailable(MOCK_AVAILABLE);
-        setIsFallback(true);
-        setLoading(false);
+        commit([...workerList, ...cloudList], MOCK_AVAILABLE, true, null);
         return;
       }
     } catch {
       /* ignore */
     }
-    if (seq !== fetchSeqRef.current) return;
-    if (downloadedRef.current.length > 0) {
-      setLoading(false);
-      return;
-    }
-    setDownloaded([]);
-    setAvailable([]);
-    setIsFallback(true);
-    setLoading(false);
-  }, []);
 
+    // No data from any source. When nothing is already on screen, surface the
+    // error with a Retry button; when this was a background refresh, keep the
+    // stale data and clear the error instead of wiping the screen.
+    if (seq !== fetchSeqRef.current) return;
+    if (downloadedRef.current.length === 0) {
+      commit([], [], true, errMsg ?? "Failed to load models");
+    } else {
+      setError(null);
+    }
+    setLoading(false);
+  },
+    [],
+  );
+
+  // `finally` guarantees the spinner comes off even if something unexpected
+  // throws inside the processing block above — the bug this fixes is the
+  // spinner staying up indefinitely when /api/models never settles usefully.
   useEffect(() => {
-    fetchModels();
+    let active = true;
+    void (async () => {
+      try {
+        await fetchModels();
+      } finally {
+        if (active) setLoading(false);
+      }
+    })();
+    return () => {
+      active = false;
+    };
   }, [fetchModels]);
 
   useRefreshOnFocus(fetchModels);
@@ -680,6 +710,17 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
         {loading ? (
           <div className="flex items-center justify-center h-full text-shell-text-tertiary text-sm">
             Loading models...
+          </div>
+        ) : error ? (
+          <div className="flex flex-col items-center justify-center h-full gap-4 text-center px-6 py-16">
+            <Brain size={40} className="text-shell-text-tertiary opacity-30" aria-hidden="true" />
+            <div className="space-y-1">
+              <p className="text-sm font-medium text-shell-text">Could not load models</p>
+              <p className="text-xs text-shell-text-tertiary max-w-xs">{error}</p>
+            </div>
+            <Button variant="outline" size="sm" onClick={() => void fetchModels()}>
+              Retry
+            </Button>
           </div>
         ) : isFallback && downloaded.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-4 text-center px-6 py-16">

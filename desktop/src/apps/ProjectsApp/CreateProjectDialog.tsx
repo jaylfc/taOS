@@ -2,6 +2,7 @@ import { useState } from "react";
 import { createPortal } from "react-dom";
 import { projectsApi, type ElementType } from "@/lib/projects";
 import { ELEMENT_TYPES, ELEMENT_TYPE_ORDER } from "./elements/types";
+import { useVisualViewport } from "@/hooks/use-visual-viewport";
 
 const slugify = (s: string) =>
   s.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
@@ -26,6 +27,12 @@ export function CreateProjectDialog({
   const [elements, setElements] = useState<ElementDraft[]>([{ name: "", type: "generic" }]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // On the mobile shell the on-screen keyboard shrinks the visible area, so a
+  // centred dialog gets pushed behind it. Anchor the card to the top of what
+  // is actually visible and cap its height at the visual viewport, scrolling
+  // inside so the focused field and the Create button stay in view.
+  const viewport = useVisualViewport();
+  const viewportHeight = viewport.height || (typeof window !== "undefined" ? window.innerHeight : 0);
 
   const createProject = async () => {
     const trimmedName = name.trim();
@@ -90,11 +97,13 @@ export function CreateProjectDialog({
       role="dialog"
       aria-modal="true"
       aria-label="Create project"
-      className="fixed inset-0 z-[10001] bg-black/50 flex items-center justify-center p-4"
+      className="fixed inset-0 z-[10001] bg-black/50 flex flex-col items-center p-4"
+      style={{ maxHeight: viewportHeight || undefined }}
     >
       <form
         onSubmit={step === 1 ? onSubmitStep1 : onSubmitStep2}
-        className="bg-zinc-900 text-zinc-200 p-4 rounded shadow w-full max-w-sm space-y-3"
+        className="bg-zinc-900 text-zinc-200 p-4 rounded shadow w-full max-w-sm space-y-3 overflow-y-auto"
+        style={{ maxHeight: viewportHeight ? `min(${viewportHeight - 32}px, 92vh)` : undefined }}
       >
         <h3 className="text-lg font-semibold text-zinc-200">
           {step === 1 ? "New Project" : "Add elements"}

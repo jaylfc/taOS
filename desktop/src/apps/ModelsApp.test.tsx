@@ -259,7 +259,7 @@ describe("ModelsApp refresh-failure", () => {
     expect(screen.queryByText("No models yet")).not.toBeInTheDocument();
   });
 
-  it("still shows 'No models yet' when no real data exists and refresh fails", async () => {
+  it("shows the error state with a Retry button when no real data exists and refresh fails", async () => {
     let callCount = 0;
     vi.stubGlobal(
       "fetch",
@@ -274,7 +274,15 @@ describe("ModelsApp refresh-failure", () => {
 
     render(<ModelsApp windowId="w1" />);
 
-    await waitFor(() => expect(screen.getByText("No models yet")).toBeInTheDocument());
+    // A rejected fetch must end the loading state and surface the error
+    // state with a Retry button — it must not sit on "Loading models..."
+    // forever, nor silently fall back to the empty state.
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    });
+    expect(screen.getByText("Could not load models")).toBeInTheDocument();
+    expect(screen.getByText("network error")).toBeInTheDocument();
+    expect(screen.queryByText("Loading models...")).not.toBeInTheDocument();
 
     window.dispatchEvent(new Event("focus"));
 
@@ -283,6 +291,23 @@ describe("ModelsApp refresh-failure", () => {
       await Promise.resolve();
     });
 
-    expect(screen.getByText("No models yet")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+  });
+
+  it("shows the empty state when the backend answers ok with no models", async () => {
+    mockFetch({
+      "/api/models": () =>
+        json({ models: [], downloaded_files: [], hardware_profile_id: "p1" }),
+    });
+
+    render(<ModelsApp windowId="w1" />);
+
+    // An ok, empty response must end loading and show the empty state —
+    // the spinner must not stay up, and there must be no Retry button.
+    await waitFor(() => {
+      expect(screen.getByText("No downloaded models")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Loading models...")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
   });
 });
