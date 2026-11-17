@@ -58,4 +58,19 @@ describe("useLockOnScreenOff cover", () => {
     await vi.waitFor(() => expect(replace).toHaveBeenCalled());
     await vi.waitFor(() => expect(document.body.querySelector("[aria-hidden=true]")).toBeNull());
   });
+
+  it("takes the lock page title before the lock request, and restores it if the shell stays", async () => {
+    document.title = "taOS";
+    let titleAtRequest = "";
+    vi.stubGlobal("fetch", vi.fn(() => {
+      titleAtRequest = document.title;
+      return Promise.resolve(new Response("{}"));
+    }));
+    replace.mockImplementation(() => { throw new Error("blocked"); });
+    renderHook(() => useLockOnScreenOff());
+    FakeEventSource.last!.fire("screen-off");
+    await vi.waitFor(() => expect(replace).toHaveBeenCalled());
+    expect(titleAtRequest).toBe("Sign in \u2014 taOS");
+    await vi.waitFor(() => expect(document.title).toBe("taOS"));
+  });
 });

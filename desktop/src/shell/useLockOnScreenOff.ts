@@ -22,6 +22,9 @@ import { withCsrf } from "@/lib/csrf";
  * is rendered already black while the screen is off, so the lock face is never
  * drawn between the cover and the page's own blackout.
  */
+/** The lock page's own <title> (see the login page in routes/auth.py). */
+const LOCK_PAGE_TITLE = "Sign in \u2014 taOS";
+
 export function useLockOnScreenOff(): void {
   useEffect(() => {
     if (typeof EventSource === "undefined") return;
@@ -39,6 +42,12 @@ export function useLockOnScreenOff(): void {
       cover.setAttribute("aria-hidden", "true");
       cover.style.cssText = "position:fixed;inset:0;z-index:2147483647;background:#000";
       document.body.appendChild(cover);
+      // The handset session covers its navigation bar when the window title
+      // is the lock page's. Take that title in the same tick as the cover, so
+      // the bar is hidden now rather than a second later when the lock page
+      // has loaded; restored below if the shell stays.
+      const previousTitle = document.title;
+      document.title = LOCK_PAGE_TITLE;
       try {
         await fetch("/auth/lock", {
           method: "POST",
@@ -54,6 +63,7 @@ export function useLockOnScreenOff(): void {
         // Navigation did not happen and the shell stays: never leave the user
         // looking at a black shell they cannot see or touch.
         cover.remove();
+        document.title = previousTitle;
         locking = false;
       }
     };
