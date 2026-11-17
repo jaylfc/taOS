@@ -1029,12 +1029,14 @@ body.lockscreen-on.osk-open { display: block; padding-bottom: 0 !important; over
 /* The close is short on purpose: the kiosk waits for black before cutting
  * panel power, so this is time the glass stays lit after the power key. The
  * wake (ls-tv-on) keeps its full 0.5s. */
-.lockscreen[data-closing="1"] { animation: ls-tv-off 0.18s cubic-bezier(.55, 0, .8, .2) forwards; }
+.lockscreen[data-closing="1"] { animation: ls-tv-off 0.08s linear forwards; }
 .lockscreen[data-opening="1"] { animation: ls-tv-on 0.5s cubic-bezier(.2, .8, .2, 1) both; }
+/* A plain fade, not a squash into the centre: a squash keeps a bright line on
+ * the glass until its last frame, and the kiosk cannot cut panel power until
+ * every pixel is black (a lit line is what flashes on the next wake). */
 @keyframes ls-tv-off {
-  0%   { transform: scale(1, 1);       opacity: 1; }
-  60%  { transform: scale(1, 0.006);   opacity: 1; }
-  100% { transform: scale(0, 0.006);   opacity: 0; }
+  0%   { opacity: 1; }
+  100% { opacity: 0; }
 }
 @keyframes ls-tv-on {
   0%   { transform: scale(0, 0.006);   opacity: 0; }
@@ -4897,7 +4899,7 @@ _LOCK_SCREEN_SCRIPT = r"""
     // The screen-off / screen-on animation (ls-tv-off / ls-tv-on).
     var TV_MS = 500;
     // The close to black is much shorter than the wake (see ls-tv-off).
-    var TV_OFF_MS = 180;
+    var TV_OFF_MS = 80;
     var tvTimer = 0;
     function tvStop() {
       if (tvTimer) { window.clearTimeout(tvTimer); tvTimer = 0; }
