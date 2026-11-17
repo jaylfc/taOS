@@ -2553,6 +2553,31 @@ to receive it, create is `409`. In addition, an agent may hold at most 3 pending
 A request expires 10 minutes after it was created; once the agent has read the
 code it has another 10 minutes to post the token.
 
+## Secrets broker (`/api/broker/keenable/*`)
+
+The Secrets broker exposes Keenable (web search + page fetch) to agents that
+hold an active Keenable grant. Routes: `tinyagentos/routes/broker.py`.
+
+- `POST /api/broker/keenable/search` (agent only: a bound per-agent local token)
+  with `{"query": "...", "num_results": 5}`. The `query` is required, 1 to 500
+  characters after stripping; `num_results` is optional, 1 to 10 (default 5).
+  Returns `{"results": [...]}`. The caller must have an ACTIVE Keenable grant
+  whose scopes include `search`. The Keenable API key is injected server-side
+  from the `KEENABLE_API_KEY` secret. Returns 403 without a bound token, grant,
+  or scope; 409 when Keenable is not configured (no key and public fallback off);
+  502 on upstream error with no upstream text echoed. Invalid request bodies
+  return 400 with `{"error": "<reason>"}`.
+
+- `POST /api/broker/keenable/fetch` (agent only: a bound per-agent local token)
+  with `{"url": "https://...", "max_chars": 50000}`. The `url` is required and
+  must start with `http://` or `https://`; `max_chars` is optional, 1 to 100000.
+  Returns the fetched page content. The caller must have an ACTIVE Keenable grant
+  whose scopes include `fetch`. The Keenable API key is injected server-side from
+  the `KEENABLE_API_KEY` secret. Returns 403 without a bound token, grant, or
+  scope; 409 when Keenable is not configured (no key and public fallback off);
+  502 on upstream error with no upstream text echoed. Invalid request bodies
+  return 400 with `{"error": "<reason>"}`.
+
 ## Skill-exec agent identity (credential-bound, not body-supplied)
 
 `POST /api/skill-exec/{skill_id}/call` and `GET /api/skill-exec/tools` now

@@ -10,11 +10,11 @@ no per-route guard of their own.
 from __future__ import annotations
 
 import time
-from typing import Optional, Union
+from typing import Optional
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel
 
 from tinyagentos.broker.clients.keenable import (
     keenable_fetch,
@@ -44,47 +44,6 @@ def _local_token_caller(request: Request) -> tuple[bool, str | None]:
     if getattr(request.state, "via", None) == "local_token":
         return True, getattr(request.state, "agent_name", None)
     return False, None
-
-
-class KeenableSearchRequest(BaseModel):
-    query: str
-    num_results: int = 5
-
-    @field_validator("query")
-    @classmethod
-    def _validate_query(cls, v: str) -> str:
-        stripped = v.strip()
-        if not stripped:
-            raise ValueError("query must not be empty after stripping")
-        if len(stripped) > 500:
-            raise ValueError("query must be at most 500 characters after stripping")
-        return stripped
-
-    @field_validator("num_results")
-    @classmethod
-    def _validate_num_results(cls, v: int) -> int:
-        if not (1 <= v <= 10):
-            raise ValueError("num_results must be between 1 and 10")
-        return v
-
-
-class KeenableFetchRequest(BaseModel):
-    url: str
-    max_chars: Optional[int] = None
-
-    @field_validator("url")
-    @classmethod
-    def _validate_url(cls, v: str) -> str:
-        if not (v.startswith("http://") or v.startswith("https://")):
-            raise ValueError("url must start with http:// or https://")
-        return v
-
-    @field_validator("max_chars")
-    @classmethod
-    def _validate_max_chars(cls, v: Optional[int]) -> Optional[int]:
-        if v is not None and not (1 <= v <= 100000):
-            raise ValueError("max_chars must be between 1 and 100000")
-        return v
 
 
 class ApproveRequest(BaseModel):
@@ -175,26 +134,68 @@ async def revoke_grant(request: Request, grant_id: str):
     return {"ok": True}
 
 
+def _validate_search_body(body: dict) -> tuple[dict | None, JSONResponse | None]:
+    query = body.get("query")
+    if not isinstance(query, str):
+        return None, JSONResponse({"error": "query must be a string"}, status_code=400)
+    stripped = query.strip()
+    if not stripped:
+        return None, JSONResponse({"error": "query must not be empty"}, status_code=400)
+    if len(stripped) > 500:
+        return None, JSONResponse({"error": "query must be at most 500 characters"}, status_code=400)
+    
+    num_results = body.get("num_results", 5)
+    if not isinstance(num_results, int):
+        return None, JSONResponse({"error": "num_results must be an integer"}, status_code=400)
+    if not (1 <= num_results <= 10):
+        return None, JSONResponse({"error": "num_results must be between 1 and 10"}, status_code=400)
+    
+    return {"query": stripped, "num_results": num_results}, None
+
+
+def _validate_fetch_body(body: dict) -> tuple[dict | None, JSONResponse | None]:
+    url = body.get("url")
+    if not isinstance(url, str):
+        return None, JSONResponse({"error": "url must be a string"}, status_code=400)
+    if not (url.startswith("http://") or url.startswith("https://")):
+        return None, JSONResponse({"error": "url must start with http:// or https://"}, status_code=400)
+    
+    max_chars = body.get("max_chars")
+    if max_chars is not None:
+        if not isinstance(max_chars, int):
+            return None, JSONResponse({"error": "max_chars must be an integer"}, status_code=400)
+        if not (1 <= max_chars <= 100000):
+            return None, JSONResponse({"error": "max_chars must be between 1 and 100000"}, status_code=400)
+    
+    return {"url": url, "max_chars": max_chars}, None
+
+
 @router.post("/api/broker/keenable/search")
-async def keenable_search_route(request: Request, body: KeenableSearchRequest):
-    return await _keenable_search(request, body)
+async def keenable_search_route(request: Request, body: dict):
+    validated, error = _validate_search_body(body)
+    if error:
+        return error
+    return await _keenable_search(request, validated)
 
 
-async def _keenable_search(request: Request, body: KeenableSearchRequest) -> dict:
+async def _keenable_search(request: Request, body: dict) -> dict:
     return await _keenable_call(request, "search", body=body)
 
 
 @router.post("/api/broker/keenable/fetch")
-async def keenable_fetch_route(request: Request, body: KeenableFetchRequest):
+async def keenable_fetch_route(request: Request, body: dict):
+    validated, error = _validate_fetch_body(body)
+    if error:
+        return error
     return await _keenable_fetch(request, body)
 
 
-async def _keenable_fetch(request: Request, body: KeenableFetchRequest) -> dict:
+async def _keenable_fetch(request: Request, body: dict) -> dict:
     return await _keenable_call(request, "fetch", body=body)
 
 
 async def _keenable_call(
-    request: Request, action: str, body: Union[KeenableSearchRequest, KeenableFetchRequest]
+    request: Request, action: str, body: dict
 ) -> dict:
     is_local, agent_name = _local_token_caller(request)
     if not is_local or agent_name is None:
