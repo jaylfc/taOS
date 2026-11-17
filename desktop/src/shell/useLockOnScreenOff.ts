@@ -18,7 +18,9 @@ import { withCsrf } from "@/lib/csrf";
  * output powers down, and nothing paints on a dark panel -- so the FIRST thing
  * is a black cover, making the last frame on the panel black instead of the
  * desktop. Then the same lock as the top bar's Lock (revoke the session), and
- * off to the lock screen, which loads while the panel is dark.
+ * off to the lock screen, which loads while the panel is dark. The lock page
+ * is rendered already black while the screen is off, so the lock face is never
+ * drawn between the cover and the page's own blackout.
  */
 export function useLockOnScreenOff(): void {
   useEffect(() => {
@@ -46,7 +48,14 @@ export function useLockOnScreenOff(): void {
       } catch {
         // The lock page still asks for a PIN if the session survived.
       }
-      window.location.replace("/auth/login");
+      try {
+        window.location.replace("/auth/login");
+      } catch {
+        // Navigation did not happen and the shell stays: never leave the user
+        // looking at a black shell they cannot see or touch.
+        cover.remove();
+        locking = false;
+      }
     };
     stream.addEventListener("screen-off", onScreenOff);
     return () => {
