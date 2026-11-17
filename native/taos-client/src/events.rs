@@ -182,8 +182,12 @@ pub struct SseOptions {
     /// Reconnect backoff.
     pub backoff: Backoff,
     /// Treat a connection with no bytes (not even a heartbeat) for this long
-    /// as dead. The controller sends a keepalive every 10 to 15 s.
-    pub idle_timeout: Duration,
+    /// as dead and reconnect; `None` waits forever. The OS-event, system-event
+    /// and model-activity streams send a keepalive every 10 s, so the default
+    /// 60 s is safe for them. The file watch routes send **nothing** while a
+    /// folder is unchanged, so they must use `None` (the typed
+    /// [`Files::watch`](crate::files::Files::watch) does).
+    pub idle_timeout: Option<Duration>,
 }
 
 impl Default for SseOptions {
@@ -191,7 +195,7 @@ impl Default for SseOptions {
         Self {
             resume: true,
             backoff: Backoff::default(),
-            idle_timeout: Duration::from_secs(60),
+            idle_timeout: Some(Duration::from_secs(60)),
         }
     }
 }
@@ -313,7 +317,11 @@ async fn run_sse(
                 let body = resp.bytes_stream();
                 futures_util::pin_mut!(body);
                 loop {
-                    match tokio::time::timeout(opts.idle_timeout, body.next()).await {
+                    let next = match opts.idle_timeout {
+                        Some(limit) => tokio::time::timeout(limit, body.next()).await,
+                        None => Ok(body.next().await),
+                    };
+                    match next {
                         Err(_) | Ok(None) => {
                             if tx.send(Err(Error::Disconnected)).await.is_err() {
                                 return;

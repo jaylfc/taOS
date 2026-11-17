@@ -29,9 +29,6 @@ pub const USER_AGENT: &str = concat!("taOS-native/", env!("CARGO_PKG_VERSION"));
 
 /// Header carrying the CSRF token on state-changing requests.
 const CSRF_HEADER: &str = "X-CSRF-Token";
-/// Header the lock-screen routes require (`LOCK_CONSOLE_HEADER` in
-/// `tinyagentos/routes/auth.py`).
-const CONSOLE_HEADER: &str = "X-taOS-Console";
 
 /// Builder for a [`Client`].
 #[derive(Debug, Clone)]
@@ -260,9 +257,6 @@ impl Client {
                     }
                 }
             }
-            if req.console {
-                rb = rb.header(CONSOLE_HEADER, "1");
-            }
             if !req.query.is_empty() {
                 rb = rb.query(&req.query);
             }
@@ -312,7 +306,8 @@ impl Client {
     pub(crate) async fn json<T: DeserializeOwned>(&self, req: Req) -> Result<T> {
         let resp = self.send(&req).await?;
         let bytes = resp.bytes().await.map_err(Error::Transport)?;
-        decode(&bytes)
+        let sensitive = req.sensitive;
+        decode(&bytes).map_err(|e| if sensitive { e.without_body() } else { e })
     }
 }
 
@@ -326,17 +321,33 @@ pub(crate) fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
 }
 
 /// A request description, built fluently and executed by [`Client`].
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct Req {
     pub(crate) method: Method,
     /// Already percent-encoded path, starting with `/`.
     pub(crate) path: String,
     pub(crate) query: Vec<(String, String)>,
     pub(crate) json: Option<serde_json::Value>,
-    pub(crate) console: bool,
     pub(crate) accept: &'static str,
     pub(crate) redirect_ok: bool,
     pub(crate) stream: bool,
+    /// The response may carry secrets: decode errors must not quote the body.
+    pub(crate) sensitive: bool,
+}
+
+impl fmt::Debug for Req {
+    // The JSON body can hold a password or a PIN, so it is never printed.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Req")
+            .field("method", &self.method)
+            .field("path", &self.path)
+            .field(
+                "query",
+                &self.query.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+            )
+            .field("json", &self.json.as_ref().map(|_| "<redacted>"))
+            .finish_non_exhaustive()
+    }
 }
 
 impl Req {
@@ -346,10 +357,10 @@ impl Req {
             path: path.into(),
             query: Vec::new(),
             json: None,
-            console: false,
             accept: "application/json",
             redirect_ok: false,
             stream: false,
+            sensitive: false,
         }
     }
     pub(crate) fn get(path: impl Into<String>) -> Self {
@@ -357,6 +368,9 @@ impl Req {
     }
     pub(crate) fn post(path: impl Into<String>) -> Self {
         Self::new(Method::POST, path)
+    }
+    pub(crate) fn put(path: impl Into<String>) -> Self {
+        Self::new(Method::PUT, path)
     }
     pub(crate) fn delete(path: impl Into<String>) -> Self {
         Self::new(Method::DELETE, path)
@@ -378,10 +392,6 @@ impl Req {
         );
         Ok(self)
     }
-    pub(crate) fn console(mut self) -> Self {
-        self.console = true;
-        self
-    }
     pub(crate) fn redirect_ok(mut self) -> Self {
         self.redirect_ok = true;
         self
@@ -390,5 +400,26 @@ impl Req {
         self.stream = true;
         self.accept = accept;
         self
+    }
+    pub(crate) fn sensitive(mut self) -> Self {
+        self.sensitive = true;
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn req_debug_never_prints_the_body() {
+        let req = Req::post("/auth/login")
+            .json_body(&serde_json::json!({"password": "hunter2-pw", "pin": "4321"}))
+            .expect("body");
+        let dump = format!("{req:?} {req:#?}");
+        assert!(
+            !dump.contains("hunter2") && !dump.contains("4321"),
+            "{dump}"
+        );
     }
 }

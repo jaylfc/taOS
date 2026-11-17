@@ -475,7 +475,11 @@ impl Decisions {
         }
         Ok(self
             .client
-            .json::<R>(Req::get("/api/agents/auth-requests").query("status", "pending"))
+            .json::<R>(
+                Req::get("/api/agents/auth-requests")
+                    .query("status", "pending")
+                    .sensitive(),
+            )
             .await?
             .requests)
     }
@@ -499,17 +503,16 @@ impl Decisions {
         let resp = self.client.send(&req).await?;
         let bytes = resp.bytes().await.map_err(Error::Transport)?;
         #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Shape {
-            Wrapped {
-                #[serde(default, deserialize_with = "lenient_vec")]
-                items: Vec<Decision>,
-            },
-            Bare(Vec<Decision>),
+        struct Wrapped {
+            #[serde(default, deserialize_with = "lenient_vec")]
+            items: Vec<Decision>,
         }
-        Ok(match crate::client::decode::<Shape>(&bytes)? {
-            Shape::Wrapped { items } => items,
-            Shape::Bare(items) => items,
-        })
+        // Decide by the first byte rather than with an untagged enum, so a
+        // decode error keeps its JSON path.
+        if bytes.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'[') {
+            crate::client::decode::<Vec<Decision>>(&bytes)
+        } else {
+            Ok(crate::client::decode::<Wrapped>(&bytes)?.items)
+        }
     }
 }

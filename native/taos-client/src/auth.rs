@@ -2,7 +2,7 @@
 //!
 //! Routes (all in `tinyagentos/routes/auth.py`, router prefix `/auth`):
 //! `POST /auth/login` (JSON form), `POST /auth/pin-login`, `POST /auth/logout`,
-//! `GET /auth/me`, `GET /auth/status`.
+//! `GET /auth/me`.
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -57,35 +57,6 @@ pub struct LoginOutcome {
     pub needs_onboarding: bool,
 }
 
-/// What `GET /auth/status` reports; used to decide which sign-in UI to show.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
-pub struct AuthStatus {
-    /// An account exists.
-    #[serde(default)]
-    pub configured: bool,
-    /// This client's session is valid.
-    #[serde(default)]
-    pub authenticated: bool,
-    /// The user, when authenticated.
-    #[serde(default)]
-    pub user: Option<User>,
-    /// More than one account is configured.
-    #[serde(default)]
-    pub multi_user: bool,
-    /// The session belongs to a pending invited user.
-    #[serde(default)]
-    pub needs_onboarding: bool,
-    /// Set (`"unreadable"`) when the user store is corrupt.
-    #[serde(default)]
-    pub store_error: Option<String>,
-    /// The device's own screen may offer a PIN keypad.
-    #[serde(default)]
-    pub pin_available: bool,
-    /// First-run setup may offer a PIN field.
-    #[serde(default)]
-    pub pin_offered: bool,
-}
-
 #[derive(Deserialize)]
 struct LoginBody {
     #[serde(default)]
@@ -124,24 +95,26 @@ impl Client {
             .await
     }
 
-    /// Sign in with the console PIN. Calls `POST /auth/pin-login` and sends the
-    /// `X-taOS-Console: 1` header the lock-screen routes require. The server
+    /// Sign in with the console PIN. Calls `POST /auth/pin-login`. The server
     /// refuses (404 "PIN sign-in is not available") unless the request comes
-    /// from the device's own screen over loopback with no forwarding header.
+    /// from the device's own screen: a loopback peer and no forwarding header
+    /// (`is_console_origin` in `tinyagentos/auth.py`). Unlike the other
+    /// `/auth/lock-*` routes, this one does not require the `X-taOS-Console`
+    /// header, so none is sent.
     pub async fn pin_login(&self, username: Option<&str>, pin: &str) -> Result<LoginOutcome> {
         self.forget_session();
         let mut body = json!({ "pin": pin });
         if let Some(u) = username.filter(|u| !u.is_empty()) {
             body["username"] = json!(u);
         }
-        self.finish_login(Req::post("/auth/pin-login").console().json_body(&body)?)
+        self.finish_login(Req::post("/auth/pin-login").json_body(&body)?)
             .await
     }
 
     async fn finish_login(&self, req: Req) -> Result<LoginOutcome> {
         let resp = self.send(&req).await?;
         let bytes = resp.bytes().await.map_err(Error::Transport)?;
-        let body: LoginBody = crate::client::decode(&bytes)?;
+        let body: LoginBody = crate::client::decode(&bytes).map_err(Error::without_body)?;
         if !self.is_signed_in() {
             return Err(Error::Protocol(format!(
                 "login succeeded but the server set no {SESSION_COOKIE} cookie"
@@ -175,10 +148,5 @@ impl Client {
             user: User,
         }
         Ok(self.json::<Me>(Req::get("/auth/me")).await?.user)
-    }
-
-    /// Sign-in state and which sign-in methods to offer. Calls `GET /auth/status`.
-    pub async fn auth_status(&self) -> Result<AuthStatus> {
-        self.json(Req::get("/auth/status")).await
     }
 }

@@ -480,7 +480,9 @@ impl Models {
 
     /// `GET /api/providers`.
     pub async fn providers(&self) -> Result<Vec<Provider>> {
-        self.client.json(Req::get("/api/providers")).await
+        self.client
+            .json(Req::get("/api/providers").sensitive())
+            .await
     }
 
     /// `POST /api/models/download {app_id, variant_id}`. Admin only.
@@ -578,17 +580,17 @@ impl Models {
 
 pub(crate) async fn workers(client: &Client) -> Result<Vec<Worker>> {
     #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum Shape {
-        Bare(Vec<Worker>),
-        Wrapped {
-            #[serde(default, deserialize_with = "lenient_vec")]
-            workers: Vec<Worker>,
-        },
+    struct Wrapped {
+        #[serde(default, deserialize_with = "lenient_vec")]
+        workers: Vec<Worker>,
     }
     let resp = client.send(&Req::get("/api/cluster/workers")).await?;
     let bytes = resp.bytes().await.map_err(crate::error::Error::Transport)?;
-    Ok(match crate::client::decode::<Shape>(&bytes)? {
-        Shape::Bare(w) | Shape::Wrapped { workers: w } => w,
-    })
+    // Decide by the first byte rather than with an untagged enum, so a decode
+    // error keeps its JSON path.
+    if bytes.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'[') {
+        crate::client::decode::<Vec<Worker>>(&bytes)
+    } else {
+        Ok(crate::client::decode::<Wrapped>(&bytes)?.workers)
+    }
 }

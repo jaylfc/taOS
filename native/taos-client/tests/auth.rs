@@ -101,7 +101,7 @@ async fn fixed_user_agent_on_every_request() {
 }
 
 #[tokio::test]
-async fn pin_login_sends_console_header() {
+async fn pin_login_needs_no_console_header() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/auth/pin-login"))
@@ -111,7 +111,13 @@ async fn pin_login_sends_console_header() {
     let client = Client::with_base_url(server.uri()).expect("client");
     client.pin_login(None, "1234").await.expect("pin login");
     let r = &find(&server, "POST", "/auth/pin-login").await[0];
-    assert_eq!(header(r, "x-taos-console").as_deref(), Some("1"));
+    // `/auth/pin-login` only checks the peer address (`is_console_origin`);
+    // the `X-taOS-Console` header belongs to the other `/auth/lock-*` posts.
+    assert!(header(r, "x-taos-console").is_none());
+    assert_eq!(
+        header(r, "content-type").as_deref(),
+        Some("application/json")
+    );
     assert_eq!(body_text(r), r#"{"pin":"1234"}"#);
 }
 

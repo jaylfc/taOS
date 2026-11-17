@@ -248,3 +248,24 @@ async fn cancelling_a_watch_stops_polling() {
         n
     );
 }
+
+#[tokio::test]
+async fn a_providers_decode_error_never_quotes_the_body() {
+    let (server, client) = signed_in().await;
+    mount(
+        &server,
+        "GET",
+        "/api/providers",
+        r#"[{"name": 5, "api_key": "sk-secret-key-value"}]"#,
+    )
+    .await;
+    let err = client.models().providers().await.expect_err("decode");
+    match &err {
+        Error::Decode { path, body, .. } => {
+            assert_eq!(path, "[0].name");
+            assert_eq!(body, "<body withheld>");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(!format!("{err} {err:?}").contains("sk-secret"));
+}

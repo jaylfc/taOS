@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Shared, GUI-toolkit-independent Rust client for the taOS controller API"
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+license-file.workspace = true
 repository.workspace = true
 publish = false
 
@@ -25,6 +25,6 @@ tokio-util = { version = "0.7", features = ["io"] }
 url = "2"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "fs", "net", "test-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "fs", "net", "io-util", "test-util"] }
 # 0.6.5 uses let-chains and needs Rust 1.88; keep the dev build on the 1.85 MSRV.
 wiremock = ">=0.6.0, <0.6.5"

@@ -295,3 +295,38 @@ async fn non_admin_gets_forbidden_for_access_requests() {
         Err(Error::Forbidden { csrf: false, .. })
     ));
 }
+
+#[tokio::test]
+async fn a_malformed_record_is_an_error_with_a_path_not_a_silent_drop() {
+    let (server, client) = signed_in().await;
+    mount(
+        &server,
+        "GET",
+        "/api/decisions",
+        r#"{"items":[{"id":"ok","question":"q"},{"id":"bad","question":5}]}"#,
+    )
+    .await;
+    match client
+        .decisions()
+        .list(&DecisionFilter::default())
+        .await
+        .expect_err("decode")
+    {
+        Error::Decode { path, .. } => assert_eq!(path, "items[1].question"),
+        other => panic!("{other:?}"),
+    }
+    // A null or object where a list is normal still reads as empty.
+    mount(
+        &server,
+        "GET",
+        "/api/agents/scope-requests",
+        r#"{"requests": null}"#,
+    )
+    .await;
+    assert!(client
+        .decisions()
+        .scope_requests()
+        .await
+        .expect("null list")
+        .is_empty());
+}

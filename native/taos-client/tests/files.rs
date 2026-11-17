@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use bytes::Bytes;
 use common::*;
 use futures_util::StreamExt;
-use taos_client::files::{Location, Op, UploadSource};
+use taos_client::files::{Location, Op, ReviewState, UploadSource};
 use taos_client::Error;
 use wiremock::matchers::{body_json, method, path, query_param};
 use wiremock::{Mock, ResponseTemplate};
@@ -530,4 +530,65 @@ async fn watch_yields_listings_and_ends_on_an_error_frame() {
         1,
         "no reconnect after an error frame"
     );
+}
+
+#[tokio::test]
+async fn doc_review_stamps() {
+    let (server, client) = signed_in().await;
+    Mock::given(method("GET"))
+        .and(path("/api/projects/prj_1/doc-reviews"))
+        .and(query_param("state", "approved"))
+        .respond_with(json_body(
+            r#"{"items":[{"project_id":"prj_1","doc_path":"docs/spec.md","review_state":"approved","changes_requested_by":null,"changes_requested_at":null,"extra":1},{"doc_path":"x.md","review_state":"paused"}]}"#,
+        ))
+        .mount(&server)
+        .await;
+    let f = client.files();
+    let reviews = f
+        .doc_reviews("prj_1", Some(&ReviewState::Approved))
+        .await
+        .expect("reviews");
+    assert_eq!(reviews[0].review_state, Some(ReviewState::Approved));
+    assert_eq!(
+        reviews[1].review_state,
+        Some(ReviewState::Unknown("paused".into()))
+    );
+
+    Mock::given(method("PUT"))
+        .and(path("/api/projects/prj_1/doc-review/docs/spec%20v2.md"))
+        .and(body_json(serde_json::json!({"state": "changes_requested"})))
+        .respond_with(json_body(r#"{"project_id":"prj_1","doc_path":"docs/spec v2.md","review_state":"changes_requested","changes_requested_by":"usr_1","changes_requested_at":5.0}"#))
+        .mount(&server)
+        .await;
+    let r = f
+        .set_doc_review("prj_1", "docs/spec v2.md", &ReviewState::ChangesRequested)
+        .await
+        .expect("set");
+    assert_eq!(r.changes_requested_by.as_deref(), Some("usr_1"));
+    let put = &find(
+        &server,
+        "PUT",
+        "/api/projects/prj_1/doc-review/docs/spec%20v2.md",
+    )
+    .await[0];
+    assert_eq!(header(put, "x-csrf-token").as_deref(), Some(CSRF));
+
+    Mock::given(method("PUT"))
+        .and(path("/api/projects/prj_1/doc-review/a.md"))
+        .respond_with(ResponseTemplate::new(409).set_body_raw(
+            r#"{"detail":"invalid transition approved -> changes_requested"}"#,
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+    assert!(matches!(
+        f.set_doc_review("prj_1", "a.md", &ReviewState::ChangesRequested)
+            .await,
+        Err(Error::Conflict { .. })
+    ));
+    assert_eq!(
+        ReviewState::Approved.allowed_next(),
+        [ReviewState::AwaitingReview]
+    );
+    assert_eq!(ReviewState::AwaitingReview.allowed_next().len(), 2);
 }

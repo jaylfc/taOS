@@ -195,6 +195,20 @@ impl Error {
         }
     }
 
+    /// Drop the quoted body from a decode error (for routes whose bodies can
+    /// hold credentials, such as `/api/providers`, which carries `api_key`
+    /// for admins).
+    pub(crate) fn without_body(self) -> Self {
+        match self {
+            Self::Decode { path, message, .. } => Self::Decode {
+                path,
+                message,
+                body: "<body withheld>".into(),
+            },
+            other => other,
+        }
+    }
+
     /// Build a decode error, truncating the body.
     pub(crate) fn decode(path: String, message: String, body: &[u8]) -> Self {
         Self::Decode {

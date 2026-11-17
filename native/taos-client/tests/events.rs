@@ -371,3 +371,59 @@ async fn poller_manual_poll_and_no_overlap() {
     tokio::time::sleep(Duration::from_secs(4)).await;
     assert!(n.load(Ordering::SeqCst) > before);
 }
+
+/// A raw server that answers with an SSE header and then stays silent for
+/// `quiet` before sending one event, like a file watch on an unchanged folder.
+async fn quiet_server(quiet: Duration) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            tokio::spawn(async move {
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf).await;
+                let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n";
+                let _ = sock.write_all(head.as_bytes()).await;
+                tokio::time::sleep(quiet).await;
+                let _ = sock.write_all(b"9\r\ndata: x\n\n\r\n").await;
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            });
+        }
+    });
+    format!("http://{addr}")
+}
+
+#[tokio::test]
+async fn idle_timeout_reconnects_a_silent_stream_unless_disabled() {
+    let base = quiet_server(Duration::from_millis(300)).await;
+    let client = Client::with_base_url(base).expect("client");
+    let mut s = client.sse(
+        "/w",
+        vec![],
+        SseOptions {
+            idle_timeout: Some(Duration::from_millis(60)),
+            ..fast()
+        },
+    );
+    assert!(
+        matches!(s.next().await.expect("item"), Err(Error::Disconnected)),
+        "silence past the limit reconnects"
+    );
+    drop(s);
+    // The file watch routes send no keepalive, so they run with no idle timeout.
+    let mut s = client.sse(
+        "/w",
+        vec![],
+        SseOptions {
+            idle_timeout: None,
+            ..fast()
+        },
+    );
+    assert_eq!(s.next().await.expect("item").expect("event").data, "x");
+}

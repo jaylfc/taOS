@@ -79,22 +79,64 @@ where
     Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
 }
 
-/// Deserialise a list, treating `null`, an empty object or any non-list value
-/// as an empty list. The controller returns `{}` where a list is normal on
-/// some error paths (for example `zram` and `network` on `/api/activity`).
+/// Deserialise a list, treating `null`, an empty object or any other non-list
+/// container as an empty list. The controller returns `{}` where a list is
+/// normal on some error paths (for example `zram` and `network` on
+/// `/api/activity`).
+///
+/// This is leniency about the **container** only. When the value is a list,
+/// every element must decode: a wrong-typed field inside a record is reported
+/// as a decode error with its path instead of silently dropping the record.
 pub(crate) fn lenient_vec<'de, D, T>(d: D) -> Result<Vec<T>, D::Error>
 where
     D: Deserializer<'de>,
-    T: for<'a> Deserialize<'a>,
+    T: Deserialize<'de>,
 {
-    let v = serde_json::Value::deserialize(d)?;
-    match v {
-        serde_json::Value::Array(items) => Ok(items
-            .into_iter()
-            .filter_map(|i| serde_json::from_value(i).ok())
-            .collect()),
-        _ => Ok(Vec::new()),
+    struct V<T>(std::marker::PhantomData<T>);
+
+    impl<'de, T: Deserialize<'de>> serde::de::Visitor<'de> for V<T> {
+        type Value = Vec<T>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a list")
+        }
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(self, seq: A) -> Result<Self::Value, A::Error> {
+            Vec::<T>::deserialize(serde::de::value::SeqAccessDeserializer::new(seq))
+        }
+        fn visit_unit<E>(self) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+        fn visit_none<E>(self) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut map: A,
+        ) -> Result<Self::Value, A::Error> {
+            while map
+                .next_entry::<serde::de::IgnoredAny, serde::de::IgnoredAny>()?
+                .is_some()
+            {}
+            Ok(Vec::new())
+        }
+        fn visit_bool<E>(self, _: bool) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+        fn visit_i64<E>(self, _: i64) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+        fn visit_u64<E>(self, _: u64) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+        fn visit_f64<E>(self, _: f64) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+        fn visit_str<E>(self, _: &str) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
     }
+
+    d.deserialize_any(V(std::marker::PhantomData))
 }
 
 /// A point in time that the controller may send as epoch seconds or as an ISO

@@ -20,7 +20,7 @@ use tokio_util::io::ReaderStream;
 use crate::client::{Client, Req};
 use crate::error::{Error, Result};
 use crate::events::{json_frame, EventStream, SseOptions};
-use crate::util::{encode_path, encode_segment, lenient_vec, Timestamp};
+use crate::util::{encode_path, encode_segment, lenient_vec, string_enum, Timestamp};
 
 /// Where files live. A web "Recycle Bin" location is not a variant: the bins
 /// are reached through the `trash` and `recycle` methods.
@@ -332,6 +332,52 @@ impl AgentRecycle {
     }
 }
 
+string_enum! {
+    /// Review state of a project document.
+    pub enum ReviewState {
+        /// Waiting for a reviewer.
+        AwaitingReview => "awaiting_review",
+        /// Approved.
+        Approved => "approved",
+        /// Changes were requested.
+        ChangesRequested => "changes_requested",
+    }
+}
+
+impl ReviewState {
+    /// The states the controller allows next (`VALID_TRANSITIONS` in
+    /// `tinyagentos/projects/doc_review_store.py`). Note this is not the
+    /// three-step cycle the web UI's spec describes: `approved` cannot go
+    /// straight to `changes_requested`.
+    pub fn allowed_next(&self) -> &'static [ReviewState] {
+        match self {
+            Self::AwaitingReview => &[Self::Approved, Self::ChangesRequested],
+            Self::Approved | Self::ChangesRequested => &[Self::AwaitingReview],
+            Self::Unknown(_) => &[],
+        }
+    }
+}
+
+/// A project document's review stamp.
+#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+pub struct DocReview {
+    /// Project id.
+    #[serde(default)]
+    pub project_id: Option<String>,
+    /// Document path inside the project's files.
+    #[serde(default)]
+    pub doc_path: String,
+    /// Current state (`None` from a single-document read of an unreviewed doc).
+    #[serde(default)]
+    pub review_state: Option<ReviewState>,
+    /// Who requested changes.
+    #[serde(default)]
+    pub changes_requested_by: Option<String>,
+    /// When, epoch seconds.
+    #[serde(default)]
+    pub changes_requested_at: Option<f64>,
+}
+
 /// Upload progress: bytes handed to the HTTP stack so far and the total. This
 /// counts what has been written to the connection, not what the server has
 /// acknowledged; the upload is complete when the call returns.
@@ -539,8 +585,12 @@ impl Files {
         } else {
             vec![("path".to_string(), dir.to_string())]
         };
+        // The watch routes send nothing while a folder is unchanged (no
+        // keepalive), so an idle timeout would reconnect and re-snapshot a
+        // quiet folder every minute.
         let opts = SseOptions {
             resume: false,
+            idle_timeout: None,
             ..SseOptions::default()
         };
         Ok(EventStream::new(self.client.sse(path, query, opts), |ev| {
@@ -746,6 +796,50 @@ impl Files {
             .json::<R>(Req::delete(format!("{}/trash", loc.root()?)))
             .await?
             .count)
+    }
+
+    /// Review stamps of a project's documents:
+    /// `GET /api/projects/{project_id}/doc-reviews`, optionally filtered by
+    /// state. Note this takes the project **id**, not the slug used by the
+    /// files routes. The route wraps the rows as `{"items": [...]}`.
+    pub async fn doc_reviews(
+        &self,
+        project_id: &str,
+        state: Option<&ReviewState>,
+    ) -> Result<Vec<DocReview>> {
+        #[derive(Deserialize)]
+        struct R {
+            #[serde(default, deserialize_with = "lenient_vec")]
+            items: Vec<DocReview>,
+        }
+        let req = Req::get(format!(
+            "/api/projects/{}/doc-reviews",
+            encode_segment(project_id)
+        ))
+        .opt_query("state", state.map(ReviewState::as_str));
+        Ok(self.client.json::<R>(req).await?.items)
+    }
+
+    /// Set a document's review state:
+    /// `PUT /api/projects/{project_id}/doc-review/{doc_path}` with
+    /// `{"state": ...}`. An invalid transition is a 409 ([`Error::Conflict`]);
+    /// see [`ReviewState::allowed_next`].
+    pub async fn set_doc_review(
+        &self,
+        project_id: &str,
+        doc_path: &str,
+        state: &ReviewState,
+    ) -> Result<DocReview> {
+        let enc = encode_path(doc_path).ok_or_else(|| {
+            Error::InvalidInput(format!("path `{doc_path}` contains `.` or `..`"))
+        })?;
+        let path = format!(
+            "/api/projects/{}/doc-review/{enc}",
+            encode_segment(project_id)
+        );
+        let mut req = Req::put(path);
+        req.json = Some(serde_json::json!({ "state": state.as_str() }));
+        self.client.json(req).await
     }
 
     /// The aggregated agent container recycle bins: `GET /api/recycle`.

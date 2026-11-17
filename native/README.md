@@ -56,8 +56,11 @@ generic `Client::sse`, and `PollWhileVisible`).
   password.
 * `Debug` for `Client`, `Session` and the cookie jar prints `<redacted>` for
   every secret. Passwords are never stored.
-* `pin_login` (`POST /auth/pin-login`) sends `X-taOS-Console: 1`. The server
-  accepts it only from the device's own screen over loopback.
+* `pin_login` (`POST /auth/pin-login`) sends no console header: that route
+  gates only on `is_console_origin` (a loopback peer and no forwarding
+  header), unlike the other `/auth/lock-*` posts, which also need
+  `X-taOS-Console` (`_lock_post_refusal`). The server accepts a PIN only from
+  the device's own screen.
 
 ### Errors
 
@@ -78,7 +81,9 @@ every enum keeps unknown values in an `Unknown(String)` variant.
 
 `Client::sse` is a generic Server-Sent Events stream with reconnect (backoff
 500 ms doubling to a 30 s cap, with jitter), `Last-Event-ID` resume when the
-server sends ids, an idle timeout, and cancellation on drop. Transient trouble
+server sends ids, an optional idle timeout (default 60 s, which suits the streams that send a
+10 s keepalive; the file watch routes send no keepalive, so `Files::watch`
+turns it off), and cancellation on drop. Transient trouble
 shows up as an `Err` item (`Disconnected`, `Transport`, `Server`) while it
 keeps reconnecting, which is what a "paused" banner needs; fatal errors (401,
 403, 404 and other 4xx) are yielded once and end the stream. Typed wrappers:
@@ -144,3 +149,37 @@ source and the port specs disagree.
   polling; the download keeps running on the controller.
 * `/api/activity/models*` accepts only a session cookie, which is what this
   client uses.
+
+## Where the controller differs from the port specs and the surface doc
+
+Found by reading the source in this tree (line numbers are this tree's, which
+is newer than the docs'). The typed API follows the source.
+
+| Topic | Docs say | Source says |
+|---|---|---|
+| `pin-login` console header | surface doc 4B: send `X-taOS-Console: 1` | not required; only `routes/auth.py:12951` (`pin_login`) peer check |
+| Scope vocabulary | `{project_scopes}` | also `valid_scopes` (`routes/agent_auth_requests.py:566`) |
+| Deny bodies | deny takes `{reason}` | access-request deny takes no body (`:1776`); scope deny reason is optional (`:202`, `:2369`) |
+| Notification list | capped at 100 client-side | server returns all pinned rows plus 20 others (`tinyagentos/notifications.py:247`, `:273`; route `routes/notifications.py:57` passes no limit); rows add `pinned` and `user_id` |
+| Decision `created_at` | epoch seconds or ISO | always epoch float (`tinyagentos/decisions/decision_store.py:34`); both are still accepted |
+| Gate decision kinds | four kinds | five: adds `collab_delegation_gate` and `shell_command` (`routes/decisions.py:41`) |
+| Shared-folder shapes | `FileEntry` and `{id,name,description,agents[],created_at}` | listing rows are `{name,size_mb,modified}` (`tinyagentos/shared_folders.py:118`); folders are `{id,name,description,owner_type,owner_name}` (`:90`, `:93`) |
+| Agent file delete | restore from `/api/recycle` | delete goes to a host-side trash (`routes/agent_workspace.py:236`, `:254`; `/workspace/trash` routes `:259` to `:301`), not the container bin of `routes/recycle.py` |
+| `/api/recycle` | returns `status?` | no `status`; only `GET /api/agents/{name}/recycle` has it (`routes/recycle.py:80`, `:92`) |
+| Review-stamp cycle | awaiting_review, approved, changes_requested | `approved` cannot go to `changes_requested` (`tinyagentos/projects/doc_review_store.py:27`); routes take the project id, not the slug |
+| Download start | `{download_id}` | `{status,download_id,app_id,variant_id}` (`routes/models.py:517`), and 503 on insufficient VRAM (`:429`) |
+| Download list | bare list | `{downloads: [...]}` (`routes/models.py:525`) |
+| Download cancel | requested | no route exists |
+| Workers for members | full record | reduced record: name, status, tier, kind (`routes/cluster.py:344`) |
+| Provider models | `{id,name}` | seeded entries are `{name,size_mb}` with no `id` (`routes/providers.py:416`); entries also carry `api_key` for admins, which this crate never models |
+| Loaded models | has `host` | no entry sets `host` (`routes/models.py:855`, `:878`, `:896`) |
+| `/api/activity` | lists | `zram`, `network` and `gpu.load` become `{}` on error paths (`routes/activity.py:91`, `:101`, `:106`) |
+| Scheduler | statuses complete/running/error/rejected | also `queued`, `cancelled` (`tinyagentos/scheduler/types.py:34`, `:39`); routes answer 503 before the scheduler exists (`routes/scheduler.py:16`) |
+| Model-activity stream | frames without ids | frames carry `id: <seq>` and `Last-Event-ID` resumes (`routes/model_activity.py:68`, `:119`); events add `owner` (`tinyagentos/model_activity.py:109`) |
+| AI-stack restart | ok/partial/failed | also `noop` (`routes/system.py:258`) |
+| `/api/events/stream` | resumable | its `id:` is a per-connection counter, so resume is off for it (`routes/event_stream.py`) |
+
+Deliberately outside the typed API: the many other routes in the surface doc,
+the notification source-to-app routing table (app logic), the project and
+agent-workspace trash routes beyond what delete needs (they are included
+because delete lands there), and WebSocket chat.
