@@ -155,6 +155,9 @@ MCSS="$(printf '%s\n' "$RES" | sed -n 3p)"
 # Released before exec, so squeekboard inherits nothing from it.
 LOCK="$XDG_RUNTIME_DIR/taos-keyboard.lock"
 LOCKED=0
+# How long to wait for the lock, in 0.1 s ticks: 30 s. Tests shorten it.
+LOCK_TICKS="${TAOS_KEYBOARD_LOCK_TICKS:-300}"
+case "$LOCK_TICKS" in ''|*[!0-9]*) LOCK_TICKS=300 ;; esac
 unlock() {
     if [ "$LOCKED" = 1 ]; then
         # Only our own lock: a later holder's must not be removed.
@@ -185,7 +188,17 @@ while :; do
     fi
     _h="$(readlink "$LOCK" 2>/dev/null || true)"
     if [ -z "$_h" ]; then
-        # Released between our ln and our readlink: just try again.
+        # No lock to read. Either it was released between our ln and our
+        # readlink (try again), or ln cannot create it at all: a read-only or
+        # full runtime dir. That second case must not spin: count it, sleep,
+        # and give up with the same bound as a held lock.
+        if [ "$_i" -ge "$LOCK_TICKS" ]; then
+            ktrace "lock: gave up, cannot create $LOCK"
+            echo "taos-kiosk-keyboard: cannot create $LOCK (runtime dir read-only or full?), giving up" >&2
+            exit 1
+        fi
+        sleep 0.1 2>/dev/null || sleep 1
+        _i=$((_i + 1))
         continue
     fi
     case "$_h" in
@@ -200,7 +213,7 @@ while :; do
         fi
         continue
     fi
-    if [ "$_i" -ge 300 ]; then
+    if [ "$_i" -ge "$LOCK_TICKS" ]; then
         ktrace "lock: gave up, held by $_h"
         echo "taos-kiosk-keyboard: another start (pid $_h) still holds $LOCK after 30 s, giving up" >&2
         exit 1

@@ -368,6 +368,33 @@ def test_a_stale_lock_does_not_hang_the_wrapper(env):
     assert time.time() - t0 < 4
 
 
+def test_a_lock_that_cannot_be_created_gives_up_instead_of_spinning(env):
+    """If the lock cannot be created at all (runtime dir read-only or full),
+    there is no owner to wait for. That path retried with no sleep and no
+    bound: a busy loop at session start."""
+    e, tmp, out = env
+    run = pathlib.Path(e["XDG_RUNTIME_DIR"])
+    os.chmod(run, 0o555)
+    try:
+        if os.access(run, os.W_OK):
+            pytest.skip("this runner can write a 0555 directory")
+        e2 = dict(e, TAOS_KEYBOARD_LOCK_TICKS="8")
+        t0 = time.time()
+        try:
+            r = subprocess.run([str(WRAPPER)], env={k: v for k, v in e2.items() if k != "_extra"},
+                               capture_output=True, text=True, timeout=12)
+        except subprocess.TimeoutExpired:
+            pytest.fail("the wrapper never gave up: it is spinning on a lock it cannot create")
+        took = time.time() - t0
+        assert r.returncode == 1, (r.returncode, r.stderr)
+        assert "cannot create" in r.stderr and "taos-keyboard.lock" in r.stderr, r.stderr
+        assert 0.5 < took < 8, took     # it waited (did not spin), and it stopped
+        assert not out.exists()
+    finally:
+        os.chmod(run, 0o755)
+    assert start(e).returncode == 0 and out.exists()  # control: a writable dir starts
+
+
 def test_a_lock_held_by_a_live_process_is_never_taken_over(env):
     """Taking a lock over on elapsed time alone let two starts into the
     section, and let the first remove the second's lock on its way out."""
