@@ -149,3 +149,33 @@ async def test_missing_console_header_gets_404(app):
     async with _client(app, "127.0.0.1", console_header=False) as c:
         r = await _state(c)
     assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_console_login_page_after_session_loss_relocks(app, console):
+    """Session ended without /auth/lock (expiry, revoked elsewhere): the console
+    then lands on the sign-in page, which is what locked means."""
+    await console.post("/auth/pin-login", json={"pin": PIN})
+    assert (await _state(console)).json() == {"locked": False}
+    app.state.auth.revoke_session(console.cookies.get("taos_session"))
+    console.cookies.clear()
+    r = await console.get("/auth/login")
+    assert r.status_code == 200
+    assert (await _state(console)).json() == {"locked": True}
+
+
+@pytest.mark.asyncio
+async def test_console_status_probe_without_session_relocks(app, console):
+    """The SPA's LoginGate never GETs /auth/login: /auth/status is its signal."""
+    await console.post("/auth/pin-login", json={"pin": PIN})
+    console.cookies.clear()
+    await console.get("/auth/status")
+    assert (await _state(console)).json() == {"locked": True}
+
+
+@pytest.mark.asyncio
+async def test_remote_login_page_leaves_it_unlocked(app, console, lan):
+    await console.post("/auth/pin-login", json={"pin": PIN})
+    await lan.get("/auth/login")
+    await lan.get("/auth/status")
+    assert (await _state(console)).json() == {"locked": False}

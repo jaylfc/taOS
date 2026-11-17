@@ -8864,6 +8864,8 @@ async def login_page(request: Request, error: str = "", next: str = ""):
     # LAN browser is never told how this device's own screen unlocks.
     unlock_method = None
     if _request_is_console(request):
+        # The lock/sign-in page being served to the console IS "locked".
+        _set_console_locked(request, True)
         sole = auth_mgr.lock_screen_user()
         if sole is not None:
             unlock_method = effective_unlock_method(sole)
@@ -13463,6 +13465,10 @@ async def auth_status(request: Request):
     _ua = request.headers.get("user-agent", "")
     user_id = auth_mgr.validate_session(token, user_agent=_ua) if token else None
     authenticated = user_id is not None
+    if not authenticated:
+        # The SPA's LoginGate renders the sign-in UI from this answer with no
+        # GET /auth/login, so an unauthenticated console probe means locked.
+        _set_console_locked(request, True)
 
     user = None
     needs_onboarding = False
@@ -13521,6 +13527,7 @@ async def auth_me(request: Request):
     if not token or auth_mgr.validate_session(
         token, user_agent=request.headers.get("user-agent", "")
     ) is None:
+        _set_console_locked(request, True)
         return JSONResponse({"error": "not authenticated"}, status_code=401)
     user = auth_mgr.get_user(token=token, user_agent=request.headers.get("user-agent", ""))
     if user is None:
