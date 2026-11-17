@@ -1276,3 +1276,342 @@ class TestAuthRequestRoutes:
         assert resp.status_code == 409, resp.text
         after = await pstore.get_project(project_id)
         assert after["lead_member_id"] == "original-lead"
+    async def test_a_failed_grant_snapshot_preserves_prior_grants(
+        self, consent_client, monkeypatch
+    ):
+        """Review #3789 (round 2): when the prior-grants snapshot read fails,
+        the undo must not treat the identity as grant-less and revoke grants
+        that existed before this approval."""
+        app = consent_client._transport.app
+        cid, request_id = await self._pending_proof_request(
+            consent_client, "snap-fail"
+        )
+        grants = app.state.agent_grants
+        await grants.add_grant(cid, "a2a_send", tier="once")
+
+        real_list = grants.list_grants
+        calls = {"n": 0}
+
+        async def flaky(canonical_id):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("grant store read unavailable")
+            return await real_list(canonical_id)
+
+        monkeypatch.setattr(grants, "list_grants", flaky)
+
+        with pytest.raises(RuntimeError, match="grant store read unavailable"):
+            await consent_client.post(
+                f"/api/agents/auth-requests/{request_id}/approve",
+                json={"granted_scopes": ["a2a_send"]},
+            )
+        scopes = [g["scope"] for g in await real_list(cid)]
+        assert scopes == ["a2a_send"]
+        assert (await app.state.agent_registry.get(cid))["status"] == "pending"
+
+    async def test_a_denied_race_restores_a_renewed_grants_prior_expiry(
+        self, consent_client, monkeypatch
+    ):
+        """Review #3789 (round 2): with renew=True the approval replaces a
+        pre-existing grant's expires_at; losing the race must put the
+        previous expiry back, not leave the renewed one in place."""
+        from datetime import datetime, timedelta, timezone
+
+        app = consent_client._transport.app
+        registry = app.state.agent_registry
+        reg = await registry.register(
+            framework="hermes",
+            display_name="Hermes",
+            handle="renew-race",
+            origin="external-selfjoin",
+        )
+        cid = reg["canonical_id"]
+        private_pem, _public_pem = app.state.agent_registry_keypair
+        proof = mint_registry_token(
+            cid, private_pem, user_id="test", framework="hermes"
+        )
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            create_resp = await bare.post(
+                "/api/agents/auth-requests",
+                json={
+                    **_CREATE_BODY,
+                    "identity_claim": "renew-race",
+                    "duration_secs": 30 * 24 * 3600,
+                },
+                headers={"Authorization": f"Bearer {proof}"},
+            )
+        request_id = create_resp.json()["request_id"]
+
+        prior_expiry = (
+            datetime.now(timezone.utc) + timedelta(days=1)
+        ).isoformat()
+        await app.state.agent_grants.add_grant(
+            cid, "a2a_send", tier="once", expires_at=prior_expiry
+        )
+        self._deny_wins_the_race(app, monkeypatch)
+
+        resp = await consent_client.post(
+            f"/api/agents/auth-requests/{request_id}/approve",
+            json={"granted_scopes": ["a2a_send"], "renew": True},
+        )
+        assert resp.status_code == 409, resp.text
+        grants = await app.state.agent_grants.list_grants(cid)
+        assert [g["scope"] for g in grants] == ["a2a_send"]
+        assert grants[0]["expires_at"] == prior_expiry
+
+    async def test_an_unreadable_decision_record_does_not_block_the_undo(
+        self, consent_client, monkeypatch
+    ):
+        """Review #3789 (round 2): _undo_lost_approval reads the decision
+        record to check who won. If that read itself fails, cleanup must
+        still run (treat the record as not accepted by us) and the caller
+        must see the 409, not the store error."""
+        app = consent_client._transport.app
+        cid, request_id = await self._pending_proof_request(
+            consent_client, "undo-store-fail"
+        )
+        store = app.state.auth_requests
+        real_set_decision = store.set_decision
+        real_get = store.get
+        state = {"decided": False}
+
+        async def racing(rid, decision, **kwargs):
+            if decision == "accepted":
+                assert await real_set_decision(
+                    rid, "refused", decided_by="other-admin"
+                )
+                state["decided"] = True
+            return await real_set_decision(rid, decision, **kwargs)
+
+        async def broken_get(rid):
+            if state["decided"]:
+                raise RuntimeError("auth store unavailable")
+            return await real_get(rid)
+
+        monkeypatch.setattr(store, "set_decision", racing)
+        monkeypatch.setattr(store, "get", broken_get)
+
+        resp = await consent_client.post(
+            f"/api/agents/auth-requests/{request_id}/approve",
+            json={"granted_scopes": ["a2a_send"]},
+        )
+        assert resp.status_code == 409, resp.text
+        assert (await app.state.agent_registry.get(cid))["status"] == "pending"
+        assert await app.state.agent_grants.list_grants(cid) == []
+
+    async def test_a_failed_grant_revoke_does_not_skip_the_rest_of_the_undo(
+        self, consent_client, monkeypatch
+    ):
+        """Review #3789 (round 2): each undo step is independent — a grant
+        revoke that raises must not skip the lead restore, the member
+        removal or the identity revert."""
+        app = consent_client._transport.app
+        pstore = app.state.project_store
+        if pstore._db is None:
+            await pstore.init()
+        await pstore.create_project_with_lead(
+            name="Undo Steps Project",
+            slug="undo-steps-project",
+            created_by="admin",
+            member_id="original-lead",
+        )
+        project_id = (await pstore.get_project_by_slug("undo-steps-project"))["id"]
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            create_resp = await bare.post(
+                "/api/agents/auth-requests",
+                json={
+                    **_CREATE_BODY,
+                    "identity_claim": "undo-steps",
+                    "requested_scopes": ["project_tasks"],
+                    "project_id": project_id,
+                },
+            )
+        request_id = create_resp.json()["request_id"]
+        self._deny_wins_the_race(app, monkeypatch)
+
+        async def boom(*args, **kwargs):
+            raise RuntimeError("grant store unavailable")
+
+        monkeypatch.setattr(app.state.agent_grants, "revoke_grant", boom)
+
+        resp = await consent_client.post(
+            f"/api/agents/auth-requests/{request_id}/approve",
+            json={
+                "granted_scopes": ["project_tasks"],
+                "is_lead": True,
+                "project_id": project_id,
+            },
+        )
+        assert resp.status_code == 409, resp.text
+        after = await pstore.get_project(project_id)
+        assert after["lead_member_id"] == "original-lead"
+        rows = [
+            r
+            for r in await app.state.agent_registry.list_all()
+            if r.get("handle") == "undo-steps"
+        ]
+        assert rows == []
+
+    async def test_the_undo_does_not_overwrite_a_lead_set_after_this_approval(
+        self, consent_client, monkeypatch
+    ):
+        """Review #3789 (round 2): the lead restore is conditional — if
+        another approval has since made someone else the project's lead,
+        the undo must not clobber that newer lead with the pre-approval
+        value."""
+        app = consent_client._transport.app
+        pstore = app.state.project_store
+        if pstore._db is None:
+            await pstore.init()
+        await pstore.create_project_with_lead(
+            name="Lead Clobber Project",
+            slug="lead-clobber-project",
+            created_by="admin",
+            member_id="original-lead",
+        )
+        project_id = (await pstore.get_project_by_slug("lead-clobber-project"))[
+            "id"
+        ]
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            create_resp = await bare.post(
+                "/api/agents/auth-requests",
+                json={
+                    **_CREATE_BODY,
+                    "identity_claim": "lead-clobber",
+                    "requested_scopes": ["project_tasks"],
+                    "project_id": project_id,
+                },
+            )
+        request_id = create_resp.json()["request_id"]
+
+        store = app.state.auth_requests
+        real_set_decision = store.set_decision
+
+        async def racing(rid, decision, **kwargs):
+            if decision == "accepted":
+                assert await real_set_decision(
+                    rid, "refused", decided_by="other-admin"
+                )
+                # Meanwhile, a different approval installed its own lead.
+                await pstore.add_member(
+                    project_id=project_id,
+                    member_id="other-lead",
+                    member_kind="native",
+                    role="lead",
+                )
+                await pstore.set_lead(project_id, "other-lead")
+            return await real_set_decision(rid, decision, **kwargs)
+
+        monkeypatch.setattr(store, "set_decision", racing)
+
+        resp = await consent_client.post(
+            f"/api/agents/auth-requests/{request_id}/approve",
+            json={
+                "granted_scopes": ["project_tasks"],
+                "is_lead": True,
+                "project_id": project_id,
+            },
+        )
+        assert resp.status_code == 409, resp.text
+        after = await pstore.get_project(project_id)
+        assert after["lead_member_id"] == "other-lead"
+
+    async def test_a_rotation_between_check_and_activation_blocks_reuse(
+        self, consent_client, monkeypatch
+    ):
+        """Review #3789 (round 2): the proof-token cutoff must be re-read at
+        activation time. A rotation that lands after the handler's registry
+        snapshot was taken supersedes the proof, and the reuse must 409
+        instead of activating on a stale snapshot."""
+        app = consent_client._transport.app
+        registry = app.state.agent_registry
+        cid, request_id = await self._pending_proof_request(
+            consent_client, "rotate-mid"
+        )
+        record = await app.state.auth_requests.get(request_id)
+        proven_iat = record["proven_token_iat"]
+        assert proven_iat
+        # The rotation lands after the request was filed.
+        await registry.bump_token_min_iat(cid, proven_iat + 3600)
+
+        real_get = registry.get
+        calls = {"n": 0}
+
+        async def stale_first_get(canonical_id):
+            calls["n"] += 1
+            row = await real_get(canonical_id)
+            if calls["n"] == 1 and row is not None:
+                # The snapshot the approve handler works from was taken
+                # before the rotation landed.
+                row = {**row, "token_min_iat": 0}
+            return row
+
+        monkeypatch.setattr(registry, "get", stale_first_get)
+
+        resp = await consent_client.post(
+            f"/api/agents/auth-requests/{request_id}/approve",
+            json={"granted_scopes": ["a2a_send"]},
+        )
+        assert resp.status_code == 409, resp.text
+        assert "superseded" in resp.json()["detail"]
+        assert (await real_get(cid))["status"] == "pending"
+
+    async def test_a_lost_race_does_not_revert_an_identity_another_approval_won(
+        self, consent_client, monkeypatch
+    ):
+        """Review #3789 (round 2): approval B reused the identity approval A
+        activated and B's decision landed. When A then loses its own race,
+        A's undo must leave the identity (and B's authorization) alone —
+        the guard must look beyond A's own request."""
+        app = consent_client._transport.app
+        cid, request_a = await self._pending_proof_request(
+            consent_client, "shared-identity"
+        )
+        store = app.state.auth_requests
+        record_a = await store.get(request_a)
+        request_b = (
+            await store.create(
+                identity_claim="shared-identity",
+                framework="hermes",
+                requested_scopes=["a2a_send"],
+                proven_canonical_id=cid,
+                proven_token_iat=record_a["proven_token_iat"],
+            )
+        )["id"]
+
+        real_set_decision = store.set_decision
+
+        async def racing(rid, decision, **kwargs):
+            if rid == request_a and decision == "accepted":
+                # B's approval of the same identity lands first and wins;
+                # then A's own record is refused by another admin.
+                assert await real_set_decision(
+                    request_b,
+                    "accepted",
+                    canonical_id=cid,
+                    token="b-token",
+                    granted_scopes=["a2a_send"],
+                    decided_by="other-admin",
+                )
+                assert await real_set_decision(
+                    rid, "refused", decided_by="other-admin"
+                )
+            return await real_set_decision(rid, decision, **kwargs)
+
+        monkeypatch.setattr(store, "set_decision", racing)
+
+        resp = await consent_client.post(
+            f"/api/agents/auth-requests/{request_a}/approve",
+            json={"granted_scopes": ["a2a_send"]},
+        )
+        assert resp.status_code == 409, resp.text
+        assert (await app.state.agent_registry.get(cid))["status"] == "active"
+        scopes = [
+            g["scope"] for g in await app.state.agent_grants.list_grants(cid)
+        ]
+        assert scopes == ["a2a_send"]

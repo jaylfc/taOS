@@ -270,6 +270,28 @@ class AuthRequestsStore(BaseStore):
         ).fetchone()
         return _row_to_dict(row) if row else None
 
+    async def find_accepted_for_canonical(
+        self, canonical_id: str, *, exclude_id: Optional[str] = None
+    ) -> Optional[dict]:
+        """Return an ACCEPTED record carrying *canonical_id*, if one exists.
+
+        The approve undo uses this to tell "the winner approved this same
+        identity" apart from "this identity merely exists": when a different
+        request for the identity was accepted, that approval is live on it
+        and a losing approval must not revert its activation. ``exclude_id``
+        skips the caller's own record.
+        """
+        if self._db is None:
+            raise RuntimeError("AuthRequestsStore not initialised")
+        cursor = await self._db.execute(
+            "SELECT * FROM auth_requests "
+            "WHERE status = 'accepted' AND canonical_id = ? AND id != ? "
+            "LIMIT 1",
+            (canonical_id, exclude_id or ""),
+        )
+        row = await cursor.fetchone()
+        return _row_to_dict(row) if row is not None else None
+
     async def list_pending(self) -> list[dict]:
         """Return all pending auth requests, oldest first."""
         if self._db is None:

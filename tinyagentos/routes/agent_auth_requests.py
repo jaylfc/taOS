@@ -1185,6 +1185,24 @@ async def approve_request_record(
             canonical_id = reg_record["canonical_id"]
             created_here = True
 
+        # Re-read the identity at activation time: the reuse checks above ran
+        # against a registry snapshot taken earlier in this handler, and a
+        # token rotation that landed in between supersedes the proof token
+        # without the snapshot ever seeing it.
+        if not created_here:
+            fresh = await registry.get(canonical_id)
+            if fresh is not None and (record.get("proven_token_iat") or 0) < (
+                fresh.get("token_min_iat") or 0
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"handle '{handle}' belongs to existing agent "
+                        f"{canonical_id}; the proof token was superseded by a "
+                        f"rotation and the request must be resubmitted with a current token"
+                    ),
+                )
+
         # Consent approval IS the activation. external-selfjoin agents are born
         # 'pending' (governance lifecycle); approving the auth-request transitions
         # them to 'active' so they are NOT in the bus inactive/revocation feed and
@@ -1238,6 +1256,8 @@ async def approve_request_record(
     # State the failure handler below needs even when the failure happens
     # before the writes it describes (e.g. the token mint itself throws).
     prior_grants: set[tuple[str, Optional[str]]] = set()
+    prior_grants_known = False
+    prior_grant_expiry: dict[tuple[str, Optional[str]], Optional[str]] = {}
     added_member = False
     prior_lead: Optional[str] = None
     lead_overwritten = False
@@ -1254,11 +1274,16 @@ async def approve_request_record(
         )
 
         # What this identity already held, so losing the decision race below undoes
-        # only what this approval wrote.
-        prior_grants = {
-            (g["scope"], g.get("project_id"))
-            for g in await grants_store.list_grants(canonical_id)
+        # only what this approval wrote. If this snapshot read fails the approval
+        # aborts (the undo is told the snapshot is unknown and leaves grants
+        # alone): an empty-because-failed snapshot must never read as "held
+        # nothing", or the undo would revoke grants that pre-date this approval.
+        _snapshot = await grants_store.list_grants(canonical_id)
+        prior_grants = {(g["scope"], g.get("project_id")) for g in _snapshot}
+        prior_grant_expiry = {
+            (g["scope"], g.get("project_id")): g.get("expires_at") for g in _snapshot
         }
+        prior_grants_known = True
         added_member = False
 
         # Record grants for each approved scope. When deferring, grants are written
@@ -1353,6 +1378,9 @@ async def approve_request_record(
                 granted_scopes=granted_scopes,
                 binding_project=binding_project,
                 prior_grants=prior_grants,
+                prior_grants_known=prior_grants_known,
+                prior_grant_expiry=prior_grant_expiry,
+                renew=renew,
                 added_member=added_member,
                 prior_lead=prior_lead,
                 lead_overwritten=lead_overwritten,
@@ -1379,6 +1407,9 @@ async def approve_request_record(
             granted_scopes=granted_scopes,
             binding_project=binding_project,
             prior_grants=prior_grants,
+            prior_grants_known=prior_grants_known,
+            prior_grant_expiry=prior_grant_expiry,
+            renew=renew,
             added_member=added_member,
             prior_lead=prior_lead,
             lead_overwritten=lead_overwritten,
@@ -1400,39 +1431,122 @@ async def _undo_lost_approval(
     added_member: bool,
     prior_lead: Optional[str] = None,
     lead_overwritten: bool = False,
+    prior_grants_known: bool = True,
+    prior_grant_expiry: Optional[
+        dict[tuple[str, Optional[str]], Optional[str]]
+    ] = None,
+    renew: bool = False,
 ) -> None:
     """Undo an approve's writes after it lost the decision race.
 
     Left alone when the winner approved this same identity: it holds a token
-    for it. Every step is best-effort so the caller's 409 is never masked.
+    for it. Every step is independent and best-effort so one failing store
+    neither skips the rest of the cleanup nor masks the caller's 409.
     """
     auth_store = _get_auth_requests_store(request)
-    final = await auth_store.get(record_id)
+    # The winner check must not itself be able to kill the cleanup: if the
+    # decision store is what failed, this read raises and no cleanup would
+    # run at all. An unreadable record is treated as "not accepted by us"
+    # and the undo proceeds.
+    try:
+        final = await auth_store.get(record_id)
+    except Exception:  # noqa: BLE001 - an unreadable record is not an acceptance
+        logger.warning(
+            "auth-approve: could not re-read request %s during undo",
+            record_id,
+            exc_info=True,
+        )
+        final = None
     if (
         final is not None
         and final.get("status") == "accepted"
         and final.get("canonical_id") == canonical_id
     ):
         return
+    # Shared identity: a DIFFERENT request for this same identity may have
+    # been accepted — it reused the identity this approval activated, and
+    # its approval is live on it. Reverting the activation would pull the
+    # identity out from under that winner, so leave everything alone.
+    try:
+        winner = await auth_store.find_accepted_for_canonical(
+            canonical_id, exclude_id=record_id
+        )
+    except Exception:  # noqa: BLE001 - unreadable means no winner found; proceed
+        logger.warning(
+            "auth-approve: could not check for another accepted request for %s during undo",
+            canonical_id,
+            exc_info=True,
+        )
+        winner = None
+    if winner is not None:
+        return
 
     registry = _get_registry_store(request)
     grants_store = _get_grants_store(request)
     rel_mgr = _get_relationships(request)
-    try:
-        prior_scopes = {scope for scope, _project in prior_grants}
-        for scope in granted_scopes:
-            if (scope, binding_project) not in prior_grants:
-                await grants_store.revoke_grant(
-                    canonical_id, scope, project_id=binding_project
-                )
-            if scope not in prior_scopes:
-                await rel_mgr.revoke_permission(canonical_id, "taos-instance", scope)
-        pstore = getattr(request.app.state, "project_store", None)
-        if lead_overwritten and binding_project and pstore is not None:
+    prior_grant_expiry = prior_grant_expiry or {}
+
+    if prior_grants_known:
+        try:
+            prior_scopes = {scope for scope, _project in prior_grants}
+            for scope in granted_scopes:
+                key = (scope, binding_project)
+                if key not in prior_grants:
+                    await grants_store.revoke_grant(
+                        canonical_id, scope, project_id=binding_project
+                    )
+                elif renew and key in prior_grant_expiry:
+                    # renew=True replaced the pre-existing grant's
+                    # expires_at; put the previous bound back rather than
+                    # leaving the renewed one in place.
+                    await grants_store.add_grant(
+                        canonical_id,
+                        scope,
+                        tier="once",
+                        project_id=binding_project,
+                        expires_at=prior_grant_expiry[key],
+                        renew=True,
+                    )
+                if scope not in prior_scopes:
+                    await rel_mgr.revoke_permission(
+                        canonical_id, "taos-instance", scope
+                    )
+        except Exception:  # noqa: BLE001 - never mask the caller's 409
+            logger.warning(
+                "auth-approve: could not undo grants for %s",
+                canonical_id,
+                exc_info=True,
+            )
+    else:
+        # The pre-approval snapshot failed, so there is no way to tell this
+        # approval's grants from ones the identity already held. Revoking
+        # blind would remove pre-existing authorization; leave grants and
+        # permission edges untouched.
+        logger.warning(
+            "auth-approve: prior-grants snapshot unavailable for %s; "
+            "leaving grants untouched during undo",
+            canonical_id,
+        )
+
+    pstore = getattr(request.app.state, "project_store", None)
+    if lead_overwritten and binding_project and pstore is not None:
+        try:
             # set_lead overwrote the project's previous lead pointer; put
-            # it back (prior_lead may be None, which clears the pointer).
-            await pstore.set_lead(binding_project, prior_lead)
-        if added_member and binding_project and pstore is not None:
+            # it back (prior_lead may be None, which clears the pointer) —
+            # but only when the pointer still names the identity this
+            # approval set. Another approval may have since installed its
+            # own lead, and that newer decision is not ours to overwrite.
+            _proj = await pstore.get_project(binding_project)
+            if _proj is not None and _proj.get("lead_member_id") == canonical_id:
+                await pstore.set_lead(binding_project, prior_lead)
+        except Exception:  # noqa: BLE001 - never mask the caller's 409
+            logger.warning(
+                "auth-approve: could not restore lead for project %s",
+                binding_project,
+                exc_info=True,
+            )
+    if added_member and binding_project and pstore is not None:
+        try:
             await pstore.remove_member(binding_project, canonical_id)
             from tinyagentos.projects.a2a import ensure_a2a_channel
 
@@ -1442,13 +1556,21 @@ async def _undo_lost_approval(
                 binding_project,
                 config=getattr(request.app.state, "config", None),
             )
+        except Exception:  # noqa: BLE001 - never mask the caller's 409
+            logger.warning(
+                "auth-approve: could not remove %s from project %s during undo",
+                canonical_id,
+                binding_project,
+                exc_info=True,
+            )
+    try:
         if created_here:
             await registry.delete(canonical_id)
         else:
             await registry.revert_activation(canonical_id)
     except Exception:  # noqa: BLE001 - never mask the caller's 409
         logger.warning(
-            "auth-approve: could not fully undo lost approval for %s",
+            "auth-approve: could not revert identity %s during undo",
             canonical_id,
             exc_info=True,
         )
