@@ -8,7 +8,9 @@ Run: python3 -m pytest -q tests/session/test_taos_kiosk_keyboard.py
 import os
 import pathlib
 import re
+import shutil
 import subprocess
+import sys
 import time
 
 import pytest
@@ -289,15 +291,17 @@ def test_two_simultaneous_starts_leave_exactly_one_recorded_keyboard(env):
                 return "%d gone (%s)" % (pid, type(exc).__name__)
             return "%d comm=%s state/ppid/pgrp=%s" % (pid, comm, stat)
 
-        lock = pathlib.Path(e["XDG_RUNTIME_DIR"]) / "taos-keyboard.lock"
-        why = "alive=%s | %s | pids file=%r | pidfile=%r | lock=%s" % (
+        # The symlink lock is not used with flock: nothing stale is left behind.
+        old_lock = pathlib.Path(e["XDG_RUNTIME_DIR"]) / "taos-keyboard.lock"
+        why = "alive=%s | %s | pids file=%r | pidfile=%r | old-lock=%s" % (
             alive, "; ".join(_describe(p) for p in alive), pids.read_text(),
             pidfile.read_text() if pidfile.exists() else None,
-            ("-> " + os.readlink(lock)) if os.path.islink(lock) else ("present" if lock.exists() else "absent"))
+            ("-> " + os.readlink(old_lock)) if os.path.islink(old_lock) else
+            ("present" if old_lock.exists() else "absent"))
         why += "\nTRACE (pid uptime step):\n" + (trace.read_text() if trace.exists() else "(no trace file)")
         assert len(alive) == 1, why
         assert pidfile.read_text().strip() == str(alive[0]), why
-        assert not os.path.lexists(pathlib.Path(e["XDG_RUNTIME_DIR"]) / "taos-keyboard.lock")
+        assert not os.path.lexists(old_lock)
     finally:
         for p in procs:
             p.kill()
@@ -344,75 +348,222 @@ def test_a_keyboard_that_ignores_term_is_still_replaced(env):
                     pass
 
 
-def test_a_stale_lock_does_not_hang_the_wrapper(env):
-    """A lock whose owner is gone is taken over at once: one naming a pid that
-    is not running, one naming garbage, and a directory lock left by an older
-    version of the script."""
+def _holder(lock, env):
+    """A single process that takes the flock on the lock file and keeps it for
+    30 s. Python's fcntl.flock() is flock(2), the same lock util-linux flock
+    uses, and a process that dies releases it automatically: nothing to
+    reclaim."""
+    holder = subprocess.Popen([sys.executable, "-c",
+        "import fcntl, sys, time\n"
+        "f = open(sys.argv[1], 'w')\n"
+        "fcntl.flock(f.fileno(), fcntl.LOCK_EX)\n"
+        "print('locked', flush=True)\n"
+        "time.sleep(30)\n", str(lock)],
+        env=env, stdout=subprocess.PIPE, text=True)
+    line = holder.stdout.readline()
+    assert line.strip() == "locked", "the holder did not take the lock: %r" % line
+    return holder
+
+
+def test_a_lock_held_by_a_live_process_is_never_taken_over(env):
+    """A live holder of the flock is waited for, up to 30 s: the start must not
+    enter the section while the holder is alive, and must not take the lock
+    over on elapsed time alone."""
     e, tmp, out = env
-    lock = pathlib.Path(e["XDG_RUNTIME_DIR"]) / "taos-keyboard.lock"
-    dead = subprocess.Popen(["true"])
-    dead.wait()
-    for make in (lambda: os.symlink(str(dead.pid), lock),
-                 lambda: os.symlink("not-a-pid", lock),
-                 lambda: (lock.mkdir(), (lock / "pid").write_text("1\n"))):
-        make()
-        t0 = time.time()
-        r = start(e)
-        assert r.returncode == 0, r.stderr
-        assert time.time() - t0 < 6
-        assert out.exists() and not os.path.lexists(lock)
-        out.unlink()
-    # Control: with no lock at all it starts at once.
+    run = pathlib.Path(e["XDG_RUNTIME_DIR"])
+    lock = run / "taos-keyboard.flock"
+    e = {k: v for k, v in e.items() if k != "_extra"}
+    holder = _holder(lock, e)
+    try:
+        p = subprocess.Popen([str(WRAPPER)], env=e, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True)
+        try:
+            time.sleep(7)   # the old symlink code took over after 5 s
+            assert p.poll() is None, "the wrapper did not wait for the live holder"
+            assert not out.exists(), "squeekboard was started while another start held the lock"
+            assert os.path.exists(lock)
+            # Control: once the holder is gone the waiting start goes through,
+            # with nothing to reclaim (the kernel released the lock).
+            holder.kill(); holder.wait()
+            p.wait(timeout=15)
+            assert p.returncode == 0 and out.exists()
+        finally:
+            if p.poll() is None:
+                p.kill()
+    finally:
+        if holder.poll() is None:
+            holder.kill()
+
+
+def test_a_holder_killed_with_sigkill_does_not_block_the_next_start(env):
+    """A holder killed with SIGKILL inside the locked section releases the
+    lock through the kernel: the next start goes through at once, with no
+    reclaim wait at all."""
+    e, tmp, out = env
+    run = pathlib.Path(e["XDG_RUNTIME_DIR"])
+    lock = run / "taos-keyboard.flock"
+    e = {k: v for k, v in e.items() if k != "_extra"}
+    holder = _holder(lock, e)
+    try:
+        p = subprocess.Popen([str(WRAPPER)], env=e, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True)
+        try:
+            time.sleep(1)
+            assert p.poll() is None, "the wrapper did not wait for the live holder"
+            t0 = time.time()
+            os.kill(holder.pid, 9)
+            holder.wait()
+            p.wait(timeout=15)
+            took = time.time() - t0
+            assert p.returncode == 0 and out.exists(), (p.returncode, p.stderr)
+            assert took < 2, ("the start waited for a dead holder", took)
+        finally:
+            if p.poll() is None:
+                p.kill()
+    finally:
+        if holder.poll() is None:
+            holder.kill()
+
+
+def test_the_started_keyboard_does_not_hold_fd_9(env):
+    """The lock fd must be closed before exec, so squeekboard inherits
+    nothing from it: no fd of the started keyboard may reference the lock
+    file."""
+    e, tmp, out = env
+    pids = tmp / "pids"
+    (tmp / "sqbin" / "squeekboard").write_text(
+        '#!/bin/sh\necho "$$" >> "%s"\nwhile :; do sleep 1; done\n' % pids)
+    proc = _spawn(e)
+    try:
+        for _ in range(100):
+            if pids.exists() and pids.read_text().strip():
+                break
+            time.sleep(0.1)
+        pid = int(pids.read_text().split()[-1])
+        lock = pathlib.Path(e["XDG_RUNTIME_DIR"]) / "taos-keyboard.flock"
+        fd_dir = pathlib.Path("/proc/%d/fd" % pid)
+        targets = [os.readlink(fd_dir / name) for name in os.listdir(fd_dir)]
+        assert str(lock) not in targets, "keyboard holds the lock fd: %r" % targets
+    finally:
+        proc.kill()
+        proc.wait()
+        if pids.exists():
+            for tok in pids.read_text().split():
+                try:
+                    os.kill(int(tok), 9)
+                except ProcessLookupError:
+                    pass
+
+
+def test_a_stale_lock_file_does_not_hang_the_wrapper(env):
+    """A lock file left behind by a start that died inside the section is not
+    stale state: there is nothing to reclaim, so a later start opens it and
+    goes on at once."""
+    e, tmp, out = env
+    run = pathlib.Path(e["XDG_RUNTIME_DIR"])
+    lock = run / "taos-keyboard.flock"
+    lock.write_text("stale\n")
+    t0 = time.time()
+    r = start(e)
+    assert r.returncode == 0, r.stderr
+    assert time.time() - t0 < 6
+    assert out.exists()
+    # Control: with no lock file at all it starts at once.
+    lock.unlink()
     t0 = time.time()
     assert start(e).returncode == 0 and out.exists()
     assert time.time() - t0 < 4
 
 
 def test_a_lock_that_cannot_be_created_gives_up_instead_of_spinning(env):
-    """If the lock cannot be created at all (runtime dir read-only or full),
-    there is no owner to wait for. That path retried with no sleep and no
-    bound: a busy loop at session start."""
+    """If the lock file cannot be created at all (runtime dir read-only or
+    full), there is no owner to wait for: give up at once instead of spinning
+    on a lock nobody can ever take."""
     e, tmp, out = env
     run = pathlib.Path(e["XDG_RUNTIME_DIR"])
     os.chmod(run, 0o555)
     try:
         if os.access(run, os.W_OK):
             pytest.skip("this runner can write a 0555 directory")
-        e2 = dict(e, TAOS_KEYBOARD_LOCK_TICKS="8")
+        e2 = {k: v for k, v in e.items() if k != "_extra"}
         t0 = time.time()
         try:
-            r = subprocess.run([str(WRAPPER)], env={k: v for k, v in e2.items() if k != "_extra"},
-                               capture_output=True, text=True, timeout=12)
+            r = subprocess.run([str(WRAPPER)], env=e2, capture_output=True,
+                               text=True, timeout=12)
         except subprocess.TimeoutExpired:
             pytest.fail("the wrapper never gave up: it is spinning on a lock it cannot create")
         took = time.time() - t0
         assert r.returncode == 1, (r.returncode, r.stderr)
-        assert "cannot create" in r.stderr and "taos-keyboard.lock" in r.stderr, r.stderr
-        assert 0.5 < took < 8, took     # it waited (did not spin), and it stopped
+        assert "cannot create" in r.stderr and "taos-keyboard.flock" in r.stderr, r.stderr
+        assert took < 8, took     # it gave up (did not spin), and it stopped
         assert not out.exists()
     finally:
         os.chmod(run, 0o755)
     assert start(e).returncode == 0 and out.exists()  # control: a writable dir starts
 
 
-def test_a_lock_held_by_a_live_process_is_never_taken_over(env):
-    """Taking a lock over on elapsed time alone let two starts into the
-    section, and let the first remove the second's lock on its way out."""
+def test_without_flock_uses_the_symlink_lock_fallback(env):
     e, tmp, out = env
+    flock_bin = shutil.which("flock")
+    assert flock_bin, "flock must exist on PATH for this test to be meaningful"
+    flock_real = os.path.realpath(os.path.dirname(flock_bin))
+    stub = tmp / "stub"
+    stub.mkdir()
+    for name in ("ln", "rm", "readlink", "sleep", "dirname", "sed", "cat", "mv", "mkdir"):
+        (stub / name).write_text('#!/bin/sh\nexec /usr/bin/%s "$@"\n' % name)
+        os.chmod(stub / name, 0o755)
+    keep = [d for d in os.environ["PATH"].split(":")
+            if d and os.path.realpath(d) != flock_real]
+    e2 = dict(e)
+    e2["PATH"] = "%s:%s" % (stub, ":".join(keep))
+    # Sanity: flock really is undiscoverable in this environment.
+    check = subprocess.run(["/bin/sh", "-c", "command -v flock >/dev/null && echo found || echo missing"],
+                           env=e2, capture_output=True, text=True)
+    assert check.stdout.strip() == "missing", check.stdout
+
+    pids = tmp / "pids"
+    (tmp / "sqbin" / "squeekboard").write_text(
+        '#!/bin/sh\necho "$$" >> "%s"\nwhile :; do sleep 1; done\n' % pids)
+    pidfile = pathlib.Path(e["XDG_RUNTIME_DIR"]) / "taos-keyboard.pid"
     lock = pathlib.Path(e["XDG_RUNTIME_DIR"]) / "taos-keyboard.lock"
-    holder = subprocess.Popen(["sleep", "30"])
+    ee = {k: v for k, v in e2.items() if k != "_extra"}
+    procs = [subprocess.Popen([str(WRAPPER)], env=ee),
+             subprocess.Popen([str(WRAPPER)], env=ee)]
     try:
-        os.symlink(str(holder.pid), lock)
-        p = subprocess.Popen([str(WRAPPER)], env={k: v for k, v in e.items() if k != "_extra"},
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        time.sleep(7)   # longer than the old 5 s takeover
-        assert p.poll() is None, "the wrapper did not wait for the live holder"
-        assert not out.exists(), "squeekboard was started while another start held the lock"
-        assert os.readlink(lock) == str(holder.pid)
-        # Control: once the holder is gone the waiting start goes through.
-        holder.kill(); holder.wait()
-        p.wait(timeout=15)
-        assert p.returncode == 0 and out.exists() and not os.path.lexists(lock)
+        for _ in range(100):
+            if pids.exists() and len(pids.read_text().split()) >= 2:
+                break
+            time.sleep(0.1)
+        for _ in range(80):
+            alive = _alive_stubs(pids)
+            if len(alive) == 1:
+                break
+            time.sleep(0.1)
+        assert len(alive) == 1, alive
+        assert pidfile.read_text().strip() == str(alive[0])
+        assert not os.path.lexists(lock)
     finally:
-        if holder.poll() is None:
-            holder.kill()
+        for p in procs:
+            p.kill()
+        if pids.exists():
+            for tok in pids.read_text().split():
+                try:
+                    os.kill(int(tok), 9)
+                except ProcessLookupError:
+                    pass
+    # A dead owner's symlink lock is taken over at once by the fallback path.
+    # A pid that never existed can never be a live holder: the fallback must
+    # not wait for it (that was the check-then-remove race the flock path
+    # removes).
+    (tmp / "sqbin" / "squeekboard").write_text(
+        '#!/bin/sh\necho "$$" >> "%s"\nwhile :; do sleep 1; done\n' % pids)
+    (tmp / "sqbin" / "squeekboard").write_text(
+        '#!/bin/sh\n{ echo "CFG=$XDG_CONFIG_HOME"; '
+        'cat "$XDG_CONFIG_HOME/gtk-3.0/gtk.css"; } > "%s"\n' % out)
+    os.chmod(tmp / "sqbin" / "squeekboard", 0o755)
+    os.symlink("1234567", lock)
+    t0 = time.time()
+    r = start(e2)
+    assert r.returncode == 0, r.stderr
+    assert time.time() - t0 < 6
+    assert out.exists() and not os.path.lexists(lock)

@@ -146,84 +146,111 @@ MCSS="$(printf '%s\n' "$RES" | sed -n 3p)"
 
 # Two instances started together would both read the old pid before either
 # wrote the pidfile, leaving one keyboard running and unrecorded. Serialize
-# stop_old + pidfile write with a lock that is a SYMLINK whose target is the
-# owner's pid: `ln -s` is atomic and exclusive, and the lock can never exist
-# without naming its owner (a directory plus an owner file could, for an
-# instant, and a waiter that saw that state could take a live holder's lock).
-# It is taken over only when its owner is not running; a live holder is waited
-# for, up to 30 s, and then this start gives up rather than enter unlocked.
-# Released before exec, so squeekboard inherits nothing from it.
-LOCK="$XDG_RUNTIME_DIR/taos-keyboard.lock"
-LOCKED=0
-# How long to wait for the lock, in 0.1 s ticks: 30 s. Tests shorten it.
-LOCK_TICKS="${TAOS_KEYBOARD_LOCK_TICKS:-300}"
-case "$LOCK_TICKS" in ''|*[!0-9]*) LOCK_TICKS=300 ;; esac
-unlock() {
-    if [ "$LOCKED" = 1 ]; then
-        # Only our own lock: a later holder's must not be removed.
-        if [ "$(readlink "$LOCK" 2>/dev/null)" = "$$" ]; then
-            rm -f "$LOCK"
-            ktrace "lock: released"
-        else
-            ktrace "lock: NOT released, owner is now '$(readlink "$LOCK" 2>/dev/null)'"
-        fi
-    fi
-    LOCKED=0
-    return 0
-}
-_i=0
-while :; do
-    # -T: never descend into LOCK if it happens to be a directory (a plain
-    # `ln -s` would create the link INSIDE it and report success).
-    if ln -sT "$$" "$LOCK" 2>/dev/null; then
-        LOCKED=1
-        ktrace "lock: acquired after $_i waits"
-        break
-    fi
-    if [ -d "$LOCK" ] && [ ! -L "$LOCK" ]; then
-        # A directory lock left by an older version of this script.
-        ktrace "lock: removing old-style directory lock"
-        rm -f "$LOCK/pid"; rmdir "$LOCK" 2>/dev/null || true
-        continue
-    fi
-    _h="$(readlink "$LOCK" 2>/dev/null || true)"
-    if [ -z "$_h" ]; then
-        # No lock to read. Either it was released between our ln and our
-        # readlink (try again), or ln cannot create it at all: a read-only or
-        # full runtime dir. That second case must not spin: count it, sleep,
-        # and give up with the same bound as a held lock.
-        if [ "$_i" -ge "$LOCK_TICKS" ]; then
-            ktrace "lock: gave up, cannot create $LOCK"
-            echo "taos-kiosk-keyboard: cannot create $LOCK (runtime dir read-only or full?), giving up" >&2
-            exit 1
-        fi
-        sleep 0.1 2>/dev/null || sleep 1
-        _i=$((_i + 1))
-        continue
-    fi
-    case "$_h" in
-        *[!0-9]*) _dead=1 ;;
-        *) if _running "$_h"; then _dead=0; else _dead=1; fi ;;
-    esac
-    if [ "$_dead" = 1 ]; then
-        # Remove it only if it still names that same dead owner.
-        if [ "$(readlink "$LOCK" 2>/dev/null)" = "$_h" ]; then
-            ktrace "lock: taking over from dead owner '$_h'"
-            rm -f "$LOCK"
-        fi
-        continue
-    fi
-    if [ "$_i" -ge "$LOCK_TICKS" ]; then
-        ktrace "lock: gave up, held by $_h"
-        echo "taos-kiosk-keyboard: another start (pid $_h) still holds $LOCK after 30 s, giving up" >&2
+# stop_old + pidfile write with flock(1) on a file descriptor: open the lock
+# file on fd 9 and hold the lock for the whole locked section. A process that
+# dies releases the lock automatically, so there is no stale state to reclaim
+# and no check-then-remove race. Released (fd closed) before exec, so
+# squeekboard inherits nothing from it. flock exists in util-linux (Debian)
+# and busybox (Alpine/postmarketOS); systems without it keep the old symlink
+# lock below as the fallback path, unchanged.
+if command -v flock >/dev/null 2>&1; then
+    USE_FLOCK=1
+    LOCK="$XDG_RUNTIME_DIR/taos-keyboard.flock"
+    # No owner to wait for when the lock file cannot be created at all: give
+    # up at once rather than spin.
+    if [ ! -w "$XDG_RUNTIME_DIR" ] || { [ -e "$LOCK" ] && [ ! -w "$LOCK" ]; }; then
+        ktrace "lock: gave up, cannot create $LOCK"
+        echo "taos-kiosk-keyboard: cannot create $LOCK (runtime dir read-only or full?), giving up" >&2
         exit 1
     fi
-    [ "$_i" != 0 ] || ktrace "lock: waiting for $_h"
-    sleep 0.1 2>/dev/null || sleep 1
-    _i=$((_i + 1))
-done
-trap unlock EXIT
-trap 'exit 1' INT TERM HUP
+    exec 9>"$LOCK"
+    # -w 30: wait up to 30 s for a live holder, then give up rather than
+    # enter unlocked; a holder that dies releases the lock at once.
+    if ! flock -w 30 9; then
+        ktrace "lock: gave up"
+        echo "taos-kiosk-keyboard: another start still holds $LOCK after 30 s, giving up" >&2
+        exit 1
+    fi
+    ktrace "lock: acquired"
+    trap 'exit 1' INT TERM HUP
+else
+    USE_FLOCK=0
+    # The symlink lock names its owner pid (`ln -s` is atomic and exclusive)
+    # and can never exist without naming its owner. It is taken over only when
+    # its owner is not running; a live holder is waited for, up to 30 s, and
+    # then this start gives up rather than enter unlocked.
+    LOCK="$XDG_RUNTIME_DIR/taos-keyboard.lock"
+    LOCKED=0
+    # How long to wait for the lock, in 0.1 s ticks: 30 s. Tests shorten it.
+    LOCK_TICKS="${TAOS_KEYBOARD_LOCK_TICKS:-300}"
+    case "$LOCK_TICKS" in ''|*[!0-9]*) LOCK_TICKS=300 ;; esac
+    unlock() {
+        if [ "$LOCKED" = 1 ]; then
+            # Only our own lock: a later holder's must not be removed.
+            if [ "$(readlink "$LOCK" 2>/dev/null)" = "$$" ]; then
+                rm -f "$LOCK"
+                ktrace "lock: released"
+            else
+                ktrace "lock: NOT released, owner is now '$(readlink "$LOCK" 2>/dev/null)'"
+            fi
+        fi
+        LOCKED=0
+        return 0
+    }
+    _i=0
+    while :; do
+        # -T: never descend into LOCK if it happens to be a directory (a plain
+        # `ln -s` would create the link INSIDE it and report success).
+        if ln -sT "$$" "$LOCK" 2>/dev/null; then
+            LOCKED=1
+            ktrace "lock: acquired after $_i waits"
+            break
+        fi
+        if [ -d "$LOCK" ] && [ ! -L "$LOCK" ]; then
+            # A directory lock left by an older version of this script.
+            ktrace "lock: removing old-style directory lock"
+            rm -f "$LOCK/pid"; rmdir "$LOCK" 2>/dev/null || true
+            continue
+        fi
+        _h="$(readlink "$LOCK" 2>/dev/null || true)"
+        if [ -z "$_h" ]; then
+            # No lock to read. Either it was released between our ln and our
+            # readlink (try again), or ln cannot create it at all: a read-only
+            # or full runtime dir. That second case must not spin: count it,
+            # sleep, and give up with the same bound as a held lock.
+            if [ "$_i" -ge "$LOCK_TICKS" ]; then
+                ktrace "lock: gave up, cannot create $LOCK"
+                echo "taos-kiosk-keyboard: cannot create $LOCK (runtime dir read-only or full?), giving up" >&2
+                exit 1
+            fi
+            sleep 0.1 2>/dev/null || sleep 1
+            _i=$((_i + 1))
+            continue
+        fi
+        case "$_h" in
+            *[!0-9]*) _dead=1 ;;
+            *) if _running "$_h"; then _dead=0; else _dead=1; fi ;;
+        esac
+        if [ "$_dead" = 1 ]; then
+            # Remove it only if it still names that same dead owner.
+            if [ "$(readlink "$LOCK" 2>/dev/null)" = "$_h" ]; then
+                ktrace "lock: taking over from dead owner '$_h'"
+                rm -f "$LOCK"
+            fi
+            continue
+        fi
+        if [ "$_i" -ge "$LOCK_TICKS" ]; then
+            ktrace "lock: gave up, held by $_h"
+            echo "taos-kiosk-keyboard: another start (pid $_h) still holds $LOCK after 30 s, giving up" >&2
+            exit 1
+        fi
+        [ "$_i" != 0 ] || ktrace "lock: waiting for $_h"
+        sleep 0.1 2>/dev/null || sleep 1
+        _i=$((_i + 1))
+    done
+    trap unlock EXIT
+    trap 'exit 1' INT TERM HUP
+fi
 
 stop_old
 mkdir -p "$KDIR/gtk-3.0"
@@ -245,7 +272,12 @@ fi
 
 echo "$$" > "$PIDFILE"
 ktrace "pidfile written"
-unlock
+if [ "$USE_FLOCK" = 1 ]; then
+    ktrace "lock: released"
+    exec 9>&-
+else
+    unlock
+fi
 trap - EXIT INT TERM HUP
 XDG_CONFIG_HOME="$KDIR"
 export XDG_CONFIG_HOME
