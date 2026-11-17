@@ -324,7 +324,19 @@ fn build_main(app: &adw::Application, cfg: &Rc<Config>) {
         win.connect_realize(move |w| {
             let Some(clock) = w.frame_clock() else { return };
             let (cfg, state) = (cfg.clone(), state.clone());
+            // after-paint fires on every frame-clock cycle, including cycles in
+            // which nothing was drawn; `paint` is emitted only when a paint was
+            // requested. Log a frame only if this cycle painted, so the log
+            // counts drawn frames, as Qt's frameSwapped does.
+            let painted = Rc::new(Cell::new(false));
+            {
+                let painted = painted.clone();
+                clock.connect_paint(move |_| painted.set(true));
+            }
             clock.connect_after_paint(move |_| {
+                if !painted.replace(false) {
+                    return;
+                }
                 let t = glib::monotonic_time(); // CLOCK_MONOTONIC, microseconds
                 let mut st = state.borrow_mut();
                 if st.1 {

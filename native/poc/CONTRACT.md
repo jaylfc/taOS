@@ -31,7 +31,8 @@ one harness can run and measure both. Research notes: `SPEC-research.md`.
   `coldstart_ms=<float>` (now - POC_T0_NS). If unset, print `coldstart_ms=na`.
 - `POC_FRAMELOG=<file>`: append one line per presented frame of the MAIN
   window: the interval in microseconds (integer) since the previous presented
-  frame, CLOCK_MONOTONIC. GTK: the frame clock's after-paint; Qt:
+  frame, CLOCK_MONOTONIC. GTK: the frame clock's after-paint, only on cycles
+  whose `paint` signal fired (a cycle that drew nothing is not a frame); Qt:
   QQuickWindow::frameSwapped. First frame writes nothing.
 - `POC_NO_BLUR=1`: the card is the same translucent surface with NO blur pass.
 - `POC_BLUR_RADIUS=<px>`: blur radius, default 24.
