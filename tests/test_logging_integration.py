@@ -200,3 +200,29 @@ class TestLoggingIntegration:
         finally:
             root.handlers = saved_handlers
             root.level = saved_level
+
+
+class TestRootLoggerRestoredBetweenTests:
+    """create_app() calls configure_logging(), which leaves the root logger at
+    INFO whenever handlers already exist.  The _restore_root_logger autouse
+    fixture (tests/conftest.py) must restore the pre-test level so the NEXT
+    test sees the level that was in effect before create_app() ran."""
+
+    _level_before = None
+
+    def test_create_app_sets_root_level_to_INFO(self, tmp_data_dir):
+        """Calling create_app() leaves the root logger at INFO."""
+        from tinyagentos.app import create_app
+
+        root = logging.getLogger()
+        root.setLevel(logging.WARNING)
+        type(self)._level_before = root.level
+        create_app(data_dir=tmp_data_dir)
+        assert root.level == logging.INFO
+
+    def test_root_logger_level_restored_in_next_test(self):
+        """The level visible to the next test equals the level before
+        create_app() ran (the fixture restored it after the previous test)."""
+        root = logging.getLogger()
+        assert type(self)._level_before is not None, "create_app test must run first"
+        assert root.level == type(self)._level_before
