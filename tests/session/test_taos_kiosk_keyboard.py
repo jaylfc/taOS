@@ -271,11 +271,65 @@ def test_two_simultaneous_starts_leave_exactly_one_recorded_keyboard(env):
             if pids.exists() and len(pids.read_text().split()) >= 2:
                 break
             time.sleep(0.1)
-        time.sleep(1)
-        alive = _alive_stubs(pids)
-        assert len(alive) == 1, alive
-        assert pidfile.read_text().strip() == str(alive[0])
+        # The second start stops the first before it execs, but allow for a slow
+        # runner: poll rather than trust one fixed sleep.
+        for _ in range(80):
+            alive = _alive_stubs(pids)
+            if len(alive) == 1:
+                break
+            time.sleep(0.1)
+
+        def _describe(pid):
+            try:
+                comm = pathlib.Path("/proc/%d/comm" % pid).read_text().strip()
+                stat = pathlib.Path("/proc/%d/stat" % pid).read_text().rsplit(")", 1)[1].split()[:3]
+            except OSError as exc:
+                return "%d gone (%s)" % (pid, type(exc).__name__)
+            return "%d comm=%s state/ppid/pgrp=%s" % (pid, comm, stat)
+
+        lock = pathlib.Path(e["XDG_RUNTIME_DIR"]) / "taos-keyboard.lock"
+        why = "alive=%s | %s | pids file=%r | pidfile=%r | lock=%s" % (
+            alive, "; ".join(_describe(p) for p in alive), pids.read_text(),
+            pidfile.read_text() if pidfile.exists() else None,
+            sorted(x.name for x in lock.iterdir()) if lock.exists() else "absent")
+        assert len(alive) == 1, why
+        assert pidfile.read_text().strip() == str(alive[0]), why
         assert not (pathlib.Path(e["XDG_RUNTIME_DIR"]) / "taos-keyboard.lock").exists()
+    finally:
+        for p in procs:
+            p.kill()
+        if pids.exists():
+            for tok in pids.read_text().split():
+                try:
+                    os.kill(int(tok), 9)
+                except ProcessLookupError:
+                    pass
+
+
+def test_a_keyboard_that_ignores_term_is_still_replaced(env):
+    """Seen in CI: two keyboards alive after two starts. A process ignores TERM
+    when its parent did (the disposition survives exec), and the stop step only
+    ever sent TERM, so the old keyboard stayed up beside the new one."""
+    e, tmp, out = env
+    pids = tmp / "pids"
+    (tmp / "sqbin" / "squeekboard").write_text(
+        '#!/bin/sh\ntrap "" TERM\necho "$$" >> "%s"\nwhile :; do sleep 1; done\n' % pids)
+    procs = [_spawn(e)]
+    try:
+        for _ in range(100):
+            if pids.exists() and len(pids.read_text().split()) >= 1:
+                break
+            time.sleep(0.1)
+        first = int(pids.read_text().split()[0])
+        procs.append(_spawn(e))
+        for _ in range(150):
+            if len(pids.read_text().split()) >= 2:
+                break
+            time.sleep(0.1)
+        time.sleep(0.5)
+        alive = _alive_stubs(pids)
+        assert first not in alive, "the TERM-ignoring keyboard is still running"
+        assert len(alive) == 1, alive   # control: the new one did start
     finally:
         for p in procs:
             p.kill()

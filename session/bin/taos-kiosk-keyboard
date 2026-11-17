@@ -45,6 +45,19 @@ done
 
 # Replace the previous instance by PID. The pidfile names one process and the
 # check reads that one process's name, so nothing here matches a process list.
+# Alive and not a zombie: a killed process whose parent has not reaped it yet
+# still answers kill -0, and waiting on it would be waiting on nothing.
+_running() {
+    [ -r "/proc/$1/stat" ] || return 1
+    _st=""
+    read -r _st < "/proc/$1/stat" 2>/dev/null || return 1
+    _st="${_st##*) }"
+    case "$_st" in
+        Z*) return 1 ;;
+    esac
+    return 0
+}
+
 stop_old() {
     [ -r "$PIDFILE" ] || return 0
     read -r _old < "$PIDFILE" || _old=""
@@ -60,10 +73,21 @@ stop_old() {
     esac
     kill "$_old" 2>/dev/null || return 0
     _i=0
-    while kill -0 "$_old" 2>/dev/null && [ "$_i" -lt 30 ]; do
+    while _running "$_old" && [ "$_i" -lt 30 ]; do
         sleep 0.1 2>/dev/null || sleep 1
         _i=$((_i + 1))
     done
+    # A keyboard that ignores TERM (the disposition is inherited, so one
+    # started by a parent that ignores it does) would otherwise stay up beside
+    # the new one: two keyboards, one unrecorded. Do not ask twice.
+    if _running "$_old"; then
+        kill -9 "$_old" 2>/dev/null || true
+        _i=0
+        while _running "$_old" && [ "$_i" -lt 20 ]; do
+            sleep 0.1 2>/dev/null || sleep 1
+            _i=$((_i + 1))
+        done
+    fi
 }
 
 if [ "$RESTART" = 1 ]; then
