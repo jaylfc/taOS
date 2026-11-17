@@ -1102,6 +1102,15 @@ relayed name; `_upstream_cookie_header` forwards only `taosmy_*` cookies, prefix
 stripped). The namespace is required, not cosmetic: taos.my's session cookie is
 also called `taos_session`, so relaying it verbatim overwrote the local session.
 
+The `taosmy_` namespace is controller-owned too: it holds the user's taos.my
+account session. The three app-facing proxies therefore strip everything the
+controller owns, via `is_controller_owned_cookie` in `tinyagentos/issued_cookies.py`
+(the issued set plus the whole `taosmy_` namespace, case-insensitive). That holds
+both ways: the browser's `taosmy_*` cookies never reach a backend, and a backend's
+`Set-Cookie` for an owned name (`taosmy_*`, `taos_session`, `csrf_token`, ...) is
+dropped instead of relayed (`relay_set_cookies`), so a backend can neither read
+the account session nor plant one (session fixation).
+
 **Adding a cookie anywhere in the package means adding it to
 `TAOS_ISSUED_COOKIES`.** Two guards in `tests/test_proxy_cookie_isolation.py`
 enforce this: one asserts all four proxies share the set by **identity**, so

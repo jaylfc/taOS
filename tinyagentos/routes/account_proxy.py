@@ -23,6 +23,7 @@ import httpx
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
 
+from tinyagentos.issued_cookies import UPSTREAM_ACCOUNT_COOKIE_PREFIX
 from tinyagentos.taosnet import mesh, mesh_credentials
 from tinyagentos.peer import resolve_local_identity_id
 from tinyagentos.auth_context import require_admin
@@ -131,7 +132,7 @@ def _append_header(resp: Response, name: str, value: str) -> None:
 #   * upstream: ONLY cookies carrying this prefix are forwarded, with the
 #     prefix stripped. Everything else the browser holds (this origin's own
 #     cookies, present or future) can never reach taos.my.
-_UPSTREAM_COOKIE_PREFIX = "taosmy_"
+_UPSTREAM_COOKIE_PREFIX = UPSTREAM_ACCOUNT_COOKIE_PREFIX
 
 
 def _rewrite_set_cookie(value: str, secure_ok: bool) -> str | None:

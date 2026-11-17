@@ -12,7 +12,11 @@ from urllib.parse import urlparse
 import httpx
 from fastapi import APIRouter, Form, Request, UploadFile, File
 from fastapi.responses import JSONResponse, FileResponse, RedirectResponse, Response, StreamingResponse
-from tinyagentos.issued_cookies import TAOS_ISSUED_COOKIES
+from tinyagentos.issued_cookies import (
+    TAOS_ISSUED_COOKIES,
+    relay_set_cookies,
+    strip_controller_cookies,
+)
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
@@ -492,8 +496,8 @@ async def serve_bundle(request: Request, app_id: str, path: str):
 
 # Hop-by-hop headers must not be forwarded between the proxy and the
 # upstream/client (RFC 2616 §13.5.1). Authorization is stripped too, and every
-# cookie this origin issues is scrubbed out of Cookie -- an untrusted
-# container-app backend must never see the controller session credential, nor
+# cookie the controller owns (the issued set plus the taosmy_ account namespace)
+# is scrubbed out of Cookie -- an untrusted container-app backend must never see the controller session credential, nor
 # the CSRF token that proves same-origin for this host.
 _PROXY_HOP_BY_HOP = frozenset({
     "connection", "keep-alive", "proxy-authorization", "te",
@@ -511,18 +515,9 @@ def _strip_taos_session_cookie(cookie_header: str) -> str:
     # Textual scrub that does not depend on SimpleCookie's grammar: a
     # malformed Cookie header must still have taos_session removed, never
     # forwarded whole (SimpleCookie.load could raise and leak the credential).
-    if not cookie_header:
-        return ""
-    kept = []
-    for part in cookie_header.split(";"):
-        stripped = part.strip()
-        if not stripped:
-            continue
-        name = stripped.split("=", 1)[0].strip()
-        if name in _PROXY_STRIPPED_COOKIES:
-            continue
-        kept.append(stripped)
-    return "; ".join(kept)
+    # Drops every controller-owned cookie: the issued set plus the whole
+    # ``taosmy_`` account namespace (see tinyagentos/issued_cookies.py).
+    return strip_controller_cookies(cookie_header)
 
 
 def _filter_proxy_headers(headers: dict) -> dict:
@@ -594,7 +589,11 @@ async def proxy_container_app(request: Request, app_id: str, path: str):
     except httpx.TimeoutException:
         return JSONResponse({"error": f"app '{app_id}' timed out"}, status_code=504)
 
-    resp_headers = _filter_proxy_headers(dict(upstream_resp.headers))
+    # Set-Cookie is relayed separately (below), one header line each and minus
+    # any controller-owned name; dict() would merge them into one broken line.
+    resp_headers = _filter_proxy_headers(
+        {k: v for k, v in upstream_resp.headers.items() if k.lower() != "set-cookie"}
+    )
     granted = app.get("permissions_granted") or []
     net_origins = [p[len("network:"):] for p in granted
                    if isinstance(p, str) and p.startswith("network:")]
@@ -602,12 +601,14 @@ async def proxy_container_app(request: Request, app_id: str, path: str):
     resp_headers["Content-Security-Policy"] = _bundle_csp(net_origins, provenance)
     resp_headers["X-Content-Type-Options"] = "nosniff"
 
-    return StreamingResponse(
+    response = StreamingResponse(
         upstream_resp.aiter_bytes(),
         status_code=upstream_resp.status_code,
         headers=resp_headers,
         background=BackgroundTask(upstream_resp.aclose),
     )
+    relay_set_cookies(response, upstream_resp.headers)
+    return response
 
 
 @router.get("/api/userspace-apps/{app_id}/icon")
