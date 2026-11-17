@@ -976,6 +976,19 @@ class TestAuthRequestRoutes:
         assert resp.json()["canonical_id"] == other_spelling["canonical_id"]
         assert (await registry.get(exact["canonical_id"]))["status"] == "pending"
 
+        # Polling must hand back a token whose effective identity is the
+        # proof-named row, not the exact-spelling one: the canonical_id
+        # field alone proves nothing about what the token authenticates as.
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            status_resp = await bare.get(
+                f"/api/agents/auth-requests/{create_resp.json()['request_id']}"
+            )
+        body = status_resp.json()
+        assert body["status"] == "accepted"
+        assert body["canonical_id"] == other_spelling["canonical_id"]
+        claims = verify_registry_token(body["token"], _public_pem)
+        assert claims["sub"] == other_spelling["canonical_id"]
+
     @staticmethod
     def _deny_wins_the_race(app, monkeypatch):
         """A competing deny lands after the approve has done its writes, just
@@ -1162,3 +1175,104 @@ class TestAuthRequestRoutes:
             if r.get("handle") == "hermes-no-proof-test"
         ]
         assert len(rows) == 1
+
+    async def test_reserved_name_value_error_is_not_a_concurrent_409(
+        self, consent_client, monkeypatch
+    ):
+        """Review #3789: register() rejecting a name (reserved prefix) must
+        surface as that error, not be rewritten into the concurrent-decision
+        409 that is reserved for a genuine activation race."""
+        app = consent_client._transport.app
+        registry = app.state.agent_registry
+
+        async def reserved(*args, **kwargs):
+            raise ValueError(
+                "cannot register agent: name 'user' resolves to reserved "
+                "prefix 'user-'; choose a different name"
+            )
+
+        monkeypatch.setattr(registry, "register", reserved)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            create_resp = await bare.post("/api/agents/auth-requests", json=_CREATE_BODY)
+        request_id = create_resp.json()["request_id"]
+        with pytest.raises(ValueError, match="reserved"):
+            await consent_client.post(
+                f"/api/agents/auth-requests/{request_id}/approve",
+                json={"granted_scopes": ["a2a_send"]},
+            )
+
+    async def test_a_failed_grant_write_undoes_the_whole_approval(
+        self, consent_client, monkeypatch
+    ):
+        """Review #3789: if a grant write fails after activation, the approval
+        must not be left half-applied: the minted identity is removed and the
+        request is still pending, so it can be decided again."""
+        app = consent_client._transport.app
+        registry = app.state.agent_registry
+        grants = app.state.agent_grants
+
+        async def boom(*args, **kwargs):
+            raise RuntimeError("grant store unavailable")
+
+        monkeypatch.setattr(grants, "add_grant", boom)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            create_resp = await bare.post("/api/agents/auth-requests", json=_CREATE_BODY)
+        request_id = create_resp.json()["request_id"]
+        with pytest.raises(RuntimeError, match="grant store unavailable"):
+            await consent_client.post(
+                f"/api/agents/auth-requests/{request_id}/approve",
+                json={"granted_scopes": ["a2a_send"]},
+            )
+        rows = [
+            r for r in await registry.list_all() if r.get("handle") == "my-external-agent"
+        ]
+        assert rows == []
+        record = await app.state.auth_requests.get(request_id)
+        assert record["status"] == "pending"
+
+    async def test_a_denied_race_restores_the_projects_previous_lead(
+        self, consent_client, monkeypatch
+    ):
+        """Review #3789: approving a new lead overwrites the project's lead
+        pointer; if the approval then loses the decision race, the undo must
+        restore the previous lead rather than leaving the refused agent (or
+        a dangling pointer) as lead."""
+        app = consent_client._transport.app
+        pstore = app.state.project_store
+        if pstore._db is None:
+            await pstore.init()
+        await pstore.create_project_with_lead(
+            name="Lead Race Project",
+            slug="lead-race-project",
+            created_by="admin",
+            member_id="original-lead",
+        )
+        project = await pstore.get_project_by_slug("lead-race-project")
+        project_id = project["id"]
+        assert project["lead_member_id"] == "original-lead"
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            create_resp = await bare.post(
+                "/api/agents/auth-requests",
+                json={
+                    **_CREATE_BODY,
+                    "requested_scopes": ["project_tasks"],
+                    "project_id": project_id,
+                },
+            )
+        request_id = create_resp.json()["request_id"]
+        self._deny_wins_the_race(app, monkeypatch)
+        resp = await consent_client.post(
+            f"/api/agents/auth-requests/{request_id}/approve",
+            json={
+                "granted_scopes": ["project_tasks"],
+                "is_lead": True,
+                "project_id": project_id,
+            },
+        )
+        assert resp.status_code == 409, resp.text
+        after = await pstore.get_project(project_id)
+        assert after["lead_member_id"] == "original-lead"

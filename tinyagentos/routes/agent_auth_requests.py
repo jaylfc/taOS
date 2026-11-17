@@ -1199,10 +1199,16 @@ async def approve_request_record(
             await registry.set_sponsorship(
                 canonical_id, project_id, sponsor_contact_id
             )
-    except ValueError:
-        # Only a reused identity can get here: a concurrent approve picked the
-        # same pending row and activated it first. That approval owns the
-        # identity now, so nothing is rolled back or deleted.
+    except ValueError as exc:
+        # A lifecycle-transition error from set_status means a concurrent
+        # approve picked the same pending row and activated it first. That
+        # approval owns the identity now, so nothing is rolled back or
+        # deleted, and the caller gets the concurrent-decision 409. Any
+        # other ValueError (register() rejecting a reserved name, say) is a
+        # real error in its own right: re-raise it rather than misreporting
+        # it as a concurrent decision.
+        if "invalid lifecycle transition" not in str(exc) and "unknown status" not in str(exc):
+            raise
         raise HTTPException(
             status_code=409,
             detail="request was decided concurrently; check current status",
@@ -1229,106 +1235,142 @@ async def approve_request_record(
             ),
         )
 
-    # Issue the identity token. When deferring, binding_project is None so the
-    # token carries no project_id claim and is valid for identity/global calls
-    # only; project-scoped calls 403 until assign-agent binds it.
-    token = mint_registry_token(
-        canonical_id,
-        private_pem,
-        user_id=decided_by,
-        framework=record["framework"],
-        project_id=binding_project,
-    )
-
-    # What this identity already held, so losing the decision race below undoes
-    # only what this approval wrote.
-    prior_grants = {
-        (g["scope"], g.get("project_id"))
-        for g in await grants_store.list_grants(canonical_id)
-    }
+    # State the failure handler below needs even when the failure happens
+    # before the writes it describes (e.g. the token mint itself throws).
+    prior_grants: set[tuple[str, Optional[str]]] = set()
     added_member = False
-
-    # Record grants for each approved scope. When deferring, grants are written
-    # unbound (project_id=None); assign-agent later writes the project-bound
-    # grant that makes project-scoped calls succeed.
-    for scope in granted_scopes:
-        await grants_store.add_grant(
-            canonical_id, scope, tier="once", project_id=binding_project, expires_at=expires_at, renew=renew
+    prior_lead: Optional[str] = None
+    lead_overwritten = False
+    try:
+        # Issue the identity token. When deferring, binding_project is None so the
+        # token carries no project_id claim and is valid for identity/global calls
+        # only; project-scoped calls 403 until assign-agent binds it.
+        token = mint_registry_token(
+            canonical_id,
+            private_pem,
+            user_id=decided_by,
+            framework=record["framework"],
+            project_id=binding_project,
         )
-        # Also write a RelationshipManager permission edge so the existing
-        # permission-check path (can_communicate etc.) is aware of the agent.
-        await rel_mgr.set_permission(canonical_id, "taos-instance", scope)
 
-    # If the agent was granted project_tasks and bound to a project, add it as a
-    # member of that project so it shows up in the project's Members and joins the
-    # project a2a channel (membership is synced into the channel). Best-effort: a
-    # membership failure never blocks the approval, which the token + grant already
-    # authorize. Skipped entirely when deferring (binding_project is None).
-    if binding_project and set(granted_scopes) & _PROJECT_SCOPES:
-        try:
-            pstore = getattr(request.app.state, "project_store", None)
-            if pstore is not None:
-                granted_canvas = set(granted_scopes) & _CANVAS_SCOPES
-                # project_tasks and canvas scopes both bind the token to a
-                # project and require a membership row. The project_tasks path
-                # adds plain membership; canvas scopes additionally flip the
-                # per-member can_read_canvas / can_edit_canvas flags so the
-                # approved token is actually authorized for canvas calls
-                # (an inert member row with all canvas flags 0 would 403).
-                # Only flags that were explicitly granted are set, mirroring
-                # how the consent card scopes are narrowed.
-                if "project_tasks" in granted_scopes or granted_canvas:
-                    added_member = (
-                        await pstore.get_member(binding_project, canonical_id) is None
-                    )
-                    await pstore.add_member(
-                        project_id=binding_project,
-                        member_id=canonical_id,
-                        member_kind="native",
-                        role="lead" if is_lead else "member",
-                    )
-                    # The role is only a label; set_lead writes the
-                    # lead_member_id pointer the lead-gated checks read
-                    # (same split as add_agent_to_project, taOS #2113).
-                    if is_lead:
-                        await pstore.set_lead(binding_project, canonical_id)
-                    if granted_canvas:
-                        await pstore.set_member_canvas(
+        # What this identity already held, so losing the decision race below undoes
+        # only what this approval wrote.
+        prior_grants = {
+            (g["scope"], g.get("project_id"))
+            for g in await grants_store.list_grants(canonical_id)
+        }
+        added_member = False
+
+        # Record grants for each approved scope. When deferring, grants are written
+        # unbound (project_id=None); assign-agent later writes the project-bound
+        # grant that makes project-scoped calls succeed.
+        for scope in granted_scopes:
+            await grants_store.add_grant(
+                canonical_id, scope, tier="once", project_id=binding_project, expires_at=expires_at, renew=renew
+            )
+            # Also write a RelationshipManager permission edge so the existing
+            # permission-check path (can_communicate etc.) is aware of the agent.
+            await rel_mgr.set_permission(canonical_id, "taos-instance", scope)
+
+        # If the agent was granted project_tasks and bound to a project, add it as a
+        # member of that project so it shows up in the project's Members and joins the
+        # project a2a channel (membership is synced into the channel). Best-effort: a
+        # membership failure never blocks the approval, which the token + grant already
+        # authorize. Skipped entirely when deferring (binding_project is None).
+        if binding_project and set(granted_scopes) & _PROJECT_SCOPES:
+            try:
+                pstore = getattr(request.app.state, "project_store", None)
+                if pstore is not None:
+                    granted_canvas = set(granted_scopes) & _CANVAS_SCOPES
+                    # project_tasks and canvas scopes both bind the token to a
+                    # project and require a membership row. The project_tasks path
+                    # adds plain membership; canvas scopes additionally flip the
+                    # per-member can_read_canvas / can_edit_canvas flags so the
+                    # approved token is actually authorized for canvas calls
+                    # (an inert member row with all canvas flags 0 would 403).
+                    # Only flags that were explicitly granted are set, mirroring
+                    # how the consent card scopes are narrowed.
+                    if "project_tasks" in granted_scopes or granted_canvas:
+                        added_member = (
+                            await pstore.get_member(binding_project, canonical_id) is None
+                        )
+                        await pstore.add_member(
                             project_id=binding_project,
                             member_id=canonical_id,
-                            can_read=("canvas_read" in granted_canvas),
-                            can_write=("canvas_write" in granted_canvas),
+                            member_kind="native",
+                            role="lead" if is_lead else "member",
                         )
-                    if "project_tasks" in granted_scopes:
-                        from tinyagentos.projects.a2a import ensure_a2a_channel
+                        # The role is only a label; set_lead writes the
+                        # lead_member_id pointer the lead-gated checks read
+                        # (same split as add_agent_to_project, taOS #2113).
+                        if is_lead:
+                            _proj = await pstore.get_project(binding_project)
+                            prior_lead = _proj.get("lead_member_id") if _proj else None
+                            lead_overwritten = True
+                            await pstore.set_lead(binding_project, canonical_id)
+                        if granted_canvas:
+                            await pstore.set_member_canvas(
+                                project_id=binding_project,
+                                member_id=canonical_id,
+                                can_read=("canvas_read" in granted_canvas),
+                                can_write=("canvas_write" in granted_canvas),
+                            )
+                        if "project_tasks" in granted_scopes:
+                            from tinyagentos.projects.a2a import ensure_a2a_channel
 
-                        await ensure_a2a_channel(
-                            request.app.state.chat_channels,
-                            pstore,
-                            binding_project,
-                            config=getattr(request.app.state, "config", None),
-                        )
-        except Exception:  # noqa: BLE001 - membership is best-effort, never blocks approval
-            logger.warning(
-                "auth-approve: could not sync %s membership/a2a channel for project %s",
-                canonical_id,
-                binding_project,
-                exc_info=True,
+                            await ensure_a2a_channel(
+                                request.app.state.chat_channels,
+                                pstore,
+                                binding_project,
+                                config=getattr(request.app.state, "config", None),
+                            )
+            except Exception:  # noqa: BLE001 - membership is best-effort, never blocks approval
+                logger.warning(
+                    "auth-approve: could not sync %s membership/a2a channel for project %s",
+                    canonical_id,
+                    binding_project,
+                    exc_info=True,
+                )
+
+        # Atomically commit the decision.
+        result = await auth_store.set_decision(
+            record["id"],
+            "accepted",
+            canonical_id=canonical_id,
+            token=token,
+            granted_scopes=granted_scopes,
+            decided_by=decided_by,
+        )
+        if result is None:
+            # Another decision beat us — 409. If it was a deny, what this approval
+            # already wrote would otherwise stay as usable authorization on a
+            # refused request.
+            await _undo_lost_approval(
+                request,
+                record_id=record["id"],
+                canonical_id=canonical_id,
+                created_here=created_here,
+                granted_scopes=granted_scopes,
+                binding_project=binding_project,
+                prior_grants=prior_grants,
+                added_member=added_member,
+                prior_lead=prior_lead,
+                lead_overwritten=lead_overwritten,
+            )
+            raise HTTPException(
+                status_code=409,
+                detail="request was decided concurrently; check current status",
             )
 
-    # Atomically commit the decision.
-    result = await auth_store.set_decision(
-        record["id"],
-        "accepted",
-        canonical_id=canonical_id,
-        token=token,
-        granted_scopes=granted_scopes,
-        decided_by=decided_by,
-    )
-    if result is None:
-        # Another decision beat us — 409. If it was a deny, what this approval
-        # already wrote would otherwise stay as usable authorization on a
-        # refused request.
+    except HTTPException:
+        # The lost-decision-race path already undid its own writes via
+        # _undo_lost_approval before raising its 409; nothing more to undo.
+        raise
+    except Exception:
+        # A failure part-way (token mint, a grant write, the decision
+        # update itself) must not leave a half-applied approval behind:
+        # undo what this approval wrote, exactly as for a lost race, then
+        # surface the original error.
         await _undo_lost_approval(
             request,
             record_id=record["id"],
@@ -1338,12 +1380,10 @@ async def approve_request_record(
             binding_project=binding_project,
             prior_grants=prior_grants,
             added_member=added_member,
+            prior_lead=prior_lead,
+            lead_overwritten=lead_overwritten,
         )
-        raise HTTPException(
-            status_code=409,
-            detail="request was decided concurrently; check current status",
-        )
-
+        raise
     await _retire_request_notification(request, record["id"])
     return {"status": "accepted", "canonical_id": canonical_id}
 
@@ -1358,6 +1398,8 @@ async def _undo_lost_approval(
     binding_project: Optional[str],
     prior_grants: set[tuple[str, Optional[str]]],
     added_member: bool,
+    prior_lead: Optional[str] = None,
+    lead_overwritten: bool = False,
 ) -> None:
     """Undo an approve's writes after it lost the decision race.
 
@@ -1386,6 +1428,10 @@ async def _undo_lost_approval(
             if scope not in prior_scopes:
                 await rel_mgr.revoke_permission(canonical_id, "taos-instance", scope)
         pstore = getattr(request.app.state, "project_store", None)
+        if lead_overwritten and binding_project and pstore is not None:
+            # set_lead overwrote the project's previous lead pointer; put
+            # it back (prior_lead may be None, which clears the pointer).
+            await pstore.set_lead(binding_project, prior_lead)
         if added_member and binding_project and pstore is not None:
             await pstore.remove_member(binding_project, canonical_id)
             from tinyagentos.projects.a2a import ensure_a2a_channel
