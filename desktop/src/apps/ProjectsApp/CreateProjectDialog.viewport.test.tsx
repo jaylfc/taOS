@@ -6,6 +6,18 @@ vi.mock("@/lib/projects", () => ({
   projectsApi: { create: vi.fn() },
 }));
 
+// Parses the dialog's computed maxHeight into a { px, vh } pair so the test
+// does not depend on substring ordering inside `min(a, b)`.
+function parseMaxHeight(el: HTMLElement): { px: number | null; vh: number | null } {
+  const raw = el.style.maxHeight;
+  const px = raw.match(/(\d+)px/);
+  const vh = raw.match(/(\d+)vh/);
+  return {
+    px: px ? Number(px[1]) : null,
+    vh: vh ? Number(vh[1]) : null,
+  };
+}
+
 describe("CreateProjectDialog viewport-aware sizing (#mobile-keyboard)", () => {
   it("bounds the dialog to the visual viewport height and scrolls inside", () => {
     const { container } = render(
@@ -16,10 +28,14 @@ describe("CreateProjectDialog viewport-aware sizing (#mobile-keyboard)", () => {
 
     // jsdom has no visualViewport, so the hook falls back to innerHeight (768).
     expect(dialog.style.maxHeight).toBe("768px");
+
     // The card itself is capped to the visible area and scrolls, so a focused
     // field and the Create button stay in view when the keyboard is up.
-    expect(form.style.maxHeight).toContain("736px");
-    expect(form.style.maxHeight).toContain("92vh");
+    // The bound is `min(viewport - 32, 92vh)` — parse it rather than asserting
+    // substring order, which is brittle.
+    const formBound = parseMaxHeight(form);
+    expect(formBound.px).toBe(768 - 32);
+    expect(formBound.vh).toBe(92);
     expect(form.className).toContain("overflow-y-auto");
   });
 

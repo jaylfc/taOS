@@ -27,8 +27,16 @@ function getFirstDayOfWeek(year: number, month: number) {
   return day === 0 ? 6 : day - 1;
 }
 
+/** YYYY-MM-DD — ISO 8601, so `new Date(key)` round-trips correctly.
+ *  Built from local components (not `toISOString()`, which is UTC and drifts
+ *  a day near month boundaries in non-UTC offsets). Zero-padding matters:
+ *  "2025-5-15" is ambiguous and some engines parse the bare month as
+ *  0-indexed, landing on the wrong day. */
 function formatDateKey(d: Date): string {
-  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 export function CalendarApp({ windowId: _windowId }: { windowId: string }) {
@@ -164,6 +172,7 @@ export function CalendarApp({ windowId: _windowId }: { windowId: string }) {
                 type="button"
                 onClick={() => onDaySelect(cell.key)}
                 aria-selected={selected}
+                data-testid="calendar-day"
                 aria-label={`${heading} ${cell.current ? "" : "(other month)"}${
                   cell.isToday ? ", today" : ""
                 }`}
