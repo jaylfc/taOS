@@ -8886,6 +8886,8 @@ async def login_page(request: Request, error: str = "", next: str = ""):
     # LAN browser is never told how this device's own screen unlocks.
     unlock_method = None
     if _request_is_console(request):
+        # The lock/sign-in page being served to the console IS "locked".
+        _set_console_locked(request, True)
         sole = auth_mgr.lock_screen_user()
         if sole is not None:
             unlock_method = effective_unlock_method(sole)
@@ -8987,6 +8989,7 @@ async def login(request: Request):
         if user_record:
             auth_mgr.update_last_login(user_id)
         token = auth_mgr.create_session(user_id=user_id, long_lived=long_lived, user_agent=user_agent)
+        _set_console_locked(request, False)
         pub = auth_mgr._public_user(user_record) if user_record else auth_mgr.get_user()
         resp = JSONResponse({"ok": True, "user": pub})
         if long_lived:
@@ -9028,6 +9031,8 @@ async def login(request: Request):
             auth_mgr.update_last_login(user_id)
         token = auth_mgr.create_session(user_id=user_id, long_lived=long_lived, user_agent=user_agent)
 
+    if not (user_record and user_record.get("pending_invite")):
+        _set_console_locked(request, False)
     destination = next_url or "/desktop"
     response = RedirectResponse(destination, status_code=303)
     if long_lived:
@@ -11999,6 +12004,39 @@ _LOCK_EVENT_WAITERS: set = set()
 #: nothing rather than guessing.
 _LOCK_SCREEN_STATE: str | None = None
 
+#: Whether the handset's OWN screen is locked. In memory, starts True and only a
+#: successful unlock from the local console (PIN, swipe, password) clears it.
+#: A controller restart therefore reads "locked" until the next console unlock.
+_CONSOLE_LOCKED: bool = True
+
+
+def _set_console_locked(request: Request, locked: bool) -> None:
+    """Record a lock/unlock, but only when it came from the console itself."""
+    global _CONSOLE_LOCKED
+    if _request_is_console(request):
+        _CONSOLE_LOCKED = locked
+
+
+@router.get("/lock-state")
+async def lock_state(request: Request):
+    """Is the handset's own screen showing the lock screen? Loopback only.
+
+    Meaning: ``locked`` is true until a PIN, swipe or password unlock succeeds
+    FROM the local console, and true again after the console locks or logs out.
+    Sessions of remote browsers are irrelevant: they neither unlock nor lock it.
+    Fails closed: starts true at process start, so a restart while the phone is
+    unlocked reports locked until the next console unlock.
+
+    No session needed. Answers only to a loopback peer with no forwarding
+    header (``is_console_origin``) that also sends X-taOS-Console; anything else
+    gets the same 404 as an unknown route. Body is exactly ``{"locked": bool}``.
+    """
+    if not _request_is_console(request) or not request.headers.get(
+        LOCK_CONSOLE_HEADER, ""
+    ).strip():
+        return JSONResponse({"detail": "Not Found"}, status_code=404)
+    return JSONResponse({"locked": bool(_CONSOLE_LOCKED)}, headers={"Cache-Control": "no-store"})
+
 
 def _push_lock_event(kind: str, payload: dict | None = None) -> int:
     """Fan an event out to every open lock-screen stream. Returns the count.
@@ -13024,6 +13062,7 @@ async def pin_login(request: Request):
         long_lived=True,
         user_agent=request.headers.get("user-agent", ""),
     )
+    _set_console_locked(request, False)
     resp = JSONResponse({"ok": True, "user": auth_mgr._public_user(user_record)})
     resp.set_cookie(
         "taos_session", token, httponly=True, samesite="strict",
@@ -13110,6 +13149,7 @@ async def swipe_unlock(request: Request):
         long_lived=True,
         user_agent=request.headers.get("user-agent", ""),
     )
+    _set_console_locked(request, False)
     resp = JSONResponse({"ok": True, "user": auth_mgr._public_user(record)})
     resp.set_cookie(
         "taos_session", token, httponly=True, samesite="strict",
@@ -13187,6 +13227,7 @@ async def logout(request: Request):
     token = request.cookies.get("taos_session")
     if token:
         auth_mgr.revoke_session(token)
+    _set_console_locked(request, True)
     response = RedirectResponse("/auth/login", status_code=303)
     response.delete_cookie("taos_session")
     return response
@@ -13199,6 +13240,7 @@ async def lock(request: Request):
     token = request.cookies.get("taos_session")
     if token:
         auth_mgr.revoke_session(token)
+    _set_console_locked(request, True)
     resp = JSONResponse({"ok": True})
     resp.delete_cookie("taos_session")
     return resp
@@ -13445,6 +13487,10 @@ async def auth_status(request: Request):
     _ua = request.headers.get("user-agent", "")
     user_id = auth_mgr.validate_session(token, user_agent=_ua) if token else None
     authenticated = user_id is not None
+    if not authenticated:
+        # The SPA's LoginGate renders the sign-in UI from this answer with no
+        # GET /auth/login, so an unauthenticated console probe means locked.
+        _set_console_locked(request, True)
 
     user = None
     needs_onboarding = False
@@ -13503,6 +13549,7 @@ async def auth_me(request: Request):
     if not token or auth_mgr.validate_session(
         token, user_agent=request.headers.get("user-agent", "")
     ) is None:
+        _set_console_locked(request, True)
         return JSONResponse({"error": "not authenticated"}, status_code=401)
     user = auth_mgr.get_user(token=token, user_agent=request.headers.get("user-agent", ""))
     if user is None:
