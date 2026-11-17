@@ -265,6 +265,8 @@ def test_two_simultaneous_starts_leave_exactly_one_recorded_keyboard(env):
     (tmp / "sqbin" / "squeekboard").write_text(
         '#!/bin/sh\necho "$$" >> "%s"\nwhile :; do sleep 1; done\n' % pids)
     pidfile = pathlib.Path(e["XDG_RUNTIME_DIR"]) / "taos-keyboard.pid"
+    trace = tmp / "trace"
+    e = dict(e, TAOS_KEYBOARD_TRACE=str(trace))
     procs = [_spawn(e), _spawn(e)]
     try:
         for _ in range(100):
@@ -291,10 +293,11 @@ def test_two_simultaneous_starts_leave_exactly_one_recorded_keyboard(env):
         why = "alive=%s | %s | pids file=%r | pidfile=%r | lock=%s" % (
             alive, "; ".join(_describe(p) for p in alive), pids.read_text(),
             pidfile.read_text() if pidfile.exists() else None,
-            sorted(x.name for x in lock.iterdir()) if lock.exists() else "absent")
+            ("-> " + os.readlink(lock)) if os.path.islink(lock) else ("present" if lock.exists() else "absent"))
+        why += "\nTRACE (pid uptime step):\n" + (trace.read_text() if trace.exists() else "(no trace file)")
         assert len(alive) == 1, why
         assert pidfile.read_text().strip() == str(alive[0]), why
-        assert not (pathlib.Path(e["XDG_RUNTIME_DIR"]) / "taos-keyboard.lock").exists()
+        assert not os.path.lexists(pathlib.Path(e["XDG_RUNTIME_DIR"]) / "taos-keyboard.lock")
     finally:
         for p in procs:
             p.kill()
@@ -342,28 +345,24 @@ def test_a_keyboard_that_ignores_term_is_still_replaced(env):
 
 
 def test_a_stale_lock_does_not_hang_the_wrapper(env):
-    """A lock whose owner is gone is taken over: one with no owner recorded
-    after a second, and one naming a pid that is not running."""
+    """A lock whose owner is gone is taken over at once: one naming a pid that
+    is not running, one naming garbage, and a directory lock left by an older
+    version of the script."""
     e, tmp, out = env
     lock = pathlib.Path(e["XDG_RUNTIME_DIR"]) / "taos-keyboard.lock"
-    lock.mkdir()
-    t0 = time.time()
-    r = start(e)
-    assert r.returncode == 0, r.stderr
-    assert time.time() - t0 < 15
-    assert out.exists() and not lock.exists()
-    out.unlink()
-    lock.mkdir()
     dead = subprocess.Popen(["true"])
     dead.wait()
-    (lock / "pid").write_text("%d\n" % dead.pid)
-    t0 = time.time()
-    r = start(e)
-    assert r.returncode == 0, r.stderr
-    assert time.time() - t0 < 10
-    assert out.exists() and not lock.exists()
+    for make in (lambda: os.symlink(str(dead.pid), lock),
+                 lambda: os.symlink("not-a-pid", lock),
+                 lambda: (lock.mkdir(), (lock / "pid").write_text("1\n"))):
+        make()
+        t0 = time.time()
+        r = start(e)
+        assert r.returncode == 0, r.stderr
+        assert time.time() - t0 < 6
+        assert out.exists() and not os.path.lexists(lock)
+        out.unlink()
     # Control: with no lock at all it starts at once.
-    out.unlink()
     t0 = time.time()
     assert start(e).returncode == 0 and out.exists()
     assert time.time() - t0 < 4
@@ -374,20 +373,19 @@ def test_a_lock_held_by_a_live_process_is_never_taken_over(env):
     section, and let the first remove the second's lock on its way out."""
     e, tmp, out = env
     lock = pathlib.Path(e["XDG_RUNTIME_DIR"]) / "taos-keyboard.lock"
-    lock.mkdir()
     holder = subprocess.Popen(["sleep", "30"])
     try:
-        (lock / "pid").write_text("%d\n" % holder.pid)
+        os.symlink(str(holder.pid), lock)
         p = subprocess.Popen([str(WRAPPER)], env={k: v for k, v in e.items() if k != "_extra"},
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         time.sleep(7)   # longer than the old 5 s takeover
         assert p.poll() is None, "the wrapper did not wait for the live holder"
         assert not out.exists(), "squeekboard was started while another start held the lock"
-        assert (lock / "pid").read_text() == "%d\n" % holder.pid
+        assert os.readlink(lock) == str(holder.pid)
         # Control: once the holder is gone the waiting start goes through.
         holder.kill(); holder.wait()
         p.wait(timeout=15)
-        assert p.returncode == 0 and out.exists() and not lock.exists()
+        assert p.returncode == 0 and out.exists() and not os.path.lexists(lock)
     finally:
         if holder.poll() is None:
             holder.kill()

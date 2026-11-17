@@ -20,6 +20,15 @@ case "${1:-}" in
 esac
 [ "$#" -le 1 ] || usage
 
+# TAOS_KEYBOARD_TRACE=<file>: append one line per step (pid, monotonic clock,
+# step). For tests chasing a start/start race; unset, it costs nothing.
+ktrace() {
+    [ -n "${TAOS_KEYBOARD_TRACE:-}" ] || return 0
+    _up=""
+    read -r _up _ < /proc/uptime 2>/dev/null || true
+    echo "$$ ${_up:-?} $*" >> "$TAOS_KEYBOARD_TRACE" 2>/dev/null || true
+}
+
 # A caller outside the session (the controller service, a root shell) has no
 # XDG_RUNTIME_DIR; the session user's is always /run/user/<uid>.
 if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
@@ -59,19 +68,20 @@ _running() {
 }
 
 stop_old() {
-    [ -r "$PIDFILE" ] || return 0
+    [ -r "$PIDFILE" ] || { ktrace "stop_old: no pidfile"; return 0; }
     read -r _old < "$PIDFILE" || _old=""
     case "$_old" in
-        ''|*[!0-9]*) return 0 ;;
+        ''|*[!0-9]*) ktrace "stop_old: pidfile not a pid ('$_old')"; return 0 ;;
     esac
-    [ "$_old" != "$$" ] || return 0
-    [ -r "/proc/$_old/comm" ] || return 0
+    [ "$_old" != "$$" ] || { ktrace "stop_old: pidfile is me"; return 0; }
+    [ -r "/proc/$_old/comm" ] || { ktrace "stop_old: $_old not running"; return 0; }
     read -r _comm < "/proc/$_old/comm" || _comm=""
     case "$_comm" in
         squeekboard|taos-kiosk-keyb*) ;;
-        *) return 0 ;;
+        *) ktrace "stop_old: $_old is '$_comm', not ours"; return 0 ;;
     esac
-    kill "$_old" 2>/dev/null || return 0
+    ktrace "stop_old: TERM $_old ($_comm)"
+    kill "$_old" 2>/dev/null || { ktrace "stop_old: kill $_old failed"; return 0; }
     _i=0
     while _running "$_old" && [ "$_i" -lt 30 ]; do
         sleep 0.1 2>/dev/null || sleep 1
@@ -81,6 +91,7 @@ stop_old() {
     # started by a parent that ignores it does) would otherwise stay up beside
     # the new one: two keyboards, one unrecorded. Do not ask twice.
     if _running "$_old"; then
+        ktrace "stop_old: KILL $_old"
         kill -9 "$_old" 2>/dev/null || true
         _i=0
         while _running "$_old" && [ "$_i" -lt 20 ]; do
@@ -88,6 +99,7 @@ stop_old() {
             _i=$((_i + 1))
         done
     fi
+    ktrace "stop_old: $_old gone"
 }
 
 if [ "$RESTART" = 1 ]; then
@@ -134,58 +146,66 @@ MCSS="$(printf '%s\n' "$RES" | sed -n 3p)"
 
 # Two instances started together would both read the old pid before either
 # wrote the pidfile, leaving one keyboard running and unrecorded. Serialize
-# stop_old + pidfile write with an atomic mkdir lock that records its owner.
-# A lock is taken over only when its owner is no longer running (or never
-# recorded itself within a second); a live holder is waited for, up to 30 s,
-# and then this start gives up rather than enter the section unlocked.
+# stop_old + pidfile write with a lock that is a SYMLINK whose target is the
+# owner's pid: `ln -s` is atomic and exclusive, and the lock can never exist
+# without naming its owner (a directory plus an owner file could, for an
+# instant, and a waiter that saw that state could take a live holder's lock).
+# It is taken over only when its owner is not running; a live holder is waited
+# for, up to 30 s, and then this start gives up rather than enter unlocked.
 # Released before exec, so squeekboard inherits nothing from it.
 LOCK="$XDG_RUNTIME_DIR/taos-keyboard.lock"
 LOCKED=0
 unlock() {
     if [ "$LOCKED" = 1 ]; then
-        _o=""
-        read -r _o < "$LOCK/pid" 2>/dev/null || true
         # Only our own lock: a later holder's must not be removed.
-        if [ "$_o" = "$$" ]; then
-            rm -f "$LOCK/pid"
-            rmdir "$LOCK" 2>/dev/null || true
+        if [ "$(readlink "$LOCK" 2>/dev/null)" = "$$" ]; then
+            rm -f "$LOCK"
+            ktrace "lock: released"
+        else
+            ktrace "lock: NOT released, owner is now '$(readlink "$LOCK" 2>/dev/null)'"
         fi
     fi
     LOCKED=0
     return 0
 }
 _i=0
-_nopid=0
 while :; do
-    if mkdir "$LOCK" 2>/dev/null; then
-        echo "$$" > "$LOCK/pid"
+    # -T: never descend into LOCK if it happens to be a directory (a plain
+    # `ln -s` would create the link INSIDE it and report success).
+    if ln -sT "$$" "$LOCK" 2>/dev/null; then
         LOCKED=1
+        ktrace "lock: acquired after $_i waits"
         break
     fi
-    _h=""
-    read -r _h < "$LOCK/pid" 2>/dev/null || true
+    if [ -d "$LOCK" ] && [ ! -L "$LOCK" ]; then
+        # A directory lock left by an older version of this script.
+        ktrace "lock: removing old-style directory lock"
+        rm -f "$LOCK/pid"; rmdir "$LOCK" 2>/dev/null || true
+        continue
+    fi
+    _h="$(readlink "$LOCK" 2>/dev/null || true)"
+    if [ -z "$_h" ]; then
+        # Released between our ln and our readlink: just try again.
+        continue
+    fi
     case "$_h" in
-        ''|*[!0-9]*)
-            # No owner recorded yet: either it is between mkdir and the write,
-            # or it died there. Give it a second before calling it dead.
-            _nopid=$((_nopid + 1))
-            if [ "$_nopid" -ge 10 ]; then
-                rm -f "$LOCK/pid"; rmdir "$LOCK" 2>/dev/null || true
-                _nopid=0
-            fi
-            ;;
-        *)
-            _nopid=0
-            if ! kill -0 "$_h" 2>/dev/null; then
-                rm -f "$LOCK/pid"; rmdir "$LOCK" 2>/dev/null || true
-                continue
-            fi
-            ;;
+        *[!0-9]*) _dead=1 ;;
+        *) if _running "$_h"; then _dead=0; else _dead=1; fi ;;
     esac
+    if [ "$_dead" = 1 ]; then
+        # Remove it only if it still names that same dead owner.
+        if [ "$(readlink "$LOCK" 2>/dev/null)" = "$_h" ]; then
+            ktrace "lock: taking over from dead owner '$_h'"
+            rm -f "$LOCK"
+        fi
+        continue
+    fi
     if [ "$_i" -ge 300 ]; then
-        echo "taos-kiosk-keyboard: another start (pid ${_h:-unknown}) still holds $LOCK after 30 s, giving up" >&2
+        ktrace "lock: gave up, held by $_h"
+        echo "taos-kiosk-keyboard: another start (pid $_h) still holds $LOCK after 30 s, giving up" >&2
         exit 1
     fi
+    [ "$_i" != 0 ] || ktrace "lock: waiting for $_h"
     sleep 0.1 2>/dev/null || sleep 1
     _i=$((_i + 1))
 done
@@ -211,8 +231,10 @@ if [ -z "${WAYLAND_DISPLAY:-}" ]; then
 fi
 
 echo "$$" > "$PIDFILE"
+ktrace "pidfile written"
 unlock
 trap - EXIT INT TERM HUP
 XDG_CONFIG_HOME="$KDIR"
 export XDG_CONFIG_HOME
+ktrace "exec $BIN"
 exec "$BIN"
