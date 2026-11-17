@@ -1,0 +1,253 @@
+#!/bin/sh
+# taos-kiosk-keyboard -- run squeekboard inside the kiosk session, themed.
+# Started by /etc/taos/sway.d/50-keyboard.conf (written by `taos-session
+# keyboard on`) as the session user. `--restart` replaces a running instance
+# and returns; taos-session uses it after a theme change.
+#
+# squeekboard has no css override path and does not reload css, so the theme is
+# applied by starting it with a private XDG_CONFIG_HOME whose gtk-3.0/gtk.css
+# (GTK user priority beats the app's own css) is the variant css followed by
+# the metrics css. dconf is linked back to the real one so the
+# screen-keyboard-enabled gsetting is still read.
+set -eu
+
+usage() { echo "usage: taos-kiosk-keyboard [--restart]" >&2; exit 2; }
+RESTART=0
+case "${1:-}" in
+    '') ;;
+    --restart) RESTART=1 ;;
+    *) usage ;;
+esac
+[ "$#" -le 1 ] || usage
+
+# TAOS_KEYBOARD_TRACE=<file>: append one line per step (pid, monotonic clock,
+# step). For tests chasing a start/start race; unset, it costs nothing.
+ktrace() {
+    [ -n "${TAOS_KEYBOARD_TRACE:-}" ] || return 0
+    _up=""
+    read -r _up _ < /proc/uptime 2>/dev/null || true
+    echo "$$ ${_up:-?} $*" >> "$TAOS_KEYBOARD_TRACE" 2>/dev/null || true
+}
+
+# A caller outside the session (the controller service, a root shell) has no
+# XDG_RUNTIME_DIR; the session user's is always /run/user/<uid>.
+if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
+    XDG_RUNTIME_DIR="/run/user/$(id -u)"
+    export XDG_RUNTIME_DIR
+fi
+[ -d "$XDG_RUNTIME_DIR" ] || { echo "taos-kiosk-keyboard: no runtime dir $XDG_RUNTIME_DIR (no session for this user?)" >&2; exit 1; }
+SELF="$0"
+PIDFILE="$XDG_RUNTIME_DIR/taos-keyboard.pid"
+KDIR="$XDG_RUNTIME_DIR/taos-keyboard"
+BIN_DIRS="${TAOS_KEYBOARD_BIN_DIRS:-/usr/bin /usr/local/bin /usr/sbin}"
+TAOS_SESSION="${TAOS_SESSION:-$(dirname "$SELF")/taos-session}"
+[ -x "$TAOS_SESSION" ] || TAOS_SESSION="$(command -v taos-session || true)"
+[ -n "$TAOS_SESSION" ] || { echo "taos-kiosk-keyboard: taos-session not found" >&2; exit 1; }
+
+# Alpine's /usr/sbin is a symlink to /usr/bin, Debian's is not: probe, do not
+# assume.
+BIN=""
+for d in $BIN_DIRS; do
+    [ -x "$d/squeekboard" ] && BIN="$d/squeekboard" && break
+done
+[ -n "$BIN" ] || { echo "taos-kiosk-keyboard: no squeekboard binary found in: $BIN_DIRS" >&2; exit 1; }
+
+# Replace the previous instance by PID. The pidfile names one process and the
+# check reads that one process's name, so nothing here matches a process list.
+# Alive and not a zombie: a killed process whose parent has not reaped it yet
+# still answers kill -0, and waiting on it would be waiting on nothing.
+_running() {
+    [ -r "/proc/$1/stat" ] || return 1
+    _st=""
+    read -r _st < "/proc/$1/stat" 2>/dev/null || return 1
+    _st="${_st##*) }"
+    case "$_st" in
+        Z*) return 1 ;;
+    esac
+    return 0
+}
+
+stop_old() {
+    [ -r "$PIDFILE" ] || { ktrace "stop_old: no pidfile"; return 0; }
+    read -r _old < "$PIDFILE" || _old=""
+    case "$_old" in
+        ''|*[!0-9]*) ktrace "stop_old: pidfile not a pid ('$_old')"; return 0 ;;
+    esac
+    [ "$_old" != "$$" ] || { ktrace "stop_old: pidfile is me"; return 0; }
+    [ -r "/proc/$_old/comm" ] || { ktrace "stop_old: $_old not running"; return 0; }
+    read -r _comm < "/proc/$_old/comm" || _comm=""
+    case "$_comm" in
+        squeekboard|taos-kiosk-keyb*) ;;
+        *) ktrace "stop_old: $_old is '$_comm', not ours"; return 0 ;;
+    esac
+    ktrace "stop_old: TERM $_old ($_comm)"
+    kill "$_old" 2>/dev/null || { ktrace "stop_old: kill $_old failed"; return 0; }
+    _i=0
+    while _running "$_old" && [ "$_i" -lt 30 ]; do
+        sleep 0.1 2>/dev/null || sleep 1
+        _i=$((_i + 1))
+    done
+    # A keyboard that ignores TERM (the disposition is inherited, so one
+    # started by a parent that ignores it does) would otherwise stay up beside
+    # the new one: two keyboards, one unrecorded. Do not ask twice.
+    if _running "$_old"; then
+        ktrace "stop_old: KILL $_old"
+        kill -9 "$_old" 2>/dev/null || true
+        _i=0
+        while _running "$_old" && [ "$_i" -lt 20 ]; do
+            sleep 0.1 2>/dev/null || sleep 1
+            _i=$((_i + 1))
+        done
+    fi
+    ktrace "stop_old: $_old gone"
+}
+
+if [ "$RESTART" = 1 ]; then
+    # Have sway start it, so the keyboard belongs to the kiosk session. Started
+    # as a child of this call it sits in the caller's login session (su from
+    # root, ssh) and logind kills it when that session closes: measured on the
+    # handset, "session-c199.scope: Killing process (squeekboard)" seconds
+    # after a theme change. The new instance stops the old one itself.
+    SOCK="${SWAYSOCK:-}"
+    if [ -z "$SOCK" ]; then
+        for s in "$XDG_RUNTIME_DIR"/sway-ipc.*.sock; do
+            [ -S "$s" ] && SOCK="$s" && break
+        done
+    fi
+    case "$SELF" in
+        /*) ;;
+        *) SELF="$(cd "$(dirname "$SELF")" && pwd)/$(basename "$SELF")" ;;
+    esac
+    if [ -n "$SOCK" ] && command -v swaymsg >/dev/null 2>&1; then
+        SWAYSOCK="$SOCK" swaymsg exec -- "$SELF" >/dev/null || {
+            echo "taos-kiosk-keyboard: swaymsg exec failed" >&2; exit 1; }
+        exit 0
+    fi
+    # No compositor to ask (tests, a bare shell): start it directly.
+    stop_old
+    rm -f "$PIDFILE"
+    if command -v setsid >/dev/null 2>&1; then
+        setsid "$SELF" </dev/null >/dev/null 2>&1 &
+    else
+        "$SELF" </dev/null >/dev/null 2>&1 &
+    fi
+    exit 0
+fi
+
+# The theme is looked up by taos-session only, so the rules exist once. Exit 3
+# means it fell back to the default (already warned on stderr).
+if RES="$("$TAOS_SESSION" resolve-theme)"; then :; else
+    rc=$?
+    [ "$rc" = 3 ] || { echo "taos-kiosk-keyboard: no usable theme (taos-session resolve-theme exit $rc)" >&2; exit 1; }
+fi
+VCSS="$(printf '%s\n' "$RES" | sed -n 2p)"
+MCSS="$(printf '%s\n' "$RES" | sed -n 3p)"
+[ -r "$VCSS" ] && [ -r "$MCSS" ] || { echo "taos-kiosk-keyboard: resolved css unreadable" >&2; exit 1; }
+
+# Two instances started together would both read the old pid before either
+# wrote the pidfile, leaving one keyboard running and unrecorded. Serialize
+# stop_old + pidfile write with a lock that is a SYMLINK whose target is the
+# owner's pid: `ln -s` is atomic and exclusive, and the lock can never exist
+# without naming its owner (a directory plus an owner file could, for an
+# instant, and a waiter that saw that state could take a live holder's lock).
+# It is taken over only when its owner is not running; a live holder is waited
+# for, up to 30 s, and then this start gives up rather than enter unlocked.
+# Released before exec, so squeekboard inherits nothing from it.
+LOCK="$XDG_RUNTIME_DIR/taos-keyboard.lock"
+LOCKED=0
+# How long to wait for the lock, in 0.1 s ticks: 30 s. Tests shorten it.
+LOCK_TICKS="${TAOS_KEYBOARD_LOCK_TICKS:-300}"
+case "$LOCK_TICKS" in ''|*[!0-9]*) LOCK_TICKS=300 ;; esac
+unlock() {
+    if [ "$LOCKED" = 1 ]; then
+        # Only our own lock: a later holder's must not be removed.
+        if [ "$(readlink "$LOCK" 2>/dev/null)" = "$$" ]; then
+            rm -f "$LOCK"
+            ktrace "lock: released"
+        else
+            ktrace "lock: NOT released, owner is now '$(readlink "$LOCK" 2>/dev/null)'"
+        fi
+    fi
+    LOCKED=0
+    return 0
+}
+_i=0
+while :; do
+    # -T: never descend into LOCK if it happens to be a directory (a plain
+    # `ln -s` would create the link INSIDE it and report success).
+    if ln -sT "$$" "$LOCK" 2>/dev/null; then
+        LOCKED=1
+        ktrace "lock: acquired after $_i waits"
+        break
+    fi
+    if [ -d "$LOCK" ] && [ ! -L "$LOCK" ]; then
+        # A directory lock left by an older version of this script.
+        ktrace "lock: removing old-style directory lock"
+        rm -f "$LOCK/pid"; rmdir "$LOCK" 2>/dev/null || true
+        continue
+    fi
+    _h="$(readlink "$LOCK" 2>/dev/null || true)"
+    if [ -z "$_h" ]; then
+        # No lock to read. Either it was released between our ln and our
+        # readlink (try again), or ln cannot create it at all: a read-only or
+        # full runtime dir. That second case must not spin: count it, sleep,
+        # and give up with the same bound as a held lock.
+        if [ "$_i" -ge "$LOCK_TICKS" ]; then
+            ktrace "lock: gave up, cannot create $LOCK"
+            echo "taos-kiosk-keyboard: cannot create $LOCK (runtime dir read-only or full?), giving up" >&2
+            exit 1
+        fi
+        sleep 0.1 2>/dev/null || sleep 1
+        _i=$((_i + 1))
+        continue
+    fi
+    case "$_h" in
+        *[!0-9]*) _dead=1 ;;
+        *) if _running "$_h"; then _dead=0; else _dead=1; fi ;;
+    esac
+    if [ "$_dead" = 1 ]; then
+        # Remove it only if it still names that same dead owner.
+        if [ "$(readlink "$LOCK" 2>/dev/null)" = "$_h" ]; then
+            ktrace "lock: taking over from dead owner '$_h'"
+            rm -f "$LOCK"
+        fi
+        continue
+    fi
+    if [ "$_i" -ge "$LOCK_TICKS" ]; then
+        ktrace "lock: gave up, held by $_h"
+        echo "taos-kiosk-keyboard: another start (pid $_h) still holds $LOCK after 30 s, giving up" >&2
+        exit 1
+    fi
+    [ "$_i" != 0 ] || ktrace "lock: waiting for $_h"
+    sleep 0.1 2>/dev/null || sleep 1
+    _i=$((_i + 1))
+done
+trap unlock EXIT
+trap 'exit 1' INT TERM HUP
+
+stop_old
+mkdir -p "$KDIR/gtk-3.0"
+cat "$VCSS" "$MCSS" > "$KDIR/gtk-3.0/gtk.css.$$"
+mv -f "$KDIR/gtk-3.0/gtk.css.$$" "$KDIR/gtk-3.0/gtk.css"
+ln -sfn "${XDG_CONFIG_HOME:-$HOME/.config}/dconf" "$KDIR/dconf"
+
+# A restart from root has no compositor variable; take the socket that exists.
+if [ -z "${WAYLAND_DISPLAY:-}" ]; then
+    for s in "$XDG_RUNTIME_DIR"/wayland-[0-9]*; do
+        case "$s" in *.lock) continue ;; esac
+        if [ -S "$s" ]; then
+            WAYLAND_DISPLAY="${s##*/}"
+            export WAYLAND_DISPLAY
+            break
+        fi
+    done
+fi
+
+echo "$$" > "$PIDFILE"
+ktrace "pidfile written"
+unlock
+trap - EXIT INT TERM HUP
+XDG_CONFIG_HOME="$KDIR"
+export XDG_CONFIG_HOME
+ktrace "exec $BIN"
+exec "$BIN"

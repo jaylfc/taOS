@@ -1,0 +1,28 @@
+/* taos-default keyboard: shape and metrics shared by every variant.
+   Colours come from the variant file through the @define-color names below. */
+sq_view {
+    background-color: @taos_kb_board;
+    box-shadow: none;
+    font-family: Inter, "Noto Sans", cantarell, sans-serif;
+}
+sq_button {
+    color: @taos_kb_label;
+    background: @taos_kb_key;
+    border-radius: 8px;
+    border: none;
+    box-shadow: none;
+    margin: 3px;
+}
+sq_button:active { background: @taos_kb_key_pressed; }
+sq_button.change-view, sq_button.change-view-2, sq_button.change-view-3,
+sq_button.special, sq_button.special-2, sq_button.special-3 {
+    background: @taos_kb_key_special;
+    border: none;
+}
+sq_button.change-view:active, sq_button.change-view-2:active, sq_button.change-view-3:active,
+sq_button.special:active, sq_button.special-2:active, sq_button.special-3:active {
+    background: @taos_kb_key_pressed;
+}
+sq_button.latched, sq_button.locked { background: @taos_kb_key_pressed; color: @taos_kb_label; }
+sq_button#Return { background: @taos_kb_accent; color: @taos_kb_accent_label; }
+sq_button#Return:active { background: @taos_kb_accent_pressed; }
