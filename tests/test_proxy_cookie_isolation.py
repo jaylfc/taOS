@@ -26,7 +26,12 @@ import pathlib
 import pytest
 
 from tinyagentos.issued_cookies import TAOS_ISSUED_COOKIES
-from tinyagentos.routes import account_proxy, service_proxy, shortcut_proxy, userspace_apps
+from tinyagentos.routes import (
+    account_proxy,
+    service_proxy,
+    shortcut_proxy,
+    userspace_apps,
+)
 
 # A header shaped like the one a real signed-in browser sends: every cookie taOS
 # issues, plus one that genuinely belongs upstream and MUST survive. The
@@ -225,3 +230,79 @@ def test_the_scanner_resolves_a_name_held_in_a_constant(tmp_path):
         "held_as_a_literal",
         "held_as_a_kwarg",
     }
+
+
+# --- /apps/{id}/ service proxy sandbox/CSP isolation (tsk-svnsie) ---
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
+
+def _make_upstream_resp(csp: str | None = None):
+    resp = MagicMock()
+    resp.status_code = 200
+    headers = {"content-type": "text/html"}
+    if csp is not None:
+        headers["content-security-policy"] = csp
+    resp.headers = headers
+
+    async def _iter():
+        yield b"ok"
+
+    resp.aiter_bytes = _iter
+    resp.aclose = AsyncMock()
+    return resp
+
+
+def _make_mock_client(return_value):
+    mock_client = MagicMock()
+
+    def fake_build(method, url, **kwargs):
+        req = MagicMock()
+        req.url = url
+        return req
+
+    mock_client.build_request = MagicMock(side_effect=fake_build)
+    mock_client.send = AsyncMock(return_value=return_value)
+    return mock_client
+
+
+@pytest.mark.asyncio
+async def test_service_proxy_sets_sandbox_csp_without_allow_same_origin(client, monkeypatch):
+    mock_store = MagicMock()
+    mock_store.get_runtime_location = AsyncMock(
+        return_value={"runtime_host": "127.0.0.1", "runtime_port": 13000, "ui_path": "/"}
+    )
+    mock_store.is_installed = AsyncMock(return_value=True)
+    monkeypatch.setattr(client._transport.app.state, "installed_apps", mock_store)
+
+    mock_client = _make_mock_client(_make_upstream_resp())
+    with patch("tinyagentos.routes.service_proxy._http_client", mock_client):
+        resp = await client.get("/apps/myapp/")
+
+    assert resp.status_code == 200
+    csp = resp.headers.get("content-security-policy", "").lower()
+    assert "sandbox" in csp
+    assert "allow-same-origin" not in csp
+
+
+@pytest.mark.asyncio
+async def test_service_proxy_preserves_existing_csp_directives(client, monkeypatch):
+    mock_store = MagicMock()
+    mock_store.get_runtime_location = AsyncMock(
+        return_value={"runtime_host": "127.0.0.1", "runtime_port": 13000, "ui_path": "/"}
+    )
+    mock_store.is_installed = AsyncMock(return_value=True)
+    monkeypatch.setattr(client._transport.app.state, "installed_apps", mock_store)
+
+    upstream_csp = "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'"
+    mock_client = _make_mock_client(_make_upstream_resp(csp=upstream_csp))
+    with patch("tinyagentos.routes.service_proxy._http_client", mock_client):
+        resp = await client.get("/apps/myapp/")
+
+    assert resp.status_code == 200
+    csp = resp.headers.get("content-security-policy", "").lower()
+    assert csp.startswith("sandbox allow-scripts allow-forms allow-popups")
+    assert "allow-same-origin" not in csp
+    assert "default-src 'self'" in csp
+    assert "img-src 'self' data:" in csp
+    assert "frame-ancestors 'none'" in csp

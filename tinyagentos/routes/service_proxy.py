@@ -143,7 +143,25 @@ async def service_proxy(app_id: str, path: str, request: Request):
     resp_headers = _filter_headers(dict(upstream_resp.headers))
     # CSP sandbox for direct top-level navigation to /apps/{id}/: enforce an
     # opaque origin (no allow-same-origin) while allowing scripts/forms/popups.
-    resp_headers["Content-Security-Policy"] = "sandbox allow-scripts allow-forms allow-popups"
+    # Preserve any existing directives from the upstream response.
+    sandbox_tokens = "sandbox allow-scripts allow-forms allow-popups"
+    existing_csp = (
+        resp_headers.pop("content-security-policy", "")
+        or resp_headers.pop("Content-Security-Policy", "")
+        or ""
+    )
+    if existing_csp:
+        stripped = existing_csp.strip()
+        if stripped.lower().startswith("sandbox"):
+            # Replace an upstream sandbox directive (which may include
+            # allow-same-origin) while keeping any additional directives.
+            parts = [p.strip() for p in stripped.split(";") if p.strip()]
+            rest = [p for p in parts[1:] if p]
+            resp_headers["Content-Security-Policy"] = "; ".join([sandbox_tokens] + rest)
+        else:
+            resp_headers["Content-Security-Policy"] = sandbox_tokens + "; " + stripped
+    else:
+        resp_headers["Content-Security-Policy"] = sandbox_tokens
 
     # Rewrite Location headers so redirects stay within /apps/{app_id}/.
     # - Absolute upstream URLs (http://<host>:<port>/foo)  → /apps/{app_id}/foo
