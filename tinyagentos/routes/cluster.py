@@ -1389,10 +1389,31 @@ async def claim_lease(request: Request, body: LeaseClaimRequest):
     denied = await _require_lease_access(request)
     if denied is not None:
         return denied
+    
+    principal = await _identify_principal(request)
+    if principal is None:
+        return JSONResponse({"error": "unidentified caller"}, status_code=403)
+    
+    # For worker HMAC callers, the lease owner must be the authenticated worker name
+    if principal == "worker":
+        authenticated_worker = getattr(request.state, "hmac_worker_name", None)
+        if authenticated_worker is None:
+            return JSONResponse({"error": "worker not authenticated"}, status_code=403)
+        
+        # The lease owner is the authenticated worker, not body.caller
+        # If body.caller differs from authenticated worker, reject with 403
+        if body.caller != authenticated_worker:
+            return JSONResponse({"error": "caller does not match authenticated worker"}, status_code=403)
+        
+        caller = authenticated_worker
+    else:
+        # For admin and local token principals, use body.caller as before
+        caller = body.caller
+    
     cluster = request.app.state.cluster_manager
     lease = await cluster.claim_lease(
         resource_id=body.resource_id,
-        caller=body.caller,
+        caller=caller,
         ttl_seconds=body.ttl_seconds,
         required_vram_mb=body.required_vram_mb,
     )
@@ -1427,7 +1448,26 @@ async def release_lease(request: Request, body: LeaseReleaseRequest):
     denied = await _require_lease_access(request)
     if denied is not None:
         return denied
+    
+    principal = await _identify_principal(request)
+    if principal is None:
+        return JSONResponse({"error": "unidentified caller"}, status_code=403)
+    
     cluster = request.app.state.cluster_manager
+    
+    # Get the lease to check ownership
+    lease = cluster._leases.get(body.lease_id)
+    if lease is not None:
+        # For worker HMAC callers, only allow release if lease owner matches authenticated worker
+        if principal == "worker":
+            authenticated_worker = getattr(request.state, "hmac_worker_name", None)
+            if authenticated_worker is None:
+                return JSONResponse({"error": "worker not authenticated"}, status_code=403)
+            
+            if lease.caller != authenticated_worker:
+                return JSONResponse({"error": "lease owner does not match authenticated worker"}, status_code=403)
+        # For admin and local token principals, allow release of any lease
+    
     released, epoch = await cluster.release_lease_result(body.lease_id, epoch=body.epoch)
     if not released:
         return JSONResponse({
@@ -1447,7 +1487,26 @@ async def renew_lease(request: Request, body: LeaseRenewRequest):
     denied = await _require_lease_access(request)
     if denied is not None:
         return denied
+    
+    principal = await _identify_principal(request)
+    if principal is None:
+        return JSONResponse({"error": "unidentified caller"}, status_code=403)
+    
     cluster = request.app.state.cluster_manager
+    
+    # Get the lease to check ownership
+    lease = cluster._leases.get(body.lease_id)
+    if lease is not None:
+        # For worker HMAC callers, only allow renew if lease owner matches authenticated worker
+        if principal == "worker":
+            authenticated_worker = getattr(request.state, "hmac_worker_name", None)
+            if authenticated_worker is None:
+                return JSONResponse({"error": "worker not authenticated"}, status_code=403)
+            
+            if lease.caller != authenticated_worker:
+                return JSONResponse({"error": "lease owner does not match authenticated worker"}, status_code=403)
+        # For admin and local token principals, allow renew of any lease
+    
     lease = await cluster.renew_lease(body.lease_id, ttl_seconds=body.ttl_seconds, epoch=body.epoch)
     if lease is None:
         return JSONResponse({
@@ -1468,8 +1527,26 @@ async def list_leases(request: Request):
     denied = await _require_lease_access(request)
     if denied is not None:
         return denied
+    
+    principal = await _identify_principal(request)
+    if principal is None:
+        return JSONResponse({"error": "unidentified caller"}, status_code=403)
+    
     cluster = request.app.state.cluster_manager
-    leases = cluster.get_leases()
+    
+    # Get all leases and filter by owner for worker HMAC callers
+    all_leases = cluster.get_leases()
+    
+    if principal == "worker":
+        authenticated_worker = getattr(request.state, "hmac_worker_name", None)
+        if authenticated_worker is None:
+            return JSONResponse({"error": "worker not authenticated"}, status_code=403)
+        
+        # Only return leases owned by the authenticated worker
+        leases = [lease for lease in all_leases if lease.caller == authenticated_worker]
+    else:
+        # For admin and local token principals, return all leases as before
+        leases = all_leases
     return {
         "leases": [
             {
