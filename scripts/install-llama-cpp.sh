@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# taOS llama.cpp server installer — the default local LLM backend on
-# NVIDIA CUDA, AMD ROCm, Apple Silicon (Metal), and x86 CPU-only.
+# taOS llama.cpp server installer -- the default local LLM backend on
+# NVIDIA CUDA, AMD ROCm, Apple Silicon (Metal), x86 CPU-only, and musl-arm64.
 #
 # llama.cpp (MIT) ships a built-in "router mode" (llama-server
 # --models-dir <dir>) that serves chat, /v1/embeddings and /v1/rerank
@@ -34,7 +34,7 @@
 #     TAOS_LLAMACPP_MODELS_DIR   models dir router mode scans (default: <project_dir>/data/llama-cpp/models)
 #     TAOS_LLAMACPP_PORT         HTTP port (default: 7835 — see port_allocator.py)
 #     TAOS_LLAMACPP_HOST         bind address (default: 127.0.0.1 — loopback only)
-#     TAOS_LLAMACPP_VARIANT      override auto-detected variant: cuda|rocm|apple-silicon|cpu
+#     TAOS_LLAMACPP_VARIANT      override auto-detected variant: cuda|rocm|apple-silicon|cpu|musl-arm64
 #
 # Safety:
 #   - No models are downloaded here — models go through the per-model
@@ -67,6 +67,10 @@ PROJECT_DIR="${1:-$(pwd)}"
 # directory) before being pinned here. Bump LLAMACPP_VERSION (and the
 # per-variant sha256 below) deliberately, not automatically.
 LLAMACPP_VERSION="b9867"
+# musl (postmarketOS/Alpine) has no upstream release asset: build this tag on the
+# device. The commit is the integrity pin (verified via git ls-remote).
+LLAMACPP_MUSL_TAG="b12020"
+LLAMACPP_MUSL_COMMIT="0ec4027a2a0183de87c007069adddc06e665f7de"
 BASE_URL="https://github.com/ggml-org/llama.cpp/releases/download/${LLAMACPP_VERSION}"
 
 PORT="${TAOS_LLAMACPP_PORT:-7835}"
@@ -96,6 +100,18 @@ verify_sha256() {
 #
 # nvidia -> CUDA build, amd -> ROCm/HIP build, apple-silicon -> Metal,
 # else -> CPU. TAOS_LLAMACPP_VARIANT overrides detection entirely.
+is_musl() {
+    [[ -e /lib/ld-musl-aarch64.so.1 ]]
+}
+
+has_rocm() {
+    [[ -d /opt/rocm ]]
+}
+
+has_nvidia() {
+    command -v nvidia-smi >/dev/null 2>&1 || [[ -d /proc/driver/nvidia/gpus ]]
+}
+
 detect_variant() {
     if [[ -n "${TAOS_LLAMACPP_VARIANT:-}" ]]; then
         VARIANT="$TAOS_LLAMACPP_VARIANT"
@@ -108,19 +124,24 @@ detect_variant() {
     arch="$(uname -m)"
 
     if [[ "$os" == "Darwin" ]]; then
-        [[ "$arch" == "arm64" ]] || die "install-llama-cpp.sh on macOS only supports Apple Silicon (arm64) — got $arch"
+        [[ "$arch" == "arm64" ]] || die "install-llama-cpp.sh on macOS only supports Apple Silicon (arm64) -- got $arch"
         VARIANT="apple-silicon"
         log "detected platform: macOS Apple Silicon -> Metal build"
         return
     fi
 
     [[ "$os" == "Linux" ]] || die "unsupported OS: $os (install-llama-cpp.sh supports Linux and macOS only)"
-    [[ "$arch" == "x86_64" ]] || die "install-llama-cpp.sh only supports x86_64 Linux — got $arch. Rockchip ARM boards use install-rknpu.sh / install-rk-llama-cpp.sh instead."
+    if [[ "$arch" == "aarch64" ]] && is_musl; then
+        VARIANT="musl-arm64"
+        log "detected platform: Linux aarch64 musl -> pinned source build (${LLAMACPP_MUSL_TAG})"
+        return
+    fi
+    [[ "$arch" == "x86_64" ]] || die "install-llama-cpp.sh only supports x86_64 Linux -- got $arch. Rockchip ARM boards use install-rknpu.sh / install-rk-llama-cpp.sh instead."
 
-    if [[ -d /opt/rocm ]]; then
+    if has_rocm; then
         VARIANT="rocm"
         log "detected platform: Linux x86_64, /opt/rocm present -> ROCm build"
-    elif command -v nvidia-smi >/dev/null 2>&1 || [[ -d /proc/driver/nvidia/gpus ]]; then
+    elif has_nvidia; then
         VARIANT="cuda"
         log "detected platform: Linux x86_64, NVIDIA driver present -> CUDA-target build"
     else
@@ -159,8 +180,12 @@ resolve_asset() {
             ASSET="llama-${LLAMACPP_VERSION}-bin-ubuntu-x64.tar.gz"
             ASSET_SHA256="a2dc4404fb43f2bb7818fd3a0602b0e59dfe67ab972ce79b3479ad764249fbd4"
             ;;
+        musl-arm64)
+            ASSET=""
+            ASSET_SHA256=""
+            ;;
         *)
-            die "unknown variant: $VARIANT (expected cuda|rocm|apple-silicon|cpu)"
+            die "unknown variant: $VARIANT (expected cuda|rocm|apple-silicon|cpu|musl-arm64)"
             ;;
     esac
 }
@@ -218,6 +243,39 @@ download_and_extract() {
     # strip it so the binary + shared libs land directly under INSTALL_DIR.
     run_as_user tar -xzf "$tmp" -C "$INSTALL_DIR" --strip-components=1
     chmod +x "$INSTALL_DIR/llama-server" 2>/dev/null || true
+}
+
+# -------- (4b) build from source for musl arm64 ----------------------------
+build_from_source_musl() {
+    if [ "$(id -u)" -eq 0 ]; then SUDO=; else SUDO=sudo; fi
+    $SUDO apk add --no-cache build-base cmake samurai git linux-headers openssl-dev || die "apk add failed"
+    local src
+    src="$(run_as_user mktemp -d -t llamacpp-src.XXXXXX)"
+    trap 'run_as_user rm -rf "$src"' EXIT ERR
+    run_as_user git clone --depth 1 --branch "$LLAMACPP_MUSL_TAG" https://github.com/ggml-org/llama.cpp "$src" || die "git clone failed"
+    local head
+    head="$(run_as_user git -C "$src" rev-parse HEAD)" || die "git rev-parse failed in $src"
+    if [[ "$head" != "$LLAMACPP_MUSL_COMMIT" ]]; then
+        die "llama.cpp $LLAMACPP_MUSL_TAG resolved to $head, expected $LLAMACPP_MUSL_COMMIT -- refusing to build"
+    fi
+    run_as_user cmake -S "$src" -B "$src/build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON -DGGML_VULKAN=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_OPENSSL=ON
+    local jobs
+    jobs="$(nproc)"
+    (( jobs > 6 )) && jobs=6
+    run_as_user nice -n 15 ninja -C "$src/build" -j"$jobs" llama-server
+    run_as_user mkdir -p "$INSTALL_DIR"
+    # Copy the shared libraries FIRST, then the server. The previous
+    # `find ... -exec cp -P` swallowed cp failures (find's exit status is
+    # not affected by -exec's child), so a dropped .so left an unrunnable
+    # llama-server that the script still reported as installed. Copy each
+    # library in a loop that dies on the first failure instead.
+    while IFS= read -r -d '' lib; do
+        run_as_user cp -P "$lib" "$INSTALL_DIR"/ || die "copying $lib failed"
+    done < <(run_as_user find "$src/build" -name 'lib*.so*' -print0)
+    run_as_user cp "$src/build/bin/llama-server" "$INSTALL_DIR/llama-server"
+    run_as_user chmod +x "$INSTALL_DIR/llama-server"
+    run_as_user rm -rf "$src"
+    trap - EXIT ERR
 }
 
 # -------- (5) service unit (systemd on Linux, launchd on macOS) ------------
@@ -293,11 +351,46 @@ EOF
     log "${label} loaded + started via launchd"
 }
 
+install_openrc_service() {
+    if [ "$(id -u)" -eq 0 ]; then SUDO=; else SUDO=sudo; fi
+    # MODELS_DIR is interpolated inside \"...\" quotes in command_args below,
+    # so a double quote or backslash would break out of that quoting.
+    case "$MODELS_DIR" in
+        *\"*|*\\*) die "MODELS_DIR contains a double quote or backslash (interpolated inside \\\" quotes in command_args): $MODELS_DIR" ;;
+    esac
+    local init_d="${INIT_D_DIR:-/etc/init.d}"
+    local script="$init_d/llama-cpp"
+    log "writing $script (port $PORT)"
+    $SUDO tee "$script" >/dev/null <<EOF
+#!/sbin/openrc-run
+name="llama.cpp server (router mode) -- taOS default local LLM backend"
+command="$INSTALL_DIR/llama-server"
+command_args="--models-dir \"$MODELS_DIR\" --host $HOST --port $PORT"
+command_user="$TARGET_USER"
+command_background=true
+pidfile="/run/llama-cpp.pid"
+start_pre() {
+    export LD_LIBRARY_PATH="$INSTALL_DIR"
+}
+depend() {
+    need net
+}
+EOF
+    $SUDO chmod 755 "$script"
+    $SUDO rc-update add llama-cpp default
+    $SUDO rc-service llama-cpp restart
+    log "llama-cpp OpenRC service enabled + started"
+}
+
 install_service() {
     if [[ "$(uname -s)" == "Darwin" ]]; then
         install_macos_service
-    else
+    elif command -v systemctl >/dev/null 2>&1; then
         install_linux_service
+    elif command -v openrc-run >/dev/null 2>&1 && command -v rc-service >/dev/null 2>&1 && command -v rc-update >/dev/null 2>&1; then
+        install_openrc_service
+    else
+        die "no supported service manager found (need systemd, OpenRC, or macOS launchd)"
     fi
 }
 
@@ -322,19 +415,26 @@ main() {
     run_as_user mkdir -p "$MODELS_DIR"
 
     if [[ -x "$INSTALL_DIR/llama-server" ]]; then
-        log "llama-server binary already present at $INSTALL_DIR — skipping download"
+        log "llama-server binary already present at $INSTALL_DIR -- skipping download"
     else
-        download_and_extract
+        if [[ "$VARIANT" == "musl-arm64" ]]; then
+            build_from_source_musl
+        else
+            download_and_extract
+        fi
     fi
 
-    # Always (re)write + (re)enable the service — this is the self-heal
+    # Always (re)write + (re)enable the service -- this is the self-heal
     # path: a binary present but a missing/dead unit gets recreated and
     # started, exactly like re-clicking Install in the Store.
     install_service
 
     if ! wait_for_health; then
-        die "llama-server did not answer http://${HOST}:${PORT}/health within 60s — check the service logs (journalctl -u llama-cpp on Linux, $INSTALL_DIR/llama-cpp.err.log on macOS)"
+        die "llama-server did not answer http://${HOST}:${PORT}/health within 60s -- check the service logs (journalctl -u llama-cpp on systemd, rc-service llama-cpp status on OpenRC, $INSTALL_DIR/llama-cpp.err.log on macOS)"
     fi
+
+    local pinned="$LLAMACPP_VERSION"
+    [[ "$VARIANT" == "musl-arm64" ]] && pinned="$LLAMACPP_MUSL_TAG"
 
     cat <<EOF
 
@@ -343,9 +443,9 @@ main() {
   =================================================================
     variant:       $VARIANT
     binary dir:    $INSTALL_DIR
-    models dir:    $MODELS_DIR (drop GGUF files here — no models installed by this script)
+    models dir:    $MODELS_DIR (drop GGUF files here -- no models installed by this script)
     HTTP endpoint: http://${HOST}:${PORT}
-    pinned build:  $LLAMACPP_VERSION
+    pinned build:  $pinned
 
 EOF
 }

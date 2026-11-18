@@ -15,10 +15,12 @@ function spaVersionPlugin() {
       outDir = path.resolve(config.root, config.build.outDir);
     },
     writeBundle() {
-      const version = readBackendVersion();
+      // The id baked into the bundle, not a fresh one: readBackendVersion()
+      // stamps the current time, so a second call never matches and every
+      // page offered a reload to a "new build" that was itself.
       writeFileSync(
         path.join(outDir, "version.json"),
-        JSON.stringify({ version }) + "\n",
+        JSON.stringify({ version: TAOS_VERSION }) + "\n",
       );
     },
   };

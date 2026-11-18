@@ -68,7 +68,7 @@ export async function generateSite(
   onProgress: (p: GenerateProgress) => void,
   opts?: { signal?: AbortSignal },
 ): Promise<GenerateSiteResult> {
-  onProgress({ stage: "streaming", detail: "Asking the taOS agent to design your site..." });
+  onProgress({ stage: "streaming", detail: "Asking the taOS Agent to design your site..." });
 
   let raw = "";
   let streamError: string | null = null;

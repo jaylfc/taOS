@@ -144,6 +144,27 @@ async def test_chat_no_gateway_path_returns_503(client, app, monkeypatch):
     assert resp.status_code == 503
 
 
+@pytest.mark.asyncio
+async def test_chat_hermes_without_secret_returns_503(client, app, monkeypatch):
+    """POST /api/taos-agent/chat with framework=hermes and no hermes_api_key secret → 503."""
+    import tinyagentos.routes.taos_agent as ta_module
+    from tinyagentos.taos_agent_runtime import FRAMEWORK_HERMES
+
+    monkeypatch.setattr(ta_module, "system_agent_framework", lambda app_state: FRAMEWORK_HERMES)
+    # Ensure the secrets store returns None for hermes_api_key
+    app.state.secrets = SimpleNamespace(get=AsyncMock(return_value=None))
+    await client.patch("/api/taos-agent/settings", json={"model": "gpt-4o"})
+
+    resp = await client.post(
+        "/api/taos-agent/chat",
+        json={"messages": [{"role": "user", "content": "Hello"}]},
+    )
+    assert resp.status_code == 503
+    data = resp.json()
+    assert "Hermes is not ready" in data.get("error", "")
+    assert "hermes_api_key" in data.get("error", "")
+
+
 # ---------------------------------------------------------------------------
 # #1616 — opencode-not-found vs opencode-found-but-failed-to-start must
 # return distinct, accurate errors (the old code masked both behind a single
@@ -452,6 +473,8 @@ async def test_chat_queued_message_claude_code_shell_rules_overwrites_active_tur
     # Assert the response text contains 'queued'
     assert resp.status_code == 200
     assert "queued" in resp.text.lower()
+    # Queued turn must NOT load shell profile
+    mock_shell_profile.rules_for.assert_not_called()
 
 # ---------------------------------------------------------------------------
 # Claude Code shell rules: accepted turn must load the shell profile
@@ -481,6 +504,10 @@ async def test_chat_accepted_claude_code_turn_loads_shell_profile(client, app, m
     monkeypatch.setattr(ta_module, "ensure_taos_claude_code_harness", fake_ensure_taos_claude_code_harness)
 
     async def fake_rules_for(store, shell_user):
+        # shell_user should be the session user's ID (admin user)
+        record = app.state.auth.find_user("admin")
+        expected_user = record["id"] if record else "user"
+        assert shell_user == expected_user, f"expected shell_user={expected_user}, got {shell_user}"
         return expected_rules
 
     mock_shell_profile = SimpleNamespace(
@@ -1230,6 +1257,236 @@ async def test_status_scopes_subagent_fields(client, app):
         assert "error" not in sub
     # The payloads must not leak anywhere in the response body.
     assert "server-side" not in resp.text
+
+
+# ---------------------------------------------------------------------------
+# Kilo harness: a kilo turn runs kilo, not the opencode adapter with server=None
+# ---------------------------------------------------------------------------
+
+_KILO_STUB = r'''#!/bin/bash
+test -n "$KILO_API_KEY" || { echo "KILO_API_KEY is not set" >&2; exit 1; }
+[ -t 0 ] && { echo "stdin is a tty" >&2; exit 1; }
+echo '{"type":"step_start","sessionID":"ses-1"}'
+echo '{"type":"text","sessionID":"ses-1","part":{"type":"text","text":"pong"}}'
+echo '{"type":"step_finish","sessionID":"ses-1"}'
+'''
+
+
+@pytest.mark.asyncio
+async def test_chat_kilo_turn_runs_kilo_not_opencode(client, app, monkeypatch, tmp_path):
+    """A kilo turn builds a KiloCliAdapter and streams "pong"; the opencode
+    server is never touched (the old bug built an OpenCode adapter with
+    server=None and died on server.base_url)."""
+    import tinyagentos.routes.taos_agent as ta_module
+    from tinyagentos.kilo_runtime import KiloHarness
+    from tinyagentos.taos_agent_runtime import FRAMEWORK_KILO
+
+    monkeypatch.setattr(ta_module, "system_agent_framework", lambda app_state: FRAMEWORK_KILO)
+
+    # Stub the kilo binary with the three success lines from test_kilo_runtime.py.
+    stub = tmp_path / "kilo"
+    stub.write_text(_KILO_STUB)
+    stub.chmod(0o755)
+
+    harness = KiloHarness(
+        home=tmp_path / "kilo-home", key="sk-kilo-test", model="kilo/kilo-auto/free",
+        binary=str(stub),
+    )
+    harness.write_home()
+
+    async def fake_ensure_taos_kilo_harness(app_state, model, system_prompt):
+        return harness
+
+    monkeypatch.setattr(ta_module, "ensure_taos_kilo_harness", fake_ensure_taos_kilo_harness)
+
+    # The opencode path must not be called at all for a kilo turn.
+    opencode_calls: list = []
+
+    async def fake_ensure_opencode_server(state, model):
+        opencode_calls.append(model)
+        return _fake_server()
+
+    monkeypatch.setattr(
+        "tinyagentos.routes.taos_agent.ensure_taos_opencode_server",
+        fake_ensure_opencode_server,
+    )
+
+    # A kilo_api_key secret is present (the readiness check reads it).
+    app.state.secrets = SimpleNamespace(get=AsyncMock(return_value={"value": "sk-kilo-test"}))
+
+    await client.patch("/api/taos-agent/settings", json={"model": "kilo/kilo-auto/free"})
+    app.state.taos_opencode_password = "testpw"
+    app.state.taos_opencode_session_id = None
+
+    resp = await client.post(
+        "/api/taos-agent/chat",
+        json={"messages": [{"role": "user", "content": "ping"}]},
+    )
+    assert resp.status_code == 200
+    assert "pong" in resp.text
+    assert opencode_calls == [], "ensure_taos_opencode_server must not be called for a kilo turn"
+
+
+# ---------------------------------------------------------------------------
+# Kilo session prompt change: changed system prompt must start a new session
+# ---------------------------------------------------------------------------
+
+_KILO_STUB_CAPTURE = r'''#!/bin/bash
+test -n "$KILO_API_KEY" || { echo "KILO_API_KEY is not set" >&2; exit 1; }
+[ -t 0 ] && { echo "stdin is a tty" >&2; exit 1; }
+# Echo the argv so the test can inspect session_id and message prefix
+echo "ARGV: $@" > "$KILO_CAPTURE_FILE"
+echo '{"type":"step_start","sessionID":"ses-new"}'
+echo '{"type":"text","sessionID":"ses-new","part":{"type":"text","text":"pong"}}'
+echo '{"type":"step_finish","sessionID":"ses-new"}'
+'''
+
+
+@pytest.mark.asyncio
+async def test_chat_kilo_changed_prompt_starts_new_session(client, app, monkeypatch, tmp_path):
+    """When the system prompt changes, a new kilo session must be started.
+
+    The bug: KiloCliAdapter prefixes the system prompt only when session_id is
+    None, but chat() restores app_state.taos_kilo_session_id on every turn and
+    saves it after the turn. After the taOS Agent persona changes, the old
+    session is resumed and the NEW system prompt never reaches kilo.
+
+    This test sets taos_kilo_session_id="old-session" with a saved
+    taos_kilo_session_prompt different from the current persona prompt, sends
+    one chat turn, and asserts the adapter received session_id=None (so the
+    stub kilo argv has no "-s old-session" and the message starts with the
+    current system prompt). Also asserts the unchanged-prompt case still
+    resumes "old-session".
+    """
+    import tinyagentos.routes.taos_agent as ta_module
+    from tinyagentos.kilo_runtime import KiloHarness
+    from tinyagentos.taos_agent_runtime import FRAMEWORK_KILO
+
+    monkeypatch.setattr(ta_module, "system_agent_framework", lambda app_state: FRAMEWORK_KILO)
+
+    # Capture file for the stub to write argv
+    capture_file = tmp_path / "capture.txt"
+
+    # Stub the kilo binary that captures argv to a file.
+    stub = tmp_path / "kilo"
+    stub.write_text(_KILO_STUB_CAPTURE.replace('$KILO_CAPTURE_FILE', str(capture_file)))
+    stub.chmod(0o755)
+
+    harness = KiloHarness(
+        home=tmp_path / "kilo-home", key="sk-kilo-test", model="kilo/kilo-auto/free",
+        binary=str(stub),
+    )
+    harness.write_home()
+
+    async def fake_ensure_taos_kilo_harness(app_state, model, system_prompt):
+        return harness
+
+    monkeypatch.setattr(ta_module, "ensure_taos_kilo_harness", fake_ensure_taos_kilo_harness)
+
+    # The opencode path must not be called at all for a kilo turn.
+    opencode_calls: list = []
+
+    async def fake_ensure_opencode_server(state, model):
+        opencode_calls.append(model)
+        return _fake_server()
+
+    monkeypatch.setattr(
+        "tinyagentos.routes.taos_agent.ensure_taos_opencode_server",
+        fake_ensure_opencode_server,
+    )
+
+    # A kilo_api_key secret is present (the readiness check reads it).
+    app.state.secrets = SimpleNamespace(get=AsyncMock(return_value={"value": "sk-kilo-test"}))
+
+    await client.patch("/api/taos-agent/settings", json={"model": "kilo/kilo-auto/free"})
+    app.state.taos_opencode_password = "testpw"
+    app.state.taos_opencode_session_id = None
+
+    # --- Case 1: Changed prompt should start a new session ---
+    # Set up old session with a DIFFERENT prompt
+    app.state.taos_kilo_session_id = "old-session"
+    app.state.taos_kilo_session_prompt = "OLD PROMPT"
+
+    # Set a persona (current prompt) that differs from the saved one
+    persona_resp = await client.put("/api/taos-agent/persona", json={"persona": "NEW PROMPT"})
+    assert persona_resp.status_code == 200, f"Persona patch failed: {persona_resp.text}"
+    assert persona_resp.json()["persona"] == "NEW PROMPT"
+
+    resp = await client.post(
+        "/api/taos-agent/chat",
+        json={"messages": [{"role": "user", "content": "ping"}]},
+    )
+    assert resp.status_code == 200
+    assert "pong" in resp.text
+
+    # Successful turn must not carry an error frame.
+    items = _parse_ndjson(resp.text)
+    error_items = [i for i in items if "error" in i]
+    assert len(error_items) == 0
+
+    assert opencode_calls == [], "ensure_taos_opencode_server must not be called for a kilo turn"
+
+    # Read the captured argv from the file
+    stderr_output = capture_file.read_text()
+
+    # The stub should NOT have been called with "-s old-session"
+    assert "-s old-session" not in stderr_output, (
+        f"Expected new session (no -s old-session), but capture shows: {stderr_output}"
+    )
+    # The message should start with the NEW prompt "NEW PROMPT"
+    assert "NEW PROMPT" in stderr_output, (
+        f"Expected message to start with new prompt 'NEW PROMPT', capture: {stderr_output}"
+    )
+
+    # --- Case 2: Unchanged prompt should resume the old session ---
+    # New capture file for second call
+    capture_file2 = tmp_path / "capture2.txt"
+
+    # Reset the stub call count by creating a new harness with a fresh stub
+    stub2 = tmp_path / "kilo2"
+    stub2.write_text(_KILO_STUB_CAPTURE.replace('$KILO_CAPTURE_FILE', str(capture_file2)))
+    stub2.chmod(0o755)
+
+    harness2 = KiloHarness(
+        home=tmp_path / "kilo-home2", key="sk-kilo-test", model="kilo/kilo-auto/free",
+        binary=str(stub2),
+    )
+    harness2.write_home()
+
+    async def fake_ensure_taos_kilo_harness2(app_state, model, system_prompt):
+        return harness2
+
+    monkeypatch.setattr(ta_module, "ensure_taos_kilo_harness", fake_ensure_taos_kilo_harness2)
+
+    # Now the saved prompt matches the current prompt
+    app.state.taos_kilo_session_id = "old-session"
+    app.state.taos_kilo_session_prompt = "SAME PROMPT"
+
+    # Set persona to the same prompt
+    persona_resp2 = await client.put("/api/taos-agent/persona", json={"persona": "SAME PROMPT"})
+    assert persona_resp2.status_code == 200
+
+    resp2 = await client.post(
+        "/api/taos-agent/chat",
+        json={"messages": [{"role": "user", "content": "ping2"}]},
+    )
+    assert resp2.status_code == 200
+
+    # Successful turn must not carry an error frame.
+    items2 = _parse_ndjson(resp2.text)
+    error_items2 = [i for i in items2 if "error" in i]
+    assert len(error_items2) == 0
+
+    stderr_output2 = capture_file2.read_text()
+
+    # The stub SHOULD have been called with "-s old-session"
+    assert "-s old-session" in stderr_output2, (
+        f"Expected resumed session with -s old-session, but capture shows: {stderr_output2}"
+    )
+    # The message should NOT have the system prompt prefixed (since it's a resume)
+    assert "SAME PROMPT" not in stderr_output2, (
+        f"Expected no prompt prefix on resume, capture: {stderr_output2}"
+    )
 
 
 # ---------------------------------------------------------------------------

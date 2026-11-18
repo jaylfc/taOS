@@ -51,6 +51,11 @@ BACKEND_CAPABILITIES: dict[str, set[str]] = {
     "iopaint": {"image-editing", "background-removal", "upscale"},
     # FLUX.1-Fill served via an inpaint/outpaint endpoint — the quality tier.
     "flux-fill": {"image-editing"},
+    # Speech: ASR via faster-whisper / whisper.cpp OpenAI-compatible servers;
+    # TTS via the Kokoro TTS server or MOSS TTS served through SGLang/vLLM-Omni.
+    "whisper": {"asr"},
+    "kokoro": {"tts"},
+    "moss": {"tts"},
 }
 
 

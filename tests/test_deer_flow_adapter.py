@@ -22,6 +22,14 @@ def test_adapter_retry_excludes_remote_protocol_error():
     assert httpx.PoolTimeout in deer_flow_adapter._RETRY_ON
 
 
+def test_retry_kwargs_disables_status_retries():
+    """Status retries (429/5xx) are off for the same reason as read timeouts:
+    DeerFlow answered, so the run may already be executing, and re-firing
+    /api/runs/wait starts a new run and re-executes the whole job plus side
+    effects."""
+    assert deer_flow_adapter._RETRY_KWARGS["retry_on_status"] == frozenset()
+
+
 def test_extract_text_string_content():
     messages = [
         {"role": "user", "content": "hi"},

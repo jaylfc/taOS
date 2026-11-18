@@ -185,18 +185,28 @@ _DEFAULT_PROBE_CANDIDATES: tuple[tuple[str, str], ...] = (
     ("vllm", "http://localhost:18000"),           # TAOS-bundled vLLM (future)
     ("sd-cpp", "http://localhost:7864"),
     ("exo", "http://localhost:52415"),           # exo distributed inference (default port)
+    ("kokoro", "http://localhost:8880"),         # kokoro-fastapi TTS server
 )
+# moss (:30000) and whisper (:9000) deliberately have no default candidate.
+# :30000 is SGLang's stock port, so any ordinary SGLang LLM there would be
+# advertised as a 'tts' backend, and :9000 is shared with MinIO and php-fpm.
+# Neither type has a server-specific health check either: both fall through to
+# the generic /v1/models probe, which cannot tell them apart from whatever else
+# answers on that port. A configured backend of either type is still probed --
+# they stay in _PROBEABLE_TYPES below and in the worker-manifest mapping.
 
 # Types an extra/manifest candidate may declare: the local servers whose API
 # detect_backends can probe (/api/tags, /sdapi/v1/sd-models, /v1/models,
-# llama-swap's /running). llama-swap has no default candidate: its default
-# port 8080 is also llama.cpp's and rkllama's legacy one, so it is configured.
+# llama-swap's /running). llama-swap, whisper and moss have no default
+# candidate -- their ports collide with other servers (8080 with llama.cpp and
+# rkllama, 9000 with MinIO/php-fpm, 30000 with SGLang) -- so they are only
+# probed when the manifest or TAOS_EXTRA_BACKENDS configures them.
 _PROBEABLE_TYPES = frozenset({
     "rkllama", "ollama", "hailo-ollama", "llama-cpp", "llama-swap", "vllm", "exo", "mlx",
-    "sd-cpp",
+    "sd-cpp", "whisper", "kokoro", "moss",
 })
 # Types detected by /v1/models alone, which a llama-swap server also answers.
-_OPENAI_MODELS_TYPES = frozenset({"llama-cpp", "vllm", "exo", "mlx"})
+_OPENAI_MODELS_TYPES = frozenset({"llama-cpp", "vllm", "exo", "mlx", "whisper", "kokoro", "moss"})
 _MAX_EXTRA_BACKENDS = 16
 # Total time one candidate may take. httpx timeouts are per read, so a server
 # trickling bytes could otherwise hold the probe (and the heartbeat, which the
@@ -465,6 +475,23 @@ class WorkerAgent:
             + _parse_extra_backends(os.environ.get("TAOS_EXTRA_BACKENDS", ""))
             + [(bt, url) for bt, url, _ in declared if url and bt in _PROBEABLE_TYPES]
         )
+        # Kokoro-specific signal is required only for the DEFAULT kokoro
+        # candidate (kokoro-fastapi on :8880). A kokoro configured via the
+        # manifest or TAOS_EXTRA_BACKENDS keeps the generic /v1/models probe.
+        default_kokoro_keys = {
+            _candidate_key(bt, url) for bt, url in _DEFAULT_PROBE_CANDIDATES if bt == "kokoro"
+        }
+        # Exclude any kokoro keys that come from configured backends
+        # (manifest or TAOS_EXTRA_BACKENDS) so they get the generic probe.
+        configured_kokoro_keys = {
+            _candidate_key(bt, url)
+            for bt, url in (
+                _parse_extra_backends(os.environ.get("TAOS_EXTRA_BACKENDS", ""))
+                + [(bt, url) for bt, url, _ in declared if url and bt in _PROBEABLE_TYPES]
+            )
+            if bt == "kokoro"
+        }
+        default_kokoro_keys -= configured_kokoro_keys
 
         async def probe(client: httpx.AsyncClient, backend_type: str, base_url: str):
             if backend_type == "llama-swap":
@@ -473,7 +500,12 @@ class WorkerAgent:
                     return None
                 models, loaded_models = probed
             else:
-                models = await self._probe_models(client, backend_type, base_url)
+                if backend_type == "kokoro" and _candidate_key(
+                    backend_type, base_url
+                ) in default_kokoro_keys:
+                    models = await self._probe_kokoro(client, base_url)
+                else:
+                    models = await self._probe_models(client, backend_type, base_url)
                 if models is None:
                     return None  # backend not running here
                 loaded_models = await self._probe_loaded_models(client, backend_type, base_url)
@@ -688,14 +720,50 @@ class WorkerAgent:
                     for m in (resp.json() if isinstance(resp.json(), list) else [])
                 ]
             # llama-cpp / vllm, OpenAI compat /v1/models
-            resp = await client.get(f"{base_url}/v1/models")
+            return await self._probe_openai_models(client, base_url)
+        except Exception:
+            return None
+
+    async def _probe_openai_models(
+        self, client: httpx.AsyncClient, base_url: str
+    ) -> list[dict] | None:
+        """Query an OpenAI-compatible ``/v1/models`` endpoint.
+
+        Returns the model list, or None when the endpoint is unreachable or
+        does not return a ``{"data": [...]}`` body.
+        """
+        resp = await client.get(f"{base_url}/v1/models")
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        return [
+            {"name": m.get("id", ""), "size_mb": 0}
+            for m in data.get("data", [])
+        ]
+
+    async def _probe_kokoro(
+        self, client: httpx.AsyncClient, base_url: str
+    ) -> list[dict] | None:
+        """Kokoro-specific probe for the DEFAULT kokoro candidate.
+
+        kokoro-fastapi serves GET /v1/audio/voices (JSON with a 'voices'
+        list). The candidate is only advertised as a kokoro/tts backend
+        when that endpoint returns HTTP 200 and a 'voices' key that is a
+        list; otherwise it is skipped silently (like a closed port). A
+        kokoro backend configured via the manifest or TAOS_EXTRA_BACKENDS
+        keeps the generic /v1/models probe and is not subject to this
+        check.
+        """
+        try:
+            resp = await client.get(f"{base_url}/v1/audio/voices")
             if resp.status_code != 200:
                 return None
             data = resp.json()
-            return [
-                {"name": m.get("id", ""), "size_mb": 0}
-                for m in data.get("data", [])
-            ]
+            if not isinstance(data, dict) or not isinstance(data.get("voices"), list):
+                return None
+            # kokoro-fastapi confirmed: read the model catalog like the other
+            # OpenAI-compatible backends.
+            return await self._probe_openai_models(client, base_url)
         except Exception:
             return None
 

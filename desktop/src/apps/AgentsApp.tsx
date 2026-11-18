@@ -77,7 +77,7 @@ function applyLiveState(agent: Agent, live: string | undefined): Agent {
 // Status is always "running" — it is host-resident and cannot be stopped.
 const TAOS_AGENT_STUB: Agent = {
   name: "taos-agent",
-  display_name: "taOS agent",
+  display_name: "taOS Agent",
   host: "localhost",
   color: "#06b6d4",
   emoji: "🤖",
@@ -619,7 +619,7 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
           >
             ← Back
           </button>
-          <span className="text-sm font-medium text-shell-text truncate">taOS agent</span>
+          <span className="text-sm font-medium text-shell-text truncate">taOS Agent</span>
         </div>
         <div className="flex flex-1 min-h-0 flex-col overflow-hidden select-text">
           <TaosAgentDetailPanel onClose={() => setTaosDetailOpen(false)} fullHeight />
@@ -695,7 +695,7 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
                 <Bot size={30} className="text-shell-text-tertiary" />
               </div>
               <div className="text-center">
-                <p className="text-base font-medium text-shell-text mb-1">No agents deployed yet</p>
+                <p className="text-base font-medium text-shell-text mb-1">No agents of your own yet</p>
                 <p className="text-sm text-shell-text-secondary max-w-xs">Deploy your first AI agent to start automating tasks on your device.</p>
               </div>
               <Button

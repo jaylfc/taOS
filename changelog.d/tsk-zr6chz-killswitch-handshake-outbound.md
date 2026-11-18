@@ -1,0 +1,1 @@
+- Collaboration kill switch now also covers `POST /api/peer/handshake` (503 while disabled, 403 for a paused contact before its nonce is recorded) and `deliver_to_peer`, which sends nothing while disabled or to a paused contact.

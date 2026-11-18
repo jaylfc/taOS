@@ -1,0 +1,2 @@
+### Added
+- Hermes framework choice for the system taOS Agent: operator override `taos_agent.framework=hermes` runs an OpenAI-compatible chat completion via a local Hermes API server (default `127.0.0.1:8642`), gated by the `hermes_api_key` secret and a `/health` probe.

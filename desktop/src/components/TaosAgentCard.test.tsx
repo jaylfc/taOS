@@ -33,7 +33,7 @@ describe("TaosAgentCard", () => {
   it("renders the agent card header, model, and permitted models", async () => {
     render(<TaosAgentCard />);
 
-    expect(await screen.findByText("taOS agent")).toBeInTheDocument();
+    expect(await screen.findByText("taOS Agent")).toBeInTheDocument();
     expect(screen.getAllByText("claude-sonnet-4-20250514").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("opencode")).toBeInTheDocument();
     expect(screen.getByText("System")).toBeInTheDocument();
@@ -45,23 +45,23 @@ describe("TaosAgentCard", () => {
   it("shows a loading skeleton before config resolves", () => {
     vi.mocked(fetchTaosAgentConfig).mockReturnValue(new Promise(() => {}));
     render(<TaosAgentCard />);
-    expect(screen.getByLabelText("Loading taOS agent")).toBeInTheDocument();
+    expect(screen.getByLabelText("Loading taOS Agent")).toBeInTheDocument();
   });
 
   it("shows an error message when config fails to load", async () => {
     vi.mocked(fetchTaosAgentConfig).mockRejectedValue(new Error("network down"));
     render(<TaosAgentCard />);
-    expect(await screen.findByRole("alert")).toHaveTextContent("Failed to load taOS agent config: network down");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Failed to load taOS Agent config: network down");
   });
 
   it("removes a permitted model and shows the save button", async () => {
     render(<TaosAgentCard />);
-    await screen.findByText("taOS agent");
+    await screen.findByText("taOS Agent");
 
-    fireEvent.click(screen.getByRole("button", { name: /remove gpt-4o from taos agent permitted models/i }));
+    fireEvent.click(screen.getByRole("button", { name: /remove gpt-4o from taOS Agent permitted models/i }));
     expect(screen.queryByText("gpt-4o")).not.toBeInTheDocument();
 
-    const saveBtn = screen.getByRole("button", { name: /save taos agent permitted models/i });
+    const saveBtn = screen.getByRole("button", { name: /save taOS Agent permitted models/i });
     expect(saveBtn).toBeInTheDocument();
 
     vi.mocked(setTaosAgentPermitted).mockResolvedValue({

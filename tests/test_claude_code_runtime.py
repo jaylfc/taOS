@@ -2,6 +2,9 @@
 
 Covers decide_framework with the claude_code override, the harness's minimal
 environment, and run_turn against a fake ``claude`` executable.
+
+Also covers the hermes framework choice in decide_framework and the
+hermes_runtime probes.
 """
 from __future__ import annotations
 
@@ -10,6 +13,7 @@ import os
 import stat
 import tempfile
 
+import httpx
 import pytest
 
 from tinyagentos.claude_code_runtime import (
@@ -19,11 +23,19 @@ from tinyagentos.claude_code_runtime import (
     home_for,
     scrub_home,
 )
+from tinyagentos.hermes_runtime import (
+    HERMES_API_KEY_SECRET,
+    hermes_api_up,
+    hermes_key_present,
+)
 from tinyagentos.taos_agent_runtime import (
     FRAMEWORK_CHOICES,
     FRAMEWORK_CLAUDE_CODE,
+    FRAMEWORK_HERMES,
+    REASON_HERMES_API_DOWN,
     REASON_NO_CLAUDE_BINARY,
     REASON_NO_CLAUDE_TOKEN,
+    REASON_NO_HERMES_KEY,
     decide_framework,
 )
 
@@ -90,6 +102,156 @@ def test_existing_callers_without_the_new_kwargs_still_work():
         detected_device_class="desktop", gateway_enabled=True, picoclaw_available=False,
     )
     assert d.framework == "opencode"
+
+
+# ---------------------------------------------------------------- hermes decision
+def _decide_hermes(**over):
+    kw = {
+        "framework_setting": "hermes",
+        "device_class_setting": "auto",
+        "detected_device_class": "desktop",
+        "gateway_enabled": True,
+        "picoclaw_available": False,
+        "claude_code_available": True,
+        "claude_code_token_present": True,
+        "hermes_key_present": True,
+        "hermes_api_up": True,
+    }
+    kw.update(over)
+    return decide_framework(**kw)
+
+
+def test_choices_include_hermes():
+    assert FRAMEWORK_HERMES == "hermes"
+    assert "hermes" in FRAMEWORK_CHOICES
+
+
+def test_hermes_chosen_when_key_present_and_api_up():
+    d = _decide_hermes()
+    assert d.framework == "hermes"
+    assert d.preference == "hermes"
+
+
+def test_hermes_without_key_falls_back_to_opencode():
+    d = _decide_hermes(hermes_key_present=False)
+    assert d.framework == "opencode"
+    assert d.preference == "hermes"
+    assert d.reason == REASON_NO_HERMES_KEY
+    assert d.reason == "hermes preferred, no hermes_api_key secret, using opencode"
+
+
+def test_hermes_with_key_but_api_down_falls_back_to_opencode():
+    d = _decide_hermes(hermes_api_up=False)
+    assert d.framework == "opencode"
+    assert d.preference == "hermes"
+    assert d.reason == REASON_HERMES_API_DOWN
+    assert d.reason == "hermes preferred, hermes api_server not reachable, using opencode"
+
+
+def test_auto_on_mobile_still_prefers_picoclaw_not_hermes():
+    d = _decide_hermes(framework_setting="auto", detected_device_class="mobile", picoclaw_available=True)
+    assert d.framework == "picoclaw"
+
+
+def test_auto_on_desktop_is_opencode_not_hermes():
+    d = _decide_hermes(framework_setting="auto")
+    assert d.framework == "opencode"
+
+
+# ---------------------------------------------------------------- hermes_runtime probes
+class _MockSecrets:
+    def __init__(self, has_key: bool):
+        self._has_key = has_key
+
+    async def get(self, name: str):
+        if name == HERMES_API_KEY_SECRET and self._has_key:
+            return {"value": "secret-key-value"}
+        return None
+
+
+class _MockConfig:
+    def __init__(self, hermes_url: str | None = None):
+        self.taos_agent = {"hermes_url": hermes_url} if hermes_url else {}
+
+
+class _MockAppState:
+    def __init__(self, has_key: bool = False, hermes_url: str | None = None):
+        self.secrets = _MockSecrets(has_key)
+        self.config = _MockConfig(hermes_url)
+
+
+@pytest.mark.asyncio
+async def test_hermes_key_present_true_when_secret_exists():
+    state = _MockAppState(has_key=True)
+    assert await hermes_key_present(state) is True
+
+
+@pytest.mark.asyncio
+async def test_hermes_key_present_false_when_secret_missing():
+    state = _MockAppState(has_key=False)
+    assert await hermes_key_present(state) is False
+
+
+@pytest.mark.asyncio
+async def test_hermes_key_present_false_when_no_secrets_store():
+    state = _MockAppState(has_key=True)
+    state.secrets = None
+    assert await hermes_key_present(state) is False
+
+
+@pytest.mark.asyncio
+async def test_hermes_api_up_true_on_mocked_200(monkeypatch):
+    async def mock_get(self, url, **kwargs):
+        assert url.endswith("/health")
+        return httpx.Response(200)
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
+    state = _MockAppState()
+    assert await hermes_api_up(state) is True
+
+
+@pytest.mark.asyncio
+async def test_hermes_api_up_false_on_connection_error(monkeypatch):
+    async def mock_get(self, url, **kwargs):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
+    state = _MockAppState()
+    assert await hermes_api_up(state) is False
+
+
+@pytest.mark.asyncio
+async def test_hermes_api_up_false_on_non_200(monkeypatch):
+    async def mock_get(self, url, **kwargs):
+        return httpx.Response(503)
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
+    state = _MockAppState()
+    assert await hermes_api_up(state) is False
+
+
+@pytest.mark.asyncio
+async def test_hermes_api_up_false_on_timeout(monkeypatch):
+    async def mock_get(self, url, **kwargs):
+        raise httpx.TimeoutException("timeout")
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
+    state = _MockAppState()
+    assert await hermes_api_up(state) is False
+
+
+@pytest.mark.asyncio
+async def test_hermes_api_url_uses_config_fallback():
+    state = _MockAppState()
+    from tinyagentos.hermes_runtime import hermes_api_url, HERMES_DEFAULT_URL
+    assert hermes_api_url(state) == HERMES_DEFAULT_URL
+
+
+@pytest.mark.asyncio
+async def test_hermes_api_url_reads_from_config_and_strips_slash():
+    state = _MockAppState(hermes_url="http://custom:9999/")
+    from tinyagentos.hermes_runtime import hermes_api_url
+    assert hermes_api_url(state) == "http://custom:9999"
 
 
 # ---------------------------------------------------------------- harness

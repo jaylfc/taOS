@@ -22,7 +22,8 @@ export function PinnedMessagesPopover({
     <div
       role="dialog"
       aria-label="Pinned messages"
-      className="absolute top-full right-0 mt-1 w-[320px] max-h-[400px] overflow-y-auto bg-shell-surface border border-shell-border-strong rounded-md shadow-lg z-40"
+      className="absolute top-full right-0 mt-1 w-[320px] max-w-[calc(100vw-1rem)] overflow-y-auto bg-shell-surface border border-shell-border-strong rounded-md shadow-lg z-40"
+      style={{ maxHeight: "min(400px, 60dvh)" }}
     >
       <header className="flex items-center justify-between px-3 py-2 border-b border-shell-border-strong">
         <span className="text-xs font-semibold">Pinned ({pins.length})</span>

@@ -127,6 +127,24 @@ def test_only_binary_value_is_not_a_package(tmp_path):
     )
 
 
+def test_log_and_upgrade_strategy_values_are_not_packages(tmp_path):
+    """--log <file> and --upgrade-strategy <mode> must not be read as packages.
+
+    `--log build.log` consumes a filename and `--upgrade-strategy eager` consumes
+    a mode; each is a value-taking option, so the token after it is the flag's
+    value rather than an undeclared package. Without both flags present in
+    ``_PIP_VALUE_OPTIONS`` the following token was mistaken for a package.
+    """
+    fake_installer = tmp_path / "install.sh"
+    fake_installer.write_text("""#!/bin/bash
+./.venv/bin/pip install --log build.log --upgrade-strategy eager notarealpkg
+""")
+    result = check_install_licences.undeclared_pip_installs(fake_installer)
+    assert result == ["notarealpkg"], (
+        f"expected [\"notarealpkg\"], got {result}"
+    )
+
+
 def test_unreadable_licence_is_its_own_failing_finding():
     """A PyPI release with no expression/license/classifiers must fail the gate.
 

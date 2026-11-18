@@ -132,6 +132,36 @@ describe("MessageInput", () => {
     expect(screen.getByRole("button", { name: /send message/i })).toBeDisabled();
   });
 
+  it("disables send button when an attachment has an error (desktop)", () => {
+    render(
+      <MessageInput
+        {...defaultProps({
+          value: "hi",
+          isMobile: false,
+          pendingAttachments: [
+            { id: "x", filename: "a.png", size: 1, uploading: false, error: "boom" },
+          ],
+        })}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /send message/i })).toBeDisabled();
+  });
+
+  it("disables send button when an attachment has an error (mobile)", () => {
+    render(
+      <MessageInput
+        {...defaultProps({
+          value: "hi",
+          isMobile: true,
+          pendingAttachments: [
+            { id: "x", filename: "a.png", size: 1, uploading: false, error: "boom" },
+          ],
+        })}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /send message/i })).toBeDisabled();
+  });
+
   it("enables send button when value has non-whitespace text", () => {
     render(<MessageInput {...defaultProps({ value: "hello" })} />);
     expect(screen.getByRole("button", { name: /send message/i })).not.toBeDisabled();
@@ -402,7 +432,7 @@ describe("MessageInput", () => {
       render(<MessageInput {...mobile()} />);
       const card = screen.getByTestId("mobile-composer");
       expect(within(card).getByText("design")).toBeInTheDocument();
-      expect(within(card).getByText("4 people")).toBeInTheDocument();
+      expect(within(card).getByText("4 members")).toBeInTheDocument();
       expect(screen.getByPlaceholderText("Message design")).toBeInTheDocument();
     });
 
@@ -487,6 +517,20 @@ describe("MessageInput", () => {
         <MessageInput {...mobile({ channel: dm, liveAgents: [{ name: "tom", display_name: "Tom" }] })} />,
       );
       expect(screen.getByText("Agent")).toBeInTheDocument();
+    });
+
+    it("for an archived agent DM shows the archived party title and subtitle", () => {
+      const dm: Channel = { id: "d", name: "old-bot", type: "dm", members: ["user", "old-bot"] };
+      render(
+        <MessageInput
+          {...mobile({
+            channel: dm,
+            archivedAgents: [{ id: "a1", archived_slug: "old-bot-x", original: { name: "old-bot", display_name: "Old Bot" } }],
+          })}
+        />,
+      );
+      expect(screen.getByText("Old Bot")).toBeInTheDocument();
+      expect(screen.getByText("Archived agent")).toBeInTheDocument();
     });
 
     it("keeps the desktop composer unchanged", () => {
