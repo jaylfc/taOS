@@ -1,8 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { installAbortSignalTimeout } from "./polyfills";
 
-const originalTimeout = AbortSignal.timeout;
-
 function deleteGlobalAbortTimeout() {
   try {
     delete (AbortSignal as any).timeout;
@@ -12,11 +10,7 @@ function deleteGlobalAbortTimeout() {
 }
 
 function restoreGlobalAbortTimeout() {
-  if (originalTimeout !== undefined) {
-    (AbortSignal as any).timeout = originalTimeout;
-  } else {
-    deleteGlobalAbortTimeout();
-  }
+  deleteGlobalAbortTimeout();
 }
 
 describe("AbortSignal.timeout polyfill", () => {
@@ -103,16 +97,28 @@ describe("AbortSignal.timeout polyfill", () => {
     expect((s.reason as DOMException).name).toBe("TimeoutError");
   });
 
-  it("does not replace existing native AbortSignal.timeout", async () => {
-    const nativeTimeout = AbortSignal.timeout;
+  it("timeout(0) is not aborted synchronously and fires after timer advance", () => {
+    const s = AbortSignal.timeout(0);
+    expect(s.aborted).toBe(false);
 
+    const listener = vi.fn();
+    s.addEventListener("abort", listener);
+
+    expect(listener).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(0);
+
+    expect(s.aborted).toBe(true);
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not replace existing native AbortSignal.timeout", () => {
     deleteGlobalAbortTimeout();
+    const stubTimeout = vi.fn();
+    (AbortSignal as any).timeout = stubTimeout;
+
     installAbortSignalTimeout();
 
-    (AbortSignal as any).timeout = nativeTimeout;
-
-    await import("./polyfills");
-
-    expect(AbortSignal.timeout).toBe(nativeTimeout);
+    expect(AbortSignal.timeout).toBe(stubTimeout);
   });
 });

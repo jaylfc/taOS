@@ -199,16 +199,24 @@ def test_large_noisy_rgba_png_stays_png():
 def test_base64_decode_inside_decode_slot(monkeypatch):
     import tinyagentos.llm_gateway.images as images_mod
 
-    # Track whether base64.b64decode was called while _DECODE_SLOTS was held.
-    # After the fix, decode happens inside the with block; before the fix, it
-    # happens before the with block acquires the slot.
-    decode_called_while_held = {"called": False}
+    # Track whether _DECODE_SLOTS was held when base64.b64decode was called.
+    slot = {"held": False, "calls": []}
+
+    class TrackingSemaphore:
+        def __enter__(self):
+            slot["held"] = True
+            return self
+
+        def __exit__(self, *args):
+            slot["held"] = False
+            return False
+
+    monkeypatch.setattr(images_mod, "_DECODE_SLOTS", TrackingSemaphore())
 
     original_b64decode = base64.b64decode
 
     def tracking_b64decode(s, alt=None):
-        nonlocal decode_called_while_held
-        decode_called_while_held["called"] = True
+        slot["calls"].append(slot["held"])
         return original_b64decode(s, alt)
 
     monkeypatch.setattr(base64, "b64decode", tracking_b64decode)
@@ -221,12 +229,14 @@ def test_base64_decode_inside_decode_slot(monkeypatch):
         ]
     }
     result = shrink_images(body)
+
+    # Restore original b64decode so _decode_data_url helper doesn't pollute calls
+    monkeypatch.setattr(base64, "b64decode", original_b64decode)
+
     new_url = result["messages"][0]["content"][0]["image_url"]["url"]
-    # After the fix, base64.b64decode is called inside _DECODE_SLOTS block.
-    # Before the fix, it was called before the with _DECODE_SLOTS: block.
-    # This test verifies the function runs to completion without error.
-    assert new_url != url  # verified that the URL was processed
-    assert decode_called_while_held["called"], "base64.b64decode must be called inside _DECODE_SLOTS"
+    assert new_url != url, "URL should have been processed"
+    assert slot["calls"], "base64.b64decode should have been called at least once"
+    assert all(slot["calls"]), "Every base64.b64decode call must happen while _DECODE_SLOTS is held"
 
 
 def test_unsupported_format_bmp_returned_unchanged(monkeypatch):
@@ -304,3 +314,68 @@ def test_i16_png_shrunk_within_long_edge():
     raw = _b64.b64decode(_b64data)
     out_img = Image.open(io.BytesIO(raw))
     assert max(out_img.size) <= 1568, f"Expected long edge <= 1568, got {max(out_img.size)}"
+
+
+def test_large_encoded_url_bypasses_decode_slot(monkeypatch):
+    """A data URL larger than MAX_ENCODED_CHARS is returned unchanged without taking a decode slot."""
+    import tinyagentos.llm_gateway.images as images_mod
+
+    monkeypatch.setattr(images_mod, "MAX_ENCODED_CHARS", 1000)
+
+    class FailingSemaphore:
+        def __enter__(self):
+            raise AssertionError("_DECODE_SLOTS should not be acquired for oversized encoded URLs")
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(images_mod, "_DECODE_SLOTS", FailingSemaphore())
+
+    # Create a PNG data URL larger than 1000 chars
+    url = _png_data_url(500, 500)  # This will be well over 1000 chars base64
+    assert len(url) > 1000, "Test setup: URL must exceed patched MAX_ENCODED_CHARS"
+
+    body = {"messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": url}}]}]}
+    result = shrink_images(body)
+    new_url = result["messages"][0]["content"][0]["image_url"]["url"]
+    assert new_url == url, "Oversized encoded URL should be returned unchanged"
+
+
+def test_transparent_gif_resized_saved_as_png(monkeypatch):
+    """A transparent palette GIF resized beyond MAX_LONG_EDGE is saved as PNG to preserve alpha."""
+    import tinyagentos.llm_gateway.images as images_mod
+    from PIL import Image
+    import io
+    import base64 as _b64
+
+    # Create a 2000x2000 'P' mode GIF with transparency
+    img = Image.new("P", (2000, 2000))
+    # Set a simple palette
+    palette = []
+    for i in range(256):
+        palette.extend([i, i, i])
+    img.putpalette(palette)
+    # Draw something visible
+    for i in range(0, 2000, 10):
+        img.putpixel((i, i), 255)
+    # Set transparency info (index 0 is transparent)
+    img.info["transparency"] = 0
+
+    buf = io.BytesIO()
+    img.save(buf, format="GIF")
+    b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
+    url = f"data:image/gif;base64,{b64}"
+
+    body = {"messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": url}}]}]}
+    result = shrink_images(body)
+    new_url = result["messages"][0]["content"][0]["image_url"]["url"]
+
+    # Should be converted to PNG (not GIF) to preserve alpha
+    assert new_url.startswith("data:image/png;base64,"), f"Expected PNG output, got {new_url[:50]}..."
+
+    # Decode and verify mode and size
+    header, _b64data = new_url.split(";base64,")
+    raw = _b64.b64decode(_b64data)
+    out_img = Image.open(io.BytesIO(raw))
+    assert out_img.mode == "RGBA", f"Expected RGBA mode, got {out_img.mode}"
+    assert max(out_img.size) <= images_mod.MAX_LONG_EDGE, f"Expected long edge <= {images_mod.MAX_LONG_EDGE}, got {max(out_img.size)}"

@@ -129,7 +129,7 @@ async def test_put_torrent_settings_non_admin_403(tmp_path):
     app.state.torrent_settings_store = app.state.download_manager._torrent_settings_store
     before = app.state.torrent_settings_store.load()
 
-    resp = client.put("/api/torrent/settings", json={"seed_enabled": True})
+    resp = client.put("/api/torrent/settings", json={"seed_enabled": False})
     assert resp.status_code == 403
 
     # Settings must be unchanged.
@@ -161,7 +161,10 @@ async def test_put_torrent_settings_admin_still_saves(client, monkeypatch):
     # GET reflects the saved value
     get_resp = await client.get("/api/torrent/settings")
     assert get_resp.status_code == 200
-    assert get_resp.json()["seed_enabled"] is False
+    get_data = get_resp.json()
+    assert get_data["seed_enabled"] is False
+    assert get_data["upload_rate_limit_kbps"] == 100
+    assert get_data["max_active_seeds"] == 3
 
 
 @pytest.mark.asyncio

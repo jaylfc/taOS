@@ -2,19 +2,22 @@
 """Tests for tinyagentos/orb/bridges/esphome."""
 
 import pytest
+from unittest.mock import MagicMock
 
 
 def test_esphome_installed_and_target(monkeypatch):
     """Test installed() True via monkeypatch and target instruction exact."""
     from tinyagentos.orb.bridges import esphome
 
-    monkeypatch.setattr(esphome.shutil, "which", lambda x: "/usr/bin/esphome")
+    which_mock = MagicMock(return_value="/usr/bin/esphome")
+    monkeypatch.setattr(esphome.shutil, "which", which_mock)
     lan_orbs = [
         {"name": "orb-1", "app": "esphome", "addresses": ["192.168.1.40"], "port": 80},
     ]
     agent_buddy = []
 
     assert esphome.installed() is True
+    which_mock.assert_called_with("esphome")
 
     result = esphome.evaluate(lan_orbs, agent_buddy)
 
@@ -35,13 +38,15 @@ def test_esphome_not_installed_target_still_present(monkeypatch):
     """Test installed() False: target still present, append to instruction."""
     from tinyagentos.orb.bridges import esphome
 
-    monkeypatch.setattr(esphome.shutil, "which", lambda x: None)
+    which_mock = MagicMock(return_value=None)
+    monkeypatch.setattr(esphome.shutil, "which", which_mock)
     lan_orbs = [
         {"name": "orb-1", "app": "esphome", "addresses": ["192.168.1.40"], "port": 80},
     ]
     agent_buddy = []
 
     assert esphome.installed() is False
+    which_mock.assert_called_with("esphome")
 
     result = esphome.evaluate(lan_orbs, agent_buddy)
 
@@ -64,7 +69,8 @@ def test_esphome_ignores_mimiclaw_orb(monkeypatch):
     """Test an orb with app 'mimiclaw' is ignored."""
     from tinyagentos.orb.bridges import esphome
 
-    monkeypatch.setattr(esphome.shutil, "which", lambda x: "/usr/bin/esphome")
+    which_mock = MagicMock(return_value="/usr/bin/esphome")
+    monkeypatch.setattr(esphome.shutil, "which", which_mock)
     lan_orbs = [
         {"name": "orb-1", "app": "mimiclaw", "addresses": ["192.168.1.40"], "port": 80},
     ]
@@ -74,13 +80,16 @@ def test_esphome_ignores_mimiclaw_orb(monkeypatch):
 
     assert len(result.targets) == 0
     assert result.instruction == "No Orb running ESPHome found on the LAN."
+    # installed() is called during evaluate, so which was called
+    which_mock.assert_called_with("esphome")
 
 
 def test_esphome_ipv6_address(monkeypatch):
     """Test IPv6-only orb address is wrapped in brackets."""
     from tinyagentos.orb.bridges import esphome
 
-    monkeypatch.setattr(esphome.shutil, "which", lambda x: "/usr/bin/esphome")
+    which_mock = MagicMock(return_value="/usr/bin/esphome")
+    monkeypatch.setattr(esphome.shutil, "which", which_mock)
     lan_orbs = [
         {"name": "orb-1", "app": "esphome", "addresses": ["fe80::2"], "port": 80},
     ]
@@ -94,13 +103,15 @@ def test_esphome_ipv6_address(monkeypatch):
         result.targets[0]["instruction"]
         == "esphome logs <your-config>.yaml --device [fe80::2]"
     )
+    which_mock.assert_called_with("esphome")
 
 
 def test_esphome_empty_input(monkeypatch):
     """Test empty input returns no targets and correct instruction."""
     from tinyagentos.orb.bridges import esphome
 
-    monkeypatch.setattr(esphome.shutil, "which", lambda x: "/usr/bin/esphome")
+    which_mock = MagicMock(return_value="/usr/bin/esphome")
+    monkeypatch.setattr(esphome.shutil, "which", which_mock)
 
     result = esphome.evaluate([], [])
 
@@ -109,6 +120,7 @@ def test_esphome_empty_input(monkeypatch):
     assert result.installed is True
     assert len(result.targets) == 0
     assert result.instruction == "No Orb running ESPHome found on the LAN."
+    which_mock.assert_called_with("esphome")
 
 
 def test_esphome_constants():
@@ -125,7 +137,8 @@ def test_esphome_in_adapters_and_evaluate_all(monkeypatch):
     import tinyagentos.orb.bridges as bridges_mod
     from tinyagentos.orb.bridges import esphome
 
-    monkeypatch.setattr(esphome.shutil, "which", lambda x: None)
+    which_mock = MagicMock(return_value=None)
+    monkeypatch.setattr(esphome.shutil, "which", which_mock)
 
     modules = bridges_mod.adapters()
     names = [m.__name__.rsplit(".", 1)[1] for m in modules]
@@ -135,3 +148,5 @@ def test_esphome_in_adapters_and_evaluate_all(monkeypatch):
     esphome_result = [r for r in all_results if r["bridge_id"] == "esphome"]
     assert len(esphome_result) == 1
     assert "error" not in esphome_result[0]
+    # evaluate_all calls installed() for all bridges; esphome's which was called
+    which_mock.assert_any_call("esphome")

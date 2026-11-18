@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Depends
@@ -199,63 +200,42 @@ async def get_wifi():
         else:
             ap_paths = []
 
-        for ap_path in ap_paths:
+        # One GetAll call per access point, fetched with bounded concurrency so a
+        # long AP list does not flood the D-Bus bus.
+        sem = asyncio.Semaphore(8)
+
+        async def read_ap(ap_path: str, ap_iface: str | None, ap_active: str | None) -> dict | None:
             try:
-                rc_ssid, ssid_val = await busctl(
-                    "get-property",
+                rc_all, all_val = await busctl(
+                    "call",
                     "org.freedesktop.NetworkManager",
                     ap_path,
+                    "org.freedesktop.DBus.Properties",
+                    "GetAll",
+                    "s",
                     "org.freedesktop.NetworkManager.AccessPoint",
-                    "Ssid",
                 )
-                if rc_ssid != 0:
-                    continue
-                ssid_data = _get_data(ssid_val)
-                if isinstance(ssid_data, list):
-                    try:
-                        ssid = bytes([int(b) for b in ssid_data]).decode("utf-8", errors="replace")
-                    except Exception:
-                        continue
-                else:
-                    continue
+                if rc_all != 0 or all_val is None:
+                    return None
+                props_list = _get_data(all_val)
+                if not isinstance(props_list, list) or not props_list:
+                    return None
+                props = props_list[0]
+                if not isinstance(props, dict):
+                    return None
+                ssid_val = _unwrap_variant(props.get("Ssid"))
+                if not isinstance(ssid_val, list):
+                    return None
+                try:
+                    ssid = bytes([int(b) for b in ssid_val]).decode("utf-8", errors="replace")
+                except Exception:
+                    return None
                 if not ssid:
-                    continue
-                rc_str, str_val = await busctl(
-                    "get-property",
-                    "org.freedesktop.NetworkManager",
-                    ap_path,
-                    "org.freedesktop.NetworkManager.AccessPoint",
-                    "Strength",
-                )
-                if rc_str != 0:
-                    continue
-                strength = _get_data(str_val)
-                rc_freq, freq_val = await busctl(
-                    "get-property",
-                    "org.freedesktop.NetworkManager",
-                    ap_path,
-                    "org.freedesktop.NetworkManager.AccessPoint",
-                    "Frequency",
-                )
-                if rc_freq != 0:
-                    continue
-                frequency = _get_data(freq_val)
-                rc_wpa, wpa_val = await busctl(
-                    "get-property",
-                    "org.freedesktop.NetworkManager",
-                    ap_path,
-                    "org.freedesktop.NetworkManager.AccessPoint",
-                    "WpaFlags",
-                )
-                rc_rsn, rsn_val = await busctl(
-                    "get-property",
-                    "org.freedesktop.NetworkManager",
-                    ap_path,
-                    "org.freedesktop.NetworkManager.AccessPoint",
-                    "RsnFlags",
-                )
-                wpa_flags = _get_data(wpa_val) if rc_wpa == 0 else 0
-                rsn_flags = _get_data(rsn_val) if rc_rsn == 0 else 0
+                    return None
+                strength = _unwrap_variant(props.get("Strength"))
+                frequency = _unwrap_variant(props.get("Frequency"))
+                wpa_flags = _unwrap_variant(props.get("WpaFlags"))
+                rsn_flags = _unwrap_variant(props.get("RsnFlags"))
                 try:
                     wpa_flags_i = int(wpa_flags) if wpa_flags is not None else 0
                 except Exception:
@@ -265,7 +245,7 @@ async def get_wifi():
                 except Exception:
                     rsn_flags_i = 0
                 secured = (wpa_flags_i != 0) or (rsn_flags_i != 0)
-                active = active_ap == ap_path if active_ap is not None else False
+                active = ap_active == ap_path if ap_active is not None else False
                 try:
                     strength_i = int(strength) if strength is not None else 0
                 except Exception:
@@ -274,18 +254,24 @@ async def get_wifi():
                     frequency_i = int(frequency) if frequency is not None else 0
                 except Exception:
                     frequency_i = 0
-                aps_out.append(
-                    {
-                        "ssid": ssid,
-                        "strength": strength_i,
-                        "frequency": frequency_i,
-                        "secured": secured,
-                        "active": active,
-                        "iface": iface,
-                    }
-                )
+                return {
+                    "ssid": ssid,
+                    "strength": strength_i,
+                    "frequency": frequency_i,
+                    "secured": secured,
+                    "active": active,
+                    "iface": ap_iface,
+                }
             except Exception:
-                continue
+                return None
+
+        async def bounded(ap_path: str) -> dict | None:
+            async with sem:
+                return await read_ap(ap_path, iface, active_ap)
+
+        for result in await asyncio.gather(*(bounded(p) for p in ap_paths)):
+            if result is not None:
+                aps_out.append(result)
 
     aps_out.sort(key=lambda x: x.get("strength", 0), reverse=True)
     return {

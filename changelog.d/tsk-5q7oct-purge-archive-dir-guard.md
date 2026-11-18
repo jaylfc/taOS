@@ -1,0 +1,2 @@
+### Fixed
+- `purge_archived` and `restore_archived` in `tinyagentos/routes/agent_archive.py` now validate `archive_dir` against path traversal and escape attempts. A new helper `_safe_archive_base` ensures the resolved archive path is strictly inside `data_dir/archive/` before any filesystem operations. Entries with missing, empty, absolute, or `..`-containing `archive_dir` values skip the archive-dir cleanup step (purge) or chat-export read (restore) while the rest of the operation proceeds.

@@ -336,6 +336,7 @@ async def peer_handshake(body: PeerEnvelope, request: Request):
         outbound_token=their_token,
         endpoints=endpoints,
         restore_revoked_at=restore_revoked_at,
+        keep_existing_endpoints=True,
     )
     if not written:
         # add_contact above commits the contact as active; a revoke that lands

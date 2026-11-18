@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { formatSize, parseChoice, pickOnDeviceModel, waitForDownload, type CatalogModel } from "./model";
+import { HopError } from "./agent";
 
 const gguf = (id: string, size_mb: number, compatibility = "green", extra = {}) => ({
   id,
@@ -135,7 +136,9 @@ describe("waitForDownload", () => {
       urls.push(url);
       return new Response(JSON.stringify({}), { status: 500 });
     }));
-    await expect(waitForDownload(choice, () => {}, 0)).rejects.toThrow(/Couldn't check/);
+    const promise = waitForDownload(choice, () => {}, 0);
+    await expect(promise).rejects.toThrow(HopError);
+    await expect(promise).rejects.toThrow(/Couldn't check the M download. Try again/);
     expect(fetch).toHaveBeenCalledTimes(20);
   });
 
@@ -145,7 +148,9 @@ describe("waitForDownload", () => {
       urls.push(url);
       throw new Error("network error");
     }));
-    await expect(waitForDownload(choice, () => {}, 0)).rejects.toThrow(/Couldn't check/);
+    const promise = waitForDownload(choice, () => {}, 0);
+    await expect(promise).rejects.toThrow(HopError);
+    await expect(promise).rejects.toThrow(/Couldn't check the M download. Try again/);
     expect(fetch).toHaveBeenCalledTimes(20);
   });
 
