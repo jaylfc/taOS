@@ -7,10 +7,11 @@ served by the same listing, download and delete code, and the same path
 traversal guard, as the workspace locations. The tests below assert that parity
 against ``/api/workspace/files`` wherever the card asks for it.
 """
-import io
-
 import pytest
+import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+
+from tinyagentos.routes.user_workspace import USER_WORKSPACE_DIR_NAME
 
 
 def _photos_dir(monkeypatch, tmp_path):
@@ -18,6 +19,21 @@ def _photos_dir(monkeypatch, tmp_path):
     base = tmp_path / "Pictures"
     monkeypatch.setenv("TAOS_PHOTOS_DIR", str(base))
     return base
+
+
+@pytest_asyncio.fixture
+async def workspace_root(client, tmp_path):
+    """The user workspace root, created through the app's own path.
+
+    The workspace location resolves and creates its root on first request, so a
+    single listing initialises it. This keeps the traversal test focused on the
+    guard rather than on an incidental upload.
+    """
+    root = tmp_path / USER_WORKSPACE_DIR_NAME
+    resp = await client.get("/api/workspace/files")
+    assert resp.status_code == 200
+    assert root.is_dir()
+    return root
 
 
 class TestPhotosLocationRoutes:
@@ -89,23 +105,17 @@ class TestPhotosLocationRoutes:
 
     @pytest.mark.asyncio
     async def test_traversal_refused_as_in_the_workspace_location(
-        self, client, monkeypatch, tmp_path
+        self, client, workspace_root, monkeypatch, tmp_path
     ):
         """``..``, an absolute path and a symlink out of the base are refused with
         the SAME status the user workspace location refuses them with."""
         base = _photos_dir(monkeypatch, tmp_path)
         base.mkdir()
-        # The user workspace root is created by its first request.
-        await client.post(
-            "/api/workspace/files/upload",
-            files={"file": ("anchor.txt", io.BytesIO(b"anchor"), "text/plain")},
-        )
-        workspace = tmp_path / "workspace"
         outside = tmp_path / "outside.txt"
         outside.write_bytes(b"outside")
         # A symlink that resolves outside the base, in both locations.
         (base / "escape.txt").symlink_to(outside)
-        (workspace / "escape.txt").symlink_to(outside)
+        (workspace_root / "escape.txt").symlink_to(outside)
 
         spellings = [
             ("dotdot_query", lambda loc: f"/api/{loc}/files?path=../../etc"),

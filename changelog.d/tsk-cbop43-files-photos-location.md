@@ -6,6 +6,7 @@
   shared or deleted from Files. Photos appears in the Files sidebar only when
   that folder exists, and is served by the same listing, thumbnail, download
   and delete paths as the workspace locations: browsing, opening and deleting
-  work, while upload, rename and new folder are not offered for it. The base
-  directory is overridable with the `server.photos_dir` config key or the
+  work, while upload, rename, move and new folder are not offered (Files shows
+  no mutation controls for the Photos location). The base directory is
+  overridable with the `server.photos_dir` config key or the
   `TAOS_PHOTOS_DIR` environment variable.
