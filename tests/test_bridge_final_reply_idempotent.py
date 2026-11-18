@@ -313,7 +313,15 @@ async def test_recovery_path_broadcasts_and_dispatches():
     """On recovery, the message_edit and message_state broadcasts must fire,
     and router.dispatch must be called (if router is set)."""
     ch_store = _FakeChannelStore(fail_update_after=0)  # fail on first call
-    reg, msg_store, ch_store, hub, tr = _make_registry(ch_store=ch_store)
+    
+    # Create a mock router
+    router_calls = []
+    class _FakeRouter:
+        async def dispatch(self, msg, channel):
+            router_calls.append((msg, channel))
+    
+    router = _FakeRouter()
+    reg, msg_store, ch_store, hub, tr = _make_registry(ch_store=ch_store, router=router)
 
     body = {
         "kind": "final",
@@ -340,6 +348,12 @@ async def test_recovery_path_broadcasts_and_dispatches():
     states = [b for _, b in hub.broadcasts if b["type"] == "message_state"]
     assert len(states) == 1, f"Expected 1 message_state, got {len(states)}"
     assert states[0]["state"] == "complete"
+
+    # Router dispatch should have been called exactly once
+    assert len(router_calls) == 1, f"Expected 1 router.dispatch call, got {len(router_calls)}"
+    dispatched_msg, dispatched_channel = router_calls[0]
+    assert dispatched_msg["content"] == "hello"
+    assert dispatched_channel["id"] == "ch1"
 
 
 @pytest.mark.asyncio

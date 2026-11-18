@@ -78,3 +78,62 @@ async def test_extend_content_blocks_respects_cap_and_keeps_existing(store):
     assert stored[:49] == existing_blocks
     # The 50th should be the first new block (since we can only add one)
     assert stored[49] == new_blocks[0]
+
+
+@pytest.mark.asyncio
+async def test_find_message_by_metadata_with_author_filters(store):
+    """find_message_by_metadata must respect author_id and author_type filters."""
+    ch1 = "ch1"
+    # Create messages from different authors in the same channel
+    msg1 = await store.send_message(
+        channel_id=ch1,
+        author_id="agent1",
+        author_type="agent",
+        content="from agent1",
+        metadata={"openclaw_msg_id": "reply-1"},
+    )
+    msg2 = await store.send_message(
+        channel_id=ch1,
+        author_id="agent2",
+        author_type="agent",
+        content="from agent2",
+        metadata={"openclaw_msg_id": "reply-1"},  # same reply_id, different author
+    )
+    msg3 = await store.send_message(
+        channel_id=ch1,
+        author_id="user1",
+        author_type="user",
+        content="from user",
+        metadata={"openclaw_msg_id": "reply-1"},  # same reply_id, different author_type
+    )
+
+    # Lookup with agent1's author_id should return msg1
+    found = await store.find_message_by_metadata(ch1, "openclaw_msg_id", "reply-1", author_id="agent1", author_type="agent")
+    assert found is not None
+    assert found["id"] == msg1["id"]
+    assert found["author_id"] == "agent1"
+
+    # Lookup with agent2's author_id should return msg2
+    found = await store.find_message_by_metadata(ch1, "openclaw_msg_id", "reply-1", author_id="agent2", author_type="agent")
+    assert found is not None
+    assert found["id"] == msg2["id"]
+    assert found["author_id"] == "agent2"
+
+    # Lookup with user's author_id should return msg3
+    found = await store.find_message_by_metadata(ch1, "openclaw_msg_id", "reply-1", author_id="user1", author_type="user")
+    assert found is not None
+    assert found["id"] == msg3["id"]
+    assert found["author_type"] == "user"
+
+    # Lookup with wrong author_id should return None
+    found = await store.find_message_by_metadata(ch1, "openclaw_msg_id", "reply-1", author_id="agent1", author_type="user")
+    assert found is None
+
+    # Lookup without author filters should return the first match (order not guaranteed, but should be one of them)
+    found = await store.find_message_by_metadata(ch1, "openclaw_msg_id", "reply-1")
+    assert found is not None
+    assert found["id"] in (msg1["id"], msg2["id"], msg3["id"])
+
+    # Lookup with non-existent key should return None
+    found = await store.find_message_by_metadata(ch1, "openclaw_msg_id", "reply-999", author_id="agent1", author_type="agent")
+    assert found is None

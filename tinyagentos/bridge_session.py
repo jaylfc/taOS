@@ -497,57 +497,62 @@ class BridgeSessionRegistry:
             # --- End: content_blocks handling ---
 
             if existing_msg is not None:
-                # Already committed; finalize without creating another row.
-                existing_id = existing_msg.get("id")
-                if existing_id and self._chat_messages:
-                    await self._chat_messages.edit_message(existing_id, final_content)
-                    await self._chat_messages.update_state(existing_id, "complete")
-                    if validated_blocks is not None:
-                        await self._chat_messages.extend_content_blocks(existing_id, validated_blocks)
-                    existing_meta = existing_msg.get("metadata") or {}
-                    if not isinstance(existing_meta, dict):
-                        existing_meta = {}
-                    existing_meta["openclaw_msg_id"] = reply_id or msg_id
-                    existing_meta.setdefault("trace_id", trace_id)
-                    setter = getattr(self._chat_messages, "set_metadata", None)
-                    if setter is not None:
-                        await setter(existing_id, existing_meta)
-                session.pending_hops.pop(trace_id, None)
-                # Also clear any pending_msg_id for this trace since we recovered
-                session._pending_msg_ids.pop(trace_id, None)
-                if self._chat_channels and channel_id:
-                    await self._chat_channels.update_last_message_at(channel_id)
-                if reply_id is not None:
-                    session.mark_final_id_seen(reply_id)
-                # Broadcast on recovery so clients/agents see the reply
-                if self._chat_hub and existing_id:
-                    # Broadcast message_edit with content and optionally content_blocks
-                    broadcast_payload = {
-                        "type": "message_edit",
-                        "seq": self._chat_hub.next_seq(),
-                        "message_id": existing_id,
-                        "content": final_content,
-                        "edited_at": time.time(),
-                    }
-                    if validated_blocks is not None:
-                        broadcast_payload["content_blocks"] = validated_blocks
-                    await self._chat_hub.broadcast(channel_id, broadcast_payload)
-                    await self._chat_hub.broadcast(channel_id, {
-                        "type": "message_state",
-                        "seq": self._chat_hub.next_seq(),
-                        "message_id": existing_id,
-                        "state": "complete",
-                    })
-                # Re-dispatch so other agents in the channel see this reply.
-                router = self._router
-                if router is not None:
-                    try:
-                        channel = await self._chat_channels.get_channel(channel_id)
-                        if channel is not None:
-                            router.dispatch(existing_msg, channel)
-                    except Exception:
-                        logger.warning("re-dispatch on agent reply recovery failed", exc_info=True)
-                return
+                # If the found message is a streaming placeholder, it's not a committed
+                # final message - let the normal streaming finalization path handle it.
+                if existing_msg.get("state") == "streaming":
+                    existing_msg = None
+                else:
+                    # Already committed; finalize without creating another row.
+                    existing_id = existing_msg.get("id")
+                    if existing_id and self._chat_messages:
+                        await self._chat_messages.edit_message(existing_id, final_content)
+                        await self._chat_messages.update_state(existing_id, "complete")
+                        if validated_blocks is not None:
+                            await self._chat_messages.extend_content_blocks(existing_id, validated_blocks)
+                        existing_meta = existing_msg.get("metadata") or {}
+                        if not isinstance(existing_meta, dict):
+                            existing_meta = {}
+                        existing_meta["openclaw_msg_id"] = reply_id or msg_id
+                        existing_meta.setdefault("trace_id", trace_id)
+                        setter = getattr(self._chat_messages, "set_metadata", None)
+                        if setter is not None:
+                            await setter(existing_id, existing_meta)
+                    session.pending_hops.pop(trace_id, None)
+                    # Also clear any pending_msg_id for this trace since we recovered
+                    session._pending_msg_ids.pop(trace_id, None)
+                    if self._chat_channels and channel_id:
+                        await self._chat_channels.update_last_message_at(channel_id)
+                    if reply_id is not None:
+                        session.mark_final_id_seen(reply_id)
+                    # Broadcast on recovery so clients/agents see the reply.
+                    if self._chat_hub and existing_id:
+                        # Broadcast message_edit with content and optionally content_blocks
+                        broadcast_payload = {
+                            "type": "message_edit",
+                            "seq": self._chat_hub.next_seq(),
+                            "message_id": existing_id,
+                            "content": final_content,
+                            "edited_at": time.time(),
+                        }
+                        if validated_blocks is not None:
+                            broadcast_payload["content_blocks"] = validated_blocks
+                        await self._chat_hub.broadcast(channel_id, broadcast_payload)
+                        await self._chat_hub.broadcast(channel_id, {
+                            "type": "message_state",
+                            "seq": self._chat_hub.next_seq(),
+                            "message_id": existing_id,
+                            "state": "complete",
+                        })
+                    # Re-dispatch so other agents in the channel see this reply.
+                    router = self._router
+                    if router is not None:
+                        try:
+                            channel = await self._chat_channels.get_channel(channel_id)
+                            if channel is not None:
+                                await router.dispatch(existing_msg, channel)
+                        except Exception:
+                            logger.warning("re-dispatch on agent reply recovery failed", exc_info=True)
+                    return
 
             # Write trace event.
             if self._trace_registry:
