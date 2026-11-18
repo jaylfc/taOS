@@ -2591,8 +2591,8 @@ class TestDeferBindingApproval:
 
     @pytest.mark.asyncio
     async def test_two_deferred_grants_inherit_earliest_expiry(self, tmp_path):
-        """Two live deferred grants: the new project grant inherits the EARLIEST
-        expiry, not the oldest grant's (which here is the later one)."""
+        """Two live deferred PROJECT grants: the new project grant inherits the
+        EARLIEST expiry, not the oldest grant's (which here is the later one)."""
         from datetime import datetime, timedelta, timezone
         from tinyagentos.agent_grants_store import AgentGrantsStore
         from tinyagentos.routes.agent_auth_requests import add_agent_to_project
@@ -2607,8 +2607,9 @@ class TestDeferBindingApproval:
         try:
             # OLDER grant (added first) expires LATER; NEWER grant expires sooner.
             # Distinct scopes: UNIQUE(canonical_id, scope, project_id).
+            # Both are PROJECT scopes so the deferred-grant logic applies.
             await grants.add_grant("agent-e", "project_tasks", project_id=None, expires_at=in_2_days)
-            await grants.add_grant("agent-e", "memory_read", project_id=None, expires_at=in_1_hour)
+            await grants.add_grant("agent-e", "project_tasks_create", project_id=None, expires_at=in_1_hour)
             request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
                 agent_grants=grants,
                 relationships=SimpleNamespace(set_permission=AsyncMock()),
@@ -2630,8 +2631,8 @@ class TestDeferBindingApproval:
 
     @pytest.mark.asyncio
     async def test_expired_old_deferred_grant_does_not_block_live_one(self, tmp_path):
-        """An expired OLD deferred grant must not refuse the binding while a
-        NEWER deferred grant is still live."""
+        """An expired OLD deferred PROJECT grant must not refuse the binding
+        while a NEWER deferred PROJECT grant is still live."""
         from datetime import datetime, timedelta, timezone
         from tinyagentos.agent_grants_store import AgentGrantsStore
         from tinyagentos.routes.agent_auth_requests import add_agent_to_project
@@ -2645,7 +2646,7 @@ class TestDeferBindingApproval:
         await grants.init()
         try:
             await grants.add_grant("agent-x", "project_tasks", project_id=None, expires_at=expired)
-            await grants.add_grant("agent-x", "memory_read", project_id=None, expires_at=in_1_hour)
+            await grants.add_grant("agent-x", "project_tasks_create", project_id=None, expires_at=in_1_hour)
             request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
                 agent_grants=grants,
                 relationships=SimpleNamespace(set_permission=AsyncMock()),
