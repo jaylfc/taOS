@@ -166,7 +166,7 @@ def test_greeter_uses_display_gpu_and_cage(box):
     assert run(GREETER, box, TAOS_DISPLAY_NODE=str(link)).returncode == 0
     assert Path(f"{box['log']}.wlr").read_text().strip() == str(real)
     args = Path(f"{box['log']}.args").read_text()
-    assert args.startswith("-s -- gtkgreet") and "/etc/taos/greetd/gtkgreet.css" in args
+    assert args.startswith("-s -d -- gtkgreet") and "/etc/taos/greetd/gtkgreet.css" in args
     assert "-l" not in args.split()
     r = run(GREETER, box)
     assert r.returncode == 0 and Path(f"{box['log']}.wlr").read_text().strip() == ""
