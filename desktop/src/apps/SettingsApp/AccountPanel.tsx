@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, type FormEvent } from "react";
-import { LogOut, AlertCircle, ShieldCheck, Plane, UserCircle, AtSign, Check, X, Globe, Loader2, KeyRound } from "lucide-react";
-import { Button, Card, Input, Label } from "@/components/ui";
+import { LogOut, AlertCircle, Plane, UserCircle, AtSign, Loader2, KeyRound } from "lucide-react";
+import { Button, Card, Input, Label, Tabs, TabsList, TabsTrigger } from "@/components/ui";
 import { withCsrf } from "@/lib/csrf";
 import {
   fetchAccount,
@@ -8,14 +8,9 @@ import {
   register,
   logout,
   isAuthError,
-  checkSubdomain,
-  claimSubdomain,
-  releaseSubdomain,
   type AccountState,
   type Account,
   type TaosgoStatus,
-  type SubdomainClaim,
-  type SubdomainCheck,
 } from "@/lib/account-client";
 
 const TAOSGO_STATUS: Record<TaosgoStatus, { label: string; tone: string }> = {
@@ -210,11 +205,11 @@ function SignInMethodCard() {
           {hasPin ? "On" : "Off"}
         </span>
       </div>
-      <p className="text-xs text-shell-text-tertiary mb-3">
-        Sign in with {PIN_MIN}-{PIN_MAX} digits on this device's own screen — the
-        quickest way in on a touchscreen with no keyboard. It works only on that
-        screen; over the network your password is still required.
-      </p>
+        <p className="text-xs text-shell-text-tertiary mb-3">
+          Sign in with {PIN_MIN}-{PIN_MAX} digits on this device's own screen, the
+          quickest way in on a touchscreen with no keyboard. It works only on that
+          screen; over the network your password is still required.
+        </p>
 
       {/* Announced to screen readers without stealing focus. */}
       <p aria-live="polite" className="sr-only">{status}</p>
@@ -375,182 +370,27 @@ function UsernameCard({ account }: { account: Account }) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Subdomains card (taOSgo, paid)                                    */
-/* ------------------------------------------------------------------ */
-
-const SUBDOMAIN_STATUS: Record<SubdomainClaim["status"], { label: string; tone: string }> = {
-  active: { label: "Active", tone: "text-emerald-400" },
-  grace: { label: "Grace", tone: "text-amber-400" },
-  released: { label: "Released", tone: "text-shell-text-tertiary" },
-};
-
-function SubdomainsCard({ account }: { account: Account }) {
-  const subscribed =
-    account.taosgo.status === "trialing" || account.taosgo.status === "active";
-  const [claims, setClaims] = useState<SubdomainClaim[]>(account.subdomains ?? []);
-  const [name, setName] = useState("");
-  const [check, setCheck] = useState<SubdomainCheck | null>(null);
-  const [checking, setChecking] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [releasing, setReleasing] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const mounted = useRef(true);
-  useEffect(() => () => { mounted.current = false; }, []);
-
-  // Inline availability feedback: re-check on every keystroke once subscribed.
-  useEffect(() => {
-    if (!subscribed) { setCheck(null); setChecking(false); return; }
-    const trimmed = name.trim();
-    if (!trimmed) { setCheck(null); setChecking(false); return; }
-    let cancelled = false;
-    setChecking(true);
-    void checkSubdomain(trimmed).then((res) => {
-      if (cancelled || !mounted.current) return;
-      setChecking(false);
-      setCheck(isAuthError(res) ? null : res);
-    });
-    return () => { cancelled = true; };
-  }, [name, subscribed]);
-
-  const claim = async () => {
-    const trimmed = name.trim();
-    if (!trimmed || !subscribed || busy) return;
-    setBusy(true);
-    setError(null);
-    const res = await claimSubdomain(trimmed);
-    if (!mounted.current) return;
-    setBusy(false);
-    if (isAuthError(res)) { setError(res.message); return; }
-    setClaims((prev) => [...prev, res]);
-    setName("");
-    setCheck(null);
-  };
-
-  const release = async (sub: SubdomainClaim) => {
-    if (releasing || busy) return;
-    setReleasing(sub.name);
-    setError(null);
-    const res = await releaseSubdomain(sub.name);
-    if (!mounted.current) return;
-    setReleasing(null);
-    if (isAuthError(res)) { setError(res.message); return; }
-    setClaims((prev) => prev.filter((s) => s.name !== sub.name));
-  };
-
-  return (
-    <Card className="p-4">
-      <div className="flex items-center gap-2 mb-2">
-        <Globe size={16} className="text-sky-400" />
-        <h3 className="text-sm font-medium">Your subdomains</h3>
-      </div>
-      <p className="text-xs text-shell-text-tertiary mb-3">
-        Public <code>*.taos.my</code> sites you publish to. A taOSgo perk.
-      </p>
-
-      {claims.length > 0 && (
-        <ul className="space-y-2 mb-3">
-          {claims.map((sub) => {
-            const meta = SUBDOMAIN_STATUS[sub.status];
-            return (
-              <li
-                key={sub.id}
-                className="flex items-center justify-between gap-3 rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2"
-              >
-                <div className="min-w-0">
-                  <p className="text-sm font-medium truncate">{sub.name}.taos.my</p>
-                  <span className={`text-xs font-medium ${meta.tone}`}>{meta.label}</span>
-                </div>
-                {sub.status !== "released" && (
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    disabled={releasing === sub.name}
-                    onClick={() => void release(sub)}
-                  >
-                    {releasing === sub.name ? "Releasing..." : "Release"}
-                  </Button>
-                )}
-              </li>
-            );
-          })}
-        </ul>
-      )}
-
-      <div className="space-y-2">
-        <div>
-          <Label htmlFor="subdomain-name" className="text-xs text-shell-text-secondary">
-            Claim a subdomain
-          </Label>
-          <div className="flex items-center gap-2 mt-1">
-            <Input
-              id="subdomain-name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") void claim(); }}
-              placeholder="yourname"
-              disabled={!subscribed}
-              className="mt-0"
-              aria-label="Subdomain name"
-            />
-            <span className="text-xs text-shell-text-tertiary shrink-0">.taos.my</span>
-            <Button
-              size="sm"
-              onClick={() => void claim()}
-              disabled={!subscribed || !name.trim() || busy || checking}
-            >
-              {busy ? "Claiming..." : "Claim"}
-            </Button>
-          </div>
-          {!subscribed && (
-            <p className="text-xs text-shell-text-tertiary mt-1.5 flex items-center gap-1.5">
-              <ShieldCheck size={12} /> Claiming a subdomain is part of taOSgo. Start your free trial
-              to publish public sites.
-            </p>
-          )}
-          {checking && subscribed && (
-            <p className="text-xs text-shell-text-tertiary mt-1.5 flex items-center gap-1.5">
-              <Loader2 size={12} className="animate-spin" /> Checking availability...
-            </p>
-          )}
-          {!checking && subscribed && check && check.available && (
-            <p className="text-xs text-emerald-400 mt-1.5 flex items-center gap-1.5">
-              <Check size={12} /> Available
-            </p>
-          )}
-          {!checking && subscribed && check && !check.available && (
-            <p className="text-xs text-amber-400 mt-1.5 flex items-center gap-1.5">
-              <X size={12} /> {check.reason ? `Unavailable (${check.reason})` : "Unavailable"}
-            </p>
-          )}
-        </div>
-        {error && (
-          <p className="text-xs text-amber-400 flex items-center gap-1.5" role="alert">
-            <AlertCircle size={12} /> {error}
-          </p>
-        )}
-      </div>
-    </Card>
-  );
-}
-
-/* ------------------------------------------------------------------ */
 /*  Signed-in view                                                    */
 /* ------------------------------------------------------------------ */
 
 function SignedIn({ account, onSignOut }: { account: Account; onSignOut: () => void }) {
+  const username = account.username;
+  const localPart = account.email.split("@")[0];
+  const name = username ?? localPart ?? "taOS account";
+
   return (
     <div className="space-y-3">
       <Card className="p-4 flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-sm font-medium truncate">{account.email}</p>
-          <p className="text-xs text-shell-text-tertiary mt-0.5">Signed in to your taOS account</p>
+          <p className="text-sm font-medium truncate">{name}</p>
+          {username && <p className="text-xs text-shell-text-secondary mt-0.5 truncate">@{username}</p>}
+          <p className="text-xs text-shell-text-tertiary mt-0.5 truncate">{account.email}</p>
         </div>
-        <Button variant="outline" size="sm" onClick={onSignOut} aria-label="Sign out">
-          <LogOut size={14} /> Sign out
+        <Button variant="outline" size="sm" onClick={onSignOut} aria-label="Disconnect">
+          <LogOut size={14} /> Disconnect
         </Button>
       </Card>
       <TaosgoCard account={account} />
-      <SubdomainsCard account={account} />
       <UsernameCard account={account} />
     </div>
   );
@@ -582,24 +422,12 @@ function SignedOut({ onSignedIn }: { onSignedIn: (account: Account) => void }) {
 
   return (
     <Card className="p-4">
-      <div className="flex gap-2 mb-4" role="group" aria-label="Account action">
-        <Button
-          variant={mode === "signin" ? "secondary" : "outline"}
-          size="sm"
-          onClick={() => { setMode("signin"); setError(null); }}
-          aria-pressed={mode === "signin"}
-        >
-          Sign in
-        </Button>
-        <Button
-          variant={mode === "register" ? "secondary" : "outline"}
-          size="sm"
-          onClick={() => { setMode("register"); setError(null); }}
-          aria-pressed={mode === "register"}
-        >
-          Create account
-        </Button>
-      </div>
+      <Tabs value={mode} onValueChange={(raw) => { setMode(raw as "signin" | "register"); setError(null); }}>
+        <TabsList className="flex gap-2 mb-4" aria-label="Account action">
+          <TabsTrigger value="signin">Sign in</TabsTrigger>
+          <TabsTrigger value="register">Create account</TabsTrigger>
+        </TabsList>
+      </Tabs>
 
       <form onSubmit={submit} className="space-y-3">
         <div>
@@ -642,8 +470,7 @@ function SignedOut({ onSignedIn }: { onSignedIn: (account: Account) => void }) {
       </form>
 
       <p className="text-xs text-shell-text-tertiary mt-3 flex items-center gap-1.5">
-        <ShieldCheck size={12} /> Your taOS account unlocks taOSgo, app sharing, and your reserved
-        taOS username.
+        Connecting lets your devices share one account.
       </p>
     </Card>
   );
@@ -674,12 +501,15 @@ export function AccountSection() {
     <section aria-label="Account">
       <h2 className="text-lg font-semibold mb-2">Account</h2>
 
+      {/* This device */}
+      <h3 className="text-sm font-semibold text-shell-text-secondary uppercase tracking-wider mb-3">This device</h3>
       <LocalAccountCard />
       <SignInMethodCard />
 
-      <p className="text-sm text-shell-text-tertiary mb-5">
-        Your taOS account is your free identity across taOS. taOSgo adds secure remote access and
-        public <code>*.taos.my</code> subdomains you can publish to.
+      {/* taOS account */}
+      <h3 className="text-sm font-semibold text-shell-text-secondary uppercase tracking-wider mb-3">taOS account</h3>
+      <p className="text-xs text-shell-text-tertiary mb-5">
+        Your taOS account is your identity across your taOS devices. taOSgo adds secure access from outside your home network.
       </p>
 
       {state.kind === "loading" && (
@@ -700,7 +530,10 @@ export function AccountSection() {
       )}
 
       {state.kind === "signed-out" && (
-        <SignedOut onSignedIn={(account) => setState({ kind: "signed-in", account })} />
+        <>
+          <p className="text-sm font-medium mb-3">Not connected</p>
+          <SignedOut onSignedIn={(account) => setState({ kind: "signed-in", account })} />
+        </>
       )}
 
       {state.kind === "signed-in" && (

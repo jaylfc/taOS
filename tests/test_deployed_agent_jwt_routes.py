@@ -106,15 +106,38 @@ async def test_openclaw_events_fenced(env):
 
 
 @pytest.mark.asyncio
+async def test_openclaw_bootstrap_cross_agent_403(env):
+    resp = await env.get("/api/openclaw/bootstrap?agent=beta", headers=_auth(env, "alpha"))
+    assert resp.status_code == 403
+    assert "agent does not match credential" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_openclaw_reply_cross_agent_403(env):
+    resp = await env.post(
+        "/api/openclaw/sessions/beta/reply",
+        headers=_auth(env, "alpha"),
+        json={"kind": "final", "content": "x"},
+    )
+    assert resp.status_code == 403
+    assert "agent does not match credential" in resp.text
+
+
+@pytest.mark.asyncio
 async def test_skill_exec_fenced_by_state_agent_name(env):
     resp = await env.get("/api/skill-exec/tools?agent_name=beta", headers=_auth(env, "alpha"))
     assert resp.status_code == 403
+    assert "agent_name does not match credential" in resp.text
 
 
 @pytest.mark.asyncio
 async def test_skill_exec_matching_agent_name_allowed(env):
     resp = await env.get("/api/skill-exec/tools?agent_name=alpha", headers=_auth(env, "alpha"))
     assert resp.status_code == 200
+    body = resp.json()
+    assert "tools" in body
+    for tool in body["tools"]:
+        assert tool.get("agent_name", "alpha") == "alpha"
 
 
 @pytest.mark.asyncio

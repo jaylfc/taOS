@@ -109,6 +109,31 @@ def test_agent_buddy_in_evaluate_all_no_error():
     assert "error" not in agent_buddy_results[0]
 
 
+def test_agent_buddy_in_evaluate_all_with_probe_replies():
+    """Test evaluate_all passes nonempty probe replies to agent-buddy adapter."""
+    from tinyagentos.orb.bridges import evaluate_all
+
+    probe_replies = [
+        {"hostname": "buddy-1", "address": "192.168.1.30"},
+        {"hostname": "buddy-2", "address": "10.0.0.7"},
+    ]
+
+    results = evaluate_all([], probe_replies)
+    agent_buddy_results = [r for r in results if r.get("bridge_id") == "agent-buddy"]
+    assert len(agent_buddy_results) == 1
+    result = agent_buddy_results[0]
+    assert "error" not in result
+    assert len(result["targets"]) == 2
+    assert result["targets"][0]["orb"] == "buddy-1"
+    assert result["targets"][0]["address"] == "192.168.1.30"
+    assert result["targets"][1]["orb"] == "buddy-2"
+    assert result["targets"][1]["address"] == "10.0.0.7"
+    assert (
+        result["instruction"]
+        == "Pair each Orb with the command shown, using the 8-digit code on its screen."
+    )
+
+
 def test_agent_buddy_constants():
     """Test agent_buddy module constants."""
     from tinyagentos.orb.bridges import agent_buddy

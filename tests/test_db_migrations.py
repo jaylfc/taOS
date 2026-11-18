@@ -289,6 +289,7 @@ class TestApplyWalPragmasAsync:
         db_path = str(tmp_path / "concurrent.db")
 
         setup_conn = await aiosqlite.connect(db_path)
+        await apply_wal_pragmas_async(setup_conn)
         await setup_conn.execute(
             "CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY)"
         )
@@ -299,7 +300,7 @@ class TestApplyWalPragmasAsync:
 
         async def writer1():
             conn = await aiosqlite.connect(db_path)
-            await conn.execute("PRAGMA busy_timeout = 5000")
+            await apply_wal_pragmas_async(conn)
             await conn.execute("BEGIN")
             await conn.execute("INSERT INTO items (id) VALUES (1)")
             ready.set()
@@ -312,7 +313,7 @@ class TestApplyWalPragmasAsync:
 
         async def writer2():
             conn = await aiosqlite.connect(db_path)
-            await conn.execute("PRAGMA busy_timeout = 5000")
+            await apply_wal_pragmas_async(conn)
             await ready.wait()
             await asyncio.sleep(0.1)
             start = time.time()

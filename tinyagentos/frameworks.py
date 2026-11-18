@@ -261,6 +261,15 @@ FRAMEWORKS: dict[str, dict] = {
             {"name": "help", "description": "Show Claude Code help"},
         ],
     },
+    "kilo": {
+        "id": "kilo",
+        "name": "Kilo",
+        "description": "Kilo CLI as the taOS Agent harness (kilo/kilo), signed in with a `kilo_api_key` secret stored in Secrets",
+        "verification_status": "experimental",
+        "slash_commands": [
+            {"name": "help", "description": "Show Kilo help"},
+        ],
+    },
     "shibaclaw": {
         "id": "shibaclaw",
         "name": "ShibaClaw",
