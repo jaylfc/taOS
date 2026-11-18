@@ -1,3 +1,5 @@
 ### Fixed
 
-- Keenable broker routes now pass validated dict instead of raw request body, fixing 500 errors on valid requests - see tinyagentos/routes/broker.py:178,190,224,228
+- Keenable broker routes now authenticate/authorize before validating request body, ensuring unauthenticated callers get 403 instead of 400 that reveals schema details
+- Added success-path tests for Keenable broker routes covering various authentication and authorization scenarios
+- Fixed trailing whitespace in validator functions
