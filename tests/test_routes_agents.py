@@ -2621,7 +2621,7 @@ class TestNameReservationReleaseFixes:
             record=AsyncMock(), query=AsyncMock(return_value=[{}])
         )
 
-        async def fake_register(*, framework, display_name, **kw):
+        async def fake_register_agent(*, framework, display_name, **kw):
             return {
                 "canonical_id": f"cid-{display_name}",
                 "framework": framework,
@@ -2629,7 +2629,7 @@ class TestNameReservationReleaseFixes:
             }
 
         mock_registry = MagicMock()
-        mock_registry.register = fake_register
+        mock_registry.register = AsyncMock(side_effect=fake_register_agent)
         app.state.agent_registry = mock_registry
 
         # The task card requires the register_agent mock to be awaited.
