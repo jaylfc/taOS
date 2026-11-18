@@ -42,18 +42,44 @@ class _FakeStore:
             current = self.messages[message_id].get("content_blocks") or []
             if not isinstance(current, list):
                 current = []
+
+        # Build a set of existing block identifiers for idempotency
+        # Use 'id' field if present, otherwise use the entire block as a JSON string
+        def block_key(b: dict) -> str:
+            if isinstance(b, dict) and "id" in b:
+                return f"id:{b['id']}"
+            return f"content:{json.dumps(b, sort_keys=True)}"
+
+        existing_keys = {block_key(b) for b in current}
+
+        # Filter new blocks to only add those not already present
+        to_add = []
+        for block in blocks:
+            key = block_key(block)
+            if key not in existing_keys:
+                to_add.append(block)
+                existing_keys.add(key)
+
+        # Determine how many new blocks we can add without exceeding cap
         available = cap - len(current)
         if available < 0:
             available = 0
-        to_add = blocks[:available]
+        to_add = to_add[:available]
+
         new_blocks = current + to_add
         if message_id in self.messages:
             self.messages[message_id]["content_blocks"] = new_blocks
         return new_blocks
 
-    async def find_message_by_metadata(self, channel_id: str, key: str, value: str) -> dict | None:
+    async def find_message_by_metadata(
+        self, channel_id: str, key: str, value: str, author_id: str | None = None, author_type: str | None = None
+    ) -> dict | None:
         for m in self.messages.values():
             if m.get("channel_id") != channel_id:
+                continue
+            if author_id is not None and m.get("author_id") != author_id:
+                continue
+            if author_type is not None and m.get("author_type") != author_type:
                 continue
             meta = m.get("metadata") or {}
             if meta.get(key) == value:
@@ -82,6 +108,12 @@ class _FakeChannelStore:
         self.last_message_at_calls.append(channel_id)
         if self._update_count > self._fail_update_after:
             raise RuntimeError("update_last_message_at boom")
+
+    async def get_channel(self, channel_id: str) -> dict | None:
+        for c in self._channels:
+            if c["id"] == channel_id:
+                return c
+        return None
 
 
 class _FakeHub:
@@ -115,7 +147,7 @@ class _FakeTraceRegistry:
         return self._store
 
 
-def _make_registry(ch_store=None, msg_store=None):
+def _make_registry(ch_store=None, msg_store=None, router=None):
     if ch_store is None:
         ch_store = _FakeChannelStore()
     if msg_store is None:
@@ -128,6 +160,8 @@ def _make_registry(ch_store=None, msg_store=None):
         chat_channels=ch_store,
         chat_hub=hub,
     )
+    if router is not None:
+        reg._router = router
     return reg, msg_store, ch_store, hub, tr
 
 
@@ -201,3 +235,219 @@ async def test_final_reply_send_message_raises_before_commit_retry_writes_once()
 
     assert len(msg_store.messages) == 1
     assert list(msg_store.messages.values())[0]["content"] == "hi"
+
+
+# --- NEW TESTS FOR THE BUGS ---
+
+@pytest.mark.asyncio
+async def test_two_agents_same_channel_same_final_id_create_separate_messages():
+    """Two agents in the same channel sending final replies with the same id
+    must create TWO separate messages, not edit each other's messages."""
+    ch_store = _FakeChannelStore(channels=[{"id": "ch1", "type": "group", "members": ["bot1", "bot2"]}])
+    reg, msg_store, ch_store, hub, tr = _make_registry(ch_store=ch_store)
+
+    body1 = {
+        "kind": "final",
+        "id": "reply-1",
+        "trace_id": "t1",
+        "content": "hello from bot1",
+        "channel_id": "ch1",
+    }
+    body2 = {
+        "kind": "final",
+        "id": "reply-1",  # same reply id
+        "trace_id": "t2",
+        "content": "hello from bot2",
+        "channel_id": "ch1",
+    }
+
+    await reg.record_reply("bot1", body1)
+    await reg.record_reply("bot2", body2)
+
+    # Should have TWO messages, one from each agent
+    assert len(msg_store.messages) == 2
+    contents = [m["content"] for m in msg_store.messages.values()]
+    assert "hello from bot1" in contents
+    assert "hello from bot2" in contents
+    # Each message should have correct author
+    authors = [m["author_id"] for m in msg_store.messages.values()]
+    assert authors.count("bot1") == 1
+    assert authors.count("bot2") == 1
+
+
+@pytest.mark.asyncio
+async def test_recovery_path_does_not_duplicate_content_blocks():
+    """On recovery, extend_content_blocks must not append blocks again if they
+    are already present (idempotent by block content or id)."""
+    ch_store = _FakeChannelStore(fail_update_after=0)  # fail on first call
+    reg, msg_store, ch_store, hub, tr = _make_registry(ch_store=ch_store)
+
+    body = {
+        "kind": "final",
+        "id": "reply-1",
+        "trace_id": "t1",
+        "content": "hello",
+        "channel_id": "ch1",
+        "content_blocks": [{"kind": "text", "text": "hello"}],
+    }
+
+    # First call fails during update_last_message_at (swallowed by record_reply)
+    await reg.record_reply("bot1", body)
+
+    # message was committed before the failure
+    assert len(msg_store.messages) == 1
+    stored = list(msg_store.messages.values())[0]
+    assert stored["content_blocks"] == [{"kind": "text", "text": "hello"}]
+
+    # retry with same reply id - should not duplicate blocks
+    ch_store._fail_update_after = 999
+    await reg.record_reply("bot1", body)
+
+    assert len(msg_store.messages) == 1
+    stored = list(msg_store.messages.values())[0]
+    assert stored["content_blocks"] == [{"kind": "text", "text": "hello"}], f"Got {stored['content_blocks']}"
+
+
+@pytest.mark.asyncio
+async def test_recovery_path_broadcasts_and_dispatches():
+    """On recovery, the message_edit and message_state broadcasts must fire,
+    and router.dispatch must be called (if router is set)."""
+    ch_store = _FakeChannelStore(fail_update_after=0)  # fail on first call
+    reg, msg_store, ch_store, hub, tr = _make_registry(ch_store=ch_store)
+
+    body = {
+        "kind": "final",
+        "id": "reply-1",
+        "trace_id": "t1",
+        "content": "hello",
+        "channel_id": "ch1",
+    }
+
+    # First call fails during update_last_message_at (swallowed by record_reply)
+    await reg.record_reply("bot1", body)
+
+    # retry with same reply id
+    ch_store._fail_update_after = 999
+    await reg.record_reply("bot1", body)
+
+    # Should have exactly one message_edit broadcast on recovery
+    edits = [b for _, b in hub.broadcasts if b["type"] == "message_edit"]
+    assert len(edits) == 1, f"Expected 1 message_edit, got {len(edits)}"
+    assert edits[0]["content"] == "hello"
+    assert edits[0]["message_id"] == list(msg_store.messages.keys())[0]
+
+    # Should have exactly one message_state broadcast (complete)
+    states = [b for _, b in hub.broadcasts if b["type"] == "message_state"]
+    assert len(states) == 1, f"Expected 1 message_state, got {len(states)}"
+    assert states[0]["state"] == "complete"
+
+
+@pytest.mark.asyncio
+async def test_streaming_placeholder_writes_reply_id_before_first_edit():
+    """Failure after first edit but before reply_id written should not cause
+    duplicate on retry. The reply_id must be written to the placeholder's
+    metadata BEFORE the first edit_message/update_state/extend_content_blocks."""
+    msg_store = _FakeStore()
+    orig_edit = msg_store.edit_message
+    calls = {"n": 0}
+
+    async def flaky_edit(message_id: str, content: str):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("edit failed")
+        return await orig_edit(message_id, content)
+
+    msg_store.edit_message = flaky_edit  # type: ignore[method-assign]
+    reg, msg_store, ch_store, hub, tr = _make_registry(msg_store=msg_store)
+
+    body = {
+        "kind": "delta",
+        "trace_id": "t1",
+        "content": "Hel",
+        "channel_id": "ch1",
+    }
+    await reg.record_reply("bot1", body)
+
+    body = {
+        "kind": "final",
+        "id": "reply-1",
+        "trace_id": "t1",
+        "content": "Hello",
+        "channel_id": "ch1",
+    }
+
+    # First final fails during edit (swallowed by record_reply)
+    await reg.record_reply("bot1", body)
+
+    # Message should exist (placeholder created during delta)
+    assert len(msg_store.messages) == 1
+    placeholder = list(msg_store.messages.values())[0]
+    assert placeholder["content"] == ""
+    assert placeholder["state"] == "streaming"
+    # The reply_id should be in metadata even though edit failed
+    assert placeholder.get("metadata", {}).get("openclaw_msg_id") == "reply-1"
+
+    # Retry - should recover the same message
+    calls["n"] = 0
+    msg_store.edit_message = orig_edit  # type: ignore[method-assign]
+    await reg.record_reply("bot1", body)
+
+    assert len(msg_store.messages) == 1
+    stored = list(msg_store.messages.values())[0]
+    assert stored["content"] == "Hello"
+    assert stored.get("state") == "complete"
+    assert stored.get("metadata", {}).get("openclaw_msg_id") == "reply-1"
+
+
+@pytest.mark.asyncio
+async def test_third_retry_no_broadcast_no_change():
+    """Third delivery of the same reply id should not broadcast again or change anything."""
+    ch_store = _FakeChannelStore(fail_update_after=0)
+    reg, msg_store, ch_store, hub, tr = _make_registry(ch_store=ch_store)
+
+    body = {
+        "kind": "final",
+        "id": "reply-1",
+        "trace_id": "t1",
+        "content": "hello",
+        "channel_id": "ch1",
+    }
+
+    # First call fails during update_last_message_at (swallowed by record_reply)
+    await reg.record_reply("bot1", body)
+
+    ch_store._fail_update_after = 999
+    await reg.record_reply("bot1", body)  # retry 1 - recovers and broadcasts
+
+    broadcast_count_after_retry1 = len(hub.broadcasts)
+
+    await reg.record_reply("bot1", body)  # retry 2 - should be no-op
+
+    broadcast_count_after_retry2 = len(hub.broadcasts)
+
+    assert len(msg_store.messages) == 1
+    assert broadcast_count_after_retry2 == broadcast_count_after_retry1, "Third retry should not broadcast"
+
+
+@pytest.mark.asyncio
+async def test_record_reply_drives_code_path_not_handle_reply_directly():
+    """Tests must drive through record_reply (which swallows exceptions), not _handle_reply directly.
+    The fix covers timeout retries (transport failures), not server errors, because
+    routes/openclaw.py calls record_reply which swallows exceptions and always returns 202."""
+    reg, msg_store, ch_store, hub, tr = _make_registry()
+
+    body = {
+        "kind": "final",
+        "id": "reply-1",
+        "trace_id": "t1",
+        "content": "hello",
+        "channel_id": "ch1",
+    }
+
+    # This should not raise - record_reply catches exceptions
+    await reg.record_reply("bot1", body)
+    assert len(msg_store.messages) == 1
+
+    # Broadcast should have fired
+    broadcasts = [b for _, b in hub.broadcasts if b["type"] == "message"]
+    assert len(broadcasts) == 1
