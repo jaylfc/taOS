@@ -512,6 +512,12 @@ def test_without_flock_uses_the_symlink_lock_fallback(env):
     for name in ("ln", "rm", "readlink", "sleep", "dirname", "sed", "cat", "mv", "mkdir"):
         (stub / name).write_text('#!/bin/sh\nexec /usr/bin/%s "$@"\n' % name)
         os.chmod(stub / name, 0o755)
+    # Dropping the directory that holds flock also drops python3 when they
+    # share it (/usr/bin on this runner), and resolve-theme reads theme.json
+    # with python3. Shim it from its resolved path so the test removes flock
+    # and nothing else, on any runner.
+    (stub / "python3").write_text('#!/bin/sh\nexec "%s" "$@"\n' % shutil.which("python3"))
+    os.chmod(stub / "python3", 0o755)
     keep = [d for d in os.environ["PATH"].split(":")
             if d and os.path.realpath(d) != flock_real]
     e2 = dict(e)
@@ -572,20 +578,54 @@ def test_without_flock_uses_the_symlink_lock_fallback(env):
 def _busybox_flock_stub(tmp, real_flock):
     """A PATH stub for a BusyBox-style flock: no -w (rejected with a usage
     line), everything else (the -n form the wrapper uses) is handed to the real
-    flock, so -n locks a real lock file against the inherited fd 9."""
+    flock, so -n locks a real lock file against the inherited fd 9. Only the
+    option arguments that come before the fd are examined (that is the whole
+    option position in `flock [-sxun] FD`), so a non-option argument can never
+    be read as -w, and a value attached to the flag (-w30) is rejected too."""
     stub = tmp / "flockstub"
     stub.mkdir()
     (stub / "flock").write_text(
         '#!/bin/sh\n'
         'for _a in "$@"; do\n'
-        '    if [ "$_a" = "-w" ]; then\n'
-        '        echo "Usage: flock [-sxun] fd | { file [-c] cmd ... }" >&2\n'
-        '        exit 1\n'
-        '    fi\n'
+        '    case "$_a" in\n'
+        '        --) break ;;\n'
+        '        -[a-z]*)\n'
+        '            case "$_a" in\n'
+        '                -w*)\n'
+        '                    echo "Usage: flock [-sxun] fd | { file [-c] cmd ... }" >&2\n'
+        '                    exit 1 ;;\n'
+        '            esac ;;\n'
+        '        *) break ;;\n'
+        '    esac\n'
         'done\n'
         'exec "%s" "$@"\n' % real_flock)
     os.chmod(stub / "flock", 0o755)
     return str(stub)
+
+
+def test_the_busybox_flock_stub_rejects_w_and_accepts_n(tmp_path):
+    """Control for the stub above: it rejects -w in both forms and passes the
+    -n form through to a real flock, so the tests that use it cannot pass on a
+    stub that simply succeeds."""
+    real = _real_flock_or_skip()
+    stub = _busybox_flock_stub(tmp_path, real)
+    env = dict(os.environ, PATH="%s:%s" % (stub, os.environ["PATH"]))
+    lock = tmp_path / "lock"
+    lock.write_text("")
+
+    def run(*args):
+        # fd 9 is the lock file, as the wrapper opens it.
+        return subprocess.run(["/bin/sh", "-c", 'exec 9>"%s"; flock %s 9' % (lock, " ".join(args))],
+                              env=env, capture_output=True, text=True)
+
+    for rejected in (["-w", "30"], ["-w30"]):
+        r = run(*rejected)
+        assert r.returncode == 1, (rejected, r.returncode, r.stderr)
+        assert "Usage:" in r.stderr, (rejected, r.stderr)
+    assert run("-n").returncode == 0
+    # Control: a flag the stub must not reject (-s, in BusyBox usage) is passed
+    # through to the real flock.
+    assert run("-s").returncode == 0
 
 
 def _real_flock_or_skip():
@@ -675,6 +715,49 @@ def test_a_lock_held_forever_makes_the_wrapper_give_up_after_bounded_tries(env):
         assert r.returncode != 0, (r.returncode, r.stderr)
         assert "giving up" in r.stderr and str(lock) in r.stderr, r.stderr
         assert took < 15, took
+        assert not out.exists()
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_a_requested_try_count_survives_the_whole_second_sleep_fallback(env):
+    """TAOS_KEYBOARD_LOCK_TRIES is the hook that shortens the wait, and the
+    whole-second sleep fallback must not undo it. When this shell's sleep rejects
+    a fraction the wrapper switches its step from 0.1 s to 1 s; only the step may
+    change there. A loop that also rewrote the try count would wait 10 times the
+    requested bound again, so the hook would shorten nothing on exactly the
+    systems that need it (BusyBox)."""
+    e, tmp, out = env
+    run = pathlib.Path(e["XDG_RUNTIME_DIR"])
+    lock = run / "taos-keyboard.flock"
+    sleepstub = tmp / "sleepstub"
+    sleepstub.mkdir()
+    (sleepstub / "sleep").write_text(
+        '#!/bin/sh\ncase "$1" in *.*) exit 1 ;; esac\nexec "%s" "$@"\n' % shutil.which("sleep"))
+    os.chmod(sleepstub / "sleep", 0o755)
+    e = {k: v for k, v in e.items() if k != "_extra"}
+    e["PATH"] = "%s:%s" % (sleepstub, e["PATH"])
+    # Control: the stub really does reject a fractional sleep, which is what
+    # puts the wrapper on its 1 s step.
+    check = subprocess.run(["/bin/sh", "-c", "sleep 0.1; echo rc=$?"], env=e,
+                           capture_output=True, text=True)
+    assert "rc=1" in check.stdout, check.stdout
+    holder = _holder(lock, e)
+    try:
+        ee = dict(e, TAOS_KEYBOARD_LOCK_TRIES="3")
+        t0 = time.time()
+        try:
+            r = subprocess.run([str(WRAPPER)], env=ee, capture_output=True,
+                               text=True, timeout=40)
+        except subprocess.TimeoutExpired:
+            pytest.fail("the wrapper did not honour TAOS_KEYBOARD_LOCK_TRIES on the 1 s step")
+        took = time.time() - t0
+        # First the bound: a loop that rewrote the count waits the full 30 tries
+        # here and then takes the lock when the 30 s holder goes away.
+        assert took < 15, ("the 1 s fallback rewrote the requested try count", took)
+        assert r.returncode != 0, (r.returncode, r.stderr)
+        assert "giving up" in r.stderr and str(lock) in r.stderr, r.stderr
         assert not out.exists()
     finally:
         holder.kill()

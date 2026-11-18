@@ -171,16 +171,24 @@ if command -v flock >/dev/null 2>&1; then
     # count is bounded so a lock held forever gives up rather than hang; a
     # holder that dies releases the lock at once, so a live holder is the only
     # thing waited for. Tests shorten the wait with TAOS_KEYBOARD_LOCK_TRIES.
-    LOCK_TRIES="${TAOS_KEYBOARD_LOCK_TRIES:-300}"
-    case "$LOCK_TRIES" in ''|*[!0-9]*) LOCK_TRIES=300 ;; esac
+    LOCK_TRIES="${TAOS_KEYBOARD_LOCK_TRIES:-}"
+    case "$LOCK_TRIES" in ''|*[!0-9]*) LOCK_TRIES='' ;; esac
     _i=0
     while ! flock -n 9; do
         if [ "$_i" = 0 ]; then
             # Contended: decide the sleep step once. sleep 0.1 is ~300 tries
-            # = 30 s; if this shell's sleep rejects a fraction, use sleep 1
-            # with 30 tries (also 30 s).
-            if sleep 0.1 2>/dev/null; then LOCK_SLEEP=0.1; else LOCK_SLEEP=1; LOCK_TRIES=30; fi
-            ktrace "lock: waiting"
+            # = 30 s; if this shell's sleep rejects a fraction, sleep 1 with 30
+            # tries is also 30 s. A requested try count is never rewritten by
+            # that probe (it would undo the bound a test asked for), only the
+            # default count follows the step that was probed.
+            if sleep 0.1 2>/dev/null; then
+                LOCK_SLEEP=0.1
+                [ -n "$LOCK_TRIES" ] || LOCK_TRIES=300
+            else
+                LOCK_SLEEP=1
+                [ -n "$LOCK_TRIES" ] || LOCK_TRIES=30
+            fi
+            ktrace "lock: waiting (step $LOCK_SLEEP, $LOCK_TRIES tries)"
         fi
         if [ "$_i" -ge "$LOCK_TRIES" ]; then
             ktrace "lock: gave up after $_i tries"
