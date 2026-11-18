@@ -1,0 +1,10 @@
+# taOS login screen. greetd reads this file only while the taos-desktop drop-in
+# is active (taos-desktop enable); until then greetd uses its own config.
+[terminal]
+# VT 7 for the graphical login. VT 1 to 6 stay text consoles (Ctrl+Alt+F1..F6).
+vt = 7
+
+[default_session]
+# The wrapper limits cage and the greeter to the display GPU (taos-gpu).
+command = "/usr/lib/taos/desktop-session/greeter"
+user = "_greetd"

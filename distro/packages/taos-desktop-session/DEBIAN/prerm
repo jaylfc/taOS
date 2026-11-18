@@ -1,0 +1,15 @@
+#!/bin/sh
+set -e
+# Take the login screen override out before the files it points at go away.
+# A running greeter or session is never stopped.
+case "$1" in
+    remove|deconfigure)
+        root=${TAOS_ROOT:-}
+        rm -f "$root/etc/systemd/system/greetd.service.d/10-taos.conf"
+        rmdir "$root/etc/systemd/system/greetd.service.d" 2>/dev/null || true
+        if [ -z "$root" ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+            systemctl daemon-reload >/dev/null 2>&1 || true
+        fi
+        ;;
+esac
+exit 0

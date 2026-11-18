@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+case "$1" in
+    purge)
+        root=${TAOS_ROOT:-}
+        rm -f "$root/etc/taos/sway.d/10-keyboard.conf" "$root/etc/taos/sway.d/10-keyboard.conf.new"
+        rmdir "$root/etc/taos/sway.d" "$root/etc/taos/sway" "$root/etc/taos/greetd" 2>/dev/null || true
+        ;;
+esac
+exit 0

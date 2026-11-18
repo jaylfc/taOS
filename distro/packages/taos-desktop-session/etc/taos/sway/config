@@ -1,0 +1,74 @@
+# taOS session config for sway. Do not add rules here: put them in
+# /etc/taos/sway.d/NN-name.conf (packages) or ~/.config/taos/sway.d/*.conf (you).
+
+set $mod Mod4
+
+# One scale for every output. Fractional scaling per output goes in a drop-in.
+output * scale 1
+
+# Wallpaper: swaybg per output via the helper (it replaces its own swaybg
+# processes on every reload and never touches others).
+exec_always /usr/lib/taos/desktop-session/wallpaper
+
+# Windows: a 1 px border, no title bars (this desktop shows window identity in
+# its own top bar later), hidden entirely for a single window.
+default_border pixel 1
+default_floating_border pixel 1
+titlebar_padding 4 2
+hide_edge_borders smart
+gaps inner 8
+focus_follows_mouse no
+
+# Inter if installed; pango falls back to a default sans otherwise.
+font pango:Inter 11
+
+floating_modifier $mod normal
+
+# Keys
+bindsym $mod+Return exec foot
+bindsym $mod+q kill
+bindsym $mod+Shift+e exec swaynag -t warning -m 'Exit the taOS session?' -B 'Yes, exit' 'swaymsg exit'
+bindsym $mod+Shift+r reload
+bindsym $mod+f fullscreen
+bindsym $mod+space floating toggle
+
+bindsym $mod+Left focus left
+bindsym $mod+Down focus down
+bindsym $mod+Up focus up
+bindsym $mod+Right focus right
+bindsym $mod+Shift+Left move left
+bindsym $mod+Shift+Down move down
+bindsym $mod+Shift+Up move up
+bindsym $mod+Shift+Right move right
+
+bindsym $mod+1 workspace number 1
+bindsym $mod+2 workspace number 2
+bindsym $mod+3 workspace number 3
+bindsym $mod+4 workspace number 4
+bindsym $mod+5 workspace number 5
+bindsym $mod+6 workspace number 6
+bindsym $mod+7 workspace number 7
+bindsym $mod+8 workspace number 8
+bindsym $mod+9 workspace number 9
+bindsym $mod+Shift+1 move container to workspace number 1
+bindsym $mod+Shift+2 move container to workspace number 2
+bindsym $mod+Shift+3 move container to workspace number 3
+bindsym $mod+Shift+4 move container to workspace number 4
+bindsym $mod+Shift+5 move container to workspace number 5
+bindsym $mod+Shift+6 move container to workspace number 6
+bindsym $mod+Shift+7 move container to workspace number 7
+bindsym $mod+Shift+8 move container to workspace number 8
+bindsym $mod+Shift+9 move container to workspace number 9
+
+# Screenshot, if taos-tools is installed.
+bindsym Print exec sh -c 'command -v taos-screenshot >/dev/null && exec taos-screenshot'
+
+# Keyboard layout: sway ignores /etc/default/keyboard, so the package postinst
+# generates /etc/taos/sway.d/10-keyboard.conf (input type:keyboard xkb_layout ...).
+# No idle or lock rules here: power and idle belong to a later package.
+
+include /etc/taos/sway.d/*.conf
+include ~/.config/taos/sway.d/*.conf
+
+# The one entry point for the graphical shell.
+exec /usr/lib/taos/desktop-session/autostart
