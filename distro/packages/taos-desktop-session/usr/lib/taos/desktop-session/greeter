@@ -11,4 +11,4 @@ else
     echo "taos greeter: $node missing; cage picks its own GPU" >&2
 fi
 # -s lets Ctrl+Alt+Fn switch to the text consoles. No -l: cage has no layer shell.
-exec cage -s -- gtkgreet -s /etc/taos/greetd/gtkgreet.css
+exec cage -s -d -- gtkgreet -s /etc/taos/greetd/gtkgreet.css

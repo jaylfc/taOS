@@ -76,3 +76,21 @@ combobox button, #command-selector {
 .error, #error {
     color: #f87171;
 }
+
+/* No window chrome on the login screen: cage is started with -d (server-side
+   decorations, which it does not draw). Belt and braces for a GTK build that
+   still draws a client-side header bar. */
+headerbar, .titlebar, decoration {
+    min-height: 0;
+    padding: 0;
+    margin: 0;
+    border: none;
+    box-shadow: none;
+    background: transparent;
+    opacity: 0;
+}
+headerbar * { min-height: 0; min-width: 0; padding: 0; margin: 0; opacity: 0; }
+
+/* The wallpaper carries the wordmark in the centre: sit the clock and the
+   sign-in card below it instead of on top of it. */
+#clock { margin-top: 580px; }
