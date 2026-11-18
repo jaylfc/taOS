@@ -1,0 +1,37 @@
+{
+  "id": "taos-default",
+  "name": "taOS Default",
+  "variants": ["dark", "light"],
+  "keyboard": {
+    "metrics": "keyboard/metrics.css",
+    "dark": "keyboard/dark.css",
+    "light": "keyboard/light.css"
+  },
+  "colors": {
+    "dark": {
+      "ground": "#0E0E10",
+      "surface": "#17171A",
+      "raised": "#1F1F23",
+      "stroke": "#FFFFFF1F",
+      "text": "#F2F2F4",
+      "textSecondary": "#B4B4BC",
+      "textTertiary": "#84848E",
+      "accent": "#7C86FF",
+      "warning": "#F5B544",
+      "danger": "#FF6B6B"
+    },
+    "light": {
+      "ground": "#F4F4F7",
+      "surface": "#FFFFFF",
+      "raised": "#FFFFFF",
+      "stroke": "#0000001F",
+      "text": "#17171A",
+      "textSecondary": "#55555E",
+      "textTertiary": "#7A7A84",
+      "accent": "#4A55E0",
+      "warning": "#B26B00",
+      "danger": "#C62828"
+    }
+  },
+  "motion": { "reduce": false }
+}

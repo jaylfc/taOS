@@ -1,0 +1,229 @@
+#!/bin/sh
+# taos-shell-session: the one entry point the desktop session execs.
+#
+#   taos-shell-session start        launch every shell component under a supervisor
+#   taos-shell-session stop         stop them (by pidfile; never by name)
+#   taos-shell-session status       list components
+#   taos-shell-session screen-off   reserved, not implemented yet (exit 0)
+#   taos-shell-session screen-on    reserved, not implemented yet (exit 0)
+#
+# Environment (all optional):
+#   TAOS_SHELL_ENV_FILE     env file sourced first (default /etc/taos/shell.env), so a
+#                           packaged Qt prefix can set LD_LIBRARY_PATH and friends
+#   TAOS_SHELL_COMPONENTS   space separated component names (default: taos-bar)
+#   TAOS_SHELL_BIN_DIR      where component binaries live (default: this script's
+#                           directory, then PATH)
+#   TAOS_SHELL_ARGS_<NAME>  extra arguments for a component, NAME upper case with
+#                           '-' as '_' (e.g. TAOS_SHELL_ARGS_TAOS_BAR="--height 48")
+#   TAOS_SHELL_SLEEP_CMD    sleep command (default sleep; tests replace it)
+#
+# A component that exits non-zero is restarted after 1 s, 2 s, 5 s, then every
+# 30 s. After 10 failures within 5 minutes the supervisor gives up, says so on
+# stderr and leaves a `<name>.gaveup` marker. A component that exits 0 is not
+# restarted.
+
+set -u
+
+ENV_FILE=${TAOS_SHELL_ENV_FILE:-/etc/taos/shell.env}
+if [ -r "$ENV_FILE" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$ENV_FILE"
+    set +a
+fi
+
+SELF=$0
+case $SELF in
+    /*) ;;
+    *) SELF=$(cd "$(dirname "$SELF")" && pwd)/$(basename "$SELF") ;;
+esac
+SELF_DIR=$(dirname "$SELF")
+
+COMPONENTS=${TAOS_SHELL_COMPONENTS:-taos-bar}
+SLEEP_CMD=${TAOS_SHELL_SLEEP_CMD:-sleep}
+BACKOFF_STEPS="1 2 5 30"
+MAX_FAILS=10
+WINDOW=300
+HEALTHY_AFTER=60
+
+if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "$XDG_RUNTIME_DIR" ]; then
+    STATE_DIR=$XDG_RUNTIME_DIR/taos-shell
+else
+    STATE_DIR=/tmp/taos-shell-$(id -u)
+fi
+
+log() { printf 'taos-shell-session: %s\n' "$*" >&2; }
+
+find_bin() {
+    if [ -n "${TAOS_SHELL_BIN_DIR:-}" ] && [ -x "$TAOS_SHELL_BIN_DIR/$1" ]; then
+        printf '%s\n' "$TAOS_SHELL_BIN_DIR/$1"
+    elif [ -x "$SELF_DIR/$1" ]; then
+        printf '%s\n' "$SELF_DIR/$1"
+    else
+        command -v "$1" 2>/dev/null
+    fi
+}
+
+# True when pid $1 is alive and its command line contains $2.
+pid_is() {
+    [ -n "$1" ] && kill -0 "$1" 2>/dev/null || return 1
+    [ -r "/proc/$1/cmdline" ] || return 0
+    tr '\0' ' ' <"/proc/$1/cmdline" | grep -F -q -- "$2"
+}
+
+read_pid() { [ -r "$1" ] && head -n 1 "$1" 2>/dev/null; }
+
+args_for() {
+    _v=TAOS_SHELL_ARGS_$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')
+    eval "printf '%s' \"\${$_v:-}\""
+}
+
+# --- supervisor: runs one component, restarts it on failure -----------------
+
+supervise() {
+    name=$1
+    bin=$(find_bin "$name")
+    mkdir -p "$STATE_DIR"
+    rm -f "$STATE_DIR/$name.gaveup"
+    if [ -z "$bin" ]; then
+        log "$name: binary not found"
+        : >"$STATE_DIR/$name.gaveup"
+        exit 1
+    fi
+    child=""
+    stopping=0
+    trap 'stopping=1; [ -n "$child" ] && kill "$child" 2>/dev/null' TERM INT HUP
+    echo $$ >"$STATE_DIR/supervisor-$name.pid"
+
+    fails=""        # epoch seconds of recent failures
+    idx=0           # position in the backoff schedule
+    n_restarts=0
+    while [ "$stopping" -eq 0 ]; do
+        started=$(date +%s)
+        # shellcheck disable=SC2046
+        set -f
+        # shellcheck disable=SC2086
+        "$bin" $(args_for "$name") &
+        child=$!
+        set +f
+        echo "$child" >"$STATE_DIR/$name.pid"
+        rc=0
+        wait "$child" || rc=$?
+        # a trapped signal interrupts wait with rc > 128: wait again for the real status
+        while kill -0 "$child" 2>/dev/null; do wait "$child" || rc=$?; done
+        child=""
+        rm -f "$STATE_DIR/$name.pid"
+        [ "$stopping" -eq 1 ] && break
+        if [ "$rc" -eq 0 ]; then
+            log "$name exited cleanly; not restarting"
+            break
+        fi
+        now=$(date +%s)
+        [ $((now - started)) -ge "$HEALTHY_AFTER" ] && { idx=0; fails=""; }
+        keep=""
+        for t in $fails; do
+            [ $((now - t)) -lt "$WINDOW" ] && keep="$keep $t"
+        done
+        fails="$keep $now"
+        count=0
+        for t in $fails; do count=$((count + 1)); done
+        if [ "$count" -ge "$MAX_FAILS" ]; then
+            log "$name failed $count times within $WINDOW s (last exit $rc); giving up"
+            : >"$STATE_DIR/$name.gaveup"
+            break
+        fi
+        i=0
+        delay=30
+        for d in $BACKOFF_STEPS; do
+            [ "$i" -eq "$idx" ] && delay=$d
+            i=$((i + 1))
+        done
+        idx=$((idx + 1))
+        n_restarts=$((n_restarts + 1))
+        log "$name exited with status $rc; restart $n_restarts in ${delay}s"
+        $SLEEP_CMD "$delay" &
+        child=$!
+        wait "$child" 2>/dev/null
+        while kill -0 "$child" 2>/dev/null; do wait "$child" 2>/dev/null; done
+        child=""
+    done
+    rm -f "$STATE_DIR/supervisor-$name.pid" "$STATE_DIR/$name.pid"
+    exit 0
+}
+
+# --- commands ---------------------------------------------------------------
+
+cmd_start() {
+    mkdir -p "$STATE_DIR" || { log "cannot create $STATE_DIR"; exit 1; }
+    chmod 700 "$STATE_DIR" 2>/dev/null
+    for c in $COMPONENTS; do
+        sp=$(read_pid "$STATE_DIR/supervisor-$c.pid")
+        if pid_is "$sp" "_supervise"; then
+            log "$c already supervised (pid $sp)"
+            continue
+        fi
+        "$SELF" _supervise "$c" &
+        log "started $c supervisor (pid $!)"
+    done
+}
+
+cmd_stop() {
+    for c in $COMPONENTS; do
+        sp=$(read_pid "$STATE_DIR/supervisor-$c.pid")
+        if pid_is "$sp" "_supervise"; then
+            kill "$sp" 2>/dev/null
+        fi
+        # wait up to ~5 s for the supervisor and its child to leave
+        n=0
+        while [ "$n" -lt 50 ]; do
+            cp=$(read_pid "$STATE_DIR/$c.pid")
+            if { [ -z "$sp" ] || ! kill -0 "$sp" 2>/dev/null; } && { [ -z "$cp" ] || ! kill -0 "$cp" 2>/dev/null; }; then
+                break
+            fi
+            n=$((n + 1))
+            sleep 0.1
+        done
+        cp=$(read_pid "$STATE_DIR/$c.pid")
+        if [ -n "$cp" ] && kill -0 "$cp" 2>/dev/null; then
+            # the supervisor is gone but the component survived: it is ours (pidfile), stop it
+            kill "$cp" 2>/dev/null
+        fi
+        rm -f "$STATE_DIR/supervisor-$c.pid" "$STATE_DIR/$c.pid" "$STATE_DIR/$c.gaveup"
+        log "stopped $c"
+    done
+}
+
+cmd_status() {
+    rc=0
+    for c in $COMPONENTS; do
+        sp=$(read_pid "$STATE_DIR/supervisor-$c.pid")
+        cp=$(read_pid "$STATE_DIR/$c.pid")
+        if [ -e "$STATE_DIR/$c.gaveup" ]; then
+            printf '%s: gave up\n' "$c"
+            rc=1
+        elif pid_is "$sp" "_supervise"; then
+            if [ -n "$cp" ] && kill -0 "$cp" 2>/dev/null; then
+                printf '%s: running (pid %s, supervisor %s)\n' "$c" "$cp" "$sp"
+            else
+                printf '%s: restarting (supervisor %s)\n' "$c" "$sp"
+            fi
+        else
+            printf '%s: stopped\n' "$c"
+            rc=3
+        fi
+    done
+    exit $rc
+}
+
+case ${1:-} in
+    start) cmd_start ;;
+    stop) cmd_stop ;;
+    status) cmd_status ;;
+    _supervise) shift; supervise "${1:?component}" ;;
+    screen-off|screen-on)
+        log "$1: not implemented yet (reserved interface)"
+        exit 0 ;;
+    *)
+        printf 'usage: %s start|stop|status|screen-off|screen-on\n' "$0" >&2
+        exit 2 ;;
+esac
