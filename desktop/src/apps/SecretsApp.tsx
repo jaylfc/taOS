@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { KeyRound, Plus, Eye, EyeOff, Trash2, Edit, X, Filter } from "lucide-react";
 import {
   Button,
@@ -220,7 +220,11 @@ export function SecretsApp({ windowId: _windowId }: { windowId: string }) {
   const [keenablePublicFallback, setKeenablePublicFallback] = useState(false);
   const [keenableLoading, setKeenableLoading] = useState(true);
   const [keenableError, setKeenableError] = useState<string | null>(null);
+  const [keenableLoadFailed, setKeenableLoadFailed] = useState(false);
   const [keenableSaving, setKeenableSaving] = useState(false);
+  // Guards overlapping retries: a response is only applied when its request id
+  // is still the latest, so an older GET cannot overwrite a newer one.
+  const keenableRequestId = useRef(0);
 
   const fetchSecrets = useCallback(async () => {
     // 10s timeout via AbortController so a hung backend never leaves the
@@ -267,23 +271,31 @@ export function SecretsApp({ windowId: _windowId }: { windowId: string }) {
   }, [fetchSecrets]);
 
   const fetchKeenablePreference = useCallback(async () => {
+    const requestId = keenableRequestId.current + 1;
+    keenableRequestId.current = requestId;
+    const isCurrent = () => requestId === keenableRequestId.current;
     try {
       const res = await fetch("/api/preferences/broker", {
         headers: { Accept: "application/json" },
       });
+      if (!isCurrent()) return;
       if (res.ok) {
         const data = await res.json();
+        if (!isCurrent()) return;
         if (data && typeof data === "object") {
           setKeenablePublicFallback(data.keenable_public_fallback === true);
           setKeenableError(null);
+          setKeenableLoadFailed(false);
         }
       } else {
         throw new Error("Failed to load preference");
       }
     } catch {
+      if (!isCurrent()) return;
       setKeenableError("Could not load Keenable preference");
+      setKeenableLoadFailed(true);
     } finally {
-      setKeenableLoading(false);
+      if (isCurrent()) setKeenableLoading(false);
     }
   }, []);
 
@@ -447,7 +459,7 @@ export function SecretsApp({ windowId: _windowId }: { windowId: string }) {
                       checked={keenablePublicFallback}
                       onCheckedChange={handleKeenableToggle}
                       aria-label="Allow Keenable keyless search"
-                      disabled={keenableSaving || !!keenableError}
+                      disabled={keenableSaving || keenableLoadFailed}
                     />
                   </div>
                   {keenableError && (
@@ -455,14 +467,16 @@ export function SecretsApp({ windowId: _windowId }: { windowId: string }) {
                       <p className="text-xs text-red-400" role="alert">
                         {keenableError}
                       </p>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={fetchKeenablePreference}
-                        aria-label="Retry loading Keenable preference"
-                      >
-                        Retry
-                      </Button>
+                      {keenableLoadFailed && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={fetchKeenablePreference}
+                          aria-label="Retry loading Keenable preference"
+                        >
+                          Retry
+                        </Button>
+                      )}
                     </div>
                   )}
                 </CardContent>

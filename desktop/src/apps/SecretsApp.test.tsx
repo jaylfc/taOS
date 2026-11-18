@@ -456,4 +456,127 @@ describe("SecretsApp", () => {
     // Alert should be gone
     expect(screen.queryByRole("alert")).toBeNull();
   });
+
+  it("keeps the switch usable after a failed save and lets a second toggle succeed", async () => {
+    let putCount = 0;
+    const ok = (body: unknown) => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/json" },
+      json: () => Promise.resolve(body),
+    });
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((input: string, init?: RequestInit) => {
+      if (input === "/api/secrets") return Promise.resolve(ok([]));
+      if (input === "/api/preferences/broker" && init?.method === "PUT") {
+        putCount++;
+        if (putCount === 1) {
+          return Promise.resolve({
+            ok: false,
+            status: 500,
+            headers: { get: () => "application/json" },
+            json: () => Promise.resolve({ error: "boom" }),
+          });
+        }
+        return Promise.resolve(ok({ ok: true }));
+      }
+      if (input === "/api/preferences/broker") {
+        return Promise.resolve(ok({ keenable_public_fallback: true }));
+      }
+      throw new Error(`Unmocked fetch: ${input}`);
+    }));
+
+    render(<SecretsApp windowId="win-1" />);
+    await flush();
+    await waitFor(() =>
+      expect(screen.getByLabelText(/allow keenable keyless search/i)).toBeTruthy(),
+    );
+
+    const toggle = screen.getByRole("switch", { name: /allow keenable keyless search/i });
+    expect(toggle).toBeChecked();
+    expect(toggle).not.toBeDisabled();
+
+    // First toggle -> PUT fails once.
+    fireEvent.click(toggle);
+    await flush();
+
+    // Alert is shown, but the switch keeps its previous value and stays usable.
+    expect(screen.getByRole("alert")).toBeTruthy();
+    expect(toggle).toBeChecked();
+    expect(toggle).not.toBeDisabled();
+
+    // Second toggle -> PUT succeeds, the switch flips and the alert clears.
+    fireEvent.click(toggle);
+    await flush();
+    await waitFor(() =>
+      expect(screen.getByRole("switch", { name: /allow keenable keyless search/i })).not.toBeChecked(),
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("applies only the latest retry response when two retries overlap", async () => {
+    let brokerCall = 0;
+    const pending: Array<() => void> = [];
+    const ok = (body: unknown) => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/json" },
+      json: () => Promise.resolve(body),
+    });
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((input: string) => {
+      if (input === "/api/secrets") return Promise.resolve(ok([]));
+      if (input === "/api/preferences/broker") {
+        brokerCall++;
+        if (brokerCall === 1) {
+          return Promise.resolve({
+            ok: false,
+            status: 500,
+            headers: { get: () => "application/json" },
+            json: () => Promise.resolve({ error: "boom" }),
+          });
+        }
+        // The first retry would turn the switch off, the second turns it on.
+        // Each response is held open so the test controls the arrival order.
+        const fallback = brokerCall !== 2;
+        return new Promise((resolve) => {
+          pending.push(() => resolve(ok({ keenable_public_fallback: fallback })));
+        });
+      }
+      throw new Error(`Unmocked fetch: ${input}`);
+    }));
+
+    render(<SecretsApp windowId="win-1" />);
+    await flush();
+    await waitFor(() =>
+      expect(screen.getByLabelText(/allow keenable keyless search/i)).toBeTruthy(),
+    );
+
+    // Initial load failed: switch disabled and a Retry button is offered.
+    expect(screen.getByRole("alert")).toBeTruthy();
+    expect(screen.getByRole("switch", { name: /allow keenable keyless search/i })).toBeDisabled();
+
+    const retryBtn = screen.getByRole("button", { name: /retry loading keenable preference/i });
+    // Fire two retries back to back.
+    fireEvent.click(retryBtn);
+    fireEvent.click(retryBtn);
+
+    // The later request resolves first and turns the switch on.
+    await act(async () => {
+      pending[1]();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("switch", { name: /allow keenable keyless search/i })).toBeChecked(),
+    );
+
+    // The earlier request resolves last and must not overwrite the newer state.
+    await act(async () => {
+      pending[0]();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    await flush();
+
+    const toggle = screen.getByRole("switch", { name: /allow keenable keyless search/i });
+    expect(toggle).toBeChecked();
+    expect(toggle).not.toBeDisabled();
+  });
 });
