@@ -20,14 +20,23 @@ type ListingEntry = {
   modified: number;
 };
 
+interface SharedFolderStub {
+  id: number;
+  name: string;
+  description: string;
+  agents: { name: string; permission: string }[];
+}
+
 function stubFetch(locations: { id: string; label: string }[]): string[];
 function stubFetch(
   locations: { id: string; label: string }[],
   listings: Record<string, ListingEntry[]>,
+  sharedFolders?: SharedFolderStub[],
 ): string[];
 function stubFetch(
   locations: { id: string; label: string }[],
   listings: Record<string, ListingEntry[]> = {},
+  sharedFolders: SharedFolderStub[] = [],
 ): string[] {
   const urls: string[] = [];
   const emptyListing: ListingEntry[] = [];
@@ -37,6 +46,8 @@ function stubFetch(
     let body: unknown = emptyListing;
     if (key.startsWith("/api/files/locations")) {
       body = locations;
+    } else if (key === "/api/shared-folders") {
+      body = sharedFolders;
     } else {
       const match = Object.keys(listings).find((prefix) => key.startsWith(prefix));
       if (match) body = listings[match];
@@ -166,5 +177,37 @@ describe("FilesApp Photos location", () => {
     expect(within(menu).queryByText("Copy")).toBeNull();
     // Read and delete are the operations Photos supports.
     expect(within(menu).getByText("Delete")).toBeTruthy();
+  });
+
+  it("keeps a shared folder named photos apart from the built-in Photos location", async () => {
+    // A shared folder may be called anything, including "photos". Built-in
+    // location ids are namespaced in the frontend routing, so the two rows are
+    // distinct locations and each keeps fetching from its own endpoint instead of
+    // the shared folder being served by the built-in one it collides with.
+    const urls = stubFetch(
+      [{ id: "photos", label: "Photos" }],
+      {},
+      [{ id: 7, name: "photos", description: "someone's photo drop", agents: [] }],
+    );
+    render(<FilesApp windowId="w1" />);
+    await flush();
+
+    expect(screen.getByLabelText("Photos")).toBeTruthy();
+    expect(screen.getByLabelText("Shared folder: photos")).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Photos"));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(urls).toContain("/api/photos/files");
+    expect(urls.some((u) => u.startsWith("/api/shared-folders/photos"))).toBe(false);
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Shared folder: photos"));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(urls).toContain("/api/shared-folders/photos/files");
   });
 });

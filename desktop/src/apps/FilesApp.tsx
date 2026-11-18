@@ -202,18 +202,37 @@ function projectSlug(loc: string): string {
 // tinyagentos/routes/photos_location.py). The backend lists only the ones whose
 // base directory exists on this device, so the set is decided by the server and
 // the sidebar renders whatever it returns.
-const PHOTOS_LOCATION = "photos";
-const PHOTOS_LABEL = "Photos";
+//
+// Their ids are namespaced in the location state. A shared folder may be called
+// anything, "photos" included, and an un-namespaced id put the two on the same
+// location: the shared folder was listed and deleted through the built-in
+// endpoint. The server's raw id is only ever used to look the entry back up.
+const BUILTIN_LOCATION_PREFIX = "builtin:";
 
-function isPhotosLocation(loc: string): boolean {
-  return loc === PHOTOS_LOCATION;
+function builtinLocationKey(id: string): string {
+  return `${BUILTIN_LOCATION_PREFIX}${id}`;
 }
 
-// Icon per built-in location id. An id the frontend does not know still gets a
-// row (with the folder icon) so a location the server starts listing stays
-// reachable rather than silently invisible.
+function isBuiltinLocation(loc: string): boolean {
+  return loc.startsWith(BUILTIN_LOCATION_PREFIX);
+}
+
+function builtinId(loc: string): string {
+  return loc.slice(BUILTIN_LOCATION_PREFIX.length);
+}
+
+const PHOTOS_LOCATION_ID = "photos";
+
+function isPhotosLocation(loc: string): boolean {
+  return isBuiltinLocation(loc) && builtinId(loc) === PHOTOS_LOCATION_ID;
+}
+
+// Icon per built-in location id as the server spells it (NOT the namespaced
+// location key). An id the frontend does not know still gets a row (with the
+// folder icon) so a location the server starts listing stays reachable rather
+// than silently invisible.
 const BUILT_IN_LOCATION_ICONS: Record<string, typeof Folder> = {
-  [PHOTOS_LOCATION]: Images,
+  [PHOTOS_LOCATION_ID]: Images,
 };
 
 function BuiltInLocationIcon({ id, size = 16 }: { id: string; size?: number }) {
@@ -243,6 +262,7 @@ function fileUrl(location: "workspace" | string, path: string): string {
  *   - "workspace"       → user workspace
  *   - "agent:<slug>"    → per-agent workspace
  *   - "photos"          → built-in Pictures folder (read and delete only)
+ *     (keyed as "builtin:photos" so a shared folder may also be named photos)
  *   - "<folder-name>"   → shared folder
  * Centralising the fan-out here keeps fetch/upload/delete/watch in sync.
  */
@@ -685,9 +705,10 @@ export function FilesApp({
           ? agents?.find((a) => a.name === agentSlug(location))?.display_name ?? agentSlug(location)
           : isProjectLocation(location)
             ? projectSlug(location)
-            : isPhotosLocation(location)
-              ? builtInLocations.find((l) => l.id === PHOTOS_LOCATION)?.label ?? PHOTOS_LABEL
-              : location;
+          : isBuiltinLocation(location)
+            ? builtInLocations.find((l) => builtinLocationKey(l.id) === location)?.label
+              ?? builtinId(location)
+            : location;
 
   /* ---- Fetch files ---- */
   const fetchFiles = useCallback(async (path = "") => {
@@ -1111,39 +1132,45 @@ export function FilesApp({
               style={{ background: "rgba(255,255,255,0.05)", borderRadius: 16 }}
               className="overflow-hidden divide-y divide-white/[0.04]"
             >
-              {builtInLocations.map((loc) => (
-                <button
-                  key={loc.id}
-                  onClick={() => {
-                    setLocation(loc.id);
-                    setCurrentPath("");
-                    setSelectedLocation(loc.id);
-                  }}
-                  className="w-full flex items-center justify-between px-4 py-3.5 text-sm text-shell-text active:bg-white/10 transition-colors"
-                  aria-label={loc.label}
-                >
-                  <span className="flex items-center gap-3">
-                    <BuiltInLocationIcon id={loc.id} />
-                    <span className="truncate">{loc.label}</span>
-                  </span>
-                  <ChevronRight size={16} className="text-shell-text-tertiary" />
-                </button>
-              ))}
+              {builtInLocations.map((loc) => {
+                const locKey = builtinLocationKey(loc.id);
+                return (
+                  <button
+                    key={loc.id}
+                    onClick={() => {
+                      setLocation(locKey);
+                      setCurrentPath("");
+                      setSelectedLocation(locKey);
+                    }}
+                    className="w-full flex items-center justify-between px-4 py-3.5 text-sm text-shell-text active:bg-white/10 transition-colors"
+                    aria-label={loc.label}
+                  >
+                    <span className="flex items-center gap-3">
+                      <BuiltInLocationIcon id={loc.id} />
+                      <span className="truncate">{loc.label}</span>
+                    </span>
+                    <ChevronRight size={16} className="text-shell-text-tertiary" />
+                  </button>
+                );
+              })}
             </div>
           )
         ) : (
-          builtInLocations.map((loc) => (
-            <Button
-              key={loc.id}
-              variant={location === loc.id ? "secondary" : "ghost"}
-              onClick={() => { setLocation(loc.id); setCurrentPath(""); }}
-              className="w-full justify-start mx-1.5 px-3"
-              aria-label={loc.label}
-            >
-              <BuiltInLocationIcon id={loc.id} />
-              <span className="truncate">{loc.label}</span>
-            </Button>
-          ))
+          builtInLocations.map((loc) => {
+            const locKey = builtinLocationKey(loc.id);
+            return (
+              <Button
+                key={loc.id}
+                variant={location === locKey ? "secondary" : "ghost"}
+                onClick={() => { setLocation(locKey); setCurrentPath(""); }}
+                className="w-full justify-start mx-1.5 px-3"
+                aria-label={loc.label}
+              >
+                <BuiltInLocationIcon id={loc.id} />
+                <span className="truncate">{loc.label}</span>
+              </Button>
+            );
+          })
         )}
 
         {/* Shared Folders */}
