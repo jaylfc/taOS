@@ -147,6 +147,37 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
           <EmptyState note={emptyNote} onOpenAgentsApp={onOpenAgentsApp} />
         ) : (
           <>
+            {emptyNote && (
+              <div
+                role={emptyNote.tone === "error" ? "alert" : "status"}
+                style={{
+                  padding: "0 12px",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 4,
+                }}
+              >
+                <p
+                  style={{
+                    fontSize: 13,
+                    fontWeight: 500,
+                    color: "var(--color-shell-text-secondary)",
+                    margin: 0,
+                  }}
+                >
+                  {emptyNote.title}
+                </p>
+                <p
+                  style={{
+                    fontSize: 11,
+                    color: "var(--color-shell-text-tertiary)",
+                    margin: 0,
+                  }}
+                >
+                  {emptyNote.detail}
+                </p>
+              </div>
+            )}
             <MobileChatList
               sections={sections}
               projectGroups={projectGroups}

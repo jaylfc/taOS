@@ -19,8 +19,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import urllib.parse
-
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
@@ -35,7 +33,7 @@ from tinyagentos.peer import (
     verify_envelope_signature,
 )
 from tinyagentos.rate_limit import MovingWindowLimiter, retry_after_headers
-from tinyagentos.routes.hub import _normalize_endpoints
+from tinyagentos.routes.hub import _safe_endpoints
 
 logger = logging.getLogger(__name__)
 
@@ -65,33 +63,6 @@ _limiter = MovingWindowLimiter(_RATE_MAX_PER_WINDOW, _RATE_WINDOW_SECS)
 _rate_hits = _limiter.hits
 # Handshakes are keyed by sender fingerprint, separately from the bearer routes.
 _handshake_limiter = MovingWindowLimiter(_RATE_MAX_PER_WINDOW, _RATE_WINDOW_SECS)
-
-
-def _safe_endpoints(raw) -> list[dict]:
-    """Filter endpoints to only valid http/https dict entries with a hostname.
-
-    Takes the output of _normalize_endpoints and keeps only dict entries whose
-    'url' is a string with scheme 'http' or 'https' and a truthy hostname.
-    Everything else (ints, dicts without url, non-http schemes, etc.) is dropped.
-    """
-    normalized = _normalize_endpoints(raw)
-    kept = []
-    for e in normalized:
-        if not isinstance(e, dict):
-            continue
-        url = e.get("url")
-        if not isinstance(url, str):
-            continue
-        try:
-            parts = urllib.parse.urlsplit(url)
-        except (ValueError, TypeError):
-            continue
-        if parts.scheme not in ("http", "https"):
-            continue
-        if not parts.hostname:
-            continue
-        kept.append(e)
-    return kept
 
 
 # ---------------------------------------------------------------------------
@@ -318,9 +289,14 @@ async def peer_handshake(body: PeerEnvelope, request: Request):
         )
 
     existing = await store.get_peer_link(contact_id)
+    restore_revoked_at = None
     if existing is not None and existing.get("revoked_at") is not None:
         if not await hub.has_edge(fp, relationships.REL_REQUEST_OUT):
             raise HTTPException(status_code=403, detail="peer link revoked")
+        # Owner re-request path: the owner re-initiated the friendship, so
+        # restoring the revoked link is intentional.  Pass the exact timestamp
+        # we observed so a newer revocation is not silently cleared.
+        restore_revoked_at = existing.get("revoked_at")
 
     if not await store.record_nonce(envelope["nonce"], contact_id, "handshake"):
         raise HTTPException(status_code=409, detail="nonce replay detected")
@@ -342,16 +318,37 @@ async def peer_handshake(body: PeerEnvelope, request: Request):
     # SSRF allowance.  Only on first handshake do we accept endpoints from the
     # envelope, and even then only valid http/https entries with a hostname.
     if existing is not None:
-        endpoints = existing.get("endpoints") or []
+        pinned = _safe_endpoints(existing.get("endpoints") or [])
+        if pinned:
+            endpoints = pinned
+        else:
+            endpoints = _safe_endpoints(hs.get("endpoints"))
     else:
         endpoints = _safe_endpoints(hs.get("endpoints"))
 
-    await store.establish_peer_link(
+    # The check above and this write are not atomic: a revoke committed in this
+    # window used to be silently overwritten, because establish_peer_link cleared
+    # revoked_at unconditionally.  establish_peer_link re-checks revoked_at inside
+    # the same statement, so a link revoked after the check is not written.
+    written = await store.establish_peer_link(
         contact_id=contact_id,
         inbound_token=our_token,
         outbound_token=their_token,
         endpoints=endpoints,
+        restore_revoked_at=restore_revoked_at,
+        keep_existing_endpoints=True,
     )
+    if not written:
+        # add_contact above commits the contact as active; a revoke that lands
+        # during the handshake leaves that row active for a revoked peer unless
+        # we restore the revoked status on the refused path.
+        try:
+            await store.set_contact_status(contact_id, "revoked")
+        except Exception:
+            logger.warning(
+                "peer handshake: set_contact_status revoked failed for %s", contact_id,
+            )
+        raise HTTPException(status_code=403, detail="peer link revoked")
     if not await hub.has_edge(fp, relationships.REL_FRIEND):
         from tinyagentos.hub import identity
 

@@ -5,7 +5,6 @@ import { useUpdateAvailable } from "@/hooks/use-update-available";
 import { useProcessStore } from "@/stores/process-store";
 import { StatusIndicators } from "../StatusIndicators";
 import { useIsPwa } from "@/hooks/use-is-pwa";
-import { isIOS } from "@/lib/platform";
 
 export const IOS_EDGE_BACKDROP_COLOR = "#141415";
 export const IOS_EDGE_BACKDROP_HEIGHT = "1px";
@@ -45,9 +44,12 @@ export function MobileTopBar({ onSearch }: Props) {
               top: 0,
               left: 0,
               right: 0,
-              // iOS 27 blurs the top edge unless a solid fixed element covers the
-              // whole top bar; the Android handset keeps the wallpaper with a 1px strip.
-              height: isIOS() ? MOBILE_TOP_BAR_HEIGHT : IOS_EDGE_BACKDROP_HEIGHT,
+              // A 1px strip everywhere, so the wallpaper shows behind the bar.
+              // A full-height solid strip stops iOS 27 blurring the top edge,
+              // but it reads as a black band across the top of the screen and
+              // was rejected on the device (2026-11-17). The blur needs a fix
+              // that keeps the wallpaper visible.
+              height: IOS_EDGE_BACKDROP_HEIGHT,
               backgroundColor: IOS_EDGE_BACKDROP_COLOR,
               zIndex: 0,
               pointerEvents: "none",

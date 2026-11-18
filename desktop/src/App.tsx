@@ -11,6 +11,7 @@ import { useSessionPersistence } from "@/hooks/use-session-persistence";
 import { useDeviceMode } from "@/hooks/use-device-mode";
 import { useMobileControl } from "@/hooks/use-desktop-control";
 import { useIsPwa } from "@/hooks/use-is-pwa";
+import { useLayoutStore } from "@/stores/layout-store";
 import { useThemeStore, restoreActiveTheme, installWebkitRepaintGuards } from "@/stores/theme-store";
 import { useOnAuthReady } from "@/hooks/use-on-auth-ready";
 import { usePushClickHandler } from "@/hooks/use-push-click";
@@ -188,6 +189,7 @@ export function App() {
   );
   const [launched, setLaunched] = useState(isPwa || isTouchDevice);
   const [isFullscreen, setIsFullscreen] = useState(isPwa);
+  const fullscreenOnLaunch = useLayoutStore((s) => s.fullscreenOnLaunch);
   const [launchpadOpen, setLaunchpadOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [cardSwitcherOpen, setCardSwitcherOpen] = useState(false);
@@ -298,6 +300,9 @@ export function App() {
   // later re-login.
   useOnAuthReady(() => {
     void restoreActiveTheme();
+    // Saved layout preference (Settings > Desktop & Dock), so a fresh browser
+    // honours "Browser fullscreen at launch" before the user clicks Launch.
+    void useLayoutStore.getState().syncFromServer();
     // Learn once whether this is a taOSmobile handset, so app opens can go to
     // the device shell as their own windows (lib/mobile-shell).
     void primeDeviceClass();
@@ -397,7 +402,7 @@ export function App() {
         <SystemShortcuts toggleSearch={toggleSearch} toggleLaunchpad={toggleLaunchpad} toggleAssistant={toggleAssistant} />
         <LoginGate>
           {!launched && <LoginScreen onLaunch={() => setLaunched(true)} />}
-          {launched && !isFullscreen && (
+          {launched && !isFullscreen && fullscreenOnLaunch && (
             <button
               onClick={() => document.documentElement.requestFullscreen().catch(() => {})}
               className="fixed top-2 left-1/2 -translate-x-1/2 z-[9998] px-4 py-1.5 rounded-full bg-accent/90 text-white text-xs font-medium shadow-lg hover:bg-accent transition-colors"

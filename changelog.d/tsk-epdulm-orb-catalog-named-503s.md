@@ -1,0 +1,3 @@
+### Fixed
+
+- Orb catalog route (GET /api/orb/catalog) now returns named 503 errors: orb_catalog_kind_invalid when the kind is present and is neither null nor orb-firmware (missing or null kind is accepted for legacy catalogs), and orb_catalog_invalid when the catalog is not a JSON object, or when expires is present, non-null, and is not a string that datetime.fromisoformat can parse (expires is optional; missing or null is accepted), instead of generic OrbError. Expiry validation runs after signature and serial format verification.

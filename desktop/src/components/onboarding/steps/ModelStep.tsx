@@ -85,6 +85,7 @@ export function ModelStep({
   async function poll(id: string) {
     try {
       const res = await fetch(`/api/models/downloads/${encodeURIComponent(id)}`, { credentials: "include" });
+      if (res.status === 404) { if (timer.current) clearInterval(timer.current); if (mounted.current) setPhase({ kind: "error", message: "taOS lost track of the download. Try again." }); return; }
       const task = await res.json();
       if (!mounted.current || !task || typeof task !== "object") return;
       if (task.status === "complete") {
