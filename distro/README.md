@@ -15,6 +15,7 @@ Packages live under `packages/<name>/` as plain dpkg-deb trees;
 | 4 | taos-gpu (driver) | `taos-gpu driver`: official vendor GPU drivers. An NVIDIA GPU gets NVIDIA's official driver from NVIDIA's own apt repo by default; `TAOS_NVIDIA_DRIVER=open` keeps the open-source driver, `skip` leaves it alone. AMD and Intel use the in-kernel driver with Mesa. Handles the Secure Boot key enrollment. |
 | 5 | taos-tools | `taos-screenshot [--json] [--output NAME] [file.png]`: grabs the Wayland session with grim, else the console framebuffer with fbgrab. Prints the path (or one JSON object with source, width and height). |
 | 6 | taos-power | `taos-power` command: a taOS machine does not sleep by default. The `always-on` profile (default without a battery) never suspends or hibernates; `battery` (default with a battery) allows suspend and changes nothing. An optional CPU tune is off unless chosen. Choose at install with `TAOS_POWER_PROFILE`. |
+| 7 | taos-wallpapers | The approved taOS wallpaper set (neural, flow, mesh, terrain), dark and light, pre-rendered JPEG at 3840x2160, 3840x1200 and 1080x2400 under `/usr/share/taos/wallpapers/<id>/` with an `index.json`. `taos-wallpaper list\|path` prints the best file for a size. |
 
 ## Display GPU
 
@@ -61,6 +62,16 @@ A taOS machine does not sleep by default: it serves models to phones and other d
 `always-on` on a battery device is allowed and prints a warning. The control panel will call `taos-power set` (and read `taos-power status --json`).
 
 The CPU tune is separate and optional (`TUNE=off` by default). `performance` sets the EPP (or the governor, where there is no EPP) to `performance` on every CPU that offers it and keeps a PM QoS wake-up latency request (`LATENCY_US`, default 100) alive through the `taos-power` unit, because the request only lasts while `/dev/cpu_dma_latency` stays open. It was measured to make no difference to model decode speed on the reference desktop, which is why it is off unless you choose it. `tune off` stops the holder and writes `balance_performance` back where the CPU lists it; otherwise the kernel default returns on the next boot. It only applies under `always-on`.
+
+## Wallpapers
+
+The set comes from the approved round 2 designs: four wallpapers (neural, the default, then flow, mesh and terrain), each with a dark and a light variant and the taOS wordmark in the centre. Every file is a JPEG at quality 90 named `<variant>-<WxH>.jpg` under `/usr/share/taos/wallpapers/<id>/`, in three sizes: 3840x2160 (desktop), 3840x1200 (ultrawide) and 1080x2400 (phone, portrait). `/usr/share/taos/wallpapers/index.json` lists id, title, variants and files, and names the default.
+
+    taos-wallpaper list                                        # ids, the default is marked
+    taos-wallpaper path                                        # default wallpaper, dark, 3840x2160
+    taos-wallpaper path --variant light --size 1080x2400 mesh
+
+`taos-wallpaper path` picks the file closest to the requested size (same orientation first, then nearest aspect ratio, then the smallest file that is large enough) and prints its path. It does not talk to the compositor. The originals are WebGL2 shaders (one GLSL fragment shader each, plus a wordmark signed distance field generated from text at start-up), which no compositor wallpaper tool can run, so the package ships the rendered rasters only.
 
 The older `os-build/` tree (Armbian per-board images) predates this and is
 not used by the desktop distro.

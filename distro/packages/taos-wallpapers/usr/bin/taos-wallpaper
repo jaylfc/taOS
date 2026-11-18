@@ -1,0 +1,77 @@
+#!/bin/sh
+# taos-wallpaper list|path [--variant dark|light] [--size WxH] [id]
+# Prints wallpaper ids, or the best matching image file. No compositor calls.
+# TAOS_WALLPAPER_DIR points at another wallpaper tree (tests).
+set -eu
+dir=${TAOS_WALLPAPER_DIR:-/usr/share/taos/wallpapers}
+index="$dir/index.json"
+usage() {
+    echo "usage: taos-wallpaper list | path [--variant dark|light] [--size WxH] [id]" >&2
+    exit 2
+}
+[ -r "$index" ] || { echo "taos-wallpaper: no index at $index" >&2; exit 1; }
+
+# index.json is written in a fixed layout: a top-level "default" line, then one
+# wallpaper per line: {"id": "neural", ..., "files": {"dark": {"3840x2160": "neural/dark-3840x2160.jpg", ...}}}
+ids() { sed -n 's/^ *{"id": "\([^"]*\)".*/\1/p' "$index"; }
+default_id() { sed -n 's/^ *"default": "\([^"]*\)",\{0,1\}$/\1/p' "$index" | head -n 1; }
+line_for() { grep "^ *{\"id\": \"$1\"" "$index" | head -n 1; }
+
+cmd=${1:-}
+[ -n "$cmd" ] || usage
+shift
+case "$cmd" in
+    list)
+        d=$(default_id)
+        ids | while read -r i; do
+            if [ "$i" = "$d" ]; then echo "$i (default)"; else echo "$i"; fi
+        done
+        ;;
+    path)
+        variant=dark size=3840x2160 id=
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --variant) [ $# -ge 2 ] || usage; variant=$2; shift 2 ;;
+                --size) [ $# -ge 2 ] || usage; size=$2; shift 2 ;;
+                -*) usage ;;
+                *) [ -z "$id" ] || usage; id=$1; shift ;;
+            esac
+        done
+        case "$variant" in dark|light) ;; *) usage ;; esac
+        case "$size" in
+            [0-9]*x[0-9]*) ;;
+            *) usage ;;
+        esac
+        w=${size%x*}; h=${size#*x}
+        case "$w$h" in *[!0-9]*) usage ;; esac
+        [ -n "$id" ] || id=$(default_id)
+        line=$(line_for "$id")
+        [ -n "$line" ] || { echo "taos-wallpaper: unknown wallpaper: $id" >&2; exit 1; }
+        # Candidate sizes are the keys inside the requested variant.
+        part=${line#*\"$variant\": \{}
+        [ "$part" != "$line" ] || { echo "taos-wallpaper: $id has no $variant variant" >&2; exit 1; }
+        part=${part%%\}*}
+        best= bestscore=
+        for entry in $(printf '%s' "$part" | sed 's/, /\n/g; s/"//g; s/: /=/g'); do
+            key=${entry%%=*}; file=${entry#*=}
+            cw=${key%x*}; ch=${key#*x}
+            # Prefer the same orientation, then the nearest aspect ratio,
+            # then a size at least as large as requested (else the largest).
+            if [ $((cw >= ch)) -eq $((w >= h)) ]; then orient=0; else orient=1; fi
+            aspect=$(( (cw * h - ch * w) ))
+            [ "$aspect" -ge 0 ] || aspect=$(( -aspect ))
+            aspect=$(( aspect * 1000 / (ch * h) ))
+            [ "$aspect" -le 9999 ] || aspect=9999
+            if [ "$cw" -ge "$w" ] && [ "$ch" -ge "$h" ]; then
+                fit=$(( cw * ch - w * h ))
+            else
+                fit=$(( 1000000000 - cw * ch ))
+            fi
+            score=$(printf '%d%04d%010d' "$orient" "$aspect" "$fit")
+            if [ -z "$best" ] || [ "$score" -lt "$bestscore" ]; then best=$file; bestscore=$score; fi
+        done
+        [ -n "$best" ] || { echo "taos-wallpaper: no files for $id $variant" >&2; exit 1; }
+        echo "$dir/$best"
+        ;;
+    *) usage ;;
+esac

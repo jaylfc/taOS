@@ -1,0 +1,13 @@
+Package: taos-wallpapers
+Version: 0.1.0
+Architecture: all
+Maintainer: jaylfc <jaylfc25@gmail.com>
+Priority: optional
+Section: x11
+Depends: coreutils
+Description: taOS desktop wallpapers
+ The approved taOS wallpaper set (neural, flow, mesh, terrain), each in dark
+ and light, pre-rendered as JPEG at 3840x2160 (desktop), 3840x1200 (ultrawide)
+ and 1080x2400 (phone), under /usr/share/taos/wallpapers/<id>/ with an
+ index.json. The taos-wallpaper command prints the best matching file for a
+ size so any compositor wallpaper tool can use it.

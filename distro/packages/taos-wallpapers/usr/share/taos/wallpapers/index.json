@@ -1,0 +1,9 @@
+{
+  "default": "neural",
+  "wallpapers": [
+    {"id": "neural", "title": "Neural", "default": true, "variants": ["dark", "light"], "files": {"dark": {"3840x2160": "neural/dark-3840x2160.jpg", "3840x1200": "neural/dark-3840x1200.jpg", "1080x2400": "neural/dark-1080x2400.jpg"}, "light": {"3840x2160": "neural/light-3840x2160.jpg", "3840x1200": "neural/light-3840x1200.jpg", "1080x2400": "neural/light-1080x2400.jpg"}}},
+    {"id": "flow", "title": "Flow", "default": false, "variants": ["dark", "light"], "files": {"dark": {"3840x2160": "flow/dark-3840x2160.jpg", "3840x1200": "flow/dark-3840x1200.jpg", "1080x2400": "flow/dark-1080x2400.jpg"}, "light": {"3840x2160": "flow/light-3840x2160.jpg", "3840x1200": "flow/light-3840x1200.jpg", "1080x2400": "flow/light-1080x2400.jpg"}}},
+    {"id": "mesh", "title": "Mesh", "default": false, "variants": ["dark", "light"], "files": {"dark": {"3840x2160": "mesh/dark-3840x2160.jpg", "3840x1200": "mesh/dark-3840x1200.jpg", "1080x2400": "mesh/dark-1080x2400.jpg"}, "light": {"3840x2160": "mesh/light-3840x2160.jpg", "3840x1200": "mesh/light-3840x1200.jpg", "1080x2400": "mesh/light-1080x2400.jpg"}}},
+    {"id": "terrain", "title": "Terrain", "default": false, "variants": ["dark", "light"], "files": {"dark": {"3840x2160": "terrain/dark-3840x2160.jpg", "3840x1200": "terrain/dark-3840x1200.jpg", "1080x2400": "terrain/dark-1080x2400.jpg"}, "light": {"3840x2160": "terrain/light-3840x2160.jpg", "3840x1200": "terrain/light-3840x1200.jpg", "1080x2400": "terrain/light-1080x2400.jpg"}}}
+  ]
+}
