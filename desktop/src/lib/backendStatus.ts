@@ -18,7 +18,7 @@ const IS_VALID_VERSION = (v: string) => VERSION_PATTERN.test(v) && /^[0-9]/.test
 // Predicate used by both the health poll (:85) and reportVersion (:119) to reject
 // the coarsened sentinel and leave currentVersion unchanged.
 export const isValidVersion = (v: string): boolean => IS_VALID_VERSION(v);
-const POLL_DELAYS_MS = [2_000, 4_000, 8_000, 16_000, 5_000];
+const POLL_DELAYS_MS = [2_000, 4_000, 5_000, 5_000, 5_000];
 const LONG_RECONNECTING_MS = 60_000;
 
 interface Options {
@@ -88,6 +88,7 @@ export function createBackendStatus(opts: Options): BackendStatusController {
   };
 
   const poll = async () => {
+    inFlight = true;
     try {
       // Bug 4 fix: 5-second fetch timeout so a hung backend doesn't wedge.
       const r = await fetchImpl(opts.healthUrl, {
@@ -112,6 +113,7 @@ export function createBackendStatus(opts: Options): BackendStatusController {
       setStatus("reconnecting");
       attemptIndex += 1;
     } finally {
+      inFlight = false;
       // Bug 3 fix: notify exactly once when crossing the 60s threshold.
       if (status === "reconnecting" && reconnectingSince !== null && !longReconnectingNotified) {
         const elapsed = Date.now() - reconnectingSince;
@@ -127,6 +129,7 @@ export function createBackendStatus(opts: Options): BackendStatusController {
   // Trigger an immediate poll (used by visibilitychange/online handlers)
   const probeNow = () => {
     if (stopped) return;
+    if (inFlight) return; // skip if a probe is already in-flight
     if (timer) clearTimeout(timer);
     timer = setTimeout(poll, 0);
   };
@@ -134,6 +137,7 @@ export function createBackendStatus(opts: Options): BackendStatusController {
   // Visibility/online handlers for immediate re-probe when tab becomes visible or network returns
   let visibilityHandler: (() => void) | null = null;
   let onlineHandler: (() => void) | null = null;
+  let inFlight = false; // track one in-flight probe at a time
 
   const attachLifecycleHandlers = () => {
     if (typeof window === "undefined") return;
