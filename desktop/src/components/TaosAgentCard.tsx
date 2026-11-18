@@ -131,9 +131,9 @@ export function TaosAgentCard() {
       <div
         className="rounded-lg border border-white/10 bg-white/5 p-4 mb-3"
         role="alert"
-        aria-label="taOS agent config error"
+        aria-label="taOS Agent config error"
       >
-        <p className="text-xs text-red-400">Failed to load taOS agent config: {loadErr}</p>
+        <p className="text-xs text-red-400">Failed to load taOS Agent config: {loadErr}</p>
       </div>
     );
   }
@@ -141,7 +141,7 @@ export function TaosAgentCard() {
   if (!config) {
     return (
       <div className="rounded-lg border border-white/10 bg-white/5 p-4 mb-3 animate-pulse">
-        <div className="h-3 w-40 bg-white/10 rounded" aria-label="Loading taOS agent" />
+        <div className="h-3 w-40 bg-white/10 rounded" aria-label="Loading taOS Agent" />
       </div>
     );
   }
@@ -151,11 +151,11 @@ export function TaosAgentCard() {
   return (
     <section
       className="rounded-lg border border-white/10 bg-white/5 p-4 mb-3"
-      aria-label="taOS agent system card"
+      aria-label="taOS Agent system card"
     >
       {/* Header */}
       <div className="flex items-center gap-2 mb-3 flex-wrap">
-        <span className="text-sm font-semibold">taOS agent</span>
+        <span className="text-sm font-semibold">taOS Agent</span>
         <span
           className="bg-cyan-600/40 text-cyan-200 px-2 py-0.5 rounded text-[10px] leading-none"
           aria-label="Framework: opencode"
@@ -190,7 +190,7 @@ export function TaosAgentCard() {
         <code className="text-sm">{currentModel || "(not set)"}</code>
         <button
           onClick={openPicker}
-          aria-label="Change taOS agent model"
+          aria-label="Change taOS Agent model"
           className="bg-white/10 hover:bg-white/15 px-2.5 py-1 rounded text-xs"
         >
           Change model
@@ -204,7 +204,7 @@ export function TaosAgentCard() {
           <span className="opacity-60 text-sm">Permitted models</span>
           <button
             onClick={openAddPicker}
-            aria-label="Add a permitted model for taOS agent"
+            aria-label="Add a permitted model for taOS Agent"
             className="bg-white/10 hover:bg-white/15 px-2.5 py-1 rounded text-xs"
           >
             + Add
@@ -237,7 +237,7 @@ export function TaosAgentCard() {
                     aria-label={
                       isCurrent
                         ? `Cannot remove current model ${m}`
-                        : `Remove ${m} from taOS agent permitted models`
+                        : `Remove ${m} from taOS Agent permitted models`
                     }
                     className="opacity-60 hover:opacity-100 disabled:opacity-20 disabled:cursor-not-allowed leading-none"
                   >
@@ -255,7 +255,7 @@ export function TaosAgentCard() {
           <button
             onClick={savePermitted}
             disabled={permittedSaving}
-            aria-label="Save taOS agent permitted models"
+            aria-label="Save taOS Agent permitted models"
             aria-busy={permittedSaving}
             className="mt-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 px-3 py-1.5 rounded text-xs"
           >
@@ -276,7 +276,7 @@ export function TaosAgentCard() {
             setPersonaDirty(e.target.value !== (config.persona ?? ""));
           }}
           rows={4}
-          aria-label="taOS agent persona — system-prompt override"
+          aria-label="taOS Agent persona — system-prompt override"
           placeholder="Leave empty to use the built-in manual as the system prompt."
           className="w-full bg-white/5 border border-white/10 rounded px-3 py-2 text-xs resize-y focus:outline-none focus:border-white/25"
         />
@@ -285,7 +285,7 @@ export function TaosAgentCard() {
           <button
             onClick={savePersona}
             disabled={personaSaving}
-            aria-label="Save taOS agent persona"
+            aria-label="Save taOS Agent persona"
             aria-busy={personaSaving}
             className="mt-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 px-3 py-1.5 rounded text-xs"
           >

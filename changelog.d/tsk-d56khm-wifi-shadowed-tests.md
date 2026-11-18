@@ -1,0 +1,2 @@
+### Fixed
+- Renamed shadowed HTTP non-admin Wi-Fi tests (test_forget_http_non_admin_returns_403, test_scan_http_non_admin_returns_403) and added response detail assertions to all five HTTP non-admin write-route tests so they execute and validate the "forbidden" error detail.

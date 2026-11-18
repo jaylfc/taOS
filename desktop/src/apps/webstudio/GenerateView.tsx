@@ -82,7 +82,7 @@ export function GenerateView({
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex h-[54px] flex-none items-center gap-3 border-b border-shell-border px-[22px]">
         <h2 className="text-[17px] font-bold tracking-[-0.02em]">Generate</h2>
-        <span className="text-[12px] text-shell-text-tertiary">Describe your site, the taOS agent designs it</span>
+        <span className="text-[12px] text-shell-text-tertiary">Describe your site, the taOS Agent designs it</span>
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto">

@@ -31,6 +31,8 @@ from tinyagentos.orb.catalog_sig import (
     CatalogSignatureInvalid,
     CatalogSerialRegression,
     CatalogStateCorrupt,
+    CatalogKindInvalid,
+    CatalogInvalid,
     default_state_path,
 )
 from tinyagentos.orb.discovery import browse_lan_orbs, list_usb_orbs, probe_agent_buddy
@@ -142,6 +144,8 @@ async def orb_catalog(request: Request):
                 CatalogSignatureInvalid,
                 CatalogSerialRegression,
                 CatalogStateCorrupt,
+                CatalogKindInvalid,
+                CatalogInvalid,
             ) as e:
                 error_map = {
                     CatalogSignatureMissing: "orb_catalog_signature_missing",
@@ -149,6 +153,8 @@ async def orb_catalog(request: Request):
                     CatalogSignatureInvalid: "orb_catalog_signature_invalid",
                     CatalogSerialRegression: "orb_catalog_serial_regression",
                     CatalogStateCorrupt: "orb_catalog_state_corrupt",
+                    CatalogKindInvalid: "orb_catalog_kind_invalid",
+                    CatalogInvalid: "orb_catalog_invalid",
                 }
                 return JSONResponse({"error": error_map[type(e)]}, status_code=503)
         else:
@@ -160,6 +166,8 @@ async def orb_catalog(request: Request):
         CatalogSignatureInvalid,
         CatalogSerialRegression,
         CatalogStateCorrupt,
+        CatalogKindInvalid,
+        CatalogInvalid,
     ) as e:
         # Signature/key/serial/state errors from remote fetch never fall back to cache
         error_map = {
@@ -168,6 +176,8 @@ async def orb_catalog(request: Request):
             CatalogSignatureInvalid: "orb_catalog_signature_invalid",
             CatalogSerialRegression: "orb_catalog_serial_regression",
             CatalogStateCorrupt: "orb_catalog_state_corrupt",
+            CatalogKindInvalid: "orb_catalog_kind_invalid",
+            CatalogInvalid: "orb_catalog_invalid",
         }
         return JSONResponse({"error": error_map[type(e)]}, status_code=503)
 

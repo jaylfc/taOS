@@ -1,0 +1,3 @@
+### Fixed
+
+- OOBE: the first-chat deploy key is now saved to onboarding progress before the deploy request, so a reload mid-setup resumes at first-chat with the same Idempotency-Key instead of minting one and deploying a second agent. A refused key (the server caches a refusal under its key for 3600s) is replaced in memory and saved again, so a resume never comes back with a key that is already refused.

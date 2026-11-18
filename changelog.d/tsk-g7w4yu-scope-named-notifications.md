@@ -1,0 +1,1 @@
+- Task lifecycle and access-request notifications that name a task or project now go only to the project's owner and admins (access requests: admins) instead of being broadcast to every user; Deny on a consent card names only the project the request named, and a reopen without `reopened_by` names the session user.

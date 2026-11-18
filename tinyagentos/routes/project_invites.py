@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field, field_validator
 from tinyagentos.agent_registry_store import _slugify, agent_slug_or_fallback
 from tinyagentos.auth_context import CurrentUser, current_user, require_owner_or_admin
 from tinyagentos.auth_middleware import rate_limit_ok, rate_limit_retry_after
-from tinyagentos.notification_labels import project_label
+from tinyagentos.notification_labels import admin_user_ids, project_label
 from tinyagentos.projects.invite_store import (
     InviteAlreadyRedeemedError,
     InviteExpiredError,
@@ -1480,19 +1480,29 @@ def _notify_pending_invite(request: Request, record: dict) -> None:
                 if project_id
                 else ""
             )
-            await notifs.add(
-                title="Access request",
-                message=f"{record['identity_claim']} is requesting {', '.join(scopes)}{on_project}",
-                level="info",
-                source="auth_requests",
-                data={
-                    "request_id": record["id"],
-                    "identity_claim": record["identity_claim"],
-                    "framework": record["framework"],
-                    "requested_scopes": list(scopes),
-                    "project_id": project_id,
-                },
-            )
+            # Only an admin may approve, and the text names the project, so it
+            # goes to each admin rather than to every user (tsk-g7w4yu). One
+            # failed write must not skip the remaining admins, and only the
+            # first row posts to webhooks so a webhook sees the request once.
+            for i, admin_id in enumerate(admin_user_ids(request.app.state)):
+                try:
+                    await notifs.add(
+                        title="Access request",
+                        message=f"{record['identity_claim']} is requesting {', '.join(scopes)}{on_project}",
+                        level="info",
+                        source="auth_requests",
+                        user_id=admin_id,
+                        webhook=i == 0,
+                        data={
+                            "request_id": record["id"],
+                            "identity_claim": record["identity_claim"],
+                            "framework": record["framework"],
+                            "requested_scopes": list(scopes),
+                            "project_id": project_id,
+                        },
+                    )
+                except Exception:
+                    logger.warning("invite access-request notification to %s failed", admin_id, exc_info=True)
 
         asyncio.create_task(_add())
     except Exception:  # noqa: BLE001

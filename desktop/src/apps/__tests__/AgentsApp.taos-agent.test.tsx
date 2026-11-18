@@ -137,14 +137,14 @@ describe("AgentsApp — taOS system agent rendered as standard AgentRow", () => 
   it("renders the taOS agent name in the same card structure as regular agents", async () => {
     render(<AgentsApp windowId="test" />);
     await waitFor(() =>
-      expect(screen.getByText(/taOS agent/i)).toBeInTheDocument()
+      expect(screen.getByText(/taOS Agent/i)).toBeInTheDocument()
     );
   });
 
   it("does NOT render a Delete button for the taOS system agent", async () => {
     render(<AgentsApp windowId="test" />);
     // Wait for agents to load
-    await screen.findByText(/taOS agent/i);
+    await screen.findByText(/taOS Agent/i);
     // Delete button for the system agent must not exist
     expect(screen.queryByRole("button", { name: /delete taos-agent/i })).toBeNull();
   });
@@ -171,7 +171,7 @@ describe("AgentsApp — taOS system agent rendered as standard AgentRow", () => 
 
   it("does NOT show a Resume button for the taOS system agent even when paused would normally show it", async () => {
     render(<AgentsApp windowId="test" />);
-    await screen.findByText(/taOS agent/i);
+    await screen.findByText(/taOS Agent/i);
     // No resume button scoped to the system agent
     expect(screen.queryByRole("button", { name: /resume taos-agent/i })).toBeNull();
   });
@@ -189,7 +189,7 @@ describe("AgentsApp — taOS agent when no deployed agents exist", () => {
   it("still renders the taOS agent card in the empty-state view", async () => {
     render(<AgentsApp windowId="test" />);
     await waitFor(() =>
-      expect(screen.getByText(/taOS agent/i)).toBeInTheDocument()
+      expect(screen.getByText(/taOS Agent/i)).toBeInTheDocument()
     );
     // Confirm no deployed count text says something useful
     expect(screen.getByText("0 deployed")).toBeInTheDocument();
@@ -197,7 +197,7 @@ describe("AgentsApp — taOS agent when no deployed agents exist", () => {
 
   it("delete is absent for taOS agent in empty-state view", async () => {
     render(<AgentsApp windowId="test" />);
-    await screen.findByText(/taOS agent/i);
+    await screen.findByText(/taOS Agent/i);
     expect(screen.queryByRole("button", { name: /delete taos-agent/i })).toBeNull();
   });
 });

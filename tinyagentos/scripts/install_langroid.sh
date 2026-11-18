@@ -118,32 +118,36 @@ async def fetch_boot(c):
             last_error = f"[bootstrap error: {detail}]"
     raise RuntimeError(last_error or "[bootstrap error: unknown]")
 async def post_reply(c, u, t, mid, tid, txt, cid=None):
-    """POST the final reply. Retries with exponential backoff on transient
-    failures (HTTP 5xx or exceptions); gives up after MAX_RETRIES attempts
-    and returns False so the answer is logged, not silently dropped."""
+    """POST the final reply. Retries on transient transport failures and
+    5xx/429 responses only; treats 2xx as success and never retries other 4xx
+    (a 4xx means the request was rejected, so re-posting would not help).
+    Backs off 1.0s * attempt between attempts, up to MAX_RETRIES total."""
     body = {"kind":"final","id":mid,"trace_id":tid,"content":txt}
     if cid: body["channel_id"] = cid
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {t}"}
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             resp = await c.post(u, json=body, headers=headers, timeout=30)
-            if resp.status_code < 400:
+            if 200 <= resp.status_code < 300:
                 return True
-            if 500 <= resp.status_code < 600 and attempt < MAX_RETRIES:
-                delay = RETRY_BACKOFF_BASE ** attempt
+            if (resp.status_code == 429 or 500 <= resp.status_code < 600) and attempt < MAX_RETRIES:
+                delay = 1.0 * attempt
                 log.warning("reply POST %s (attempt %d/%d), retry in %.1fs",
                             resp.status_code, attempt, MAX_RETRIES, delay)
                 await asyncio.sleep(delay)
                 continue
             log.warning("reply POST %s: %s", resp.status_code, resp.text[:300])
             return False
-        except Exception as e:
+        except httpx.TransportError as e:
             if attempt < MAX_RETRIES:
-                delay = RETRY_BACKOFF_BASE ** attempt
+                delay = 1.0 * attempt
                 log.warning("reply POST error %s (attempt %d/%d), retry in %.1fs",
                             e, attempt, MAX_RETRIES, delay)
                 await asyncio.sleep(delay)
                 continue
+            log.warning("reply POST failed: %s", e)
+            return False
+        except Exception as e:
             log.warning("reply POST failed: %s", e)
             return False
     return False

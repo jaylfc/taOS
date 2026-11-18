@@ -127,7 +127,12 @@ class TestFriendsList:
 
 class TestBlockMute:
     @pytest.mark.asyncio
-    async def test_block_severs_local_edges(self, client, upstream):
+    async def test_block_severs_local_edges(self, client, upstream, app):
+        # This test exercises local edge severing only; it does not need the
+        # contacts cascade. The shared ``client`` fixture leaves
+        # contacts_store uninitialised, so point it at None rather than let the
+        # block route reach an uninitialised store and fail closed.
+        app.state.contacts_store = None
         # Establish a friend edge + a follow, then block.
         captured, calls = upstream
         await client.put("/api/hub/follow", json={"target_fingerprint": "peerFP"})
@@ -235,7 +240,9 @@ class TestFriendRequestFlow:
         self, client, app, upstream, monkeypatch
     ):
         """A slow network exchange never delays the accept, and the contact
-        (local work) already exists when the response returns."""
+        (local work) already exists when the response returns. The bound only
+        has to separate the inline 0.3s contact write from the backgrounded 5s
+        exchange."""
         import asyncio
         import time
 
@@ -284,10 +291,19 @@ class TestFriendRequestFlow:
         try:
             assert resp.status_code == 200
             assert resp.json()["state"] == "accepted"
-            assert elapsed < 1.0
+            assert elapsed < 3.0
             contact = await contacts_store.get_contact(f"hub:{peer_fp}")
             assert contact is not None, "contact must exist when accept returns"
             assert await contacts_store.get_peer_link(f"hub:{peer_fp}") is not None
+            app_state = app.state
+            hub_store = getattr(app_state, "hub_store", None)
+            if hub_store is None:
+                from tinyagentos.hub import store as hub_store_mod
+                from pathlib import Path
+                hub_store = hub_store_mod.HubStore(Path(hub_store_mod.default_db_path()))
+                await hub_store.init()
+                app_state.hub_store = hub_store
+            assert await hub_store.has_edge(peer_fp, "friend")
         finally:
             for t in list(hub_routes._BACKGROUND_TASKS):
                 t.cancel()

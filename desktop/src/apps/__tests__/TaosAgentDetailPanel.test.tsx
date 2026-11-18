@@ -86,7 +86,7 @@ describe("<TaosAgentDetailPanel />", () => {
     render(<TaosAgentDetailPanel onClose={onClose} />);
     await waitFor(() =>
       expect(
-        screen.getByLabelText("Remove ollama/qwen3 from taOS agent permitted models")
+        screen.getByLabelText("Remove ollama/qwen3 from taOS Agent permitted models")
       ).not.toBeDisabled()
     );
   });
@@ -94,7 +94,7 @@ describe("<TaosAgentDetailPanel />", () => {
   it("persona textarea pre-fills with config persona", async () => {
     render(<TaosAgentDetailPanel onClose={onClose} />);
     await waitFor(() => {
-      const ta = screen.getByLabelText("taOS agent persona — system-prompt override");
+      const ta = screen.getByLabelText("taOS Agent persona — system-prompt override");
       expect((ta as HTMLTextAreaElement).value).toBe("Be helpful.");
     });
   });
@@ -102,16 +102,16 @@ describe("<TaosAgentDetailPanel />", () => {
   it("Save (persona) button appears only after editing persona", async () => {
     render(<TaosAgentDetailPanel onClose={onClose} />);
     await waitFor(() =>
-      screen.getByLabelText("taOS agent persona — system-prompt override")
+      screen.getByLabelText("taOS Agent persona — system-prompt override")
     );
     // Initially no save button
-    expect(screen.queryByLabelText("Save taOS agent persona")).toBeNull();
+    expect(screen.queryByLabelText("Save taOS Agent persona")).toBeNull();
     // Edit the textarea
-    fireEvent.change(screen.getByLabelText("taOS agent persona — system-prompt override"), {
+    fireEvent.change(screen.getByLabelText("taOS Agent persona — system-prompt override"), {
       target: { value: "Be terse." },
     });
     await waitFor(() =>
-      expect(screen.getByLabelText("Save taOS agent persona")).toBeInTheDocument()
+      expect(screen.getByLabelText("Save taOS Agent persona")).toBeInTheDocument()
     );
   });
 
@@ -119,13 +119,13 @@ describe("<TaosAgentDetailPanel />", () => {
     vi.mocked(setTaosAgentPersona).mockResolvedValue({ persona: "Be terse." });
     render(<TaosAgentDetailPanel onClose={onClose} />);
     await waitFor(() =>
-      screen.getByLabelText("taOS agent persona — system-prompt override")
+      screen.getByLabelText("taOS Agent persona — system-prompt override")
     );
-    fireEvent.change(screen.getByLabelText("taOS agent persona — system-prompt override"), {
+    fireEvent.change(screen.getByLabelText("taOS Agent persona — system-prompt override"), {
       target: { value: "Be terse." },
     });
-    await waitFor(() => screen.getByLabelText("Save taOS agent persona"));
-    fireEvent.click(screen.getByLabelText("Save taOS agent persona"));
+    await waitFor(() => screen.getByLabelText("Save taOS Agent persona"));
+    fireEvent.click(screen.getByLabelText("Save taOS Agent persona"));
     await waitFor(() =>
       expect(setTaosAgentPersona).toHaveBeenCalledWith("Be terse.")
     );
@@ -138,15 +138,15 @@ describe("<TaosAgentDetailPanel />", () => {
     });
     render(<TaosAgentDetailPanel onClose={onClose} />);
     await waitFor(() =>
-      screen.getByLabelText("Remove ollama/qwen3 from taOS agent permitted models")
+      screen.getByLabelText("Remove ollama/qwen3 from taOS Agent permitted models")
     );
     fireEvent.click(
-      screen.getByLabelText("Remove ollama/qwen3 from taOS agent permitted models")
+      screen.getByLabelText("Remove ollama/qwen3 from taOS Agent permitted models")
     );
     await waitFor(() =>
-      screen.getByLabelText("Save taOS agent permitted models")
+      screen.getByLabelText("Save taOS Agent permitted models")
     );
-    fireEvent.click(screen.getByLabelText("Save taOS agent permitted models"));
+    fireEvent.click(screen.getByLabelText("Save taOS Agent permitted models"));
     await waitFor(() =>
       expect(setTaosAgentPermitted).toHaveBeenCalledWith(["ollama/llama3"])
     );

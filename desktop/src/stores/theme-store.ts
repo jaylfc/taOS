@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { ThemeConfig } from "@/theme/theme-config";
 import { ALLOWED_TOKENS } from "@/theme/theme-config";
 import { BUILTIN_THEMES } from "@/theme/builtin-themes";
+import { randomId } from "@/lib/uid";
 
 // Wallpapers are split into (image, fallback) pairs rather than a single
 // background-shorthand so CSS media queries can control background-size
@@ -196,7 +197,7 @@ const DEVICE_ID_KEY = "taos-wallpaper-device-id";
 function getDeviceId(): string {
   let id = localStorage.getItem(DEVICE_ID_KEY);
   if (!id) {
-    id = crypto.randomUUID();
+    id = randomId();
     localStorage.setItem(DEVICE_ID_KEY, id);
   }
   return id;

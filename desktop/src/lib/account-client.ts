@@ -196,8 +196,7 @@ export async function login(email: string, password: string): Promise<Account | 
     };
   }
   if (typeof d?.user_id !== "string") return UNEXPECTED;
-  const me = await fetchAccount();
-  return me.kind === "signed-in" ? me.account : UNEXPECTED;
+  return accountFor(d.user_id);
 }
 
 /** taos.my's register mints a session too (the proxy relays its cookie) and
@@ -206,9 +205,17 @@ export async function register(email: string, password: string): Promise<Account
   const res = await authAction("/register", email, password);
   if (isAuthError(res)) return res;
   if (isAccount(res.data)) return res.data;
-  if (typeof (res.data as Record<string, unknown> | null)?.user_id !== "string") return UNEXPECTED;
+  const userId = (res.data as Record<string, unknown> | null)?.user_id;
+  if (typeof userId !== "string") return UNEXPECTED;
+  return accountFor(userId);
+}
+
+/** The /me after login or register must be the account that call named: a
+ *  session cookie for someone else (a stale one the new cookie failed to
+ *  replace) is not a sign-in. */
+async function accountFor(userId: string): Promise<Account | AuthError> {
   const me = await fetchAccount();
-  return me.kind === "signed-in" ? me.account : UNEXPECTED;
+  return me.kind === "signed-in" && me.account.user_id === userId ? me.account : UNEXPECTED;
 }
 
 export async function logout(): Promise<void> {

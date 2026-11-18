@@ -525,6 +525,10 @@ Run `curl -fsSL https://raw.githubusercontent.com/jaylfc/taOS/master/scripts/ins
 
 Installs `hailo-ollama` (the Hailo-10H LLM runtime) at a pinned ref, listening on port **7836** (port 8000 is the Django slot in taOS port hygiene and is already probed as a llama-cpp/vllm candidate). Before installing, the script checks for a pre-existing upstream hailo-ollama (something answering `GET /api/tags` on `0.0.0.0:8000`, Hailo's own default). If one is found it reports plainly what was detected and exits, leaving the existing instance untouched rather than silently building a second server that would compete for the accelerator and go unseen by taOS.
 
+### llama.cpp install (`scripts/install-llama-cpp.sh`)
+
+Installs the taOS default local LLM backend (router mode) on port **7835**, serving chat, embeddings, and rerank from one process. On musl-arm64 (Alpine, postmarketOS) it builds from source; OpenRC is supported alongside systemd and macOS launchd.
+
 ### Worker install (`scripts/install-worker.sh`)
 
 Linux uses a two-phase install. Phase 1 runs on the bare host; phase 2 runs inside the `taos-worker` LXC.

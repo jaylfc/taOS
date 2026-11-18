@@ -54,7 +54,7 @@ export function CreateView({ onOpenGame }: CreateViewProps) {
       return;
     }
     if (!model) {
-      setError("No taOS agent model is configured -- pick one in taOS Assistant settings first.");
+      setError("No taOS Agent model is configured -- pick one in taOS Assistant settings first.");
       return;
     }
 
@@ -116,7 +116,7 @@ export function CreateView({ onOpenGame }: CreateViewProps) {
             Describe the game you want to make
           </h2>
           <p className="mt-1 text-[12.5px] text-shell-text-secondary">
-            The taOS agent customizes a real starter template to match your idea, or start from a
+            The taOS Agent customizes a real starter template to match your idea, or start from a
             template with no changes.
           </p>
         </header>
@@ -147,7 +147,7 @@ export function CreateView({ onOpenGame }: CreateViewProps) {
               {busy ? "Building..." : "Generate with AI"}
             </button>
             <span className="text-[11px] text-shell-text-tertiary">
-              {model ? `Using ${model}` : "No taOS agent model configured"}
+              {model ? `Using ${model}` : "No taOS Agent model configured"}
             </span>
           </div>
 

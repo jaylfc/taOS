@@ -1,0 +1,3 @@
+### Fixed
+
+- POST /api/providers now returns a `models_source` field on the added provider: `discovered` when models came from a live /models probe, `defaults` when the per-type seed list was used, `none` when no models came from the caller or the seed list, or `supplied` when the caller supplied its own models. Cloud provider types probe /models before using seed defaults; non-cloud types skip the probe.

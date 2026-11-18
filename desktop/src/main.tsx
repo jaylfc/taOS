@@ -5,6 +5,7 @@ import { App } from "./App";
 import { AppShell } from "./components/AppShell";
 import { installAuthGuard } from "./lib/auth-guard";
 import { installGlobalErrorReporting } from "./lib/client-log";
+import "@fontsource-variable/inter";
 import "./theme/tokens.css";
 
 // Wrap window.fetch so any 401 from /api/* triggers a session-expired

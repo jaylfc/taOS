@@ -94,18 +94,27 @@ def _extract_curl_retry_block(text: str) -> str:
     return "\n".join(block_lines)
 
 
+def _curl_commands(text: str):
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if "curl " in line and not line.strip().startswith("#") and "curl --help" not in line:
+            parts = [line]
+            while parts[-1].rstrip().endswith("\\") and i + 1 < len(lines):
+                i += 1
+                parts.append(lines[i])
+            yield "\n".join(parts)
+        i += 1
+
+
 def test_no_unconditional_retry_all_errors():
-    """No line of install-server.sh that contains `curl ` also contains a literal `--retry-all-errors`.
-    Only the guarded `CURL_RETRY+=(--retry-all-errors)` line may carry the flag."""
+    """No complete continued `curl` command in install-server.sh contains a
+    literal `--retry-all-errors`. Only the guarded
+    `CURL_RETRY+=(--retry-all-errors)` line may carry the flag."""
     text = INSTALL.read_text()
-    offenders = [
-        line for line in text.splitlines()
-        if not line.strip().startswith("#")
-        and "curl " in line
-        and "curl --help" not in line
-        and "--retry-all-errors" in line
-    ]
-    assert offenders == [], f"curl lines with an unconditional --retry-all-errors: {offenders}"
+    offenders = [cmd for cmd in _curl_commands(text) if "--retry-all-errors" in cmd]
+    assert offenders == [], f"curl commands with an unconditional --retry-all-errors: {offenders}"
     guarded = [line for line in text.splitlines() if "--retry-all-errors" in line and line.strip().startswith("CURL_RETRY+=(")]
     assert len(guarded) == 1, f"expected exactly one guarded CURL_RETRY+=(--retry-all-errors) line, got {guarded}"
 
