@@ -2163,7 +2163,9 @@ class TestEpubHardening:
 
         monkeypatch.setattr(library_pipeline, "EPUB_MAX_ENTRY_BYTES", 1024 * 1024)
         monkeypatch.setattr(library_pipeline, "EPUB_MAX_TOTAL_BYTES", 2 * 1024 * 1024)
-        filler = "1" * (1024 * 1024)
+        # 768 KiB fillers: each chapter sits comfortably under the per-entry
+        # cap, so only the *total* cap can reject this book (review, #3783).
+        filler = "1" * (768 * 1024)
         book = _write_epub(tmp_path / "wide.epub", {
             "ch1": f"<html><body><p>{filler}</p></body></html>",
             "ch2": f"<html><body><p>{filler}</p></body></html>",
@@ -2277,3 +2279,297 @@ class TestEpubHardening:
         )
         assert "LOL" not in written
         assert "rejected" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Review round 2 (taOS #3783): DOCTYPE books, UTF-16 scan, OOXML envelope,
+# rejection visibility, OPF resolution, grouped PPTX shapes
+# ---------------------------------------------------------------------------
+
+
+class TestEpubDoctypeChapters:
+    """A bare DOCTYPE is not an attack: EPUB 2 chapters carry the XHTML 1.1
+    DOCTYPE and EPUB 3 chapters carry <!DOCTYPE html>. Only entity
+    declarations and DTD internal subsets are rejected."""
+
+    @pytest.mark.asyncio
+    async def test_doctype_chapters_extract_text(self, lib_store, storage_dir, tmp_path):
+        from tinyagentos.library_pipeline import EpubProcessor
+
+        epub2 = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" '
+            '"http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">'
+            '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
+            "<p>EPUB2 chapter text</p></body></html>"
+        )
+        epub3 = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            "<!DOCTYPE html>"
+            '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
+            "<p>EPUB3 chapter text</p></body></html>"
+        )
+        book = _write_epub(tmp_path / "doctypes.epub", {"ch1": epub2, "ch2": epub3})
+        item_id = await lib_store.create_item(
+            kind="epub", title="doctypes.epub", storage_path=str(book),
+        )
+        item = await lib_store.get_item(item_id)
+        artifacts = await EpubProcessor(lib_store, storage_dir).process(item)
+        assert len(artifacts) == 1
+        content = Path(artifacts[0]["path"]).read_text()
+        assert "EPUB2 chapter text" in content
+        assert "EPUB3 chapter text" in content
+        assert artifacts[0]["meta"]["chapter_count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_utf16_entity_chapter_rejected(
+        self, lib_store, storage_dir, tmp_path, caplog,
+    ):
+        """A UTF-16 chapter's markup is interleaved with NUL bytes, so a
+        byte-level scan never sees its entity declaration; the scan must
+        decode before it judges (review item, taOS #3783)."""
+        from tinyagentos.library_pipeline import EpubProcessor
+
+        chapter = (
+            '<?xml version="1.0" encoding="UTF-16"?>'
+            '<!DOCTYPE html [<!ENTITY boom "UTF16_ENTITY_TOKEN">]>'
+            "<html><body><p>&boom;</p></body></html>"
+        )
+        book = _write_epub(tmp_path / "utf16.epub", {
+            "ch1": chapter.encode("utf-16"),
+            "ch2": "<html><body><p>Clean chapter</p></body></html>",
+        })
+        item_id = await lib_store.create_item(
+            kind="epub", title="utf16.epub", storage_path=str(book),
+        )
+        item = await lib_store.get_item(item_id)
+        with caplog.at_level(logging.ERROR):
+            artifacts = await EpubProcessor(lib_store, storage_dir).process(item)
+        assert artifacts == []
+        text_dir = storage_dir / "text"
+        written = (
+            "".join(p.read_text() for p in text_dir.glob("*"))
+            if text_dir.exists() else ""
+        )
+        assert "UTF16_ENTITY_TOKEN" not in written
+        assert "rejected" in caplog.text
+
+
+class TestRejectionRecordedOnItem:
+    """A rejected document must not leave its item "ready" with no text
+    and no explanation: the rejection is recorded in the item meta."""
+
+    @pytest.mark.asyncio
+    async def test_rejected_epub_records_error_in_meta(
+        self, lib_store, storage_dir, tmp_path,
+    ):
+        from tinyagentos.library_pipeline import EPUB_MAX_ENTRY_BYTES
+
+        payload = (
+            "<html><body><p>"
+            + ("0" * (EPUB_MAX_ENTRY_BYTES + 1024))
+            + "</p></body></html>"
+        )
+        bomb = _write_epub(tmp_path / "bomb.epub", {"ch1": payload})
+        item_id = await lib_store.create_item(
+            kind="epub", title="bomb.epub", storage_path=str(bomb),
+        )
+        await run_pipeline(lib_store, item_id, storage_dir)
+        item = await lib_store.get_item(item_id)
+        assert item["status"] == "ready"  # status flow unchanged
+        meta = json.loads(item["meta_json"])
+        assert "error" in meta
+        assert "rejected" in meta["error"]
+
+
+def _write_custom_epub(path: Path, *, manifest_href: str, entries: dict[str, str]) -> Path:
+    """Write an EPUB whose OPF lists one chapter under ``manifest_href``
+    while the chapter bytes live at the ``entries`` keys."""
+    import zipfile
+
+    opf = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<package xmlns="http://www.idpf.org/2007/opf" version="2.0">'
+        f'<manifest><item id="ch1" href="{manifest_href}" '
+        'media-type="application/xhtml+xml"/></manifest>'
+        '<spine><itemref idref="ch1"/></spine></package>'
+    )
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("mimetype", "application/epub+zip")
+        zf.writestr("META-INF/container.xml", _EPUB_CONTAINER_XML)
+        zf.writestr("OEBPS/content.opf", opf)
+        for name, payload in entries.items():
+            zf.writestr(name, payload)
+    return path
+
+
+class TestEpubOpfResolution:
+    """Manifest hrefs are URI-escaped and may not resolve against the
+    archive the way the spine assumes; when no spine entry matches an
+    archive entry, fall back to alphabetical order."""
+
+    @pytest.mark.asyncio
+    async def test_percent_encoded_href_resolves(self, lib_store, storage_dir, tmp_path):
+        from tinyagentos.library_pipeline import EpubProcessor
+
+        book = _write_custom_epub(
+            tmp_path / "escaped.epub",
+            manifest_href="ch%201.xhtml",
+            entries={"OEBPS/ch 1.xhtml": "<html><body><p>Escaped href chapter</p></body></html>"},
+        )
+        item_id = await lib_store.create_item(
+            kind="epub", title="escaped.epub", storage_path=str(book),
+        )
+        item = await lib_store.get_item(item_id)
+        artifacts = await EpubProcessor(lib_store, storage_dir).process(item)
+        assert len(artifacts) == 1
+        assert "Escaped href chapter" in Path(artifacts[0]["path"]).read_text()
+
+    @pytest.mark.asyncio
+    async def test_unmatched_spine_falls_back_to_alphabetical(
+        self, lib_store, storage_dir, tmp_path,
+    ):
+        from tinyagentos.library_pipeline import EpubProcessor
+
+        book = _write_custom_epub(
+            tmp_path / "stray.epub",
+            manifest_href="elsewhere/ch1.xhtml",
+            entries={"OEBPS/ch1.xhtml": "<html><body><p>Fallback chapter</p></body></html>"},
+        )
+        item_id = await lib_store.create_item(
+            kind="epub", title="stray.epub", storage_path=str(book),
+        )
+        item = await lib_store.get_item(item_id)
+        artifacts = await EpubProcessor(lib_store, storage_dir).process(item)
+        assert len(artifacts) == 1
+        assert "Fallback chapter" in Path(artifacts[0]["path"]).read_text()
+
+
+def _group_slide_shapes(slide) -> None:
+    """Move a slide's shapes into one group shape (test fixture).
+
+    python-pptx cannot create group shapes, so the group element is
+    assembled in the slide XML directly; PowerPoint files do this
+    routinely whenever an author groups shapes.
+    """
+    from pptx.oxml import parse_xml
+    from pptx.oxml.ns import nsdecls, qn
+
+    sp_tree = slide.shapes._spTree
+    shape_els = [
+        el for el in sp_tree
+        if el.tag in (qn("p:sp"), qn("p:graphicFrame"), qn("p:pic"), qn("p:cxnSp"))
+    ]
+    grp_sp = parse_xml(
+        '<p:grpSp %s>'
+        '<p:nvGrpSpPr><p:cNvPr id="900" name="Group 900"/>'
+        "<p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>"
+        "<p:grpSpPr><a:xfrm><a:off x=\"0\" y=\"0\"/>"
+        '<a:ext cx="914400" cy="914400"/><a:chOff x="0" y="0"/>'
+        '<a:chExt cx="914400" cy="914400"/></a:xfrm></p:grpSpPr>'
+        "</p:grpSp>" % nsdecls("p", "a")
+    )
+    sp_tree.append(grp_sp)
+    for el in shape_els:
+        grp_sp.append(el)
+
+
+class TestOfficeHardening:
+    """The OOXML processors get the same decompression envelope as EPUB
+    before the parser runs, rejections land on the item meta, and PPTX
+    extraction walks grouped shapes."""
+
+    @pytest.mark.asyncio
+    async def test_docx_over_cap_rejected(self, lib_store, storage_dir, tmp_path, monkeypatch):
+        pytest.importorskip(
+            "docx",
+            reason="python-docx is the optional `library` extra; CI shards install no extras",
+        )
+        import tinyagentos.library_pipeline as library_pipeline
+        from docx import Document
+
+        file_path = tmp_path / "doc.docx"
+        doc = Document()
+        doc.add_paragraph("Hello DOCX world")
+        doc.save(file_path)
+        monkeypatch.setattr(library_pipeline, "OFFICE_MAX_TOTAL_BYTES", 64)
+        item_id = await lib_store.create_item(
+            kind="docx", title="doc.docx", storage_path=str(file_path),
+        )
+        item = await lib_store.get_item(item_id)
+        artifacts = await library_pipeline.DocxProcessor(lib_store, storage_dir).process(item)
+        assert artifacts == []
+        meta = json.loads((await lib_store.get_item(item_id))["meta_json"])
+        assert "rejected" in meta["error"]
+
+    @pytest.mark.asyncio
+    async def test_pptx_over_cap_rejected(self, lib_store, storage_dir, tmp_path, monkeypatch):
+        pytest.importorskip(
+            "pptx",
+            reason="python-pptx is the optional `library` extra; CI shards install no extras",
+        )
+        import tinyagentos.library_pipeline as library_pipeline
+        from pptx import Presentation
+
+        file_path = tmp_path / "deck.pptx"
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[5])
+        slide.shapes.title.text = "Hello PPTX world"
+        prs.save(file_path)
+        monkeypatch.setattr(library_pipeline, "OFFICE_MAX_TOTAL_BYTES", 64)
+        item_id = await lib_store.create_item(
+            kind="pptx", title="deck.pptx", storage_path=str(file_path),
+        )
+        item = await lib_store.get_item(item_id)
+        artifacts = await library_pipeline.PptxProcessor(lib_store, storage_dir).process(item)
+        assert artifacts == []
+        meta = json.loads((await lib_store.get_item(item_id))["meta_json"])
+        assert "rejected" in meta["error"]
+
+    @pytest.mark.asyncio
+    async def test_xlsx_over_cap_rejected(self, lib_store, storage_dir, tmp_path, monkeypatch):
+        pytest.importorskip(
+            "openpyxl",
+            reason="openpyxl is the optional `library` extra; CI shards install no extras",
+        )
+        import openpyxl
+        import tinyagentos.library_pipeline as library_pipeline
+
+        file_path = tmp_path / "data.xlsx"
+        wb = openpyxl.Workbook()
+        wb.active.append(["Hello XLSX"])
+        wb.save(file_path)
+        monkeypatch.setattr(library_pipeline, "OFFICE_MAX_TOTAL_BYTES", 64)
+        item_id = await lib_store.create_item(
+            kind="xlsx", title="data.xlsx", storage_path=str(file_path),
+        )
+        item = await lib_store.get_item(item_id)
+        artifacts = await library_pipeline.XlsxProcessor(lib_store, storage_dir).process(item)
+        assert artifacts == []
+        meta = json.loads((await lib_store.get_item(item_id))["meta_json"])
+        assert "rejected" in meta["error"]
+
+    @pytest.mark.asyncio
+    async def test_pptx_grouped_shape_text_extracted(self, lib_store, storage_dir, tmp_path):
+        pytest.importorskip(
+            "pptx",
+            reason="python-pptx is the optional `library` extra; CI shards install no extras",
+        )
+        from pptx import Presentation
+        from pptx.util import Inches
+
+        file_path = tmp_path / "grouped.pptx"
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        box = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(4), Inches(1))
+        box.text_frame.text = "Grouped shape text"
+        _group_slide_shapes(slide)
+        prs.save(file_path)
+        item_id = await lib_store.create_item(
+            kind="pptx", title="grouped.pptx", storage_path=str(file_path),
+        )
+        item = await lib_store.get_item(item_id)
+        from tinyagentos.library_pipeline import PptxProcessor
+        artifacts = await PptxProcessor(lib_store, storage_dir).process(item)
+        assert len(artifacts) == 1
+        assert "Grouped shape text" in Path(artifacts[0]["path"]).read_text()

@@ -8,12 +8,16 @@ that are stored on the item and optionally handed off to taosmd collections.
 from __future__ import annotations
 
 import asyncio
+import codecs
 import json
 import logging
 import mimetypes
 import os
+import posixpath
+import re
 import time
 from pathlib import Path
+from urllib.parse import unquote
 
 from tinyagentos.library_store import LibraryStore
 
@@ -115,6 +119,18 @@ class Processor:
     async def process(self, item: dict) -> list[dict]:
         """Run processing on an item, return list of artifact dicts produced."""
         raise NotImplementedError
+
+    async def _record_rejection(self, item: dict, message: str) -> None:
+        """Record a rejected upload on the item's meta.
+
+        A rejected document produces no text artifact, so without this the
+        item would end up "ready" with nothing to show and no sign of why
+        (review item, taOS #3783). The pipeline status flow is unchanged;
+        the error lives in the meta where the UI surfaces it.
+        """
+        meta_json = json.loads(item.get("meta_json", "{}"))
+        meta_json["error"] = message
+        await self.store.update_item(item["id"], meta_json=meta_json)
 
 
 class FileProcessor(Processor):
@@ -298,15 +314,46 @@ class DocxProcessor(Processor):
         if not p.exists():
             return artifacts
         try:
-            from docx import Document
+            from docx import Document  # noqa: F401 -- presence check; the parse runs in a thread
         except ImportError:
             logger.warning("DocxProcessor: python-docx not installed, skipping %s", storage_path)
             return artifacts
         try:
-            doc = Document(str(p))
+            parts, paragraph_count = await asyncio.to_thread(self._extract, p)
+        except DocumentSecurityError as exc:
+            logger.error("DocxProcessor: rejected %s: %s", storage_path, exc)
+            await self._record_rejection(item, f"DOCX rejected: {exc}")
+            return artifacts
         except Exception:
             logger.warning("DocxProcessor: could not read %s", storage_path, exc_info=True)
             return artifacts
+        if not parts:
+            return artifacts
+        text_content = "\n".join(parts)
+        text_dir = self.storage_dir / "text"
+        text_dir.mkdir(parents=True, exist_ok=True)
+        text_path = text_dir / f"{item_id}_docx.txt"
+        text_path.write_text(text_content, encoding="utf-8")
+        meta = {"char_count": len(text_content), "paragraph_count": paragraph_count}
+        await self.store.add_artifact(item_id, kind="text", path=str(text_path), meta=meta)
+        artifacts.append({"kind": "text", "path": str(text_path), "meta": meta})
+        meta_json = json.loads(item.get("meta_json", "{}"))
+        meta_json["preview"] = text_content[:200]
+        await self.store.update_item(item_id, meta_json=meta_json)
+        return artifacts
+
+
+    @staticmethod
+    def _extract(p: Path) -> tuple[list[str], int]:
+        """Parse one DOCX and return (text parts, paragraph count).
+
+        Runs in a worker thread (see process()): the decompression envelope
+        is checked before python-docx is allowed to inflate the archive.
+        """
+        from docx import Document
+
+        _check_office_envelope(p)
+        doc = Document(str(p))
         parts: list[str] = []
         for para in doc.paragraphs:
             if para.text.strip():
@@ -316,20 +363,7 @@ class DocxProcessor(Processor):
                 cells = [c.text.strip() for c in row.cells if c.text.strip()]
                 if cells:
                     parts.append(" | ".join(cells))
-        if not parts:
-            return artifacts
-        text_content = "\n".join(parts)
-        text_dir = self.storage_dir / "text"
-        text_dir.mkdir(parents=True, exist_ok=True)
-        text_path = text_dir / f"{item_id}_docx.txt"
-        text_path.write_text(text_content, encoding="utf-8")
-        meta = {"char_count": len(text_content), "paragraph_count": len(doc.paragraphs)}
-        await self.store.add_artifact(item_id, kind="text", path=str(text_path), meta=meta)
-        artifacts.append({"kind": "text", "path": str(text_path), "meta": meta})
-        meta_json = json.loads(item.get("meta_json", "{}"))
-        meta_json["preview"] = text_content[:200]
-        await self.store.update_item(item_id, meta_json=meta_json)
-        return artifacts
+        return parts, len(doc.paragraphs)
 
 
 class PptxProcessor(Processor):
@@ -349,18 +383,49 @@ class PptxProcessor(Processor):
         if not p.exists():
             return artifacts
         try:
-            from pptx import Presentation
+            from pptx import Presentation  # noqa: F401 -- presence check; the parse runs in a thread
         except ImportError:
             logger.warning("PptxProcessor: python-pptx not installed, skipping %s", storage_path)
             return artifacts
         try:
-            prs = Presentation(str(p))
+            parts, slide_count = await asyncio.to_thread(self._extract, p)
+        except DocumentSecurityError as exc:
+            logger.error("PptxProcessor: rejected %s: %s", storage_path, exc)
+            await self._record_rejection(item, f"PPTX rejected: {exc}")
+            return artifacts
         except Exception:
             logger.warning("PptxProcessor: could not read %s", storage_path, exc_info=True)
             return artifacts
+        if not parts:
+            return artifacts
+        text_content = "\n".join(parts)
+        text_dir = self.storage_dir / "text"
+        text_dir.mkdir(parents=True, exist_ok=True)
+        text_path = text_dir / f"{item_id}_pptx.txt"
+        text_path.write_text(text_content, encoding="utf-8")
+        meta = {"char_count": len(text_content), "slide_count": slide_count}
+        await self.store.add_artifact(item_id, kind="text", path=str(text_path), meta=meta)
+        artifacts.append({"kind": "text", "path": str(text_path), "meta": meta})
+        meta_json = json.loads(item.get("meta_json", "{}"))
+        meta_json["preview"] = text_content[:200]
+        await self.store.update_item(item_id, meta_json=meta_json)
+        return artifacts
+
+
+    @staticmethod
+    def _extract(p: Path) -> tuple[list[str], int]:
+        """Parse one PPTX and return (text parts, slide count).
+
+        Runs in a worker thread (see process()): the decompression envelope
+        is checked before python-pptx is allowed to inflate the archive.
+        """
+        from pptx import Presentation
+
+        _check_office_envelope(p)
+        prs = Presentation(str(p))
         parts: list[str] = []
         for slide in prs.slides:
-            for shape in slide.shapes:
+            for shape in PptxProcessor._walk_shapes(slide.shapes):
                 if shape.has_text_frame:
                     text = shape.text_frame.text.strip()
                     if text:
@@ -370,20 +435,21 @@ class PptxProcessor(Processor):
                         cells = [c.text.strip() for c in row.cells if c.text.strip()]
                         if cells:
                             parts.append(" | ".join(cells))
-        if not parts:
-            return artifacts
-        text_content = "\n".join(parts)
-        text_dir = self.storage_dir / "text"
-        text_dir.mkdir(parents=True, exist_ok=True)
-        text_path = text_dir / f"{item_id}_pptx.txt"
-        text_path.write_text(text_content, encoding="utf-8")
-        meta = {"char_count": len(text_content), "slide_count": len(prs.slides)}
-        await self.store.add_artifact(item_id, kind="text", path=str(text_path), meta=meta)
-        artifacts.append({"kind": "text", "path": str(text_path), "meta": meta})
-        meta_json = json.loads(item.get("meta_json", "{}"))
-        meta_json["preview"] = text_content[:200]
-        await self.store.update_item(item_id, meta_json=meta_json)
-        return artifacts
+        return parts, len(prs.slides)
+
+    @staticmethod
+    def _walk_shapes(shapes):
+        """Yield every shape in a shape tree, descending into groups.
+
+        Grouped shapes keep their text on the group's children, so a flat
+        iteration of a slide's top-level shapes silently drops any text
+        an author grouped (review item, taOS #3783).
+        """
+        for shape in shapes:
+            yield shape
+            children = getattr(shape, "shapes", None)
+            if children is not None:
+                yield from PptxProcessor._walk_shapes(children)
 
 
 class XlsxProcessor(Processor):
@@ -403,25 +469,19 @@ class XlsxProcessor(Processor):
         if not p.exists():
             return artifacts
         try:
-            from openpyxl import load_workbook
+            from openpyxl import load_workbook  # noqa: F401 -- presence check; the parse runs in a thread
         except ImportError:
             logger.warning("XlsxProcessor: openpyxl not installed, skipping %s", storage_path)
             return artifacts
         try:
-            wb = load_workbook(str(p), read_only=True, data_only=True)
+            parts, sheet_count = await asyncio.to_thread(self._extract, p)
+        except DocumentSecurityError as exc:
+            logger.error("XlsxProcessor: rejected %s: %s", storage_path, exc)
+            await self._record_rejection(item, f"XLSX rejected: {exc}")
+            return artifacts
         except Exception:
             logger.warning("XlsxProcessor: could not read %s", storage_path, exc_info=True)
             return artifacts
-        parts: list[str] = []
-        sheet_count = 0
-        for ws in wb.worksheets:
-            sheet_count += 1
-            parts.append(f"=== Sheet: {ws.title} ===")
-            for row in ws.iter_rows(values_only=True):
-                cells = [str(c) for c in row if c is not None and str(c).strip()]
-                if cells:
-                    parts.append("\t".join(cells))
-        wb.close()
         if not parts:
             return artifacts
         text_content = "\n".join(parts)
@@ -438,6 +498,38 @@ class XlsxProcessor(Processor):
         return artifacts
 
 
+    @staticmethod
+    def _extract(p: Path) -> tuple[list[str], int]:
+        """Parse one XLSX and return (text parts, sheet count).
+
+        Runs in a worker thread (see process()): the decompression envelope
+        is checked before openpyxl is allowed to inflate the archive, and
+        the workbook is closed even when a sheet fails to read.
+        """
+        from openpyxl import load_workbook
+
+        _check_office_envelope(p)
+        wb = load_workbook(str(p), read_only=True, data_only=True)
+        try:
+            parts: list[str] = []
+            sheet_count = 0
+            for ws in wb.worksheets:
+                sheet_count += 1
+                parts.append(f"=== Sheet: {ws.title} ===")
+                for row in ws.iter_rows(values_only=True):
+                    cells = [str(c) for c in row if c is not None and str(c).strip()]
+                    if cells:
+                        parts.append("\t".join(cells))
+            return parts, sheet_count
+        finally:
+            wb.close()
+
+
+class DocumentSecurityError(Exception):
+    """An uploaded Office document exceeded the decompression safety
+    envelope (or is not a readable OOXML archive at all)."""
+
+
 # EPUB uploads are untrusted, so decompression is bounded in three ways:
 # entry count, per-entry bytes and total bytes read. A zip bomb (a small
 # archive whose metadata declares gigabytes of content) is rejected before
@@ -452,22 +544,88 @@ class EpubSecurityError(Exception):
     XML that is unsafe to parse (DTD / entity declarations)."""
 
 
-def _parse_epub_xml(raw: bytes):
-    """Parse one untrusted EPUB XML document with no DTD and no entities.
+# OOXML uploads are untrusted zips too: python-docx / python-pptx /
+# openpyxl inflate whatever they are handed, so the declared entry count
+# and total decompressed size are checked against the same envelope the
+# EPUB path uses *before* the parser runs (review item, taOS #3783). The
+# parsers read the file themselves, so unlike EPUB this is a declared-size
+# gate, not a budgeted read -- which is also why the parse runs in a thread.
+OFFICE_MAX_ENTRIES = EPUB_MAX_ENTRIES
+OFFICE_MAX_TOTAL_BYTES = EPUB_MAX_TOTAL_BYTES
 
-    ``defusedxml`` is used when installed. Without it the document is
-    rejected whenever it declares a DOCTYPE or an entity, which removes the
-    billion-laughs surface entirely, and the stdlib parser is then given
-    input that has no DTD to act on. The stdlib parser performs no network
+
+def _check_office_envelope(path: Path) -> None:
+    """Reject an OOXML archive whose entry count or declared size busts the caps."""
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(str(path)) as zf:
+            infos = zf.infolist()
+    except (zipfile.BadZipFile, OSError) as exc:
+        raise DocumentSecurityError(f"not a readable OOXML archive: {exc}") from exc
+    if len(infos) > OFFICE_MAX_ENTRIES:
+        raise DocumentSecurityError(
+            f"{len(infos)} entries exceeds the cap of {OFFICE_MAX_ENTRIES}"
+        )
+    declared = sum(info.file_size for info in infos)
+    if declared > OFFICE_MAX_TOTAL_BYTES:
+        raise DocumentSecurityError(
+            f"declared {declared} uncompressed bytes exceeds the cap of "
+            f"{OFFICE_MAX_TOTAL_BYTES}"
+        )
+
+
+_ENTITY_DECL_RE = re.compile(r"<!ENTITY", re.IGNORECASE)
+_DTD_SUBSET_RE = re.compile(r"<!DOCTYPE[^[>]*\[", re.IGNORECASE)
+
+
+def _decode_xml_for_scan(raw: bytes) -> str:
+    """Decode untrusted XML bytes just far enough to scan the markup.
+
+    A byte-level scan for ``<!DOCTYPE`` / ``<!ENTITY`` is blind to UTF-16
+    and UTF-32 documents, whose markup is interleaved with NUL bytes --
+    a UTF-16 chapter with an internal entity used to sail through the
+    scan and be expanded by the parser (review item, taOS #3783). The
+    encoding is sniffed from the BOM, or from the NUL pattern of the
+    opening ``<`` when there is no BOM (XML spec appendix F). Only the
+    scan uses this decoding; the parser re-reads the original bytes with
+    the document's declared encoding.
+    """
+    if raw.startswith((codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE)):
+        return raw.decode("utf-32", errors="replace")
+    if raw.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        return raw.decode("utf-16", errors="replace")
+    if raw[:4] in (b"<\x00\x00\x00", b"\x00\x00\x00<"):
+        return raw.decode("utf-32", errors="replace")
+    if raw[:2] in (b"<\x00", b"\x00<"):
+        return raw.decode("utf-16", errors="replace")
+    return raw.decode("utf-8", errors="replace")
+
+
+def _parse_epub_xml(raw: bytes):
+    """Parse one untrusted EPUB XML document with no entities.
+
+    A bare DOCTYPE is fine -- real books carry one (EPUB 2 chapters use
+    the XHTML 1.1 DOCTYPE, EPUB 3 chapters ``<!DOCTYPE html>``), so only
+    the dangerous declarations are rejected: entity declarations and a
+    DOCTYPE with an internal ``[`` subset, which is where entities live.
+    That removes the billion-laughs / XXE surface while letting ordinary
+    books through (review item, taOS #3783).
+
+    ``defusedxml`` is used when installed (the ``library`` extra pulls it
+    in). Without it the stdlib parser is given input the scan has already
+    cleared of entity declarations; the stdlib parser performs no network
     I/O, so an external entity can never be fetched.
     """
-    lowered = raw.lower()
-    if b"<!doctype" in lowered or b"<!entity" in lowered:
-        raise EpubSecurityError("XML declares a DTD or entity -- rejected")
+    text = _decode_xml_for_scan(raw)
+    if _ENTITY_DECL_RE.search(text) or _DTD_SUBSET_RE.search(text):
+        raise EpubSecurityError(
+            "XML declares an entity or a DTD internal subset -- rejected"
+        )
     try:
         from defusedxml.ElementTree import fromstring as _defused_fromstring
     except ImportError:
-        import xml.etree.ElementTree as ET  # noqa: S314 -- DTD/entities rejected above
+        import xml.etree.ElementTree as ET  # noqa: S314 -- entity declarations rejected above
         return ET.fromstring(raw)
     return _defused_fromstring(raw)
 
@@ -533,6 +691,7 @@ class EpubProcessor(Processor):
                 parts = self._extract_chapters(zf)
             except EpubSecurityError as exc:
                 logger.error("EpubProcessor: rejected %s: %s", storage_path, exc)
+                await self._record_rejection(item, f"EPUB rejected: {exc}")
                 return artifacts
             if not parts:
                 return artifacts
@@ -556,7 +715,8 @@ class EpubProcessor(Processor):
         """Return one text blob per chapter, in spine order when available.
 
         Raises :class:`EpubSecurityError` when the archive busts a
-        decompression cap or any XML document declares a DTD/entity.
+        decompression cap or any XML document declares an entity or a
+        DTD internal subset.
         """
         import xml.etree.ElementTree as ET  # noqa: S314 -- names the parse-error type only
 
@@ -593,9 +753,13 @@ class EpubProcessor(Processor):
                 id_to_href: dict[str, str] = {}
                 for item_el in opf.findall(".//o:manifest/o:item", opf_ns):
                     if item_el.get("media-type") in ("application/xhtml+xml", "text/html"):
-                        href = item_el.get("href", "")
+                        # Manifest hrefs are URI-escaped and may carry dot
+                        # segments; archive entry names are neither. Unquote
+                        # and normalise so the spine order can actually be
+                        # matched against the archive (review item, #3783).
+                        href = unquote(item_el.get("href", ""))
                         full = f"{base}/{href}" if base not in ("", ".") else href
-                        id_to_href[item_el.get("id", "")] = full
+                        id_to_href[item_el.get("id", "")] = posixpath.normpath(full)
                 for ref in opf.findall(".//o:spine/o:itemref", opf_ns):
                     href = id_to_href.get(ref.get("idref", ""))
                     if href:
@@ -604,6 +768,13 @@ class EpubProcessor(Processor):
                 logger.debug("EpubProcessor: OPF %s missing from archive", opf_path)
             except xml_errors as exc:
                 logger.debug("EpubProcessor: unreadable OPF %s: %s", opf_path, exc)
+        if ordered:
+            # A spine whose entries match nothing in the archive (a base
+            # path the entries do not share, say) is no better than no
+            # spine: fall back to alphabetical order (review item, #3783).
+            names = set(zf.namelist())
+            if not any(name in names for name in ordered):
+                ordered = []
         if not ordered:
             ordered = sorted(
                 n for n in zf.namelist()
@@ -628,8 +799,8 @@ class EpubProcessor(Processor):
             try:
                 root = _parse_epub_xml(raw)
             except xml_errors:
-                # One malformed chapter must not abort the whole book; a DTD
-                # or entity declaration is fatal and raised above instead.
+                # One malformed chapter must not abort the whole book; an
+                # entity declaration is fatal and raised above instead.
                 logger.debug("EpubProcessor: skipping unparseable chapter %s", name)
                 continue
             # Strip tags, keep text (namespace-agnostic)
