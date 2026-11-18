@@ -6,7 +6,6 @@ import importlib.util
 from pathlib import Path
 from unittest.mock import patch, mock_open
 
-import pytest
 import yaml
 
 _SPEC = importlib.util.spec_from_file_location(
@@ -503,5 +502,3 @@ def test_model_single_context_field_no_warning(capsys) -> None:
     warning_texts = [l.replace("  warn: ", "") for l in warn_lines]
     assert any("family" in w for w in warning_texts)
     assert not any("min_context" in w or "max_context" in w for w in warning_texts)
-
-

@@ -2355,6 +2355,93 @@ class TestEpubDoctypeChapters:
         assert "rejected" in caplog.text
 
 
+class TestEpubParserLevelEntityRejection:
+    """The entity check lives in the parser, not in a decode-and-scan
+    pass: expat reads the document's real encoding, so UTF-16 shapes a
+    text scan misreads -- big-endian with no BOM (decoded as
+    little-endian by the scan), little-endian starting with whitespace
+    (never detected as UTF-16 at all) -- are rejected too, while plain
+    UTF-16 chapters still extract (review item, taOS #3783)."""
+
+    async def _process(self, lib_store, storage_dir, book, title):
+        from tinyagentos.library_pipeline import EpubProcessor
+
+        item_id = await lib_store.create_item(
+            kind="epub", title=title, storage_path=str(book),
+        )
+        item = await lib_store.get_item(item_id)
+        return await EpubProcessor(lib_store, storage_dir).process(item)
+
+    @staticmethod
+    def _written_text(storage_dir) -> str:
+        text_dir = storage_dir / "text"
+        if not text_dir.exists():
+            return ""
+        return "".join(p.read_text() for p in text_dir.glob("*"))
+
+    @pytest.mark.asyncio
+    async def test_utf16be_no_bom_entity_chapter_rejected(
+        self, lib_store, storage_dir, tmp_path, caplog,
+    ):
+        chapter = (
+            '<?xml version="1.0" encoding="UTF-16"?>'
+            '<!DOCTYPE html [<!ENTITY boom "BE_ENTITY_TOKEN">]>'
+            "<html><body><p>&boom;</p></body></html>"
+        )
+        book = _write_epub(tmp_path / "be.epub", {
+            "ch1": chapter.encode("utf-16-be"),
+            "ch2": "<html><body><p>Clean chapter</p></body></html>",
+        })
+        with caplog.at_level(logging.ERROR):
+            artifacts = await self._process(lib_store, storage_dir, book, "be.epub")
+        assert artifacts == []
+        assert "BE_ENTITY_TOKEN" not in self._written_text(storage_dir)
+        assert "rejected" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_utf16le_leading_whitespace_entity_chapter_rejected(
+        self, lib_store, storage_dir, tmp_path, caplog,
+    ):
+        chapter = (
+            "\n"
+            '<!DOCTYPE html [<!ENTITY boom "LE_ENTITY_TOKEN">]>'
+            "<html><body><p>&boom;</p></body></html>"
+        )
+        book = _write_epub(tmp_path / "le.epub", {
+            "ch1": chapter.encode("utf-16-le"),
+            "ch2": "<html><body><p>Clean chapter</p></body></html>",
+        })
+        with caplog.at_level(logging.ERROR):
+            artifacts = await self._process(lib_store, storage_dir, book, "le.epub")
+        assert artifacts == []
+        assert "LE_ENTITY_TOKEN" not in self._written_text(storage_dir)
+        assert "rejected" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_utf16_chapters_without_entities_extract_text(
+        self, lib_store, storage_dir, tmp_path,
+    ):
+        """Regression guard: plain UTF-16 chapters (LE with a BOM, BE
+        without one) carry no entities and must still extract."""
+        le = (
+            '<?xml version="1.0" encoding="UTF-16"?>'
+            "<html><body><p>UTF16 LE chapter text</p></body></html>"
+        )
+        be = (
+            '<?xml version="1.0" encoding="UTF-16"?>'
+            "<html><body><p>UTF16 BE chapter text</p></body></html>"
+        )
+        book = _write_epub(tmp_path / "plain16.epub", {
+            "ch1": le.encode("utf-16"),
+            "ch2": be.encode("utf-16-be"),
+        })
+        artifacts = await self._process(lib_store, storage_dir, book, "plain16.epub")
+        assert len(artifacts) == 1
+        content = Path(artifacts[0]["path"]).read_text()
+        assert "UTF16 LE chapter text" in content
+        assert "UTF16 BE chapter text" in content
+
+
 class TestRejectionRecordedOnItem:
     """A rejected document must not leave its item "ready" with no text
     and no explanation: the rejection is recorded in the item meta."""
@@ -2376,7 +2463,9 @@ class TestRejectionRecordedOnItem:
         )
         await run_pipeline(lib_store, item_id, storage_dir)
         item = await lib_store.get_item(item_id)
-        assert item["status"] == "ready"  # status flow unchanged
+        # LibraryItemCard only surfaces meta.error on "error" items,
+        # so a rejection must move the status too (review item, #3783).
+        assert item["status"] == "error"
         meta = json.loads(item["meta_json"])
         assert "error" in meta
         assert "rejected" in meta["error"]

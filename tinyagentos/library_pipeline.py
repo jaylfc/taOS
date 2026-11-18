@@ -8,7 +8,6 @@ that are stored on the item and optionally handed off to taosmd collections.
 from __future__ import annotations
 
 import asyncio
-import codecs
 import json
 import logging
 import mimetypes
@@ -121,16 +120,19 @@ class Processor:
         raise NotImplementedError
 
     async def _record_rejection(self, item: dict, message: str) -> None:
-        """Record a rejected upload on the item's meta.
+        """Record a rejected upload on the item's meta and mark it "error".
 
         A rejected document produces no text artifact, so without this the
         item would end up "ready" with nothing to show and no sign of why
-        (review item, taOS #3783). The pipeline status flow is unchanged;
-        the error lives in the meta where the UI surfaces it.
+        (review item, taOS #3783). The error lives in the meta where the
+        UI surfaces it -- but LibraryItemCard only shows meta.error when
+        the status is "error", so the status moves too, and run_pipeline
+        leaves it standing instead of stamping "ready" over it.
         """
         meta_json = json.loads(item.get("meta_json", "{}"))
         meta_json["error"] = message
         await self.store.update_item(item["id"], meta_json=meta_json)
+        await self.store.update_item_status(item["id"], "error")
 
 
 class FileProcessor(Processor):
@@ -575,59 +577,76 @@ def _check_office_envelope(path: Path) -> None:
         )
 
 
-_ENTITY_DECL_RE = re.compile(r"<!ENTITY", re.IGNORECASE)
-_DTD_SUBSET_RE = re.compile(r"<!DOCTYPE[^[>]*\[", re.IGNORECASE)
+class _DtdConstructFound(Exception):
+    """Internal signal: an expat handler saw an entity declaration or a
+    DTD internal subset in an untrusted EPUB XML document."""
 
 
-def _decode_xml_for_scan(raw: bytes) -> str:
-    """Decode untrusted XML bytes just far enough to scan the markup.
+def _reject_dtd_constructs(raw: bytes) -> None:
+    """Reject XML that declares entities, at the parser level.
 
-    A byte-level scan for ``<!DOCTYPE`` / ``<!ENTITY`` is blind to UTF-16
-    and UTF-32 documents, whose markup is interleaved with NUL bytes --
-    a UTF-16 chapter with an internal entity used to sail through the
-    scan and be expanded by the parser (review item, taOS #3783). The
-    encoding is sniffed from the BOM, or from the NUL pattern of the
-    opening ``<`` when there is no BOM (XML spec appendix F). Only the
-    scan uses this decoding; the parser re-reads the original bytes with
-    the document's declared encoding.
+    The check runs on expat itself (the parser the stdlib ElementTree is
+    built on), which reads the document's own encoding from the bytes.
+    A decode-and-scan pass misreads two UTF-16 shapes -- big-endian with
+    no BOM (the scan decoded it as little-endian) and little-endian
+    starting with whitespace (never detected as UTF-16 at all) -- and
+    both sailed through with their entities expanded by the parser
+    (review item, taOS #3783). Any entity declaration raises, as does a
+    DOCTYPE with an internal subset, which is where entities live. A
+    bare DOCTYPE is fine: real EPUB 2/3 chapters carry one.
     """
-    if raw.startswith((codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE)):
-        return raw.decode("utf-32", errors="replace")
-    if raw.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
-        return raw.decode("utf-16", errors="replace")
-    if raw[:4] in (b"<\x00\x00\x00", b"\x00\x00\x00<"):
-        return raw.decode("utf-32", errors="replace")
-    if raw[:2] in (b"<\x00", b"\x00<"):
-        return raw.decode("utf-16", errors="replace")
-    return raw.decode("utf-8", errors="replace")
+    from xml.parsers import expat
+
+    def _entity_decl(*_args):
+        raise _DtdConstructFound
+
+    def _doctype(_name, _system_id, _public_id, has_internal_subset):
+        if has_internal_subset:
+            raise _DtdConstructFound
+
+    parser = expat.ParserCreate()
+    parser.EntityDeclHandler = _entity_decl
+    parser.StartDoctypeDeclHandler = _doctype
+    try:
+        parser.Parse(raw, True)
+    except _DtdConstructFound:
+        raise EpubSecurityError(
+            "XML declares an entity or a DTD internal subset -- rejected"
+        ) from None
+    except expat.ExpatError:
+        # Not well-formed. That is not a rejection: the parse in
+        # _parse_epub_xml reports it the way it always has (an unreadable
+        # container/OPF, a skipped chapter).
+        pass
 
 
 def _parse_epub_xml(raw: bytes):
     """Parse one untrusted EPUB XML document with no entities.
 
-    A bare DOCTYPE is fine -- real books carry one (EPUB 2 chapters use
-    the XHTML 1.1 DOCTYPE, EPUB 3 chapters ``<!DOCTYPE html>``), so only
-    the dangerous declarations are rejected: entity declarations and a
-    DOCTYPE with an internal ``[`` subset, which is where entities live.
-    That removes the billion-laughs / XXE surface while letting ordinary
-    books through (review item, taOS #3783).
-
-    ``defusedxml`` is used when installed (the ``library`` extra pulls it
-    in). Without it the stdlib parser is given input the scan has already
-    cleared of entity declarations; the stdlib parser performs no network
-    I/O, so an external entity can never be fetched.
+    Entity declarations and DTD internal subsets are rejected by
+    :func:`_reject_dtd_constructs` before any tree is built, whatever
+    the document's encoding. ``defusedxml`` is used when installed (the
+    ``library`` extra pulls it in); its own refusals are re-raised as
+    :class:`EpubSecurityError` so they reject the book instead of
+    surfacing as a ValueError the chapter loop would quietly skip.
+    Without defusedxml the stdlib parser is used: it performs no
+    network I/O, so an external entity can never be fetched, and the
+    parser-level check has already cleared the document of entity
+    declarations.
     """
-    text = _decode_xml_for_scan(raw)
-    if _ENTITY_DECL_RE.search(text) or _DTD_SUBSET_RE.search(text):
-        raise EpubSecurityError(
-            "XML declares an entity or a DTD internal subset -- rejected"
-        )
+    _reject_dtd_constructs(raw)
     try:
         from defusedxml.ElementTree import fromstring as _defused_fromstring
+        from defusedxml.common import DefusedXmlException
     except ImportError:
-        import xml.etree.ElementTree as ET  # noqa: S314 -- entity declarations rejected above
+        import xml.etree.ElementTree as ET  # noqa: S314 -- entities rejected at the parser level above
         return ET.fromstring(raw)
-    return _defused_fromstring(raw)
+    try:
+        return _defused_fromstring(raw)
+    except DefusedXmlException as exc:
+        raise EpubSecurityError(
+            f"XML refused by defusedxml -- rejected: {exc}"
+        ) from exc
 
 
 def _check_epub_envelope(zf) -> None:
@@ -688,7 +707,7 @@ class EpubProcessor(Processor):
             return artifacts
         try:
             try:
-                parts = self._extract_chapters(zf)
+                parts = await asyncio.to_thread(self._extract_chapters, zf)
             except EpubSecurityError as exc:
                 logger.error("EpubProcessor: rejected %s: %s", storage_path, exc)
                 await self._record_rejection(item, f"EPUB rejected: {exc}")
@@ -1528,7 +1547,12 @@ async def run_pipeline(
         if not isinstance(proc, FileProcessor):
             await proc.process(item)
 
-        await store.update_item_status(item_id, "ready")
+        # A processor that rejected the document has already marked the
+        # item "error" (Processor._record_rejection); do not stamp
+        # "ready" over a rejection.
+        current = await store.get_item(item_id)
+        if not current or current.get("status") != "error":
+            await store.update_item_status(item_id, "ready")
     except Exception:
         logger.exception("Library pipeline failed for item %s (kind=%s)",
                          item_id, kind)
