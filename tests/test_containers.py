@@ -123,16 +123,27 @@ class TestCreateContainer:
     @pytest.mark.asyncio
     async def test_creates_and_configures(self):
         with patch("tinyagentos.containers._run", new_callable=AsyncMock) as mock_run:
-            mock_run.return_value = (0, "")
+            # First call is incus list --all-projects (empty -> no conflict),
+            # then launch, set memory, set cpu
+            mock_run.side_effect = [
+                (0, "[]"),  # list --all-projects
+                (0, ""),    # launch
+                (0, ""),    # set memory
+                (0, ""),    # set cpu
+            ]
             result = await create_container("taos-agent-test", memory_limit="1GB", cpu_limit=1)
             assert result["success"] is True
-            # Should have called: launch, set memory, set cpu
-            assert mock_run.call_count == 3
+            assert mock_run.call_count == 4
 
     @pytest.mark.asyncio
     async def test_handles_launch_failure(self):
         with patch("tinyagentos.containers._run", new_callable=AsyncMock) as mock_run:
-            mock_run.return_value = (1, "launch failed")
+            # First call is incus list --all-projects (empty -> no conflict),
+            # then launch fails
+            mock_run.side_effect = [
+                (0, "[]"),         # list --all-projects
+                (1, "launch failed"),  # launch
+            ]
             result = await create_container("taos-agent-test")
             assert result["success"] is False
 
@@ -190,6 +201,51 @@ class TestCreateContainer:
         launch = calls[0]
         assert launch[2] == "images:debian/bookworm"
         assert launch[3] == "fedora-worker:taos-agent-bob"
+
+    @pytest.mark.asyncio
+    async def test_refuses_create_when_name_exists_in_another_project(self):
+        """create_container must refuse to launch if the name exists in ANY project."""
+        listing = json.dumps([
+            {"name": "taos-agent-alpha", "project": "user-2"},
+        ])
+        calls = []
+
+        async def mock_run(cmd, timeout=120):
+            calls.append(cmd)
+            if cmd[:5] == ["incus", "list", "--all-projects", "-f", "json"]:
+                return (0, listing)
+            return (0, "")
+
+        with patch("tinyagentos.containers._run", side_effect=mock_run):
+            result = await create_container("taos-agent-alpha", image="images:debian/bookworm")
+
+        assert result["success"] is False
+        assert "taos-agent-alpha" in result["error"]
+        assert "user-2" in result["error"]
+        # No launch command should have been issued
+        launch_cmds = [c for c in calls if c[:2] == ["incus", "launch"]]
+        assert launch_cmds == []
+
+    @pytest.mark.asyncio
+    async def test_allows_create_when_name_free_in_all_projects(self):
+        """create_container proceeds normally when the name is free everywhere."""
+        listing = json.dumps([])  # empty listing -> no conflicts
+        calls = []
+
+        async def mock_run(cmd, timeout=120):
+            calls.append(cmd)
+            if cmd[:5] == ["incus", "list", "--all-projects", "-f", "json"]:
+                return (0, listing)
+            return (0, "")
+
+        with patch("tinyagentos.containers._run", side_effect=mock_run):
+            result = await create_container("taos-agent-new", image="images:debian/bookworm")
+
+        assert result["success"] is True
+        launch_cmds = [c for c in calls if c[:2] == ["incus", "launch"]]
+        assert len(launch_cmds) == 1
+        assert launch_cmds[0][2] == "images:debian/bookworm"
+        assert launch_cmds[0][3] == "taos-agent-new"
 
 
 class TestSetRootQuota:

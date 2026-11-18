@@ -348,6 +348,16 @@ async def create_container(
     the agent reaches the controller over the network (Tailscale) instead.
     """
     import asyncio as _asyncio
+    # Refuse to create a local container if the name already exists in ANY project.
+    # Remote creates target a different incus instance, so the local namespace does
+    # not apply there.
+    if not remote:
+        existing_project = await _resolve_container_project(name)
+        if existing_project is not None:
+            return {
+                "success": False,
+                "error": f"Container '{name}' already exists in project '{existing_project}'",
+            }
     # Qualify image + instance name for the target remote. The prefetched base
     # alias lives on the remote, so the image ref is also remote-qualified.
     target = f"{remote}:{name}" if remote else name

@@ -86,6 +86,8 @@ exec systemd-run \
   /usr/bin/chromium \
     --app="$URL" \
     --ozone-platform=wayland \
+    --enable-wayland-ime \
+    --wayland-text-input-version=3 \
     --no-first-run \
     --no-default-browser-check \
     --disable-features=TranslateUI \

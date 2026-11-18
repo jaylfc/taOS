@@ -1,24 +1,41 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { ProjectBoard } from "../ProjectBoard";
 import { projectsApi } from "../../../../lib/projects";
 
-const MockEventSourceCtor = vi.fn().mockImplementation(function (this: any) {
-  this.url = "";
-  this.onopen = null;
-  this.onmessage = null;
-  this.onerror = null;
-  this.close = vi.fn();
-  this.readyState = 0;
-});
+const openedUrls: string[] = [];
+const closedUrls: string[] = [];
+let latestSource: { url: string; close: () => void; onmessage: ((e: MessageEvent) => void) | null } | null = null;
+const MockEventSourceCtor = vi.fn();
 Object.assign(MockEventSourceCtor, { CONNECTING: 0, OPEN: 1, CLOSED: 2 });
 
 beforeEach(() => {
+  vi.restoreAllMocks();
   vi.spyOn(projectsApi.tasks, "list").mockResolvedValue([]);
   vi.spyOn(projectsApi.elements, "list").mockResolvedValue([]);
-  vi.spyOn(projectsApi, "subscribeEvents").mockReturnValue(() => {});
+  const realSubscribe = projectsApi.subscribeEvents;
+  vi.spyOn(projectsApi, "subscribeEvents").mockImplementation(
+    (pid: string, cb: (e: unknown) => void, opts?: { onOpen?: () => void; onError?: () => void }) =>
+      realSubscribe(pid, cb, opts),
+  );
+  MockEventSourceCtor.mockImplementation(function (this: any, url: string) {
+    this.url = url;
+    this.onopen = null;
+    this.onmessage = null;
+    this.onerror = null;
+    const close = vi.fn(() => {
+      closedUrls.push(url);
+      this.readyState = 2;
+    });
+    this.close = close;
+    this.readyState = 0;
+    openedUrls.push(url);
+    latestSource = this;
+  });
   vi.stubGlobal("EventSource", MockEventSourceCtor);
-  MockEventSourceCtor.mockClear();
+  openedUrls.length = 0;
+  closedUrls.length = 0;
+  latestSource = null;
 });
 
 describe("ProjectBoard", () => {
@@ -74,6 +91,44 @@ describe("ProjectBoard", () => {
     fireEvent.click(await screen.findByRole("tab", { name: /Kanban/ }));
     await waitFor(() => {
       expect(screen.getByRole("button", { name: /Unquarantine task tq1/i })).toBeInTheDocument();
+    });
+  });
+
+  describe("live updates", () => {
+    it("subscribes to the per-project stream instead of the OS stream", () => {
+      render(<ProjectBoard projectId="p1" currentUserId="u1" />);
+      expect(openedUrls).toContain("/api/projects/p1/events");
+      expect(openedUrls.some((url) => url.includes("/api/os/events"))).toBe(false);
+    });
+
+    it("applies a task.updated frame to the card", async () => {
+      vi.spyOn(projectsApi.tasks, "list").mockResolvedValueOnce([
+        { id: "t1", title: "Original", status: "open", labels: [], priority: 0 } as any,
+      ]);
+      render(<ProjectBoard projectId="p1" currentUserId="u1" />);
+      fireEvent.click(await screen.findByRole("tab", { name: /Kanban/ }));
+      await waitFor(() => expect(screen.getByText("Original")).toBeInTheDocument());
+      expect(latestSource).not.toBeNull();
+      act(() => {
+        latestSource!.onmessage!({
+          data: JSON.stringify({
+            kind: "task.updated",
+            payload: { id: "t1", patch: { title: "renamed" } },
+            ts: 1,
+          }),
+        } as MessageEvent);
+      });
+      expect(screen.getByText("renamed")).toBeInTheDocument();
+      expect(screen.queryByText("Original")).not.toBeInTheDocument();
+    });
+
+    it("closes the old project's stream and opens the new project's stream when the project changes", () => {
+      const { rerender } = render(<ProjectBoard projectId="p1" currentUserId="u1" />);
+      const firstUrl = openedUrls.find((url) => url.startsWith("/api/projects/p1/events"))!;
+      rerender(<ProjectBoard projectId="q1" currentUserId="u1" />);
+      expect(closedUrls).toContain(firstUrl);
+      expect(openedUrls).toContain("/api/projects/q1/events");
+      expect(openedUrls.some((url) => url.includes("/api/os/events"))).toBe(false);
     });
   });
 });
