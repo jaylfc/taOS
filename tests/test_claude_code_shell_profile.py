@@ -412,7 +412,10 @@ def test_hard_refusal_wrapper_bypass_positive_controls():
 def test_profile_deny_env_split_string_key():
     from tinyagentos.claude_code_guard import profile_refusal
     refusal_msg, _ = profile_refusal("env -S 'ls -la'", allow={"env"}, deny={"ls"})
-    assert refusal_msg is not None, "profile deny of ls should block env -S split string"
+    assert refusal_msg == (
+        "Refused by taOS: the user has denied `ls` for the agent. "
+        "Do not retry it; find another way or ask the user."
+    ), f"expected denied-`ls` message, got {refusal_msg!r}"
 
 
 def test_hard_gh_refusal_on_parsed_keys():

@@ -229,6 +229,41 @@ router-wide, and a per-agent local token may only reach its own agent's
 workspace. Before this any signed-in member could list, read, upload into or
 delete from any agent's workspace.
 
+**Agent reads are owner-only and never carry `llm_key`.** `GET /api/agents/{name}`,
+`/export`, `/logs`, `/budget` and `/deploy-status` (`tinyagentos/routes/agents.py`)
+require the agent's owner or an admin, with a per-agent local token fenced to its
+own agent. A member's `GET /api/agents` and `/api/agents/archived` list only the
+agents the registry attributes to them. No read returns `llm_key` (the agent's
+bearer credential), not even to an admin, including the deployer result inside
+`/deploy-status`; it stays in config and import re-mints it.
+
+**Archived agents belong to the canonical id saved at deploy.** An archive entry's
+`id` is the agent's config id, which the registry does not know, and its slug can
+be reused, so the archived list and the restore and purge routes resolve the owner
+through `original.registry_canonical_id`, looked up as an exact registry id (no
+configured name, slug or handle stands in for it, so an agent named after another
+agent's canonical id does not own that archive). An entry without one is admin-only; a
+per-agent local token (marked admin by the middleware) lists only its own agent,
+sees no archives and cannot restore or purge one; and
+`resolve_agent_owner` (`tinyagentos/auth_context.py`) attributes an empty id to nobody.
+
+**A per-agent local token dies with its agent's name.** It is bound by name, so
+archive and purge revoke it, a new deploy under the name revokes any token still
+bound there, and restore mints a fresh one. A revoke that fails stops archive or
+purge before the entry moves (retry once the bindings file is readable), and a
+restore whose fresh token cannot be installed leaves the container stopped.
+Restores run one at a time: a second restore of the same archive answers `404`.
+`GET /api/agents/containers` follows the agent list's visibility: a member sees
+only their own agents' containers.
+
+**A configured agent's owner is its canonical id, not its name.** Deploy gives a
+repeated display name a unique config name (`helper-2`) while the registry slug
+stays `helper`, and another agent may hold the `helper-2` slug, so
+`resolve_agent_owner` maps a config name to the entry's `registry_canonical_id`
+before asking the registry. An entry without one (imported, created without a
+deploy, or deployed while the registry was down) has no registry row of its own,
+so it is admin-only.
+
 **`assign-agent`'s scope list is authoritative, not a delta.** It returns 200
 with `granted_scopes` echoing the request and, since taOS #2148, reconciles the
 registry grants bound to that project to exactly the list you pass: a grant on
@@ -839,6 +874,7 @@ different project, and 403 when the agent lacks the `canvas_read` scope or the
   The DELETE `/api/memory/chunk/{content_hash}` route stays human-only and is not
   reachable by agent tokens, even with memory_read.
 - **memory_write**: `POST /api/memory/remember` writes a memory entry into the calling agent's OWN namespace; accepts a registry JWT with a memory_write grant or a bound per-agent local token; a body `agent` naming another agent returns 403; the unbound host token and admin sessions must pass `agent`; a non-admin human session that owns the target agent is accepted.
+- **secrets_read_own**: `GET /api/agents/self/secrets/{name}` reads a single secret value granted to the calling agent. Requires an agent bearer token with the `secrets_read_own` scope. The token's canonical_id is matched against `registry_canonical_id` in `config.agents` to determine which agent's grants apply. Returns the secret's plaintext value if granted to that agent; returns 404 with `{"detail": "Secret not found"}` if the secret is unknown or not granted to the bound agent (no existence oracle). Returns 401 `{"detail": "agent token required"}` without a valid agent token. Returns 403 if the token lacks the `secrets_read_own` scope.
 
 Access is per-project: a token is authorized for a project only when the agent
 holds an active grant + membership there; a request for a project it has no
@@ -2760,7 +2796,7 @@ the LiteLLM hook's 429 before anything is forwarded. Revoking, blocking or
 deleting a cluster node, and archiving an agent, revoke the keys bound to it
 in the same request.
 
-## The system taOS Agent's harness (opencode, PicoClaw on a handset, or Claude Code)
+## The system taOS Agent's harness (opencode, PicoClaw on a handset, Claude Code or Kilo)
 
 The built-in taOS Agent runs on opencode (a host `opencode serve`) on every
 host, except a taOSmobile handset, where it runs on PicoClaw (the catalog's
@@ -2770,8 +2806,8 @@ the choice is made, from two config.yaml keys:
 - `device.class`: `auto` (default; `hardware._detect_device_class`, which
   reads the `taos-kiosk.service` and `plasma-mobile.service` units), `mobile` or `desktop`;
 - `taos_agent.framework`: `auto` (default; picoclaw on mobile, opencode
-  elsewhere), `opencode`, `picoclaw` or `claude_code` (operator overrides;
-  `auto` never picks `claude_code`).
+  elsewhere), `opencode`, `picoclaw`, `claude_code` or `kilo` (operator
+  overrides; `auto` never picks `claude_code` or `kilo`).
 - **Local desktop state**: `GET /api/system/local-desktop` reports `available`,
   `enabled`, and `active` based on `taos-kiosk.service` systemd unit state. The
   `enabled` and `active` fields can be `null` if `systemctl` times out or is
@@ -2796,6 +2832,23 @@ gateway. Without them opencode runs, with the reason exactly
 `claude_code preferred, no claude_code_oauth_token secret, using opencode`;
 a chat request while it is selected but not ready answers 503 with a plain
 message. Attachments are not supported yet.
+
+`kilo` runs one `kilo run --format json --model <provider/model> --dir <workdir>` turn per chat
+message (`tinyagentos/kilo_runtime.py`), continued with `-s <session-id>` taken from
+the previous turn's events. It signs in with the `kilo_api_key` secret, passed to the
+child only as `KILO_API_KEY` (never the controller env, never logged); the child
+gets only `HOME`, `PATH`, `LANG`, `NO_COLOR`, `TZ` and `KILO_API_KEY`. It needs
+the `kilo` binary (PATH, `/usr/local/bin/kilo`, `~/.local/bin/kilo`) and that
+secret, not the gateway. Without them opencode runs, with the reason exactly
+`kilo preferred, kilo binary not found, using opencode` or
+`kilo preferred, no kilo_api_key secret, using opencode`;
+a chat request while it is selected but not ready answers 503 with a plain
+message. The turn's `--dir` is a git repo created once under the harness home;
+kilo's JSON-lines output is parsed for `type == "text"` events whose `part.text`
+is the reply and whose `sessionID` continues the conversation.
+
+For the kilo framework the system prompt is prefixed to the first user turn of a
+kilo session, and a changed system prompt starts a new session (CodeRabbit 4543157074).
 
 - `GET /api/taos-agent/config` and the lock screen (`/auth/lock-widgets`)
   report `framework` = the harness that RUNS the agent (never the

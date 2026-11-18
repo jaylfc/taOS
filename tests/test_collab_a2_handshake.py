@@ -725,6 +725,86 @@ class TestBlockCascade:
             )
 
 
+    async def test_block_cascade_revoke_failure_returns_incomplete(
+        self, client_with_contacts, app_with_contacts, monkeypatch
+    ):
+        """A revoke failure must fail the block response closed, not report success."""
+        store = app_with_contacts.state.contacts_store
+        await store.add_contact(
+            contact_id=f"hub:{_PEER_FP}",
+            hub_username=_PEER_USERNAME,
+            display_name="Remote",
+            ed25519_pub=_PEER_SIGNING_PUB,
+            x25519_pub=_PEER_ENCRYPTION_PUB,
+            peer_fingerprint=_PEER_FP,
+        )
+        await store.establish_peer_link(
+            contact_id=f"hub:{_PEER_FP}",
+            inbound_token=generate_peer_token(),
+            outbound_token=generate_peer_token(),
+        )
+
+        async def handler(method, url, **kw):
+            if "/api/hub/edges/revoke" in url:
+                return _fake_dir_resp(body={"status": "revoked"})
+            return _fake_dir_resp(body={})
+
+        _patch_account_proxy(monkeypatch, handler)
+
+        async def boom(cid):
+            raise RuntimeError("revoke boom")
+
+        monkeypatch.setattr(store, "revoke_peer_link", boom)
+
+        resp = await client_with_contacts.post(
+            "/api/hub/friends/block",
+            json={"peer_fingerprint": _PEER_FP},
+        )
+        assert resp.status_code == 500
+        assert resp.json()["state"] == "block-incomplete"
+        assert resp.json()["peer"] == _PEER_FP
+
+        from tinyagentos.hub import relationships
+        hub_store = app_with_contacts.state.hub_store
+        assert await hub_store.has_edge(_PEER_FP, relationships.REL_BLOCK)
+
+    async def test_block_fails_closed_when_contacts_store_uninitialised(
+        self, client_with_contacts, app_with_contacts, monkeypatch
+    ):
+        """A contacts store that exists but was never initialised must NOT skip
+        the cascade.  The route must reach the try block, raise, and return the
+        new 500 block-incomplete response — the fail-open the card closes."""
+        from tinyagentos.contacts_store import ContactsStore
+
+        store = app_with_contacts.state.contacts_store
+        # Replace with a fresh ContactsStore whose init() was NEVER awaited.
+        uninit = ContactsStore(store.db_path)
+        app_with_contacts.state.contacts_store = uninit
+
+        async def handler(method, url, **kw):
+            if "/api/hub/edges/revoke" in url:
+                return _fake_dir_resp(body={"status": "revoked"})
+            return _fake_dir_resp(body={})
+
+        _patch_account_proxy(monkeypatch, handler)
+
+        resp = await client_with_contacts.post(
+            "/api/hub/friends/block",
+            json={"peer_fingerprint": _PEER_FP},
+        )
+        assert resp.status_code == 500
+        body = resp.json()
+        assert body["state"] == "block-incomplete"
+        assert body["peer"] == _PEER_FP
+
+        # The local REL_BLOCK edge was recorded before the cascade, so the
+        # marker must survive the failed cascade (fail closed, not fail open).
+        from tinyagentos.hub import relationships
+        hub_store = app_with_contacts.state.hub_store
+        assert await hub_store.has_edge(_PEER_FP, relationships.REL_BLOCK)
+
+
+
 # ---------------------------------------------------------------------------
 # Security regression tests
 # ---------------------------------------------------------------------------

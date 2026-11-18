@@ -161,7 +161,10 @@ async def test_put_torrent_settings_admin_still_saves(client, monkeypatch):
     # GET reflects the saved value
     get_resp = await client.get("/api/torrent/settings")
     assert get_resp.status_code == 200
-    assert get_resp.json()["seed_enabled"] is False
+    get_data = get_resp.json()
+    assert get_data["seed_enabled"] is False
+    assert get_data["upload_rate_limit_kbps"] == 100
+    assert get_data["max_active_seeds"] == 3
 
 
 @pytest.mark.asyncio

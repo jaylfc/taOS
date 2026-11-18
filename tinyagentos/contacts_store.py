@@ -169,6 +169,23 @@ class ContactsStore(BaseStore):
         if stale:
             await self._db.commit()
 
+        # Register a deterministic SQLite function that mirrors the predicate
+        # the routes use to filter endpoints before establish_peer_link
+        # (tinyagentos.routes.hub._safe_endpoints).  The keep-existing decision
+        # in establish_peer_link is made INSIDE the atomic UPDATE statement, so
+        # it must be expressible in SQL; this function lets the CASE ask "does
+        # the stored list hold any usable endpoint?" without reading the row
+        # outside the statement (a read-then-write would reintroduce the race
+        # the single-statement design exists to avoid).  Imported lazily: this
+        # module is imported by routes.hub at module load, so a top-level import
+        # would be circular.
+        await self._db.create_function(
+            "_has_usable_endpoint",
+            1,
+            _endpoint_list_has_usable_endpoint,
+            deterministic=True,
+        )
+
     async def _hub_username_unique_index_exists(self) -> bool:
         """True when the legacy UNIQUE auto-index on hub_username still exists."""
         for idx in await (
@@ -185,6 +202,22 @@ class ContactsStore(BaseStore):
                 if cols == ["hub_username"]:
                     return True
         return False
+
+    async def _ensure_usable_endpoint_fn(self) -> None:
+        """Register the SQL helper used by establish_peer_link's keep-existing CASE.
+
+        Idempotent: SQLite allows re-registering a function with the same name,
+        so this is safe to call on every establish_peer_link even though the
+        connection registers it once in ``_post_init``.
+        """
+        if self._db is None:
+            return
+        await self._db.create_function(
+            "_has_usable_endpoint",
+            1,
+            _endpoint_list_has_usable_endpoint,
+            deterministic=True,
+        )
 
     # ------------------------------------------------------------------
     # contacts
@@ -361,17 +394,28 @@ class ContactsStore(BaseStore):
         possible), the later revoke could be cleared unintentionally.
 
         ``keep_existing_endpoints``: when True, the ON CONFLICT DO UPDATE arm
-        keeps the stored endpoints only when they are non-empty (not NULL, '' or
-        '[]'); when the stored endpoints are empty it takes the new ones
-        (``excluded.endpoints``).  When False, always overwrites with the new
-        ones.  Default False keeps every other caller unchanged.
-        """
+        keeps the stored endpoints only when they are non-empty AND hold at
+        least one usable endpoint (an entry the routes' ``_safe_endpoints``
+        predicate would accept — http/https with a hostname and a parseable
+        port).  When the stored list is empty or holds only unusable entries
+        it takes the new ones (``excluded.endpoints``).  When False, always
+        overwrites with the new ones.  Default False keeps every other caller
+        unchanged.
+
+        The decision is made INSIDE the atomic UPDATE statement via the
+        registered SQLite function ``_has_usable_endpoint`` (see ``_post_init``),
+        so a concurrently written valid list is preserved and a list that
+        holds only unusable entries is never kept forever: there is no read
+        of ``peer_links.endpoints`` outside the statement, so no read-then-write
+        race.
+"""
+        await self._ensure_usable_endpoint_fn()
         now = time.time()
         eps_json = _json_dumps(endpoints or [])
         if keep_existing_endpoints:
             endpoints_clause = (
                 "endpoints = CASE WHEN peer_links.endpoints IS NULL "
-                "OR peer_links.endpoints IN ('', '[]') "
+                "OR _has_usable_endpoint(peer_links.endpoints) = 0 "
                 "THEN excluded.endpoints ELSE peer_links.endpoints END, "
             )
         else:
@@ -552,3 +596,25 @@ def _json_dumps(obj) -> str:
 def _json_loads(s: str):
     import json
     return json.loads(s)
+
+
+def _endpoint_list_has_usable_endpoint(raw_json: str) -> int:
+    """Return 1 when the stored endpoints JSON holds at least one usable endpoint.
+
+    Reuses the predicate the routes apply before establish_peer_link
+    (``tinyagentos.routes.hub._safe_endpoints``) so the keep-existing decision
+    inside the atomic UPDATE statement is made on the same notion of "usable"
+    the handshake already uses.  ``raw_json`` is the raw peer_links.endpoints
+    text; any value that is not valid JSON or not a list is treated as empty.
+    """
+    if not raw_json:
+        return 0
+    try:
+        import json
+        endpoints = json.loads(raw_json)
+    except (ValueError, TypeError):
+        return 0
+    if not isinstance(endpoints, list):
+        return 0
+    from tinyagentos.routes.hub import _safe_endpoints
+    return 1 if _safe_endpoints(endpoints) else 0

@@ -120,6 +120,28 @@ describe("layout-store", () => {
     expect(notes[0]?.body).toContain("HTTP 403");
   });
 
+  it("keeps the cached value when the unsaved marker write fails", () => {
+    const originalSetItem = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key: string, value: string) {
+      if (key === UNSAVED_KEY) throw new Error("quota");
+      return originalSetItem.call(this, key, value);
+    });
+    localStorage.setItem(KEY, "off");
+    useLayoutStore.getState().setFullscreenOnLaunch(false);
+    expect(localStorage.getItem(KEY)).toBe("off");
+  });
+
+  it("restores the previous cached value when the unsaved marker write fails", () => {
+    const originalSetItem = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key: string, value: string) {
+      if (key === UNSAVED_KEY) throw new Error("quota");
+      return originalSetItem.call(this, key, value);
+    });
+    localStorage.setItem(KEY, "on");
+    useLayoutStore.getState().setFullscreenOnLaunch(false);
+    expect(localStorage.getItem(KEY)).toBe("on");
+  });
+
   it("after a permanent rejection, a later sync resumes and applies the server value", async () => {
     globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({}, false, 403)) as unknown as typeof fetch;
     useLayoutStore.getState().setFullscreenOnLaunch(false);

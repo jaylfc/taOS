@@ -200,15 +200,20 @@ class TestProviderAPI:
 
     async def test_add_provider_models_source_supplied(self, client, app):
         """Caller supplied models so discovery did not run -> "supplied"."""
-        resp = await client.post("/api/providers", json={
-            "name": "supplied-source",
-            "type": "kilocode",
-            "url": "https://example.test/api",
-            "models": [{"id": "custom/model-a"}],
-            "api_key_secret": "provider-supplied-key",
-        })
-        assert resp.status_code == 200
-        assert resp.json()["models_source"] == "supplied"
+        with patch(
+            "tinyagentos.routes.providers._discover_provider_models",
+            new=AsyncMock(return_value=[]),
+        ) as discover_mock:
+            resp = await client.post("/api/providers", json={
+                "name": "supplied-source",
+                "type": "kilocode",
+                "url": "https://example.test/api",
+                "models": [{"id": "custom/model-a"}],
+                "api_key_secret": "provider-supplied-key",
+            })
+            assert resp.status_code == 200
+            assert resp.json()["models_source"] == "supplied"
+            discover_mock.assert_not_awaited()
 
     async def test_add_provider_non_cloud_no_models(self, client, app):
         """Non-cloud provider with no models supplied -> models_source == 'none'."""
@@ -439,6 +444,43 @@ class TestProviderAPI:
         assert resp.status_code == 200
         by_name = {p.get("name"): p for p in resp.json()}
         assert by_name["legacy-explicit-false"].get("models_seeded") is False
+
+    async def test_list_marks_multi_model_legacy_seed_list_as_seeded(self, client, app):
+        """A legacy provider config with a multi-model seed list and an
+        explicit models_seeded=True marker must be marked models_seeded
+        when the live probe returns nothing."""
+        app.state.config.backends.append({
+            "name": "legacy-multi-seeded-kilo",
+            "type": "kilocode",
+            "url": "https://kilo.example/api",
+            "models": [
+                {"id": "kilo-auto/free"},
+                {"id": "kilo-auto/pro"},
+                {"id": "kilo/other-model"},
+            ],
+            "models_seeded": True,
+        })
+
+        class _EmptyHealth:
+            async def health(self, *_a, **_k):
+                return {"status": "ok", "response_ms": 5, "models": []}
+
+        with patch(
+            "tinyagentos.routes.providers.get_adapter",
+            return_value=_EmptyHealth(),
+        ), patch(
+            "tinyagentos.routes.providers._resolve_api_key_for_backend",
+            new=AsyncMock(return_value=None),
+        ):
+            resp = await client.get("/api/providers")
+        assert resp.status_code == 200
+        by_name = {p.get("name"): p for p in resp.json()}
+        assert by_name["legacy-multi-seeded-kilo"].get("models_seeded") is True
+        # All seed models should be surfaced
+        model_ids = [m.get("id") for m in by_name["legacy-multi-seeded-kilo"]["models"]]
+        assert "kilo-auto/free" in model_ids
+        assert "kilo-auto/pro" in model_ids
+        assert "kilo/other-model" in model_ids
 
     async def test_list_providers_surfaces_seeded_models_when_probe_empty(self, client, app):
         """A cloud provider whose live /models probe returns nothing (e.g.

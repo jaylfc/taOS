@@ -37,7 +37,7 @@ name: Gate integrity
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, edited, labeled, unlabeled]
-    branches: [master, dev]
+    branches: [master, dev, distro]
 
 permissions:
   contents: read

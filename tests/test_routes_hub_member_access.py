@@ -17,7 +17,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 from fastapi import HTTPException
 
-from tinyagentos.hub import identity, posts, store as hub_store
+from tinyagentos.hub import identity, posts, relationships, store as hub_store
 
 # Import the handlers to test
 from tinyagentos.routes.hub import (
@@ -415,7 +415,7 @@ class TestHubMemberAccess:
 
         # Store unchanged: no follow relationship
         fingerprint = identity.signing_fingerprint()
-        follows = await store.list_relationships("follow_out")
+        follows = await store.list_relationships(relationships.REL_FOLLOW_OUT)
         assert follows == []
 
         await store.close()
@@ -442,7 +442,7 @@ class TestHubMemberAccess:
             assert e.detail == "forbidden"
 
         # Store unchanged: no cache grant
-        grants = await store.list_relationships("cache_grant")
+        grants = await store.list_relationships(relationships.REL_CACHE_GRANT)
         assert grants == []
 
         await store.close()
@@ -469,7 +469,7 @@ class TestHubMemberAccess:
             assert e.detail == "forbidden"
 
         # Store unchanged: no outgoing request recorded
-        requests_out = await store.list_relationships("request_out")
+        requests_out = await store.list_relationships(relationships.REL_REQUEST_OUT)
         assert requests_out == []
 
         await store.close()
@@ -496,7 +496,7 @@ class TestHubMemberAccess:
             assert e.detail == "forbidden"
 
         # Store unchanged: no friend edge
-        friends = await store.list_relationships("friend")
+        friends = await store.list_relationships(relationships.REL_FRIEND)
         assert friends == []
 
         await store.close()
@@ -522,7 +522,7 @@ class TestHubMemberAccess:
             assert e.detail == "forbidden"
 
         # Store unchanged: no declined request recorded
-        declined = await store.list_relationships("request_declined")
+        declined = await store.list_relationships(relationships.REL_REQUEST_DECLINED)
         assert declined == []
 
         await store.close()
@@ -549,7 +549,7 @@ class TestHubMemberAccess:
             assert e.detail == "forbidden"
 
         # Store unchanged: no block edge
-        blocks = await store.list_relationships("block")
+        blocks = await store.list_relationships(relationships.REL_BLOCK)
         assert blocks == []
 
         await store.close()
@@ -576,7 +576,7 @@ class TestHubMemberAccess:
             assert e.detail == "forbidden"
 
         # Store unchanged: no mute edge
-        mutes = await store.list_relationships("mute")
+        mutes = await store.list_relationships(relationships.REL_MUTE)
         assert mutes == []
 
         await store.close()
@@ -603,7 +603,7 @@ class TestHubMemberAccess:
             assert e.detail == "forbidden"
 
         # Store unchanged: no mute edge to delete (already none)
-        mutes = await store.list_relationships("mute")
+        mutes = await store.list_relationships(relationships.REL_MUTE)
         assert mutes == []
 
         await store.close()
@@ -702,7 +702,7 @@ class TestHubMemberAccess:
             pass  # directory forward may fail in test env
 
         # Local request_out should be recorded (kind is "friend_request_out")
-        requests_out = await store.list_relationships("friend_request_out")
+        requests_out = await store.list_relationships(relationships.REL_REQUEST_OUT)
         assert len(requests_out) == 1
         assert requests_out[0]["peer"] == "c" * 64
 
