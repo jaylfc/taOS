@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import logging
-import os
 from io import StringIO
 from unittest.mock import patch
+
+import pytest
 
 
 def _disable_all_listeners(monkeypatch, m):
@@ -46,6 +47,7 @@ class TestLoggingIntegration:
         m = self._run_main_with_env(monkeypatch, {"TAOS_HOST": "127.0.0.1", "TAOS_PORT": "7117"}, "uvicorn.run")
 
         configure_called = []
+
         def fake_configure_logging():
             configure_called.append(True)
             from tinyagentos.logging_config import configure_logging as real_configure
@@ -80,13 +82,14 @@ class TestLoggingIntegration:
             assert "INFO" in output, f"Level missing in output: {output}"
         finally:
             root.handlers = saved_handlers
-            root.level = saved_level
+            root.setLevel(saved_level)
 
     def test_main_dual_port_calls_configure_logging(self, monkeypatch):
         """python -m tinyagentos (dual-port default) calls configure_logging()."""
         m = self._run_main_with_env(monkeypatch, {"TAOS_HOST": "127.0.0.1", "TAOS_PORT": "7117"}, "_serve_dual_port")
 
         configure_called = []
+
         def fake_configure_logging():
             configure_called.append(True)
             from tinyagentos.logging_config import configure_logging as real_configure
@@ -119,9 +122,9 @@ class TestLoggingIntegration:
             assert "INFO" in output, f"Level missing in output: {output}"
         finally:
             root.handlers = saved_handlers
-            root.level = saved_level
+            root.setLevel(saved_level)
 
-    def test_configure_logging_respects_TAOS_LOG_LEVEL_WARNING(self):
+    def test_configure_logging_respects_TAOS_LOG_LEVEL_WARNING(self, monkeypatch):
         """configure_logging() respects TAOS_LOG_LEVEL=WARNING."""
         from tinyagentos.logging_config import configure_logging
 
@@ -129,18 +132,18 @@ class TestLoggingIntegration:
         saved_handlers = list(root.handlers)
         saved_level = root.level
         root.handlers = []
-        root.level = logging.NOTSET
+        root.setLevel(logging.NOTSET)
 
         try:
-            os.environ["TAOS_LOG_LEVEL"] = "WARNING"
+            monkeypatch.setenv("TAOS_LOG_LEVEL", "WARNING")
             configure_logging()
             assert root.level == logging.WARNING, f"Root level should be WARNING, got {root.level}"
         finally:
             root.handlers = saved_handlers
-            root.level = saved_level
-            os.environ.pop("TAOS_LOG_LEVEL", None)
+            root.setLevel(saved_level)
+            monkeypatch.delenv("TAOS_LOG_LEVEL", raising=False)
 
-    def test_configure_logging_defaults_to_INFO(self):
+    def test_configure_logging_defaults_to_INFO(self, monkeypatch):
         """configure_logging() defaults to INFO when TAOS_LOG_LEVEL unset."""
         from tinyagentos.logging_config import configure_logging
 
@@ -148,15 +151,15 @@ class TestLoggingIntegration:
         saved_handlers = list(root.handlers)
         saved_level = root.level
         root.handlers = []
-        root.level = logging.NOTSET
+        root.setLevel(logging.NOTSET)
 
         try:
-            os.environ.pop("TAOS_LOG_LEVEL", None)
+            monkeypatch.delenv("TAOS_LOG_LEVEL", raising=False)
             configure_logging()
             assert root.level == logging.INFO, f"Root level should be INFO, got {root.level}"
         finally:
             root.handlers = saved_handlers
-            root.level = saved_level
+            root.setLevel(saved_level)
 
     def test_configure_logging_idempotent_no_duplicate_handlers(self):
         """configure_logging() is idempotent - doesn't add duplicate handlers."""
@@ -166,7 +169,7 @@ class TestLoggingIntegration:
         saved_handlers = list(root.handlers)
         saved_level = root.level
         root.handlers = []
-        root.level = logging.NOTSET
+        root.setLevel(logging.NOTSET)
 
         try:
             configure_logging()
@@ -177,7 +180,7 @@ class TestLoggingIntegration:
             assert handler_count_after_second == 1, f"Expected 1 handler after second call, got {handler_count_after_second}"
         finally:
             root.handlers = saved_handlers
-            root.level = saved_level
+            root.setLevel(saved_level)
 
     def test_configure_logging_preserves_existing_handler(self):
         """configure_logging() preserves pre-existing handler."""
@@ -187,7 +190,7 @@ class TestLoggingIntegration:
         saved_handlers = list(root.handlers)
         saved_level = root.level
         root.handlers = []
-        root.level = logging.NOTSET
+        root.setLevel(logging.NOTSET)
 
         try:
             existing_handler = logging.NullHandler()
@@ -199,7 +202,7 @@ class TestLoggingIntegration:
             assert len(stream_handlers) == 0, f"Expected 0 StreamHandlers when handler exists, got {len(stream_handlers)}"
         finally:
             root.handlers = saved_handlers
-            root.level = saved_level
+            root.setLevel(saved_level)
 
 
 class TestRootLoggerRestoredBetweenTests:
@@ -208,21 +211,88 @@ class TestRootLoggerRestoredBetweenTests:
     fixture (tests/conftest.py) must restore the pre-test level so the NEXT
     test sees the level that was in effect before create_app() ran."""
 
-    _level_before = None
+    def test_autouse_fixture_is_active(self, request):
+        """The _restore_root_logger autouse fixture is present in fixturenames."""
+        assert "_restore_root_logger" in request.fixturenames
 
-    def test_create_app_sets_root_level_to_INFO(self, tmp_data_dir):
-        """Calling create_app() leaves the root logger at INFO."""
+    def test_root_logger_state_restored_after_create_app(self, tmp_data_dir):
+        """Root logger level and handlers are restored after create_app() runs.
+
+        This test is self-contained and order-independent: it snapshots the
+        root logger state, calls create_app() (which changes the level to INFO),
+        then calls the same restore helper the fixture uses, and asserts the
+        state matches the snapshot.
+        """
+        from tests.conftest import _save_root_logger_state, _restore_root_logger_state
         from tinyagentos.app import create_app
 
         root = logging.getLogger()
-        root.setLevel(logging.WARNING)
-        type(self)._level_before = root.level
+        # Snapshot state before any mutation
+        before_state = _save_root_logger_state()
+        before_level, before_handlers = before_state
+
+        # Call create_app which will set root level to INFO
         create_app(data_dir=tmp_data_dir)
+
+        # Verify the level was changed by create_app
         assert root.level == logging.INFO
 
-    def test_root_logger_level_restored_in_next_test(self):
-        """The level visible to the next test equals the level before
-        create_app() ran (the fixture restored it after the previous test)."""
+        # Restore using the same helper the fixture uses
+        _restore_root_logger_state(before_state)
+
+        # Assert level and handlers match the snapshot
+        assert root.level == before_level, f"Expected level {before_level}, got {root.level}"
+        assert list(root.handlers) == before_handlers, f"Handlers mismatch: {root.handlers} != {before_handlers}"
+
+    def test_restore_clears_child_logger_level_cache(self):
+        """Restoring root level with setLevel() clears child logger isEnabledFor cache.
+
+        When root is INFO, a child logger caches isEnabledFor(INFO) == True.
+        After restoring root to WARNING via setLevel(), the child's cache
+        must be invalidated so isEnabledFor(INFO) returns False.
+        """
+        from tests.conftest import _save_root_logger_state, _restore_root_logger_state
+
         root = logging.getLogger()
-        assert type(self)._level_before is not None, "create_app test must run first"
-        assert root.level == type(self)._level_before
+        # Ensure root starts at INFO so child caches INFO as enabled
+        root.setLevel(logging.INFO)
+
+        # Create a child logger and prime its cache
+        child = logging.getLogger("tinyagentos.test_child_cache")
+        assert child.isEnabledFor(logging.INFO) is True, "Child should have INFO enabled when root is INFO"
+
+        # Snapshot state (root at INFO)
+        state_at_info = _save_root_logger_state()
+
+        # Change root to WARNING and restore back to the saved state (INFO)
+        # This simulates what happens when a test runs with root at WARNING,
+        # create_app sets it to INFO, then fixture restores to WARNING
+        root.setLevel(logging.WARNING)
+        _restore_root_logger_state(state_at_info)
+
+        # Root should be back at INFO
+        assert root.level == logging.INFO
+
+        # Now simulate the reverse: root at WARNING, create_app sets to INFO, restore to WARNING
+        root.setLevel(logging.WARNING)
+        # Prime child cache at WARNING (INFO should be disabled)
+        assert child.isEnabledFor(logging.INFO) is False, "Child should have INFO disabled when root is WARNING"
+
+        # Snapshot state at WARNING
+        state_at_warning = _save_root_logger_state()
+
+        # Change root to INFO (simulating create_app)
+        root.setLevel(logging.INFO)
+        assert child.isEnabledFor(logging.INFO) is True, "Child should have INFO enabled when root is INFO"
+
+        # Restore to WARNING using the helper (uses setLevel)
+        _restore_root_logger_state(state_at_warning)
+
+        # Root should be WARNING
+        assert root.level == logging.WARNING
+
+        # Child's cache should be cleared: isEnabledFor(INFO) must be False
+        assert child.isEnabledFor(logging.INFO) is False, (
+            "Child logger cache not cleared after restore: "
+            "isEnabledFor(INFO) should be False when root is WARNING"
+        )
