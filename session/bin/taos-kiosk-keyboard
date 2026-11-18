@@ -164,13 +164,32 @@ if command -v flock >/dev/null 2>&1; then
         exit 1
     fi
     exec 9>"$LOCK"
-    # -w 30: wait up to 30 s for a live holder, then give up rather than
-    # enter unlocked; a holder that dies releases the lock at once.
-    if ! flock -w 30 9; then
-        ktrace "lock: gave up"
-        echo "taos-kiosk-keyboard: another start still holds $LOCK after 30 s, giving up" >&2
-        exit 1
-    fi
+    # BusyBox flock (the handset) has no -w, only flock [-sxun] FD. Do not use
+    # -w at all: wait with a loop of non-blocking attempts and a short sleep,
+    # which works on util-linux and BusyBox alike. The first -n is the fast
+    # path: an uncontended start takes the lock here and never sleeps. The
+    # count is bounded so a lock held forever gives up rather than hang; a
+    # holder that dies releases the lock at once, so a live holder is the only
+    # thing waited for. Tests shorten the wait with TAOS_KEYBOARD_LOCK_TRIES.
+    LOCK_TRIES="${TAOS_KEYBOARD_LOCK_TRIES:-300}"
+    case "$LOCK_TRIES" in ''|*[!0-9]*) LOCK_TRIES=300 ;; esac
+    _i=0
+    while ! flock -n 9; do
+        if [ "$_i" = 0 ]; then
+            # Contended: decide the sleep step once. sleep 0.1 is ~300 tries
+            # = 30 s; if this shell's sleep rejects a fraction, use sleep 1
+            # with 30 tries (also 30 s).
+            if sleep 0.1 2>/dev/null; then LOCK_SLEEP=0.1; else LOCK_SLEEP=1; LOCK_TRIES=30; fi
+            ktrace "lock: waiting"
+        fi
+        if [ "$_i" -ge "$LOCK_TRIES" ]; then
+            ktrace "lock: gave up after $_i tries"
+            echo "taos-kiosk-keyboard: another start still holds $LOCK, giving up" >&2
+            exit 1
+        fi
+        sleep "$LOCK_SLEEP" 2>/dev/null || sleep 1
+        _i=$((_i + 1))
+    done
     ktrace "lock: acquired"
     trap 'exit 1' INT TERM HUP
 else

@@ -455,7 +455,7 @@ def test_the_started_keyboard_does_not_hold_fd_9(env):
                     pass
 
 
-def test_a_stale_lock_file_does_not_hang_the_wrapper(env):
+def test_a_stale_lock_does_not_hang_the_wrapper(env):
     """A lock file left behind by a start that died inside the section is not
     stale state: there is nothing to reclaim, so a later start opens it and
     goes on at once."""
@@ -567,3 +567,115 @@ def test_without_flock_uses_the_symlink_lock_fallback(env):
     assert r.returncode == 0, r.stderr
     assert time.time() - t0 < 6
     assert out.exists() and not os.path.lexists(lock)
+
+
+def _busybox_flock_stub(tmp, real_flock):
+    """A PATH stub for a BusyBox-style flock: no -w (rejected with a usage
+    line), everything else (the -n form the wrapper uses) is handed to the real
+    flock, so -n locks a real lock file against the inherited fd 9."""
+    stub = tmp / "flockstub"
+    stub.mkdir()
+    (stub / "flock").write_text(
+        '#!/bin/sh\n'
+        'for _a in "$@"; do\n'
+        '    if [ "$_a" = "-w" ]; then\n'
+        '        echo "Usage: flock [-sxun] fd | { file [-c] cmd ... }" >&2\n'
+        '        exit 1\n'
+        '    fi\n'
+        'done\n'
+        'exec "%s" "$@"\n' % real_flock)
+    os.chmod(stub / "flock", 0o755)
+    return str(stub)
+
+
+def _real_flock_or_skip():
+    real = shutil.which("flock")
+    if not real:
+        pytest.skip("no real flock on PATH to delegate -n to")
+    return real
+
+
+def test_a_busybox_flock_without_w_still_acquires_the_lock(env):
+    """The handset runs BusyBox, whose flock has no -w. A flock that rejects -w
+    but implements -n against a real lock file must not stop the wrapper: it
+    takes the lock with the non-blocking retry loop and starts the keyboard."""
+    e, tmp, out = env
+    real = _real_flock_or_skip()
+    stub = _busybox_flock_stub(tmp, real)
+    e2 = dict(e, PATH="%s:%s" % (stub, e["PATH"]))
+    # Control: the stub really rejects -w, which is why the old `-w 30` call
+    # made the wrapper print "gave up" and exit 1 on BusyBox.
+    check = subprocess.run(["/bin/sh", "-c", "flock -w 30 9 2>/dev/null; echo rc=$?"],
+                           env={k: v for k, v in e2.items() if k != "_extra"},
+                           capture_output=True, text=True)
+    assert "rc=1" in check.stdout, check.stdout
+    r = start(e2)
+    assert r.returncode == 0, r.stderr
+    assert out.exists(), "the keyboard never started under a flock without -w"
+
+
+def test_two_wrappers_under_a_busybox_flock_start_exactly_one_keyboard(env):
+    """With a BusyBox-style flock (no -w) two wrappers started together still
+    serialize on the -n retry loop: the second waits for the first, then finds
+    it running and replaces it, so exactly one keyboard process is left."""
+    e, tmp, out = env
+    real = _real_flock_or_skip()
+    stub = _busybox_flock_stub(tmp, real)
+    pids = tmp / "pids"
+    (tmp / "sqbin" / "squeekboard").write_text(
+        '#!/bin/sh\necho "$$" >> "%s"\nwhile :; do sleep 1; done\n' % pids)
+    pidfile = pathlib.Path(e["XDG_RUNTIME_DIR"]) / "taos-keyboard.pid"
+    ee = {k: v for k, v in e.items() if k != "_extra"}
+    ee["PATH"] = "%s:%s" % (stub, e["PATH"])
+    procs = [subprocess.Popen([str(WRAPPER)], env=ee),
+             subprocess.Popen([str(WRAPPER)], env=ee)]
+    try:
+        for _ in range(100):
+            if pids.exists() and len(pids.read_text().split()) >= 1:
+                break
+            time.sleep(0.1)
+        alive = []
+        for _ in range(120):
+            alive = _alive_stubs(pids)
+            if len(alive) == 1:
+                break
+            time.sleep(0.1)
+        assert len(alive) == 1, alive
+        assert pidfile.read_text().strip() == str(alive[0])
+    finally:
+        for p in procs:
+            p.kill()
+        if pids.exists():
+            for tok in pids.read_text().split():
+                try:
+                    os.kill(int(tok), 9)
+                except ProcessLookupError:
+                    pass
+
+
+def test_a_lock_held_forever_makes_the_wrapper_give_up_after_bounded_tries(env):
+    """A lock held forever must not hang the wrapper: after a bounded number of
+    non-blocking tries (shortened here with TAOS_KEYBOARD_LOCK_TRIES) it gives
+    up with a clear message and a non-zero exit, without starting the keyboard.
+    This runs on the real flock (util-linux and BusyBox share the -n form)."""
+    e, tmp, out = env
+    run = pathlib.Path(e["XDG_RUNTIME_DIR"])
+    lock = run / "taos-keyboard.flock"
+    e = {k: v for k, v in e.items() if k != "_extra"}
+    holder = _holder(lock, e)
+    try:
+        ee = dict(e, TAOS_KEYBOARD_LOCK_TRIES="3")
+        t0 = time.time()
+        try:
+            r = subprocess.run([str(WRAPPER)], env=ee, capture_output=True,
+                               text=True, timeout=30)
+        except subprocess.TimeoutExpired:
+            pytest.fail("the wrapper never gave up: it hangs on a lock held forever")
+        took = time.time() - t0
+        assert r.returncode != 0, (r.returncode, r.stderr)
+        assert "giving up" in r.stderr and str(lock) in r.stderr, r.stderr
+        assert took < 15, took
+        assert not out.exists()
+    finally:
+        holder.kill()
+        holder.wait()
