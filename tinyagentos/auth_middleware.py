@@ -15,13 +15,24 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import HTMLResponse, RedirectResponse
 
 from tinyagentos.agent_token_auth import (
-    _enforce_rotation_cutoff, _get_grants_store, _get_keypair, _get_store,
-    _grant_unexpired, check_agent_identity,
+    _enforce_rotation_cutoff,
+    _get_grants_store,
+    _get_keypair,
+    _get_store,
+    _grant_unexpired,
+    check_agent_identity,
 )
 from tinyagentos.auth import AuthStoreCorruptError
 from tinyagentos.device_scopes import (
-    AGENTS_READ, CHAT_SEND, DECISIONS_ANSWER, FILES_UPLOAD, LIBRARY_INGEST,
-    PUSH_REGISTER, VOICE_STT, VOICE_TTS, effective_scopes,
+    AGENTS_READ,
+    CHAT_SEND,
+    DECISIONS_ANSWER,
+    FILES_UPLOAD,
+    LIBRARY_INGEST,
+    PUSH_REGISTER,
+    VOICE_STT,
+    VOICE_TTS,
+    effective_scopes,
 )
 from tinyagentos.device_store import DEVICE_TOKEN_PREFIX
 from tinyagentos.rate_limit import MovingWindowLimiter
@@ -125,6 +136,8 @@ def _resolve_bound_local_token_agent(request: Request, auth_mgr, presented: str)
             ):
                 bound_agent, canonical_id = binding
                 if not canonical_id:
+                    if not bound_agent or not bound_agent.strip():
+                        return False
                     return bound_agent
                 config = getattr(request.app.state, "config", None)
                 if config is None:
@@ -1082,7 +1095,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
                         # (Scope checks stay route-level; here we only
                         # establish that the caller is a known agent.)
                         try:
-                            from tinyagentos.agent_token_auth import verify_registry_token
+                            from tinyagentos.agent_token_auth import (
+                                verify_registry_token,
+                            )
 
                             _private_pem, public_pem = _get_keypair(request)
                             payload = verify_registry_token(presented, public_pem)
@@ -1270,7 +1285,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
                         # Verify the token and check if it's the native agent (all allowlisted paths)
                         # or a deployed agent on skill-exec paths.
                         try:
-                            from tinyagentos.agent_token_auth import verify_registry_token
+                            from tinyagentos.agent_token_auth import (
+                                verify_registry_token,
+                            )
                             from tinyagentos.native_agent_identity import (
                                 NATIVE_AGENT_ORIGIN,
                             )

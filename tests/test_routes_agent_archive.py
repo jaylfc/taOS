@@ -1,9 +1,5 @@
+
 import pytest
-import asyncio
-import tempfile
-import shutil
-from pathlib import Path
-from unittest.mock import AsyncMock
 
 
 class TestListArchivedAgents:
@@ -180,7 +176,7 @@ class TestArchiveSnapshotTimeout:
             return {"success": True, "output": ""}
 
         async def fake_snapshot_create(name, snapshot_name):
-            raise asyncio.TimeoutError()
+            raise TimeoutError()
 
         async def fake_container_exists(name):
             return True
@@ -442,3 +438,51 @@ class TestRestorePublishesConfigBeforeContainerStart:
         ), "restored entry lost its canonical id"
         assert any(a["name"] == "ghost" for a in config.agents)
         assert not any(e["id"] == "ghost-1" for e in config.archived_agents)
+
+
+@pytest.mark.asyncio
+class TestRestoreRollbackOnSaveFailure:
+    """If save_config_locked raises during restore, the in-memory config
+    mutation (moving the entry from archived_agents to agents) must be
+    rolled back so the archive entry is still present and the agent is not
+    duplicated in the live list.
+    """
+
+    async def test_restore_rolls_back_in_memory_on_save_failure(self, client, monkeypatch, app):
+        config = app.state.config
+        entry = {
+            "id": "ghost-1",
+            "archived_at": "20260101T000000",
+            "archived_slug": "ghost",
+            "snapshot_name": "taos-archive-1",
+            "export_path": None,
+            "archive_dir": "archive/ghost-1",
+            "container_name": "taos-agent-ghost",
+            "original": {"name": "ghost", "registry_canonical_id": "cid-ghost"},
+        }
+        config.archived_agents = [entry]
+        original_archived = list(config.archived_agents)
+        original_agents = list(config.agents)
+
+        async def ok(*args, **kwargs):
+            return {"success": True, "output": ""}
+
+        monkeypatch.setattr("tinyagentos.containers.snapshot_restore", ok)
+        monkeypatch.setattr("tinyagentos.containers.rename_container", ok)
+        monkeypatch.setattr("tinyagentos.containers.start_container", ok)
+        monkeypatch.setattr("tinyagentos.containers.set_env", ok)
+        monkeypatch.setattr("tinyagentos.containers.exec_in_container", ok)
+
+        # Patch save_config_locked to raise
+        async def failing_save(*args, **kwargs):
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr("tinyagentos.routes.agent_archive.save_config_locked", failing_save)
+
+        resp = await client.post("/api/agents/archived/ghost-1/restore")
+        assert resp.status_code == 500
+        assert "disk full" in resp.json().get("error", "")
+
+        # In-memory state must be rolled back
+        assert config.archived_agents == original_archived
+        assert config.agents == original_agents

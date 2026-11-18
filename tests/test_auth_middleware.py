@@ -1369,8 +1369,10 @@ class TestBoundLocalTokenCanonicalMiddleware:
     @pytest.mark.asyncio
     async def test_mismatched_canonical_id_rejected_as_invalid_token(self):
         from unittest.mock import AsyncMock, MagicMock
+
         from fastapi.responses import JSONResponse
         from starlette.datastructures import Headers
+
         from tinyagentos.auth_middleware import AuthMiddleware
 
         def _request(*, method="GET", path="/api/system", headers=None, auth_mgr=None, config=None):
@@ -1419,8 +1421,10 @@ class TestBoundLocalTokenCanonicalMiddleware:
     @pytest.mark.asyncio
     async def test_matching_canonical_id_sets_agent_name(self):
         from unittest.mock import AsyncMock, MagicMock
+
         from fastapi.responses import JSONResponse
         from starlette.datastructures import Headers
+
         from tinyagentos.auth_middleware import AuthMiddleware
 
         def _request(*, method="GET", path="/api/system", headers=None, auth_mgr=None, config=None):
@@ -1470,8 +1474,10 @@ class TestBoundLocalTokenCanonicalMiddleware:
     @pytest.mark.asyncio
     async def test_legacy_plain_string_binding_still_sets_agent_name(self):
         from unittest.mock import AsyncMock, MagicMock
+
         from fastapi.responses import JSONResponse
         from starlette.datastructures import Headers
+
         from tinyagentos.auth_middleware import AuthMiddleware
 
         def _request(*, method="GET", path="/api/system", headers=None, auth_mgr=None, config=None):
@@ -1526,7 +1532,6 @@ class TestBoundLocalTokenCanonicalMiddleware:
         The host's own unbound local token (positive control, below) still
         passes: it is the one binding-less credential that is allowed.
         """
-        import hashlib
 
         from tinyagentos.auth import AuthManager
         from tinyagentos.auth_middleware import AuthMiddleware
@@ -1599,6 +1604,163 @@ class TestBoundLocalTokenCanonicalMiddleware:
         middleware = AuthMiddleware(app=MagicMock())
         call_next = AsyncMock(return_value=JSONResponse({"ok": True}))
         req = _request()
+
+        resp = await middleware.dispatch(req, call_next)
+
+        assert resp.status_code == 200
+        assert req.state.user_id
+        assert req.state.is_admin is True
+        call_next.assert_awaited_once()
+
+
+class TestLocalTokenEmptyBinding:
+    """An empty or whitespace-only bound agent name must be treated as an
+    INVALID binding: return False from the resolver so the token is refused
+    (401) exactly like an unexpected shape. The unbound host token must still
+    work.
+    """
+
+    def _make_request(self, auth_mgr, token, agents=None):
+        from unittest.mock import MagicMock
+
+        from starlette.datastructures import Headers
+        req = MagicMock()
+        req.method = "GET"
+        req.url.path = "/api/system"
+        req.headers = Headers({"authorization": f"Bearer {token}"})
+        req.cookies = {}
+        req.client = MagicMock(host="203.0.113.5")
+        req.app.routes = []
+        req.scope = {}
+        state = MagicMock()
+        state.auth = auth_mgr
+        state.config = MagicMock(agents=agents or [])
+        req.app.state = state
+        req.state = MagicMock()
+        return req
+
+    @pytest.mark.asyncio
+    async def test_empty_dict_name_binding_returns_401(self, tmp_path):
+        """A token bound to {"name": ""} must get 401, not fall through as admin."""
+        import hashlib
+
+        from tinyagentos.auth import AuthManager
+        from tinyagentos.auth_middleware import AuthMiddleware
+
+        auth_mgr = AuthManager(tmp_path)
+        auth_mgr.setup_user("admin", "Test Admin", "", "testpass")
+        own_path = auth_mgr.local_token_path()
+        own_path.write_text("host-token")
+        token = "empty-name-token"
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        bindings_path = tmp_path / ".auth_local_token_bindings.json"
+        bindings_path.write_text(f'{{"{token_hash}": {{"name": "", "canonical_id": "cid"}}}}')
+
+        middleware = AuthMiddleware(app=MagicMock())
+        call_next = AsyncMock(return_value=JSONResponse({"ok": True}))
+        req = self._make_request(auth_mgr, token)
+
+        resp = await middleware.dispatch(req, call_next)
+
+        assert resp.status_code == 401
+        assert resp.body == b'{"error":"Authentication required"}'
+        call_next.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_legacy_empty_string_binding_returns_401(self, tmp_path):
+        """A legacy "" binding must get 401, not fall through as admin."""
+        import hashlib
+
+        from tinyagentos.auth import AuthManager
+        from tinyagentos.auth_middleware import AuthMiddleware
+
+        auth_mgr = AuthManager(tmp_path)
+        auth_mgr.setup_user("admin", "Test Admin", "", "testpass")
+        own_path = auth_mgr.local_token_path()
+        own_path.write_text("host-token")
+        token = "legacy-empty-token"
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        bindings_path = tmp_path / ".auth_local_token_bindings.json"
+        bindings_path.write_text(f'{{"{token_hash}": ""}}')
+
+        middleware = AuthMiddleware(app=MagicMock())
+        call_next = AsyncMock(return_value=JSONResponse({"ok": True}))
+        req = self._make_request(auth_mgr, token)
+
+        resp = await middleware.dispatch(req, call_next)
+
+        assert resp.status_code == 401
+        assert resp.body == b'{"error":"Authentication required"}'
+        call_next.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_whitespace_name_binding_returns_401(self, tmp_path):
+        """A token bound to {"name": "   "} must get 401, not fall through as admin."""
+        import hashlib
+
+        from tinyagentos.auth import AuthManager
+        from tinyagentos.auth_middleware import AuthMiddleware
+
+        auth_mgr = AuthManager(tmp_path)
+        auth_mgr.setup_user("admin", "Test Admin", "", "testpass")
+        own_path = auth_mgr.local_token_path()
+        own_path.write_text("host-token")
+        token = "whitespace-name-token"
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        bindings_path = tmp_path / ".auth_local_token_bindings.json"
+        bindings_path.write_text(f'{{"{token_hash}": {{"name": "   ", "canonical_id": "cid"}}}}')
+
+        middleware = AuthMiddleware(app=MagicMock())
+        call_next = AsyncMock(return_value=JSONResponse({"ok": True}))
+        req = self._make_request(auth_mgr, token)
+
+        resp = await middleware.dispatch(req, call_next)
+
+        assert resp.status_code == 401
+        assert resp.body == b'{"error":"Authentication required"}'
+        call_next.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_valid_bound_name_still_works(self, tmp_path):
+        """A token with a valid bound name must still work (200, agent_name set)."""
+        import hashlib
+
+        from tinyagentos.auth import AuthManager
+        from tinyagentos.auth_middleware import AuthMiddleware
+
+        auth_mgr = AuthManager(tmp_path)
+        auth_mgr.setup_user("admin", "Test Admin", "", "testpass")
+        own_path = auth_mgr.local_token_path()
+        own_path.write_text("host-token")
+        token = "valid-name-token"
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        bindings_path = tmp_path / ".auth_local_token_bindings.json"
+        bindings_path.write_text(f'{{"{token_hash}": {{"name": "helper", "canonical_id": "cid"}}}}')
+
+        middleware = AuthMiddleware(app=MagicMock())
+        call_next = AsyncMock(return_value=JSONResponse({"ok": True}))
+        req = self._make_request(auth_mgr, token, agents=[{"name": "helper", "registry_canonical_id": "cid"}])
+
+        resp = await middleware.dispatch(req, call_next)
+
+        assert resp.status_code == 200
+        assert req.state.agent_name == "helper"
+        call_next.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_unbound_host_token_still_works(self, tmp_path):
+        """The host's own unbound local token must still work (200, admin)."""
+        from tinyagentos.auth import AuthManager
+        from tinyagentos.auth_middleware import AuthMiddleware
+
+        auth_mgr = AuthManager(tmp_path)
+        auth_mgr.setup_user("admin", "Test Admin", "", "testpass")
+        own_path = auth_mgr.local_token_path()
+        own_path.write_text("host-token")
+
+        middleware = AuthMiddleware(app=MagicMock())
+        call_next = AsyncMock(return_value=JSONResponse({"ok": True}))
+        req = self._make_request(auth_mgr, "host-token")
 
         resp = await middleware.dispatch(req, call_next)
 

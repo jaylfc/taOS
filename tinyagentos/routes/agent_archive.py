@@ -532,9 +532,25 @@ async def _restore_archived(request: Request, archive_id: str):
     restored["host"] = ""
     if new_key is not None:
         restored["llm_key"] = new_key
+
+    # Save original state for rollback on save failure
+    original_agents = list(config.agents)
+    original_archived = list(config.archived_agents)
+
     config.agents.append(restored)
     config.archived_agents = [a for a in config.archived_agents if a.get("id") != archive_id]
-    await save_config_locked(config, config.config_path)
+    try:
+        await save_config_locked(config, config.config_path)
+    except Exception as exc:  # noqa: BLE001
+        # Roll back in-memory mutations before returning 500
+        config.agents = original_agents
+        config.archived_agents = original_archived
+        logger.warning("restore: save_config_locked failed for %s: %s", final_slug, exc)
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            {"error": f"restore failed: config save failed: {exc}"},
+            status_code=500,
+        )
 
     # 3) Start container.
     try:
