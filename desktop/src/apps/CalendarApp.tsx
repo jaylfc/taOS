@@ -182,6 +182,7 @@ export function CalendarApp({ windowId: _windowId }: { windowId: string }) {
                 onClick={() => onDaySelect(cell.key)}
                 aria-pressed={selected}
                 data-testid="calendar-day"
+                data-date-key={cell.key}
                 aria-label={`${cellHeading}${cell.current ? "" : " (other month)"}${cell.isToday ? ", today" : ""}`}
                 className={`relative h-8 w-8 flex items-center justify-center rounded-full text-sm font-medium transition-colors ${
                   selected

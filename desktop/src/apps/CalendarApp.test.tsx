@@ -170,10 +170,13 @@ describe("CalendarApp day selection", () => {
   it("gives each cell a distinct accessible name (its own date)", () => {
     render(<CalendarApp windowId="test" />);
     const buttons = screen.getAllByTestId("calendar-day");
-    // Find two different cells (today and another current-month cell)
+    // Find two different current-month cells with different date keys
     const todayButton = buttons.find((b) => b.getAttribute("aria-pressed") === "true");
     const otherButton = buttons.find(
-      (b) => b.getAttribute("aria-pressed") !== "true" && b.textContent?.trim() !== todayButton?.textContent?.trim(),
+      (b) =>
+        b.getAttribute("aria-pressed") !== "true" &&
+        b.getAttribute("data-date-key") !== todayButton?.getAttribute("data-date-key") &&
+        !b.getAttribute("aria-label")?.includes("(other month)")
     );
     expect(todayButton).toBeDefined();
     expect(otherButton).toBeDefined();
