@@ -1258,6 +1258,7 @@ async def approve_request_record(
     prior_grants: set[tuple[str, Optional[str]]] = set()
     prior_grants_known = False
     prior_grant_expiry: dict[tuple[str, Optional[str]], Optional[str]] = {}
+    prior_grant_tier: dict[tuple[str, Optional[str]], str] = {}
     added_member = False
     prior_lead: Optional[str] = None
     lead_overwritten = False
@@ -1282,6 +1283,10 @@ async def approve_request_record(
         prior_grants = {(g["scope"], g.get("project_id")) for g in _snapshot}
         prior_grant_expiry = {
             (g["scope"], g.get("project_id")): g.get("expires_at") for g in _snapshot
+        }
+        prior_grant_tier = {
+            (g["scope"], g.get("project_id")): g.get("tier") or "once"
+            for g in _snapshot
         }
         prior_grants_known = True
         added_member = False
@@ -1380,6 +1385,7 @@ async def approve_request_record(
                 prior_grants=prior_grants,
                 prior_grants_known=prior_grants_known,
                 prior_grant_expiry=prior_grant_expiry,
+                prior_grant_tier=prior_grant_tier,
                 renew=renew,
                 added_member=added_member,
                 prior_lead=prior_lead,
@@ -1409,6 +1415,7 @@ async def approve_request_record(
             prior_grants=prior_grants,
             prior_grants_known=prior_grants_known,
             prior_grant_expiry=prior_grant_expiry,
+            prior_grant_tier=prior_grant_tier,
             renew=renew,
             added_member=added_member,
             prior_lead=prior_lead,
@@ -1435,13 +1442,16 @@ async def _undo_lost_approval(
     prior_grant_expiry: Optional[
         dict[tuple[str, Optional[str]], Optional[str]]
     ] = None,
+    prior_grant_tier: Optional[dict[tuple[str, Optional[str]], str]] = None,
     renew: bool = False,
 ) -> None:
     """Undo an approve's writes after it lost the decision race.
 
-    Left alone when the winner approved this same identity: it holds a token
-    for it. Every step is independent and best-effort so one failing store
-    neither skips the rest of the cleanup nor masks the caller's 409.
+    When a different approval won this same identity, only the identity
+    revert is skipped — the winner is live on it — and grants the winner
+    also holds are left in place; everything else this approval wrote is
+    still undone. Every step is independent and best-effort so one failing
+    store neither skips the rest of the cleanup nor masks the caller's 409.
     """
     auth_store = _get_auth_requests_store(request)
     # The winner check must not itself be able to kill the cleanup: if the
@@ -1466,7 +1476,10 @@ async def _undo_lost_approval(
     # Shared identity: a DIFFERENT request for this same identity may have
     # been accepted — it reused the identity this approval activated, and
     # its approval is live on it. Reverting the activation would pull the
-    # identity out from under that winner, so leave everything alone.
+    # identity out from under that winner, so the identity revert below is
+    # skipped — but only that step: this approval's own writes (grants the
+    # winner does not also hold, membership, the lead pointer) are still
+    # undone.
     try:
         winner = await auth_store.find_accepted_for_canonical(
             canonical_id, exclude_id=record_id
@@ -1478,36 +1491,53 @@ async def _undo_lost_approval(
             exc_info=True,
         )
         winner = None
+    # Grants the winner also holds, keyed the way the grants store keys
+    # them: the winner's record carries its granted scopes and the project
+    # its request bound them to. Those rows are the winner's writes, not
+    # this approval's, and the grant cleanup below leaves them alone.
+    winner_keys: set[tuple[str, Optional[str]]] = set()
+    winner_scopes: set[str] = set()
     if winner is not None:
-        return
+        winner_scopes = set(winner.get("granted_scopes") or [])
+        winner_keys = {
+            (scope, winner.get("project_id")) for scope in winner_scopes
+        }
 
     registry = _get_registry_store(request)
     grants_store = _get_grants_store(request)
     rel_mgr = _get_relationships(request)
     prior_grant_expiry = prior_grant_expiry or {}
+    prior_grant_tier = prior_grant_tier or {}
 
     if prior_grants_known:
         try:
             prior_scopes = {scope for scope, _project in prior_grants}
             for scope in granted_scopes:
                 key = (scope, binding_project)
+                if key in winner_keys:
+                    # The winning approval holds this grant too: its
+                    # write governs the row, so leave it exactly as it
+                    # stands — no revoke and no expiry restore.
+                    continue
                 if key not in prior_grants:
                     await grants_store.revoke_grant(
                         canonical_id, scope, project_id=binding_project
                     )
-                elif renew and key in prior_grant_expiry:
-                    # renew=True replaced the pre-existing grant's
-                    # expires_at; put the previous bound back rather than
-                    # leaving the renewed one in place.
+                elif key in prior_grant_expiry:
+                    # This approval's add_grant rewrote the pre-existing
+                    # grant's expiry and tier whether renew was set or
+                    # not: renew=False still bounds a permanent grant and
+                    # replaces an expired one with the new bound. Put the
+                    # snapshotted expiry and tier back.
                     await grants_store.add_grant(
                         canonical_id,
                         scope,
-                        tier="once",
+                        tier=prior_grant_tier.get(key, "once"),
                         project_id=binding_project,
                         expires_at=prior_grant_expiry[key],
                         renew=True,
                     )
-                if scope not in prior_scopes:
+                if scope not in prior_scopes and scope not in winner_scopes:
                     await rel_mgr.revoke_permission(
                         canonical_id, "taos-instance", scope
                     )
@@ -1564,7 +1594,11 @@ async def _undo_lost_approval(
                 exc_info=True,
             )
     try:
-        if created_here:
+        if winner is not None:
+            # Another approval won this identity and is live on it; its
+            # activation stands.
+            pass
+        elif created_here:
             await registry.delete(canonical_id)
         else:
             await registry.revert_activation(canonical_id)

@@ -1003,7 +1003,7 @@ class TestAuthRequestRoutes:
 
         monkeypatch.setattr(store, "set_decision", racing)
 
-    async def _pending_proof_request(self, consent_client, handle):
+    async def _pending_proof_request(self, consent_client, handle, **create_overrides):
         app = consent_client._transport.app
         reg = await app.state.agent_registry.register(
             framework="hermes",
@@ -1019,7 +1019,7 @@ class TestAuthRequestRoutes:
         async with AsyncClient(transport=transport, base_url="http://test") as bare:
             resp = await bare.post(
                 "/api/agents/auth-requests",
-                json={**_CREATE_BODY, "identity_claim": handle},
+                json={**_CREATE_BODY, "identity_claim": handle, **create_overrides},
                 headers={"Authorization": f"Bearer {proof}"},
             )
         return reg["canonical_id"], resp.json()["request_id"]
@@ -1615,3 +1615,144 @@ class TestAuthRequestRoutes:
             g["scope"] for g in await app.state.agent_grants.list_grants(cid)
         ]
         assert scopes == ["a2a_send"]
+
+    async def test_a_denied_race_restores_a_permanent_grant_bounded_without_renew(
+        self, consent_client, monkeypatch
+    ):
+        """Review #3789 (round 3): add_grant(renew=False) also rewrites a
+        pre-existing grant — a permanent grant gains the approval's bound
+        and the row is rewritten at the approval's tier. Losing the race
+        must restore the snapshotted expiry (unbounded) and tier for the
+        pre-existing key, not only in the renew=True case."""
+        app = consent_client._transport.app
+        cid, request_id = await self._pending_proof_request(
+            consent_client, "perm-race", duration_secs=30 * 24 * 3600
+        )
+        grants = app.state.agent_grants
+        await grants.add_grant(cid, "a2a_send", tier="always-allow")
+        self._deny_wins_the_race(app, monkeypatch)
+
+        resp = await consent_client.post(
+            f"/api/agents/auth-requests/{request_id}/approve",
+            json={"granted_scopes": ["a2a_send"]},
+        )
+        assert resp.status_code == 409, resp.text
+        rows = await grants.list_grants(cid)
+        assert [g["scope"] for g in rows] == ["a2a_send"]
+        assert rows[0]["expires_at"] is None
+        assert rows[0]["tier"] == "always-allow"
+
+    async def test_a_denied_race_restores_an_expired_grant_replaced_without_renew(
+        self, consent_client, monkeypatch
+    ):
+        """Review #3789 (round 3): with renew=False an expired pre-existing
+        grant is replaced by the approval's live bound. Losing the race
+        must put the original past expiry back — the grant must not come
+        back live on a refused request."""
+        from datetime import datetime, timedelta, timezone
+
+        app = consent_client._transport.app
+        cid, request_id = await self._pending_proof_request(
+            consent_client, "expired-race", duration_secs=30 * 24 * 3600
+        )
+        grants = app.state.agent_grants
+        prior_expiry = (
+            datetime.now(timezone.utc) - timedelta(days=1)
+        ).isoformat()
+        await grants.add_grant(
+            cid, "a2a_send", tier="once", expires_at=prior_expiry
+        )
+        self._deny_wins_the_race(app, monkeypatch)
+
+        resp = await consent_client.post(
+            f"/api/agents/auth-requests/{request_id}/approve",
+            json={"granted_scopes": ["a2a_send"]},
+        )
+        assert resp.status_code == 409, resp.text
+        rows = await grants.list_grants(cid)
+        assert [g["scope"] for g in rows] == ["a2a_send"]
+        assert rows[0]["expires_at"] == prior_expiry
+
+    async def test_a_lost_race_to_a_shared_identity_still_undoes_the_losers_writes(
+        self, consent_client, monkeypatch
+    ):
+        """Review #3789 (round 3): when another approval won the same
+        identity, the loser's undo skips only the identity revert. The
+        grants the loser wrote that the winner does not also hold, the
+        loser's project membership and its lead overwrite are still
+        undone."""
+        app = consent_client._transport.app
+        pstore = app.state.project_store
+        if pstore._db is None:
+            await pstore.init()
+        await pstore.create_project_with_lead(
+            name="Shared Identity Project",
+            slug="shared-identity-project",
+            created_by="admin",
+            member_id="original-lead",
+        )
+        project = await pstore.get_project_by_slug("shared-identity-project")
+        project_id = project["id"]
+
+        cid, request_a = await self._pending_proof_request(
+            consent_client,
+            "shared-cleanup",
+            requested_scopes=["a2a_send", "a2a_receive", "project_tasks"],
+            project_id=project_id,
+        )
+        store = app.state.auth_requests
+        record_a = await store.get(request_a)
+        request_b = (
+            await store.create(
+                identity_claim="shared-cleanup",
+                framework="hermes",
+                requested_scopes=["a2a_send"],
+                project_id=project_id,
+                proven_canonical_id=cid,
+                proven_token_iat=record_a["proven_token_iat"],
+            )
+        )["id"]
+
+        real_set_decision = store.set_decision
+
+        async def racing(rid, decision, **kwargs):
+            if rid == request_a and decision == "accepted":
+                # B's approval of the same identity lands first and wins,
+                # holding only a2a_send; then A's record is refused by
+                # another admin and A's own decision call loses.
+                assert await real_set_decision(
+                    request_b,
+                    "accepted",
+                    canonical_id=cid,
+                    token="b-token",
+                    granted_scopes=["a2a_send"],
+                    decided_by="other-admin",
+                )
+                assert await real_set_decision(
+                    rid, "refused", decided_by="other-admin"
+                )
+            return await real_set_decision(rid, decision, **kwargs)
+
+        monkeypatch.setattr(store, "set_decision", racing)
+
+        resp = await consent_client.post(
+            f"/api/agents/auth-requests/{request_a}/approve",
+            json={
+                "granted_scopes": ["a2a_send", "a2a_receive", "project_tasks"],
+                "is_lead": True,
+                "project_id": project_id,
+            },
+        )
+        assert resp.status_code == 409, resp.text
+        # The winner's activation of the shared identity stands...
+        assert (await app.state.agent_registry.get(cid))["status"] == "active"
+        # ...the grant the winner also holds stays, the loser's other
+        # grants are revoked...
+        scopes = sorted(
+            g["scope"] for g in await app.state.agent_grants.list_grants(cid)
+        )
+        assert scopes == ["a2a_send"]
+        # ...and the loser's membership and lead overwrite are undone.
+        assert await pstore.get_member(project_id, cid) is None
+        after = await pstore.get_project(project_id)
+        assert after["lead_member_id"] == "original-lead"
