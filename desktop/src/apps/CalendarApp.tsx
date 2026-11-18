@@ -27,16 +27,22 @@ function getFirstDayOfWeek(year: number, month: number) {
   return day === 0 ? 6 : day - 1;
 }
 
-/** YYYY-MM-DD — ISO 8601, so `new Date(key)` round-trips correctly.
- *  Built from local components (not `toISOString()`, which is UTC and drifts
- *  a day near month boundaries in non-UTC offsets). Zero-padding matters:
- *  "2025-5-15" is ambiguous and some engines parse the bare month as
- *  0-indexed, landing on the wrong day. */
+/** YYYY-MM-DD — ISO 8601 local date (no timezone). Zero-padded so that
+ *  parseDateKey can reconstruct the exact local day without UTC drift. */
 function formatDateKey(d: Date): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
+}
+
+/** Parse a YYYY-MM-DD key as a LOCAL date (not UTC). */
+function parseDateKey(key: string): Date {
+  const parts = key.split("-");
+  const y = Number(parts[0]);
+  const m = Number(parts[1]);
+  const d = Number(parts[2]);
+  return new Date(y, m - 1, d);
 }
 
 export function CalendarApp({ windowId: _windowId }: { windowId: string }) {
@@ -112,7 +118,7 @@ export function CalendarApp({ windowId: _windowId }: { windowId: string }) {
     setSelectedKey(key);
   }
 
-  const selectedDate = new Date(selectedKey);
+  const selectedDate = parseDateKey(selectedKey);
   const heading = `${MONTHS[selectedDate.getMonth()]} ${selectedDate.getDate()}, ${selectedDate.getFullYear()}`;
 
   return (
@@ -147,21 +153,24 @@ export function CalendarApp({ windowId: _windowId }: { windowId: string }) {
       </div>
 
       {/* Day-of-week header */}
-      <div className="grid grid-cols-7 text-center text-xs text-shell-text-tertiary font-medium">
+      <div role="row" className="grid grid-cols-7 text-center text-xs text-shell-text-tertiary font-medium">
         {DAYS.map((d) => (
-          <div key={d} className="py-2">
+          <div key={d} role="columnheader" className="py-2">
             {d}
           </div>
         ))}
       </div>
 
       {/* Day grid */}
-      <div className="grid grid-cols-7 flex-1 gap-px">
+      <div role="grid" className="grid grid-cols-7 flex-1 gap-px">
         {cells.map((cell) => {
           const selected = cell.key === selectedKey;
+          const cellDate = parseDateKey(cell.key);
+          const cellHeading = `${MONTHS[cellDate.getMonth()]} ${cellDate.getDate()}, ${cellDate.getFullYear()}`;
           return (
             <div
               key={cell.key}
+              role="gridcell"
               className={`flex items-start justify-center pt-2 rounded-lg text-sm transition-colors ${
                 cell.current
                   ? "text-shell-text hover:bg-shell-surface"
@@ -171,11 +180,9 @@ export function CalendarApp({ windowId: _windowId }: { windowId: string }) {
               <button
                 type="button"
                 onClick={() => onDaySelect(cell.key)}
-                aria-selected={selected}
+                aria-pressed={selected}
                 data-testid="calendar-day"
-                aria-label={`${heading} ${cell.current ? "" : "(other month)"}${
-                  cell.isToday ? ", today" : ""
-                }`}
+                aria-label={`${cellHeading}${cell.current ? "" : " (other month)"}${cell.isToday ? ", today" : ""}`}
                 className={`relative h-8 w-8 flex items-center justify-center rounded-full text-sm font-medium transition-colors ${
                   selected
                     ? "bg-accent text-white"

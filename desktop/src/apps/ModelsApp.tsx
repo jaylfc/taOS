@@ -291,6 +291,7 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
       setAvailable(availableList);
       setIsFallback(fallback);
       setError(err);
+      setLoading(false);
     };
 
     try {
@@ -418,7 +419,10 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
         aggregatedToDownloaded,
       );
       if (workerList.length > 0 || cloudList.length > 0) {
-        commit([...workerList, ...cloudList], MOCK_AVAILABLE, true, null);
+        // Primary fetch failed but we have remote models — surface them WITH
+        // the error so the Retry button is shown and the user knows the
+        // local catalogue is stale.
+        commit([...workerList, ...cloudList], MOCK_AVAILABLE, true, errMsg);
         return;
       }
     } catch {
@@ -433,27 +437,22 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
       commit([], [], true, errMsg ?? "Failed to load models");
     } else {
       setError(null);
+      setLoading(false);
     }
-    setLoading(false);
   },
     [],
   );
 
-  // `finally` guarantees the spinner comes off even if something unexpected
-  // throws inside the processing block above — the bug this fixes is the
-  // spinner staying up indefinitely when /api/models never settles usefully.
+  // Loading state is now managed inside fetchModels via the sequence number.
+  // The mount effect just kicks off the first fetch; refresh-on-focus calls
+  // fetchModels directly. No finally block here — only the LATEST request
+  // may clear loading.
   useEffect(() => {
-    let active = true;
     void (async () => {
-      try {
-        await fetchModels();
-      } finally {
-        if (active) setLoading(false);
-      }
+      await fetchModels();
+      // If the component unmounted before the fetch started, do nothing.
+      // fetchModels itself guards with seq and clears loading.
     })();
-    return () => {
-      active = false;
-    };
   }, [fetchModels]);
 
   useRefreshOnFocus(fetchModels);
@@ -711,7 +710,7 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
           <div className="flex items-center justify-center h-full text-shell-text-tertiary text-sm">
             Loading models...
           </div>
-        ) : error ? (
+        ) : error && downloaded.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-4 text-center px-6 py-16">
             <Brain size={40} className="text-shell-text-tertiary opacity-30" aria-hidden="true" />
             <div className="space-y-1">
@@ -737,6 +736,15 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
           </div>
         ) : (
           <>
+            {error && downloaded.length > 0 && (
+              <div className="flex items-center justify-between gap-2 p-3 rounded-lg bg-amber-500/15 border border-amber-500/25 text-amber-300" role="alert">
+                <p className="text-sm font-medium">Could not load models from the main catalog</p>
+                <p className="text-xs text-amber-200 max-w-md">{error}</p>
+                <Button variant="outline" size="sm" onClick={() => void fetchModels()}>
+                  Retry
+                </Button>
+              </div>
+            )}
             {/* Downloaded Models — hidden when browsing cloud-only */}
             {source !== "cloud" && <section aria-label="Downloaded models">
               <div className="flex items-center gap-2 mb-3">

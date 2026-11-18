@@ -3,14 +3,15 @@ import { useEffect, useState } from "react";
 export interface VisualViewportState {
   height: number;
   keyboardInset: number;
+  offsetTop: number;
 }
 
 function read(): VisualViewportState {
-  if (typeof window === "undefined") return { height: 0, keyboardInset: 0 };
+  if (typeof window === "undefined") return { height: 0, keyboardInset: 0, offsetTop: 0 };
   const vv = window.visualViewport;
-  if (!vv) return { height: window.innerHeight, keyboardInset: 0 };
+  if (!vv) return { height: window.innerHeight, keyboardInset: 0, offsetTop: 0 };
   const inset = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
-  return { height: vv.height, keyboardInset: inset };
+  return { height: vv.height, keyboardInset: inset, offsetTop: vv.offsetTop };
 }
 
 export function useVisualViewport(): VisualViewportState {

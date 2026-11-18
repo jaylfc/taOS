@@ -311,3 +311,109 @@ describe("ModelsApp refresh-failure", () => {
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
   });
 });
+
+describe("ModelsApp request sequencing", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("only the latest fetch clears loading; a stale mount request cannot clear it before a newer refresh commits", async () => {
+    // Mount fetch is SLOW; refresh fetch is FAST and resolves first.
+    let resolveMount: (r: Response) => void = () => {};
+    const mountPromise = new Promise<Response>((resolve) => {
+      resolveMount = resolve;
+    });
+
+    const REFRESH_RESPONSE = {
+      models: [
+        {
+          id: "m1",
+          name: "Refreshed Model",
+          description: "",
+          compatibility: "green",
+          capabilities: [],
+          has_downloaded_variant: true,
+          variants: [{ id: "q4", size_mb: 500 }],
+        },
+      ],
+      downloaded_files: [
+        { filename: "refreshed-model.gguf", size_mb: 500, format: "gguf", model_id: "m1" },
+      ],
+      hardware_profile_id: "p1",
+    };
+
+    let modelsCallCount = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url === "/api/models") {
+          modelsCallCount += 1;
+          if (modelsCallCount === 1) return mountPromise; // mount: resolves LAST (stale)
+          return Promise.resolve(json(REFRESH_RESPONSE)); // refresh: resolves FIRST
+        }
+        if (url.startsWith("/api/cluster/workers")) return Promise.resolve(json({ nodes: [], capabilities: [] }));
+        if (url.startsWith("/api/cloud/providers")) return Promise.resolve(json({ providers: [] }));
+        return Promise.resolve(json([]));
+      }) as unknown as typeof fetch,
+    );
+
+    render(<ModelsApp windowId="w1" />);
+
+    // Trigger a refresh (simulating focus) while mount is still pending.
+    window.dispatchEvent(new Event("focus"));
+    await act(async () => {
+      vi.advanceTimersByTime(1100);
+      await Promise.resolve();
+    });
+
+    // Refresh should have resolved and shown its data.
+    await waitFor(() => expect(screen.getByText("Refreshed Model")).toBeInTheDocument());
+    expect(screen.queryByText("Loading models...")).not.toBeInTheDocument();
+
+    // Now let the stale mount resolve — it must NOT clobber the UI (loading must
+    // stay cleared, data must stay the refreshed data).
+    resolveMount(json({ models: [], downloaded_files: [], hardware_profile_id: "p1" }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("Refreshed Model")).toBeInTheDocument();
+    expect(screen.queryByText("Loading models...")).not.toBeInTheDocument();
+  });
+
+  it("shows error state with Retry when primary fetch fails but worker/cloud models are available", async () => {
+    // /api/models fails, but cluster workers + cloud providers return models.
+    const WORKER_RESPONSE = [{ name: "worker-1", kind: "worker", url: "http://w1", hardware: { ram_mb: 8192 }, backends: [{ name: "llama.cpp", models: ["worker-model"] }] }];
+    const CLOUD_RESPONSE = [{ type: "openai", name: "OpenAI", models: [{ id: "gpt-4", name: "gpt-4" }] }];
+
+    let modelsCallCount = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url === "/api/models") {
+          modelsCallCount += 1;
+          return Promise.reject(new Error("network error"));
+        }
+        if (url.startsWith("/api/cluster/workers")) return Promise.resolve(json(WORKER_RESPONSE));
+        if (url.startsWith("/api/providers")) return Promise.resolve(json(CLOUD_RESPONSE));
+        return Promise.resolve(json([]));
+      }) as unknown as typeof fetch,
+    );
+
+    render(<ModelsApp windowId="w1" />);
+
+    // Must show the fallback data (worker + cloud models) AND the error state
+    // with a Retry button — not silently succeed or hide the error.
+    await waitFor(() => expect(screen.getByText("worker-model")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("gpt-4")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument());
+    expect(screen.getByText("Could not load models from the main catalog")).toBeInTheDocument();
+    expect(screen.getByText("network error")).toBeInTheDocument();
+    expect(screen.queryByText("Loading models...")).not.toBeInTheDocument();
+    expect(screen.getByText("Sample data")).toBeInTheDocument(); // isFallback badge
+  });
+});

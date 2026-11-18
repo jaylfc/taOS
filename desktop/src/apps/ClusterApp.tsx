@@ -1431,7 +1431,7 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
   return (
     <div className="flex flex-col h-full min-h-0 overflow-hidden bg-shell-bg text-shell-text select-none">
        {/* Toolbar */}
-      <div className="flex flex-col [@min-width:600px]:flex-row [@min-width:600px]:items-center [@min-width:600px]:justify-between gap-2 px-4 py-3 border-b border-white/5 shrink-0">
+      <div className="flex flex-col min-[600px]:flex-row min-[600px]:items-center min-[600px]:justify-between gap-2 px-4 py-3 border-b border-white/5 shrink-0">
         <div className="flex items-center gap-2 min-w-0">
           <Network size={18} className="text-accent shrink-0" />
           <h1 className="text-sm font-semibold shrink-0">Cluster</h1>

@@ -29,10 +29,12 @@ export function CreateProjectDialog({
   const [error, setError] = useState<string | null>(null);
   // On the mobile shell the on-screen keyboard shrinks the visible area, so a
   // centred dialog gets pushed behind it. Anchor the card to the top of what
-  // is actually visible and cap its height at the visual viewport, scrolling
-  // inside so the focused field and the Create button stay in view.
+  // is actually visible (accounting for visualViewport.offsetTop) and cap its
+  // height at the visual viewport, scrolling inside so the focused field and
+  // the Create button stay in view.
   const viewport = useVisualViewport();
   const viewportHeight = viewport.height || (typeof window !== "undefined" ? window.innerHeight : 0);
+  const viewportOffsetTop = viewport.offsetTop || 0;
 
   const createProject = async () => {
     const trimmedName = name.trim();
@@ -98,7 +100,7 @@ export function CreateProjectDialog({
       aria-modal="true"
       aria-label="Create project"
       className="fixed inset-0 z-[10001] bg-black/50 flex flex-col items-center p-4"
-      style={{ maxHeight: viewportHeight || undefined }}
+      style={{ maxHeight: viewportHeight || undefined, paddingTop: viewportOffsetTop + 4 }}
     >
       <form
         onSubmit={step === 1 ? onSubmitStep1 : onSubmitStep2}
