@@ -1,0 +1,3 @@
+### Added
+
+- Native login screen: `native/shell/greeter/` with `taos-greeter`, a Qt 6 / QML greetd greeter (large clock, date and optional weather above the wallpaper's wordmark, macOS style user selector with a single password pill, frosted glass, power buttons, reduced motion, keyboard and screen reader support, a built-in fake greetd for `--demo`), the opt-in `taos-weather-cache` companion with its systemd service and timer, a shared `native/shell/common/` theme library, unit tests, a headless sway end to end script, and `README.md` documentation of the greetd contract and how to put it live.

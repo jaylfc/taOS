@@ -7,12 +7,15 @@ set(CMAKE_AUTOMOC ON)
 
 # The Qt prefix and the LayerShellQt prefix come from CMAKE_PREFIX_PATH
 # (see dev-build.sh); nothing machine specific lives in this tree.
-find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Qml Quick Test)
+find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Qml Quick Test Network DBus)
 find_package(LayerShellQt REQUIRED)
 
 enable_testing()
 
+set(TAOS_COMMON_DIR ${CMAKE_CURRENT_SOURCE_DIR}/common)
+add_subdirectory(common)
 add_subdirectory(bar)
+add_subdirectory(greeter)
 
 # Shell session entry point test (needs only a POSIX sh).
 add_test(NAME session-script

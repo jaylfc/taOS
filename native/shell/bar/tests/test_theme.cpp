@@ -1,7 +1,7 @@
 #include <QtTest>
 #include "theme.h"
 
-static const QString kBuiltin = QStringLiteral(TAOS_BAR_SOURCE_DIR "/resources/themes/taos-default/theme.json");
+static const QString kBuiltin = QStringLiteral(TAOS_COMMON_DIR "/resources/themes/taos-default/theme.json");
 
 static const char *const kJson0 = R"({"id":"mine","variants":["dark"],"colors":{"dark":{"ground":"#112233","stroke":"#FFFFFF10","text":"#EEEEEE","accent":"#FF0000"}},"motion":{"reduce":true}})";
 static const char *const kJson1 = R"({"id":"old","variants":["dark","light"],"keyboard":{}})";

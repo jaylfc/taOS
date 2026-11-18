@@ -7,6 +7,9 @@ untouched by this directory.
 | Component | State |
 |---|---|
 | `bar/` : `taos-bar`, the status bar | version 0 (this README) |
+| `greeter/` : `taos-greeter`, the login screen (a greetd greeter) | version 0 (section below) |
+| `weather/` : `taos-weather-cache` and its systemd units | opt-in weather for the login screen |
+| `common/` | theme loader shared by the bar and the greeter |
 | `taos-shell-session` | session entry point and supervisor |
 
 ## The bar (`taos-bar`)
@@ -62,6 +65,145 @@ output. SIGTERM and SIGINT exit with status 0. The bar sets
 when they are unset, and removes the latter from the environment of processes
 it launches.
 
+## The login screen (`taos-greeter`)
+
+A Qt 6 / QML application with a C++ backend that talks to greetd. It is an
+ordinary fullscreen xdg-toplevel (not a layer-shell surface): greetd starts it
+inside the `cage` kiosk compositor as the greeter user.
+
+**Composition.** The wallpaper is drawn by the greeter (the same pick as the
+session: default id of `index.json`, the dark or light variant, the file whose
+orientation and aspect fit the output best), so the glass can blur it. Every
+shipped wallpaper has the "taOS" wordmark rendered into the image at the exact
+centre; the layout composes around it and never covers it (`LayoutMath` in
+`greeter/src/layoutplan.cpp` holds the measured wordmark box per aspect ratio;
+`tests/wordmark_check.py` compares screenshots with the wallpaper to prove the
+wordmark is untouched). Above it: a very large light clock (24 hour by default,
+`--12h` for 12 hour, tabular figures), the date, and, when a cache file exists,
+a one line weather summary. Below it: a macOS style user selector (96 px round
+avatars with the display name) and, once a user is chosen (immediately when
+there is only one), a single pill shaped password field with an inline round
+arrow, a spinner while greetd works, a Caps Lock mark, and one message line.
+Bottom: hostname (left), Sleep, Restart and Shut Down (right; the first click
+turns the button into "Restart?" for 4 seconds, the second one runs it).
+Under the selected name a caption says "Account on this computer": it is the
+computer's own account, not an email address or an online account. There is no
+username field and no session chooser.
+
+**Users** are found at run time: AccountsService over D-Bus (`ListCachedUsers`,
+skipping system and locked accounts) when it answers with users, else
+`/etc/passwd` (uid 1000 to 59999 with a real login shell; name from the first
+GECOS field). Avatar: AccountsService `IconFile`, `/var/lib/AccountsService/icons/<user>`
+or `~/.face` when readable, else a monogram on a gradient in the accent colour
+family derived from a hash of the user name. No user name is hard coded.
+
+**Keys.** Left and Right move between users, Enter or a click selects, Escape
+(or a click on the background) goes back to the user row when there are several
+users, Tab reaches the power buttons, Enter submits the field. Focus rings show
+only once a key was pressed. Caps Lock is learned from the first key press.
+
+### Flags and environment
+
+```
+taos-greeter [--demo] [--demo-users N] [--demo-otp] [--session-cmd "<cmd>"]
+             [--variant dark|light] [--theme <id>] [--reduce-motion] [--12h]
+             [--size WxH] [--version] [--help]
+```
+
+`--session-cmd` defaults to `taos-desktop-session`. `--demo` runs against a
+built-in fake greetd (it speaks the real protocol on a private socket): the
+password is `demo`, wrong ones fail after 600 ms, `--demo-users N` (1 to 6)
+adds invented placeholder users, `--demo-otp` adds a second visible prompt
+(code `123456`); the power buttons only echo in demo mode and the process
+prints `demo: session start: <cmd> (user <name>)` and exits 0 after a login.
+`--size WxH` opens a window of that size instead of going fullscreen.
+
+Environment: `GREETD_SOCK` (set by greetd), `TAOS_THEME_VARIANT`,
+`TAOS_REDUCE_MOTION=1`, `TAOS_THEME_DIR`, `TAOS_WALLPAPER_DIR`,
+`TAOS_WEATHER_FILE` (default `/var/cache/taos/weather.json`),
+`TAOS_GREETER_POWER_CMD` (replaces `systemctl`; run with `suspend`, `reboot` or
+`poweroff`), `TAOS_GREETER_PASSWD` and `TAOS_GREETER_NO_DBUS=1` (user discovery
+in tests), `TAOS_GREETER_DEBUG=1` (phase changes on stderr). Without
+`GREETD_SOCK` (and without `--demo`) the screen shows a plain message and the
+process exits 1 after 5 seconds, so a misconfiguration is visible and never a
+black screen. With no users it shows "No one to sign in" and stays up so the
+power buttons keep working. Motion (appear, spring selection, shake) is removed
+by `--reduce-motion`, `TAOS_REDUCE_MOTION=1` or `motion.reduce` in the theme.
+The cursor hides after 10 s of inactivity.
+
+### The greetd contract
+
+Frames are a 4 byte native-endian length and a JSON payload (greetd-ipc(7)).
+`GreetdClient` runs: `create_session` then any number of `auth_message` rounds
+(`visible` and `secret` are questions and surface as `promptRequested`; `info`
+and `error` are shown as a message and acknowledged with a null response)
+answered by `post_auth_message_response`, then `success`, then `start_session`
+with the session command, then `success`, then the greeter exits and greetd
+starts the session. After any `error` it sends `cancel_session` before
+`authFailed` is reported, and a login can start again at once. Frames over
+1 MiB, zero length frames, malformed JSON, unknown reply types, unsolicited
+replies, a closed socket and a missing answer to `cancel_session` or
+`start_session` within 20 s are fatal (the screen says so and exits 1). Waiting
+for the user, and for PAM (fingerprint, touch key, lockout delay), is never
+timed out.
+
+### Weather (opt in, no network in the greeter)
+
+The greeter never makes a network request. It reads
+`/var/cache/taos/weather.json` and shows weather only when the file is under
+3 hours old and well formed; otherwise nothing is drawn (no placeholder, no
+error). `weather/taos-weather-cache` (POSIX sh and curl) writes that file
+atomically from Open-Meteo current conditions. It does nothing, and exits 0,
+unless `/etc/taos/weather.conf` exists. No location is ever guessed or looked up
+from the IP address:
+
+```
+# /etc/taos/weather.conf
+LATITUDE=0.0
+LONGITUDE=0.0
+PLACE=Example Town
+UNITS=metric        # or imperial
+```
+
+Output fields: `place`, `temperature`, `units`, `code` (WMO), `is_day`,
+`condition`, `icon`, `updated` (UTC, ISO 8601). `weather/wmo-codes.tsv` is the
+single table both the script and the greeter are tested against.
+`taos-weather-cache.service` and `.timer` (every 30 minutes) are shipped as
+files and not installed by anything here. The service runs as the fixed
+unprivileged user `taos-weather` (`taos-weather.sysusers`) with
+`CacheDirectory=taos`, not as a dynamic user: a dynamic user's cache directory
+lives under the root-only `/var/cache/private`, which the greeter's own account
+could never read. Open-Meteo data is licensed CC BY 4.0 (see THIRD-PARTY.md).
+
+### Putting it live
+
+`greeter/taos-greeter-session` is the command greetd runs (cage plus the
+greeter, with the Qt runtime pinned to `/opt/taos/qt`); `greeter/stage-qt-runtime.sh`
+copies the part of a Qt installation the greeter needs (about 83 MB without
+WebEngine, Quick Controls or QML tooling) into one directory the greeter user
+can read. A machine whose GL stack does not work can set `TAOS_GREETER_SOFTWARE=1`
+(Mesa llvmpipe; the Qt Quick software backend cannot draw the effects).
+
+### What is stubbed or unverified
+
+Tested only against a scripted greetd and the built-in fake one: real greetd,
+real PAM (including fingerprint and one time codes), AccountsService on a seat,
+the power actions and a physical keyboard's Caps Lock state are not exercised.
+Keyboard layout switching is not shown (no cheap way to read the active layout).
+The weather icons and clock use the Inter font from the system; if it is
+missing Qt falls back to another sans.
+
+### Tests
+
+`ctest` runs the greeter unit tests (greetd client against a scripted
+local-socket server, passwd parser, monograms, weather parsing and freshness,
+WMO mapping, wordmark layout at four sizes plus seven more, wallpaper pick,
+power confirm, and a contrast test that samples every shipped wallpaper under
+the real glass and scrim numbers) and `weather/tests/test-weather-cache.sh`
+(stubbed curl). `tests/e2e-greeter.sh` drives `taos-greeter --demo` under a
+headless sway at 3840x1200, 3840x2160, 1920x1080 and 1080x2400 with `wtype`
+and `grim`, and also a non-demo run against `tests/fake-greetd.py`.
+
 ## Building against a Qt prefix
 
 ```
@@ -72,7 +214,7 @@ RUN_TESTS=1 native/shell/dev-build.sh ...      # also runs ctest
 `TAOS_EXTRA_CXX_FLAGS` passes compiler flags; on a Debian 13 host with Qt 6.12
 (its private headers mention `struct wl_fixes`, a libwayland 1.24 type, while
 Debian ships 1.23) use `-include shim.h` where `shim.h` holds `struct wl_fixes;`.
-Needs Qt >= 6.8 (Core, Gui, Qml, Quick, Test) and LayerShellQt. Running needs
+Needs Qt >= 6.8 (Core, Gui, Network, DBus, Qml, Quick, Test) and LayerShellQt. Running needs
 the Qt libraries and plugins on the library path: see `tests/dev-env.sh.example`.
 
 Tests: `ctest` runs the Qt Test unit tests (clock formatting, network and
