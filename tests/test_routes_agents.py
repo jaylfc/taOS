@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from tinyagentos.config import load_config
 from tinyagentos.cluster.worker_protocol import WorkerInfo
@@ -2604,3 +2606,188 @@ class TestDeployDeferredModelsSelfHeal:
 
         assert captured_task_id is not None
         assert app.state.taosmd_selfheal_task_id == captured_task_id
+
+
+@pytest.mark.asyncio
+class TestNameReservationReleaseFixes:
+    """Reserved agent slugs are released after a successful create so a later
+    archive/restore or redeploy reuses the original name (fixes #4302).
+    """
+
+    async def _deploy_mocks(self, app, monkeypatch):
+        from unittest.mock import AsyncMock, MagicMock
+
+        app.state.archive = MagicMock(
+            record=AsyncMock(), query=AsyncMock(return_value=[{}])
+        )
+
+        async def fake_register(*, framework, display_name, **kw):
+            return {
+                "canonical_id": f"cid-{display_name}",
+                "framework": framework,
+                "display_name": display_name,
+            }
+
+        mock_registry = MagicMock()
+        mock_registry.register = fake_register
+        app.state.agent_registry = mock_registry
+
+        # The task card requires the register_agent mock to be awaited.
+        monkeypatch.setattr(app.state.taosmd_agent_registry, "register_agent", AsyncMock())
+
+        async def fake_deploy(req):
+            return {
+                "success": True,
+                "name": req.name,
+                "ip": "10.0.0.42",
+                "llm_key": "sk-test",
+                "steps": ["deployment_complete"],
+                "container": f"taos-agent-{req.name}",
+            }
+        monkeypatch.setattr("tinyagentos.deployer.deploy_agent", fake_deploy)
+
+        class _FakeCatalog:
+            def all_models(self, capability=None):
+                return [{"name": "test-model", "id": "test-model"}]
+
+        app.state.backend_catalog = _FakeCatalog()
+        app.state.cluster_manager._workers.clear()
+
+    async def _deploy(self, client, app, monkeypatch, name):
+        await self._deploy_mocks(app, monkeypatch)
+        resp = await client.post(
+            "/api/agents/deploy",
+            json={"name": name, "framework": "none", "model": "test-model"},
+        )
+        await asyncio.sleep(0.2)
+        return resp
+
+    async def _archive_container_mocks(self, monkeypatch):
+        async def fake_stop(name, force=False):
+            return {"success": True, "output": ""}
+
+        async def fake_snapshot_create(name, snapshot_name):
+            return {"success": True, "output": ""}
+
+        async def fake_snapshot_restore(name, snapshot_name):
+            return {"success": True, "output": ""}
+
+        async def fake_rename(old, new):
+            return {"success": True, "output": ""}
+
+        async def fake_start(name):
+            return {"success": True, "output": ""}
+
+        async def fake_set_env(name, key, value):
+            return {"success": True, "output": ""}
+
+        async def fake_exec(name, cmd, timeout=300):
+            return (0, "")
+
+        monkeypatch.setattr("tinyagentos.containers.stop_container", fake_stop)
+        monkeypatch.setattr(
+            "tinyagentos.containers.snapshot_create", fake_snapshot_create
+        )
+        monkeypatch.setattr(
+            "tinyagentos.containers.snapshot_restore", fake_snapshot_restore
+        )
+        monkeypatch.setattr(
+            "tinyagentos.containers.rename_container", fake_rename
+        )
+        monkeypatch.setattr("tinyagentos.containers.start_container", fake_start)
+        monkeypatch.setattr("tinyagentos.containers.set_env", fake_set_env)
+        monkeypatch.setattr(
+            "tinyagentos.containers.exec_in_container", fake_exec
+        )
+
+    # (a) two concurrent deploys with the same display name get distinct names
+    async def test_concurrent_deploy_same_name_gets_distinct_names(
+        self, client, app, monkeypatch
+    ):
+        await self._deploy_mocks(app, monkeypatch)
+        resp1, resp2 = await asyncio.gather(
+            client.post(
+                "/api/agents/deploy",
+                json={"name": "concurrent-helper", "framework": "none", "model": "test-model"},
+            ),
+            client.post(
+                "/api/agents/deploy",
+                json={"name": "concurrent-helper", "framework": "none", "model": "test-model"},
+            ),
+        )
+        assert resp1.status_code == 200, resp1.text
+        assert resp2.status_code == 200, resp2.text
+        names = {resp1.json()["name"], resp2.json()["name"]}
+        assert len(names) == 2, f"expected distinct names, got {names}"
+        await asyncio.sleep(0.2)
+        stored = [a["name"] for a in app.state.config.agents if a.get("display_name") == "concurrent-helper"]
+        assert set(stored) == names
+
+    # (b) create, archive, restore: restored agent gets its ORIGINAL name
+    async def test_restore_gets_original_name_after_archive(
+        self, client, app, monkeypatch
+    ):
+        await self._archive_container_mocks(monkeypatch)
+        resp = await self._deploy(client, app, monkeypatch, name="restore-helper")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["name"] == "restore-helper"
+
+        del_resp = await client.delete("/api/agents/restore-helper")
+        assert del_resp.status_code == 200, del_resp.text
+
+        archived = (await client.get("/api/agents/archived")).json()
+        assert archived, "expected an archive entry"
+        archive_id = archived[0]["id"]
+
+        rest_resp = await client.post(
+            f"/api/agents/archived/{archive_id}/restore"
+        )
+        assert rest_resp.status_code == 200, rest_resp.text
+        assert rest_resp.json()["name"] == "restore-helper"
+
+    # (c) create, delete, second create of the same name gets the original name
+    async def test_create_delete_create_reuses_original_name(
+        self, client, app, monkeypatch
+    ):
+        await self._archive_container_mocks(monkeypatch)
+        resp1 = await self._deploy(client, app, monkeypatch, name="delete-helper")
+        assert resp1.status_code == 200, resp1.text
+        assert resp1.json()["name"] == "delete-helper"
+
+        del_resp = await client.delete("/api/agents/delete-helper")
+        assert del_resp.status_code == 200, del_resp.text
+
+        resp2 = await self._deploy(client, app, monkeypatch, name="delete-helper")
+        assert resp2.status_code == 200, resp2.text
+        assert resp2.json()["name"] == "delete-helper"
+
+    # (d) the import path honours a reservation held by an in-flight deploy
+    async def test_json_import_honours_active_reservation(
+        self, client, app, monkeypatch
+    ):
+        from tinyagentos.config import release_agent_slug, reserve_agent_slug
+
+        config = app.state.config
+        held = await reserve_agent_slug(config, "import-helper")
+        assert held == "import-helper"
+        try:
+            resp = await client.post(
+                "/api/agents/import",
+                json={
+                    "version": 1,
+                    "agent": {
+                        "name": "import-helper",
+                        "host": "10.0.0.9",
+                        "qmd_index": "q",
+                        "color": "#000000",
+                    },
+                    "channels": [],
+                    "groups": [],
+                },
+            )
+            assert resp.status_code == 200, resp.text
+            assert resp.json()["name"] == "import-helper-2"
+            names = [a["name"] for a in config.agents]
+            assert "import-helper-2" in names
+        finally:
+            release_agent_slug("import-helper")

@@ -67,11 +67,14 @@ async def reserve_agent_slug(config: "AppConfig", display_name: str) -> str:
     agent entry is appended to ``config.agents`` or the create path fails.
     """
     async with _reserved_slugs_lock:
+        unique_slug = unique_agent_slug(config, display_name)
+        # unique_agent_slug already excluded config.agents; also treat names
+        # reserved by other in-flight creates as taken so concurrent paths
+        # never pick the same slug. Re-check config.agents since a suffix
+        # could land on an existing row.
         slug = slugify_agent_name(display_name)
-        unique_slug = slug
         suffix = 2
-        # Treat both existing config.agents and currently-reserved names as taken.
-        while any(a.get("name") == unique_slug for a in config.agents) or unique_slug in _reserved_agent_slugs:
+        while unique_slug in _reserved_agent_slugs or any(a.get("name") == unique_slug for a in config.agents):
             tail = f"-{suffix}"
             unique_slug = slug[: MAX_AGENT_SLUG_LEN - len(tail)].rstrip("-") + tail
             suffix += 1

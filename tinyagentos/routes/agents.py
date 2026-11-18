@@ -21,8 +21,9 @@ from tinyagentos.llm_gateway.cutover import llm_gateway_live_port, llm_gateway_m
 from tinyagentos.agent_registry_store import mint_registry_token
 from tinyagentos.agent_token_auth import _get_grants_store, _get_keypair
 from tinyagentos.config import (
+    release_agent_slug,
+    reserve_agent_slug,
     save_config_locked,
-    slugify_agent_name,
     unique_agent_slug,
     validate_agent_name,
 )
@@ -753,9 +754,6 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
                 idempotency_cache.set(scoped_key, 400, err)
             return JSONResponse(err, status_code=400)
 
-        # Track whether the agent entry was successfully appended to config.agents.
-        # If not, we must release the reserved slug in the finally block.
-        agent_appended = False
         try:
             # Rewrite body.name to the unique slug; the original user-entered name
             # is preserved as display_name for the UI.
@@ -961,12 +959,11 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
 
             config.agents.append(new_agent)
             await save_config_locked(config, config.config_path)
-            agent_appended = True
         finally:
-            # Release the reserved slug if the agent entry was never appended
-            # to config.agents (i.e., the create path failed before config mutation).
-            if not agent_appended:
-                release_agent_slug(unique_slug)
+            # Release the reserved slug once the entry is appended (or the
+            # create path failed before config mutation) so a later
+            # archive/restore or redeploy of the same name can reuse it.
+            release_agent_slug(unique_slug)
 
         # Write to user persona library if requested.
         if body.save_to_library:
@@ -1649,34 +1646,39 @@ async def _import_agent_json(request: Request, body: AgentImport):
     name_error = validate_agent_name(name)
     if name_error:
         return JSONResponse({"error": name_error}, status_code=400)
-    # Slugify with the same rule the create route uses (unique_agent_slug
-    # delegates to slugify_agent_name). Collisions keep the 409 behaviour.
-    slug = slugify_agent_name(name)
-    if find_agent(config, slug):
-        return JSONResponse({"error": f"Agent '{slug}' already exists"}, status_code=409)
+    # Route name allocation through reserve_agent_slug so the import path
+    # consults the reserved set the same way deploy/import/restore do.
+    try:
+        slug = await reserve_agent_slug(config, name)
+    except ValueError:
+        return JSONResponse({"error": f"Agent '{name}' already exists"}, status_code=409)
+    try:
+        # Build the persisted agent from the allowlisted model only, then
+        # rewrite name/display_name exactly as the create route does.
+        agent = agent_in.model_dump(exclude_unset=True)
+        agent["name"] = slug
+        agent["display_name"] = name
+        config.agents.append(agent)
+        await save_config_locked(config, config.config_path)
 
-    # Build the persisted agent from the allowlisted model only, then
-    # rewrite name/display_name exactly as the create route does.
-    agent = agent_in.model_dump(exclude_unset=True)
-    agent["name"] = slug
-    agent["display_name"] = name
-    config.agents.append(agent)
-    await save_config_locked(config, config.config_path)
+        # Restore channel assignments
+        channel_store = request.app.state.channels
+        for ch in body.channels:
+            await channel_store.add(slug, ch.get("type", ""), ch.get("config", {}))
 
-    # Restore channel assignments
-    channel_store = request.app.state.channels
-    for ch in body.channels:
-        await channel_store.add(slug, ch.get("type", ""), ch.get("config", {}))
+        # Restore group memberships
+        relationship_mgr = request.app.state.relationships
+        existing_groups = await relationship_mgr.list_groups()
+        group_map = {g["name"]: g["id"] for g in existing_groups}
+        for group_name in body.groups:
+            if group_name in group_map:
+                await relationship_mgr.add_member(group_map[group_name], slug)
 
-    # Restore group memberships
-    relationship_mgr = request.app.state.relationships
-    existing_groups = await relationship_mgr.list_groups()
-    group_map = {g["name"]: g["id"] for g in existing_groups}
-    for group_name in body.groups:
-        if group_name in group_map:
-            await relationship_mgr.add_member(group_map[group_name], slug)
-
-    return {"status": "imported", "name": slug}
+        return {"status": "imported", "name": slug}
+    finally:
+        # Release the reserved slug once the entry is appended (or the
+        # import path failed before config mutation).
+        release_agent_slug(slug)
 
 
 @router.delete("/api/agents/{name}/destroy")

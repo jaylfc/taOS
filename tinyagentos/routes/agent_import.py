@@ -138,9 +138,6 @@ async def import_hermes_agent(
         _safe_unlink(tmp_path)
         return JSONResponse({"error": str(e)}, status_code=400)
 
-    # Track whether the agent entry was successfully appended to config.agents.
-    # If not, we must release the reserved slug in the finally block.
-    agent_appended = False
     try:
         # --- Parse secrets ----------------------------------------------------
         secrets_map: dict[str, str] = {}
@@ -179,7 +176,6 @@ async def import_hermes_agent(
         new_agent["migrated_to_v2_personas"] = True
         config.agents.append(new_agent)
         await save_config_locked(config, config.config_path)
-        agent_appended = True
 
         # --- Grant user-supplied secrets to the agent (same path as deploy) ---
         # deploy_agent reads these via secrets_store.get_agent_secrets(name) and
@@ -262,10 +258,10 @@ async def import_hermes_agent(
                 await save_config_locked(config, config.config_path)
 
     finally:
-        # Release the reserved slug if the agent entry was never appended
-        # to config.agents (i.e., the create path failed before config mutation).
-        if not agent_appended:
-            release_agent_slug(unique_slug)
+        # Release the reserved slug once the entry is appended (or the
+        # create path failed before config mutation) so a later
+        # archive/restore or redeploy of the same name can reuse it.
+        release_agent_slug(unique_slug)
 
     asyncio.create_task(_background_import())
 

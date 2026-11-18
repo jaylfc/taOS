@@ -444,9 +444,6 @@ async def _restore_archived(request: Request, archive_id: str):
         from fastapi.responses import JSONResponse
         return JSONResponse({"error": "Could not resolve restore slug"}, status_code=500)
 
-    # Track whether the agent entry was successfully appended to config.agents.
-    # If not, we must release the reserved slug in the finally block.
-    agent_appended = False
     try:
         data_dir = request.app.state.data_dir
         archive_base = _safe_archive_base(data_dir, entry)
@@ -603,7 +600,6 @@ async def _restore_archived(request: Request, archive_id: str):
         config.agents.append(restored)
         config.archived_agents = [a for a in config.archived_agents if a.get("id") != archive_id]
         await save_config_locked(config, config.config_path)
-        agent_appended = True
 
         return {
             "status": "restored",
@@ -614,10 +610,10 @@ async def _restore_archived(request: Request, archive_id: str):
             "new_llm_key": new_key is not None,
         }
     finally:
-        # Release the reserved slug if the agent entry was never appended
-        # to config.agents (i.e., the restore path failed before config mutation).
-        if not agent_appended:
-            release_agent_slug(final_slug)
+        # Release the reserved slug once the entry is appended (or the
+        # restore path failed before config mutation) so a later deploy of
+        # the same name can reuse it.
+        release_agent_slug(final_slug)
 
 
 async def purge_archived(request: Request, archive_id: str):
