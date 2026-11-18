@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from unittest.mock import patch, mock_open
 
 import yaml
 
@@ -114,6 +115,47 @@ def test_unparseable_yaml_is_an_error(tmp_path: Path) -> None:
     (d / "manifest.yaml").write_text("id: broken\nlifecycle: {: bad")
     errors = check_manifests.lint_managed(tmp_path)
     assert any("not valid YAML" in e for e in errors)
+
+
+def test_service_manifest_os_error_reported(tmp_path: Path) -> None:
+    """An OSError when reading a service manifest (e.g. permission denied)
+    must be reported as an error, not silently skipped."""
+    d = tmp_path / "services" / "unreadable"
+    d.mkdir(parents=True)
+    (d / "manifest.yaml").write_text("id: unreadable\nlifecycle: {auto_manage: true}")
+
+    with patch("pathlib.Path.read_text", side_effect=OSError("Permission denied")):
+        errors = check_manifests.lint_managed(tmp_path)
+
+    assert any("could not be read (OSError)" in e for e in errors)
+    assert any("unreadable" in e for e in errors)
+
+
+def test_service_manifest_unicode_error_reported(tmp_path: Path) -> None:
+    """A UnicodeError when reading a service manifest must be reported
+    as an error, not silently skipped."""
+    d = tmp_path / "services" / "bad-encoding"
+    d.mkdir(parents=True)
+    (d / "manifest.yaml").write_text("id: bad-encoding\nlifecycle: {auto_manage: true}")
+
+    with patch("pathlib.Path.read_text", side_effect=UnicodeDecodeError("utf-8", b"", 0, 1, "invalid")):
+        errors = check_manifests.lint_managed(tmp_path)
+
+    assert any("could not be read (UnicodeDecodeError)" in e for e in errors)
+    assert any("bad-encoding" in e for e in errors)
+
+
+def test_model_manifest_os_error_reported(tmp_path: Path) -> None:
+    """An OSError when reading a model manifest must be reported as an error."""
+    d = tmp_path / "models" / "unreadable-model"
+    d.mkdir(parents=True)
+    (d / "manifest.yaml").write_text("id: unreadable-model\nfamily: test")
+
+    with patch("pathlib.Path.read_text", side_effect=OSError("Permission denied")):
+        warns, errors = check_manifests.lint_model_fields(tmp_path)
+
+    assert any("could not be read (OSError)" in e for e in errors)
+    assert any("unreadable-model" in e for e in errors)
 
 
 def test_unit_without_service_suffix_is_flagged(tmp_path: Path) -> None:
@@ -304,12 +346,17 @@ def test_fifteen_model_warns_capped(capsys) -> None:
     assert exit_code == 0  # exits 0 when warnings are non-fatal
 
     output = capsys.readouterr().err
-    assert "15 model manifests missing capability fields" in output
+    lines = output.splitlines()
+    assert any(line == "15 model capability field warnings" for line in lines)
     # Count warn: lines - should be exactly 10
-    warn_lines = [l for l in output.splitlines() if l.startswith("  warn:")]
+    warn_lines = [l for l in lines if l.startswith("  warn:")]
     assert len(warn_lines) == 10, f"Expected 10 warn lines, got {len(warn_lines)}"
-    # Each warning text should appear exactly once
+    # Non-verbose prints only the first ten warnings, then a hidden notice.
+    assert any("(more warnings hidden" in l for l in lines), "missing hidden-warnings notice"
+    # The first ten warnings are for model-00 through model-09, in order.
     warning_texts = [l.replace("  warn: ", "") for l in warn_lines]
+    expected_prefixes = [f"model-{i:02d}: missing 'family'" for i in range(10)]
+    assert all(t.startswith(p) for t, p in zip(warning_texts, expected_prefixes)), warning_texts
     assert len(warning_texts) == len(set(warning_texts)), "Duplicate warning texts found"
 
 
@@ -347,3 +394,111 @@ def test_fifteen_model_warns_verbose(capsys) -> None:
     # Each warning text should appear exactly once
     warning_texts = [l.replace("  warn: ", "") for l in warn_lines]
     assert len(warning_texts) == len(set(warning_texts)), "Duplicate warning texts found"
+
+
+def test_model_missing_family_and_context_counts_both_warnings(capsys) -> None:
+    """One manifest missing both 'family' and context fields produces two warnings;
+    the summary line reflects the total count."""
+    from pathlib import Path
+    import yaml
+    import tempfile
+
+    tmp = Path(tempfile.mkdtemp())
+    models_dir = tmp / "models"
+    models_dir.mkdir()
+
+    # One model manifest missing both 'family' and min_context/max_context
+    mid = "model-missing-both"
+    (m_dir := models_dir / mid).mkdir()
+    (m_dir / "manifest.yaml").write_text(yaml.safe_dump({
+        "id": mid,
+        "name": mid,
+        "type": "model",
+        "version": "1.0.0",
+        "variants": [
+            {"id": "q4", "format": "gguf", "size_mb": 5000, "vram_floor_mb": 6000}
+        ],
+    }))
+
+    exit_code = check_manifests.main(["managed-lint", "--root", str(tmp)])
+    assert exit_code == 0
+
+    output = capsys.readouterr().err
+    lines = output.splitlines()
+    # Summary line should show 2 warnings (1 for family, 1 for context)
+    assert any(line == "2 model capability field warnings" for line in lines)
+    # Both warning texts should be present
+    warn_lines = [l for l in lines if l.startswith("  warn:")]
+    assert len(warn_lines) == 2
+    warning_texts = [l.replace("  warn: ", "") for l in warn_lines]
+    assert any("family" in w for w in warning_texts)
+    assert any("min_context" in w for w in warning_texts)
+
+
+def test_model_single_context_field_no_warning(capsys) -> None:
+    """A manifest with only min_context OR only max_context (not both missing)
+    should NOT warn about missing context fields."""
+    from pathlib import Path
+    import yaml
+    import tempfile
+
+    tmp = Path(tempfile.mkdtemp())
+    models_dir = tmp / "models"
+    models_dir.mkdir()
+
+    # Model with only min_context (no max_context, no family)
+    mid = "model-only-min-context"
+    (m_dir := models_dir / mid).mkdir()
+    (m_dir / "manifest.yaml").write_text(yaml.safe_dump({
+        "id": mid,
+        "name": mid,
+        "type": "model",
+        "version": "1.0.0",
+        "min_context": 4096,
+        "variants": [
+            {"id": "q4", "format": "gguf", "size_mb": 5000, "vram_floor_mb": 6000}
+        ],
+    }))
+
+    exit_code = check_manifests.main(["managed-lint", "--root", str(tmp)])
+    assert exit_code == 0
+
+    output = capsys.readouterr().err
+    lines = output.splitlines()
+    # Should only warn about missing family (1 warning), not about context
+    assert any(line == "1 model capability field warnings" for line in lines)
+    warn_lines = [l for l in lines if l.startswith("  warn:")]
+    assert len(warn_lines) == 1
+    warning_texts = [l.replace("  warn: ", "") for l in warn_lines]
+    assert any("family" in w for w in warning_texts)
+    assert not any("min_context" in w or "max_context" in w for w in warning_texts)
+
+    # Model with only max_context (no min_context, no family)
+    tmp2 = Path(tempfile.mkdtemp())
+    models_dir2 = tmp2 / "models"
+    models_dir2.mkdir()
+
+    mid2 = "model-only-max-context"
+    (m_dir2 := models_dir2 / mid2).mkdir()
+    (m_dir2 / "manifest.yaml").write_text(yaml.safe_dump({
+        "id": mid2,
+        "name": mid2,
+        "type": "model",
+        "version": "1.0.0",
+        "max_context": 131072,
+        "variants": [
+            {"id": "q4", "format": "gguf", "size_mb": 5000, "vram_floor_mb": 6000}
+        ],
+    }))
+
+    exit_code = check_manifests.main(["managed-lint", "--root", str(tmp2)])
+    assert exit_code == 0
+
+    output = capsys.readouterr().err
+    lines = output.splitlines()
+    assert any(line == "1 model capability field warnings" for line in lines)
+    warn_lines = [l for l in lines if l.startswith("  warn:")]
+    assert len(warn_lines) == 1
+    warning_texts = [l.replace("  warn: ", "") for l in warn_lines]
+    assert any("family" in w for w in warning_texts)
+    assert not any("min_context" in w or "max_context" in w for w in warning_texts)

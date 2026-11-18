@@ -13,6 +13,7 @@ MAX_LONG_EDGE = 1568
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 MAX_SOURCE_PIXELS = 40_000_000
 MAX_IMAGES_PER_REQUEST = 8
+MAX_ENCODED_CHARS = 64 * 1024 * 1024
 
 _DECODE_SLOTS = threading.BoundedSemaphore(2)
 
@@ -33,13 +34,15 @@ def _media_type_from_header(header: str) -> str:
 def _shrink_one(url: str) -> str:
     if not url.startswith("data:") or ";base64," not in url:
         return url
-    prefix, b64 = url.split(";base64,", 1)
-    media_type = _media_type_from_header(prefix)
-    try:
-        raw = base64.b64decode(b64)
-    except Exception:  # noqa: BLE001
+    if len(url) > MAX_ENCODED_CHARS:
         return url
     with _DECODE_SLOTS:
+        try:
+            prefix, b64 = url.split(";base64,", 1)
+            media_type = _media_type_from_header(prefix)
+            raw = base64.b64decode(b64)
+        except Exception:  # noqa: BLE001
+            return url
         try:
             img = Image.open(io.BytesIO(raw))
         except Exception:  # noqa: BLE001
@@ -57,6 +60,21 @@ def _shrink_one(url: str) -> str:
                 return url
             # Capture format before transpose (transpose returns format=None).
             fmt = img.format
+            # Return unsupported formats unchanged (before exif_transpose/thumbnail).
+            if fmt not in _FORMAT_MEDIA:
+                return url
+            # Convert palette mode before thumbnail (transparency-aware).
+            if img.mode == "P":
+                if "transparency" in img.info:
+                    img = img.convert("RGBA")
+                else:
+                    img = img.convert("RGB")
+            # Convert grayscale with transparency to RGBA to preserve alpha.
+            if img.mode == "L" and "transparency" in img.info:
+                img = img.convert("RGBA")
+            # Convert 16-bit modes to 'L' before thumbnail.
+            if img.mode.startswith("I"):
+                img = img.point(lambda v: v / 256).convert("L")
             img = ImageOps.exif_transpose(img)
             img.thumbnail((MAX_LONG_EDGE, MAX_LONG_EDGE))
             if fmt not in _FORMAT_MEDIA:
@@ -64,9 +82,12 @@ def _shrink_one(url: str) -> str:
             out = io.BytesIO()
             if fmt == "JPEG" and img.mode not in ("RGB", "L"):
                 img = img.convert("RGB")
-            img.save(out, format=fmt)
+            save_fmt = fmt
+            if fmt == "GIF" and img.mode == "RGBA":
+                save_fmt = "PNG"
+            img.save(out, format=save_fmt)
             new_bytes = out.getvalue()
-            new_media = _FORMAT_MEDIA[fmt]
+            new_media = _FORMAT_MEDIA[save_fmt] if save_fmt in _FORMAT_MEDIA else _FORMAT_MEDIA["PNG"]
             if len(new_bytes) > MAX_IMAGE_BYTES:
                 has_alpha = "A" in img.mode or (
                     img.mode == "P" and "transparency" in getattr(img, "info", {})

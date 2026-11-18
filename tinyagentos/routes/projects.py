@@ -527,7 +527,7 @@ async def _revoke_cloud_agent_identity(
         if record is None or record.get("status") == "revoked":
             # The revoke already happened, continue to remove_member
             return
-        # Re-raise if the status hasn't changed
+        # Re-raise if revoke failed but the identity is still present and not revoked
         raise
     await _audit_governance(
         request,

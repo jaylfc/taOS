@@ -5,7 +5,7 @@ import io
 
 from PIL import Image
 
-from tinyagentos.llm_gateway.images import shrink_images
+from tinyagentos.llm_gateway.images import shrink_images, _FORMAT_MEDIA, MAX_LONG_EDGE, MAX_IMAGE_BYTES
 
 
 def _png_data_url(width: int, height: int) -> str:
@@ -192,3 +192,190 @@ def test_large_noisy_rgba_png_stays_png():
     media_type, out_img, _ = _decode_data_url(new_url)
     assert media_type == "image/png"
     assert out_img.mode == "RGBA"
+    assert max(out_img.size) <= MAX_LONG_EDGE
+    assert len(base64.b64decode(new_url.split(";base64,")[1])) <= MAX_IMAGE_BYTES
+
+
+def test_base64_decode_inside_decode_slot(monkeypatch):
+    import tinyagentos.llm_gateway.images as images_mod
+
+    # Track whether _DECODE_SLOTS was held when base64.b64decode was called.
+    slot = {"held": False, "calls": []}
+
+    class TrackingSemaphore:
+        def __enter__(self):
+            slot["held"] = True
+            return self
+
+        def __exit__(self, *args):
+            slot["held"] = False
+            return False
+
+    monkeypatch.setattr(images_mod, "_DECODE_SLOTS", TrackingSemaphore())
+
+    original_b64decode = base64.b64decode
+
+    def tracking_b64decode(s, alt=None):
+        slot["calls"].append(slot["held"])
+        return original_b64decode(s, alt)
+
+    monkeypatch.setattr(base64, "b64decode", tracking_b64decode)
+
+    # Use a large image that will go through the full shrink path
+    url = _png_data_url(3000, 2000)
+    body = {
+        "messages": [
+            {"role": "user", "content": [{"type": "image_url", "image_url": {"url": url}}]}
+        ]
+    }
+    result = shrink_images(body)
+
+    # Restore original b64decode so _decode_data_url helper doesn't pollute calls
+    monkeypatch.setattr(base64, "b64decode", original_b64decode)
+
+    new_url = result["messages"][0]["content"][0]["image_url"]["url"]
+    assert new_url != url, "URL should have been processed"
+    assert slot["calls"], "base64.b64decode should have been called at least once"
+    assert all(slot["calls"]), "Every base64.b64decode call must happen while _DECODE_SLOTS is held"
+
+
+def test_unsupported_format_bmp_returned_unchanged(monkeypatch):
+    import tinyagentos.llm_gateway.images as images_mod
+    transpose_calls = {"count": 0}
+
+    def mock_exif_transpose(img):
+        transpose_calls["count"] += 1
+        return img
+
+    monkeypatch.setattr(images_mod.ImageOps, "exif_transpose", mock_exif_transpose)
+
+    # Create a 2000x2000 BMP data URL using PIL
+    img = Image.new("RGB", (2000, 2000), color=(255, 0, 0))
+    buf = io.BytesIO()
+    img.save(buf, format="BMP")
+    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    url = f"data:image/bmp;base64,{b64}"
+
+    body = {"messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": url}}]}]}
+    result = images_mod.shrink_images(body)
+    new_url = result["messages"][0]["content"][0]["image_url"]["url"]
+    assert new_url == url, f"Expected {url!r} unchanged, got {new_url!r}"
+    assert transpose_calls["count"] == 0, f"exif_transpose should not be called, got {transpose_calls['count']}"
+
+
+def test_palette_mode_converted_before_thumbnail():
+    """A 2000x2000 'P' PNG with a 1-pixel diagonal line comes back shrunk with mode RGB or RGBA."""
+    from PIL import Image
+    import io
+    import base64 as _b64
+
+    # Create a 2000x2000 'P' mode PNG with a diagonal line
+    img = Image.new("P", (2000, 2000))
+    # Add a 1-pixel diagonal line
+    for i in range(2000):
+        img.putpixel((i, i), i % 256)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
+    url = f"data:image/png;base64,{b64}"
+
+    body = {"messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": url}}]}]}
+    result = shrink_images(body)
+    new_url = result["messages"][0]["content"][0]["image_url"]["url"]
+    # Should be shrunk (not returned unchanged), and decoded mode should be RGB or RGBA
+    assert new_url != url, f"Expected shrunk output, got unchanged {new_url!r}"
+    # Decode the output to check mode
+    header, _b64data = new_url.split(";base64,")
+    raw = _b64.b64decode(_b64data)
+    out_img = Image.open(io.BytesIO(raw))
+    assert out_img.mode in ("RGB", "RGBA"), f"Expected RGB or RGBA mode, got {out_img.mode}"
+
+
+def test_i16_png_shrunk_within_long_edge():
+    """A 2000x2000 'I;16' PNG comes back shrunk (long edge <= MAX_LONG_EDGE)."""
+    from PIL import Image
+    import io
+    import base64 as _b64
+
+    # Create a 2000x2000 'I;16' mode PNG
+    img = Image.new("I;16", (2000, 2000), 32768)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
+    url = f"data:image/png;base64,{b64}"
+
+    body = {"messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": url}}]}]}
+    result = shrink_images(body)
+    new_url = result["messages"][0]["content"][0]["image_url"]["url"]
+    # Decode the output to check size
+    header, _b64data = new_url.split(";base64,")
+    raw = _b64.b64decode(_b64data)
+    out_img = Image.open(io.BytesIO(raw))
+    assert max(out_img.size) <= 1568, f"Expected long edge <= 1568, got {max(out_img.size)}"
+
+
+def test_large_encoded_url_bypasses_decode_slot(monkeypatch):
+    """A data URL larger than MAX_ENCODED_CHARS is returned unchanged without taking a decode slot."""
+    import tinyagentos.llm_gateway.images as images_mod
+
+    monkeypatch.setattr(images_mod, "MAX_ENCODED_CHARS", 1000)
+
+    class FailingSemaphore:
+        def __enter__(self):
+            raise AssertionError("_DECODE_SLOTS should not be acquired for oversized encoded URLs")
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(images_mod, "_DECODE_SLOTS", FailingSemaphore())
+
+    # Create a PNG data URL larger than 1000 chars
+    url = _png_data_url(500, 500)  # This will be well over 1000 chars base64
+    assert len(url) > 1000, "Test setup: URL must exceed patched MAX_ENCODED_CHARS"
+
+    body = {"messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": url}}]}]}
+    result = shrink_images(body)
+    new_url = result["messages"][0]["content"][0]["image_url"]["url"]
+    assert new_url == url, "Oversized encoded URL should be returned unchanged"
+
+
+def test_transparent_gif_resized_saved_as_png(monkeypatch):
+    """A transparent palette GIF resized beyond MAX_LONG_EDGE is saved as PNG to preserve alpha."""
+    import tinyagentos.llm_gateway.images as images_mod
+    from PIL import Image
+    import io
+    import base64 as _b64
+
+    # Create a 2000x2000 'P' mode GIF with transparency
+    img = Image.new("P", (2000, 2000))
+    # Set a simple palette
+    palette = []
+    for i in range(256):
+        palette.extend([i, i, i])
+    img.putpalette(palette)
+    # Draw something visible
+    for i in range(0, 2000, 10):
+        img.putpixel((i, i), 255)
+    # Set transparency info (index 0 is transparent)
+    img.info["transparency"] = 0
+
+    buf = io.BytesIO()
+    img.save(buf, format="GIF")
+    b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
+    url = f"data:image/gif;base64,{b64}"
+
+    body = {"messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": url}}]}]}
+    result = shrink_images(body)
+    new_url = result["messages"][0]["content"][0]["image_url"]["url"]
+
+    # Should be converted to PNG (not GIF) to preserve alpha
+    assert new_url.startswith("data:image/png;base64,"), f"Expected PNG output, got {new_url[:50]}..."
+
+    # Decode and verify mode and size
+    header, _b64data = new_url.split(";base64,")
+    raw = _b64.b64decode(_b64data)
+    out_img = Image.open(io.BytesIO(raw))
+    assert out_img.mode == "RGBA", f"Expected RGBA mode, got {out_img.mode}"
+    assert max(out_img.size) <= images_mod.MAX_LONG_EDGE, f"Expected long edge <= {images_mod.MAX_LONG_EDGE}, got {max(out_img.size)}"

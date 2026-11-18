@@ -295,7 +295,12 @@ async def test_catalog_admin_remote_fetch_success(client, app, monkeypatch, tmp_
     assert versions == {"1.0.0": False, "0.9.0": True}
     # Ensure no file paths or extents are leaked
     resp_text = resp.text
-    assert "/" not in resp_text or "http" not in resp_text
+    assert "/home/" not in resp_text
+    assert "/tmp/" not in resp_text
+    assert "file://" not in resp_text
+    assert "/var/" not in resp_text
+    assert app_data["id"] == "test-app"
+    assert all("/" not in v["version"] for v in app_data["versions"])
 
 
 @pytest.mark.asyncio

@@ -271,7 +271,7 @@ class TestGpuArbiterLeaseEpochs:
         arbiter._RENEW_INTERVAL_S = 0.02
 
         async def short(_resource):
-            for _ in range(500):
+            for _ in range(50):
                 if len(cm.renew_epochs) >= 2:
                     break
                 await asyncio.sleep(0.01)

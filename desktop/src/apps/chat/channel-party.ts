@@ -35,6 +35,10 @@ export function describeChannelParty(
           subtitle: "Archived agent",
         };
       }
+      // archived_agent_id is set but the archived roster has not loaded yet
+      // (or does not carry it): keep the DM's title stable until the roster
+      // loads instead of swapping in the member slug and changing it later.
+      return { title: name, kind: "agent", subtitle: "Archived agent" };
     }
     const other = (channel.members ?? []).find((m) => m !== "user") ?? name;
     const agent = liveAgents.find((a) => a.name === other);

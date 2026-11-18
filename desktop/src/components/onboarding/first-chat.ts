@@ -79,6 +79,33 @@ export async function deployAssistant(
 }
 
 /**
+ * Hop 2 with the key saved first. The deploy is the one write a reload in
+ * between must not lose: progress is saved before the POST, so a resume
+ * retries with the same Idempotency-Key and gets the first deploy back
+ * instead of a second agent. A refused key (the server caches a refusal under
+ * its key) is replaced in memory and saved again, so a resume never comes
+ * back with a key that is already refused.
+ */
+export async function deployFirstChat(
+  key: { current: string },
+  save: (key: string) => Promise<boolean>,
+  body: { name: string; framework: string; model: string; soul_md: string },
+): Promise<string> {
+  if (!(await save(key.current))) {
+    throw new HopError("Couldn't save setup progress. Check the connection and try again.");
+  }
+  try {
+    return await deployAssistant(body, key.current);
+  } catch (e) {
+    if (!(e instanceof DeployUnanswered)) {
+      key.current = newIdempotencyKey();
+      void save(key.current);
+    }
+    throw e;
+  }
+}
+
+/**
  * Open Messages in this page with the new agent and its prompts. Props keep
  * it in-page on a handset too (shouldLaunchInShell sends a bare open to the
  * device shell, which could not be handed the agent), and the activate event
