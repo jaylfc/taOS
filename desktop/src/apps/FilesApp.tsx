@@ -8,6 +8,7 @@ import {
   FileAudio,
   FileCode,
   FileArchive,
+  Images,
   ChevronRight,
   FolderPlus,
   Upload,
@@ -90,6 +91,13 @@ interface AgentSummary {
   display_name?: string;
   emoji?: string;
   framework?: string;
+}
+
+// Entry returned by GET /api/files/locations: a built-in location that exists
+// on this device. The server decides the set, the sidebar renders it.
+interface BuiltInLocation {
+  id: string;
+  label: string;
 }
 
 interface WorkspaceStats {
@@ -190,10 +198,36 @@ function projectSlug(loc: string): string {
   return loc.slice(PROJECT_LOCATION_PREFIX.length);
 }
 
+// Built-in locations the controller owns directly (see
+// tinyagentos/routes/photos_location.py). The backend lists only the ones whose
+// base directory exists on this device, so the set is decided by the server and
+// the sidebar renders whatever it returns.
+const PHOTOS_LOCATION = "photos";
+const PHOTOS_LABEL = "Photos";
+
+function isPhotosLocation(loc: string): boolean {
+  return loc === PHOTOS_LOCATION;
+}
+
+// Icon per built-in location id. An id the frontend does not know still gets a
+// row (with the folder icon) so a location the server starts listing stays
+// reachable rather than silently invisible.
+const BUILT_IN_LOCATION_ICONS: Record<string, typeof Folder> = {
+  [PHOTOS_LOCATION]: Images,
+};
+
+function BuiltInLocationIcon({ id, size = 16 }: { id: string; size?: number }) {
+  const Icon = BUILT_IN_LOCATION_ICONS[id] ?? Folder;
+  return <Icon size={size} className="text-accent" />;
+}
+
 function fileUrl(location: "workspace" | string, path: string): string {
   const encoded = encodeURIComponent(path);
   if (location === "workspace") {
     return `/api/workspace/files/${encoded}`;
+  }
+  if (isPhotosLocation(location)) {
+    return `/api/photos/files/${encoded}`;
   }
   if (isAgentLocation(location)) {
     return `/api/agents/${encodeURIComponent(agentSlug(location))}/workspace/files/${encoded}`;
@@ -205,15 +239,17 @@ function fileUrl(location: "workspace" | string, path: string): string {
 }
 
 /**
- * Build endpoint URLs for the three workspace root kinds:
+ * Build endpoint URLs for the location kinds the sidebar can list:
  *   - "workspace"       → user workspace
  *   - "agent:<slug>"    → per-agent workspace
+ *   - "photos"          → built-in Pictures folder (read and delete only)
  *   - "<folder-name>"   → shared folder
- * Centralising the fan-out here keeps fetch/upload/mkdir/delete/watch in sync.
+ * Centralising the fan-out here keeps fetch/upload/delete/watch in sync.
  */
 function workspaceListUrl(location: "workspace" | string, path: string): string {
   const qs = path ? `?path=${encodeURIComponent(path)}` : "";
   if (location === "workspace") return `/api/workspace/files${qs}`;
+  if (isPhotosLocation(location)) return `/api/photos/files${qs}`;
   if (isAgentLocation(location)) {
     return `/api/agents/${encodeURIComponent(agentSlug(location))}/workspace/files${qs}`;
   }
@@ -235,9 +271,10 @@ function workspaceWatchUrl(location: "workspace" | string, path: string): string
   return null;
 }
 
-function workspaceUploadUrl(location: "workspace" | string, path: string): string {
+function workspaceUploadUrl(location: "workspace" | string, path: string): string | null {
   const qs = path ? `?path=${encodeURIComponent(path)}` : "";
   if (location === "workspace") return `/api/workspace/files/upload${qs}`;
+  if (isPhotosLocation(location)) return null;  // the camera folder is not a write target
   if (isAgentLocation(location)) {
     return `/api/agents/${encodeURIComponent(agentSlug(location))}/workspace/files/upload${qs}`;
   }
@@ -261,6 +298,7 @@ function workspaceMkdirUrl(location: "workspace" | string): string | null {
 function workspaceDeleteUrl(location: "workspace" | string, path: string): string | null {
   const encoded = encodeURIComponent(path);
   if (location === "workspace") return `/api/workspace/files/${encoded}`;
+  if (isPhotosLocation(location)) return `/api/photos/files/${encoded}`;
   if (isAgentLocation(location)) {
     return `/api/agents/${encodeURIComponent(agentSlug(location))}/workspace/files/${encoded}`;
   }
@@ -393,7 +431,7 @@ interface FileRowProps {
   location: "workspace" | string;
   currentPath: string;
   navigateTo: (path: string) => void;
-  isWritable: boolean;
+  canReadAndDelete: boolean;
   deleteConfirm: string | null;
   handleDelete: (path: string) => void;
   setDeleteConfirm: (path: string | null) => void;
@@ -408,7 +446,7 @@ function FileRow({
   location,
   currentPath,
   navigateTo,
-  isWritable,
+  canReadAndDelete,
   deleteConfirm,
   handleDelete,
   setDeleteConfirm,
@@ -491,7 +529,7 @@ function FileRow({
       </td>
       <td className="px-3 py-2">
         <div className="flex items-center gap-1">
-          {!f.is_dir && isWritable && (
+          {!f.is_dir && canReadAndDelete && (
             <a
               href={fileUrl(location, f.path || f.name)}
               target="_blank"
@@ -502,7 +540,7 @@ function FileRow({
               <Download size={13} />
             </a>
           )}
-          {isWritable && (
+          {canReadAndDelete && (
             <Button
               variant="ghost"
               size="icon"
@@ -547,6 +585,7 @@ export function FilesApp({
   const [location, setLocation] = useState<"workspace" | string>(() => rootPath ?? "workspace");
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [sharedFolders, setSharedFolders] = useState<SharedFolder[]>([]);
+  const [builtInLocations, setBuiltInLocations] = useState<BuiltInLocation[]>([]);
   const [agents, setAgents] = useState<AgentSummary[] | null>(null);
   const [agentsExpanded, setAgentsExpanded] = useState(true);
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
@@ -633,6 +672,10 @@ export function FilesApp({
   // Workspace locations (user + per-agent + project) allow mutations and the stats
   // endpoint. Shared folders and the recycle bin are read-only here.
   const isWritable = location === "workspace" || isAgentLocation(location) || isProjectLocation(location);
+  // The built-in Photos location has no upload / mkdir / rename endpoint, so the
+  // mutation affordances stay hidden, but opening, downloading and deleting a
+  // photo works exactly as it does in a writable location.
+  const canReadAndDelete = isWritable || isPhotosLocation(location);
   const locationTitle =
     location === "recycle"
       ? "Recycle Bin"
@@ -642,7 +685,9 @@ export function FilesApp({
           ? agents?.find((a) => a.name === agentSlug(location))?.display_name ?? agentSlug(location)
           : isProjectLocation(location)
             ? projectSlug(location)
-            : location;
+            : isPhotosLocation(location)
+              ? builtInLocations.find((l) => l.id === PHOTOS_LOCATION)?.label ?? PHOTOS_LABEL
+              : location;
 
   /* ---- Fetch files ---- */
   const fetchFiles = useCallback(async (path = "") => {
@@ -715,6 +760,14 @@ export function FilesApp({
     apiFetch<SharedFolder[]>("/api/shared-folders")
       .then((d) => setSharedFolders(Array.isArray(d) ? d : []))
       .catch(() => setSharedFolders([]));
+  }, []);
+
+  // Built-in locations (Photos). The server lists only the ones whose directory
+  // exists, so a device without a Pictures folder lists no Photos entry.
+  useEffect(() => {
+    apiFetch<BuiltInLocation[]>("/api/files/locations")
+      .then((d) => setBuiltInLocations(Array.isArray(d) ? d : []))
+      .catch(() => setBuiltInLocations([]));
   }, []);
 
   useEffect(() => {
@@ -881,6 +934,9 @@ export function FilesApp({
     setError(null);
     try {
       const uploadUrl = workspaceUploadUrl(location, currentPath);
+      // A location with no upload endpoint (the built-in Photos folder) is not a
+      // write target, so a dropped file is ignored rather than posted to a 404.
+      if (!uploadUrl) return;
       for (let i = 0; i < fileList.length; i++) {
         const file = fileList.item(i);
         if (!file) continue;
@@ -1044,6 +1100,50 @@ export function FilesApp({
             <HardDrive size={16} />
             <span className="truncate">My Workspace</span>
           </Button>
+        )}
+
+        {/* Built-in locations (Photos). Rendered only for what the server
+            reports as present, so a device with no Pictures folder shows no
+            Photos row. */}
+        {isMobile ? (
+          builtInLocations.length > 0 && (
+            <div
+              style={{ background: "rgba(255,255,255,0.05)", borderRadius: 16 }}
+              className="overflow-hidden divide-y divide-white/[0.04]"
+            >
+              {builtInLocations.map((loc) => (
+                <button
+                  key={loc.id}
+                  onClick={() => {
+                    setLocation(loc.id);
+                    setCurrentPath("");
+                    setSelectedLocation(loc.id);
+                  }}
+                  className="w-full flex items-center justify-between px-4 py-3.5 text-sm text-shell-text active:bg-white/10 transition-colors"
+                  aria-label={loc.label}
+                >
+                  <span className="flex items-center gap-3">
+                    <BuiltInLocationIcon id={loc.id} />
+                    <span className="truncate">{loc.label}</span>
+                  </span>
+                  <ChevronRight size={16} className="text-shell-text-tertiary" />
+                </button>
+              ))}
+            </div>
+          )
+        ) : (
+          builtInLocations.map((loc) => (
+            <Button
+              key={loc.id}
+              variant={location === loc.id ? "secondary" : "ghost"}
+              onClick={() => { setLocation(loc.id); setCurrentPath(""); }}
+              className="w-full justify-start mx-1.5 px-3"
+              aria-label={loc.label}
+            >
+              <BuiltInLocationIcon id={loc.id} />
+              <span className="truncate">{loc.label}</span>
+            </Button>
+          ))
         )}
 
         {/* Shared Folders */}
@@ -1695,7 +1795,7 @@ export function FilesApp({
                     }
                   }}
                   onDoubleClick={() => {
-                    if (!f.is_dir && isWritable) {
+                    if (!f.is_dir && canReadAndDelete) {
                       const handler = handlerAppForFile(f.name);
                       if (handler) {
                         window.dispatchEvent(
@@ -1759,7 +1859,7 @@ export function FilesApp({
                   )}
 
                   {/* Delete button overlay */}
-                  {isWritable && (
+                  {canReadAndDelete && (
                     <span
                       role="button"
                       tabIndex={0}
@@ -1820,7 +1920,7 @@ export function FilesApp({
                   location={location}
                   currentPath={currentPath}
                   navigateTo={navigateTo}
-                  isWritable={isWritable}
+                  canReadAndDelete={canReadAndDelete}
                   deleteConfirm={deleteConfirm}
                   handleDelete={handleDelete}
                   setDeleteConfirm={setDeleteConfirm}
@@ -1871,10 +1971,10 @@ export function FilesApp({
       );
       return;
     }
-    if (isWritable) {
+    if (canReadAndDelete) {
       window.open(fileUrl(location, f.path || f.name), "_blank");
     }
-  }, [navigateTo, currentPath, isWritable, location]);
+  }, [navigateTo, currentPath, canReadAndDelete, location]);
 
   const copySupported = workspaceCopyUrl(location) !== null;
   const moveSupported = workspaceRenameUrl(location) !== null;
@@ -1890,7 +1990,7 @@ export function FilesApp({
         action: () => openFile(f),
       },
     ];
-    if (!f.is_dir && isWritable) {
+    if (!f.is_dir && canReadAndDelete) {
       items.push({
         label: "Download",
         icon: <Download size={14} />,
@@ -1913,6 +2013,12 @@ export function FilesApp({
           disabled: !copySupported,
           action: () => setClipboard({ mode: "copy", location, path: f.path, name: f.name }),
         },
+      );
+    }
+    // Read-and-delete locations (the built-in Photos folder) get Delete without
+    // the mutation entries above, since they have no rename / move endpoint.
+    if (canReadAndDelete) {
+      items.push(
         { label: "", separator: true },
         {
           label: "Delete",
