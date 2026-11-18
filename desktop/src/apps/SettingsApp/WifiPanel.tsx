@@ -53,6 +53,12 @@ export function WifiPanel() {
     }
   }, []);
 
+  const loadWithTimeout = () =>
+    Promise.race([
+      load(),
+      new Promise<void>((resolve) => setTimeout(resolve, 10_000)),
+    ]);
+
   useEffect(() => {
     active.current = true;
     load();
@@ -82,7 +88,7 @@ export function WifiPanel() {
         return;
       }
       setStatus(null);
-      load();
+      await loadWithTimeout();
     } catch {
       setError("Could not reach taOS.");
       setStatus(null);
@@ -110,7 +116,7 @@ export function WifiPanel() {
         return;
       }
       setStatus(null);
-      load();
+      await loadWithTimeout();
     } catch {
       setError("Could not reach taOS.");
       setStatus(null);
@@ -140,6 +146,12 @@ export function WifiPanel() {
     setSubmitting(true);
     setError(null);
     setPasswordError(null);
+    if (secured && !psk) {
+      setPasswordError("Enter the network password.");
+      setSubmitting(false);
+      setConnectingSsid(null);
+      return;
+    }
     try {
       const res = await fetch("/api/hardware/wifi/connect", {
         method: "POST",
@@ -188,7 +200,9 @@ export function WifiPanel() {
   const handlePasswordKeyDown = (e: React.KeyboardEvent, ssid: string) => {
     if (e.key === "Enter") {
       e.preventDefault();
-      handleConnect(ssid, password, true);
+      if (password !== "") {
+        handleConnect(ssid, password, true);
+      }
     } else if (e.key === "Escape") {
       e.preventDefault();
       setConnectingSsid(null);
@@ -224,7 +238,7 @@ export function WifiPanel() {
           Wi-Fi
         </Label>
       </div>
-      {status && <p aria-live="polite" className="mb-3 text-xs text-sky-400">{status}</p>}
+      <p aria-live="polite" className={`text-xs text-sky-400${status ? " mb-3" : ""}`}>{status ?? ""}</p>
       {error && (
         <p role="alert" className="mb-3 text-xs text-amber-400 flex items-center gap-1.5">
           <AlertCircle size={12} /> {error}
@@ -280,12 +294,12 @@ export function WifiPanel() {
                       disabled={isConnecting}
                       aria-label={ap.secured ? `Join ${ap.ssid} (secured)` : `Join ${ap.ssid}`}
                     >
-                      {isConnecting && ap.secured ? (
+                      {isConnecting && ap.secured && submitting ? (
                         <>
                           <Loader2 size={12} className="animate-spin" />
                           Connecting
                         </>
-                      ) : isConnecting ? (
+                      ) : isConnecting && !ap.secured ? (
                         <>
                           <Loader2 size={12} className="animate-spin" />
                           Joining
@@ -327,7 +341,6 @@ export function WifiPanel() {
                           className="absolute right-2 top-1/2 -translate-y-1/2 h-6 w-6 p-0"
                           onClick={() => setShowPassword(isPasswordVisible ? null : ap.ssid)}
                           aria-label={isPasswordVisible ? "Hide password" : "Show password"}
-                          tabIndex={-1}
                         >
                           {isPasswordVisible ? <EyeOff size={14} /> : <Eye size={14} />}
                         </Button>
@@ -337,7 +350,7 @@ export function WifiPanel() {
                         variant="default"
                         size="sm"
                         onClick={() => handleConnect(ap.ssid, password, true)}
-                        disabled={submitting || password.trim() === ""}
+                        disabled={submitting || password === ""}
                         aria-label={`Join ${ap.ssid}`}
                       >
                         Join
@@ -359,7 +372,6 @@ export function WifiPanel() {
                           btn?.focus();
                         }}
                         aria-label="Cancel"
-                        tabIndex={-1}
                         disabled={submitting}
                       >
                         <X size={14} />

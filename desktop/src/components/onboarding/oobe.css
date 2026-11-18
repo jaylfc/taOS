@@ -512,6 +512,10 @@
   .oobe-root *::after {
     transition-duration: 0.01ms !important;
   }
+
+  .oobe-primary[aria-busy="true"]::before {
+    animation: none;
+  }
 }
 
 /* A list of choices, each a full-width row with a chevron. */

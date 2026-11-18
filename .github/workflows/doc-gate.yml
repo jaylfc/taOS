@@ -9,7 +9,7 @@ name: Doc drift gate
 
 on:
   pull_request:
-    branches: [master, dev]
+    branches: [master, dev, distro]
 
 # This gate only reads the checkout; nothing here writes to the repo, so do not
 # inherit whatever the repository or org default happens to grant GITHUB_TOKEN.

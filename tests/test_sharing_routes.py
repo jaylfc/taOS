@@ -157,3 +157,43 @@ class TestCreateGrantAppKindRejectsEvenWithConsent:
         # Both should be empty (no grant created)
         assert owned_by_a == [], f"Expected no grants owned by admin, got: {owned_by_a}"
         assert shared_with_userb == [], f"Expected no grants shared with userb, got: {shared_with_userb}"
+
+
+    @pytest.mark.asyncio
+    async def test_create_grant_rejects_game_kind(self, client, app):
+        owner_id = client._transport.app.state.auth.find_user("admin")["id"]
+        resp = await client.post(
+            "/api/sharing/grants",
+            json={"artifact_id": "game-x", "artifact_kind": "game", "grantee": "userb"},
+        )
+        assert resp.status_code == 403
+        assert resp.json()["error"] == "you do not own this artifact"
+        sharing_grants_store = app.state.sharing_grants
+        assert await sharing_grants_store.list_owned(owner_id) == []
+        assert await sharing_grants_store.list_for("userb") == []
+
+    @pytest.mark.asyncio
+    async def test_create_grant_rejects_workflow_kind(self, client, app):
+        owner_id = client._transport.app.state.auth.find_user("admin")["id"]
+        resp = await client.post(
+            "/api/sharing/grants",
+            json={"artifact_id": "wf-x", "artifact_kind": "workflow", "grantee": "userb"},
+        )
+        assert resp.status_code == 403
+        assert resp.json()["error"] == "you do not own this artifact"
+        sharing_grants_store = app.state.sharing_grants
+        assert await sharing_grants_store.list_owned(owner_id) == []
+        assert await sharing_grants_store.list_for("userb") == []
+
+    @pytest.mark.asyncio
+    async def test_create_grant_rejects_studio_kind(self, client, app):
+        owner_id = client._transport.app.state.auth.find_user("admin")["id"]
+        resp = await client.post(
+            "/api/sharing/grants",
+            json={"artifact_id": "studio-x", "artifact_kind": "studio", "grantee": "userb"},
+        )
+        assert resp.status_code == 403
+        assert resp.json()["error"] == "you do not own this artifact"
+        sharing_grants_store = app.state.sharing_grants
+        assert await sharing_grants_store.list_owned(owner_id) == []
+        assert await sharing_grants_store.list_for("userb") == []

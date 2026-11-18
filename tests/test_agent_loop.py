@@ -632,6 +632,11 @@ async def test_cancel_during_safe_point_subagent_wait_returns_to_idle():
         # RED: on the buggy base the loop stays in SAFE_POINT.
         assert loop.state == LoopState.IDLE, f"expected IDLE, got {loop.state}"
 
+        # The queued redirect must be retained (delivered) even though
+        # reach_safe_point was cancelled mid-cancellation.
+        delivered = loop.delivered
+        assert any(m.is_redirect for m in delivered), "redirect lost after cancellation"
+
         # A subsequent message should start a new turn (IMMEDIATE), not be queued.
         action = await loop.handle_message("fresh turn")
         assert action == LoopAction.IMMEDIATE

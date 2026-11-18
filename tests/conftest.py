@@ -329,6 +329,14 @@ def pair_and_register_worker():
     return _pair_and_register_worker
 
 
+@pytest.fixture
+def worker_request_signer():
+    """Function fixture so test files in any directory can use the HMAC
+    signing helper without importing from conftest (tests/ is not a package,
+    so ``from tests.conftest import ...`` breaks under CI's import mode)."""
+    return sign_worker_request
+
+
 # macOS + Python 3.14: after the interpreter loads ObjC-backed extension
 # modules (psutil, zeroconf, Pillow, lxml …), forking a child process with
 # subprocess violates macOS's "unsafe after ObjC runtime init" restriction and

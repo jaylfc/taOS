@@ -14,20 +14,24 @@ const GIVE_UP_MS = 10 * 60 * 1000;
 /** After giving up, a deferred model pull can still finish the deploy. */
 const LATE_POLL_MS = 30 * 1000;
 const TOO_LONG = "Setting up your assistant is taking longer than expected.";
+const NO_DM_AFTER_SUCCESS = "Your assistant is set up, but its chat could not be created.";
 
 /** The deploy's error when it failed. A missing record (404, e.g. after a
- * server restart) or an unreadable reply is not a failure: keep waiting. */
-async function deployFailure(agent: string): Promise<string | undefined> {
+ * server restart) or an unreadable reply is not a failure: keep waiting.
+ * Returns { status, error } where status is the deploy status and error is
+ * the failure message (only when status === "failed"). */
+async function deployFailure(agent: string): Promise<{ status: string | undefined; error: string | undefined }> {
   try {
     const res = await fetch(`/api/agents/${encodeURIComponent(agent)}/deploy-status`);
-    if (!res.ok) return undefined;
+    if (!res.ok) return { status: undefined, error: undefined };
     const task = await res.json();
-    if (task?.status !== "failed") return undefined;
+    const status = task?.status;
+    if (status !== "failed") return { status, error: undefined };
     const err = typeof task.error === "string" ? task.error.trim() : "";
-    if (!err) return "The deploy failed.";
-    return /[.!?]$/.test(err) ? err : `${err}.`;
+    if (!err) return { status, error: "The deploy failed." };
+    return { status, error: /[.!?]$/.test(err) ? err : `${err}.` };
   } catch {
-    return undefined;
+    return { status: undefined, error: undefined };
   }
 }
 
@@ -57,6 +61,7 @@ export function useFirstChat(
   const [failure, setFailure] = useState<string | undefined>();
   const [late, setLate] = useState(false);
   const dm = agent ? findAgentDm(channels, agent) : undefined;
+  const successPollsRef = useRef(0);
 
   useEffect(() => {
     if (!dm || opened.current) return;
@@ -64,9 +69,8 @@ export function useFirstChat(
     open(dm.id);
   }, [dm, open]);
 
-  const found = Boolean(dm);
   useEffect(() => {
-    if (!agent || found || failure) return;
+    if (!agent || dm || failure) return;
     const started = Date.now();
     let live = true;
     const id = setInterval(() => {
@@ -75,20 +79,32 @@ export function useFirstChat(
         return;
       }
       void refresh();
-      void deployFailure(agent).then((err) => {
-        if (live && err) setFailure(err);
+      void deployFailure(agent).then(({ status, error }) => {
+        if (!live) return;
+        if (error) {
+          setFailure(error);
+          return;
+        }
+        if (status === "success" && !dm) {
+          successPollsRef.current += 1;
+          if (successPollsRef.current >= 3) {
+            setFailure(NO_DM_AFTER_SUCCESS);
+          }
+        } else {
+          successPollsRef.current = 0;
+        }
       });
     }, late ? LATE_POLL_MS : POLL_MS);
     return () => {
       live = false;
       clearInterval(id);
     };
-  }, [agent, found, failure, late, refresh]);
+  }, [agent, dm, failure, late, refresh]);
 
   return {
-    waiting: Boolean(agent) && !found && !failure && !late,
+    waiting: Boolean(agent) && !dm && !failure && !late,
     channelId: dm?.id,
-    failure: found ? undefined : (failure ?? (late ? TOO_LONG : undefined)),
+    failure: dm ? undefined : (failure ?? (late ? TOO_LONG : undefined)),
   };
 }
 

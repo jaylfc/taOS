@@ -31,6 +31,7 @@ is plaintext here and slice 7 wraps it.
 from __future__ import annotations
 
 import asyncio
+import weakref
 
 import base64
 import hashlib
@@ -127,17 +128,20 @@ async def next_chain_position(store: hub_store.HubStore, author: str) -> tuple[i
     return head["seq"] + 1, head["hash"]
 
 
-# Serialize chain appends per process: next_chain_position reads the chain head
-# and put_chain_object inserts the next entry, and hub_chain inserts use
-# INSERT OR IGNORE, so two concurrent appends for the same author would both
-# compute the same seq and the loser would be silently dropped from the chain
-# index while its body stayed in hub_objects (orphaned). The local node is the
-# only writer of its own chain, so a per-store asyncio lock closes the race.
-_append_locks: dict[int, asyncio.Lock] = {}
+# Per-store append lock, keyed weakly by the store object so that when a
+# HubStore is garbage-collected its lock is reclaimed.  Using id(store) as
+# key would let a new store reuse the old lock id() after GC, which may be
+# bound to a different event loop or still held -- causing
+# RuntimeError: Lock is bound to a different event loop.
+_append_locks = weakref.WeakKeyDictionary()
 
 
 def _append_lock(store: "hub_store.HubStore") -> asyncio.Lock:
-    return _append_locks.setdefault(id(store), asyncio.Lock())
+    lock = _append_locks.get(store)
+    if lock is None:
+        lock = asyncio.Lock()
+        _append_locks[store] = lock
+    return lock
 
 
 async def append_post(

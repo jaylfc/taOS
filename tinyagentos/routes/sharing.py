@@ -25,23 +25,17 @@ async def _caller_owns_artifact(
     
     Returns True if the user owns the artifact, False otherwise.
     """
-    if artifact_kind in ("app", "game"):
-        return False
-    
-    elif artifact_kind == "project":
+    if artifact_kind == "project":
         project_store = getattr(request.app.state, "project_store", None)
         if project_store is not None:
             project = await project_store.get_project(artifact_id)
             if project is not None:
                 return project.get("user_id") == owner_id
         return False
-    
-    elif artifact_kind == "workflow":
+
+    if artifact_kind in ("app", "game", "workflow", "studio"):
         return False
-    
-    elif artifact_kind == "studio":
-        return False
-    
+
     return False
 
 

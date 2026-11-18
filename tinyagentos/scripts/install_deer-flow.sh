@@ -483,7 +483,20 @@ async def sse_loop(client: httpx.AsyncClient, channel: dict, stop: asyncio.Event
                             try:
                                 evt = json.loads(evt_data)
                                 if len(pending_tasks) >= _PENDING_CAP:
-                                    await asyncio.wait(pending_tasks, return_when=asyncio.FIRST_COMPLETED)
+                                    stop_task = asyncio.create_task(stop.wait())
+                                    try:
+                                        await asyncio.wait(
+                                            pending_tasks | {stop_task},
+                                            return_when=asyncio.FIRST_COMPLETED,
+                                        )
+                                    finally:
+                                        stop_task.cancel()
+                                    if stop.is_set():
+                                        log.warning(
+                                            "user_message id=%s not dispatched: shutdown began",
+                                            evt.get("id"),
+                                        )
+                                        break
                                 task = asyncio.create_task(_run_handle_user_message_limited(
                                     client, evt, channel, seen_ids, error_until))
                                 pending_tasks.add(task)
