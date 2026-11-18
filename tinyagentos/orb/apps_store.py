@@ -25,6 +25,15 @@ MANIFEST_FILE_NAME = "desktop.json"
 MANIFEST_SIG_FILE_NAME = "desktop.json.sig"
 _REL_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
+# Serialize verify-record-cache in fetch_manifest so two concurrent fetches
+# cannot leave an older manifest cached behind a newer recorded serial.
+_fetch_manifest_lock = asyncio.Lock()
+
+# Per-read idle timeout for the download stream.  The total transfer is still
+# capped by *timeout*; this bounds how long a stalled stream can keep the
+# temp file (and the caller) waiting.
+_DOWNLOAD_IDLE_TIMEOUT: float = 30.0
+
 
 class AppDownloadError(OrbError):
     """App download failed."""
@@ -178,20 +187,22 @@ async def fetch_manifest(base_url, cache_dir, state_path, keys=None, timeout: fl
                 if manifest_bytes is None:
                     raise catalog_sig.CatalogFetchError("manifest not found")
                 sig_bytes = await _get_capped(client, sig_url, SIG_MAX_BYTES)
-                if sig_bytes is None:
-                    sig_bytes = None  # so accept_catalog raises CatalogSignatureMissing
     except TimeoutError as e:
         raise catalog_sig.CatalogFetchError(f"manifest fetch exceeded {timeout}s") from e
 
-    # A signed firmware catalog replayed at the manifest URL must be refused by kind before it can raise the manifest's serial high-water mark.
-    doc = catalog_sig.verify_catalog(manifest_bytes, sig_bytes, keys)
-    validate_manifest(doc)
-    catalog_sig.accept_catalog(manifest_bytes, sig_bytes, state_path, keys)
+    # Verify, check+record the serial high-water mark, and write the cache all
+    # under one lock so concurrent fetches cannot leave an older manifest
+    # cached behind a newer recorded serial.
+    async with _fetch_manifest_lock:
+        # A signed firmware catalog replayed at the manifest URL must be refused by kind before it can raise the manifest's serial high-water mark.
+        doc = catalog_sig.verify_catalog(manifest_bytes, sig_bytes, keys)
+        validate_manifest(doc)
+        catalog_sig.accept_catalog(manifest_bytes, sig_bytes, state_path, keys)
 
-    cache_dir_path = Path(cache_dir)
-    cache_dir_path.mkdir(parents=True, exist_ok=True)
-    atomic_io.atomic_write_bytes(cache_dir_path / MANIFEST_FILE_NAME, manifest_bytes)
-    atomic_io.atomic_write_bytes(cache_dir_path / MANIFEST_SIG_FILE_NAME, sig_bytes if sig_bytes is not None else b"")
+        cache_dir_path = Path(cache_dir)
+        cache_dir_path.mkdir(parents=True, exist_ok=True)
+        atomic_io.atomic_write_bytes(cache_dir_path / MANIFEST_FILE_NAME, manifest_bytes)
+        atomic_io.atomic_write_bytes(cache_dir_path / MANIFEST_SIG_FILE_NAME, sig_bytes if sig_bytes is not None else b"")
 
     return doc
 
@@ -226,14 +237,17 @@ def load_cached_manifest(cache_dir, state_path, keys=None) -> dict:
     return doc
 
 
-async def download_app(manifest, app_id, base_url, dest_dir, version=None, platform=None, timeout: float = 300.0, transport=None) -> Path:
+async def download_app(manifest, app_id, base_url, dest_dir, version=None, platform=None, timeout: float = 300.0, idle_timeout: float = _DOWNLOAD_IDLE_TIMEOUT, transport=None) -> Path:
     v, f = pick_file(manifest, app_id, version, platform)
     if f["size"] > APP_MAX_BYTES:
         raise AppDownloadError("file exceeds app size limit")
     url = resolve_url(base_url, f["url"])
     dest_dir_path = Path(dest_dir)
     dest_dir_path.mkdir(parents=True, exist_ok=True)
-    final_path = dest_dir_path / f["url"].rsplit("/", 1)[-1]
+    basename = f["url"].rsplit("/", 1)[-1]
+    # Two versions that share a basename must not overwrite one another; the
+    # sha256 prefix keeps them distinct while staying a legal file name.
+    final_path = dest_dir_path / f"{f['sha256'][:16]}-{basename}"
 
     temp_path = None
     try:
@@ -252,12 +266,21 @@ async def download_app(manifest, app_id, base_url, dest_dir, version=None, platf
                         total = 0
                         expected = f["size"]
                         with open(temp_path, "wb") as tf:
-                            async for chunk in resp.aiter_bytes():
+                            iterator = resp.aiter_bytes()
+                            while True:
+                                try:
+                                    chunk = await asyncio.wait_for(iterator.__anext__(), idle_timeout)
+                                except StopAsyncIteration:
+                                    break
+                                except TimeoutError as e:
+                                    raise AppDownloadError("download stalled: no chunk within idle timeout") from e
                                 total += len(chunk)
                                 if total > expected:
                                     raise AppDownloadError("download exceeded declared size")
                                 h.update(chunk)
-                                tf.write(chunk)
+                                # Offload the blocking write so a multi-gibibyte
+                                # transfer does not block the event loop.
+                                await asyncio.to_thread(tf.write, chunk)
         except AppDownloadError:
             raise
         except TimeoutError as e:
@@ -267,7 +290,7 @@ async def download_app(manifest, app_id, base_url, dest_dir, version=None, platf
 
         if total != expected or h.hexdigest() != f["sha256"]:
             raise AppDownloadError("download size or sha256 mismatch")
-        os.replace(temp_path, final_path)
+        atomic_io.durable_replace(temp_path, final_path)
         temp_path = None
         return final_path
     except Exception:

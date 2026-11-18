@@ -1,4 +1,5 @@
 """Tests for tinyagentos/orb/apps_store fetch/download."""
+import asyncio
 import base64
 import hashlib
 import json
@@ -325,7 +326,7 @@ async def test_download_good_bytes_file_at_dest_no_dot_dl_left(tmp_path, test_ke
 
     transport = httpx.MockTransport(handler)
     result = await apps_store.download_app(manifest, "openharness-taos", "https://example.com/", dest_dir, transport=transport)
-    assert result == dest_dir / "oh-linux-x64.zip"
+    assert result == dest_dir / f"{hashlib.sha256(data).hexdigest()[:16]}-oh-linux-x64.zip"
     assert result.read_bytes() == data
     # no .dl-* left
     assert list(dest_dir.glob(".dl-*")) == []
@@ -466,3 +467,132 @@ async def test_download_file_entry_with_size_app_max_bytes_plus1_raises_app_down
     with pytest.raises(AppDownloadError):
         await apps_store.download_app(manifest, "openharness-taos", "https://example.com/", dest_dir, transport=transport)
     assert called["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_fetch_manifest_concurrent_high_water_cache_matches_serial(tmp_path, test_key, keys_dict):
+    private_key, _, key_id = test_key
+
+    def signed(serial: int) -> tuple[bytes, bytes]:
+        manifest = make_valid_manifest()
+        manifest["serial"] = serial
+        manifest_bytes = json.dumps(manifest).encode("utf-8")
+        return manifest_bytes, sign_manifest(private_key, manifest_bytes)
+
+    m5_bytes, m5_sig = signed(5)
+    m6_bytes, m6_sig = signed(6)
+
+    cache_dir = tmp_path / "cache"
+    state_path = tmp_path / "state.json"
+
+    def handler(serial_bytes: bytes, serial_sig: bytes):
+        def handle(request: httpx.Request):
+            if request.url.path.endswith("/desktop.json.sig"):
+                return httpx.Response(200, content=serial_sig)
+            if request.url.path.endswith("/desktop.json"):
+                return httpx.Response(200, content=serial_bytes)
+            return httpx.Response(404)
+
+        return handle
+
+    results = await asyncio.gather(
+        apps_store.fetch_manifest(
+            "https://example.com/", cache_dir, state_path, keys=keys_dict,
+            transport=httpx.MockTransport(handler(m5_bytes, m5_sig)),
+        ),
+        apps_store.fetch_manifest(
+            "https://example.com/", cache_dir, state_path, keys=keys_dict,
+            transport=httpx.MockTransport(handler(m6_bytes, m6_sig)),
+        ),
+        return_exceptions=True,
+    )
+
+    for result in results:
+        assert not isinstance(result, Exception) or isinstance(result, catalog_sig.CatalogSerialRegression)
+
+    state = json.loads(state_path.read_text())
+    assert state["serial"] == 6
+    cached = json.loads((cache_dir / "desktop.json").read_bytes())
+    assert cached["serial"] == 6
+
+
+@pytest.mark.asyncio
+async def test_download_stalled_stream_times_out_no_partial_file(tmp_path):
+    manifest = make_valid_manifest()
+    data = b"hello"
+    h = hashlib.sha256(data).hexdigest()
+    manifest["apps"][0]["versions"][0]["files"]["linux-x64"]["sha256"] = h
+    manifest["apps"][0]["versions"][0]["files"]["linux-x64"]["size"] = len(data)
+
+    dest_dir = tmp_path / "downloads"
+
+    class StalledStream(httpx.AsyncByteStream):
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await asyncio.sleep(3600)
+            raise StopAsyncIteration
+
+    class StalledTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, stream=StalledStream(), request=request)
+
+    transport = StalledTransport()
+    from tinyagentos.orb.apps_store import AppDownloadError
+    with pytest.raises(AppDownloadError, match="stalled"):
+        await apps_store.download_app(
+            manifest, "openharness-taos", "https://example.com/", dest_dir,
+            transport=transport, idle_timeout=1,
+        )
+    assert list(dest_dir.glob("oh-linux-x64.zip")) == []
+    assert list(dest_dir.glob(".dl-*")) == []
+
+
+@pytest.mark.asyncio
+async def test_download_versions_sharing_basename_keep_distinct_files(tmp_path):
+    def entry(version: str, url: str, content: bytes) -> dict:
+        return {
+            "version": version,
+            "yanked": False,
+            "files": {
+                "linux-x64": {"url": url, "sha256": hashlib.sha256(content).hexdigest(), "size": len(content)},
+            },
+        }
+
+    manifest = {
+        "kind": apps_store.MANIFEST_KIND,
+        "serial": 1,
+        "apps": [{
+            "id": "openharness-taos",
+            "versions": [
+                entry("2.0.0", "app/2.0.0/app.zip", b"v2-content"),
+                entry("1.0.0", "app/1.0.0/app.zip", b"v1-content"),
+            ],
+        }],
+    }
+
+    def handler(request: httpx.Request):
+        if request.url.path.endswith("/app/2.0.0/app.zip"):
+            return httpx.Response(200, content=b"v2-content")
+        if request.url.path.endswith("/app/1.0.0/app.zip"):
+            return httpx.Response(200, content=b"v1-content")
+        return httpx.Response(404)
+
+    dest_dir = tmp_path / "downloads"
+    transport = httpx.MockTransport(handler)
+
+    result2 = await apps_store.download_app(
+        manifest, "openharness-taos", "https://example.com/", dest_dir,
+        version="2.0.0", platform="linux-x64", transport=transport,
+    )
+    result1 = await apps_store.download_app(
+        manifest, "openharness-taos", "https://example.com/", dest_dir,
+        version="1.0.0", platform="linux-x64", transport=transport,
+    )
+
+    assert result1 != result2
+    assert result1.read_bytes() == b"v1-content"
+    assert result2.read_bytes() == b"v2-content"
+    assert result1.name != "app.zip"
+    assert result2.name != "app.zip"

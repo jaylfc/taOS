@@ -198,6 +198,9 @@ def test_validate_manifest_yanked_null_refused_no_yanked_ok():
     manifest2 = make_valid_manifest()
     manifest2["apps"][0]["versions"][0].pop("yanked")
     apps_store.validate_manifest(manifest2)
+
+
+def test_validate_manifest_firmware_shaped_no_kind_raises_kind_error():
     """Firmware-shaped doc without kind raises DesktopManifestKindError."""
     manifest = {
         "serial": 1,
