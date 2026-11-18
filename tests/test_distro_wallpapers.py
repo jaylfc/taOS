@@ -153,12 +153,12 @@ def test_setup_sh_step7_readme_changelog():
     assert text.index("Step 6: power") < text.index("Step 7: wallpapers")
     readme = (REPO / "distro/README.md").read_text()
     assert "| 7 | taos-wallpapers |" in readme and "## Wallpapers" in readme
-    frag = (REPO / "changelog.d/distro-wallpapers.md").read_text()
+    frag = (REPO / "changelog.d/4340-distro-wallpapers.md").read_text()
     assert frag.startswith("### Added\n")
 
 
 def test_no_em_dashes_or_ai_mentions():
     files = [CLI, SETUP, REPO / "distro/README.md", Path(__file__), INDEX,
-             REPO / "changelog.d/distro-wallpapers.md", PKG / "DEBIAN/control"]
+             REPO / "changelog.d/4340-distro-wallpapers.md", PKG / "DEBIAN/control"]
     for p in files:
         assert chr(0x2014) not in p.read_text(), p
