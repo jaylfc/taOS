@@ -187,7 +187,7 @@ async def keenable_fetch_route(request: Request, body: dict):
     validated, error = _validate_fetch_body(body)
     if error:
         return error
-    return await _keenable_fetch(request, body)
+    return await _keenable_fetch(request, validated)
 
 
 async def _keenable_fetch(request: Request, body: dict) -> dict:
@@ -221,11 +221,11 @@ async def _keenable_call(
     try:
         if action == "search":
             results = await keenable_search(
-                api_key, body.query, body.num_results, allow_public=allow_public
+                api_key, body["query"], body["num_results"], allow_public=allow_public
             )
             return {"results": results}
         results = await keenable_fetch(
-            api_key, body.url, body.max_chars, allow_public=allow_public
+            api_key, body["url"], body["max_chars"], allow_public=allow_public
         )
         return results
     except RuntimeError:
