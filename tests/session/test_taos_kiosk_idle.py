@@ -1,6 +1,6 @@
 """taos-kiosk-idle reads SCREEN_OFF_SECONDS from /etc/taos/display.conf and starts swayidle.
 
-Valid values: 0 (never), 5..3600. Missing file -> default 30. Malformed/out-of-range ->
+Valid values: 5..3600. Missing file -> default 30. Malformed/out-of-range ->
 fall back to 30 with one stderr message. File wins when present and valid; TAOS_KIOSK_IDLE_SECS
 env override only applies when file is absent or invalid. The script never sources the file.
 
@@ -87,81 +87,39 @@ def _run_idle(env, display_conf_content=None, display_conf_path=None):
         return proc.stdout, proc.stderr, swayidle_args, proc.returncode
 
 
+# Every value in 5..3600 with no leading zero must be accepted verbatim. The
+# old pattern only matched 5-299 and 3000-3600, so 300/600/999/1000/1800/2999
+# (a 5- or 30-minute timeout) silently fell back to 30.
+ACCEPTED = [5, 6, 59, 60, 299, 300, 600, 999, 1000, 1800, 2999, 3000, 3599, 3600]
+
+# Everything else falls back to the default 30 with one message on stderr.
+# Values that fail the anchored grep (99999, -5, 1.5, empty, text, a trailing
+# space) are rejected before arithmetic; 0, 4, 3601 and 0300 reach the range
+# check (0 and 0300 also trip the leading-zero guard) and are rejected there.
+REJECTED = ["0", "4", "3601", "99999", "-5", "1.5", "", "text", "0300", "60 "]
+
+
 class TestTaosKioskIdle:
     """Tests for taos-kiosk-idle reading SCREEN_OFF_SECONDS from display.conf."""
 
-    def test_valid_zero_never_blanks(self):
-        """SCREEN_OFF_SECONDS=0 -> no timeout swayidle args, only before-sleep."""
-        stdout, stderr, args, rc = _run_idle({}, display_conf_content="SCREEN_OFF_SECONDS=0\n")
+    @pytest.mark.parametrize("value", ACCEPTED)
+    def test_accepted_range_runs_under_dash(self, value):
+        """An in-range SCREEN_OFF_SECONDS sets that swayidle timeout, no warning (under dash)."""
+        stdout, stderr, args, rc = _run_idle(
+            {}, display_conf_content="SCREEN_OFF_SECONDS=%d\n" % value)
         assert rc == 0
-        assert "timeout" not in args
-        assert "before-sleep" in args
+        assert "timeout %d" % value in args
         assert stderr == ""
 
-    def test_valid_five_seconds(self):
-        """SCREEN_OFF_SECONDS=5 -> swayidle timeout 5."""
-        stdout, stderr, args, rc = _run_idle({}, display_conf_content="SCREEN_OFF_SECONDS=5\n")
-        assert rc == 0
-        assert "timeout 5" in args
-        assert stderr == ""
-
-    def test_valid_sixty_seconds(self):
-        """SCREEN_OFF_SECONDS=60 -> swayidle timeout 60."""
-        stdout, stderr, args, rc = _run_idle({}, display_conf_content="SCREEN_OFF_SECONDS=60\n")
-        assert rc == 0
-        assert "timeout 60" in args
-        assert stderr == ""
-
-    def test_valid_3600_seconds(self):
-        """SCREEN_OFF_SECONDS=3600 -> swayidle timeout 3600."""
-        stdout, stderr, args, rc = _run_idle({}, display_conf_content="SCREEN_OFF_SECONDS=3600\n")
-        assert rc == 0
-        assert "timeout 3600" in args
-        assert stderr == ""
-
-    def test_below_min_four_seconds_fallback(self):
-        """SCREEN_OFF_SECONDS=4 -> fallback to 30 with stderr message."""
-        stdout, stderr, args, rc = _run_idle({}, display_conf_content="SCREEN_OFF_SECONDS=4\n")
+    @pytest.mark.parametrize("value", REJECTED)
+    def test_rejected_falls_back_with_message(self, value):
+        """A rejected SCREEN_OFF_SECONDS falls back to 30 and warns (run under dash)."""
+        stdout, stderr, args, rc = _run_idle(
+            {}, display_conf_content="SCREEN_OFF_SECONDS=%s\n" % value)
         assert rc == 0
         assert "timeout 30" in args
-        assert "invalid SCREEN_OFF_SECONDS=4" in stderr
+        assert stderr != "", "expected a fallback message for %r" % value
         assert stderr.count("\n") == 1
-
-    def test_above_max_3601_fallback(self):
-        """SCREEN_OFF_SECONDS=3601 -> fallback to 30 with stderr message."""
-        stdout, stderr, args, rc = _run_idle({}, display_conf_content="SCREEN_OFF_SECONDS=3601\n")
-        assert rc == 0
-        assert "timeout 30" in args
-        assert "invalid SCREEN_OFF_SECONDS=3601" in stderr
-
-    def test_five_digits_99999_fallback(self):
-        """SCREEN_OFF_SECONDS=99999 (5 digits) -> fallback to 30, rejected before arithmetic."""
-        stdout, stderr, args, rc = _run_idle({}, display_conf_content="SCREEN_OFF_SECONDS=99999\n")
-        assert rc == 0
-        assert "timeout 30" in args
-        assert ("invalid SCREEN_OFF_SECONDS=99999" in stderr) or ("malformed" in stderr)
-
-    def test_twenty_digits_fallback(self):
-        """SCREEN_OFF_SECONDS=20-digit value -> fallback to 30, rejected before arithmetic."""
-        val = "1" * 20
-        stdout, stderr, args, rc = _run_idle({}, display_conf_content="SCREEN_OFF_SECONDS=%s\n" % val)
-        assert rc == 0
-        assert "timeout 30" in args
-        assert ("invalid SCREEN_OFF_SECONDS=%s" % val in stderr) or ("malformed" in stderr)
-
-    def test_non_number_fallback(self):
-        """SCREEN_OFF_SECONDS=abc -> fallback to 30 with stderr message."""
-        stdout, stderr, args, rc = _run_idle({}, display_conf_content="SCREEN_OFF_SECONDS=abc\n")
-        assert rc == 0
-        assert "timeout 30" in args
-        assert "malformed" in stderr
-
-    def test_empty_value_fallback(self):
-        """SCREEN_OFF_SECONDS= (empty) -> fallback to 30 with stderr message."""
-        stdout, stderr, args, rc = _run_idle({}, display_conf_content="SCREEN_OFF_SECONDS=\n")
-        assert rc == 0
-        assert "timeout 30" in args
-        assert "malformed" in stderr
 
     def test_key_missing_fallback(self):
         """File exists but key missing -> fallback to 30 with stderr message."""
@@ -245,88 +203,50 @@ class TestTaosKioskIdle:
             assert "timeout 60" in swayidle_args
 
 
+def _run_installer(destdir):
+    """Run the real install-session.sh with DESTDIR pointed at a staging root."""
+    test_env = dict(os.environ, DESTDIR=str(destdir))
+    return subprocess.run(
+        ["/bin/dash", str(INSTALL_SCRIPT)],
+        env=test_env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+
 class TestInstallSessionDisplayConf:
-    """Tests for install-session.sh display.conf installation logic."""
+    """install-session.sh places the session helpers and display.conf under DESTDIR.
 
-    def test_install_creates_display_conf_when_missing(self):
-        """install-session.sh installs display.conf when /etc/taos/display.conf does not exist."""
+    These drive the real installer, not a re-typed snippet: if the install logic
+    in install-session.sh is removed the files never land under DESTDIR here.
+    """
+
+    def test_installer_places_idle_and_display_conf(self):
+        """The real installer installs taos-kiosk-idle and the display.conf sample under DESTDIR."""
         with tempfile.TemporaryDirectory() as td:
             td_path = pathlib.Path(td)
-            etc_taos = td_path / "etc" / "taos"
-            etc_taos.mkdir(parents=True)
-            session_dir = td_path / "session"
-            session_dir.mkdir()
-            session_etc = session_dir / "etc"
-            session_etc.mkdir(parents=True)
-            import shutil
-            shutil.copy(DISPLAY_CONF_SRC, session_etc / "display.conf")
+            proc = _run_installer(td_path)
+            assert proc.returncode == 0, proc.stderr + proc.stdout
 
-            # Create a minimal test script that only tests the display.conf logic
-            test_script = td_path / "test_display_conf.sh"
-            test_script.write_text("""#!/bin/sh
-set -eu
-HERE="%s/session"
-# Source the install function logic for display.conf
-if [ ! -f %s/display.conf ]; then
-    install -m 644 "$HERE/etc/display.conf" %s/display.conf
-    echo "installed %s/display.conf"
-else
-    echo "%s/display.conf already exists, keeping current value"
-fi
-""" % (td, etc_taos, etc_taos, etc_taos, etc_taos))
-            os.chmod(test_script, 0o755)
+            idle = td_path / "usr" / "local" / "bin" / "taos-kiosk-idle"
+            conf = td_path / "etc" / "taos" / "display.conf"
+            assert idle.is_file(), "taos-kiosk-idle was not installed under DESTDIR"
+            assert os.access(idle, os.X_OK), "installed taos-kiosk-idle is not executable"
+            assert conf.is_file(), "display.conf was not installed under DESTDIR"
+            # It is the real sample file, copied verbatim, not a stub.
+            assert conf.read_bytes() == DISPLAY_CONF_SRC.read_bytes()
 
-            proc = subprocess.run(
-                ["/bin/dash", str(test_script)],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                cwd=td
-            )
-
-            installed = etc_taos / "display.conf"
-            assert installed.exists(), "display.conf should be installed when missing"
-            content = installed.read_text()
-            assert "SCREEN_OFF_SECONDS=60" in content
-
-    def test_install_keeps_existing_display_conf(self):
-        """install-session.sh keeps existing /etc/taos/display.conf and does not overwrite."""
+    def test_installer_keeps_existing_display_conf(self):
+        """A pre-existing display.conf under DESTDIR is not overwritten."""
         with tempfile.TemporaryDirectory() as td:
             td_path = pathlib.Path(td)
-            etc_taos = td_path / "etc" / "taos"
-            etc_taos.mkdir(parents=True)
-            session_dir = td_path / "session"
-            session_dir.mkdir()
-            session_etc = session_dir / "etc"
-            session_etc.mkdir(parents=True)
-            import shutil
-            shutil.copy(DISPLAY_CONF_SRC, session_etc / "display.conf")
-
-            # Pre-create display.conf with a custom value
-            existing = etc_taos / "display.conf"
+            existing = td_path / "etc" / "taos" / "display.conf"
+            existing.parent.mkdir(parents=True)
             existing.write_text("SCREEN_OFF_SECONDS=120\n")
 
-            # Create a minimal test script that only tests the display.conf logic
-            test_script = td_path / "test_display_conf.sh"
-            test_script.write_text("""#!/bin/sh
-set -eu
-HERE="%s/session"
-if [ ! -f %s/display.conf ]; then
-    install -m 644 "$HERE/etc/display.conf" %s/display.conf
-    echo "installed %s/display.conf"
-else
-    echo "%s/display.conf already exists, keeping current value"
-fi
-""" % (td, etc_taos, etc_taos, etc_taos, etc_taos))
-            os.chmod(test_script, 0o755)
-
-            proc = subprocess.run(
-                ["/bin/dash", str(test_script)],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                cwd=td
-            )
+            proc = _run_installer(td_path)
+            assert proc.returncode == 0, proc.stderr + proc.stdout
 
             content = existing.read_text()
             assert "SCREEN_OFF_SECONDS=120" in content, "Existing display.conf should not be overwritten"

@@ -11,10 +11,14 @@ set -eu
 
 # Read screen timeout from /etc/taos/display.conf (same setting as the phone layer).
 # Path overridable with TAOS_DISPLAY_CONF for tests. Parse with ONE anchored
-# pattern; never source the file. Refuse >4 digits before numeric comparison.
-# Accept 0 (never) and 5..3600. Missing file -> default 30. Malformed/out-of-range
-# -> fall back to 30 with one stderr message. File wins when present and valid;
-# TAOS_KIOSK_IDLE_SECS env override only applies when file is absent or invalid.
+# pattern; never source the file. The grep fixes the SHAPE: 1-4 ASCII digits,
+# line-anchored, so a value with spaces or a stray suffix is rejected here. Then
+# reject a leading zero (0, 0300) so the numeric test cannot be read as octal, and
+# check the RANGE arithmetically so every POSIX shell (dash, busybox ash) agrees
+# -- a case pattern cannot span 5..3600 without matching 300..2999 wrong.
+# Accept 5..3600. Missing file -> default 30. Malformed/out-of-range -> fall back
+# to 30 with one stderr message. File wins when present and valid;
+# TAOS_KIOSK_IDLE_SECS env override only applies when the file is absent or invalid.
 DISPLAY_CONF="${TAOS_DISPLAY_CONF:-/etc/taos/display.conf}"
 IDLE_SECS=30
 
@@ -22,13 +26,14 @@ if [ -f "$DISPLAY_CONF" ]; then
     line="$(grep -E '^SCREEN_OFF_SECONDS=([0-9]{1,4})$' "$DISPLAY_CONF" || true)"
     if [ -n "$line" ]; then
         val="${line#*=}"
-        case "$val" in
-            0) IDLE_SECS=0 ;;
-            [5-9] | [1-9][0-9] | [1-2][0-9][0-9] | 3[0-5][0-9][0-9] | 3600)
-                IDLE_SECS="$val" ;;
-            *) echo "taos-kiosk-idle: invalid SCREEN_OFF_SECONDS=$val, using 30" >&2
-               IDLE_SECS="${TAOS_KIOSK_IDLE_SECS:-30}" ;;
-        esac
+        ok=1
+        case "$val" in 0*) ok=0 ;; esac
+        if [ "$ok" = 1 ] && { [ "$val" -ge 5 ] && [ "$val" -le 3600 ]; }; then
+            IDLE_SECS="$val"
+        else
+            echo "taos-kiosk-idle: invalid SCREEN_OFF_SECONDS=$val, using 30" >&2
+            IDLE_SECS="${TAOS_KIOSK_IDLE_SECS:-30}"
+        fi
     else
         echo "taos-kiosk-idle: SCREEN_OFF_SECONDS missing or malformed in $DISPLAY_CONF, using 30" >&2
         IDLE_SECS="${TAOS_KIOSK_IDLE_SECS:-30}"
@@ -60,6 +65,12 @@ pkill -x swayidle 2>/dev/null || true
 #
 # THE POWER KEY REMAINS THE FALLBACK, bound with --locked by the device layer's
 # sway drop-in: if the daemon is dead the screen is still reachable.
+# taos-kiosk-screen, not a bare `output * power off`: turning the screen off
+# also has to GATE TOUCH, or taps in a pocket press whatever is under the finger
+# on the lock screen. Jay reported exactly that. One script owns both halves so
+# the three callers -- this, the power key and the double-tap watcher -- cannot
+# drift apart again.
+#
 # taos-kiosk-screen is DEVICE layer (a handset ships it). Without it, as on a
 # desk, a missing binary would mean the screen never blanks, so fall back to
 # plain output power off. Nothing else wakes a desk (no double tap), so that

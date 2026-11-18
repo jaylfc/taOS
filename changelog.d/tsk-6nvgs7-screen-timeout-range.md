@@ -1,0 +1,3 @@
+### Fixed
+- taos-kiosk-idle: a SCREEN_OFF_SECONDS value of 300, 600, 999, 1000, 1800 or 2999 (a 5- or 30-minute timeout) was silently rejected and fell back to 30. The validator now checks the range arithmetically (5..3600) instead of with a case pattern, so every POSIX shell accepts the whole range. A value with a leading zero (0, 0300) is rejected rather than read as octal.
+- tests/session/test_taos_kiosk_idle.py: parametrized accept/reject cases run under dash, and the install tests now drive the real install-session.sh against a DESTDIR staging root instead of a re-typed snippet, so they fail if the installer's install logic is removed.
