@@ -103,7 +103,8 @@ class _AgentSession:
         # Set of trace_ids for which mark_seen has been called (idempotent guard).
         self._seen_trace_ids: set[str] = set()
         # Per-session archive dedup set: reply_ids already archived, for idempotency.
-        self._archive_seen_ids: set[str] = set()
+        # Bounded same as _seen_final_ids (OrderedDict with cap) to prevent unbounded growth.
+        self._archive_seen_ids: OrderedDict[str, None] = OrderedDict()
 
     def accumulate_delta(self, trace_id: str, content: str) -> None:
         if trace_id not in self._delta_buffers:
@@ -130,6 +131,15 @@ class _AgentSession:
         self._seen_final_ids[reply_id] = None
         if len(self._seen_final_ids) > _FINAL_ID_SEEN_CAP:
             self._seen_final_ids.popitem(last=False)
+
+    def is_archive_id_seen(self, reply_id: str) -> bool:
+        return reply_id in self._archive_seen_ids
+
+    def mark_archive_id_seen(self, reply_id: str) -> None:
+        """Record an archive reply id as seen, evicting the oldest past the cap."""
+        self._archive_seen_ids[reply_id] = None
+        if len(self._archive_seen_ids) > _FINAL_ID_SEEN_CAP:
+            self._archive_seen_ids.popitem(last=False)
 
 
 class BridgeSessionRegistry:
@@ -479,18 +489,10 @@ class BridgeSessionRegistry:
                     )
             # --- End: content_blocks handling ---
 
-            # Write trace event.
-            if self._trace_registry:
-                store = await self._trace_registry.get(slug)
-                await store.record(
-                    "message_out",
-                    trace_id=trace_id,
-                    channel_id=channel_id,
-                    payload={"content": final_content},
-                )
             if self._archive is not None:
                 # Skip archive write if reply_id already archived (idempotency dedup).
-                if reply_id is not None and reply_id in session._archive_seen_ids:
+                # Replies without an id are not deduplicated.
+                if reply_id is not None and session.is_archive_id_seen(reply_id):
                     logger.debug(
                         "bridge_session: duplicate final reply id %s already archived for agent %s, skipping",
                         reply_id, slug,
@@ -511,9 +513,25 @@ class BridgeSessionRegistry:
                         # Mark as archived only after successful write (not on failure),
                         # so a failed archive write is retried.
                         if reply_id is not None:
-                            session._archive_seen_ids.add(reply_id)
+                            session.mark_archive_id_seen(reply_id)
                     except Exception:
                         logger.exception("archive dual-write failed (final)")
+
+            # Chat persistence guard: if this reply_id was already seen, skip chat
+            # write entirely (but archive write above still ran / was attempted).
+            # Replies without an id are not deduplicated.
+            if reply_id is not None and session.is_final_id_seen(reply_id):
+                return
+
+            # Write trace event (only for new reply_ids).
+            if self._trace_registry:
+                store = await self._trace_registry.get(slug)
+                await store.record(
+                    "message_out",
+                    trace_id=trace_id,
+                    channel_id=channel_id,
+                    payload={"content": final_content},
+                )
 
             persisted = None
             if channel_id:

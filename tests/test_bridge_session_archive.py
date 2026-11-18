@@ -203,7 +203,7 @@ async def test_final_reply_idempotent_archive_then_chat_failure_then_success():
     archive.record.side_effect = track_archive_record
     
     # Fake chat message store
-    edit_call_count = 0
+    send_call_count = 0
 
     class _FakeChatMessages:
         def __init__(self):
@@ -214,21 +214,21 @@ async def test_final_reply_idempotent_archive_then_chat_failure_then_success():
             return self.messages.get(msg_id)
 
         async def edit_message(self, msg_id, content):
-            nonlocal edit_call_count
-            edit_call_count += 1
-            if edit_call_count == 1:
-                raise RuntimeError("chat store transient failure")
-            return {"id": msg_id, "channel_id": "ch1", "content": content, "state": "complete"}
+            if msg_id in self.messages:
+                self.messages[msg_id]["content"] = content
 
         async def update_state(self, msg_id, state):
             self.states[msg_id] = state
 
         async def send_message(self, **kwargs):
+            nonlocal send_call_count
+            send_call_count += 1
+            if send_call_count == 1:
+                raise RuntimeError("chat store transient failure")
             channel_id = kwargs.get("channel_id", "ch1")
             content = kwargs.get("content", "")
             mid = content[:4] if content else "msg"
             self.messages[channel_id] = {"id": mid, "channel_id": channel_id, "content": content, "state": "complete"}
-            mid
 
         async def update_last_message_at(self, channel_id):
             pass
@@ -287,13 +287,15 @@ async def test_final_reply_idempotent_archive_then_chat_failure_then_success():
     # Assert exactly one archive record total (dedup prevented second archive write)
     assert len(archive_calls) == 0, f"Expected 0 additional archive records (dedup), got {len(archive_calls)}"
 
-# Verify the chat message was persisted on the second delivery.
+    # Verify the chat message was persisted on the second delivery.
     # The send_message path was used (pending_msg_id is None), so the message
     # should be stored in the fake's messages dict with state "complete".
     assert "ch1" in chat_msgs.messages, "Chat message should be persisted in messages dict"
     msg = chat_msgs.messages["ch1"]
     assert msg["state"] == "complete", f"Message state should be 'complete', got {msg['state']}"
     assert msg["content"] == "Final reply text", f"Content should be 'Final reply text', got {msg['content']}"
+    # Assert two delivery attempts (send_message called twice)
+    assert send_call_count == 2, f"Expected send_message to be called twice, got {send_call_count}"
 
 
 @pytest.mark.asyncio
