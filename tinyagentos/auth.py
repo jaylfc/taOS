@@ -912,7 +912,6 @@ class AuthManager:
                 return removed
         raise ValueError(f"user '{username}' not found")
 
-    @_serialized
     def check_pin(self, pin: str, username: str | None = None) -> tuple[bool, dict | None]:
         """Verify a PIN against the stored hash. Returns ``(ok, user_record)``.
 
@@ -922,20 +921,34 @@ class AuthManager:
         testable on its own and keeps this method honest about what it proves,
         which is solely "this PIN matches this account".
 
-        The hash read and the verify happen under the account-store lock, so a
-        concurrent ``set_pin``/``clear_pin`` cannot swap the hash out between the
-        read and the check. A login racing a PIN change must see one consistent
-        state or the other, never a hash from the new PIN verified against the
-        old.
+        The stored hash is read under the account-store lock, but the argon2
+        verify runs outside it so an account mutation (set_pin/clear_pin) is not
+        blocked for the duration of verification. The read sees one consistent
+        store state and the verify runs against that snapshot.
         """
-        record = self._pin_user(username)
-        if record is None:
+        with self._users_lock:
+            record = self._pin_user(username)
+            if record is None:
+                return (False, None)
+            stored_hash = record.get("pin_hash", "")
+            needs_learn = "pin_length" not in record or record.get("pin_length") is None
+            record_snapshot = dict(record)
+        if not verify_password(pin, stored_hash):
             return (False, None)
-        if not verify_password(pin, record.get("pin_hash", "")):
-            return (False, None)
-        if "pin_length" not in record or record.get("pin_length") is None:
-            self._learn_pin_length(record, pin)
-        return (True, record)
+        if needs_learn:
+            self._learn_pin_length(record_snapshot, pin)
+            if record_snapshot.get("pin_length") is not None:
+                with self._users_lock:
+                    current = self._pin_user(username)
+                    if current and current.get("id") == record_snapshot.get("id"):
+                        record_snapshot = dict(current)
+                    else:
+                        # re-resolve by id in case username context shifted
+                        for u in self._read_users().get("users", []):
+                            if u.get("id") == record_snapshot.get("id"):
+                                record_snapshot = dict(u)
+                                break
+        return (True, record_snapshot)
 
     @_serialized
     def _learn_pin_length(self, record: dict, pin: str) -> None:
