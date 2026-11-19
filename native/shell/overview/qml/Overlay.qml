@@ -51,7 +51,7 @@ FocusScope {
     Rectangle {
         anchors.fill: parent
         color: Style.dark ? "#000000" : "#FFFFFF"
-        opacity: root.shownMode === "overview" ? root.progress * (Style.dark ? 0.38 : 0.34) : 0
+        opacity: root.shownMode === "overview" ? root.progress * (Style.dark ? 0.55 : 0.45) : 0
     }
     MouseArea {
         anchors.fill: parent
