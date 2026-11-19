@@ -249,3 +249,37 @@ def test_fragment_with_yaml_frontmatter_is_refused(repo: Path):
         encoding="utf-8",
     )
     assert mod.main(["1.0.0-beta.52", "--date", "2026-08-05"]) == 1
+
+
+def test_changelog_ending_exactly_at_unreleased_anchor_still_folds(repo: Path):
+    """#2485 item 7: a CHANGELOG.md that ends right after the
+    ``## [Unreleased]`` anchor (no trailing newline, nothing below it)
+    must still fold: the anchor replace must not silently no-op while
+    the fragments are unlinked and success is reported."""
+    mod = _load(repo)
+    (repo / "CHANGELOG.md").write_text(
+        "# Changelog\n\n## [Unreleased]", encoding="utf-8"
+    )
+    frag = repo / "changelog.d" / "2485-eof.md"
+    frag.write_text("- Folded at EOF (#2485).\n", encoding="utf-8")
+    assert mod.main(["1.0.0-beta.48", "--date", "2026-08-04"]) == 0
+    text = (repo / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert "- Folded at EOF (#2485)." in text
+    assert text.index("## [Unreleased]") < text.index("## [1.0.0-beta.48]")
+    assert not frag.exists()
+def test_anchor_at_eof_preceded_by_other_text_fails_and_keeps_fragments(repo: Path):
+    """CodeRabbit on #4368: an anchor that ends the file but is NOT on
+    its own line (``Some prefix ## [Unreleased]``) must be refused like
+    any other malformed anchor -- exit 1, fragments kept. The EOF check
+    used to accept any file merely ending with the anchor text, so the
+    section was inserted mid-line and the fragments unlinked."""
+    mod = _load(repo)
+    (repo / "CHANGELOG.md").write_text(
+        "# Changelog\n\nSome prefix ## [Unreleased]", encoding="utf-8"
+    )
+    frag = repo / "changelog.d" / "4368-midline.md"
+    frag.write_text("- Must not be folded (#4368).\n", encoding="utf-8")
+    assert mod.main(["1.0.0-beta.48", "--date", "2026-08-04"]) == 1
+    assert frag.exists()
+    text = (repo / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert "## [1.0.0-beta.48]" not in text
