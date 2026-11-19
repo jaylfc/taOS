@@ -470,7 +470,10 @@ async def _restore_archived(request: Request, archive_id: str):
     #     records, and the restore can be retried.
     try:
         from tinyagentos.auth import AuthManager
-        local_token = AuthManager(request.app.state.data_dir).mint_agent_local_token(final_slug)
+        restored_canonical_id = original.get("registry_canonical_id")
+        local_token = AuthManager(request.app.state.data_dir).mint_agent_local_token(
+            final_slug, canonical_id=restored_canonical_id
+        )
         env_result = await set_env(container, "TAOS_LOCAL_TOKEN", local_token)
         if not env_result.get("success"):
             raise RuntimeError(
@@ -502,13 +505,13 @@ async def _restore_archived(request: Request, archive_id: str):
     else:
         target_container = container
 
-    # 3) Start container.
-    try:
-        await start_container(target_container)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("restore: start_container failed for %s: %s", target_container, exc)
-
-    # 4) Mint a new key in the local key store.
+    # 4) Mint a new key in the local key store, and move the config entry from
+    #    archived_agents back to agents, BEFORE the container starts.
+    #    The restored agent's local token is bound to the canonical id, so the
+    #    middleware looks up the CURRENT config entry for a canonical-bound
+    #    token: without this entry the bridge's bootstrap request (steps 3-7)
+    #    answers 401 and fetch_bootstrap does not retry. The key is minted first
+    #    so the entry carries it when the container starts.
     llm_proxy = getattr(request.app.state, "llm_proxy", None)
     new_key = None
     if llm_proxy:
@@ -521,6 +524,39 @@ async def _restore_archived(request: Request, archive_id: str):
             new_key = await llm_proxy.create_agent_key(final_slug, models=restore_models or None)
         except Exception:
             pass
+
+    # 8) Move config entry from archived_agents back to agents.
+    restored = dict(original)
+    restored["name"] = final_slug
+    restored["status"] = "stopped"
+    restored["host"] = ""
+    if new_key is not None:
+        restored["llm_key"] = new_key
+
+    # Save original state for rollback on save failure
+    original_agents = list(config.agents)
+    original_archived = list(config.archived_agents)
+
+    config.agents.append(restored)
+    config.archived_agents = [a for a in config.archived_agents if a.get("id") != archive_id]
+    try:
+        await save_config_locked(config, config.config_path)
+    except Exception as exc:  # noqa: BLE001
+        # Roll back in-memory mutations before returning 500
+        config.agents = original_agents
+        config.archived_agents = original_archived
+        logger.warning("restore: save_config_locked failed for %s: %s", final_slug, exc)
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            {"error": f"restore failed: config save failed: {exc}"},
+            status_code=500,
+        )
+
+    # 3) Start container.
+    try:
+        await start_container(target_container)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("restore: start_container failed for %s: %s", target_container, exc)
 
     # 5) Update openclaw env in the restored container with the new key.
     #    Uses incus config set environment.OPENAI_API_KEY=<new> so the
@@ -588,17 +624,6 @@ async def _restore_archived(request: Request, archive_id: str):
                 await ch_store.set_settings(ch["id"], {"archived": False})
     except Exception as exc:  # noqa: BLE001
         logger.warning("restore: channel unflag failed: %s", exc)
-
-    # 8) Move config entry from archived_agents back to agents.
-    restored = dict(original)
-    restored["name"] = final_slug
-    restored["status"] = "stopped"
-    restored["host"] = ""
-    if new_key is not None:
-        restored["llm_key"] = new_key
-    config.agents.append(restored)
-    config.archived_agents = [a for a in config.archived_agents if a.get("id") != archive_id]
-    await save_config_locked(config, config.config_path)
 
     return {
         "status": "restored",
