@@ -39,6 +39,40 @@ _VALIDATED_IP_TTL_SECS = 30.0
 # the GIL costs at most one re-validation.
 _validated_ip_cache: dict[str, tuple[str, frozenset[str], float]] = {}
 
+# Upper bound on cached hostnames. An install validates a handful of
+# source hosts, so this is generous; it exists so a caller validating
+# many distinct hostnames cannot grow the dict without limit. Inserts
+# also sweep expired entries (see _cache_validated_ips), so a hostname
+# that is never looked up again does not linger past its TTL.
+_VALIDATED_IP_CACHE_MAX_ENTRIES = 512
+
+
+def _cache_validated_ips(hostname: str, chosen: str, validated: list[str]) -> None:
+    """Record a successful validation in the TTL cache.
+
+    Expired entries are swept first: expiry is otherwise only enforced
+    when the same hostname is looked up again, and a hostname that is
+    validated once and never fetched by name (the install route fetches
+    an IP literal) would otherwise stay in memory past its TTL. The
+    cache is then bounded to _VALIDATED_IP_CACHE_MAX_ENTRIES, evicting
+    the oldest entries first (insertion order == validation order, and
+    every entry shares the same TTL, so oldest == soonest to expire).
+    """
+    now = time.monotonic()
+    expired = [key for key, entry in _validated_ip_cache.items() if now >= entry[2]]
+    for key in expired:
+        del _validated_ip_cache[key]
+    key = hostname.lower()
+    # Re-insert so a re-validated hostname counts as newest for eviction.
+    _validated_ip_cache.pop(key, None)
+    _validated_ip_cache[key] = (
+        chosen,
+        frozenset(validated),
+        now + _VALIDATED_IP_TTL_SECS,
+    )
+    while len(_validated_ip_cache) > _VALIDATED_IP_CACHE_MAX_ENTRIES:
+        del _validated_ip_cache[next(iter(_validated_ip_cache))]
+
 
 def _is_blocked_ip(ip) -> bool:
     return bool(
@@ -85,11 +119,7 @@ def resolve_safe_public_ip(url: str) -> str | None:
             return None
         validated.append(str(ip))
     chosen = validated[0]
-    _validated_ip_cache[parsed.hostname.lower()] = (
-        chosen,
-        frozenset(validated),
-        time.monotonic() + _VALIDATED_IP_TTL_SECS,
-    )
+    _cache_validated_ips(parsed.hostname, chosen, validated)
     return chosen
 
 

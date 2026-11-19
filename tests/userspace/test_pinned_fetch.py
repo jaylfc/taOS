@@ -177,3 +177,38 @@ async def test_ip_literal_targets_are_checked_too():
         resp = await client.get("http://8.8.8.8/app.taosapp")
     assert resp.status_code == 200
     assert [r.url.host for r in inner.requests] == ["8.8.8.8"]
+def test_insert_sweeps_expired_entries_for_other_hostnames():
+    """Expired entries are swept on insert, not only on same-host lookup.
+
+    Regression (CodeRabbit on #4364): expiry used to be enforced only
+    when the SAME hostname was looked up again via
+    cached_validated_ips, so a hostname validated once and never fetched
+    by name again (the install route fetches an IP literal) lingered in
+    the cache past its TTL indefinitely.
+    """
+    resolver = _ScriptedResolver({"old.test": [_PUBLIC], "new.test": [_PUBLIC]})
+    with patch("socket.getaddrinfo", resolver):
+        assert resolve_safe_public_ip("http://old.test/app.taosapp") == _PUBLIC
+        cache = url_guard._validated_ip_cache
+        chosen, ips, _expiry = cache["old.test"]
+        cache["old.test"] = (chosen, ips, 0.0)  # force the entry expired
+        # Validating a DIFFERENT hostname must sweep the expired entry.
+        assert resolve_safe_public_ip("http://new.test/app.taosapp") == _PUBLIC
+    assert "old.test" not in url_guard._validated_ip_cache
+    assert "new.test" in url_guard._validated_ip_cache
+
+
+def test_cache_size_is_bounded_oldest_evicted_first():
+    """The cache cannot grow without limit; the oldest entries go first."""
+    cap = url_guard._VALIDATED_IP_CACHE_MAX_ENTRIES
+    answers = {f"host{i}.test": [_PUBLIC] for i in range(cap + 5)}
+    resolver = _ScriptedResolver(answers)
+    with patch("socket.getaddrinfo", resolver):
+        for i in range(cap + 5):
+            assert resolve_safe_public_ip(f"http://host{i}.test/app.taosapp") == _PUBLIC
+    cache = url_guard._validated_ip_cache
+    assert len(cache) == cap
+    # The five oldest validations were evicted; recent ones still pin.
+    for i in range(5):
+        assert f"host{i}.test" not in cache
+    assert url_guard.cached_validated_ips(f"host{cap + 4}.test") is not None
