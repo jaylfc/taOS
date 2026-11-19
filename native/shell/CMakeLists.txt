@@ -16,6 +16,7 @@ set(TAOS_COMMON_DIR ${CMAKE_CURRENT_SOURCE_DIR}/common)
 add_subdirectory(common)
 add_subdirectory(bar)
 add_subdirectory(greeter)
+add_subdirectory(overview)
 
 # Shell session entry point test (needs only a POSIX sh).
 add_test(NAME session-script
