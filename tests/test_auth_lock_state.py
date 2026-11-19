@@ -27,7 +27,9 @@ def _fresh_state():
 
     assert isinstance(auth_routes._CONSOLE_SESSION, int)
     assert auth_routes._CONSOLE_SESSION >= 1_700_000_000
-    assert auth_routes._CONSOLE_SESSION <= int(time.time())
+    # Earlier tests in the same second may have incremented it past the clock
+    # (each lock transition adds one); only a wild value is a failure here.
+    assert auth_routes._CONSOLE_SESSION <= int(time.time()) + 10_000
 
     auth_routes._pin_limiter = type(auth_routes._pin_limiter)()
     auth_routes._CONSOLE_LOCKED = True
