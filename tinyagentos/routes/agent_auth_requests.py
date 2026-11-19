@@ -1583,6 +1583,35 @@ async def approve_request_record(
         # The lost-decision-race path already undid its own writes via
         # _undo_lost_approval before raising its 409; nothing more to undo.
         raise
+    except asyncio.CancelledError:
+        # CancelledError is a BaseException, so the except Exception
+        # below would never see it: a cancellation landing mid-writes
+        # — on the a2a channel sync after the membership write, say —
+        # would leave the half-applied approval behind (identity
+        # active, grants and membership written, request undecided).
+        # Run the same undo and wait for it to complete — a further
+        # cancellation must not release the request lock while the
+        # cleanup is still running — then re-raise.
+        await _await_cleanup(
+            _undo_lost_approval(
+                request,
+                record_id=record["id"],
+                canonical_id=canonical_id,
+                created_here=created_here,
+                granted_scopes=granted_scopes,
+                binding_project=binding_project,
+                prior_grants=prior_grants,
+                prior_grants_known=prior_grants_known,
+                prior_grant_expiry=prior_grant_expiry,
+                prior_grant_tier=prior_grant_tier,
+                renew=renew,
+                added_member=added_member,
+                prior_lead=prior_lead,
+                lead_overwritten=lead_overwritten,
+                approval_started_ts=approval_started_ts,
+            )
+        )
+        raise
     except Exception:
         # A failure part-way (token mint, a grant write, the decision
         # update itself) must not leave a half-applied approval behind:

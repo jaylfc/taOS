@@ -826,3 +826,137 @@ async def test_backfill_all_with_config_updates_leads(stores):
     chans = await channel_store.list_channels(project_id=p["id"])
     a2a = next(c for c in chans if (c.get("settings") or {}).get("kind") == A2A_KIND)
     assert a2a["settings"]["leads"] == ["coord"]
+
+class _KeyedRegistry:
+    """Registry stub keyed by canonical id; ids in ``failing`` raise,
+    like a transient store error on that one row."""
+
+    def __init__(self, identities, failing=()):
+        self._identities = identities
+        self._failing = set(failing)
+
+    async def get(self, canonical_id):
+        if canonical_id in self._failing:
+            raise RuntimeError("transient store error")
+        return self._identities.get(canonical_id)
+
+
+def _identity(handle, status="active"):
+    return {"handle": handle, "status": status, "display_name": handle}
+
+
+@pytest.mark.asyncio
+async def test_ensure_removes_confirmed_departure_when_another_lookup_fails(stores):
+    """CodeRabbit on #4373 (4635125135): the incomplete-resolution guard
+    must be per-member. alice (a config agent) leaves the project while
+    ext-bot's registry lookup fails: alice's removal is confirmed —
+    config resolution never touches the registry — and must still
+    apply, while the unresolved ext-bot is preserved."""
+    project_store, channel_store = stores
+    p = await project_store.create_project(
+        name="P", slug="departure-during-failure", created_by="u1"
+    )
+    await project_store.add_member(p["id"], "111111111111", member_kind="native")
+    await project_store.add_member(p["id"], "reg-cid-1", member_kind="native")
+    config = _config(_agent("alice", "111111111111"))
+    registry = _KeyedRegistry({"reg-cid-1": _identity("ext-bot")})
+
+    ch = await ensure_a2a_channel(
+        channel_store, project_store, p["id"], config=config,
+        agent_registry=registry,
+    )
+    assert ch["members"] == ["alice", "ext-bot"]
+
+    await project_store.remove_member(p["id"], "111111111111")
+    failing = _KeyedRegistry(
+        {"reg-cid-1": _identity("ext-bot")}, failing={"reg-cid-1"}
+    )
+    ch = await ensure_a2a_channel(
+        channel_store, project_store, p["id"], config=config,
+        agent_registry=failing,
+    )
+    assert ch["members"] == ["ext-bot"]
+
+
+@pytest.mark.asyncio
+async def test_ensure_removes_revoked_member_when_another_lookup_fails(stores):
+    """CodeRabbit on #4373 (4635170159): a revoked member's lookup
+    SUCCEEDS, so its absence is confirmed and its handle must be
+    removed even though another member's lookup fails in the same
+    sync; the unresolved member is preserved."""
+    project_store, channel_store = stores
+    p = await project_store.create_project(
+        name="P", slug="revoked-during-failure", created_by="u1"
+    )
+    await project_store.add_member(p["id"], "reg-cid-1", member_kind="native")
+    await project_store.add_member(p["id"], "reg-cid-2", member_kind="native")
+    config = _config(_agent("alice", "111111111111"))
+    registry = _KeyedRegistry(
+        {
+            "reg-cid-1": _identity("revoked-bot"),
+            "reg-cid-2": _identity("ext-bot"),
+        }
+    )
+
+    ch = await ensure_a2a_channel(
+        channel_store, project_store, p["id"], config=config,
+        agent_registry=registry,
+    )
+    assert ch["members"] == ["ext-bot", "revoked-bot"]
+
+    registry = _KeyedRegistry(
+        {
+            "reg-cid-1": _identity("revoked-bot", status="revoked"),
+            "reg-cid-2": _identity("ext-bot"),
+        },
+        failing={"reg-cid-2"},
+    )
+    ch = await ensure_a2a_channel(
+        channel_store, project_store, p["id"], config=config,
+        agent_registry=registry,
+    )
+    assert ch["members"] == ["ext-bot"]
+
+
+@pytest.mark.asyncio
+async def test_ensure_removes_colliding_handle_when_another_lookup_fails(stores):
+    """CodeRabbit on #4373 (4635146991): a handle colliding with a
+    configured agent who is not a project member is confirmed unsafe
+    from a successful lookup, so it must be removed even though
+    another member's lookup fails in the same sync; the unresolved
+    member is preserved."""
+    project_store, channel_store = stores
+    p = await project_store.create_project(
+        name="P", slug="collision-during-failure", created_by="u1"
+    )
+    await project_store.add_member(p["id"], "reg-cid-1", member_kind="native")
+    await project_store.add_member(p["id"], "reg-cid-2", member_kind="native")
+    registry = _KeyedRegistry(
+        {
+            "reg-cid-1": _identity("mallory"),
+            "reg-cid-2": _identity("ext-bot"),
+        }
+    )
+
+    ch = await ensure_a2a_channel(
+        channel_store, project_store, p["id"],
+        config=_config(_agent("alice", "111111111111")),
+        agent_registry=registry,
+    )
+    assert ch["members"] == ["ext-bot", "mallory"]
+
+    failing = _KeyedRegistry(
+        {
+            "reg-cid-1": _identity("mallory"),
+            "reg-cid-2": _identity("ext-bot"),
+        },
+        failing={"reg-cid-2"},
+    )
+    ch = await ensure_a2a_channel(
+        channel_store, project_store, p["id"],
+        config=_config(
+            _agent("alice", "111111111111"), _agent("mallory", "cfg-9")
+        ),
+        agent_registry=failing,
+    )
+    assert ch["members"] == ["ext-bot"]

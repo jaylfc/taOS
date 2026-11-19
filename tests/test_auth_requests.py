@@ -1966,7 +1966,7 @@ class TestAuthRequestRoutes:
             if (c.get("settings") or {}).get("kind") == "a2a"
         ]
         assert len(a2a) == 1
-        assert a2a[0].get("members") or [] == ["undo-bystander"]
+        assert (a2a[0].get("members") or []) == ["undo-bystander"]
 
     async def test_a_lost_race_to_a_same_project_winner_keeps_the_lead(
         self, consent_client, monkeypatch

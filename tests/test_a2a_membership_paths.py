@@ -349,8 +349,109 @@ async def test_revoke_agent_keeps_registry_bystander_in_channel(
         assert await pstore.get_member(pid, target["canonical_id"]) is None
         channels = await _a2a_channels(channel_store, pid)
         assert len(channels) == 1
-        assert channels[0].get("members") or [] == ["rev-bystander"]
+        assert (channels[0].get("members") or []) == ["rev-bystander"]
     finally:
         await registry.close()
+        await grants.close()
+        await pstore.close()
+
+
+@pytest.mark.asyncio
+async def test_approve_canvas_only_cancel_during_channel_sync_undoes_writes(
+    client, monkeypatch, tmp_path
+):
+    """CodeRabbit on #4373: a cancellation landing on the canvas-only
+    branch's ensure_a2a_channel await bypasses the final write span's
+    `except Exception` undo (CancelledError is a BaseException), leaving
+    the activation, grants and membership active while the request
+    stays undecided. The span now mirrors the reuse branch: run
+    _undo_lost_approval through _await_cleanup, then re-raise."""
+    import asyncio
+
+    from tinyagentos.agent_grants_store import AgentGrantsStore
+    from tinyagentos.agent_registry_store import (
+        AgentRegistryStore,
+        load_or_create_signing_keypair,
+    )
+    from tinyagentos.auth_requests_store import AuthRequestsStore
+    from tinyagentos.projects import a2a as a2a_module
+    from tinyagentos.projects.project_store import ProjectStore
+    from tinyagentos.routes.agent_auth_requests import approve_request_record
+
+    registry = AgentRegistryStore(tmp_path / "reg-canvas-cancel.db")
+    await registry.init()
+    auth_store = AuthRequestsStore(tmp_path / "auth-canvas-cancel.db")
+    await auth_store.init()
+    grants = AgentGrantsStore(tmp_path / "grants-canvas-cancel.db")
+    await grants.init()
+    pstore = ProjectStore(tmp_path / "projects-canvas-cancel.db")
+    await pstore.init()
+    priv, pub = load_or_create_signing_keypair(tmp_path / "keys-canvas-cancel")
+
+    try:
+        project = await pstore.create_project(
+            name="Canvas Cancel", slug="canvas-cancel", created_by="u"
+        )
+        pid = project["id"]
+
+        record = await auth_store.create(
+            identity_claim="canvas-cancel-bot",
+            framework="canvas-cli",
+            requested_scopes=["canvas_write"],
+            requested_skills=None,
+            reason="",
+            duration_secs=None,
+            project_id=pid,
+        )
+        record = await auth_store.get(record["id"])
+
+        monkeypatch.setattr(client._transport.app.state, "agent_registry", registry)
+        monkeypatch.setattr(client._transport.app.state, "auth_requests", auth_store)
+        monkeypatch.setattr(client._transport.app.state, "agent_grants", grants)
+        monkeypatch.setattr(
+            client._transport.app.state, "agent_registry_keypair", (priv, pub)
+        )
+        monkeypatch.setattr(client._transport.app.state, "project_store", pstore)
+
+        seen: dict = {}
+
+        async def cancelled_ensure(channels, pstore_, project_id, **kwargs):
+            # Membership is written immediately before the ensure, so the
+            # member row visible here names the approval's canonical id.
+            # Only the first call is the approval's sync: the undo re-syncs
+            # the channel after removing the member, and that call must
+            # observe the empty list without raising or overwriting this.
+            if "member_ids" in seen:
+                return
+            members = await pstore_.list_members(project_id)
+            seen["member_ids"] = [m["member_id"] for m in members]
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(a2a_module, "ensure_a2a_channel", cancelled_ensure)
+
+        fake_request = SimpleNamespace(app=client._transport.app)
+        with pytest.raises(asyncio.CancelledError):
+            await approve_request_record(
+                fake_request,
+                record=record,
+                granted_scopes=["canvas_write"],
+                effective_project=pid,
+                decided_by="admin-user",
+                project_id=pid,
+            )
+
+        # The membership write did happen (the ensure runs after it)...
+        assert len(seen["member_ids"]) == 1
+        cid = seen["member_ids"][0]
+        # ...but the cancelled approval leaves nothing behind: membership
+        # removed, grants revoked, the created identity deleted, and the
+        # request still undecided.
+        assert await pstore.list_members(pid) == []
+        assert await grants.list_grants(cid) == []
+        assert await registry.get(cid) is None
+        assert (await auth_store.get(record["id"]))["status"] == "pending"
+    finally:
+        await registry.close()
+        await auth_store.close()
         await grants.close()
         await pstore.close()
