@@ -273,7 +273,8 @@ to the running bar over `$XDG_RUNTIME_DIR/taos-bar.sock` (`TAOS_BAR_SOCKET`
 overrides) and the bar flashes the level at the bottom centre of the main
 screen. Steps are 5 points and never go above 100%. Bind the keys with
 `sway/50-taos-audio-keys.conf`. `TAOS_BAR_PULSE_SERVER` points the bar at
-another sound server (tests, demos).
+another sound server (tests, demos). `TAOS_BAR_OPEN_MENU=network|audio` opens
+that menu two seconds after start (screenshots).
 
 Tests: `test_audiostate` (naming, filtering, profile choices, from written-out
 data), `test_audio` (the controller against a recording fake), `test_baripc`,

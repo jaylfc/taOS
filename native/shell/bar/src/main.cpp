@@ -5,7 +5,9 @@
 #include <QQmlEngine>
 #include <QDBusConnection>
 #include <QSocketNotifier>
+#include <QScreen>
 #include <QStandardPaths>
+#include <QTimer>
 #include <QtQml>
 #include <csignal>
 #include <cstdio>
@@ -165,5 +167,12 @@ int main(int argc, char **argv) {
             qPrintable(theme.source()), height, int(theme.reduceMotion()));
     QObject::connect(&audio, &Audio::flash, &mgr, &BarManager::showOsd);
     mgr.start();
+    // Screenshots and demos: TAOS_BAR_OPEN_MENU=network|audio opens that menu once the bar is up (no pointer needed).
+    const QString openMenu = qEnvironmentVariable("TAOS_BAR_OPEN_MENU");
+    if (!openMenu.isEmpty())
+        QTimer::singleShot(2000, &app, [&] {
+            if (QScreen *s = QGuiApplication::primaryScreen())
+                emit menuHost.openRequested(openMenu, s->name(), s->geometry().width() - 40);
+        });
     return app.exec();
 }
