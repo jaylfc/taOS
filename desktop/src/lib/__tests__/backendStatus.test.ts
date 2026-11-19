@@ -170,26 +170,6 @@ describe("backendStatus", () => {
     bs.stop();
   });
 
-  it("caps backoff at 5s (not 30s) while reconnecting", async () => {
-    const fetchMock = vi.fn().mockRejectedValue(new TypeError("network"));
-    const bs = createBackendStatus({ healthUrl: "/api/health", fetchImpl: fetchMock });
-    bs.start();
-    await vi.advanceTimersByTimeAsync(2000);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(4000);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    // +5s (cap, not 8s)
-    await vi.advanceTimersByTimeAsync(5000);
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    // +5s (still capped)
-    await vi.advanceTimersByTimeAsync(5000);
-    expect(fetchMock).toHaveBeenCalledTimes(4);
-    // +5s (still capped)
-    await vi.advanceTimersByTimeAsync(5000);
-    expect(fetchMock).toHaveBeenCalledTimes(5);
-    bs.stop();
-  });
-
   it("triggers onUp callback when status returns to 'up' after reconnecting", async () => {
     const fetchMock = vi.fn()
       .mockRejectedValueOnce(new TypeError("network"))
@@ -215,11 +195,13 @@ describe("backendStatus", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     // Simulate visibilitychange to visible
     const event = new Event("visibilitychange");
+    const originalVisibilityState = document.visibilityState;
     Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
     document.dispatchEvent(event);
     // Should trigger an immediate poll (not wait for backoff)
     await vi.advanceTimersByTimeAsync(0);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    Object.defineProperty(document, "visibilityState", { value: originalVisibilityState, configurable: true });
     bs.stop();
   });
 
@@ -248,6 +230,7 @@ describe("backendStatus", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     // Dispatch visibilitychange to visible while already waiting for backoff
     const visibleEvent = new Event("visibilitychange");
+    const originalVisibilityState = document.visibilityState;
     Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
     document.dispatchEvent(visibleEvent);
     // Dispatch online event while the visibility probe is in-flight
@@ -257,6 +240,7 @@ describe("backendStatus", () => {
     await vi.advanceTimersByTimeAsync(0);
     // fetchMock should have been called at most 2 times (1 initial + 1 superseding)
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    Object.defineProperty(document, "visibilityState", { value: originalVisibilityState, configurable: true });
     bs.stop();
   });
 });

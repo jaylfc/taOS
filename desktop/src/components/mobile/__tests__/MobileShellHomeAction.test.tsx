@@ -1,67 +1,78 @@
-import { renderHook, act } from "@testing-library/react";
+import { render, screen, act } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { BackendStatusProvider, __setBackendStatusSingletonForTest } from "@/contexts/BackendStatusContext";
+import { BackendBanner } from "@/components/BackendBanner";
 import { createBackendStatus } from "@/lib/backendStatus";
-import { useHomeKey, HOME_KEY } from "@/hooks/use-home-key";
 
-const press = (key: string) => window.dispatchEvent(new KeyboardEvent("keydown", { key }));
-
-describe("Home action while banner shown (reconnecting)", () => {
+describe("Mobile shell with BackendBanner", () => {
   beforeEach(() => {
     vi.useFakeTimers();
   });
-
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+    __setBackendStatusSingletonForTest(null as any);
   });
 
-  it("useHomeKey callback fires while backend status is reconnecting", async () => {
-    // Create a backend status that stays in reconnecting
+  it("shows 'taOS is restarting...' banner when backend is reconnecting", async () => {
     const fetchMock = vi.fn().mockRejectedValue(new TypeError("network"));
-    const bs = createBackendStatus({ healthUrl: "/api/health", fetchImpl: fetchMock });
-    bs.start();
+    const testBs = createBackendStatus({
+      healthUrl: "/api/health",
+      fetchImpl: fetchMock,
+    });
+    __setBackendStatusSingletonForTest(testBs);
+
+    render(
+      <BackendStatusProvider>
+        <BackendBanner />
+      </BackendStatusProvider>
+    );
+
+    // Initially status is "up", banner should not be visible
+    expect(screen.queryByText(/taOS is restarting/i)).not.toBeInTheDocument();
 
     // Advance to trigger first poll failure -> reconnecting
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2000);
     });
 
-    // Verify status is reconnecting
-    expect(bs.getStatus()).toBe("reconnecting");
+    // Banner should now show "taOS is restarting..."
+    expect(screen.getByText(/taOS is restarting/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /refresh/i })).not.toBeInTheDocument();
 
-    // Now test that useHomeKey still works
-    const onHome = vi.fn();
-    renderHook(() => useHomeKey(true, onHome));
-
-    press(HOME_KEY);
-
-    expect(onHome).toHaveBeenCalledTimes(1);
-
-    bs.stop();
+    testBs.stop();
   });
 
-  it("presses F13 calls onHome while backend status is reconnecting", async () => {
-    // Create a fresh controller with injected fetch mock
+  it("shows refresh button after 60s of reconnecting", async () => {
     const fetchMock = vi.fn().mockRejectedValue(new TypeError("network"));
-    const bs = createBackendStatus({ healthUrl: "/api/health", fetchImpl: fetchMock });
-    bs.start();
+    const testBs = createBackendStatus({
+      healthUrl: "/api/health",
+      fetchImpl: fetchMock,
+    });
+    __setBackendStatusSingletonForTest(testBs);
+
+    render(
+      <BackendStatusProvider>
+        <BackendBanner />
+      </BackendStatusProvider>
+    );
 
     // Advance to trigger first poll failure -> reconnecting
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2000);
     });
 
-    // Verify status is reconnecting
-    expect(bs.getStatus()).toBe("reconnecting");
+    expect(screen.getByText(/taOS is restarting/i)).toBeInTheDocument();
 
-    // Test that pressing F13 calls onHome
-    const onHome = vi.fn();
-    renderHook(() => useHomeKey(true, onHome));
+    // Advance past 60s threshold
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
 
-    press(HOME_KEY);
+    // Should show "taking longer than usual" with refresh button
+    expect(screen.getByText(/taking longer than usual/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /refresh/i })).toBeInTheDocument();
 
-    expect(onHome).toHaveBeenCalledTimes(1);
-
-    bs.stop();
+    testBs.stop();
   });
 });
