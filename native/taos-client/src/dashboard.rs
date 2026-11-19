@@ -11,7 +11,7 @@
 //! routes accept only a session cookie (a host local token gets 401), which is
 //! what this client uses.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::client::{Client, Req};
@@ -21,7 +21,7 @@ use crate::models::Worker;
 use crate::util::{lenient_vec, num, opt_num, string_enum};
 
 /// Hardware CPU block.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct HwCpu {
     /// CPU model string.
     #[serde(default)]
@@ -38,7 +38,7 @@ pub struct HwCpu {
 }
 
 /// Hardware GPU block.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct HwGpu {
     /// Vendor type, for example `nvidia`.
     #[serde(default, rename = "type")]
@@ -52,7 +52,7 @@ pub struct HwGpu {
 }
 
 /// Hardware NPU block.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct HwNpu {
     /// Type, for example `rknpu`.
     #[serde(default, rename = "type")]
@@ -69,7 +69,7 @@ pub struct HwNpu {
 }
 
 /// Static hardware description.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct Hardware {
     /// SoC or CPU model, whichever the controller knows.
     #[serde(default)]
@@ -89,7 +89,7 @@ pub struct Hardware {
 }
 
 /// One CPU core.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct CpuCore {
     /// Core index.
     #[serde(default, deserialize_with = "num")]
@@ -106,7 +106,7 @@ pub struct CpuCore {
 }
 
 /// CPU block.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct Cpu {
     /// Per-core load.
     #[serde(default, deserialize_with = "lenient_vec")]
@@ -120,7 +120,7 @@ pub struct Cpu {
 }
 
 /// Memory block.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct Memory {
     /// Total MB.
     #[serde(default, deserialize_with = "num")]
@@ -146,7 +146,7 @@ pub struct Memory {
 }
 
 /// One NPU core.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct NpuCore {
     /// Core index.
     #[serde(default, deserialize_with = "num")]
@@ -157,7 +157,7 @@ pub struct NpuCore {
 }
 
 /// NPU block. `cores` is empty when there is no NPU.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct Npu {
     /// Per-core load.
     #[serde(default, deserialize_with = "lenient_vec")]
@@ -174,7 +174,7 @@ pub struct Npu {
 }
 
 /// GPU load sample.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct GpuLoad {
     /// Load, 0 to 100.
     #[serde(default, deserialize_with = "opt_num")]
@@ -185,7 +185,7 @@ pub struct GpuLoad {
 }
 
 /// GPU block.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct Gpu {
     /// Load, when readable.
     #[serde(default)]
@@ -205,7 +205,7 @@ pub struct Gpu {
 }
 
 /// A thermal zone.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct Thermal {
     /// Zone name.
     #[serde(default)]
@@ -216,7 +216,7 @@ pub struct Thermal {
 }
 
 /// A ZRAM device.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct Zram {
     /// Device name.
     #[serde(default)]
@@ -233,7 +233,7 @@ pub struct Zram {
 }
 
 /// Disk throughput.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct DiskIo {
     /// Read bytes per second.
     #[serde(default, deserialize_with = "num")]
@@ -244,7 +244,7 @@ pub struct DiskIo {
 }
 
 /// Disk block.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct Disk {
     /// Throughput.
     #[serde(default)]
@@ -261,7 +261,7 @@ pub struct Disk {
 }
 
 /// A network interface.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct NetIface {
     /// Interface name.
     #[serde(default)]
@@ -281,7 +281,7 @@ pub struct NetIface {
 }
 
 /// A top process.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct Process {
     /// Process id.
     #[serde(default, deserialize_with = "num")]
@@ -301,7 +301,7 @@ pub struct Process {
 }
 
 /// `GET /api/activity`.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct Activity {
     /// Server time, epoch seconds.
     #[serde(default, deserialize_with = "opt_num")]
@@ -340,7 +340,7 @@ pub struct Activity {
 }
 
 /// A model resident in memory (`GET /api/models/loaded`).
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct LoadedModel {
     /// Model name.
     #[serde(default)]
@@ -369,7 +369,7 @@ pub struct LoadedModel {
 }
 
 /// A scheduler resource.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct SchedulerResource {
     /// Resource name, for example `npu-rk3588`.
     #[serde(default)]
@@ -402,7 +402,7 @@ pub struct SchedulerResource {
 
 /// `GET /api/scheduler/stats`. The route answers 503 until the scheduler is
 /// initialised, which arrives as [`Error::Server`](crate::Error::Server).
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct SchedulerStats {
     /// Tasks submitted.
     #[serde(default, deserialize_with = "num")]
@@ -443,7 +443,7 @@ string_enum! {
 }
 
 /// A recent scheduler task.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct SchedulerTask {
     /// Task id.
     #[serde(default)]
@@ -475,7 +475,7 @@ pub struct SchedulerTask {
 }
 
 /// One model-activity event (a history row or a live frame).
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct ModelActivityEvent {
     /// Monotonic sequence number; merge live frames into history by this.
     #[serde(default)]
@@ -517,7 +517,7 @@ pub struct ModelActivityEvent {
 }
 
 /// `GET /api/activity/models`.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct ModelActivityPage {
     /// Events, newest first.
     #[serde(default, deserialize_with = "lenient_vec")]
@@ -545,7 +545,7 @@ pub struct ModelActivityFilter {
 }
 
 /// `POST /api/system/ai-stack/restart` reply.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct AiStackRestart {
     /// `ok`, `partial`, `failed` or `noop`.
     #[serde(default)]
@@ -565,7 +565,7 @@ pub struct AiStackRestart {
 }
 
 /// Result of restarting one service unit.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct UnitResult {
     /// Unit name.
     #[serde(default)]

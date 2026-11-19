@@ -5,7 +5,9 @@ use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use reqwest::header::{HeaderValue, ACCEPT, CONTENT_TYPE, COOKIE, RETRY_AFTER, SET_COOKIE};
+use reqwest::header::{
+    HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE, COOKIE, RETRY_AFTER, SET_COOKIE,
+};
 use reqwest::{Method, RequestBuilder, Response};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -35,6 +37,7 @@ const CSRF_HEADER: &str = "X-CSRF-Token";
 pub struct ClientBuilder {
     base_url: String,
     session: Option<Session>,
+    bearer: Option<String>,
     request_timeout: Duration,
     connect_timeout: Duration,
 }
@@ -44,6 +47,7 @@ impl Default for ClientBuilder {
         Self {
             base_url: DEFAULT_BASE_URL.to_string(),
             session: None,
+            bearer: None,
             request_timeout: Duration::from_secs(30),
             connect_timeout: Duration::from_secs(10),
         }
@@ -63,6 +67,15 @@ impl ClientBuilder {
     pub fn session(mut self, session: Session) -> Self {
         self.base_url = session.base_url().to_string();
         self.session = Some(session);
+        self
+    }
+
+    /// Authenticate with a bearer token (`Authorization: Bearer ...`), for
+    /// example the host-local admin token where the controller permits it.
+    /// It is sent on every request in addition to any session cookie. It can
+    /// be replaced later with [`Client::set_bearer_token`].
+    pub fn bearer_token(mut self, token: impl Into<String>) -> Self {
+        self.bearer = Some(token.into());
         self
     }
 
@@ -115,6 +128,7 @@ impl ClientBuilder {
                 base,
                 user_agent,
                 request_timeout: self.request_timeout,
+                bearer: Mutex::new(self.bearer),
                 jar: Mutex::new(jar),
             }),
         })
@@ -126,6 +140,7 @@ struct Inner {
     base: String,
     user_agent: String,
     request_timeout: Duration,
+    bearer: Mutex<Option<String>>,
     jar: Mutex<Jar>,
 }
 
@@ -202,6 +217,55 @@ impl Client {
         self.jar().clear();
     }
 
+    /// Replace (or with `None` remove) the bearer token sent on every request.
+    pub fn set_bearer_token(&self, token: Option<String>) {
+        *self.inner.bearer.lock().unwrap_or_else(|p| p.into_inner()) = token;
+    }
+
+    /// True while a session cookie or a bearer token is held.
+    pub fn has_credentials(&self) -> bool {
+        self.is_signed_in()
+            || self
+                .inner
+                .bearer
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .is_some()
+    }
+
+    /// Send an arbitrary request and return the JSON body (`null` when the
+    /// body is empty or not JSON). Cookies, CSRF, the constant `User-Agent`
+    /// and error mapping are the same as for the typed calls. This is the
+    /// escape hatch for routes that have no typed wrapper yet. `path` must
+    /// start with `/` and is not percent-encoded here; `method` is one of
+    /// GET, POST, PUT, PATCH, DELETE.
+    pub async fn raw_json(
+        &self,
+        method: &str,
+        path: &str,
+        query: &[(String, String)],
+        body: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value> {
+        if !path.starts_with('/') {
+            return Err(Error::InvalidInput("path must start with /".into()));
+        }
+        let method = match method.to_ascii_uppercase().as_str() {
+            "GET" => Method::GET,
+            "POST" => Method::POST,
+            "PUT" => Method::PUT,
+            "PATCH" => Method::PATCH,
+            "DELETE" => Method::DELETE,
+            other => return Err(Error::InvalidInput(format!("unsupported method {other}"))),
+        };
+        let mut req = Req::get(path);
+        req.method = method;
+        req.query = query.to_vec();
+        req.json = body;
+        let resp = self.send(&req).await?;
+        let bytes = resp.bytes().await.map_err(Error::Transport)?;
+        Ok(serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null))
+    }
+
     fn jar(&self) -> MutexGuard<'_, Jar> {
         // A poisoned lock only means another thread panicked mid-update of a
         // string map; the data is still usable.
@@ -247,6 +311,18 @@ impl Client {
                 if let Ok(mut hv) = HeaderValue::from_str(&c) {
                     hv.set_sensitive(true);
                     rb = rb.header(COOKIE, hv);
+                }
+            }
+            let bearer = self
+                .inner
+                .bearer
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
+            if let Some(t) = bearer {
+                if let Ok(mut hv) = HeaderValue::from_str(&format!("Bearer {t}")) {
+                    hv.set_sensitive(true);
+                    rb = rb.header(AUTHORIZATION, hv);
                 }
             }
             if mutating {

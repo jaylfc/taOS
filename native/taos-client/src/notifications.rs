@@ -124,7 +124,7 @@ pub struct ClearSummary {
 }
 
 /// The scope vocabulary (`GET /api/agents/scope-vocabulary`).
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct ScopeVocabulary {
     /// Every grantable scope. The web spec lists only `project_scopes`; the
     /// route also returns this.
@@ -153,7 +153,7 @@ fn is_false(b: &bool) -> bool {
 }
 
 /// Result of approving an access request.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct AccessApproval {
     /// `accepted`.
     #[serde(default)]
@@ -191,7 +191,7 @@ pub struct ApproveScopes {
 }
 
 /// Result of approving a scope request.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct ScopeApproval {
     /// `accepted`.
     #[serde(default)]
@@ -205,7 +205,7 @@ pub struct ScopeApproval {
 }
 
 /// A project as the consent picker needs it.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct ProjectRef {
     /// Project id.
     #[serde(default)]

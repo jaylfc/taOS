@@ -14,7 +14,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use futures_util::Stream;
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -51,7 +51,7 @@ string_enum! {
 
 /// A model reference that the controller sends either as a bare string or as
 /// an object `{id, name, size_mb}` (worker and provider model lists).
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize)]
 pub struct ModelRef {
     /// Model id.
     pub id: String,
@@ -88,7 +88,7 @@ impl<'de> Deserialize<'de> for ModelRef {
 }
 
 /// A downloadable variant of a catalog model.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct Variant {
     /// Variant id.
     #[serde(default)]
@@ -108,7 +108,7 @@ pub struct Variant {
 }
 
 /// A catalog entry (`models[]` of `GET /api/models`).
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct CatalogModel {
     /// Manifest id.
     #[serde(default)]
@@ -153,7 +153,7 @@ impl CatalogModel {
 }
 
 /// A model file on the controller's disk.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct DownloadedFile {
     /// File name.
     #[serde(default)]
@@ -176,7 +176,7 @@ pub struct DownloadedFile {
 }
 
 /// `GET /api/models`.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct ModelCatalog {
     /// Catalog entries.
     #[serde(default, deserialize_with = "lenient_vec")]
@@ -190,7 +190,7 @@ pub struct ModelCatalog {
 }
 
 /// A backend reported by a worker.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct WorkerBackend {
     /// Backend name (`type:port` on the controller's records).
     #[serde(default)]
@@ -233,7 +233,7 @@ pub enum Liveness {
 
 /// A cluster worker (`GET /api/cluster/workers`). Non-admin sessions get a
 /// reduced record (name, status, tier, kind) and the other fields stay empty.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct Worker {
     /// Worker name.
     #[serde(default)]
@@ -310,7 +310,7 @@ impl Worker {
 
 /// A configured provider (`GET /api/providers`). The `api_key` field the
 /// server returns to admins is deliberately not modelled.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct Provider {
     /// Provider name.
     #[serde(default)]
@@ -346,7 +346,7 @@ fn yes() -> bool {
 }
 
 /// `POST /api/models/download` reply.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct DownloadStart {
     /// `started`.
     #[serde(default)]
@@ -363,7 +363,7 @@ pub struct DownloadStart {
 }
 
 /// Progress of one download.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct DownloadProgress {
     /// Download id.
     #[serde(default)]
@@ -398,7 +398,7 @@ pub struct DownloadProgress {
 }
 
 /// `DELETE /api/models/{id}` reply.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct DeleteResult {
     /// `deleted`.
     #[serde(default)]

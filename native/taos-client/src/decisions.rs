@@ -119,7 +119,7 @@ pub struct DecisionNote {
 }
 
 /// A decision. Unknown fields and unknown enum values are tolerated.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct Decision {
     /// Decision id.
     #[serde(default)]
@@ -313,7 +313,7 @@ impl AnswerRequest {
 
 /// A pending access (auth) request from an external agent
 /// (`GET /api/agents/auth-requests`). The row's token fields are never read.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct AccessRequest {
     /// Request id.
     #[serde(default)]
@@ -346,7 +346,7 @@ pub struct AccessRequest {
 
 /// A pending scope request from an existing agent
 /// (`GET /api/agents/scope-requests`).
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct ScopeRequest {
     /// Request id.
     #[serde(default)]
