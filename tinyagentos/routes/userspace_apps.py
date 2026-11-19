@@ -22,7 +22,10 @@ from tinyagentos.userspace.broker import handle_capability, GATED_CAPS
 from tinyagentos.userspace.capabilities import capability_ceiling, default_provenance_for_trust
 from tinyagentos.userspace.container_deploy import deploy_app_container, destroy_app_container
 from tinyagentos.userspace.package import build_package, extract_package, parse_manifest, PackageError
-from tinyagentos.userspace.url_guard import resolve_safe_public_ip
+from tinyagentos.userspace.url_guard import (
+    resolve_safe_public_ip,
+    userspace_fetch_client,
+)
 
 # Provenance values a caller may set through the PUBLIC install endpoint. Never
 # includes "first-party" -- that tier is only reachable via the internal
@@ -168,7 +171,7 @@ async def install_app(
         _pinned_url = _u._replace(netloc=_netloc).geturl()
         _host_header = _u.hostname if not _u.port else f"{_u.hostname}:{_u.port}"
         try:
-            async with httpx.AsyncClient(timeout=120, follow_redirects=False) as c:
+            async with userspace_fetch_client(timeout=120, follow_redirects=False) as c:
                 # Connect to the pinned IP; keep the original Host header + TLS
                 # SNI so vhost routing and certificate validation still work.
                 resp = await c.get(

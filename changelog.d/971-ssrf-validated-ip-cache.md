@@ -1,0 +1,3 @@
+### Fixed
+
+- **Userspace install SSRF (#971, intermediate hardening)**: `resolve_safe_public_ip` now caches each successful validation (hostname -> validated IPs) for 30s in `tinyagentos/userspace/url_guard.py`, and the new `userspace_fetch_client` factory returns an httpx client whose transport pins every connection to the cached validated IP -- original Host header and TLS SNI preserved -- refusing the fetch when validation fails or an expired entry re-validates to a non-public address. The userspace install route fetches through this factory, so a nameserver that answers public at validation time and internal at connect time cannot bounce the fetch onto an internal address. The full pinned fetch scheduled with the P2 download broker is unaffected and still to come.
