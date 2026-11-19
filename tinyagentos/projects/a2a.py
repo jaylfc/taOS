@@ -89,18 +89,45 @@ async def _resolve_member_names(
       config) resolves to its registry handle — the routing name the
       @mention parser and router look up via get_by_handle. An identity
       with no handle falls back to the slug of its display name/framework.
+      Only ACTIVE identities resolve: a non-active identity's handle is
+      reusable, so leaving it in the member set could route project
+      traffic to a later, unrelated identity that takes the handle over.
+      A resolved handle that collides with a configured agent's name is
+      rejected when that agent is not itself a project member, because
+      the router would deliver the project's traffic to the outsider.
     - Members matching none of the above (deleted agents) are dropped with
       a debug log. A registry lookup that raises is treated as no match,
-      so an unusable registry cannot fail the whole channel sync.
+      so an unusable registry cannot fail the whole channel sync;
+      _resolve_member_names_detailed reports the resolution as incomplete
+      in that case, and ensure_a2a_channel then skips removals so the
+      failure cannot evict an existing channel member.
 
     If config is None (test path), member_id is returned as-is so that tests
     that already store names in project_members continue to work unmodified.
     """
+    names, _complete = await _resolve_member_names_detailed(
+        member_rows, config, agent_registry
+    )
+    return names
+
+
+async def _resolve_member_names_detailed(
+    member_rows: list[dict], config, agent_registry=None
+) -> tuple[set[str], bool]:
+    """Resolve member rows to channel names, and report completeness.
+
+    Returns (names, complete). complete is False when at least one
+    registry lookup raised: the returned set may then be missing members
+    whose project membership is still valid, so a caller must not treat
+    absence from the set as a confirmed removal.
+    """
     by_id, by_name = _build_agent_lookups(config)
     if by_id is None:
-        return {m["member_id"] for m in member_rows}
+        return {m["member_id"] for m in member_rows}, True
 
     resolved: set[str] = set()
+    config_names: set[str] = set()
+    registry_rows: list[dict] = []
     for m in member_rows:
         mid = m["member_id"]
         agent = by_id.get(mid) or by_name.get(mid)
@@ -108,42 +135,76 @@ async def _resolve_member_names(
             name = agent.get("name")
             if name:
                 resolved.add(name)
+                config_names.add(name)
             continue
         if m.get("member_kind") == "human":
             resolved.add(mid)
             continue
-        if agent_registry is not None:
-            try:
-                identity = await agent_registry.get(mid)
-            except Exception:
-                # An unusable registry (e.g. uninitialised in a minimal
-                # app, or a transient store error) must not fail the
-                # whole channel sync: treat it as no match and drop
-                # the member like any other unknown id.
-                logger.debug(
-                    "a2a: registry lookup for member_id %r failed — skipping",
-                    mid,
-                    exc_info=True,
-                )
-                identity = None
-            if identity is not None:
-                handle = identity.get("handle")
-                if not handle:
-                    from tinyagentos.agent_registry_store import (
-                        agent_slug_or_fallback,
-                    )
+        registry_rows.append(m)
 
-                    handle = agent_slug_or_fallback(
-                        identity.get("display_name")
-                        or identity.get("framework")
-                        or mid
-                    )
-                resolved.add(handle)
-                continue
-        logger.debug(
-            "a2a: member_id %r not found in config agents — skipping", mid
-        )
-    return resolved
+    complete = True
+    for m in registry_rows:
+        mid = m["member_id"]
+        if agent_registry is None:
+            logger.debug(
+                "a2a: member_id %r not found in config agents — skipping", mid
+            )
+            continue
+        try:
+            identity = await agent_registry.get(mid)
+        except Exception:
+            # An unusable registry (e.g. uninitialised in a minimal
+            # app, or a transient store error) must not fail the
+            # whole channel sync: treat it as no match and drop
+            # the member like any other unknown id — but flag the
+            # resolution incomplete so the caller does not evict an
+            # existing channel member over a transient failure.
+            logger.debug(
+                "a2a: registry lookup for member_id %r failed — skipping",
+                mid,
+                exc_info=True,
+            )
+            complete = False
+            continue
+        if identity is None:
+            logger.debug(
+                "a2a: member_id %r not found in config agents — skipping", mid
+            )
+            continue
+        if identity.get("status") != "active":
+            logger.debug(
+                "a2a: registry identity %r has status %r, not active"
+                " — skipping",
+                mid, identity.get("status"),
+            )
+            continue
+        handle = identity.get("handle")
+        if not handle:
+            from tinyagentos.agent_registry_store import (
+                agent_slug_or_fallback,
+            )
+
+            handle = agent_slug_or_fallback(
+                identity.get("display_name")
+                or identity.get("framework")
+                or mid
+            )
+        if handle in by_name and handle not in config_names:
+            # The router resolves channel member names to configured
+            # agents, so this handle would deliver the project's
+            # traffic to a configured agent who is not a member.
+            # Reject the colliding handle; when the configured agent
+            # IS a member, its name is in the set via the config path
+            # anyway and the handle adds nothing new.
+            logger.warning(
+                "a2a: registry handle %r for member_id %r collides with"
+                " a configured agent who is not a project member"
+                " — skipping",
+                handle, mid,
+            )
+            continue
+        resolved.add(handle)
+    return resolved, complete
 
 
 def _resolve_lead_names(project: dict, config) -> list[str]:
@@ -195,11 +256,16 @@ async def ensure_a2a_channel(
 
     Idempotent. Serialized per project_id via _A2A_LOCKS to prevent racing
     member-sync diffs when multiple callers fire concurrently.
+
+    If member resolution is incomplete (a registry lookup failed), the
+    sync applies additions only and keeps existing members, so a
+    transient registry error cannot evict anyone; removals resume on
+    the next clean sync.
     """
     async with _A2A_LOCKS[project_id]:
         project = await project_store.get_project(project_id)
         project_members = await project_store.list_members(project_id)
-        expected = await _resolve_member_names(
+        expected, resolution_complete = await _resolve_member_names_detailed(
             project_members, config, agent_registry
         )
         expected_leads = _resolve_lead_names(project, config)
@@ -232,6 +298,18 @@ async def ensure_a2a_channel(
         current = set(existing.get("members") or [])
         to_add = expected - current
         to_remove = current - expected
+        if not resolution_complete and to_remove:
+            # A registry lookup failed during resolution, so `expected`
+            # may be missing members whose project membership is still
+            # valid. Applying removals now would evict them over a
+            # transient error; additions are safe, so apply only those
+            # and let a later clean sync reconcile removals.
+            logger.warning(
+                "a2a: member resolution incomplete for project %s — "
+                "keeping existing members %s until a clean sync",
+                project_id, sorted(to_remove),
+            )
+            to_remove = set()
         for slug in sorted(to_add):
             await channel_store.add_member(existing["id"], slug)
         for slug in sorted(to_remove):
