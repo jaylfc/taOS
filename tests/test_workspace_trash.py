@@ -254,6 +254,24 @@ class TestUserWorkspaceTrashRoutes:
         assert (await client.get("/api/workspace/trash")).json()["items"] == []
 
     @pytest.mark.asyncio
+    async def test_restore_with_an_escaping_sidecar_is_a_400_not_a_500(self, client, app):
+        await client.post(
+            "/api/workspace/files/upload",
+            files={"file": ("doc.txt", io.BytesIO(b"draft"), "text/plain")},
+        )
+        await client.delete("/api/workspace/files/doc.txt")
+        item_id = (await client.get("/api/workspace/trash")).json()["items"][0]["id"]
+        trash_root = app.state.config_path.parent / ".taos-trash" / "workspace"
+        sidecar = trash_root / f"{item_id}.json"
+        record = json.loads(sidecar.read_text())
+        record["original_path"] = "../escaped.txt"
+        sidecar.write_text(json.dumps(record))
+
+        resp = await client.post(f"/api/workspace/trash/{item_id}/restore")
+        assert resp.status_code == 400
+        assert not (app.state.config_path.parent / "escaped.txt").exists()
+
+    @pytest.mark.asyncio
     async def test_empty_trash_purges_all_items(self, client, app):
         for name in ("one.txt", "two.txt"):
             await client.post(
