@@ -1687,6 +1687,69 @@ class TestOrphanAgentDeletion:
         tombstones = [a for a in config.archived_agents if a.get("archived_slug") == "test-agent"]
         assert len(tombstones) == 1
 
+    async def test_orphan_with_chat_history_is_archived(
+        self, client, app, tmp_data_dir, monkeypatch
+    ):
+        """Orphan (no container) WITH chat history is archived: tombstone written,
+        status 'archived', snapshot_name None."""
+        async def _no_container(name):
+            return False
+        monkeypatch.setattr("tinyagentos.containers.container_exists", _no_container)
+
+        ch_store = app.state.chat_channels
+        msg_store = app.state.chat_messages
+        ch = await ch_store.create_channel(
+            name="dm-test-agent", type="dm", created_by="user",
+            members=["test-agent", "user"],
+        )
+        await msg_store.send_message(ch["id"], "test-agent", "agent", "hello")
+
+        config = app.state.config
+        for a in config.agents:
+            if a["name"] == "test-agent":
+                a["chat_channel_id"] = ch["id"]
+                break
+        from tinyagentos.config import save_config_locked
+        await save_config_locked(config, config.config_path)
+
+        resp = await client.delete("/api/agents/test-agent")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "archived"
+        assert data["snapshot_name"] is None
+
+        config = load_config(tmp_data_dir / "config.yaml")
+        assert not any(a["name"] == "test-agent" for a in config.agents)
+        tombstones = [a for a in config.archived_agents if a.get("archived_slug") == "test-agent"]
+        assert len(tombstones) == 1
+        assert tombstones[0]["snapshot_name"] is None
+
+    async def test_orphan_without_history_is_deleted(
+        self, client, app, tmp_data_dir, monkeypatch
+    ):
+        """Orphan (no container) WITHOUT chat or trace history is hard-deleted:
+        status 'deleted', no tombstone."""
+        async def _no_container(name):
+            return False
+        monkeypatch.setattr("tinyagentos.containers.container_exists", _no_container)
+
+        # Ensure no trace dir for test-agent.
+        import shutil
+        trace_dir = tmp_data_dir / "trace" / "test-agent"
+        if trace_dir.exists():
+            shutil.rmtree(trace_dir, ignore_errors=True)
+
+        resp = await client.delete("/api/agents/test-agent")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "deleted"
+
+        config = load_config(tmp_data_dir / "config.yaml")
+        assert not any(a["name"] == "test-agent" for a in config.agents)
+        assert not any(
+            a.get("archived_slug") == "test-agent" for a in config.archived_agents
+        )
+
 
 @pytest.mark.asyncio
 class TestDeleteResolvesOrphanedContainer:
