@@ -1,5 +1,4 @@
 ### Fixed
-- Backend recovery now triggers reload: `onUp` callback wired in `BackendStatusContext` to dispatch `taos:backend-up` event and reload page when health probe succeeds after reconnecting.
-- Added provider-level test verifying `taos:backend-up` fires exactly once on recovery.
-- Replaced vacuous `MobileShellHomeAction` tests with integration tests rendering mobile shell with reconnecting banner.
-- Removed duplicate backoff-cap test; restore `document.visibilityState` after visibility tests.
+- Backend recovery now triggers reload: `onUp` callback wired in `BackendStatusContext` to dispatch `taos:backend-up` and reload the page when the health probe succeeds after reconnecting.
+- Added a provider-level test (real provider, real singleton, mocked global fetch and `location.reload`) verifying `taos:backend-up` and the reload each fire exactly once on recovery.
+- Removed the provider-and-banner-only mobile tests (they did not exercise the fix) and the duplicate backoff-cap test; the visibility tests restore `document.visibilityState` in a `finally`.

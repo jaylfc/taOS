@@ -194,14 +194,17 @@ describe("backendStatus", () => {
     expect(bs.getStatus()).toBe("reconnecting");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     // Simulate visibilitychange to visible
-    const event = new Event("visibilitychange");
     const originalVisibilityState = document.visibilityState;
-    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
-    document.dispatchEvent(event);
-    // Should trigger an immediate poll (not wait for backoff)
-    await vi.advanceTimersByTimeAsync(0);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    Object.defineProperty(document, "visibilityState", { value: originalVisibilityState, configurable: true });
+    try {
+      const event = new Event("visibilitychange");
+      Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+      document.dispatchEvent(event);
+      // Should trigger an immediate poll (not wait for backoff)
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      Object.defineProperty(document, "visibilityState", { value: originalVisibilityState, configurable: true });
+    }
     bs.stop();
   });
 
@@ -229,18 +232,21 @@ describe("backendStatus", () => {
     expect(bs.getStatus()).toBe("reconnecting");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     // Dispatch visibilitychange to visible while already waiting for backoff
-    const visibleEvent = new Event("visibilitychange");
     const originalVisibilityState = document.visibilityState;
-    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
-    document.dispatchEvent(visibleEvent);
-    // Dispatch online event while the visibility probe is in-flight
-    const onlineEvent = new Event("online");
-    window.dispatchEvent(onlineEvent);
-    // Only one extra poll should be triggered (the latter one supersedes the former)
-    await vi.advanceTimersByTimeAsync(0);
-    // fetchMock should have been called at most 2 times (1 initial + 1 superseding)
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    Object.defineProperty(document, "visibilityState", { value: originalVisibilityState, configurable: true });
+    try {
+      const visibleEvent = new Event("visibilitychange");
+      Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+      document.dispatchEvent(visibleEvent);
+      // Dispatch online event while the visibility probe is in-flight
+      const onlineEvent = new Event("online");
+      window.dispatchEvent(onlineEvent);
+      // Only one extra poll should be triggered (the latter one supersedes the former)
+      await vi.advanceTimersByTimeAsync(0);
+      // fetchMock should have been called at most 2 times (1 initial + 1 superseding)
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      Object.defineProperty(document, "visibilityState", { value: originalVisibilityState, configurable: true });
+    }
     bs.stop();
   });
 });
