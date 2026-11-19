@@ -879,6 +879,14 @@ async def approve_request_record(
     """
     auth_store = _get_auth_requests_store(request)
 
+    # When this approval began, in the same ISO format set_decision
+    # records in decided_ts. The undo's winner lookup counts only
+    # requests accepted after this instant: a request accepted before
+    # this approval began (the earlier approval that left a reused
+    # identity active, say) is not the race winner and must not spare
+    # this approval's writes.
+    approval_started_ts = datetime.now(timezone.utc).isoformat()
+
     # The admin can narrow the requested scopes but never widen them, and
     # every granted scope must be in the closed vocabulary (defence in depth
     # for pending records created before scope validation existed).
@@ -1150,6 +1158,7 @@ async def approve_request_record(
                     prior_lead=prior_lead,
                     lead_overwritten=lead_overwritten,
                     revert_identity=False,
+                    approval_started_ts=approval_started_ts,
                 )
 
             try:
@@ -1346,6 +1355,7 @@ async def approve_request_record(
                     request,
                     record_id=record["id"],
                     canonical_id=canonical_id,
+                    approval_started_ts=approval_started_ts,
                     created_here=created_here,
                     granted_scopes=granted_scopes,
                     binding_project=binding_project,
@@ -1371,6 +1381,7 @@ async def approve_request_record(
                 request,
                 record_id=record["id"],
                 canonical_id=canonical_id,
+                approval_started_ts=approval_started_ts,
                 created_here=created_here,
                 granted_scopes=granted_scopes,
                 binding_project=binding_project,
@@ -1517,6 +1528,7 @@ async def approve_request_record(
                 added_member=added_member,
                 prior_lead=prior_lead,
                 lead_overwritten=lead_overwritten,
+                approval_started_ts=approval_started_ts,
             )
             raise HTTPException(
                 status_code=409,
@@ -1547,6 +1559,7 @@ async def approve_request_record(
             added_member=added_member,
             prior_lead=prior_lead,
             lead_overwritten=lead_overwritten,
+            approval_started_ts=approval_started_ts,
         )
         raise
     await _retire_request_notification(request, record["id"])
@@ -1572,6 +1585,7 @@ async def _undo_lost_approval(
     prior_grant_tier: Optional[dict[tuple[str, Optional[str]], str]] = None,
     renew: bool = False,
     revert_identity: bool = True,
+    approval_started_ts: Optional[str] = None,
 ) -> None:
     """Undo an approve's writes after it lost the decision race.
 
@@ -1588,6 +1602,13 @@ async def _undo_lost_approval(
     identity itself (the already-active reuse arm): there is no
     activation to revert, though the winner-sparing above still governs
     its grants, membership and lead cleanup.
+
+    ``approval_started_ts`` bounds the winner lookup to requests
+    accepted after this approval began. An approval accepted before
+    that — the one that left a reused identity active, say — merely
+    predates this approval: treating it as the winner would spare
+    writes this approval made on top of state that approval no longer
+    stands behind (its membership may since have been removed).
     """
     auth_store = _get_auth_requests_store(request)
     # The winner check must not itself be able to kill the cleanup: if the
@@ -1618,7 +1639,9 @@ async def _undo_lost_approval(
     # undone.
     try:
         winner = await auth_store.find_accepted_for_canonical(
-            canonical_id, exclude_id=record_id
+            canonical_id,
+            exclude_id=record_id,
+            decided_after=approval_started_ts,
         )
     except Exception:  # noqa: BLE001 - unreadable means no winner found; proceed
         logger.warning(
