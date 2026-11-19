@@ -862,6 +862,15 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
   const [resourcesError, setResourcesError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [optimiseResult, setOptimiseResult] = useState<{
+    suggestions: Array<{
+      model_or_service: string;
+      suggested_worker: string;
+      reason: string;
+      improvement?: string;
+    }>;
+    summary: string;
+  } | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<{
     title: string;
     message: string;
@@ -1072,9 +1081,12 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
 
   const handleOptimise = useCallback(async () => {
     setBusy(true);
+    setOptimiseResult(null);
     try {
       const res = await fetch("/api/cluster/optimise", { headers: { Accept: "application/json" } });
       if (res.ok) {
+        const json = await res.json();
+        setOptimiseResult(json);
         showToast("Optimiser run complete");
       } else {
         showToast(`Optimiser failed (${res.status})`);
@@ -1586,6 +1598,50 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
           </Button>
         </div>
       </div>
+
+      {/* Optimiser suggestions panel */}
+      {optimiseResult && (
+        <div
+          role="region"
+          aria-label="Optimiser suggestions"
+          className="px-4 py-2 border-b border-white/5 bg-white/[0.02] shrink-0"
+        >
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-medium text-shell-text-tertiary mb-1">Summary</p>
+              <p className="text-xs text-shell-text">{optimiseResult.summary}</p>
+              {optimiseResult.suggestions.length > 0 && (
+                <div className="mt-2 space-y-1">
+                  <p className="text-xs font-medium text-shell-text-tertiary">Suggestions</p>
+                  <ul className="space-y-1" role="list">
+                    {optimiseResult.suggestions.map((s, i) => (
+                      <li
+                        key={`suggestion-${i}`}
+                        className="text-xs text-shell-text bg-white/[0.03] rounded p-2 border border-white/5"
+                      >
+                        <div className="font-medium">{s.model_or_service}</div>
+                        <div className="text-shell-text-tertiary">
+                          → {s.suggested_worker}
+                        </div>
+                        <div className="text-shell-text-tertiary">{s.reason}</div>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setOptimiseResult(null)}
+              aria-label="Dismiss optimiser suggestions"
+              className="shrink-0 text-shell-text-tertiary hover:text-shell-text"
+            >
+              <X size={14} />
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* Master-detail */}
       <div className="flex-1 min-h-0 overflow-hidden">
