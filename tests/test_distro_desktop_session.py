@@ -327,7 +327,8 @@ OUTPUTS = """[
 """
 
 
-def wall_env(box, outputs=OUTPUTS, known=("1920x1080", "1080x2400", "3840x2160"), fail_all=False):
+def wall_env(box, outputs=OUTPUTS, known=("1920x1080", "1080x2400", "3840x2160"), fail_all=False,
+             sway_bg=False):
     walls = box["tmp"] / "walls"
     walls.mkdir(exist_ok=True)
     for k in known:
@@ -337,7 +338,12 @@ def wall_env(box, outputs=OUTPUTS, known=("1920x1080", "1080x2400", "3840x2160")
          + ('exit 1\n' if fail_all else
             'while [ $# -gt 0 ]; do case "$1" in --size) s=$2; shift;; esac; shift; done\n'
             f'[ -e {walls}/dark-$s.jpg ] || exit 1\necho {walls}/dark-$s.jpg\n'))
-    stub(box["bin"], "swaymsg", f"cat <<'EOF'\n{outputs}EOF\n")
+    # get_outputs answers with the fixture; any other command is logged and,
+    # unless sway_bg, refused (a compositor that does not take "output bg").
+    stub(box["bin"], "swaymsg",
+         'if [ "$1" = -r ] || [ "$1" = -t ]; then\n'
+         f"cat <<'EOF'\n{outputs}EOF\nexit 0\nfi\n"
+         f'echo "$@" >> {box["log"]}.sm\nexit {0 if sway_bg else 1}\n')
     stub(box["bin"], "swaybg", f'echo "$@" >> {box["log"]}.bg\n'
          "trap 'kill $!; exit 0' TERM\nsleep 30 &\nwait\n")
     return walls
@@ -401,6 +407,39 @@ def test_wallpaper_without_outputs_uses_wildcard(box):
         assert swaybg_calls(box) == [f"-o * -m fill -i {walls}/dark-3840x2160.jpg"]
     finally:
         stop_started(box)
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_wallpaper_is_handed_to_sway_when_it_takes_it(box, shell):
+    walls = wall_env(box, sway_bg=True)
+    r = run(WALL, box, shell=shell)
+    assert r.returncode == 0, r.stderr
+    calls = sorted(Path(f"{box['log']}.sm").read_text().splitlines())
+    assert calls == sorted([f'output "DP-1" bg "{walls}/dark-1920x1080.jpg" fill',
+                            f'output "HDMI-A-1" bg "{walls}/dark-1080x2400.jpg" fill'])
+    # no swaybg of our own: sway owns the only one
+    assert not Path(f"{box['log']}.bg").exists()
+    assert (box["run"] / "taos-swaybg.pids").read_text().split() == []
+
+
+def test_wallpaper_retires_its_old_swaybg_once_sway_owns_it(box):
+    wall_env(box)
+    assert run(WALL, box).returncode == 0  # sway refuses: our own swaybg processes
+    first = (box["run"] / "taos-swaybg.pids").read_text().split()
+    assert len(first) == 2
+    wall_env(box, sway_bg=True)
+    try:
+        assert run(WALL, box).returncode == 0
+        import time
+        time.sleep(0.3)
+        for p in first:
+            assert not Path(f"/proc/{p}").exists() or Path(f"/proc/{p}/stat").read_text().split()[2] == "Z"
+    finally:
+        for p in first:
+            try:
+                os.kill(int(p), 15)
+            except OSError:
+                pass
 
 
 def test_wallpaper_replaces_only_its_own_swaybg(box):

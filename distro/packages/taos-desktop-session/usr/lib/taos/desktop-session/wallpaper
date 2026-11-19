@@ -41,7 +41,22 @@ pick() {
 }
 
 started=
+# Preferred: hand the wallpaper to sway ("output NAME bg ..."). Sway then owns
+# the one swaybg, restarts it with the output, and keeps it below everything
+# after a switch to a text console and back. Spawning swaybg ourselves is the
+# fallback for a compositor that does not take the command.
+via_sway() { # output file-or-empty
+    command -v swaymsg >/dev/null 2>&1 || return 1
+    if [ -n "$2" ]; then
+        swaymsg output "\"$1\"" bg "\"$2\"" fill >/dev/null 2>&1
+    else
+        swaymsg output "\"$1\"" bg "$solid" solid_color >/dev/null 2>&1
+    fi
+}
 start_one() { # output file-or-empty
+    if via_sway "$1" "$2"; then
+        return 0
+    fi
     if [ -n "$2" ]; then
         swaybg -o "$1" -m fill -i "$2" >/dev/null 2>&1 &
     else
