@@ -24,7 +24,7 @@ struct AudioProfile {
 
 struct AudioCard {
     quint32 index = kNoIndex;
-    QString name, description, bus, formFactor, activeProfile;
+    QString name, description, bus, formFactor, activeProfile, vendor, product;
     bool bluetooth = false;
     QList<AudioProfile> profiles;
 };

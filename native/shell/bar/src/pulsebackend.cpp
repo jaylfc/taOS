@@ -55,6 +55,8 @@ struct PulseCallbacks {
         c.description = s(pa_proplist_gets(i->proplist, PA_PROP_DEVICE_DESCRIPTION));
         c.bus = s(pa_proplist_gets(i->proplist, PA_PROP_DEVICE_BUS));
         c.formFactor = s(pa_proplist_gets(i->proplist, PA_PROP_DEVICE_FORM_FACTOR));
+        c.vendor = s(pa_proplist_gets(i->proplist, PA_PROP_DEVICE_VENDOR_NAME));
+        c.product = s(pa_proplist_gets(i->proplist, PA_PROP_DEVICE_PRODUCT_NAME));
         c.bluetooth = c.bus == QLatin1String("bluetooth") || c.name.startsWith(QLatin1String("bluez_card"));
         c.activeProfile = i->active_profile2 ? s(i->active_profile2->name) : QString();
         for (uint32_t k = 0; k < i->n_profiles; ++k) {

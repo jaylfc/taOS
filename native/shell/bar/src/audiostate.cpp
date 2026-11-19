@@ -54,6 +54,23 @@ static QString monitorName(const QString &portDesc) {
     return {};
 }
 
+// What a card is called to people. Never a raw hardware string.
+static QString cardLabel(const AudioCard *c, const AudioDevice &d) {
+    const QString bus = c && !c->bus.isEmpty() ? c->bus : d.bus;
+    const QString text = (c ? c->vendor + QLatin1Char(' ') + c->description : QString()) + QLatin1Char(' ') + d.description;
+    if (bus == QLatin1String("bluetooth") || (c && c->bluetooth)) return tr("Bluetooth");
+    if (bus == QLatin1String("usb")) {
+        const QString prod = c && !c->product.isEmpty() ? c->product : d.product;
+        return prod.isEmpty() ? cleanDescription(c ? c->description : d.description) : prod;
+    }
+    if (has(text, "nvidia") || has(text, "geforce") || has(text, "ga10") || has(text, "tu10") || has(text, "ad10"))
+        return tr("NVIDIA graphics card");
+    if ((has(text, "amd") || has(text, "ati ") || has(text, "radeon")) && (has(text, "hdmi") || has(text, "radeon") || has(text, "navi")))
+        return tr("AMD graphics card");
+    if (bus == QLatin1String("pci") || bus.isEmpty()) return tr("Built-in audio");
+    return tr("Audio device");
+}
+
 struct Naming {
     QString title, subtitle, icon;
     int rank = 9;
@@ -87,7 +104,7 @@ static Naming nameFor(const AudioDevice &d, const AudioPort *p, const AudioCard 
     } else if (usb) {
         n.icon = QStringLiteral("usb");
         n.rank = 1;
-        n.subtitle = d.product.isEmpty() ? clean : d.product;
+        n.subtitle = cardLabel(card, d);
         if (ff == QLatin1String("headset")) n.title = tr("USB headset");
         else if (ff == QLatin1String("headphone")) n.title = tr("USB headphones");
         else if (ff == QLatin1String("speaker")) n.title = tr("USB speakers");
@@ -98,39 +115,39 @@ static Naming nameFor(const AudioDevice &d, const AudioPort *p, const AudioCard 
         n.rank = 2;
         const QString mon = monitorName(portDesc);
         n.title = tr("Monitor speakers (%1)").arg(hdmiLabel(portDesc.isEmpty() ? portName + QLatin1Char(' ') + d.name : portDesc));
-        n.subtitle = mon.isEmpty() ? (card ? cleanDescription(card->description) : clean) : mon;
+        n.subtitle = mon.isEmpty() ? cardLabel(card, d) : mon;
     } else if (has(portName, "headphone") || ff == QLatin1String("headphone")) {
         n.icon = QStringLiteral("headphones");
         n.rank = 3;
         n.title = tr("Headphones (%1)").arg(jackWord(portName + portDesc));
-        n.subtitle = card ? cleanDescription(card->description) : clean;
+        n.subtitle = cardLabel(card, d);
     } else if (has(portName, "headset") || ff == QLatin1String("headset")) {
         n.icon = QStringLiteral("headphones");
         n.rank = 3;
         n.title = output ? tr("Headset (%1)").arg(jackWord(portName + portDesc)) : tr("Headset microphone (%1)").arg(jackWord(portName + portDesc));
-        n.subtitle = card ? cleanDescription(card->description) : clean;
+        n.subtitle = cardLabel(card, d);
     } else if (has(portName, "lineout") || has(portName, "line-out")) {
         n.icon = QStringLiteral("analog");
         n.rank = 4;
         n.title = tr("Line out (%1)").arg(jackWord(portName + portDesc));
-        n.subtitle = card ? cleanDescription(card->description) : clean;
+        n.subtitle = cardLabel(card, d);
     } else if (has(portName, "speaker") || ff == QLatin1String("speaker") || ff == QLatin1String("internal")) {
         n.icon = QStringLiteral("speaker");
         n.rank = 4;
         const QString j = jackWord(portName + portDesc);
         n.title = has(portName + portDesc, "rear") ? tr("Speakers (%1)").arg(j) : tr("Speakers");
-        n.subtitle = card ? cleanDescription(card->description) : clean;
+        n.subtitle = cardLabel(card, d);
     } else if (!output && (has(portName, "mic") || has(portName, "line") || ff == QLatin1String("microphone"))) {
         n.icon = QStringLiteral("mic");
         n.rank = 4;
         n.title = has(portName, "linein") || has(portName, "line-in") ? tr("Line in (%1)").arg(jackWord(portName + portDesc))
                                                                        : tr("Microphone (%1)").arg(jackWord(portName + portDesc));
-        n.subtitle = card ? cleanDescription(card->description) : clean;
+        n.subtitle = cardLabel(card, d);
     } else {
         n.icon = output ? QStringLiteral("speaker") : QStringLiteral("mic");
         n.rank = 5;
         n.title = !portDesc.isEmpty() && card ? portDesc : clean;
-        n.subtitle = card ? cleanDescription(card->description) : QString();
+        n.subtitle = cardLabel(card, d);
         if (n.subtitle == n.title) n.subtitle.clear();
     }
     return n;
@@ -140,6 +157,7 @@ static Naming nameForProfile(const AudioCard &c, const AudioProfile &prof, bool 
     const QString part = parts(prof.name, output ? QStringLiteral("output:") : QStringLiteral("input:")).value(0);
     AudioDevice d;
     d.description = c.description;
+    d.product = c.product;
     d.bus = c.bus;
     d.formFactor = c.formFactor;
     AudioPort p;
@@ -226,7 +244,7 @@ QList<ProfileChoice> profileChoices(const AudioState &s, bool output, QString *c
     if (!d) return out;
     const AudioCard *c = s.card(d->card);
     if (!c) return out;
-    if (cardTitle) *cardTitle = c->bluetooth ? nameFor(*d, nullptr, c, output).title : cleanDescription(c->description);
+    if (cardTitle) *cardTitle = c->bluetooth ? nameFor(*d, nullptr, c, output).title : cardLabel(c, *d);
     if (c->bluetooth) {
         // Two real choices on Bluetooth: music quality or a microphone.
         const AudioProfile *music = nullptr, *headset = nullptr;

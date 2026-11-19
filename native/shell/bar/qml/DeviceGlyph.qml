@@ -18,7 +18,7 @@ Item {
         anchors.fill: parent
         preferredRendererType: Shape.CurveRenderer
         ShapePath {
-            strokeColor: g.color; strokeWidth: 1.4; fillColor: "transparent"; capStyle: ShapePath.RoundCap; joinStyle: ShapePath.RoundJoin
+            strokeColor: g.color; strokeWidth: 1.5; fillColor: "transparent"; capStyle: ShapePath.RoundCap; joinStyle: ShapePath.RoundJoin
             startX: 3; startY: 8
             PathLine { x: 15; y: 8 }
             PathMove { x: 9; y: 8 }
@@ -36,7 +36,7 @@ Item {
         anchors.fill: parent
         preferredRendererType: Shape.CurveRenderer
         ShapePath {
-            strokeColor: g.color; strokeWidth: 1.4; fillColor: "transparent"; joinStyle: ShapePath.RoundJoin
+            strokeColor: g.color; strokeWidth: 1.5; fillColor: "transparent"; joinStyle: ShapePath.RoundJoin
             startX: 2; startY: 4
             PathLine { x: 16; y: 4 }
             PathLine { x: 16; y: 8.5 }
@@ -50,7 +50,7 @@ Item {
     Item {
         visible: g.kind === "headphones"
         anchors.fill: parent
-        Rectangle { x: 3; y: 2; width: 12; height: 12; radius: 6; color: "transparent"; border.width: 1.4; border.color: g.color }
+        Rectangle { x: 3; y: 2; width: 12; height: 12; radius: 6; color: "transparent"; border.width: 1.5; border.color: g.color }
         Rectangle { x: 0; y: 8; width: 18; height: 8; color: Theme.ground; opacity: 0 }
         Rectangle { x: 1.5; y: 8; width: 4; height: 6; radius: 1.5; color: g.color }
         Rectangle { x: 12.5; y: 8; width: 4; height: 6; radius: 1.5; color: g.color }
@@ -59,10 +59,10 @@ Item {
     Item {
         visible: g.kind === "mic"
         anchors.fill: parent
-        Rectangle { x: 6.5; y: 1; width: 5; height: 9; radius: 2.5; color: "transparent"; border.width: 1.4; border.color: g.color }
-        Rectangle { x: 4; y: 6; width: 10; height: 6; radius: 5; color: "transparent"; border.width: 1.4; border.color: g.color }
+        Rectangle { x: 6.5; y: 1; width: 5; height: 9; radius: 2.5; color: "transparent"; border.width: 1.5; border.color: g.color }
+        Rectangle { x: 4; y: 6; width: 10; height: 6; radius: 5; color: "transparent"; border.width: 1.5; border.color: g.color }
         Rectangle { x: 8.3; y: 12; width: 1.4; height: 3; color: g.color }
     }
     // Speaker (and analog jack): the bar's speaker glyph.
-    VolumeIcon { visible: g.kind === "speaker" || g.kind === "analog"; level: "medium"; color: g.color; anchors.centerIn: parent; scale: 0.85 }
+    VolumeIcon { visible: g.kind === "speaker" || g.kind === "analog"; level: "medium"; color: g.color; anchors.centerIn: parent }
 }

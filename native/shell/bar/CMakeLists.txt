@@ -44,6 +44,7 @@ qt_add_resources(taos-bar bar_resources
         qml/LevelSlider.qml
         qml/LevelMeter.qml
         qml/DeviceGlyph.qml
+        qml/MuteButton.qml
         qml/Osd.qml)
 qt_add_resources(taos-bar bar_theme
     PREFIX /taos/bar

@@ -30,7 +30,7 @@ using namespace Fx;
 static void fillAudio(FakeAudioBackend &b) {
     AudioState &s = b.st;
     s.connected = true;
-    AudioCard hda; hda.index = 1; hda.name = "alsa_card.pci-hda"; hda.description = "Built-in Audio"; hda.bus = "pci";
+    AudioCard hda; hda.index = 1; hda.name = "alsa_card.pci-hda"; hda.description = "Built-in Audio"; hda.bus = "pci"; hda.vendor = "Intel Corporation";
     hda.activeProfile = "output:analog-stereo+input:analog-stereo";
     hda.profiles << prof("off", "Off", 0, 0, 0) << prof("output:analog-stereo+input:analog-stereo", "Analog Stereo Duplex", 1, 1, 6565)
                  << prof("output:hdmi-stereo", "Digital Stereo (HDMI) Output", 1, 0, 5900, true);
@@ -39,7 +39,7 @@ static void fillAudio(FakeAudioBackend &b) {
     AudioCard bt; bt.index = 3; bt.name = "bluez_card.AA"; bt.description = "Sony WH-1000XM4"; bt.bus = "bluetooth"; bt.bluetooth = true;
     bt.activeProfile = "a2dp-sink";
     bt.profiles << prof("a2dp-sink", "High Fidelity Playback (A2DP Sink)", 1, 0, 40) << prof("headset-head-unit", "Headset Head Unit (HSP/HFP)", 1, 1, 30);
-    AudioCard nv; nv.index = 4; nv.name = "alsa_card.pci-nvidia"; nv.description = "GA104 High Definition Audio Controller"; nv.bus = "pci"; nv.activeProfile = "off";
+    AudioCard nv; nv.index = 4; nv.name = "alsa_card.pci-nvidia"; nv.description = "GA104 High Definition Audio Controller"; nv.bus = "pci"; nv.vendor = "NVIDIA Corporation"; nv.activeProfile = "off";
     nv.profiles << prof("off", "Off", 0, 0, 0) << prof("output:hdmi-stereo", "Digital Stereo (HDMI) Output", 1, 0, 5900, false)
                 << prof("output:hdmi-stereo-extra1", "Digital Stereo (HDMI 2) Output", 1, 0, 5800, true)
                 << prof("output:hdmi-stereo-extra2", "Digital Stereo (HDMI 3) Output", 1, 0, 5700, false)

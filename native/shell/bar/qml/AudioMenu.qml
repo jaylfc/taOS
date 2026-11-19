@@ -23,23 +23,6 @@ MenuFrame {
             Accessible.role: Accessible.Heading
             Accessible.name: text
         }
-        Text {
-            visible: Audio.hasOutput
-            anchors.right: parent.right; anchors.rightMargin: 56
-            anchors.verticalCenter: parent.verticalCenter
-            text: qsTr("Mute")
-            color: Theme.textSecondary
-            font.family: root.fontFamily; font.pixelSize: 12
-            Accessible.ignored: true
-        }
-        MenuSwitch {
-            visible: Audio.hasOutput
-            anchors.right: parent.right; anchors.rightMargin: 10
-            anchors.verticalCenter: parent.verticalCenter
-            label: qsTr("Mute")
-            checked: Audio.muted
-            onToggled: function (on) { Audio.setMuted(on) }
-        }
     }
     Text {
         visible: Audio.message.length > 0 || !Audio.hasOutput
@@ -58,9 +41,9 @@ MenuFrame {
         height: 30
         leftPadding: 12; rightPadding: 12
         spacing: 10
-        VolumeIcon { level: Audio.level; anchors.verticalCenter: parent.verticalCenter }
+        MuteButton { anchors.verticalCenter: parent.verticalCenter; glyph: "speaker"; level: Audio.level; muted: Audio.muted; label: qsTr("Mute output"); onToggled: function (m) { Audio.setMuted(m) } }
         LevelSlider {
-            width: parent.width - 24 - 21 - 44 - 20
+            width: parent.width - 24 - 28 - 44 - 20
             anchors.verticalCenter: parent.verticalCenter
             label: qsTr("Output volume")
             value: Audio.percent
@@ -145,23 +128,6 @@ MenuFrame {
             Accessible.role: Accessible.Heading
             Accessible.name: text
         }
-        Text {
-            visible: Audio.hasInput
-            anchors.right: parent.right; anchors.rightMargin: 56
-            anchors.verticalCenter: parent.verticalCenter
-            text: qsTr("Mute")
-            color: Theme.textSecondary
-            font.family: root.fontFamily; font.pixelSize: 12
-            Accessible.ignored: true
-        }
-        MenuSwitch {
-            visible: Audio.hasInput
-            anchors.right: parent.right; anchors.rightMargin: 10
-            anchors.verticalCenter: parent.verticalCenter
-            label: qsTr("Mute microphone")
-            checked: Audio.inputMuted
-            onToggled: function (on) { Audio.setInputMuted(on) }
-        }
     }
     Text {
         visible: Audio.available && !Audio.hasInput
@@ -183,9 +149,9 @@ MenuFrame {
             height: 22
             leftPadding: 12; rightPadding: 12
             spacing: 10
-            DeviceGlyph { kind: "mic"; anchors.verticalCenter: parent.verticalCenter; color: Audio.inputMuted ? Theme.danger : Theme.text }
+            Item { width: 28; height: 1 }
             LevelMeter {
-                width: parent.width - 24 - 18 - 10
+                width: parent.width - 24 - 28 - 10
                 anchors.verticalCenter: parent.verticalCenter
                 level: Audio.micLevel
                 muted: Audio.inputMuted
@@ -196,9 +162,9 @@ MenuFrame {
             height: 28
             leftPadding: 12; rightPadding: 12
             spacing: 10
-            Item { width: 18; height: 1 }
+            MuteButton { anchors.verticalCenter: parent.verticalCenter; glyph: "mic"; muted: Audio.inputMuted; label: qsTr("Mute microphone"); onToggled: function (m) { Audio.setInputMuted(m) } }
             LevelSlider {
-                width: parent.width - 24 - 18 - 44 - 20
+                width: parent.width - 24 - 28 - 44 - 20
                 anchors.verticalCenter: parent.verticalCenter
                 label: qsTr("Input volume")
                 value: Audio.inputPercent

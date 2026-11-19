@@ -29,6 +29,7 @@ private slots:
         QCOMPARE(out.at(0).title, QStringLiteral("Monitor speakers (HDMI 2)"));
         QCOMPARE(out.at(0).profileName, QStringLiteral("output:hdmi-stereo-extra1"));
         QCOMPARE(out.at(0).icon, QStringLiteral("hdmi"));
+        QCOMPARE(out.at(0).subtitle, QStringLiteral("NVIDIA graphics card"));  // never "GA104 High Definition Audio Controller"
     }
     void unavailablePortsOnALiveSinkAreHidden() {
         AudioState s; s.connected = true; s.defaultSink = "hda";
@@ -46,6 +47,7 @@ private slots:
         QVERIFY(!titles.contains("Headphones (analog jack)"));  // not plugged in
         QVERIFY(titles.contains("Speakers"));
         QVERIFY(titles.contains("Line out (rear jack)"));
+        for (const auto &c3 : out) QCOMPARE(c3.subtitle, QStringLiteral("Built-in audio"));
         for (const auto &c2 : out) QCOMPARE(c2.active, c2.portName == "analog-output-speaker");
         // Plug the headphones in: the port appears.
         s.sinks[0].ports[1].available = Avail::Yes;
@@ -62,6 +64,7 @@ private slots:
         const auto out = AudioNames::choices(s, true);
         QCOMPARE(out.size(), 2);
         QCOMPARE(out.at(0).title, QStringLiteral("Headphones (Sony WH-1000XM4)"));  // Bluetooth first
+        QCOMPARE(out.at(0).subtitle, QStringLiteral("Bluetooth"));
         QVERIFY(out.at(0).active);
         QCOMPARE(out.at(1).title, QStringLiteral("USB headset"));
         QCOMPARE(out.at(1).subtitle, QStringLiteral("Jabra Evolve 40"));
