@@ -50,45 +50,45 @@ describe("useVisualViewport", () => {
     const vv = createMockVisualViewport(600);
     (window as unknown as Record<string, unknown>)["visualViewport"] = vv;
     const { result } = renderHook(() => useVisualViewport());
-    expect(result.current).toEqual({ height: 600, keyboardInset: 200 });
+    expect(result.current).toEqual({ height: 600, keyboardInset: 200, offsetTop: 0 });
   });
 
   it("computes keyboardInset accounting for offsetTop", () => {
     const vv = createMockVisualViewport(500, 100);
     (window as unknown as Record<string, unknown>)["visualViewport"] = vv;
     const { result } = renderHook(() => useVisualViewport());
-    expect(result.current).toEqual({ height: 500, keyboardInset: 200 });
+    expect(result.current).toEqual({ height: 500, keyboardInset: 200, offsetTop: 100 });
   });
 
   it("falls back to innerHeight when visualViewport is null", () => {
     (window as unknown as Record<string, unknown>)["visualViewport"] = null;
     const { result } = renderHook(() => useVisualViewport());
-    expect(result.current).toEqual({ height: 800, keyboardInset: 0 });
+    expect(result.current).toEqual({ height: 800, keyboardInset: 0, offsetTop: 0 });
   });
 
   it("updates on resize event", () => {
     const vv = createMockVisualViewport(600);
     (window as unknown as Record<string, unknown>)["visualViewport"] = vv;
     const { result } = renderHook(() => useVisualViewport());
-    expect(result.current).toEqual({ height: 600, keyboardInset: 200 });
+    expect(result.current).toEqual({ height: 600, keyboardInset: 200, offsetTop: 0 });
 
     act(() => {
       vv.height = 500;
       vv._fire("resize");
     });
-    expect(result.current).toEqual({ height: 500, keyboardInset: 300 });
+    expect(result.current).toEqual({ height: 500, keyboardInset: 300, offsetTop: 0 });
   });
 
   it("updates on scroll event", () => {
     const vv = createMockVisualViewport(600);
     (window as unknown as Record<string, unknown>)["visualViewport"] = vv;
     const { result } = renderHook(() => useVisualViewport());
-    expect(result.current).toEqual({ height: 600, keyboardInset: 200 });
+    expect(result.current).toEqual({ height: 600, keyboardInset: 200, offsetTop: 0 });
 
     act(() => {
       vv.offsetTop = 50;
       vv._fire("scroll");
     });
-    expect(result.current.keyboardInset).toBe(150);
+    expect(result.current).toEqual({ height: 600, keyboardInset: 150, offsetTop: 50 });
   });
 });

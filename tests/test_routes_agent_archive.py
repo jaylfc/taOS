@@ -167,6 +167,112 @@ class TestPurgeSlugReuse:
         assert app.state.auth.validate_local_token(new_token) is True
         assert app.state.auth.get_local_token_agent(new_token) == "test-agent"
 
+    async def test_purge_with_live_agent_keeps_deploy_task(
+        self, client, monkeypatch
+    ):
+        """Purge with a live agent holding the same name keeps the live
+        agent's deploy_tasks entry."""
+        async def fake_stop(name, force=False):
+            return {"success": True, "output": ""}
+
+        async def fake_snapshot_create(name, snapshot_name):
+            return {"success": True, "output": ""}
+
+        async def fake_destroy(name):
+            return {"success": True, "output": ""}
+
+        async def fake_container_exists(name):
+            return True
+
+        monkeypatch.setattr("tinyagentos.containers.stop_container", fake_stop)
+        monkeypatch.setattr(
+            "tinyagentos.containers.snapshot_create", fake_snapshot_create
+        )
+        monkeypatch.setattr(
+            "tinyagentos.containers.destroy_container", fake_destroy
+        )
+        monkeypatch.setattr(
+            "tinyagentos.containers.container_exists", fake_container_exists
+        )
+
+        resp = await client.delete("/api/agents/test-agent")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "archived"
+
+        app = client._transport.app
+        config = app.state.config
+        entry = config.archived_agents[-1]
+        archive_id = entry["id"]
+
+        # A fresh deploy takes the freed slug and creates a deploy_tasks entry.
+        config.agents.append(
+            {"name": "test-agent", "host": "", "qmd_index": "", "color": ""}
+        )
+        from tinyagentos.config import save_config_locked
+        await save_config_locked(config, config.config_path)
+        app.state.deploy_tasks["test-agent"] = {
+            "status": "deployed",
+            "name": "test-agent",
+        }
+
+        purge_resp = await client.delete(f"/api/agents/archived/{archive_id}")
+        assert purge_resp.status_code == 200
+        assert purge_resp.json()["status"] == "purged"
+
+        # Live agent's deploy_tasks entry must survive.
+        assert "test-agent" in app.state.deploy_tasks
+        assert app.state.deploy_tasks["test-agent"]["status"] == "deployed"
+
+    async def test_purge_without_live_agent_removes_deploy_task(
+        self, client, monkeypatch
+    ):
+        """Purge without a live agent holding the name removes the
+        deploy_tasks entry."""
+        async def fake_stop(name, force=False):
+            return {"success": True, "output": ""}
+
+        async def fake_snapshot_create(name, snapshot_name):
+            return {"success": True, "output": ""}
+
+        async def fake_destroy(name):
+            return {"success": True, "output": ""}
+
+        async def fake_container_exists(name):
+            return True
+
+        monkeypatch.setattr("tinyagentos.containers.stop_container", fake_stop)
+        monkeypatch.setattr(
+            "tinyagentos.containers.snapshot_create", fake_snapshot_create
+        )
+        monkeypatch.setattr(
+            "tinyagentos.containers.destroy_container", fake_destroy
+        )
+        monkeypatch.setattr(
+            "tinyagentos.containers.container_exists", fake_container_exists
+        )
+
+        resp = await client.delete("/api/agents/test-agent")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "archived"
+
+        app = client._transport.app
+        config = app.state.config
+        entry = config.archived_agents[-1]
+        archive_id = entry["id"]
+
+        # Seed a stale deploy task (no live agent with this name).
+        app.state.deploy_tasks["test-agent"] = {
+            "status": "deployed",
+            "name": "test-agent",
+        }
+
+        purge_resp = await client.delete(f"/api/agents/archived/{archive_id}")
+        assert purge_resp.status_code == 200
+        assert purge_resp.json()["status"] == "purged"
+
+        # Stale deploy_tasks entry must be removed.
+        assert "test-agent" not in app.state.deploy_tasks
+
 
 @pytest.mark.asyncio
 class TestArchiveSnapshotTimeout:
@@ -336,25 +442,26 @@ class TestArchiveChannelFlagAfterRevoke:
         token = auth.mint_agent_local_token("test-agent")
         assert auth.validate_local_token(token) is True
 
-        async def fake_container_exists(name):
-            return True
-
         async def fake_stop(name, force=False):
             return {"success": True, "output": ""}
 
         async def fake_snapshot_create(name, snapshot_name):
             return {"success": True, "output": ""}
 
-        def failing_revoke(request, slug, agent_id):
-            raise RuntimeError("revoke boom")
+        async def fake_container_exists(name):
+            return True
 
-        monkeypatch.setattr(
-            "tinyagentos.containers.container_exists", fake_container_exists
-        )
         monkeypatch.setattr("tinyagentos.containers.stop_container", fake_stop)
         monkeypatch.setattr(
             "tinyagentos.containers.snapshot_create", fake_snapshot_create
         )
+        monkeypatch.setattr(
+            "tinyagentos.containers.container_exists", fake_container_exists
+        )
+
+        def failing_revoke(request, slug, agent_id):
+            raise RuntimeError("revoke boom")
+
         monkeypatch.setattr(
             "tinyagentos.routes.agent_archive._revoke_gateway_keys",
             failing_revoke,
@@ -377,3 +484,109 @@ class TestArchiveChannelFlagAfterRevoke:
         ch = await app.state.chat_channels.get_channel(channel_id)
         settings = (ch or {}).get("settings") or {}
         assert settings.get("archived") is not True
+
+
+@pytest.mark.asyncio
+class TestArchiveDropsDeployTask:
+    """Archiving an agent must clear any stale deploy_tasks entry for its slug."""
+
+    async def test_archive_drops_deploy_task(self, client, monkeypatch, app):
+        async def fake_stop(name, force=False):
+            return {"success": True, "output": ""}
+
+        async def fake_snapshot_create(name, snapshot_name):
+            return {"success": True, "output": ""}
+
+        async def fake_container_exists(name):
+            return True
+
+        monkeypatch.setattr("tinyagentos.containers.stop_container", fake_stop)
+        monkeypatch.setattr(
+            "tinyagentos.containers.snapshot_create", fake_snapshot_create
+        )
+        monkeypatch.setattr(
+            "tinyagentos.containers.container_exists", fake_container_exists
+        )
+
+        # Seed a stale deploy task under the agent's name.
+        app.state.deploy_tasks["test-agent"] = {
+            "status": "deployed",
+            "name": "test-agent",
+        }
+
+        resp = await client.delete("/api/agents/test-agent")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "archived"
+        assert "test-agent" not in app.state.deploy_tasks
+
+
+@pytest.mark.asyncio
+class TestRestoreDropsDeployTask:
+    """Restoring an agent must clear any stale deploy_tasks entry for the
+    restored name."""
+
+    async def test_restore_drops_deploy_task(self, client, monkeypatch, app):
+        async def fake_deploy(req):
+            return {
+                "success": True,
+                "name": req.name,
+                "ip": "10.0.0.50",
+                "llm_key": "sk-x",
+                "steps": [],
+                "container": f"taos-agent-{req.name}",
+            }
+
+        async def fake_stop(name, force=False):
+            return {"success": True, "output": ""}
+
+        async def fake_snapshot_create(name, snapshot_name):
+            return {"success": True, "output": ""}
+
+        async def fake_snapshot_restore(name, snapshot_name):
+            return {"success": True, "output": ""}
+
+        async def fake_start(name):
+            return {"success": True, "output": ""}
+
+        async def fake_set_env(name, key, value):
+            return {"success": True, "output": ""}
+
+        async def fake_exec(name, cmd, timeout=300):
+            return (0, "")
+
+        monkeypatch.setattr("tinyagentos.deployer.deploy_agent", fake_deploy)
+        monkeypatch.setattr("tinyagentos.containers.stop_container", fake_stop)
+        monkeypatch.setattr(
+            "tinyagentos.containers.snapshot_create", fake_snapshot_create
+        )
+        monkeypatch.setattr(
+            "tinyagentos.containers.snapshot_restore", fake_snapshot_restore
+        )
+        monkeypatch.setattr("tinyagentos.containers.start_container", fake_start)
+        monkeypatch.setattr("tinyagentos.containers.set_env", fake_set_env)
+        monkeypatch.setattr("tinyagentos.containers.exec_in_container", fake_exec)
+
+        async def fake_container_exists(name):
+            return True
+        monkeypatch.setattr(
+            "tinyagentos.containers.container_exists", fake_container_exists
+        )
+
+        await client.post("/api/agents/deploy", json={"name": "test-agent", "framework": "none"})
+        import asyncio
+        await asyncio.sleep(0.2)
+        await client.delete("/api/agents/test-agent")
+
+        archived = (await client.get("/api/agents/archived")).json()
+        archive_id = archived[0]["id"]
+
+        # Seed a stale deploy task under the restored name before restore.
+        app.state.deploy_tasks["test-agent"] = {
+            "status": "deployed",
+            "name": "test-agent",
+        }
+
+        resp = await client.post(f"/api/agents/archived/{archive_id}/restore")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "restored"
+        assert "test-agent" not in app.state.deploy_tasks

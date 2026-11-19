@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { MobileTopBar, MOBILE_TOP_BAR_HEIGHT } from "../MobileTopBar";
+import { MobileTopBar } from "../MobileTopBar";
 
 // Mock the stores and hooks with implementations (except useIsPwa)
 vi.mock("@/stores/notification-store", () => ({
@@ -107,7 +107,7 @@ describe("MobileTopBar edge backdrop", () => {
     expect(backdrop.style.backgroundColor).not.toContain("rgba");
   });
 
-  it("uses the full top-bar height on iOS so the iOS 27 edge blur is covered", () => {
+  it("keeps the 1px strip on iOS too, so the wallpaper shows behind the bar", () => {
     // Set up navigator.standalone = true for iOS PWA
     Object.defineProperty(navigator, "standalone", {
       value: true,
@@ -126,12 +126,7 @@ describe("MobileTopBar edge backdrop", () => {
     const backdrop = document.body.querySelector('[data-testid="ios-edge-backdrop"]');
     expect(backdrop).not.toBeNull();
 
-    // On iOS the backdrop should cover the full top bar height
-    // The browser normalizes calc() expressions (reorders terms, expands env()),
-    // so check that the computed height contains the key parts from the constant.
-    const height = backdrop.style.height;
-    expect(height).toContain("44px");
-    expect(height).toContain("safe-area-inset-top");
+    expect(backdrop.style.height).toBe("1px");
   });
 
   it("does not render the backdrop when not in standalone mode", () => {
