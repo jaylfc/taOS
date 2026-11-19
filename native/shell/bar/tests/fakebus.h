@@ -4,6 +4,7 @@
 #include <QDBusConnection>
 #include <QDBusError>
 #include <QDBusMessage>
+#include <QDBusObjectPath>
 #include <QDBusVariant>
 #include <QDBusVirtualObject>
 #include <QProcess>
@@ -11,6 +12,8 @@
 #include <functional>
 
 #include "dbusutil.h"
+
+inline QVariant opath(const QString &p) { return QVariant::fromValue(QDBusObjectPath(p)); }
 
 class PrivateBus {
 public:

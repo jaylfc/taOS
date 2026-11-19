@@ -5,7 +5,7 @@
 // ---- models --------------------------------------------------------------
 
 QHash<int, QByteArray> ChoiceModel::roleNames() const {
-    return {{IdRole, "id"}, {TitleRole, "title"}, {SubtitleRole, "subtitle"}, {IconRole, "icon"}, {ActiveRole, "active"}, {DescriptionRole, "description"}};
+    return {{IdRole, "choiceId"}, {TitleRole, "label"}, {SubtitleRole, "detail"}, {IconRole, "icon"}, {ActiveRole, "active"}, {DescriptionRole, "description"}};
 }
 QVariant ChoiceModel::data(const QModelIndex &i, int role) const {
     if (!i.isValid() || i.row() < 0 || i.row() >= m_rows.size()) return {};

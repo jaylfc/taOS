@@ -142,7 +142,7 @@ FocusScope {
                             horizontalAlignment: Text.AlignHCenter
                             wrapMode: Text.WordWrap
                             color: Theme.textSecondary
-                            font.family: root.fontFamily; font.pixelSize: 11.5
+                            font.family: root.fontFamily; font.pixelSize: 11
                             text: qsTr("Make sure the same code is showing on the device.")
                         }
                         PillField {
@@ -168,7 +168,7 @@ FocusScope {
                                 Accessible.onPressAction: Bluetooth.cancelPairing()
                                 Keys.onReturnPressed: Bluetooth.cancelPairing()
                                 Keys.onSpacePressed: Bluetooth.cancelPairing()
-                                Text { anchors.centerIn: parent; text: parent.Accessible.name; color: Theme.text; font.family: root.fontFamily; font.pixelSize: 12.5; font.weight: Font.Medium }
+                                Text { anchors.centerIn: parent; text: parent.Accessible.name; color: Theme.text; font.family: root.fontFamily; font.pixelSize: 12; font.weight: Font.Medium }
                                 MouseArea { id: cancelTap; anchors.fill: parent; hoverEnabled: true; onClicked: Bluetooth.cancelPairing() }
                             }
                             Rectangle {
@@ -184,7 +184,7 @@ FocusScope {
                                 Keys.onReturnPressed: Bluetooth.respond(true)
                                 Keys.onSpacePressed: Bluetooth.respond(true)
                                 Rectangle { anchors.fill: parent; anchors.margins: -2.5; radius: height / 2; color: "transparent"; border.width: 1.5; border.color: Theme.text; opacity: parent.activeFocus ? 0.45 : 0 }
-                                Text { anchors.centerIn: parent; text: parent.Accessible.name; color: Theme.ground; font.family: root.fontFamily; font.pixelSize: 12.5; font.weight: Font.DemiBold }
+                                Text { anchors.centerIn: parent; text: parent.Accessible.name; color: Theme.ground; font.family: root.fontFamily; font.pixelSize: 12; font.weight: Font.DemiBold }
                                 MouseArea { id: okTap; anchors.fill: parent; onClicked: Bluetooth.respond(true) }
                             }
                         }
@@ -220,7 +220,7 @@ FocusScope {
                     wrapMode: Text.WordWrap
                     text: Wifi.wifiMessage
                     color: Theme.textSecondary
-                    font.family: root.fontFamily; font.pixelSize: 12.5
+                    font.family: root.fontFamily; font.pixelSize: 12
                     Accessible.role: Accessible.StaticText
                     Accessible.name: text
                 }
@@ -358,7 +358,7 @@ FocusScope {
                     wrapMode: Text.WordWrap
                     text: Bluetooth.message
                     color: Theme.textSecondary
-                    font.family: root.fontFamily; font.pixelSize: 12.5
+                    font.family: root.fontFamily; font.pixelSize: 12
                     Accessible.role: Accessible.StaticText
                     Accessible.name: text
                 }
@@ -390,7 +390,7 @@ FocusScope {
                     leftPadding: 10; bottomPadding: 4
                     text: qsTr("No paired devices")
                     color: Theme.textTertiary
-                    font.family: root.fontFamily; font.pixelSize: 12.5
+                    font.family: root.fontFamily; font.pixelSize: 12
                     Accessible.role: Accessible.StaticText
                     Accessible.name: text
                 }
@@ -403,7 +403,7 @@ FocusScope {
                         anchors.verticalCenter: parent.verticalCenter
                         text: qsTr("Nearby")
                         color: Theme.textSecondary
-                        font.family: root.fontFamily; font.pixelSize: 11.5; font.weight: Font.DemiBold
+                        font.family: root.fontFamily; font.pixelSize: 11; font.weight: Font.DemiBold
                         Accessible.role: Accessible.Heading
                         Accessible.name: Bluetooth.discovering ? qsTr("Nearby, looking for devices") : qsTr("Nearby")
                     }

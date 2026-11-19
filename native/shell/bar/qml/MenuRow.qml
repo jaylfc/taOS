@@ -82,7 +82,7 @@ Item {
             elide: Text.ElideRight
             color: Theme.textSecondary
             font.family: row.fontFamily
-            font.pixelSize: 11.5
+            font.pixelSize: 11
             font.features: { "tnum": 1 }
             renderType: Text.NativeRendering
         }
@@ -112,7 +112,7 @@ Item {
                 text: row.actionText
                 color: Theme.text
                 font.family: row.fontFamily
-                font.pixelSize: 11.5
+                font.pixelSize: 11
                 font.weight: Font.Medium
                 renderType: Text.NativeRendering
             }

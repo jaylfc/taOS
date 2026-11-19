@@ -18,7 +18,7 @@ public:
         int height = 40;
         QString onlyOutput;  // empty: every output
         QString qmlUrl;
-        QString menuQmlUrl;
+        QString networkMenuUrl, audioMenuUrl, osdUrl;
         MenuHost *host = nullptr;
     };
     BarManager(const Options &o, QObject *parent = nullptr);
@@ -29,7 +29,9 @@ public:
     bool menuOpen() const { return m_menu != nullptr; }
 
 public slots:
-    void openMenu(const QString &output, qreal anchorRight);
+    void openMenu(const QString &kind, const QString &output, qreal anchorRight);
+    // The on-screen level flash for the volume keys (kind: "volume" or "mic"; percent -1: no device).
+    void showOsd(const QString &kind, int percent, bool muted);
     void closeMenu();
 
 private:
@@ -39,5 +41,7 @@ private:
     QQmlEngine m_engine;  // shared: singleton instances belong to one engine
     QHash<QScreen *, QQuickView *> m_views;
     QQuickView *m_menu = nullptr;
+    QString m_menuKind;
+    QQuickView *m_osd = nullptr;
     QScreen *m_menuScreen = nullptr;
 };

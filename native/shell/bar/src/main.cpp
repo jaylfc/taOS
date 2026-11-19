@@ -12,7 +12,10 @@
 #include <unistd.h>
 
 #include "barmanager.h"
+#include "audio.h"
+#include "baripc.h"
 #include "battery.h"
+#include "pulsebackend.h"
 #include "clock.h"
 #include "bluezclient.h"
 #include "launcher.h"
@@ -20,7 +23,6 @@
 #include "nmclient.h"
 #include "network.h"
 #include "theme.h"
-#include "volume.h"
 
 static int g_sigPipe[2] = {-1, -1};
 static void onSignal(int) {
@@ -32,6 +34,15 @@ static void onSignal(int) {
 int main(int argc, char **argv) {
     QStringList args;
     for (int i = 0; i < argc; ++i) args << QString::fromLocal8Bit(argv[i]);
+
+    // `taos-bar volume up|down|mute|mic-mute` (also `taos-bar mic-mute`): hand the key to the running bar and leave.
+    if (args.size() >= 2 && (args.at(1) == QLatin1String("volume") || args.at(1) == QLatin1String("mic-mute"))) {
+        QCoreApplication cli(argc, argv);
+        QString msg;
+        const int rc = BarIpc::send(args.mid(1), QString(), &msg);
+        if (rc != 0) fprintf(stderr, "taos-bar: %s\n", qPrintable(msg));
+        return rc;
+    }
 
     QCoreApplication::setApplicationName(QStringLiteral("taos-bar"));
     QCoreApplication::setApplicationVersion(QStringLiteral(TAOS_BAR_VERSION));
@@ -115,12 +126,16 @@ int main(int argc, char **argv) {
         netBus = QDBusConnection::connectToBus(qEnvironmentVariable("TAOS_BAR_DBUS_ADDRESS"), QStringLiteral("taos-bar-net"));
     NmClient nm(netBus);
     BluezClient bluez(netBus);
-    MenuHost menuHost(&nm, &bluez);
+    // The sound server: TAOS_BAR_PULSE_SERVER (tests, demos) or the user's default.
+    PulseBackend pulse(qEnvironmentVariable("TAOS_BAR_PULSE_SERVER"));
+    Audio audio(&pulse);
+    MenuHost menuHost(&nm, &bluez, &audio);
+    BarIpc ipc(&audio);
+    if (!ipc.listen()) fprintf(stderr, "taos-bar: cannot listen on %s: volume keys will not work\n", qPrintable(ipc.path()));
     Network network;
     network.attachNm(&nm);
     nm.start();
     bluez.start();
-    Volume volume;
     Battery battery;
     Launcher launcher;
     launcher.setCommand(p.value(optLauncher));
@@ -131,7 +146,7 @@ int main(int argc, char **argv) {
     qmlRegisterSingletonInstance("Taos.Bar", 1, 0, "Wifi", &nm);
     qmlRegisterSingletonInstance("Taos.Bar", 1, 0, "Bluetooth", &bluez);
     qmlRegisterSingletonInstance("Taos.Bar", 1, 0, "MenuHost", &menuHost);
-    qmlRegisterSingletonInstance("Taos.Bar", 1, 0, "Volume", &volume);
+    qmlRegisterSingletonInstance("Taos.Bar", 1, 0, "Audio", &audio);
     qmlRegisterSingletonInstance("Taos.Bar", 1, 0, "Battery", &battery);
     qmlRegisterSingletonInstance("Taos.Bar", 1, 0, "Launcher", &launcher);
 
@@ -139,13 +154,16 @@ int main(int argc, char **argv) {
     o.height = height;
     o.onlyOutput = p.value(optOutput);
     o.qmlUrl = QStringLiteral("qrc:/taos/bar/qml/Bar.qml");
-    o.menuQmlUrl = QStringLiteral("qrc:/taos/bar/qml/NetMenu.qml");
+    o.networkMenuUrl = QStringLiteral("qrc:/taos/bar/qml/NetMenu.qml");
+    o.audioMenuUrl = QStringLiteral("qrc:/taos/bar/qml/AudioMenu.qml");
+    o.osdUrl = QStringLiteral("qrc:/taos/bar/qml/Osd.qml");
     o.host = &menuHost;
     BarManager mgr(o);
 
     fprintf(stderr, "taos-bar %s outputs=%s theme=%s/%s source=%s height=%d reduce-motion=%d\n", TAOS_BAR_VERSION,
             qPrintable(mgr.describeOutputs()), qPrintable(theme.id()), qPrintable(theme.variant()),
             qPrintable(theme.source()), height, int(theme.reduceMotion()));
+    QObject::connect(&audio, &Audio::flash, &mgr, &BarManager::showOsd);
     mgr.start();
     return app.exec();
 }

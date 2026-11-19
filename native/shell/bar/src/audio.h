@@ -52,6 +52,8 @@ class Audio : public QObject {
     Q_PROPERTY(ProfileModel *inputProfiles READ inputProfiles CONSTANT)
     Q_PROPERTY(QString outputProfileTitle READ outputProfileTitle NOTIFY changed)
     Q_PROPERTY(QString inputProfileTitle READ inputProfileTitle NOTIFY changed)
+    Q_PROPERTY(int outputProfileCount READ outputProfileCount NOTIFY changed)
+    Q_PROPERTY(int inputProfileCount READ inputProfileCount NOTIFY changed)
     Q_PROPERTY(double micLevel READ micLevel NOTIFY micLevelChanged)
     Q_PROPERTY(QString errorText READ errorText NOTIFY errorChanged)
     Q_PROPERTY(bool menuOpen READ menuOpen NOTIFY menuOpenChanged)
@@ -73,6 +75,8 @@ public:
     ProfileModel *inputProfiles() { return &m_inProfiles; }
     QString outputProfileTitle() const { return m_outProfileTitle; }
     QString inputProfileTitle() const { return m_inProfileTitle; }
+    int outputProfileCount() const { return m_outProfiles.rowCount(); }
+    int inputProfileCount() const { return m_inProfiles.rowCount(); }
     double micLevel() const { return m_mic; }
     QString errorText() const { return m_error; }
     bool menuOpen() const { return m_menuOpen; }

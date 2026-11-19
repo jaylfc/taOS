@@ -144,7 +144,7 @@ static Naming nameForProfile(const AudioCard &c, const AudioProfile &prof, bool 
     d.formFactor = c.formFactor;
     AudioPort p;
     p.name = part;
-    p.description = part + QLatin1Char(' ') + prof.description;
+    p.description = part;  // the profile's own wording would put its parentheses into the title
     if (has(part, "hdmi") || has(part, "displayport")) p.type = QStringLiteral("hdmi");
     else if (has(part, "headphone")) p.name = QStringLiteral("headphones");
     else if (has(part, "speaker")) p.name = QStringLiteral("speaker");

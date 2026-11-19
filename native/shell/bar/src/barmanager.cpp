@@ -3,6 +3,7 @@
 #include <LayerShellQt/Window>
 #include "menuhost.h"
 #include <QGuiApplication>
+#include <QQuickItem>
 #include <QQuickView>
 #include <QScreen>
 #include <QUrl>
@@ -13,6 +14,7 @@ BarManager::BarManager(const Options &o, QObject *parent) : QObject(parent), m_o
 
 BarManager::~BarManager() {
     if (m_menu) { m_menu->destroy(); delete m_menu; }
+    if (m_osd) { m_osd->destroy(); delete m_osd; }
     for (QQuickView *v : std::as_const(m_views)) {
         v->destroy();
         delete v;
@@ -26,8 +28,10 @@ QString BarManager::describeOutputs() const {
     return l.join(QLatin1Char(','));
 }
 
-void BarManager::openMenu(const QString &output, qreal anchorRight) {
-    if (m_o.menuQmlUrl.isEmpty()) return;
+void BarManager::openMenu(const QString &kind, const QString &output, qreal anchorRight) {
+    const QString url = kind == QLatin1String("audio") ? m_o.audioMenuUrl : m_o.networkMenuUrl;
+    if (url.isEmpty()) return;
+    // The same icon again closes it: the menu window covers the bar, so that click already closed it; a second open is ignored.
     closeMenu();
     QScreen *s = nullptr;
     for (QScreen *c : QGuiApplication::screens())
@@ -39,10 +43,10 @@ void BarManager::openMenu(const QString &output, qreal anchorRight) {
     v->setColor(Qt::transparent);
     v->setFlag(Qt::FramelessWindowHint);
     v->setResizeMode(QQuickView::SizeRootObjectToView);
-    v->setTitle(QStringLiteral("taos-netmenu"));
+    v->setTitle(QStringLiteral("taos-menu"));
     v->setInitialProperties({{QStringLiteral("barHeight"), m_o.height}, {QStringLiteral("anchorRight"), anchorRight}});
     v->resize(s->geometry().size());
-    v->setSource(QUrl(m_o.menuQmlUrl));
+    v->setSource(QUrl(url));
     if (v->status() != QQuickView::Ready) {
         for (const auto &e : v->errors()) fprintf(stderr, "taos-bar: menu qml: %s\n", qPrintable(e.toString()));
         delete v;
@@ -52,7 +56,7 @@ void BarManager::openMenu(const QString &output, qreal anchorRight) {
     if (auto *w = LayerShellQt::Window::get(v)) {
         w->setScreen(s);
         w->setLayer(LayerShellQt::Window::LayerOverlay);
-        w->setScope(QStringLiteral("taos-netmenu"));
+        w->setScope(QStringLiteral("taos-menu"));
         // Whole output: the clear area behind the panel catches the click that dismisses the menu.
         w->setAnchors(LayerShellQt::Window::Anchors(LayerShellQt::Window::AnchorTop | LayerShellQt::Window::AnchorBottom
                                                     | LayerShellQt::Window::AnchorLeft | LayerShellQt::Window::AnchorRight));
@@ -64,7 +68,43 @@ void BarManager::openMenu(const QString &output, qreal anchorRight) {
     v->show();
     m_menu = v;
     m_menuScreen = s;
-    if (m_o.host) m_o.host->setOpen(true);
+    m_menuKind = kind;
+    if (m_o.host) m_o.host->setOpen(true, kind);
+}
+
+void BarManager::showOsd(const QString &kind, int percent, bool muted) {
+    if (m_o.osdUrl.isEmpty()) return;
+    if (!m_osd) {
+        QScreen *s = QGuiApplication::primaryScreen();
+        if (!s) return;
+        auto *v = new QQuickView(&m_engine, nullptr);
+        v->setScreen(s);
+        v->setColor(Qt::transparent);
+        v->setFlags(Qt::FramelessWindowHint | Qt::WindowTransparentForInput);  // clicks go to what is underneath
+        v->setResizeMode(QQuickView::SizeRootObjectToView);
+        v->setTitle(QStringLiteral("taos-osd"));
+        v->resize(260, 84);
+        v->setSource(QUrl(m_o.osdUrl));
+        if (v->status() != QQuickView::Ready) {
+            for (const auto &e : v->errors()) fprintf(stderr, "taos-bar: osd qml: %s\n", qPrintable(e.toString()));
+            delete v;
+            return;
+        }
+        v->create();
+        if (auto *w = LayerShellQt::Window::get(v)) {
+            w->setScreen(s);
+            w->setLayer(LayerShellQt::Window::LayerOverlay);
+            w->setScope(QStringLiteral("taos-osd"));
+            w->setAnchors(LayerShellQt::Window::Anchors(LayerShellQt::Window::AnchorBottom));  // bottom centre
+            w->setMargins(QMargins(0, 0, 0, 96));
+            w->setExclusiveZone(-1);
+            w->setDesiredSize(QSize(260, 84));
+            w->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivityNone);
+        }
+        v->show();  // stays mapped and clear between flashes: no map/unmap churn
+        m_osd = v;
+    }
+    QMetaObject::invokeMethod(static_cast<QObject *>(m_osd->rootObject()), "flash", Q_ARG(QVariant, kind), Q_ARG(QVariant, percent), Q_ARG(QVariant, muted));
 }
 
 void BarManager::closeMenu() {
@@ -72,7 +112,7 @@ void BarManager::closeMenu() {
     QQuickView *v = m_menu;
     m_menu = nullptr;
     m_menuScreen = nullptr;
-    if (m_o.host) m_o.host->setOpen(false);
+    if (m_o.host) m_o.host->setOpen(false, m_menuKind);
     v->hide();
     v->deleteLater();  // may be called from inside the menu's own handler
 }
