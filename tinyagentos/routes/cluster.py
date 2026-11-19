@@ -325,10 +325,9 @@ async def list_workers(request: Request):
     # taOS #3227: headless callers presenting a valid local token, device
     # token, or registry JWT on this exempt GET get the full worker view
     # (the middleware sets headless_full_view). A registry JWT holding the
-    # cluster_read scope instead gets the full-but-not-admin tier below
-    # (the middleware sets cluster_read_view): the operational picture
-    # without pairing state, host_lan_ip or hardware. signing_key stays
-    # stripped for everyone -- see below.
+    # cluster_read scope instead gets the restricted tier below (the
+    # middleware sets cluster_read_view): an allowlist of operational
+    # fields only. signing_key stays stripped for everyone -- see below.
     full_view = is_admin or getattr(request.state, "headless_full_view", False)
     cluster_read_view = getattr(request.state, "cluster_read_view", False)
     cluster = request.app.state.cluster_manager
@@ -354,15 +353,25 @@ async def list_workers(request: Request):
             })
             continue
         if cluster_read_view and not is_admin:
-            # Full but not admin (taOS #3227): capabilities, backends,
-            # resources, free_vram_mb and models stay; the pairing-state
-            # merge below is skipped and the host-identifying fields are
-            # dropped. Least privilege wins: this tier applies even when
-            # the caller also qualified for headless_full_view (a JWT
-            # holding both agents:read and cluster_read).
-            d.pop("host_lan_ip", None)
-            d.pop("hardware", None)
-            result.append(d)
+            # Full but not admin (taOS #3227): an ALLOWLIST, not a denylist
+            # (jaylfc, PR #4370). The tier returns ONLY the fields below;
+            # dropping a few keys from the full record still leaked url and
+            # worker_url (the same LAN address removing host_lan_ip was
+            # meant to withhold) plus the storage and TLS fields. Least
+            # privilege wins: this tier applies even when the caller also
+            # qualified for headless_full_view -- a JWT holding both
+            # agents:read and cluster_read gets the narrower view.
+            result.append({
+                "name": d["name"],
+                "status": d["status"],
+                "tier_id": d.get("tier_id", ""),
+                "kind": d.get("kind", "worker"),
+                "capabilities": d.get("capabilities", []),
+                "backends": d.get("backends", []),
+                "resources": d.get("resources", []),
+                "free_vram_mb": d.get("free_vram_mb"),
+                "models": d.get("models", []),
+            })
             continue
         # Surface the persistent auth state from the pairing store so the
         # Cluster UI can show whether a node's signing key is live (not

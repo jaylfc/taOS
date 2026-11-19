@@ -549,3 +549,223 @@ class TestListWorkersClusterReadView:
         assert "blocked" not in w
         assert "live_token" not in w
         assert w["free_vram_mb"] == 8192
+# --- taOS #3227 follow-up (jaylfc review on PR #4370): the cluster_read tier
+# is an ALLOWLIST, not a denylist -------------------------------------------
+#
+# The first cut dropped host_lan_ip/hardware from the full record, which
+# still leaked url and worker_url (the same LAN address under another key),
+# plus storage and TLS fields. The tier now returns ONLY the fields jaylfc
+# listed: name, status, tier_id, kind, capabilities, backends, resources,
+# free_vram_mb, models.
+
+
+_CLUSTER_READ_KEYS = {
+    "name", "status", "tier_id", "kind", "capabilities", "backends",
+    "resources", "free_vram_mb", "models",
+}
+
+
+def _make_fully_populated_worker() -> WorkerInfo:
+    """A WorkerInfo with EVERY field set, so any key the tier forgets to
+    exclude shows up in the response and fails the exact-key-set tests."""
+    return WorkerInfo(
+        name="gpu-box",
+        url="http://192.168.1.50:9000",
+        hardware={"gpu": "RTX 4090", "gpu_vram_mb": 24576},
+        backends=[
+            {
+                "name": "ollama:11434",
+                "type": "ollama",
+                "loaded_models": ["llama3.1"],
+            }
+        ],
+        models=["llama3.1"],
+        available_models=[{"id": "llama3.1", "size_gb": 4.7}],
+        capabilities=["chat", "embed"],
+        kind="worker",
+        status="online",
+        last_heartbeat=1700000000.0,
+        registered_at=1690000000.0,
+        load=0.25,
+        platform="linux",
+        tier_id="tier-1",
+        potential_capabilities=["chat", "embed", "image-gen"],
+        resources=["gpu-cuda-0"],
+        kv_cache_quant_support=["fp16", "q8_0"],
+        kv_cache_quant_k_support=["fp16", "q8_0"],
+        kv_cache_quant_v_support=["fp16"],
+        kv_cache_quant_boundary_layer_protect=True,
+        worker_url="http://192.168.1.50:9000",
+        signing_key=b"\x00\x01\x02",
+        tls_cert_provider="letsencrypt",
+        host_lan_ip="192.168.1.50",
+        storage_cap_bytes=1_000_000_000_000,
+        storage_used_bytes=250_000_000_000,
+        bytes_deduped_total=123456789,
+        worker_lxc_image_version="ubuntu/24.04/amd64",
+        degraded=True,
+        degraded_reason="probe stale",
+        free_vram_mb=8192,
+        used_vram_mb=16384,
+        last_vram_report_at=1700000000.0,
+        vram_sampled_at=1700000000.0,
+    )
+
+
+class TestListWorkersClusterReadAllowlist:
+    def test_cluster_read_view_returns_exactly_the_allowlist(self):
+        app = _route_app(
+            cluster_read_view=True,
+            worker=_make_fully_populated_worker(),
+            pairing_state={"revoked": True, "blocked": False},
+        )
+        with TestClient(app) as client:
+            r = client.get("/api/cluster/workers")
+        assert r.status_code == 200
+        body = r.json()
+        assert len(body) == 1
+        w = body[0]
+        # Exact key set: nothing beyond jaylfc's list may survive -- in
+        # particular not url / worker_url (the LAN address), the storage
+        # fields, or the TLS field the denylist version leaked.
+        assert set(w.keys()) == _CLUSTER_READ_KEYS
+        # The allowlisted values themselves are the real ones.
+        assert w["name"] == "gpu-box"
+        assert w["status"] == "online"
+        assert w["tier_id"] == "tier-1"
+        assert w["kind"] == "worker"
+        assert w["capabilities"] == ["chat", "embed"]
+        assert w["backends"][0]["loaded_models"] == ["llama3.1"]
+        assert w["resources"] == ["gpu-cuda-0"]
+        assert w["free_vram_mb"] == 8192
+        assert w["models"] == ["llama3.1"]
+
+
+# --- taOS #3227 follow-up: real-token end-to-end ----------------------------
+#
+# The tests above inject request.state flags or mock verify_registry_token.
+# These build the real stack instead: real AgentRegistryStore +
+# AgentGrantsStore on disk, a token minted by the real issuer
+# (mint_registry_token) with a fresh Ed25519 keypair, the real AuthMiddleware
+# on a real FastAPI app, and the real cluster router -- so the scope ->
+# middleware flag -> route tier chain is exercised exactly as deployed.
+
+
+def _e2e_keypair() -> tuple[bytes, bytes]:
+    """Return (private_pem, public_pem) for a fresh Ed25519 keypair."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+        Ed25519PrivateKey,
+    )
+    from cryptography.hazmat.primitives.serialization import (
+        Encoding,
+        NoEncryption,
+        PrivateFormat,
+        PublicFormat,
+    )
+
+    private = Ed25519PrivateKey.generate()
+    return (
+        private.private_bytes(
+            encoding=Encoding.PEM,
+            format=PrivateFormat.PKCS8,
+            encryption_algorithm=NoEncryption(),
+        ),
+        private.public_key().public_bytes(
+            encoding=Encoding.PEM,
+            format=PublicFormat.SubjectPublicKeyInfo,
+        ),
+    )
+
+
+async def _e2e_app_and_token(tmp_path, scopes):
+    """Build the real middleware+route app and mint a real registry token
+    for a freshly registered active agent holding *scopes*."""
+    from httpx import ASGITransport, AsyncClient
+
+    from tinyagentos.agent_grants_store import AgentGrantsStore
+    from tinyagentos.agent_registry_store import (
+        AgentRegistryStore,
+        mint_registry_token,
+    )
+
+    private_pem, public_pem = _e2e_keypair()
+    registry = AgentRegistryStore(tmp_path / "registry.db")
+    grants = AgentGrantsStore(tmp_path / "grants.db")
+    await registry.init()
+    await grants.init()
+    rec = await registry.register(framework="test", display_name="Cluster Reader")
+    assert rec["status"] == "active"
+    canonical_id = rec["canonical_id"]
+    for scope in scopes:
+        await grants.add_grant(canonical_id, scope)
+    token = mint_registry_token(
+        canonical_id, private_pem, user_id="user-1", framework="test"
+    )
+
+    app = FastAPI()
+    app.add_middleware(am.AuthMiddleware)
+    app.include_router(cluster_router)
+    app.state.auth = _default_auth_mgr()
+    app.state.device_store = AsyncMock()
+    app.state.agent_registry = registry
+    app.state.agent_grants = grants
+    app.state.agent_registry_keypair = (private_pem, public_pem)
+    cluster = MagicMock()
+    cluster.get_workers.return_value = [_make_fully_populated_worker()]
+    app.state.cluster_manager = cluster
+    app.state.cluster_pairing = None
+    app.state.registry = None
+
+    async def _get():
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as ac:
+            return await ac.get(
+                "/api/cluster/workers",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+    return _get
+
+
+class TestClusterReadRealTokenEndToEnd:
+    @pytest.mark.asyncio
+    async def test_cluster_read_token_gets_allowlist_tier_end_to_end(self, tmp_path):
+        get = await _e2e_app_and_token(tmp_path, ["cluster_read"])
+        r = await get()
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert len(body) == 1
+        w = body[0]
+        assert set(w.keys()) == _CLUSTER_READ_KEYS
+        assert w["free_vram_mb"] == 8192
+        assert w["models"] == ["llama3.1"]
+        assert w["capabilities"] == ["chat", "embed"]
+
+    @pytest.mark.asyncio
+    async def test_both_scopes_token_gets_narrower_cluster_read_view(self, tmp_path):
+        # Least privilege wins: agents:read + cluster_read together still get
+        # the narrower cluster_read tier, NOT the unrestricted full view.
+        get = await _e2e_app_and_token(tmp_path, ["agents:read", "cluster_read"])
+        r = await get()
+        assert r.status_code == 200, r.text
+        w = r.json()[0]
+        assert set(w.keys()) == _CLUSTER_READ_KEYS
+        assert "url" not in w
+        assert "host_lan_ip" not in w
+
+    @pytest.mark.asyncio
+    async def test_agents_read_only_token_gets_full_view_end_to_end(self, tmp_path):
+        # Control for the both-scopes case: agents:read ALONE still earns the
+        # unrestricted full view, so the narrowing above is really the
+        # cluster_read scope at work.
+        get = await _e2e_app_and_token(tmp_path, ["agents:read"])
+        r = await get()
+        assert r.status_code == 200, r.text
+        w = r.json()[0]
+        assert "url" in w
+        assert "worker_url" in w
+        assert "host_lan_ip" in w
+        assert "hardware" in w
+        assert "live_token" in w
+        assert "signing_key" not in w
