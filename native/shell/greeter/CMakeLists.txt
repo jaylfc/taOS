@@ -9,7 +9,6 @@ add_library(taosgreeter_core STATIC
     src/poweractions.cpp src/poweractions.h
     src/wallpaperprovider.cpp src/wallpaperprovider.h
     src/layoutplan.cpp src/layoutplan.h
-    src/glass.cpp src/glass.h
     src/keystate.cpp src/keystate.h
     src/controller.cpp src/controller.h
     src/fakegreetd.cpp src/fakegreetd.h)
