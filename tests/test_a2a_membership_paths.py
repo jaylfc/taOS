@@ -1,0 +1,254 @@
+"""taOS #2115: every membership path must ensure the project's A2A channel.
+
+PR #3788 made every project *creation* path create the channel. These tests
+pin the membership paths that could still land a member on a project with
+no channel — a project whose creation-time ensure failed (it is
+best-effort), or one created before #3788:
+
+- approving an auth request that grants ONLY canvas scopes (no
+  project_tasks): the member row was written but ensure_a2a_channel was
+  only called for project_tasks grants.
+- assigning an existing agent (Agents app) with ONLY canvas scopes: same
+  gap in add_agent_to_project.
+- accepting a cross-instance collab invite (peer inbox): the member was
+  added with no ensure call at all.
+
+Each test starts from a project created directly in the store, which never
+creates a channel, so a missing ensure on the membership path is
+observable.
+"""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import pytest
+
+
+async def _a2a_channels(channel_store, project_id: str) -> list[dict]:
+    channels = await channel_store.list_channels(
+        project_id=project_id, archived=False
+    )
+    return [
+        c for c in channels if (c.get("settings") or {}).get("kind") == "a2a"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_approve_canvas_only_grant_creates_a2a_channel(
+    client, monkeypatch, tmp_path
+):
+    """A canvas-only approval adds the member AND creates the A2A channel."""
+    from tinyagentos.agent_grants_store import AgentGrantsStore
+    from tinyagentos.agent_registry_store import (
+        AgentRegistryStore,
+        load_or_create_signing_keypair,
+    )
+    from tinyagentos.auth_requests_store import AuthRequestsStore
+    from tinyagentos.projects.project_store import ProjectStore
+
+    registry = AgentRegistryStore(tmp_path / "reg-canvas-a2a.db")
+    await registry.init()
+    auth_store = AuthRequestsStore(tmp_path / "auth-canvas-a2a.db")
+    await auth_store.init()
+    grants = AgentGrantsStore(tmp_path / "grants-canvas-a2a.db")
+    await grants.init()
+    pstore = ProjectStore(tmp_path / "projects-canvas-a2a.db")
+    await pstore.init()
+    priv, pub = load_or_create_signing_keypair(tmp_path / "keys-canvas-a2a")
+
+    # Store-level creation never creates a channel.
+    project = await pstore.create_project(
+        name="Canvas A2A", slug="canvas-a2a", created_by="u"
+    )
+    pid = project["id"]
+    channel_store = client._transport.app.state.chat_channels
+    assert await _a2a_channels(channel_store, pid) == []
+
+    record = await auth_store.create(
+        identity_claim="canvas-bot",
+        framework="canvas-cli",
+        requested_scopes=["canvas_write"],
+        requested_skills=None,
+        reason="",
+        duration_secs=None,
+        project_id=pid,
+    )
+
+    monkeypatch.setattr(client._transport.app.state, "agent_registry", registry)
+    monkeypatch.setattr(client._transport.app.state, "auth_requests", auth_store)
+    monkeypatch.setattr(client._transport.app.state, "agent_grants", grants)
+    monkeypatch.setattr(
+        client._transport.app.state, "agent_registry_keypair", (priv, pub)
+    )
+    monkeypatch.setattr(client._transport.app.state, "project_store", pstore)
+
+    resp = await client.post(
+        f"/api/agents/auth-requests/{record['id']}/approve",
+        json={"granted_scopes": ["canvas_write"], "project_id": pid},
+    )
+    assert resp.status_code == 200, resp.text
+
+    members = await pstore.list_members(pid)
+    assert len(members) == 1
+
+    channels = await _a2a_channels(channel_store, pid)
+    assert len(channels) == 1, (
+        "canvas-only approval must create the project's A2A channel"
+    )
+    assert channels[0]["name"] == "a2a"
+    assert channels[0]["type"] == "group"
+
+    await registry.close()
+    await auth_store.close()
+    await grants.close()
+    await pstore.close()
+
+
+@pytest.mark.asyncio
+async def test_assign_canvas_only_creates_channel_and_repeat_does_not_duplicate(
+    client, monkeypatch, tmp_path
+):
+    """Assigning an agent with only canvas scopes creates the channel; a
+    second membership event on the same project must not duplicate it."""
+    from tinyagentos.agent_grants_store import AgentGrantsStore
+    from tinyagentos.agent_registry_store import (
+        AgentRegistryStore,
+        load_or_create_signing_keypair,
+    )
+    from tinyagentos.projects.project_store import ProjectStore
+
+    registry = AgentRegistryStore(tmp_path / "reg-assign-a2a.db")
+    await registry.init()
+    grants = AgentGrantsStore(tmp_path / "grants-assign-a2a.db")
+    await grants.init()
+    pstore = ProjectStore(tmp_path / "projects-assign-a2a.db")
+    await pstore.init()
+    load_or_create_signing_keypair(tmp_path / "keys-assign-a2a")
+
+    reg = await registry.register(
+        framework="openclaw", display_name="a2a-dev",
+        user_id="u", origin="external-selfjoin", handle="a2a-dev",
+    )
+    await registry.set_status(reg["canonical_id"], "active")
+    cid = reg["canonical_id"]
+
+    project = await pstore.create_project(
+        name="P", slug="assign-a2a", created_by="u"
+    )
+    pid = project["id"]
+    channel_store = client._transport.app.state.chat_channels
+    assert await _a2a_channels(channel_store, pid) == []
+
+    monkeypatch.setattr(client._transport.app.state, "agent_registry", registry)
+    monkeypatch.setattr(client._transport.app.state, "agent_grants", grants)
+    monkeypatch.setattr(client._transport.app.state, "project_store", pstore)
+
+    resp = await client.post(
+        f"/api/projects/{pid}/members/assign-agent",
+        json={"canonical_id": cid, "scopes": ["canvas_read"]},
+    )
+    assert resp.status_code == 200, resp.text
+
+    members = await pstore.list_members(pid)
+    assert any(m["member_id"] == cid for m in members)
+
+    channels = await _a2a_channels(channel_store, pid)
+    assert len(channels) == 1, (
+        "canvas-only assign must create the project's A2A channel"
+    )
+
+    # A repeat membership event (the previously-working project_tasks path)
+    # must not duplicate the channel.
+    resp = await client.post(
+        f"/api/projects/{pid}/members/assign-agent",
+        json={"canonical_id": cid, "scopes": ["project_tasks"]},
+    )
+    assert resp.status_code == 200, resp.text
+    channels = await _a2a_channels(channel_store, pid)
+    assert len(channels) == 1
+
+    await registry.close()
+    await grants.close()
+    await pstore.close()
+
+
+@pytest.mark.asyncio
+async def test_collab_invite_accept_creates_a2a_channel(tmp_path):
+    """Accepting a collab invite via the peer inbox adds the human member
+    AND creates the project's A2A channel; a second accept cycle for the
+    same contact must not duplicate it."""
+    from tinyagentos.chat.channel_store import ChatChannelStore
+    from tinyagentos.projects.invite_store import ProjectInviteStore
+    from tinyagentos.projects.project_store import ProjectStore
+    from tinyagentos.routes.peer import _handle_collab_response
+
+    pstore = ProjectStore(tmp_path / "projects-collab-a2a.db")
+    await pstore.init()
+    istore = ProjectInviteStore(tmp_path / "invites-collab-a2a.db")
+    await istore.init()
+    cstore = ChatChannelStore(tmp_path / "chat-collab-a2a.db")
+    await cstore.init()
+
+    project = await pstore.create_project(
+        name="P", slug="collab-a2a", created_by="u"
+    )
+    pid = project["id"]
+    assert await _a2a_channels(cstore, pid) == []
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                project_store=pstore,
+                project_invites=istore,
+                chat_channels=cstore,
+                config=None,
+            )
+        )
+    )
+
+    async def _accept() -> dict:
+        minted = await istore.mint(
+            project_id=pid,
+            scopes=[],
+            approval_mode="manual",
+            check_interval_secs=5,
+            created_by="u",
+            kind="collab",
+            contact_id="contact-1",
+        )
+        return await _handle_collab_response(
+            request,
+            "contact-1",
+            {},
+            {
+                "invite_id": minted["record"]["invite_id"],
+                "project_id": pid,
+                "accepted": True,
+            },
+            "collab_invite_accept",
+        )
+
+    result = await _accept()
+    assert result.get("error") is None, result
+
+    members = await pstore.list_members(pid)
+    assert any(
+        m["member_id"] == "contact-1" and m["member_kind"] == "human"
+        for m in members
+    )
+
+    channels = await _a2a_channels(cstore, pid)
+    assert len(channels) == 1, (
+        "collab invite accept must create the project's A2A channel"
+    )
+    assert "contact-1" in (channels[0].get("members") or [])
+
+    # Second invite/accept cycle for the same contact: still one channel.
+    result = await _accept()
+    assert result.get("error") is None, result
+    assert len(await _a2a_channels(cstore, pid)) == 1
+
+    await pstore.close()
+    await istore.close()
+    await cstore.close()

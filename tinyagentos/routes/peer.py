@@ -897,6 +897,28 @@ async def _handle_collab_response(
                 "error": str(exc),
             }
 
+        # Membership landed outside the project routes, so sync the
+        # project's A2A channel here too (taOS #2115: a collab invite
+        # accepted via the peer inbox used to leave the project with a
+        # member but no channel). Best-effort, like every other ensure
+        # call site; ensure is idempotent.
+        channel_store = getattr(request.app.state, "chat_channels", None)
+        if channel_store is not None:
+            try:
+                from tinyagentos.projects.a2a import ensure_a2a_channel
+
+                await ensure_a2a_channel(
+                    channel_store,
+                    project_store,
+                    project_id,
+                    config=getattr(request.app.state, "config", None),
+                )
+            except Exception:
+                logger.warning(
+                    "peer_inbox: a2a ensure failed for project %s",
+                    project_id, exc_info=True,
+                )
+
         # Mark the invite as redeemed.
         if invite_store is not None:
             try:

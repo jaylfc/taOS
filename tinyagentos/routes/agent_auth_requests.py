@@ -1522,15 +1522,19 @@ async def approve_request_record(
                                 can_read=("canvas_read" in granted_canvas),
                                 can_write=("canvas_write" in granted_canvas),
                             )
-                        if "project_tasks" in granted_scopes:
-                            from tinyagentos.projects.a2a import ensure_a2a_channel
+                        # Membership was just written above, so sync the a2a
+                        # channel for every grant shape that adds a member,
+                        # not only project_tasks (taOS #2115: canvas-only
+                        # grants used to skip this, leaving the project with
+                        # members but no channel). Ensure is idempotent.
+                        from tinyagentos.projects.a2a import ensure_a2a_channel
 
-                            await ensure_a2a_channel(
-                                request.app.state.chat_channels,
-                                pstore,
-                                binding_project,
-                                config=getattr(request.app.state, "config", None),
-                            )
+                        await ensure_a2a_channel(
+                            request.app.state.chat_channels,
+                            pstore,
+                            binding_project,
+                            config=getattr(request.app.state, "config", None),
+                        )
             except Exception:  # noqa: BLE001 - membership is best-effort, never blocks approval
                 logger.warning(
                     "auth-approve: could not sync %s membership/a2a channel for project %s",
@@ -2058,15 +2062,19 @@ async def add_agent_to_project(
                                 canonical_id, project_id,
                             )
 
-                    if "project_tasks" in granted_scopes:
-                        from tinyagentos.projects.a2a import ensure_a2a_channel
+                    # Membership was just written above, so sync the a2a
+                    # channel for every grant shape that adds a member,
+                    # not only project_tasks (taOS #2115: canvas-only
+                    # grants used to skip this, leaving the project with
+                    # members but no channel). Ensure is idempotent.
+                    from tinyagentos.projects.a2a import ensure_a2a_channel
 
-                        await ensure_a2a_channel(
-                            request.app.state.chat_channels,
-                            pstore,
-                            project_id,
-                            config=getattr(request.app.state, "config", None),
-                        )
+                    await ensure_a2a_channel(
+                        request.app.state.chat_channels,
+                        pstore,
+                        project_id,
+                        config=getattr(request.app.state, "config", None),
+                    )
         except Exception:  # noqa: BLE001 - membership is best-effort
             logger.warning(
                 "add_agent_to_project: could not sync %s membership/a2a for project %s",
