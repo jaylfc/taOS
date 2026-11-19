@@ -169,7 +169,8 @@ int main(int argc, char **argv) {
         } else {
             fprintf(stderr, "taos-greeter: %s\n", qPrintable(line));
         }
-        QTimer::singleShot(theme.reduceMotion() ? 0 : 280, &app, [] { QCoreApplication::exit(0); });
+        // Long enough for the QML curtain (240 ms) to reach black and be presented.
+        QTimer::singleShot(theme.reduceMotion() ? 0 : 340, &app, [] { QCoreApplication::exit(0); });
     });
     QObject::connect(&ctl, &GreeterController::fatalError, &app, [&](const QString &m) {
         fprintf(stderr, "taos-greeter: fatal: %s\n", qPrintable(m));

@@ -266,6 +266,18 @@ Window {
             }
         }
 
+        // ---- Leaving: fade to black, so the hand-over to the desktop is a
+        // dissolve through black and never a cut to the bare console.
+        Rectangle {
+            id: curtain
+            anchors.fill: parent
+            z: 1000
+            color: "black"
+            opacity: Greeter.phase === 4 ? 1 : 0
+            visible: opacity > 0
+            Behavior on opacity { enabled: !Style.reduceMotion; NumberAnimation { duration: 240; easing.type: Easing.InOutQuad } }
+        }
+
         // ---- Behaviour -----------------------------------------------------
         property Item field: null
         function choose(name) {
