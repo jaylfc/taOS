@@ -41,9 +41,23 @@ if mkdir -p "$confd" 2>/dev/null && ! ls "$confd"/*.conf >/dev/null 2>&1; then
     echo "# Personal sway rules for the taOS session; every *.conf here is included." > "$confd/00-user.conf" 2>/dev/null || true
 fi
 
-config=${TAOS_SWAY_CONFIG:-/etc/taos/sway/config}
+# The taOS compositor (sway with effects, carried under /opt/taos/compositor
+# with its own libraries) when installed; otherwise the distribution's sway
+# with the plain configuration. Effects live in a separate file because the
+# distribution's sway rejects those commands.
+compositor=${TAOS_COMPOSITOR:-/opt/taos/compositor/bin/sway}
+if [ -x "$compositor" ] && "$compositor" --version >/dev/null 2>&1; then
+    default_config=/etc/taos/sway/config-effects
+    PATH="$(dirname "$compositor"):$PATH"
+    export PATH
+else
+    compositor=sway
+    default_config=/etc/taos/sway/config
+fi
+config=${TAOS_SWAY_CONFIG:-$default_config}
+echo "taos-desktop-session: compositor $compositor, config $config"
 start=$(date +%s)
-sway --config "$config"
+"$compositor" --config "$config"
 rc=$?
 elapsed=$(( $(date +%s) - start ))
 if [ "$rc" -ne 0 ] && [ "$elapsed" -lt 5 ]; then

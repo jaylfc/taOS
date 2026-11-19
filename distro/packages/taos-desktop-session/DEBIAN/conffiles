@@ -4,3 +4,4 @@
 /etc/taos/greetd/greetd.service-dropin.conf
 /etc/taos/sway/config
 /etc/taos/sway.d/00-taos.conf
+/etc/taos/sway/config-effects

@@ -8,6 +8,8 @@ output * scale 1
 
 # Wallpaper: swaybg per output via the helper (it replaces its own swaybg
 # processes on every reload and never touches others).
+# Black until the wallpaper is up: no grey flash when the session starts.
+output * bg #000000 solid_color
 exec_always /usr/lib/taos/desktop-session/wallpaper
 
 # Windows: a 1 px border, no title bars (this desktop shows window identity in

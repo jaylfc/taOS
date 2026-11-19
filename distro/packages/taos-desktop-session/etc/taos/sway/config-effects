@@ -1,0 +1,30 @@
+# taOS desktop: the effects layer on top of the standard configuration.
+# Read only by the taOS compositor (sway with effects, /opt/taos/compositor);
+# the distribution's sway uses /etc/taos/sway/config and never sees this file.
+include /etc/taos/sway/config
+
+# Soft corners and depth on windows.
+corner_radius 10
+shadows enable
+shadows_on_csd disable
+shadow_blur_radius 28
+shadow_color #00000066
+shadow_inactive_color #00000040
+shadow_offset 0 6
+
+# Frosted glass behind translucent windows and the top bar.
+blur enable
+blur_xray disable
+blur_passes 3
+blur_radius 6
+blur_noise 0.02
+blur_brightness 0.95
+blur_saturation 1.1
+layer_effects "taos-bar" blur enable; blur_ignore_transparent enable; shadows enable
+
+# Windows open, close and move with a short eased motion.
+animation_duration_ms 220
+
+# Inactive windows step back slightly.
+default_dim_inactive 0.06
+dim_inactive_colors.unfocused #000000FF

@@ -20,6 +20,7 @@ GREETER = LIB / "greeter"
 AUTOSTART = LIB / "autostart"
 WALL = LIB / "wallpaper"
 SWAYCONF = PKG / "etc/taos/sway/config"
+FXCONF = PKG / "etc/taos/sway/config-effects"
 GREETD = PKG / "etc/taos/greetd/config.toml"
 CSS = PKG / "etc/taos/greetd/gtkgreet.css"
 DROPIN = PKG / "etc/taos/greetd/greetd.service-dropin.conf"
@@ -50,7 +51,8 @@ def box(tmp_path: Path):
 def env_for(box, **extra):
     e = {"PATH": f"{box['bin']}:/usr/bin:/bin", "HOME": str(box["home"]),
          "XDG_RUNTIME_DIR": str(box["run"]), "TAOS_SESSION_NO_JOURNAL": "1",
-         "TAOS_DISPLAY_NODE": str(box["tmp"] / "no-such-node")}
+         "TAOS_DISPLAY_NODE": str(box["tmp"] / "no-such-node"),
+         "TAOS_COMPOSITOR": str(box["tmp"] / "no-such-compositor")}
     e.update(extra)
     return e
 
@@ -114,6 +116,54 @@ def test_session_exports_and_runs_sway(box, shell):
     assert "--unsupported-gpu" not in Path(f"{box['log']}.args").read_text()
     # the user drop-in directory is created so the include glob matches
     assert list((box["home"] / ".config/taos/sway.d").glob("*.conf"))
+
+
+def carried_stub(box, version_rc=0):
+    d = box["tmp"] / "opt/taos/compositor/bin"
+    return stub(d, "sway",
+                f'[ "$1" = "--version" ] && exit {version_rc}\n'
+                f'echo "$@" > {box["log"]}.fxargs\nenv > {box["log"]}.fxenv\nexit 0\n')
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_session_prefers_carried_compositor_with_effects(box, shell):
+    sway_stub(box)
+    fx = carried_stub(box)
+    r = run(SESSION, box, shell=shell, TAOS_COMPOSITOR=str(fx))
+    assert r.returncode == 0, r.stderr
+    assert Path(f"{box['log']}.fxargs").read_text().split() == ["--config", "/etc/taos/sway/config-effects"]
+    assert not Path(f"{box['log']}.args").exists(), "the distribution sway must not run"
+    env = dict(l.split("=", 1) for l in Path(f"{box['log']}.fxenv").read_text().splitlines() if "=" in l)
+    # swaymsg and friends from the carried build come first on PATH
+    assert env["PATH"].startswith(str(fx.parent) + ":")
+
+
+def test_session_falls_back_when_carried_compositor_is_broken(box):
+    sway_stub(box)
+    fx = carried_stub(box, version_rc=127)
+    r = run(SESSION, box, TAOS_COMPOSITOR=str(fx))
+    assert r.returncode == 0, r.stderr
+    assert Path(f"{box['log']}.args").read_text().split() == ["--config", "/etc/taos/sway/config"]
+    assert not Path(f"{box['log']}.fxargs").exists()
+
+
+def test_session_explicit_config_wins(box):
+    fx = carried_stub(box)
+    r = run(SESSION, box, TAOS_COMPOSITOR=str(fx), TAOS_SWAY_CONFIG="/tmp/x.conf")
+    assert r.returncode == 0, r.stderr
+    assert Path(f"{box['log']}.fxargs").read_text().split() == ["--config", "/tmp/x.conf"]
+
+
+def test_effects_config_layers_on_the_standard_one():
+    c = FXCONF.read_text()
+    assert c.splitlines()[c.splitlines().index("include /etc/taos/sway/config")] == "include /etc/taos/sway/config"
+    for needle in ("blur enable", "corner_radius", "shadows enable", "animation_duration_ms",
+                   'layer_effects "taos-bar"'):
+        assert needle in c, needle
+    # effects commands never leak into the file the distribution's sway reads
+    for needle in ("blur", "corner_radius", "shadows", "animation_duration_ms", "layer_effects"):
+        assert needle not in SWAYCONF.read_text(), needle
+    assert "/etc/taos/sway/config-effects" in (PKG / "DEBIAN/conffiles").read_text()
 
 
 def test_session_restricts_to_display_gpu(box):
