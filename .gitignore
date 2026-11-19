@@ -204,8 +204,6 @@ data/*.sqlite3-wal
 data/apps/
 data/.install_id
 data/store_popularity.json
-data/device_tls.crt
-data/device_event_hwm
 
 # Registry signing-key lock sidecar. Added 2026-09-12: `data/*.pem` (above)
 # covers the key itself, but not the 0-byte `*.pem.lock` flock sidecar the
