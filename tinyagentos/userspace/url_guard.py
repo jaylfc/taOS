@@ -10,13 +10,14 @@ follow_redirects=False so a 3xx cannot bounce to a blocked host.
 Validating is not enough on its own: a client that re-resolves the hostname
 when it connects reopens a DNS-rebinding / TOCTOU window where the connected
 IP differs from the validated one. So every successful validation is cached
-here (hostname -> validated IPs, short TTL), and `userspace_fetch_client`
+here (hostname -> the validated IP, short TTL), and `userspace_fetch_client`
 hands out an httpx client whose transport pins each connection to the
 cached validated IP -- the intermediate hardening jaylfc endorsed on #971,
 pending the full pinned fetch in the P2 download broker.
 """
 from __future__ import annotations
 
+import asyncio
 import socket
 import time
 from ipaddress import ip_address
@@ -33,43 +34,41 @@ _ALLOWED_SCHEMES = {"http", "https"}
 # nameserver whose answer turns hostile is re-checked almost immediately.
 _VALIDATED_IP_TTL_SECS = 30.0
 
-# hostname -> (chosen IP, all validated IPs, monotonic expiry). Populated
-# only by successful resolve_safe_public_ip calls; a failed validation
-# caches nothing. Plain dict: entries are small, and a lost update under
-# the GIL costs at most one re-validation.
-_validated_ip_cache: dict[str, tuple[str, frozenset[str], float]] = {}
+# hostname -> (validated IP, monotonic expiry). Populated only by
+# successful resolve_safe_public_ip calls; a failed validation caches
+# nothing. Only the chosen IP is stored: it is the one address the
+# pinning transport connects to, and nothing ever read the full set of
+# resolved addresses the cache used to carry. Plain dict: entries are
+# small, and a lost update under the GIL costs at most one re-validation.
+_validated_ip_cache: dict[str, tuple[str, float]] = {}
 
 # Upper bound on cached hostnames. An install validates a handful of
 # source hosts, so this is generous; it exists so a caller validating
 # many distinct hostnames cannot grow the dict without limit. Inserts
-# also sweep expired entries (see _cache_validated_ips), so a hostname
+# also sweep expired entries (see _cache_validated_ip), so a hostname
 # that is never looked up again does not linger past its TTL.
 _VALIDATED_IP_CACHE_MAX_ENTRIES = 512
 
 
-def _cache_validated_ips(hostname: str, chosen: str, validated: list[str]) -> None:
+def _cache_validated_ip(hostname: str, chosen: str) -> None:
     """Record a successful validation in the TTL cache.
 
     Expired entries are swept first: expiry is otherwise only enforced
     when the same hostname is looked up again, and a hostname that is
-    validated once and never fetched by name (the install route fetches
-    an IP literal) would otherwise stay in memory past its TTL. The
+    validated once and never fetched (e.g. checked through
+    is_safe_public_url) would otherwise stay in memory past its TTL. The
     cache is then bounded to _VALIDATED_IP_CACHE_MAX_ENTRIES, evicting
     the oldest entries first (insertion order == validation order, and
     every entry shares the same TTL, so oldest == soonest to expire).
     """
     now = time.monotonic()
-    expired = [key for key, entry in _validated_ip_cache.items() if now >= entry[2]]
+    expired = [key for key, entry in _validated_ip_cache.items() if now >= entry[1]]
     for key in expired:
         del _validated_ip_cache[key]
     key = hostname.lower()
     # Re-insert so a re-validated hostname counts as newest for eviction.
     _validated_ip_cache.pop(key, None)
-    _validated_ip_cache[key] = (
-        chosen,
-        frozenset(validated),
-        now + _VALIDATED_IP_TTL_SECS,
-    )
+    _validated_ip_cache[key] = (chosen, now + _VALIDATED_IP_TTL_SECS)
     while len(_validated_ip_cache) > _VALIDATED_IP_CACHE_MAX_ENTRIES:
         del _validated_ip_cache[next(iter(_validated_ip_cache))]
 
@@ -94,7 +93,7 @@ def resolve_safe_public_ip(url: str) -> str | None:
     actually connected to.
 
     A successful validation is also recorded in the TTL cache
-    (`cached_validated_ips`), which is what `userspace_fetch_client` pins
+    (`cached_validated_ip`), which is what `userspace_fetch_client` pins
     connections to.
     """
     try:
@@ -119,7 +118,7 @@ def resolve_safe_public_ip(url: str) -> str | None:
             return None
         validated.append(str(ip))
     chosen = validated[0]
-    _cache_validated_ips(parsed.hostname, chosen, validated)
+    _cache_validated_ip(parsed.hostname, chosen)
     return chosen
 
 
@@ -132,8 +131,8 @@ def is_safe_public_url(url: str) -> bool:
     return resolve_safe_public_ip(url) is not None
 
 
-def cached_validated_ips(hostname: str) -> tuple[str, frozenset[str]] | None:
-    """(chosen IP, all validated IPs) for hostname from the TTL cache.
+def cached_validated_ip(hostname: str) -> str | None:
+    """The validated IP for hostname from the TTL cache.
 
     Returns None when the hostname was never validated through
     resolve_safe_public_ip, or when its entry has outlived
@@ -145,11 +144,11 @@ def cached_validated_ips(hostname: str) -> tuple[str, frozenset[str]] | None:
     entry = _validated_ip_cache.get(key)
     if entry is None:
         return None
-    chosen, ips, expiry = entry
+    chosen, expiry = entry
     if time.monotonic() >= expiry:
         del _validated_ip_cache[key]
         return None
-    return chosen, ips
+    return chosen
 
 
 def clear_validated_ip_cache() -> None:
@@ -197,12 +196,16 @@ class _ValidatedPinTransport(httpx.AsyncBaseTransport):
                 )
             return await self._inner.handle_async_request(request)
 
-        entry = cached_validated_ips(host)
-        if entry is not None:
-            chosen_ip = entry[0]
+        cached_ip = cached_validated_ip(host)
+        if cached_ip is not None:
+            chosen_ip = cached_ip
         else:
             # Cache miss or expired entry: validate (and re-cache) now.
-            chosen_ip = resolve_safe_public_ip(str(url))
+            # resolve_safe_public_ip does blocking DNS, so it runs off
+            # the event loop.
+            chosen_ip = await asyncio.to_thread(
+                resolve_safe_public_ip, str(url)
+            )
             if chosen_ip is None:
                 raise httpx.ConnectError(
                     f"refusing to fetch {host!r}: not a validated public host",

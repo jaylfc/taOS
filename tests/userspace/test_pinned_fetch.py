@@ -14,6 +14,7 @@ made, so an answer that changed to an internal address is refused.
 from __future__ import annotations
 
 import socket
+import threading
 from unittest.mock import patch
 
 import httpx
@@ -127,8 +128,8 @@ async def test_expired_cache_revalidates_and_refuses_internal_answer():
         resolver.answers["rebind.test"] = [_INTERNAL]
         cache = getattr(url_guard, "_validated_ip_cache", {})
         assert "rebind.test" in cache, "validation did not populate the IP cache"
-        chosen, ips, _expiry = cache["rebind.test"]
-        cache["rebind.test"] = (chosen, ips, 0.0)
+        chosen, _expiry = cache["rebind.test"]
+        cache["rebind.test"] = (chosen, 0.0)
         async with _fetch_client(inner) as client:
             with pytest.raises(httpx.ConnectError):
                 await client.get("http://rebind.test/app.taosapp")
@@ -182,16 +183,15 @@ def test_insert_sweeps_expired_entries_for_other_hostnames():
 
     Regression (CodeRabbit on #4364): expiry used to be enforced only
     when the SAME hostname was looked up again via
-    cached_validated_ips, so a hostname validated once and never fetched
-    by name again (the install route fetches an IP literal) lingered in
-    the cache past its TTL indefinitely.
+    cached_validated_ip, so a hostname validated once and never looked
+    up again lingered in the cache past its TTL indefinitely.
     """
     resolver = _ScriptedResolver({"old.test": [_PUBLIC], "new.test": [_PUBLIC]})
     with patch("socket.getaddrinfo", resolver):
         assert resolve_safe_public_ip("http://old.test/app.taosapp") == _PUBLIC
         cache = url_guard._validated_ip_cache
-        chosen, ips, _expiry = cache["old.test"]
-        cache["old.test"] = (chosen, ips, 0.0)  # force the entry expired
+        chosen, _expiry = cache["old.test"]
+        cache["old.test"] = (chosen, 0.0)  # force the entry expired
         # Validating a DIFFERENT hostname must sweep the expired entry.
         assert resolve_safe_public_ip("http://new.test/app.taosapp") == _PUBLIC
     assert "old.test" not in url_guard._validated_ip_cache
@@ -211,4 +211,31 @@ def test_cache_size_is_bounded_oldest_evicted_first():
     # The five oldest validations were evicted; recent ones still pin.
     for i in range(5):
         assert f"host{i}.test" not in cache
-    assert url_guard.cached_validated_ips(f"host{cap + 4}.test") is not None
+    assert url_guard.cached_validated_ip(f"host{cap + 4}.test") is not None
+
+
+@pytest.mark.asyncio
+async def test_cache_miss_validation_runs_off_the_event_loop():
+    """resolve_safe_public_ip does blocking DNS; on a cache miss the async
+    transport must run it via asyncio.to_thread, not on the event-loop
+    thread (jaylfc on #4364)."""
+    loop_thread = threading.get_ident()
+    resolve_threads: list[int] = []
+    real_resolve = url_guard.resolve_safe_public_ip
+
+    def spy_resolve(url):
+        resolve_threads.append(threading.get_ident())
+        return real_resolve(url)
+
+    resolver = _ScriptedResolver({"stable.test": [_PUBLIC]})
+    inner = _RecordingTransport()
+    with patch("socket.getaddrinfo", resolver), \
+            patch.object(url_guard, "resolve_safe_public_ip", spy_resolve):
+        async with _fetch_client(inner) as client:
+            resp = await client.get("http://stable.test/page")
+    assert resp.status_code == 200
+    assert resolve_threads, "transport never validated on the cache miss"
+    assert all(t != loop_thread for t in resolve_threads), (
+        "validation ran on the event-loop thread: "
+        f"{resolve_threads} vs loop thread {loop_thread}"
+    )
