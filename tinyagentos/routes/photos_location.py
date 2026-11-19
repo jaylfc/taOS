@@ -29,6 +29,7 @@ list the trash, and is refused on delete and restore: agents are read-only here.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from pathlib import Path
@@ -41,6 +42,7 @@ from tinyagentos.routes.user_workspace import _list_dir, _resolve_safe
 from tinyagentos.workspace_trash import (
     TrashItemNotFound,
     TrashRestoreConflict,
+    TrashRestoreOutsideRoot,
     get_trash_dir,
     list_trash_items,
     move_to_trash,
@@ -85,11 +87,16 @@ def _photos_root(request: Request) -> tuple[Path | None, JSONResponse | None]:
     returns the error response as-is. A missing Pictures folder is a 404
     rather than an empty listing so the UI can tell "no such location" apart
     from "nothing in it yet".
+
+    The base is resolved because the Pictures folder may itself be a symlink
+    (a camera roll moved to another disk leaves ``~/Pictures`` as a link).
+    Everything this location builds is compared against, or made relative to,
+    this base, so an unresolved base rejects items that are plainly inside it.
     """
     base = _photos_base(request)
     if not base.is_dir():
         return None, JSONResponse({"error": "Photos folder not found"}, status_code=404)
-    return base, None
+    return base.resolve(), None
 
 
 def _get_photos_trash_dir(request: Request) -> Path:
@@ -248,23 +255,46 @@ async def api_delete_photo(request: Request, file_path: str):
 
     The item lands in the ``photos`` trash scope, so the recycle bin's list and
     restore routes can put it back; nothing here unlinks it from disk.
+
+    Only the parent directory is resolved, never the entry itself: an entry
+    inside the folder that is a symlink (an alias for a photo) is the item the
+    user sees, and moving its resolved target would trash the real photo and
+    leave the alias dangling. The whole path is still resolved once, exactly
+    as before, to refuse spellings that leave the base (``..``, or a link
+    pointing outside the folder).
     """
     _require_photos_access(request)
     _refuse_agent_writes(request)
     base, err = _photos_root(request)
     if err is not None:
         return err
-    target = _resolve_safe(base, file_path)
-    if target is None:
+    resolved = _resolve_safe(base, file_path)
+    if resolved is None:
         return JSONResponse({"error": "Invalid path"}, status_code=400)
-    if target == base.resolve():
+    if resolved == base.resolve():
         # "", "." and "sub/.." all resolve to the location itself. Trashing the
         # base would take the entire camera roll (and the location with it), so
         # the folder itself is not a delete target however it is spelled.
         return JSONResponse({"error": "Invalid path"}, status_code=400)
+    name = Path(file_path).name
+    if name in ("", ".."):
+        # A path whose last component is a directory dot spells the parent
+        # folder, not a deletable entry; refuse rather than move a directory
+        # the request did not name.
+        return JSONResponse({"error": "Invalid path"}, status_code=400)
+    parent = _resolve_safe(base, str(Path(file_path).parent))
+    if parent is None:
+        return JSONResponse({"error": "Invalid path"}, status_code=400)
+    target = parent / name
     if not target.exists():
         return JSONResponse({"error": f"'{file_path}' not found"}, status_code=404)
-    move_to_trash(_get_photos_trash_dir(request), target, file_path)
+    # The recorded path is the entry as it sits in the folder, never the raw
+    # request string and never the target a symlink points at, so a restore
+    # puts this entry back where the user deleted it from.
+    original_path = str(target.relative_to(base.resolve()))
+    await asyncio.to_thread(
+        move_to_trash, _get_photos_trash_dir(request), target, original_path
+    )
     return {"path": file_path, "status": "deleted"}
 
 
@@ -284,11 +314,17 @@ async def api_restore_photos_trash_item(request: Request, item_id: str):
     if err is not None:
         return err
     try:
-        metadata = restore_trash_item(_get_photos_trash_dir(request), base, item_id)
+        metadata = await asyncio.to_thread(
+            restore_trash_item, _get_photos_trash_dir(request), base, item_id
+        )
     except TrashItemNotFound:
         return JSONResponse({"error": "item not found"}, status_code=404)
     except TrashRestoreConflict:
         return JSONResponse(
             {"error": "a file already exists at the original path"}, status_code=409
+        )
+    except TrashRestoreOutsideRoot:
+        return JSONResponse(
+            {"error": "original path escapes the Photos folder"}, status_code=400
         )
     return {"status": "restored", "path": metadata["original_path"]}

@@ -7,6 +7,8 @@ served by the same listing, download and delete code, and the same path
 traversal guard, as the workspace locations. The tests below assert that parity
 against ``/api/workspace/files`` wherever the card asks for it.
 """
+import json
+
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -217,6 +219,63 @@ class TestPhotosLocationRoutes:
         assert (base / "link-dir").is_symlink()
 
     @pytest.mark.asyncio
+    async def test_delete_in_folder_symlink_trashes_the_link_not_its_target(
+        self, client, monkeypatch, tmp_path
+    ):
+        """An alias photo is deleted as the alias, never as its target.
+
+        ``alias.jpg -> real.jpg`` inside the folder is one entry in the user's
+        listing. The delete resolved the final path component, so it moved
+        ``real.jpg`` into the recycle bin under the name ``alias.jpg`` and left
+        the alias behind: the real photo was gone and the link dangled. The
+        parent is resolved, the entry itself never is; the link moves, its
+        target stays, and restore puts the link back.
+        """
+        base = _photos_dir(monkeypatch, tmp_path)
+        base.mkdir()
+        target = base / "real.jpg"
+        target.write_bytes(b"the real photo")
+        (base / "alias.jpg").symlink_to("real.jpg")
+
+        resp = await client.delete("/api/photos/files/alias.jpg")
+        assert resp.status_code == 200
+        assert not (base / "alias.jpg").is_symlink()
+        assert not (base / "alias.jpg").exists()
+        assert target.read_bytes() == b"the real photo"
+
+        items = (await client.get("/api/photos/trash")).json()["items"]
+        assert [item["original_path"] for item in items] == ["alias.jpg"]
+        assert [item["name"] for item in items] == ["alias.jpg"]
+
+        restored = await client.post(f"/api/photos/trash/{items[0]['id']}/restore")
+        assert restored.status_code == 200
+        assert (base / "alias.jpg").is_symlink()
+        assert (base / "alias.jpg").resolve() == target
+        assert (base / "alias.jpg").read_bytes() == b"the real photo"
+        assert target.exists()
+
+    @pytest.mark.asyncio
+    async def test_symlinked_pictures_folder_lists_its_subfolders(self, client, monkeypatch, tmp_path):
+        """A Pictures folder that is itself a symlink still works as a location.
+
+        A camera roll moved to another disk leaves ``~/Pictures`` as a link to
+        the new place. Listing a subfolder through that link made the shared
+        listing compute ``relative_to`` an unresolved base, a ValueError that
+        answered 500. The route resolves the base, so items inside the folder
+        stay inside it.
+        """
+        realpics = tmp_path / "realpics"
+        (realpics / "sub").mkdir(parents=True)
+        (realpics / "sub" / "IMG_0009.jpg").write_bytes(b"real bytes")
+        pictures = tmp_path / "Pictures"
+        pictures.symlink_to(realpics, target_is_directory=True)
+        monkeypatch.setenv("TAOS_PHOTOS_DIR", str(pictures))
+
+        resp = await client.get("/api/photos/files?path=sub")
+        assert resp.status_code == 200, resp.text
+        assert [e["name"] for e in resp.json()] == ["IMG_0009.jpg"]
+
+    @pytest.mark.asyncio
     async def test_dangling_symlink_does_not_break_the_listing(self, client, monkeypatch, tmp_path):
         """A symlink whose target is gone is skipped, not a 500 for the folder.
 
@@ -261,6 +320,39 @@ class TestPhotosLocationRoutes:
         assert photo.read_bytes() == b"restore me"
 
         assert (await client.get("/api/photos/trash")).json()["items"] == []
+
+    @pytest.mark.asyncio
+    async def test_restore_with_escaping_original_path_is_refused(
+        self, client, app, monkeypatch, tmp_path
+    ):
+        """A trash entry whose original_path leaves the folder cannot restore.
+
+        The recorded path only escapes the base through a corrupt or
+        hand-edited trash entry, but a restore must refuse with 400 rather
+        than write the file outside the Photos folder.
+        """
+        base = _photos_dir(monkeypatch, tmp_path)
+        base.mkdir()
+        trash_dir = app.state.config_path.parent / ".taos-trash" / "photos"
+        trash_dir.mkdir(parents=True, exist_ok=True)
+        item_id = "0123456789abcdef0123456789abcdef"
+        holder = trash_dir / item_id
+        holder.mkdir()
+        (holder / "ghost.jpg").write_bytes(b"ghost")
+        (trash_dir / f"{item_id}.json").write_text(json.dumps({
+            "id": item_id,
+            "name": "ghost.jpg",
+            "original_path": "../escaped.jpg",
+            "is_dir": False,
+            "size_bytes": 5,
+            "deleted_at": "2026-11-19T00:00:00+00:00",
+        }))
+
+        resp = await client.post(f"/api/photos/trash/{item_id}/restore")
+        assert resp.status_code == 400, resp.text
+        assert not (tmp_path / "escaped.jpg").exists()
+        assert (holder / "ghost.jpg").read_bytes() == b"ghost"
+        assert base.is_dir()
 
     @pytest.mark.asyncio
     async def test_unauthenticated_requests_refused(self, client, app, monkeypatch, tmp_path):

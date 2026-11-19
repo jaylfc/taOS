@@ -147,6 +147,28 @@ describe("FilesApp Photos location", () => {
     expect(screen.queryByLabelText("New folder")).toBeNull();
   });
 
+  it("offers Upload for the workspace but not for the Photos location", async () => {
+    // The Upload button posts to workspaceUploadUrl, which is null for the
+    // camera folder: there the button did nothing at all. Asserting the
+    // button is present for the workspace keeps the Photos assertion
+    // meaningful rather than trivially true.
+    stubFetch([{ id: "photos", label: "Photos" }]);
+    render(<FilesApp windowId="w1" />);
+    await flush();
+
+    // The app opens on the user workspace, which has an upload endpoint.
+    expect(screen.getByLabelText("Upload file")).toBeTruthy();
+
+    // Select the built-in Photos location.
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Photos"));
+    });
+    await flush();
+
+    // The camera folder is not a write target, so no dead Upload button.
+    expect(screen.queryByLabelText("Upload file")).toBeNull();
+  });
+
   it("omits rename, cut and copy from a photo's context menu but keeps delete", async () => {
     // copy / move (rename) are gated off these actions; Photos must not offer
     // them because the backend exposes no copy or rename endpoint for it.

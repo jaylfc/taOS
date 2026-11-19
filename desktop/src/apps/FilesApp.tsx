@@ -1396,15 +1396,19 @@ export function FilesApp({
         </Button>
       )}
 
-      <Button
-        variant="default"
-        size="sm"
-        onClick={() => fileInputRef.current?.click()}
-        aria-label="Upload file"
-      >
-        <Upload size={14} />
-        <span className="hidden sm:inline">Upload</span>
-      </Button>
+      {/* No upload endpoint for this location (the Photos camera folder), so
+          no button that would only look pressed and do nothing. */}
+      {workspaceUploadUrl(location, "") !== null && (
+        <Button
+          variant="default"
+          size="sm"
+          onClick={() => fileInputRef.current?.click()}
+          aria-label="Upload file"
+        >
+          <Upload size={14} />
+          <span className="hidden sm:inline">Upload</span>
+        </Button>
+      )}
       <input
         ref={fileInputRef}
         type="file"
