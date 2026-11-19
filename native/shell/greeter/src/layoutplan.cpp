@@ -43,15 +43,15 @@ Plan plan(const QSizeF &sz) {
     const qreal gap = std::max(H * 0.035, 20.0 * s);
     const qreal availH = std::max(40.0, p.wordmark.top() - gap - top);
     // Block height = clockPx * kBlock (clock line, date, weather row).
-    const qreal kBlock = 1.52;
-    qreal clockPx = std::min({availH / kBlock, H * 0.175, W * 0.24});
+    const qreal kBlock = 1.26;  // one info line, then the time
+    qreal clockPx = std::min({availH / kBlock, H * 0.15, W * 0.24});
     clockPx = std::max(clockPx, 56.0);
     p.clockPx = clockPx;
-    p.datePx = std::max(18.0, clockPx * 0.19);
+    p.datePx = std::max(16.0, clockPx * 0.15);
     p.weatherPx = std::max(15.0, clockPx * 0.14);
     const qreal blockH = std::min(availH, clockPx * kBlock);
     const qreal blockW = std::min(W * 0.92, std::max(clockPx * 3.4, 420.0 * s));
-    const qreal y0 = top + (availH - blockH) * 0.3;  // settle toward the top: air above the wordmark
+    const qreal y0 = top + (availH - blockH) * 0.5;  // settle toward the top: air above the wordmark
     p.clockBlock = QRectF((W - blockW) / 2, y0, blockW, blockH);
 
     // User block: below the wordmark box, above the bottom bar.

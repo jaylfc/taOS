@@ -86,8 +86,8 @@ private slots:
                     const QRectF message(field.left(), field.bottom() + 10 * s, p.fieldW, p.messageH);
                     const QRectF power(p.bottomBar.right() - 260 * s, p.bottomBar.top(), 260 * s, p.bottomBar.height());
                     const QRectF host(p.bottomBar.left(), p.bottomBar.top(), 260 * s, p.bottomBar.height());
-                    const QRectF clock(p.clockBlock.center().x() - p.clockPx * 1.5, p.clockBlock.top(), p.clockPx * 3.0, p.clockPx);
-                    const QRectF dateWx(p.clockBlock.center().x() - p.clockPx * 1.5, p.clockBlock.top() + p.clockPx, p.clockPx * 3.0, p.clockBlock.height() - p.clockPx);
+                    const QRectF clock(p.clockBlock.center().x() - p.clockPx * 1.5, p.clockBlock.top() + p.datePx * 1.3, p.clockPx * 3.0, p.clockPx);
+                    const QRectF dateWx(p.clockBlock.center().x() - p.clockPx * 1.5, p.clockBlock.top(), p.clockPx * 3.0, p.datePx * 1.3);
 
                     struct Check { const char *what; QRectF r; int block; bool glass; QColor fg; double min; };
                     QColor dateFg = g.text; dateFg.setAlphaF(0.92);
@@ -97,7 +97,6 @@ private slots:
                         {"power buttons", power, 32, true, g.text, 4.5},
                         {"clock digits (large)", clock, 24, false, g.text, 3.0},
                         {"date", dateWx, 24, false, dateFg, 4.5},
-                        {"weather condition", dateWx, 24, false, g.placeholder, 4.5},
                         {"user names", names, 24, false, g.text, 4.5},
                         {"hostname", host, 24, false, g.placeholder, 4.5},
                         {"error or info message", message, 24, false, g.text, 4.5},

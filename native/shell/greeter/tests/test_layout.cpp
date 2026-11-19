@@ -73,7 +73,7 @@ private slots:
         // The users block has room for what it must hold: avatar + name + field.
         QVERIFY2(p.userBlock.height() >= p.fieldTop + p.fieldH + p.messageH, "users block holds avatar, name and field");
         // The clock really fits its block: clock line + date + weather row.
-        QVERIFY2(p.clockBlock.height() >= p.clockPx * 1.4, "clock block holds clock, date and weather");
+        QVERIFY2(p.clockBlock.height() >= p.clockPx * 1.2, "clock block holds clock, date and weather");
     }
     void clockBlockWidthHoldsTheDigits() {
         // "00:00" in a light face is about 2.9 em wide with tabular figures.
