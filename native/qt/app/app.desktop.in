@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=@APP_DISPLAY_NAME@
+Comment=@APP_COMMENT@
+Exec=@APP_EXEC@ %U
+Icon=@APP_ID@
+Terminal=false
+Categories=@APP_CATEGORIES@
+# The window's Wayland app_id (QGuiApplication::setDesktopFileName) and this
+# StartupWMClass are the same string as the file name without ".desktop".
+StartupWMClass=@APP_ID@
+StartupNotify=true
+SingleMainWindow=true
+X-taOS-AppId=@APP_ID@

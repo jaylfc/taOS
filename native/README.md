@@ -6,10 +6,14 @@ crate.
 | Crate | What it is |
 |---|---|
 | `taos-client` | The shared, GUI-toolkit-independent client for the Python controller: REST, SSE, session sign-in. Every native app and the native shell use it. |
+| `taos-client-ffi` | A small C ABI over `taos-client` (header `taos-client-ffi/include/taos_client.h`) for the Qt layer. |
+
+The Qt (QML + C++) layer on top is in [`qt/`](qt/README.md); the fake controller
+the tests use is `testing/fake_controller.py`.
 
 Minimum Rust version: **1.85** (Debian 13's `rustc`). Dependency versions are
 resolved with the MSRV-aware resolver, so `Cargo.lock` is committed and builds
-on 1.85. Nothing here uses `unsafe`; TLS is rustls (no OpenSSL).
+on 1.85. `taos-client` uses no `unsafe` (the only `unsafe` is the C boundary in `taos-client-ffi`); TLS is rustls (no OpenSSL).
 
 ```text
 native/check.sh        # fmt, clippy -D warnings, tests, and a 1.85 build

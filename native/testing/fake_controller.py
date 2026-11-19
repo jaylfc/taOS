@@ -23,6 +23,7 @@ Test controls (no auth), all under /__fake/:
         drop_sse: true -> close every open SSE connection now
         push: {"kind": "notification.added", ...} -> send to every open SSE
         burst: N      -> push N numbered events quickly
+        add_notification: {...} -> insert a row (newest first) and push notification.added
         bearer: "tok" -> accept this bearer token
 Run: fake_controller.py [--port 0]; prints `LISTENING <port>` on stdout.
 """
@@ -43,6 +44,9 @@ USER, PASSWORD = "jay", "hunter2-secret-pw"
 
 lock = threading.Lock()
 state = {}
+# Survive reset(): connections opened before a reset are still open (and
+# will close later), so these must keep counting across it.
+live = {"sse_open": 0, "drop_epoch": 0}
 
 
 def reset():
@@ -55,11 +59,9 @@ def reset():
             delay_path="/",
             heartbeat_ms=10000,
             fail=[],
-            sse_open=0,
             sse_total=0,
             requests=0,
             sse_queues=[],
-            sse_drop_epoch=0,
             seq=0,
             notifications=json.loads(fx("notifications_list.json")),
             decisions=json.loads(fx("decisions_list.json"))["items"],
@@ -173,7 +175,7 @@ class H(BaseHTTPRequestHandler):
     def control(self, verb, path):
         if path == "/__fake/stats":
             with lock:
-                return self.send_json({k: state[k] for k in ("sse_open", "sse_total", "requests")})
+                return self.send_json({"sse_open": live["sse_open"], "sse_total": state["sse_total"], "requests": state["requests"]})
         b = self.body()
         with lock:
             if b.get("reset"):
@@ -189,8 +191,17 @@ class H(BaseHTTPRequestHandler):
             if b.get("expire"):
                 state["sessions"].clear()
             if b.get("drop_sse"):
-                state["sse_drop_epoch"] += 1
+                live["drop_epoch"] += 1
             qs = list(state["sse_queues"])
+        if "add_notification" in b:
+            with lock:
+                row = dict(id=max([r["id"] for r in state["notifications"]] + [0]) + 1,
+                           timestamp=time.time(), level="info", title="Added", message="", read=False,
+                           source="test", data=None, user_id=None)
+                row.update(b["add_notification"])
+                state["notifications"].insert(0, row)
+            for q in qs:
+                q.put(("data", {"kind": "notification.added", "id": "n%d" % row["id"]}))
         if "push" in b:
             for q in qs:
                 q.put(("data", b["push"]))
@@ -275,10 +286,10 @@ class H(BaseHTTPRequestHandler):
     def sse(self):
         q = queue.Queue()
         with lock:
-            state["sse_open"] += 1
+            live["sse_open"] += 1
             state["sse_total"] += 1
             state["sse_queues"].append(q)
-            epoch = state["sse_drop_epoch"]
+            epoch = live["drop_epoch"]
         try:
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -292,7 +303,7 @@ class H(BaseHTTPRequestHandler):
             last_hb = time.time()
             while True:
                 with lock:
-                    if state["sse_drop_epoch"] != epoch:
+                    if live["drop_epoch"] != epoch:
                         return
                     hb = state["heartbeat_ms"] / 1000.0
                 try:
@@ -313,7 +324,7 @@ class H(BaseHTTPRequestHandler):
             return
         finally:
             with lock:
-                state["sse_open"] -= 1
+                live["sse_open"] -= 1
                 if q in state["sse_queues"]:
                     state["sse_queues"].remove(q)
 

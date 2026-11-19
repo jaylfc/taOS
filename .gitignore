@@ -228,3 +228,4 @@ apps/*/.env.*
 
 # Native Rust workspace build output
 native/target/
+native/qt/build*/
