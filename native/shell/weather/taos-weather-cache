@@ -1,0 +1,122 @@
+#!/bin/sh
+# taos-weather-cache: fetch the current weather once and write it where the
+# login screen can read it, so the login screen itself never uses the network.
+#
+# Opt in by creating /etc/taos/weather.conf (KEY=value lines, # comments):
+#   LATITUDE=0.0
+#   LONGITUDE=0.0
+#   PLACE=Example Town
+#   UNITS=metric            (metric or imperial; default metric)
+# Without that file this program does nothing and exits 0: no location is ever
+# guessed, and nothing is looked up from the IP address.
+#
+# Data: Open-Meteo current conditions (https://open-meteo.com, no API key).
+# Output: /var/cache/taos/weather.json, written atomically:
+#   {"place":"...","temperature":8.4,"units":"metric","code":3,"is_day":1,
+#    "condition":"Overcast","icon":"cloudy","updated":"2026-11-18T10:15:00Z"}
+#
+# Environment (tests and unusual setups):
+#   TAOS_WEATHER_CONF  config path        (default /etc/taos/weather.conf)
+#   TAOS_WEATHER_OUT   output path        (default /var/cache/taos/weather.json)
+#   TAOS_WEATHER_CURL  curl executable    (default curl)
+#   TAOS_WEATHER_API   forecast endpoint  (default https://api.open-meteo.com/v1/forecast)
+set -u
+conf=${TAOS_WEATHER_CONF:-/etc/taos/weather.conf}
+out=${TAOS_WEATHER_OUT:-/var/cache/taos/weather.json}
+curl_bin=${TAOS_WEATHER_CURL:-curl}
+api=${TAOS_WEATHER_API:-https://api.open-meteo.com/v1/forecast}
+prog=taos-weather-cache
+
+die() { echo "$prog: $*" >&2; exit 1; }
+
+[ -r "$conf" ] || exit 0
+
+LATITUDE= LONGITUDE= PLACE= UNITS=metric
+# Parse KEY=value without executing anything from the file.
+while IFS= read -r line || [ -n "$line" ]; do
+    case $line in ''|'#'*) continue ;; esac
+    key=${line%%=*}
+    [ "$key" != "$line" ] || continue
+    val=${line#*=}
+    key=$(printf '%s' "$key" | tr -d ' \t')
+    case $key in
+        LATITUDE) LATITUDE=$(printf '%s' "$val" | tr -d ' \t\r"') ;;
+        LONGITUDE) LONGITUDE=$(printf '%s' "$val" | tr -d ' \t\r"') ;;
+        UNITS) UNITS=$(printf '%s' "$val" | tr -d ' \t\r"') ;;
+        PLACE) PLACE=$val ;;
+    esac
+done <"$conf"
+
+num_re='^-?[0-9]{1,3}(\.[0-9]{1,8})?$'
+printf '%s' "$LATITUDE" | grep -Eq "$num_re" || die "LATITUDE is missing or not a number"
+printf '%s' "$LONGITUDE" | grep -Eq "$num_re" || die "LONGITUDE is missing or not a number"
+awk -v v="$LATITUDE" 'BEGIN { exit !(v >= -90 && v <= 90) }' || die "LATITUDE out of range"
+awk -v v="$LONGITUDE" 'BEGIN { exit !(v >= -180 && v <= 180) }' || die "LONGITUDE out of range"
+case $UNITS in metric|imperial) ;; *) die "UNITS must be metric or imperial" ;; esac
+
+# Place: printable text only, at most 48 bytes, JSON-escaped.
+place=$(printf '%s' "$PLACE" | tr -d '\000-\037\177' | cut -c1-48 | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+[ -n "$place" ] || place=
+
+unit_arg=
+[ "$UNITS" = imperial ] && unit_arg='&temperature_unit=fahrenheit'
+url="${api}?latitude=${LATITUDE}&longitude=${LONGITUDE}&current=temperature_2m,weather_code,is_day&timezone=auto${unit_arg}"
+
+proto=
+case $api in https://*) proto='--proto =https' ;; esac
+# shellcheck disable=SC2086
+body=$("$curl_bin" -fsS --max-time 20 --retry 2 $proto "$url") || die "request failed"
+[ -n "$body" ] || die "empty response"
+
+# The "current" object is flat. (Not "current_units", which has a different key.)
+cur=$(printf '%s' "$body" | tr -d '\n' | sed -n 's/.*"current"[[:space:]]*:[[:space:]]*{\([^}]*\)}.*/\1/p')
+[ -n "$cur" ] || die "response has no current conditions"
+field() { printf '%s' "$cur" | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\(-\{0,1\}[0-9.]*\).*/\1/p"; }
+temp=$(field temperature_2m)
+code=$(field weather_code)
+is_day=$(field is_day)
+printf '%s' "$temp" | grep -Eq '^-?[0-9]{1,3}(\.[0-9]+)?$' || die "bad temperature in response"
+printf '%s' "$code" | grep -Eq '^[0-9]{1,2}$' || die "bad weather code in response"
+printf '%s' "$is_day" | grep -Eq '^[01]$' || die "bad is_day in response"
+awk -v v="$temp" 'BEGIN { exit !(v > -90 && v < 140) }' || die "temperature out of range"
+
+# WMO weather interpretation code -> short condition text and icon id.
+# Keep in step with weather/wmo-codes.tsv (the tests compare them).
+case $code in
+    0) cond="Clear"; icon=clear ;;
+    1) cond="Mostly clear"; icon=clear ;;
+    2) cond="Partly cloudy"; icon=partly-cloudy ;;
+    3) cond="Overcast"; icon=cloudy ;;
+    45) cond="Fog"; icon=fog ;;
+    48) cond="Freezing fog"; icon=fog ;;
+    51) cond="Light drizzle"; icon=drizzle ;;
+    53) cond="Drizzle"; icon=drizzle ;;
+    55) cond="Heavy drizzle"; icon=drizzle ;;
+    56|57) cond="Freezing drizzle"; icon=drizzle ;;
+    61) cond="Light rain"; icon=rain ;;
+    63) cond="Rain"; icon=rain ;;
+    65) cond="Heavy rain"; icon=rain ;;
+    66|67) cond="Freezing rain"; icon=rain ;;
+    71) cond="Light snow"; icon=snow ;;
+    73) cond="Snow"; icon=snow ;;
+    75) cond="Heavy snow"; icon=snow ;;
+    77) cond="Snow grains"; icon=snow ;;
+    80|81) cond="Rain showers"; icon=rain ;;
+    82) cond="Heavy showers"; icon=rain ;;
+    85|86) cond="Snow showers"; icon=snow ;;
+    95) cond="Thunderstorm"; icon=thunder ;;
+    96|99) cond="Thunderstorm with hail"; icon=thunder ;;
+    *) die "unknown weather code $code" ;;
+esac
+
+updated=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+outdir=$(dirname "$out")
+[ -d "$outdir" ] || die "output directory $outdir does not exist"
+tmp=$(mktemp "$outdir/.weather.XXXXXX") || die "cannot create a temporary file in $outdir"
+trap 'rm -f "$tmp"' EXIT HUP INT TERM
+printf '{"place":"%s","temperature":%s,"units":"%s","code":%s,"is_day":%s,"condition":"%s","icon":"%s","updated":"%s"}\n' \
+    "$place" "$temp" "$UNITS" "$code" "$is_day" "$cond" "$icon" "$updated" >"$tmp" || die "write failed"
+chmod 0644 "$tmp"
+mv -f "$tmp" "$out" || die "cannot replace $out"
+trap - EXIT HUP INT TERM
+exit 0

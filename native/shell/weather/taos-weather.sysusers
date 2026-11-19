@@ -1,0 +1,2 @@
+# Unprivileged account that owns /var/cache/taos and runs taos-weather-cache.
+u taos-weather - "taOS weather cache" /var/lib/taos-weather /usr/sbin/nologin

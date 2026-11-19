@@ -1,0 +1,54 @@
+#!/bin/sh
+# greetd greeter command: taos-greeter inside the cage kiosk compositor, run by
+# greetd as the greeter user (for example _greetd). Install as
+# /usr/lib/taos/desktop-session/greeter-native and point greetd's
+# [default_session] command at it (see README.md, "Putting it live").
+#
+# Environment (all optional):
+#   TAOS_QT_PREFIX       Qt runtime staged by stage-qt-runtime.sh  (default /opt/taos/qt)
+#   TAOS_GREETER_BIN     the binary                                (default /opt/taos/greeter/bin/taos-greeter)
+#   TAOS_DISPLAY_NODE    the display GPU's DRM node                (default /dev/dri/taos-display)
+#   TAOS_GREETER_SOFTWARE=1   software rendering (no GPU needed; for a machine whose GL does not work)
+#   /etc/taos/greeter.env     sourced when present: extra variables for the greeter
+set -u
+prefix=${TAOS_QT_PREFIX:-/opt/taos/qt}
+bin=${TAOS_GREETER_BIN:-/opt/taos/greeter/bin/taos-greeter}
+node=${TAOS_DISPLAY_NODE:-/dev/dri/taos-display}
+
+[ -x "$bin" ] || { echo "taos greeter: $bin is missing" >&2; exit 1; }
+[ -r /etc/taos/greeter.env ] && . /etc/taos/greeter.env
+
+# The Qt runtime is private to taOS: nothing from the system or a home directory.
+LD_LIBRARY_PATH="$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+QT_PLUGIN_PATH="$prefix/plugins"
+QML_IMPORT_PATH="$prefix/qml"
+export LD_LIBRARY_PATH QT_PLUGIN_PATH QML_IMPORT_PATH
+export QT_QPA_PLATFORM=wayland
+export QT_QUICK_CONTROLS_STYLE=Basic
+
+if [ -e "$node" ]; then
+    WLR_DRM_DEVICES=$(readlink -f "$node")
+    export WLR_DRM_DEVICES
+else
+    unset WLR_DRM_DEVICES
+    echo "taos greeter: $node missing; cage picks its own GPU" >&2
+fi
+if [ "${TAOS_GREETER_SOFTWARE:-0}" = 1 ]; then
+    export LIBGL_ALWAYS_SOFTWARE=1 WLR_RENDERER=pixman
+elif [ -r /usr/share/glvnd/egl_vendor.d/50_mesa.json ]; then
+    # Machines with a second (proprietary) GPU stack: keep Qt on Mesa.
+    : "${__EGL_VENDOR_LIBRARY_FILENAMES:=/usr/share/glvnd/egl_vendor.d/50_mesa.json}"
+    export __EGL_VENDOR_LIBRARY_FILENAMES
+fi
+export LIBVA_DRIVER_NAME=none
+
+# The login VT is ours: blank it and hide its cursor, so whatever is left on
+# it never shows while the login screen hands over to the desktop.
+printf '\033[?25l\033[2J\033[3J\033[H' 2>/dev/null || true
+# Log to the journal, not to the VT: text written to the VT is what flashes
+# between the login screen and the desktop.
+if command -v systemd-cat >/dev/null 2>&1 && systemd-cat -t taos-greeter true >/dev/null 2>&1; then
+    # -s lets Ctrl+Alt+Fn switch to the text consoles; -d no client-side decorations.
+    exec systemd-cat -t taos-greeter cage -s -d -- "$bin" "$@"
+fi
+exec cage -s -d -- "$bin" "$@" >/dev/null 2>&1
