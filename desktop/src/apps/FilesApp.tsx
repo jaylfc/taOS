@@ -1396,8 +1396,9 @@ export function FilesApp({
         </Button>
       )}
 
-      {/* No upload endpoint for this location (the Photos camera folder), so
-          no button that would only look pressed and do nothing. */}
+      {/* Rendered only where workspaceUploadUrl has an upload endpoint for this
+          location; where it returns null the button would only look pressed and
+          do nothing. */}
       {workspaceUploadUrl(location, "") !== null && (
         <Button
           variant="default"

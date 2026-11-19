@@ -195,6 +195,60 @@ class TestPhotosLocationRoutes:
         assert (base / "sub").is_dir()
 
     @pytest.mark.asyncio
+    async def test_delete_dot_spelling_names_the_entry_the_plain_path_names(
+        self, client, workspace_root, monkeypatch, tmp_path
+    ):
+        """No request can spell a final path component ``.``, and the one that
+        looks like it does names the directory itself.
+
+        ``Path(".").name`` is ``""`` and ``Path("sub/.").name`` is ``"sub"``:
+        pathlib drops a lone ``.`` component, so ``"."`` can never reach a name
+        check and the guard on ``("", "..")`` already covers both dot forms.
+        What a trailing ``.`` actually asks for is the directory it is appended
+        to, which is a deletable entry in this location exactly as in the user
+        workspace route it mirrors (``api_delete_file``: "Move a file or
+        directory from the user workspace to the trash"). So every spelling of
+        one directory moves that directory and nothing else, and the two dot
+        spellings that would name something the request did not name (``.``
+        alone, ``sub/..``) are refused as the base folder, as
+        test_delete_refuses_the_base_folder_itself asserts.
+        """
+        base = _photos_dir(monkeypatch, tmp_path)
+        for directory in ("plain", "dotted", "slashed", "keep"):
+            (base / directory).mkdir(parents=True)
+            (base / directory / "inner.jpg").write_bytes(b"inner")
+
+        refused = await client.delete("/api/photos/files/%2E")
+        assert refused.status_code == 400
+        assert refused.json() == {"error": "Invalid path"}
+
+        for directory, spelling in (
+            ("plain", "plain"),
+            ("dotted", "dotted%2F%2E"),
+            ("slashed", "slashed%2F"),
+        ):
+            resp = await client.delete(f"/api/photos/files/{spelling}")
+            assert resp.status_code == 200, spelling
+            assert not (base / directory).exists(), spelling
+
+        assert (base / "keep" / "inner.jpg").read_bytes() == b"inner"
+        items = (await client.get("/api/photos/trash")).json()["items"]
+        assert sorted(item["original_path"] for item in items) == [
+            "dotted",
+            "plain",
+            "slashed",
+        ]
+
+        # The mirrored route answers the trailing-dot spelling the same way, so
+        # this is parity and not a Photos-only policy: a directory named by the
+        # request is a deletable entry there too.
+        (workspace_root / "wdot").mkdir()
+        (workspace_root / "wdot" / "inner.jpg").write_bytes(b"inner")
+        workspace_resp = await client.delete("/api/workspace/files/wdot%2F%2E")
+        assert workspace_resp.status_code == 200, workspace_resp.text
+        assert not (workspace_root / "wdot").exists()
+
+    @pytest.mark.asyncio
     async def test_delete_through_symlinks_outside_is_refused(self, client, monkeypatch, tmp_path):
         """A delete follows no symlink out of the base, file or directory."""
         base = _photos_dir(monkeypatch, tmp_path)
