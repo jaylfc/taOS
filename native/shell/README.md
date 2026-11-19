@@ -8,8 +8,10 @@ untouched by this directory.
 |---|---|
 | `bar/` : `taos-bar`, the status bar | version 0 (this README) |
 | `greeter/` : `taos-greeter`, the login screen (a greetd greeter) | version 0 (section below) |
+| `overview/` : `taos-overview`, the Alt+Tab window switcher and the workspace overview | version 0 (section below) |
 | `weather/` : `taos-weather-cache` and its systemd units | opt-in weather for the login screen |
-| `common/` | theme loader shared by the bar and the greeter |
+| `common/` | theme loader and glass style shared by the bar, the greeter and the overview |
+| `protocols/` | vendored Wayland protocol XML (ext-foreign-toplevel-list, ext-image-capture-source, ext-image-copy-capture) |
 | `taos-shell-session` | session entry point and supervisor |
 
 ## The bar (`taos-bar`)
@@ -204,6 +206,90 @@ the real glass and scrim numbers) and `weather/tests/test-weather-cache.sh`
 headless sway at 3840x1200, 3840x2160, 1920x1080 and 1080x2400 with `wtype`
 and `grim`, and also a non-demo run against `tests/fake-greetd.py`.
 
+## The window switcher and overview (`taos-overview`)
+
+A daemon that stays hidden until asked. It owns one layer-shell surface (layer OVERLAY, all four
+edges, exclusive zone -1, namespace `taos-overview`, exclusive keyboard while shown), on the output
+of the focused workspace; the same binary is the client (`taos-overview switcher` and friends).
+
+```
+taos-overview daemon [--variant dark|light] [--theme id] [--reduce-motion] [--no-capture]
+taos-overview switcher [--reverse] [--sticky]   open the switcher, or move its selection
+taos-overview overview                          open the overview, or close it
+taos-overview hide | commit | next | prev | left | right | up | down | status
+```
+
+The commands travel over a Unix socket, `$XDG_RUNTIME_DIR/taos-shell/overview.sock` (mode 600 in a
+mode 700 directory). The client is plain POSIX code that runs before any Qt object exists, so a key
+binding that execs it costs a socket write. `taos-shell-session` starts and supervises the daemon
+next to `taos-bar` (default `TAOS_SHELL_COMPONENTS="taos-bar taos-overview"`).
+
+**Switcher (Alt+Tab).** A glass panel with a row of live thumbnails in most-recently-used order, the
+app icon on each and the title under it; the previous window is preselected. The first Alt+Tab opens
+it. While the overlay owns the keyboard sway still matches its key bindings first, so every further
+Tab (and Shift+Tab) re-runs `taos-overview switcher [--reverse]`, which moves the selection while it
+is up; arrows, Q (close the selected window, `kill` over sway IPC), Escape (cancel) and the mouse reach
+the overlay itself. Releasing Alt focuses the selection (`[con_id=N] focus`, which also changes
+workspace). If Alt was already released when the overlay got the keyboard, it commits at once. `--sticky`
+keeps the switcher up until Return or Escape (for scripts and tests). One window: shown alone. No
+window: nothing is shown.
+
+**Overview (Super tap).** Fades and blurs the desktop (swayfx `layer_effects`), packs the live
+thumbnails of the current workspace in a Mission Control style layout (aspect ratios kept, one shared
+scale, no overlap, reading order kept), with a strip of workspace miniatures on top (the windows'
+thumbnails composed at their positions; click one to go there, the last tile makes a new workspace).
+Hover lifts a thumbnail and shows its title; click focuses; Escape, or a second Super tap, closes;
+typing filters by title, app or workspace across ALL workspaces; arrows and Tab move the selection and
+Return focuses it.
+
+**Window model.** Sway IPC over `$SWAYSOCK` directly: one `get_tree` at start, then the `window` and
+`workspace` events patch the model (a title change patches one string; only structural events refetch,
+after a 20 ms debounce). Most recently used order is kept from the focus events (one seat: sway has one
+default seat here). Each window carries con_id, app_id (or X11 class), title, workspace, output, focused,
+urgent, floating, geometry and `foreign_toplevel_identifier` (the exact field name in sway 1.12's
+`get_tree`). Icons come from the app's `.desktop` file (`Icon=`, indexed on a background thread) through
+the icon theme; without one the tile is a monogram in the greeter's avatar style.
+
+**Live thumbnails.** A second Wayland connection on its own thread binds `ext_foreign_toplevel_list_v1`
+(handles matched to sway windows by identifier), `ext_foreign_toplevel_image_capture_source_manager_v1`
+and `ext_image_copy_capture_manager_v1`. Capture sessions exist only while the overlay is visible and are
+destroyed when it hides; frames go through `wl_shm` buffers and are scaled down on that thread, so only
+thumbnail-size images reach the GUI, which paints them as textures. The newest image of each window is
+cached and shown at once on the next open. The rate is 15 fps for up to 4 thumbnails, 12 up to 8, then 8
+and 5. Windows on other workspaces and covered windows are captured too (verified under sway 1.12).
+dmabuf capture is a later optimisation: the session offers shm formats only to this client for now.
+
+**Motion and accessibility.** Open and close are a 200 ms fade with a slight scale; selection moves
+animate; everything is off under reduced motion (theme `motion.reduce`, `--reduce-motion`,
+`TAOS_REDUCE_MOTION=1`). The overlay exposes the windows as a list ("Terminal: ~/src, workspace 2"),
+announces selection changes, and everything works from the keyboard.
+
+**Fail-safes.** The overlay owns the keyboard while up, so: it closes itself after 30 s without a key,
+click or command (`TAOS_OVERVIEW_IDLE_MS` overrides); a watchdog thread exits the process if the GUI
+thread stops beating for 6 s while the overlay is up (the compositor then drops the surface and the
+supervisor restarts the daemon); `kill -9` leaves nothing behind, as the keyboard grab ends with the
+surface (tested); a non-sticky switcher that never receives the keyboard hides after 0.8 s.
+
+**Idle cost.** Hidden, the daemon has no timer and no capture session; the capture thread and the
+watchdog sleep in `poll` and a condition variable. Sway events patch the model only.
+
+**Installing the key bindings.** `overview/sway/40-overview.conf` goes to
+`/etc/taos/sway.d/40-overview.conf` (the installed copy is `share/taos/sway.d/`):
+
+```
+bindsym Mod1+Tab exec taos-overview switcher
+bindsym Mod1+Shift+Tab exec taos-overview switcher --reverse
+bindsym --release Super_L exec taos-overview overview
+bindsym Mod4+Tab exec taos-overview overview
+layer_effects "taos-overview" blur enable; blur_ignore_transparent enable
+```
+
+`bindsym --release Super_L` was checked headless: it does not fire after Super+Return or Super+x (sway
+runs a release binding only when no other key went down meanwhile). Not covered: a Super+mouse drag
+(`floating_modifier`) followed by a Super release may open the overview; Super+Tab is the plain
+alternative if that bothers. `tests/e2e-overview.sh` drives all of it under a headless sway (see its
+header); the unit tests (`test_swaytree`, `test_windowlist`, `test_packing`, `test_ipc`) run in `ctest`.
+
 ## Building against a Qt prefix
 
 ```
@@ -229,7 +315,7 @@ scale 1.5. See the script header for its environment.
 ## Session entry point: `taos-shell-session`
 
 POSIX sh. `start` launches each component in `TAOS_SHELL_COMPONENTS` (default
-`taos-bar`) under a supervisor and returns; `stop` ends them using the pidfiles
+`taos-bar taos-overview`) under a supervisor and returns; `stop` ends them using the pidfiles
 in `$XDG_RUNTIME_DIR/taos-shell/` (it never signals by name); `status` lists
 them (exit 0 all running, 1 a component gave up, 3 something stopped).
 `screen-off` and `screen-on` are reserved: they print "not implemented yet" on

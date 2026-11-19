@@ -17,3 +17,8 @@ Data (not shipped): the weather text the login screen shows comes from
 only when the owner opts in. Open-Meteo data is offered under CC BY 4.0; the
 free API is for non-commercial use, so a commercial distribution needs their
 subscription or its own weather source.
+
+Wayland protocols vendored in `protocols/` (XML with their licence headers intact; the client glue is
+generated from them at build time with `wayland-scanner`): `ext-foreign-toplevel-list-v1`,
+`ext-image-capture-source-v1` and `ext-image-copy-capture-v1`, from wayland-protocols (MIT licence).
+`taos-overview` also links libwayland-client (MIT).
