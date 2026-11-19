@@ -143,21 +143,27 @@ void Session::useSavedSession(const QByteArray &savedSession)
 
 void Session::verify()
 {
-    m_client->call(u"auth.me"_s)->then(this, [this](const Result &r) {
-        if (r.ok()) {
-            m_user = r.value.toObject();
+    // `/auth/me` reads only the session cookie (the controller ignores a bearer
+    // token there), so a cookie session is checked with it and a bearer-only
+    // credential with a cheap authenticated route that does accept the token.
+    const bool cookie = !m_client->exportSession().isEmpty();
+    Reply *r = cookie ? m_client->call(u"auth.me"_s)
+                      : m_client->http(u"GET"_s, u"/api/notifications"_s, {{u"unread_only"_s, u"true"_s}});
+    r->then(this, [this, cookie](const Result &res) {
+        if (res.ok()) {
+            m_user = cookie ? res.value.toObject() : QJsonObject{{u"via"_s, u"token"_s}};
             m_acquireBudget = 3;
             setError(Error());
             Q_EMIT userChanged();
             setState(SignedIn);
             Q_EMIT signedIn(m_user);
-        } else if (r.error.kind() == Error::Unauthenticated) {
+        } else if (res.error.kind() == Error::Unauthenticated) {
             m_client->forgetCredentials();
-            acquire(r.error); // the Client's own coalesced signal is not used for this check
+            acquire(res.error); // the Client's own coalesced signal is not used for this check
         } else {
-            setError(r.error);
+            setError(res.error);
             setState(SignedOut);
-            Q_EMIT signInFailed(r.error);
+            Q_EMIT signInFailed(res.error);
         }
     });
 }

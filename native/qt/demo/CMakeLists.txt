@@ -9,8 +9,12 @@ taos_add_native_app(
   SOURCES main.cpp
   LIBS Qt6::Quick Qt6::QuickControls2)
 
+get_filename_component(QT_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/.. ABSOLUTE)
+# Resource paths are relative to BASE: :/demo/main.qml and :/style/Taos/Style/...
 qt_add_resources(taos-native-demo "qml"
   PREFIX "/"
-  BASE ${CMAKE_CURRENT_SOURCE_DIR}/..
-  FILES demo/main.qml style/Taos/Style/qmldir style/Taos/Style/TaosStyle.qml
-        style/Taos/Style/TaosWindow.qml)
+  BASE ${QT_ROOT}
+  FILES ${CMAKE_CURRENT_SOURCE_DIR}/main.qml
+        ${QT_ROOT}/style/Taos/Style/qmldir
+        ${QT_ROOT}/style/Taos/Style/TaosStyle.qml
+        ${QT_ROOT}/style/Taos/Style/TaosWindow.qml)

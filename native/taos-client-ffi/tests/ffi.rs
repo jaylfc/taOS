@@ -237,7 +237,7 @@ fn network_down_is_a_network_error() {
 
 #[test]
 fn bearer_token_and_session_export() {
-    let Some(fake) = Fake::start() else { return };
+    let fake = Fake::start().expect("python3 fake controller must start");
     let sink = Arc::new(Sink::default());
     let c = new_client(&fake.url(), &sink, Some("local-token-123"));
     call(c, 1, "notifications.list", "{}");
@@ -282,7 +282,7 @@ fn bearer_token_and_session_export() {
 
 #[test]
 fn stream_events_reconnect_cancel_and_free() {
-    let Some(fake) = Fake::start() else { return };
+    let fake = Fake::start().expect("python3 fake controller must start");
     fake.ctl(r#"{"heartbeat_ms":50}"#);
     let sink = Arc::new(Sink::default());
     let c = new_client(&fake.url(), &sink, None);
@@ -357,7 +357,7 @@ fn stream_events_reconnect_cancel_and_free() {
 
 #[test]
 fn free_from_inside_a_callback_is_refused() {
-    let Some(fake) = Fake::start() else { return };
+    let fake = Fake::start().expect("python3 fake controller must start");
     struct Ctx {
         client: Mutex<usize>,
         rc: Mutex<Option<c_int>>,

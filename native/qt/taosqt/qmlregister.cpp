@@ -19,7 +19,8 @@ void registerQmlTypes()
     qmlRegisterUncreatableType<EventStream>(uri, 1, 0, "EventStream", QStringLiteral("created by C++"));
     qmlRegisterUncreatableType<LiveQuery>(uri, 1, 0, "LiveQuery", QStringLiteral("created by C++"));
     qmlRegisterUncreatableType<JsonListModel>(uri, 1, 0, "JsonListModel", QStringLiteral("created by C++"));
-    qmlRegisterUncreatableMetaObject(Error::staticMetaObject, uri, 1, 0, "Error", QStringLiteral("enum only"));
+    // Named TaosError: a QML type called Error would shadow the JavaScript global.
+    qmlRegisterUncreatableMetaObject(Error::staticMetaObject, uri, 1, 0, "TaosError", QStringLiteral("enum only"));
 }
 
 } // namespace Taos

@@ -1,7 +1,7 @@
 # taos_add_native_app(
 #   APP_ID my.taos.notifications        # reverse DNS: the Wayland app_id, StartupWMClass, icon name
 #   DISPLAY_NAME "Notifications"
-#   [COMMENT "..."] [CATEGORIES "Utility;"]
+#   [COMMENT "..."] [CATEGORIES Utility Office]
 #   SOURCES main.cpp ...
 #   [QML_FILES ...] [LIBS ...])
 #
@@ -10,7 +10,7 @@
 # StartupWMClass = APP_ID. The code defines TAOS_APP_ID and TAOS_APP_NAME for
 # Taos::App::configure().
 function(taos_add_native_app)
-  cmake_parse_arguments(A "" "APP_ID;DISPLAY_NAME;COMMENT;CATEGORIES;EXECUTABLE" "SOURCES;LIBS" ${ARGN})
+  cmake_parse_arguments(A "" "APP_ID;DISPLAY_NAME;COMMENT;EXECUTABLE" "CATEGORIES;SOURCES;LIBS" ${ARGN})
   if(NOT A_APP_ID OR NOT A_DISPLAY_NAME OR NOT A_SOURCES)
     message(FATAL_ERROR "taos_add_native_app needs APP_ID, DISPLAY_NAME and SOURCES")
   endif()
@@ -24,8 +24,11 @@ function(taos_add_native_app)
     set(A_COMMENT "${A_DISPLAY_NAME}")
   endif()
   if(NOT A_CATEGORIES)
-    set(A_CATEGORIES "Utility;")
+    set(A_CATEGORIES Utility)
   endif()
+  # The .desktop format wants a ";"-terminated list: Utility;Office;
+  list(JOIN A_CATEGORIES ";" _cats)
+  set(_cats "${_cats};")
   add_executable(${A_EXECUTABLE} ${A_SOURCES})
   target_link_libraries(${A_EXECUTABLE} PRIVATE taosqt ${A_LIBS})
   target_compile_definitions(${A_EXECUTABLE} PRIVATE TAOS_APP_ID="${A_APP_ID}"
@@ -33,7 +36,7 @@ function(taos_add_native_app)
   set(APP_ID ${A_APP_ID})
   set(APP_DISPLAY_NAME ${A_DISPLAY_NAME})
   set(APP_COMMENT ${A_COMMENT})
-  set(APP_CATEGORIES ${A_CATEGORIES})
+  set(APP_CATEGORIES "${_cats}")
   set(APP_EXEC ${A_EXECUTABLE})
   configure_file(${TAOS_APP_TEMPLATE_DIR}/app.desktop.in
                  ${CMAKE_CURRENT_BINARY_DIR}/${A_APP_ID}.desktop @ONLY)

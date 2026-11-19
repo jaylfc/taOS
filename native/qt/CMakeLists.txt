@@ -12,7 +12,7 @@ add_compile_definitions(QT_DISABLE_DEPRECATED_BEFORE=0x060800 QT_NO_CAST_FROM_AS
 find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Network Test)
 # Qt Quick is optional so the library and its tests build on a host without
 # the QML development files; the demo and the QML registration need it.
-find_package(Qt6 6.8 QUIET COMPONENTS Qml Quick)
+find_package(Qt6 6.8 QUIET COMPONENTS Qml Quick QuickControls2)
 
 enable_testing()
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
@@ -21,7 +21,7 @@ include(TaosNativeApp)
 
 # ---- the Rust side: libtaos_client_ffi.a ---------------------------------
 set(TAOS_NATIVE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/..)
-set(TAOS_CARGO_TARGET_DIR ${CMAKE_CURRENT_BINARY_DIR}/cargo-target)
+set(TAOS_CARGO_TARGET_DIR ${CMAKE_CURRENT_BINARY_DIR}/cargo-target CACHE PATH "cargo target dir (share one between build trees to avoid rebuilding the Rust side)")
 set(TAOS_FFI_LIB ${TAOS_CARGO_TARGET_DIR}/release/libtaos_client_ffi.a)
 option(TAOS_CARGO_OFFLINE "Pass --offline to cargo (use the vendored/cached crates)" OFF)
 set(TAOS_CARGO "cargo" CACHE STRING "cargo executable (rustup shim is fine)")
@@ -53,8 +53,8 @@ set_property(TARGET taos_client_ffi PROPERTY INTERFACE_LINK_LIBRARIES
 
 add_subdirectory(taosqt)
 add_subdirectory(tests)
-if(Qt6Quick_FOUND)
+if(Qt6Quick_FOUND AND Qt6QuickControls2_FOUND)
   add_subdirectory(demo)
 else()
-  message(STATUS "Qt Quick not found: taos-native-demo is not built")
+  message(STATUS "Qt Quick / QuickControls2 not found: taos-native-demo is not built")
 endif()

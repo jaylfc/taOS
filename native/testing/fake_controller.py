@@ -155,6 +155,9 @@ class H(BaseHTTPRequestHandler):
         mutating = verb != "GET"
         if path == "/auth/login" and verb == "POST":
             return self.login()
+        if path == "/auth/me" and not self.cookies().get("taos_session"):
+            # Like the real route: it reads only the session cookie, never a bearer.
+            return self.send_json({"error": "not authenticated"}, 401)
         err = self.authed(mutating)
         if err:
             return self.send_json({"detail": err[1]}, err[0])

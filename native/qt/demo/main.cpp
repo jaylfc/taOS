@@ -32,7 +32,7 @@ int main(int argc, char *argv[])
 
     Taos::registerQmlTypes();
     QQmlApplicationEngine engine;
-    engine.addImportPath(u"qrc:/"_s);
+    engine.addImportPath(u"qrc:/style"_s);
     engine.rootContext()->setContextProperty(u"session"_s, &session);
     engine.rootContext()->setContextProperty(u"notifications"_s, &notifications);
     engine.load(QUrl(u"qrc:/demo/main.qml"_s));

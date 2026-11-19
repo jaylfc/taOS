@@ -66,7 +66,7 @@ fn header_compiles_as_c_and_cpp() {
             .status();
         match st {
             Ok(s) => assert!(s.success(), "{cc} rejected the header"),
-            Err(_) => eprintln!("{cc} not found; skipped"),
+            Err(e) => panic!("{cc} is required to check the header: {e}"),
         }
     }
 }
