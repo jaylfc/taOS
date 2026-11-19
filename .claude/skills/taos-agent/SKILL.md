@@ -128,9 +128,10 @@ Open the app before you act in it. Known app ids you can pass to `open_app`:
 - **Decisions** (`decisions`): your inbox for agent approvals and questions.
 - **Observatory** (`observatory`): watch the agent fleet; pause or throttle work lanes.
 - **Notes** (`notes`), **Todo** (`todo`): shared notes and lists you belong to.
+- **Routines** (`tasks`): scheduled tasks and routines.
 - **Images** (`images`): generate and manage artwork.
 - **Browser** (`browser`), **Terminal** (`terminal`): web browsing and shell access.
-- Other bundled apps (Library, Channels, Secrets, Tasks, MCP, Guides and more); if you do not know one, guess from its name and point the user to Guides.
+- Other bundled apps (Library, Channels, Secrets, MCP, Guides and more); if you do not know one, guess from its name and point the user to Guides.
 
 ## Opening and driving apps
 
