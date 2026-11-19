@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import random
@@ -7,7 +8,6 @@ import re
 import shutil
 import string
 from pathlib import Path
-from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, Form, Request, UploadFile, File
@@ -154,31 +154,23 @@ async def install_app(
         if not url:
             return JSONResponse({"error": "source_url or package required"}, status_code=400)
         provenance = body.get("provenance") or provenance
-        # SSRF guard: resolve + validate the host ONCE, then pin the connection
-        # to that validated IP. Re-resolving at fetch time would reopen a
-        # DNS-rebinding TOCTOU window. follow_redirects stays off so a 3xx
-        # cannot bounce to a blocked host.
-        pinned_ip = resolve_safe_public_ip(url)
-        if pinned_ip is None:
+        # SSRF guard: resolve + validate the host ONCE here -- a successful
+        # validation also caches the validated IP in url_guard -- then fetch
+        # the original URL through userspace_fetch_client, whose transport
+        # pins the connection to that cached IP (preserving the original
+        # Host header and TLS SNI) so the HTTP stack never re-resolves the
+        # hostname. Re-resolving at fetch time would reopen a DNS-rebinding
+        # TOCTOU window. follow_redirects stays off so a 3xx cannot bounce
+        # to a blocked host. The DNS lookup itself runs off the event loop.
+        if await asyncio.to_thread(resolve_safe_public_ip, url) is None:
             return JSONResponse(
                 {"error": "source_url is not allowed -- only public http(s) hosts "
                           "(no private, loopback, link-local or reserved addresses)"},
                 status_code=400,
             )
-        _u = urlparse(url)
-        _ip_host = f"[{pinned_ip}]" if ":" in pinned_ip else pinned_ip
-        _netloc = _ip_host if not _u.port else f"{_ip_host}:{_u.port}"
-        _pinned_url = _u._replace(netloc=_netloc).geturl()
-        _host_header = _u.hostname if not _u.port else f"{_u.hostname}:{_u.port}"
         try:
             async with userspace_fetch_client(timeout=120, follow_redirects=False) as c:
-                # Connect to the pinned IP; keep the original Host header + TLS
-                # SNI so vhost routing and certificate validation still work.
-                resp = await c.get(
-                    _pinned_url,
-                    headers={"Host": _host_header},
-                    extensions={"sni_hostname": _u.hostname},
-                )
+                resp = await c.get(url)
                 resp.raise_for_status()
                 data = resp.content
         except httpx.HTTPStatusError as exc:
