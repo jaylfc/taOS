@@ -158,6 +158,14 @@ def test_session_falls_back_when_carried_compositor_dies_at_start(box):
     assert "starting the distribution's sway instead" in r.stderr
 
 
+def test_session_stops_shell_components_when_the_desktop_ends(box):
+    sway_stub(box)
+    stub(box["bin"], "taos-shell-session", f'echo "$@" >> {box["log"]}.shell\n')
+    r = run(SESSION, box)
+    assert r.returncode == 0, r.stderr
+    assert Path(f"{box['log']}.shell").read_text().split() == ["stop"]
+
+
 def test_session_explicit_config_wins(box):
     fx = carried_stub(box)
     r = run(SESSION, box, TAOS_COMPOSITOR=str(fx), TAOS_SWAY_CONFIG="/tmp/x.conf")
