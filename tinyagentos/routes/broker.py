@@ -159,7 +159,7 @@ def _validate_fetch_body(body: dict) -> tuple[dict | None, JSONResponse | None]:
 
     max_chars = body.get("max_chars")
     if max_chars is not None:
-        if not isinstance(max_chars, int):
+        if isinstance(max_chars, bool) or not isinstance(max_chars, int):
             return None, JSONResponse({"error": "max_chars must be an integer"}, status_code=400)
         if not (1 <= max_chars <= 100000):
             return None, JSONResponse({"error": "max_chars must be between 1 and 100000"}, status_code=400)

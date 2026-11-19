@@ -322,6 +322,71 @@ class TestBrokerRoutes:
         assert resp.json() == expected
         mock_fetch.assert_awaited_once_with("test-key", "https://example.com/page", 500, allow_public=False)
 
+    async def test_keenable_search_after_revoke_403(self, client, app):
+        grant_id = await self._active_keenable_grant(client)
+        resp = await client.post(f"/api/broker/grants/{grant_id}/revoke")
+        assert resp.status_code == 200
+        async with await self._agent_client(app) as c:
+            resp = await c.post("/api/broker/keenable/search", json={"query": "test"})
+        assert resp.status_code == 403
+        assert resp.json()["error"] == "no active keenable grant"
+
+    async def test_keenable_fetch_not_configured_409_client_not_called(self, client, app):
+        await self._active_keenable_grant(client)
+        with patch("tinyagentos.routes.broker.keenable_fetch", AsyncMock()) as mock_fetch:
+            async with await self._agent_client(app) as c:
+                resp = await c.post(
+                    "/api/broker/keenable/fetch", json={"url": "https://example.com"}
+                )
+        assert resp.status_code == 409
+        assert resp.json()["error"] == "keenable not configured"
+        mock_fetch.assert_not_awaited()
+
+    async def test_keenable_search_public_fallback_200_without_key(self, client, app):
+        await self._active_keenable_grant(client)
+        with patch(
+            "tinyagentos.routes.broker.public_fallback_enabled",
+            AsyncMock(return_value=True),
+        ), patch(
+            "tinyagentos.routes.broker.keenable_search",
+            AsyncMock(return_value=[]),
+        ) as mock_search:
+            async with await self._agent_client(app) as c:
+                resp = await c.post("/api/broker/keenable/search", json={"query": "test"})
+        assert resp.status_code == 200
+        mock_search.assert_awaited_once_with("", "test", 5, allow_public=True)
+
+    async def test_keenable_search_upstream_error_502_hides_detail(self, client, app):
+        await self._active_keenable_grant(client)
+        await app.state.secrets.add("KEENABLE_API_KEY", "secret-key-value")
+        with patch(
+            "tinyagentos.routes.broker.keenable_search",
+            AsyncMock(side_effect=RuntimeError("boom secret-key-value")),
+        ):
+            async with await self._agent_client(app) as c:
+                resp = await c.post("/api/broker/keenable/search", json={"query": "test"})
+        assert resp.status_code == 502
+        assert "boom" not in resp.text
+        assert "secret-key-value" not in resp.text
+
+    async def test_keenable_search_non_object_body_400(self, client, app):
+        await self._active_keenable_grant(client)
+        async with await self._agent_client(app) as c:
+            resp = await c.post("/api/broker/keenable/search", json=["query"])
+        assert resp.status_code == 400
+        assert resp.json()["error"] == "body must be a JSON object"
+
+    async def test_keenable_fetch_max_chars_boolean_400(self, client, app):
+        """`isinstance(True, int)` is true, so booleans must be rejected explicitly."""
+        await self._active_keenable_grant(client)
+        async with await self._agent_client(app) as c:
+            resp = await c.post(
+                "/api/broker/keenable/fetch",
+                json={"url": "https://example.com", "max_chars": True},
+            )
+        assert resp.status_code == 400
+        assert resp.json()["error"] == "max_chars must be an integer"
+
 
 @pytest.mark.asyncio
 async def test_deny_revoke_unknown_grant_404(client):
