@@ -1,0 +1,19 @@
+Package: taos-desktop-session
+Version: 0.1.0
+Architecture: all
+Maintainer: jaylfc <jaylfc25@gmail.com>
+Priority: optional
+Section: x11
+Depends: greetd, gtkgreet, cage, sway, swaybg, foot, xwayland, taos-wallpapers, taos-gpu
+Description: taOS graphical login screen and Wayland session
+ A greetd login screen (gtkgreet inside a cage kiosk, interim until the native
+ taOS greeter exists) on VT 7, and the taOS session it starts: sway with a
+ minimal config, the taOS wallpaper, and one autostart entry point for the
+ graphical shell. Both the greeter and the session are limited to the display
+ GPU chosen by taos-gpu (/dev/dri/taos-display), so a compute-only NVIDIA card
+ never drives the screen. Installing the package does not start greetd and
+ does not switch the default target; the taOS login config only becomes active
+ with 'taos-desktop enable' ('taos-desktop disable' reverses it). Debian's
+ greetd package itself enables its stock unit on first install, so stock greetd
+ (text login on VT 7) can start at the next boot until 'taos-desktop disable'.
+ The text consoles on VT 1 to 6 are never touched.

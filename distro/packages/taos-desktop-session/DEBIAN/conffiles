@@ -1,0 +1,7 @@
+/etc/greetd/environments
+/etc/taos/greetd/config.toml
+/etc/taos/greetd/gtkgreet.css
+/etc/taos/greetd/greetd.service-dropin.conf
+/etc/taos/sway/config
+/etc/taos/sway.d/00-taos.conf
+/etc/taos/sway/config-effects

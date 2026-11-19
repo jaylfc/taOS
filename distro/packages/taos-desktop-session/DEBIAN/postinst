@@ -1,0 +1,41 @@
+#!/bin/sh
+set -e
+# TAOS_ROOT is a prefix for tests; empty on a real system.
+root=${TAOS_ROOT:-}
+case "$1" in
+    configure)
+        mkdir -p "$root/etc/taos/sway.d"
+        # sway does not read /etc/default/keyboard. Generate a keyboard drop-in
+        # once from it; never overwrite one that exists (it may be hand-edited).
+        kb="$root/etc/default/keyboard"
+        dropin="$root/etc/taos/sway.d/10-keyboard.conf"
+        if [ -r "$kb" ] && [ ! -e "$dropin" ]; then
+            # Parse, never source: the file is data. Keep only characters that
+            # are valid in an xkb name list so nothing can reach the sway config.
+            get() {
+                sed -n "s/^[[:space:]]*$1=//p" "$kb" | head -n 1 | tr -d "\"'" | tr -cd 'A-Za-z0-9_,:+-'
+            }
+            layout=$(get XKBLAYOUT)
+            variant=$(get XKBVARIANT)
+            options=$(get XKBOPTIONS)
+            if [ -n "$layout" ]; then
+                {
+                    echo "# Generated once by taos-desktop-session from /etc/default/keyboard."
+                    echo "# Edit freely; it is not regenerated, and is removed on purge."
+                    echo "input type:keyboard {"
+                    echo "    xkb_layout \"$layout\""
+                    [ -z "$variant" ] || echo "    xkb_variant \"$variant\""
+                    [ -z "$options" ] || echo "    xkb_options \"$options\""
+                    echo "}"
+                } > "$dropin.new"
+                mv -f "$dropin.new" "$dropin"
+            fi
+        fi
+        # Installing never enables or starts greetd ourselves and never changes the default
+        # target: 'taos-desktop enable' does that on purpose.
+        if [ -z "$root" ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+            systemctl daemon-reload >/dev/null 2>&1 || true
+        fi
+        ;;
+esac
+exit 0

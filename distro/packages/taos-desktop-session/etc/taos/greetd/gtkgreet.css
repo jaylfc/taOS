@@ -1,0 +1,96 @@
+/* taOS login screen (gtkgreet, GTK3 CSS). Interim: replaced by the native greeter.
+   Accent #a78bfa is the violet the taos-shell prompt palette already uses.
+   The solid colour is the fallback if the wallpaper file is missing. */
+window {
+    background-color: #141415;
+    background-image: url("file:///usr/share/taos/wallpapers/neural/dark-3840x2160.jpg");
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    color: #ececf1;
+    font-family: Inter, "Noto Sans", "DejaVu Sans", sans-serif;
+    font-size: 20px;
+}
+
+#body {
+    background-color: rgba(20, 20, 21, 0.78);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 16px;
+    padding: 40px 48px;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+}
+
+#clock {
+    color: #ececf1;
+    font-size: 56px;
+    font-weight: 600;
+    margin-bottom: 16px;
+}
+
+label {
+    color: #ececf1;
+}
+
+entry, #input-field {
+    background-color: rgba(255, 255, 255, 0.07);
+    background-image: none;
+    color: #ffffff;
+    caret-color: #a78bfa;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 10px;
+    padding: 10px 14px;
+    min-height: 32px;
+    box-shadow: none;
+}
+
+entry:focus, #input-field:focus {
+    border-color: #a78bfa;
+    box-shadow: 0 0 0 2px rgba(167, 139, 250, 0.35);
+}
+
+button {
+    background-color: #a78bfa;
+    background-image: none;
+    color: #141415;
+    font-weight: 600;
+    border: none;
+    border-radius: 10px;
+    padding: 10px 22px;
+    box-shadow: none;
+}
+
+button:hover {
+    background-color: #b9a2fc;
+}
+
+button:active {
+    background-color: #8f6df5;
+}
+
+combobox button, #command-selector {
+    background-color: rgba(255, 255, 255, 0.07);
+    color: #ececf1;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+}
+
+.error, #error {
+    color: #f87171;
+}
+
+/* No window chrome on the login screen: cage is started with -d (server-side
+   decorations, which it does not draw). Belt and braces for a GTK build that
+   still draws a client-side header bar. */
+headerbar, .titlebar, decoration {
+    min-height: 0;
+    padding: 0;
+    margin: 0;
+    border: none;
+    box-shadow: none;
+    background: transparent;
+    opacity: 0;
+}
+headerbar * { min-height: 0; min-width: 0; padding: 0; margin: 0; opacity: 0; }
+
+/* The wallpaper carries the wordmark in the centre: sit the clock and the
+   sign-in card below it instead of on top of it. */
+#clock { margin-top: 580px; }

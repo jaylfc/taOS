@@ -1,0 +1,71 @@
+#!/bin/sh
+# taos-desktop enable|disable|status: turn the taOS graphical login on or off.
+# Env (tests): TAOS_ROOT (path prefix), TAOS_DESKTOP_UID (pretend uid),
+# TAOS_DISPLAY_NODE (default /dev/dri/taos-display).
+set -u
+root=${TAOS_ROOT:-}
+node=${TAOS_DISPLAY_NODE:-/dev/dri/taos-display}
+dropin_src=/etc/taos/greetd/greetd.service-dropin.conf
+dropin_dir="$root/etc/systemd/system/greetd.service.d"
+dropin="$dropin_dir/10-taos.conf"
+cfg="$root/etc/taos/greetd/config.toml"
+
+usage() { echo "usage: taos-desktop enable|disable|status" >&2; exit 2; }
+need_root() {
+    if [ "${TAOS_DESKTOP_UID:-$(id -u)}" -ne 0 ]; then
+        echo "taos-desktop: '$1' changes system services; run: sudo taos-desktop $1" >&2
+        exit 1
+    fi
+}
+reload() { [ -n "$root" ] || systemctl daemon-reload || true; }
+
+cmd_enable() {
+    need_root enable
+    [ -x "$root/usr/sbin/greetd" ] || { echo "taos-desktop: greetd is not installed" >&2; exit 1; }
+    [ -r "$cfg" ] || { echo "taos-desktop: $cfg is missing; reinstall taos-desktop-session" >&2; exit 1; }
+    if [ ! -e "$node" ]; then
+        echo "taos-desktop: warning: $node does not exist; the login screen and session will pick a GPU themselves." >&2
+        echo "taos-desktop: run 'taos-gpu status' and reboot, or continue only if this machine has one GPU." >&2
+    fi
+    mkdir -p "$dropin_dir"
+    ln -sfn "$dropin_src" "$dropin"
+    reload
+    if ! systemctl enable greetd; then
+        rm -f "$dropin"; reload
+        echo "taos-desktop: could not enable greetd (another display manager enabled? disable it first). Nothing was changed." >&2
+        exit 1
+    fi
+    systemctl set-default graphical.target
+    echo "taOS login screen enabled on VT 7. Not started yet."
+    echo "Reboot, or run: systemctl start greetd"
+    echo "Text consoles stay on Ctrl+Alt+F1 to F6. To undo: sudo taos-desktop disable"
+}
+
+cmd_disable() {
+    need_root disable
+    rm -f "$dropin"
+    rmdir "$dropin_dir" 2>/dev/null || true
+    reload
+    systemctl set-default multi-user.target
+    systemctl disable greetd || true
+    echo "taOS login screen disabled. A running session is left alone; greetd stops at reboot."
+}
+
+cmd_status() {
+    en=$(systemctl is-enabled greetd 2>/dev/null) || en=${en:-not enabled}
+    tgt=$(systemctl get-default 2>/dev/null) || tgt=unknown
+    echo "greetd: $en"
+    echo "default target: $tgt"
+    if [ -e "$dropin" ]; then echo "login screen: taOS config active"; else echo "login screen: not active (taos-desktop enable)"; fi
+    vt=$(sed -n 's/^[[:space:]]*vt[[:space:]]*=[[:space:]]*\([0-9a-z"]*\).*/\1/p' "$cfg" 2>/dev/null | head -n 1)
+    echo "vt: ${vt:-unknown}"
+    if [ -e "$node" ]; then echo "display gpu: $(readlink -f "$node") (via $node)"; else echo "display gpu: none ($node missing; see taos-gpu status)"; fi
+    if command -v taos-shell-session >/dev/null 2>&1; then echo "shell entry point: taos-shell-session present"; else echo "shell entry point: taos-shell-session missing (bare session)"; fi
+}
+
+case "${1:-}" in
+    enable) cmd_enable ;;
+    disable) cmd_disable ;;
+    status) cmd_status ;;
+    *) usage ;;
+esac

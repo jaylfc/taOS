@@ -1,0 +1,9 @@
+#!/bin/sh
+# The ONE entry point through which the taOS graphical shell is started.
+# The native shell package provides taos-shell-session; until it is installed
+# the session is bare sway.
+if command -v taos-shell-session >/dev/null 2>&1; then
+    exec taos-shell-session start
+fi
+echo "taOS shell not installed; bare session"
+exit 0

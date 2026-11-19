@@ -1,0 +1,92 @@
+#!/bin/sh
+# taos-desktop-session: the session greetd starts after login. Starts sway with
+# the taOS config on the display GPU only. Logs to the journal.
+# Env (tests): TAOS_DISPLAY_NODE (default /dev/dri/taos-display),
+# TAOS_SWAY_CONFIG (default /etc/taos/sway/config), TAOS_SESSION_NO_JOURNAL=1.
+set -u
+# Started on the login VT: blank it and hide the cursor first, so no text
+# shows between the login screen and the desktop.
+if [ -z "${TAOS_SESSION_LOGGED:-}" ] && [ -t 1 ]; then
+    printf '\033[?25l\033[2J\033[3J\033[H' 2>/dev/null || true
+fi
+
+# Send everything to the journal under one tag, once, if the journal answers.
+if [ -z "${TAOS_SESSION_LOGGED:-}" ] && [ -z "${TAOS_SESSION_NO_JOURNAL:-}" ] \
+        && command -v systemd-cat >/dev/null 2>&1 \
+        && systemd-cat -t taos-desktop-session true >/dev/null 2>&1; then
+    TAOS_SESSION_LOGGED=1 exec systemd-cat -t taos-desktop-session "$0" "$@"
+fi
+
+XDG_CURRENT_DESKTOP=taOS
+XDG_SESSION_TYPE=wayland
+MOZ_ENABLE_WAYLAND=1
+QT_QPA_PLATFORM=wayland
+export XDG_CURRENT_DESKTOP XDG_SESSION_TYPE MOZ_ENABLE_WAYLAND QT_QPA_PLATFORM
+
+# Open only the display GPU. taos-gpu keeps a udev symlink to it; NVIDIA cards
+# are compute only and must never be opened for display. Without the symlink the
+# compositor keeps its own GPU choice (and we say so).
+node=${TAOS_DISPLAY_NODE:-/dev/dri/taos-display}
+if [ -e "$node" ]; then
+    real=$(readlink -f "$node")
+    WLR_DRM_DEVICES=$real
+    export WLR_DRM_DEVICES
+    echo "taos-desktop-session: display GPU $real"
+else
+    unset WLR_DRM_DEVICES
+    echo "taos-desktop-session: $node missing; run 'taos-gpu status'. Compositor picks its own GPU." >&2
+fi
+
+PATH="$HOME/.local/bin:$PATH"
+export PATH
+
+# Keep the user include glob from matching nothing.
+confd="$HOME/.config/taos/sway.d"
+if mkdir -p "$confd" 2>/dev/null && ! ls "$confd"/*.conf >/dev/null 2>&1; then
+    echo "# Personal sway rules for the taOS session; every *.conf here is included." > "$confd/00-user.conf" 2>/dev/null || true
+fi
+
+# The taOS compositor (sway with effects, carried under /opt/taos/compositor
+# with its own libraries) when installed; otherwise the distribution's sway
+# with the plain configuration. Effects live in a separate file because the
+# distribution's sway rejects those commands.
+plain_path=$PATH
+compositor=${TAOS_COMPOSITOR:-/opt/taos/compositor/bin/sway}
+if [ -x "$compositor" ] && "$compositor" --version >/dev/null 2>&1; then
+    default_config=/etc/taos/sway/config-effects
+    PATH="$(dirname "$compositor"):$PATH"
+    export PATH
+else
+    compositor=sway
+    default_config=/etc/taos/sway/config
+fi
+config=${TAOS_SWAY_CONFIG:-$default_config}
+echo "taos-desktop-session: compositor $compositor, config $config"
+start=$(date +%s)
+"$compositor" --config "$config"
+rc=$?
+elapsed=$(( $(date +%s) - start ))
+# The carried compositor failed at once (for example its renderer did not come
+# up on this GPU): start the distribution's sway with the plain configuration
+# instead of dropping the user back at the login screen.
+if [ "$rc" -ne 0 ] && [ "$elapsed" -lt 5 ] && [ "$compositor" != sway ] && [ -z "${TAOS_SWAY_CONFIG:-}" ] \
+        && PATH=$plain_path command -v sway >/dev/null 2>&1; then
+    echo "taos-desktop-session: $compositor exited with status $rc after ${elapsed}s; starting the distribution's sway instead" >&2
+    compositor=sway
+    config=/etc/taos/sway/config
+    PATH=$plain_path
+    export PATH
+    start=$(date +%s)
+    sway --config "$config"
+    rc=$?
+    elapsed=$(( $(date +%s) - start ))
+fi
+# The desktop has ended: stop its shell components now so none outlives it.
+if command -v taos-shell-session >/dev/null 2>&1; then
+    taos-shell-session stop >/dev/null 2>&1 || true
+fi
+if [ "$rc" -ne 0 ] && [ "$elapsed" -lt 5 ]; then
+    echo "taos-desktop-session: sway exited with status $rc after ${elapsed}s; the session did not start (check 'journalctl -t taos-desktop-session')" >&2
+    exit "$rc"
+fi
+exit "$rc"

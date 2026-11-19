@@ -1,0 +1,87 @@
+#!/bin/sh
+# Set the taOS wallpaper on every active output with swaybg, one process per
+# output at that output's resolution. Only swaybg processes started here (pids
+# in $XDG_RUNTIME_DIR/taos-swaybg.pids) are ever stopped. No jq: swaymsg's JSON
+# is read with sed and awk, which every taOS install already has.
+set -u
+rundir=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+pidfile="$rundir/taos-swaybg.pids"
+solid='#141415'
+
+command -v swaybg >/dev/null 2>&1 || { echo "taos wallpaper: swaybg not found" >&2; exit 0; }
+
+old=
+[ -r "$pidfile" ] && old=$(cat "$pidfile")
+mkdir -p "$rundir" 2>/dev/null || true
+
+# "NAME WxH" per active output.
+outputs=
+if command -v swaymsg >/dev/null 2>&1; then
+    outputs=$(swaymsg -r -t get_outputs 2>/dev/null | sed 's/[{},]/\
+&\
+/g' | awk '
+        /^[ \t]*"name"[ \t]*:/ && !cm { s=$0; sub(/^[^:]*:[ \t]*"/, "", s); sub(/".*$/, "", s); name=s; if (!(name in seen)) { seen[name]=1; order[++n]=name } }
+        /^[ \t]*"active"[ \t]*:[ \t]*true/ { active[name]=1 }
+        /"current_mode"/ { cm=1; depth=0; next }
+        cm && /^[ \t]*\{/ { depth++; next }
+        cm && /^[ \t]*\}/ { depth--; if (depth <= 0) cm=0; next }
+        cm && /"width"/ { s=$0; gsub(/[^0-9]/, "", s); w[name]=s }
+        cm && /"height"/ { s=$0; gsub(/[^0-9]/, "", s); h[name]=s }
+        END { for (i=1; i<=n; i++) { k=order[i]; if (active[k] && w[k] != "" && h[k] != "") print k, w[k] "x" h[k] } }')
+fi
+
+# Wallpaper file for a size; the default wallpaper's largest size as fallback.
+pick() {
+    f=
+    if command -v taos-wallpaper >/dev/null 2>&1; then
+        [ -z "$1" ] || f=$(taos-wallpaper path --variant dark --size "$1" 2>/dev/null) || f=
+        [ -n "$f" ] || f=$(taos-wallpaper path --variant dark --size 3840x2160 2>/dev/null) || f=
+    fi
+    [ -n "$f" ] && [ -r "$f" ] && echo "$f"
+}
+
+started=
+# Preferred: hand the wallpaper to sway ("output NAME bg ..."). Sway then owns
+# the one swaybg, restarts it with the output, and keeps it below everything
+# after a switch to a text console and back. Spawning swaybg ourselves is the
+# fallback for a compositor that does not take the command.
+via_sway() { # output file-or-empty
+    command -v swaymsg >/dev/null 2>&1 || return 1
+    if [ -n "$2" ]; then
+        swaymsg output "\"$1\"" bg "\"$2\"" fill >/dev/null 2>&1
+    else
+        swaymsg output "\"$1\"" bg "$solid" solid_color >/dev/null 2>&1
+    fi
+}
+start_one() { # output file-or-empty
+    if via_sway "$1" "$2"; then
+        return 0
+    fi
+    if [ -n "$2" ]; then
+        swaybg -o "$1" -m fill -i "$2" >/dev/null 2>&1 &
+    else
+        swaybg -o "$1" -c "$solid" >/dev/null 2>&1 &
+    fi
+    started="$started $!"
+}
+
+if [ -n "$outputs" ]; then
+    while read -r name size; do
+        start_one "$name" "$(pick "$size")"
+    done <<LIST
+$outputs
+LIST
+else
+    start_one '*' "$(pick '')"
+fi
+
+for p in $started; do echo "$p"; done 2>/dev/null > "$pidfile" || true
+
+# Retire the previous generation only now, and only if the pid is still a swaybg.
+for p in $old; do
+    case "$p" in *[!0-9]*|'') continue ;; esac
+    if [ "$(cat "/proc/$p/comm" 2>/dev/null)" = swaybg ]; then
+        kill "$p" 2>/dev/null || true
+    fi
+done
+exit 0

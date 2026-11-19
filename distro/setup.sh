@@ -124,3 +124,11 @@ taos-power status
 # prints the file for a size; the compositor session picks it up from there.
 apt-get install -y --reinstall "$here"/dist/taos-wallpapers_*_all.deb
 taos-wallpaper list
+
+# Step 8: desktop session (taos-desktop-session): the graphical login screen
+# (greetd + gtkgreet on VT 7) and the taOS sway session. Installing it does not
+# start greetd, change the default target or activate the taOS login config.
+apt-get install -y --reinstall "$here"/dist/taos-desktop-session_*_all.deb
+taos-desktop status
+echo "setup.sh: optional last step, not run: 'sudo taos-desktop enable' turns the graphical login on"
+echo "setup.sh: (then reboot, or: systemctl start greetd). Text consoles stay on Ctrl+Alt+F1..F6."
