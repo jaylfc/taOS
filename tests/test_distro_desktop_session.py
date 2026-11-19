@@ -147,6 +147,17 @@ def test_session_falls_back_when_carried_compositor_is_broken(box):
     assert not Path(f"{box['log']}.fxargs").exists()
 
 
+def test_session_falls_back_when_carried_compositor_dies_at_start(box):
+    sway_stub(box)
+    d = box["tmp"] / "opt/taos/compositor/bin"
+    fx = stub(d, "sway", f'[ "$1" = "--version" ] && exit 0\necho "$@" > {box["log"]}.fxargs\nexit 1\n')
+    r = run(SESSION, box, TAOS_COMPOSITOR=str(fx))
+    assert r.returncode == 0, r.stderr
+    assert Path(f"{box['log']}.fxargs").exists(), "the carried compositor is tried first"
+    assert Path(f"{box['log']}.args").read_text().split() == ["--config", "/etc/taos/sway/config"]
+    assert "starting the distribution's sway instead" in r.stderr
+
+
 def test_session_explicit_config_wins(box):
     fx = carried_stub(box)
     r = run(SESSION, box, TAOS_COMPOSITOR=str(fx), TAOS_SWAY_CONFIG="/tmp/x.conf")

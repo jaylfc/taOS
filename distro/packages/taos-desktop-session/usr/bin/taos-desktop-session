@@ -45,6 +45,7 @@ fi
 # with its own libraries) when installed; otherwise the distribution's sway
 # with the plain configuration. Effects live in a separate file because the
 # distribution's sway rejects those commands.
+plain_path=$PATH
 compositor=${TAOS_COMPOSITOR:-/opt/taos/compositor/bin/sway}
 if [ -x "$compositor" ] && "$compositor" --version >/dev/null 2>&1; then
     default_config=/etc/taos/sway/config-effects
@@ -60,6 +61,21 @@ start=$(date +%s)
 "$compositor" --config "$config"
 rc=$?
 elapsed=$(( $(date +%s) - start ))
+# The carried compositor failed at once (for example its renderer did not come
+# up on this GPU): start the distribution's sway with the plain configuration
+# instead of dropping the user back at the login screen.
+if [ "$rc" -ne 0 ] && [ "$elapsed" -lt 5 ] && [ "$compositor" != sway ] && [ -z "${TAOS_SWAY_CONFIG:-}" ] \
+        && PATH=$plain_path command -v sway >/dev/null 2>&1; then
+    echo "taos-desktop-session: $compositor exited with status $rc after ${elapsed}s; starting the distribution's sway instead" >&2
+    compositor=sway
+    config=/etc/taos/sway/config
+    PATH=$plain_path
+    export PATH
+    start=$(date +%s)
+    sway --config "$config"
+    rc=$?
+    elapsed=$(( $(date +%s) - start ))
+fi
 if [ "$rc" -ne 0 ] && [ "$elapsed" -lt 5 ]; then
     echo "taos-desktop-session: sway exited with status $rc after ${elapsed}s; the session did not start (check 'journalctl -t taos-desktop-session')" >&2
     exit "$rc"
