@@ -13,6 +13,7 @@ from tinyagentos.notifications import VALID_LEVELS
 
 from tinyagentos.auth import get_current_user
 from tinyagentos.agent_token_auth import check_agent_scope_for_project, registry_agent_caller
+from tinyagentos.auth_context import require_admin
 from tinyagentos.rate_limit import MovingWindowLimiter
 from tinyagentos.routes.auth import _require_admin
 
@@ -368,7 +369,7 @@ async def get_notification_prefs(request: Request):
     return await store.get_event_prefs()
 
 
-@router.put("/api/notifications/prefs/{event_type}")
+@router.put("/api/notifications/prefs/{event_type}", dependencies=[Depends(require_admin)])
 async def set_notification_pref(request: Request, event_type: str):
     store = request.app.state.notifications
     if event_type not in store.EVENT_TYPES:
