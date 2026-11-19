@@ -1450,7 +1450,10 @@ async def _undo_lost_approval(
     When a different approval won this same identity, only the identity
     revert is skipped — the winner is live on it — and grants the winner
     also holds are left in place; everything else this approval wrote is
-    still undone. Every step is independent and best-effort so one failing
+    still undone. One further exception: a winner on the same project
+    holding project_tasks (or a canvas scope) keeps the membership and
+    the lead pointer too, since both name the shared identity it is
+    live on. Every step is independent and best-effort so one failing
     store neither skips the rest of the cleanup nor masks the caller's 409.
     """
     auth_store = _get_auth_requests_store(request)
@@ -1495,13 +1498,33 @@ async def _undo_lost_approval(
     # them: the winner's record carries its granted scopes and the project
     # its request bound them to. Those rows are the winner's writes, not
     # this approval's, and the grant cleanup below leaves them alone.
+    # A winner that deferred binding wrote its grants UNBOUND even though
+    # its record still names a project, so the unbound key is recognised
+    # as the winner's too — keying only on the record's project_id would
+    # let this undo revoke the very rows the winner holds.
     winner_keys: set[tuple[str, Optional[str]]] = set()
     winner_scopes: set[str] = set()
     if winner is not None:
         winner_scopes = set(winner.get("granted_scopes") or [])
         winner_keys = {
             (scope, winner.get("project_id")) for scope in winner_scopes
-        }
+        } | {(scope, None) for scope in winner_scopes}
+    # A winner on the SAME project holding project_tasks (or a canvas
+    # scope) is a live member of the project this approval wrote to:
+    # removing the membership below would leave it holding project_tasks
+    # with no member row, and the lead pointer names the shared identity,
+    # so the still-ours guard cannot tell this approval's lead write from
+    # the winner's — putting the prior lead back could strip the lead
+    # from the winner. (A winner that took the lead necessarily holds
+    # project_tasks or a canvas scope on this project — is_lead requires
+    # one — so this one condition covers that case too.) The membership
+    # removal and the lead restore are both skipped for such a winner.
+    winner_on_same_project = (
+        winner is not None
+        and binding_project is not None
+        and winner.get("project_id") == binding_project
+        and bool(winner_scopes & ({"project_tasks"} | _CANVAS_SCOPES))
+    )
 
     registry = _get_registry_store(request)
     grants_store = _get_grants_store(request)
@@ -1559,7 +1582,12 @@ async def _undo_lost_approval(
         )
 
     pstore = getattr(request.app.state, "project_store", None)
-    if lead_overwritten and binding_project and pstore is not None:
+    if (
+        lead_overwritten
+        and binding_project
+        and pstore is not None
+        and not winner_on_same_project
+    ):
         try:
             # set_lead overwrote the project's previous lead pointer; put
             # it back (prior_lead may be None, which clears the pointer) —
@@ -1575,7 +1603,12 @@ async def _undo_lost_approval(
                 binding_project,
                 exc_info=True,
             )
-    if added_member and binding_project and pstore is not None:
+    if (
+        added_member
+        and binding_project
+        and pstore is not None
+        and not winner_on_same_project
+    ):
         try:
             await pstore.remove_member(binding_project, canonical_id)
             from tinyagentos.projects.a2a import ensure_a2a_channel

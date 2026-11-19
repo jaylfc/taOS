@@ -1756,3 +1756,227 @@ class TestAuthRequestRoutes:
         assert await pstore.get_member(project_id, cid) is None
         after = await pstore.get_project(project_id)
         assert after["lead_member_id"] == "original-lead"
+
+
+    async def test_a_lost_race_to_a_same_project_winner_keeps_its_membership(
+        self, consent_client, monkeypatch
+    ):
+        """Review #3789 (round 4): when the winning request is on the SAME
+        project and holds project_tasks, the loser's undo must not remove
+        the project membership. The winner is a live member of that
+        project on the shared identity; removing the row would leave it
+        holding project_tasks with no membership."""
+        app = consent_client._transport.app
+        pstore = app.state.project_store
+        if pstore._db is None:
+            await pstore.init()
+        await pstore.create_project_with_lead(
+            name="Same Project Member",
+            slug="same-project-member",
+            created_by="admin",
+            member_id="original-lead",
+        )
+        project = await pstore.get_project_by_slug("same-project-member")
+        project_id = project["id"]
+
+        cid, request_a = await self._pending_proof_request(
+            consent_client,
+            "same-project-member",
+            requested_scopes=["a2a_send", "a2a_receive", "project_tasks"],
+            project_id=project_id,
+        )
+        store = app.state.auth_requests
+        record_a = await store.get(request_a)
+        request_b = (
+            await store.create(
+                identity_claim="same-project-member",
+                framework="hermes",
+                requested_scopes=["a2a_send", "project_tasks"],
+                project_id=project_id,
+                proven_canonical_id=cid,
+                proven_token_iat=record_a["proven_token_iat"],
+            )
+        )["id"]
+
+        real_set_decision = store.set_decision
+
+        async def racing(rid, decision, **kwargs):
+            if rid == request_a and decision == "accepted":
+                # B's approval of the same identity on the same project
+                # lands first and wins, holding project_tasks; then A's
+                # record is refused and A's own decision call loses.
+                assert await real_set_decision(
+                    request_b,
+                    "accepted",
+                    canonical_id=cid,
+                    token="tok-b",
+                    granted_scopes=["a2a_send", "project_tasks"],
+                    decided_by="other-admin",
+                )
+                assert await real_set_decision(
+                    rid, "refused", decided_by="other-admin"
+                )
+            return await real_set_decision(rid, decision, **kwargs)
+
+        monkeypatch.setattr(store, "set_decision", racing)
+
+        resp = await consent_client.post(
+            f"/api/agents/auth-requests/{request_a}/approve",
+            json={
+                "granted_scopes": ["a2a_send", "a2a_receive", "project_tasks"],
+                "project_id": project_id,
+            },
+        )
+        assert resp.status_code == 409, resp.text
+        assert (await app.state.agent_registry.get(cid))["status"] == "active"
+        scopes = sorted(
+            g["scope"] for g in await app.state.agent_grants.list_grants(cid)
+        )
+        assert scopes == ["a2a_send", "project_tasks"]
+        # The winner is a member of the same project on this identity:
+        # the loser's undo leaves the membership row in place.
+        assert await pstore.get_member(project_id, cid) is not None
+
+    async def test_a_lost_race_to_a_same_project_winner_keeps_the_lead(
+        self, consent_client, monkeypatch
+    ):
+        """Review #3789 (round 4): same-project winner holding
+        project_tasks — the loser's undo must not restore the lead
+        pointer either. The pointer names the shared identity, so the
+        still-ours guard cannot tell the loser's lead write from the
+        winner's; putting the prior lead back would strip the lead
+        from the winning member."""
+        app = consent_client._transport.app
+        pstore = app.state.project_store
+        if pstore._db is None:
+            await pstore.init()
+        await pstore.create_project_with_lead(
+            name="Same Project Lead",
+            slug="same-project-lead",
+            created_by="admin",
+            member_id="original-lead",
+        )
+        project = await pstore.get_project_by_slug("same-project-lead")
+        project_id = project["id"]
+
+        cid, request_a = await self._pending_proof_request(
+            consent_client,
+            "same-project-lead",
+            requested_scopes=["a2a_send", "a2a_receive", "project_tasks"],
+            project_id=project_id,
+        )
+        store = app.state.auth_requests
+        record_a = await store.get(request_a)
+        request_b = (
+            await store.create(
+                identity_claim="same-project-lead",
+                framework="hermes",
+                requested_scopes=["a2a_send", "project_tasks"],
+                project_id=project_id,
+                proven_canonical_id=cid,
+                proven_token_iat=record_a["proven_token_iat"],
+            )
+        )["id"]
+
+        real_set_decision = store.set_decision
+
+        async def racing(rid, decision, **kwargs):
+            if rid == request_a and decision == "accepted":
+                # B wins the same identity on the same project holding
+                # project_tasks; A's record is refused and A loses.
+                assert await real_set_decision(
+                    request_b,
+                    "accepted",
+                    canonical_id=cid,
+                    token="tok-b",
+                    granted_scopes=["a2a_send", "project_tasks"],
+                    decided_by="other-admin",
+                )
+                assert await real_set_decision(
+                    rid, "refused", decided_by="other-admin"
+                )
+            return await real_set_decision(rid, decision, **kwargs)
+
+        monkeypatch.setattr(store, "set_decision", racing)
+
+        resp = await consent_client.post(
+            f"/api/agents/auth-requests/{request_a}/approve",
+            json={
+                "granted_scopes": ["a2a_send", "a2a_receive", "project_tasks"],
+                "is_lead": True,
+                "project_id": project_id,
+            },
+        )
+        assert resp.status_code == 409, resp.text
+        assert (await app.state.agent_registry.get(cid))["status"] == "active"
+        # The lead pointer still names the shared identity the winner
+        # is live on, and the membership row remains.
+        after = await pstore.get_project(project_id)
+        assert after["lead_member_id"] == cid
+        assert await pstore.get_member(project_id, cid) is not None
+
+    async def test_a_lost_race_to_a_deferred_winner_keeps_its_unbound_grants(
+        self, consent_client, monkeypatch
+    ):
+        """Review #3789 (round 4): a winner that deferred binding wrote
+        its grants unbound (project_id=None) even though its record
+        names a project. Keying the winner's grants only on the
+        record's project_id misses those rows, and the loser's undo
+        would revoke the very grant the winner holds."""
+        app = consent_client._transport.app
+        cid, request_a = await self._pending_proof_request(
+            consent_client,
+            "deferred-winner",
+            requested_scopes=["a2a_send", "a2a_receive"],
+            project_id="prj-deferred",
+        )
+        store = app.state.auth_requests
+        record_a = await store.get(request_a)
+        request_b = (
+            await store.create(
+                identity_claim="deferred-winner",
+                framework="hermes",
+                requested_scopes=["a2a_send"],
+                project_id="prj-deferred",
+                proven_canonical_id=cid,
+                proven_token_iat=record_a["proven_token_iat"],
+            )
+        )["id"]
+
+        real_set_decision = store.set_decision
+
+        async def racing(rid, decision, **kwargs):
+            if rid == request_a and decision == "accepted":
+                # B's approval of the same identity lands first and wins.
+                # B deferred binding, so its a2a_send grant is the
+                # unbound row; then A's record is refused and A loses.
+                assert await real_set_decision(
+                    request_b,
+                    "accepted",
+                    canonical_id=cid,
+                    token="tok-b",
+                    granted_scopes=["a2a_send"],
+                    decided_by="other-admin",
+                )
+                assert await real_set_decision(
+                    rid, "refused", decided_by="other-admin"
+                )
+            return await real_set_decision(rid, decision, **kwargs)
+
+        monkeypatch.setattr(store, "set_decision", racing)
+
+        resp = await consent_client.post(
+            f"/api/agents/auth-requests/{request_a}/approve",
+            json={
+                "granted_scopes": ["a2a_send", "a2a_receive"],
+                "defer_binding": True,
+            },
+        )
+        assert resp.status_code == 409, resp.text
+        assert (await app.state.agent_registry.get(cid))["status"] == "active"
+        # The winner's unbound a2a_send grant survives the loser's undo;
+        # the loser's own a2a_receive is revoked.
+        scopes = sorted(
+            g["scope"] for g in await app.state.agent_grants.list_grants(cid)
+        )
+        assert scopes == ["a2a_send"]
