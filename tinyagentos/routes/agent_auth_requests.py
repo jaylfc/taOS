@@ -121,6 +121,12 @@ VALID_SCOPES = frozenset({
     "memory_read",
     # Memory access: write to an agent's own memory namespace.
     "memory_write",
+    # Cluster worker list (taOS #3227): read the full-but-not-admin view of
+    # GET /api/cluster/workers -- capabilities, backends, resources,
+    # free_vram_mb and loaded models, WITHOUT pairing state
+    # (revoked/blocked/live_token), host_lan_ip or hardware. A global scope:
+    # deliberately not project-bound, so it is not in _PROJECT_SCOPES.
+    "cluster_read",
 })
 
 

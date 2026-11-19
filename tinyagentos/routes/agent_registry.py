@@ -108,6 +108,7 @@ _ALLOWED_SCOPES = frozenset({
     "memory_read",
     # Memory access: write to an agent's own memory namespace.
     "memory_write",
+    "cluster_read",
 })
 
 

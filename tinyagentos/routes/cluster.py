@@ -319,14 +319,30 @@ class MoveRequest(BaseModel):
     to_worker: str
 
 
+# The cluster_read tier also filters each backend entry: a backend entry
+# carries its own url (the worker's LAN address), which the tier's
+# top-level allowlist exists to withhold (jaylfc, PR #4370). Only these
+# keys may reach a cluster_read caller.
+_CLUSTER_READ_BACKEND_KEYS = (
+    "name", "type", "capabilities", "models", "loaded_models", "status",
+)
+
+
+def _cluster_read_backend(backend: dict) -> dict:
+    return {key: backend[key] for key in _CLUSTER_READ_BACKEND_KEYS if key in backend}
+
+
 @router.get("/api/cluster/workers")
 async def list_workers(request: Request):
     is_admin = getattr(request.state, "is_admin", False)
     # taOS #3227: headless callers presenting a valid local token, device
     # token, or registry JWT on this exempt GET get the full worker view
-    # (the middleware sets headless_full_view). signing_key stays stripped
-    # for everyone -- see below.
+    # (the middleware sets headless_full_view). A registry JWT holding the
+    # cluster_read scope instead gets the restricted tier below (the
+    # middleware sets cluster_read_view): an allowlist of operational
+    # fields only. signing_key stays stripped for everyone -- see below.
     full_view = is_admin or getattr(request.state, "headless_full_view", False)
+    cluster_read_view = getattr(request.state, "cluster_read_view", False)
     cluster = request.app.state.cluster_manager
     pairing = getattr(request.app.state, "cluster_pairing", None)
     registry = getattr(request.app.state, "registry", None)
@@ -341,12 +357,35 @@ async def list_workers(request: Request):
         # non-utf8 signing key, and (2) even when serialization didn't
         # crash, the secret has no business being on the wire.
         d.pop("signing_key", None)
-        if not full_view:
+        if not full_view and not cluster_read_view:
             result.append({
                 "name": d["name"],
                 "status": d["status"],
                 "tier_id": d.get("tier_id", ""),
                 "kind": d.get("kind", "worker"),
+            })
+            continue
+        if cluster_read_view and not is_admin:
+            # Full but not admin (taOS #3227): an ALLOWLIST, not a denylist
+            # (jaylfc, PR #4370). The tier returns ONLY the fields below;
+            # dropping a few keys from the full record still leaked url and
+            # worker_url (the same LAN address removing host_lan_ip was
+            # meant to withhold) plus the storage and TLS fields. Least
+            # privilege wins: this tier applies even when the caller also
+            # qualified for headless_full_view -- a JWT holding both
+            # agents:read and cluster_read gets the narrower view.
+            result.append({
+                "name": d["name"],
+                "status": d["status"],
+                "tier_id": d.get("tier_id", ""),
+                "kind": d.get("kind", "worker"),
+                "capabilities": d.get("capabilities", []),
+                "backends": [
+                    _cluster_read_backend(b) for b in d.get("backends", [])
+                ],
+                "resources": d.get("resources", []),
+                "free_vram_mb": d.get("free_vram_mb"),
+                "models": d.get("models", []),
             })
             continue
         # Surface the persistent auth state from the pairing store so the
