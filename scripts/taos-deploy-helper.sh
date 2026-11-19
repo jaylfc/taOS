@@ -438,7 +438,7 @@ _detached_restart_worker() {
 _worker_env_prefix() {
     local prefix="TAOS_INSTALL_DIR=$(printf '%q' "$INSTALL_DIR")"
     local var
-    for var in TAOS_CHECKPOINT_MANIFEST TAOS_VENV TAOS_HEALTH_MIN_UPTIME_S; do
+    for var in TAOS_CHECKPOINT_MANIFEST TAOS_VENV TAOS_HEALTH_MIN_UPTIME_S TAOS_HEALTH_HEARTBEAT_MAX_AGE_S; do
         if [[ -n "${!var:-}" ]]; then
             prefix+=" $var=$(printf '%q' "${!var}")"
         fi
@@ -570,12 +570,14 @@ cmd_restart_and_verify() {
 
 # Verify the worker's main process directly: it must be alive, running the
 # worker entrypoint, and have stayed up at least TAOS_HEALTH_MIN_UPTIME_S
-# seconds.  The worker opens no port -- its heartbeat is an outbound POST to
-# the controller every 5s and leaves no local artifact the helper could
-# read -- so the unit's main process is the strongest health signal on the
-# worker host: a build that fails to boot either never produces one or
-# crash-loops below the uptime floor.  ($ok/$failures are cmd_health_check's
-# locals; bash dynamic scoping makes them visible here.)
+# seconds.  The worker opens no port, so there is nothing to probe.  The
+# process checks are the necessary half of the health check, not a
+# sufficient one -- a live process may still be failing to reach the
+# controller -- so cmd_health_check also requires the heartbeat-ok
+# timestamp (_check_heartbeat_freshness).  A build that fails to boot
+# either never produces a main process or crash-loops below the uptime
+# floor.  ($ok/$failures are cmd_health_check's locals; bash dynamic
+# scoping makes them visible here.)
 _check_worker_process() {
     local pid="$1"
     if [[ -z "$pid" || "$pid" == "0" ]]; then
@@ -610,6 +612,47 @@ _check_worker_process() {
         fi
     else
         log "health-check: main process age unavailable — skipping uptime check"
+    fi
+}
+
+# Proof of work: after every successful heartbeat the worker rewrites a
+# "last heartbeat OK" timestamp (epoch seconds) in its state dir
+# (tinyagentos/worker/agent.py, HEARTBEAT_OK_FILENAME), and clears it when
+# its run loop starts, so the timestamp only ever describes the current
+# process.  A worker that is running but not reaching the controller never
+# refreshes it.  The heartbeat interval is 5s; the default bound of 60s is
+# twelve missed beats -- twice the controller's own 30s offline threshold,
+# so a worker the controller still considers online never fails here,
+# while one that has stopped landing heartbeats is caught within a
+# minute.  Override with TAOS_HEALTH_HEARTBEAT_MAX_AGE_S.
+_check_heartbeat_freshness() {
+    local state_dir="${TAOS_WORKER_STATE_DIR:-$INSTALL_DIR/.taos-worker-state}"
+    local hb_file="$state_dir/last-heartbeat-ok"
+    local max_age="${TAOS_HEALTH_HEARTBEAT_MAX_AGE_S:-60}"
+    [[ "$max_age" =~ ^[0-9]+$ ]] || max_age=60
+    if [[ ! -f "$hb_file" ]]; then
+        ok=false
+        failures+=("no successful heartbeat recorded — the worker has not reached the controller (missing $hb_file)")
+        return
+    fi
+    local ts now age
+    ts="$(tr -d '[:space:]' < "$hb_file" 2>/dev/null || true)"
+    if [[ ! "$ts" =~ ^[0-9]+$ ]]; then
+        ok=false
+        failures+=("heartbeat-ok timestamp in $hb_file is unreadable")
+        return
+    fi
+    now="$(date +%s)"
+    age=$(( now - ts ))
+    if (( age < 0 )); then
+        log "health-check: heartbeat-ok timestamp is $(( -age ))s in the future — treating as fresh (clock skew?)"
+        return
+    fi
+    if (( age <= max_age )); then
+        log "health-check: last successful heartbeat ${age}s ago (bound ${max_age}s)"
+    else
+        ok=false
+        failures+=("last successful heartbeat ${age}s ago (> ${max_age}s) — worker is running but not reaching the controller")
     fi
 }
 
@@ -648,6 +691,11 @@ cmd_health_check() {
             launchd_pid="$(printf '%s' "$launchd_line" | awk '{print $1}')"
             if [[ "$launchd_pid" =~ ^[0-9]+$ ]]; then
                 _check_worker_process "$launchd_pid"
+            else
+                # launchd shows "-" for a loaded job with no process:
+                # there is nothing to inspect, and loaded is not running.
+                ok=false
+                failures+=("tinyagentos-worker is loaded in launchd but has no PID — not running")
             fi
         else
             ok=false
@@ -658,7 +706,14 @@ cmd_health_check() {
         failures+=("worker service not active")
     fi
 
-    # 3. Check the checkpoint manifest exists
+    # 3. Proof of work: a fresh heartbeat-ok timestamp, written by the
+    #    worker after each successful heartbeat.  Without it, a worker
+    #    that is running but cannot reach the controller passes on
+    #    process checks alone -- and the post-restart caller of this
+    #    check is the worker itself.
+    _check_heartbeat_freshness
+
+    # 4. Check the checkpoint manifest exists
     if [[ -f "$manifest_file" ]]; then
         log "health-check: checkpoint manifest present"
     else

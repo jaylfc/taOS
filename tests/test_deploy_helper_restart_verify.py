@@ -19,6 +19,7 @@ import os
 import shutil
 import socket
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -130,6 +131,28 @@ def _install_tree(tmp_path: Path) -> Path:
     return install
 
 
+# The heartbeat-ok timestamp the worker rewrites in its state dir after
+# every successful heartbeat (tinyagentos/worker/agent.py,
+# HEARTBEAT_OK_FILENAME).  The helper's health check resolves the state
+# dir as $TAOS_WORKER_STATE_DIR, defaulting to
+# $INSTALL_DIR/.taos-worker-state -- which is where these tests plant it.
+HEARTBEAT_OK_NAME = "last-heartbeat-ok"
+
+
+def _plant_heartbeat_ok(install: Path, *, age_s: int = 0) -> Path:
+    """Plant a heartbeat-ok timestamp as the worker would write it.
+
+    A scenario that is meant to be healthy (or to fail for exactly one
+    other reason) needs this artifact: without it the check correctly
+    reports that no successful heartbeat has happened.
+    """
+    state_dir = install / ".taos-worker-state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    hb = state_dir / HEARTBEAT_OK_NAME
+    hb.write_text(f"{int(time.time()) - age_s}\n")
+    return hb
+
+
 def _run_helper(
     tmp_path: Path,
     bin_dir: Path,
@@ -186,6 +209,7 @@ def test_does_not_roll_back_when_the_worker_comes_up(tmp_path: Path):
     """Control: a healthy restart must not touch the checkpoint."""
     bin_dir, calls, _ = _fake_bin(tmp_path, healthy_after=0)
     install = _install_tree(tmp_path)
+    _plant_heartbeat_ok(install)
 
     with _fake_worker(tmp_path):
         proc = _run_helper(tmp_path, bin_dir, install, ["restart-and-verify"])
@@ -205,12 +229,16 @@ def test_restart_self_schedules_the_health_verified_restart(tmp_path: Path):
     bin_dir, _, at_records = _fake_bin(tmp_path, healthy_after=0, record_at=True)
     install = _install_tree(tmp_path)
 
-    proc = _run_helper(tmp_path, bin_dir, install, ["restart-self"])
+    proc = _run_helper(
+        tmp_path, bin_dir, install, ["restart-self"],
+        extra_env={"TAOS_HEALTH_HEARTBEAT_MAX_AGE_S": "45"},
+    )
 
     assert proc.returncode == 0, proc.stdout + proc.stderr
     scheduled = at_records.read_text()
     assert "restart-and-verify" in scheduled
     assert str(HELPER) in scheduled
+    assert "TAOS_HEALTH_HEARTBEAT_MAX_AGE_S=45" in scheduled
     # The detached job runs under a different HOME and a minimal environment,
     # so the resolved install dir and health-check tuning have to be carried across
     # explicitly or the verification would probe (and roll back) the wrong
@@ -284,6 +312,7 @@ def test_health_check_uses_launchd_where_there_is_no_systemd(tmp_path: Path):
     bin_dir, _, _ = _fake_bin(tmp_path, healthy_after=0)
     _macos_like_path(bin_dir, tmp_path)
     install = _install_tree(tmp_path)
+    _plant_heartbeat_ok(install)
 
     with _fake_worker(tmp_path):
         proc = _run_helper(
@@ -300,6 +329,8 @@ def test_health_check_passes_for_a_live_worker_with_nothing_on_the_worker_port(t
 
     The check now inspects the unit's main process.  Nothing listens on
     9898 here and no ``ss`` is stubbed: the port is simply never consulted.
+    A fresh heartbeat-ok timestamp is planted, as the real worker would
+    maintain: alive process + fresh proof of heartbeat = healthy.
     """
     probe = socket.socket()
     try:
@@ -309,6 +340,7 @@ def test_health_check_passes_for_a_live_worker_with_nothing_on_the_worker_port(t
         probe.close()
     bin_dir, _, _ = _fake_bin(tmp_path, healthy_after=0)
     install = _install_tree(tmp_path)
+    _plant_heartbeat_ok(install)
 
     with _fake_worker(tmp_path):
         proc = _run_helper(tmp_path, bin_dir, install, ["health-check"])
@@ -322,6 +354,7 @@ def test_health_check_fails_when_the_main_process_is_gone(tmp_path: Path):
     """Service 'active' with a dead main process is not healthy."""
     bin_dir, _, _ = _fake_bin(tmp_path, healthy_after=0)
     install = _install_tree(tmp_path)
+    _plant_heartbeat_ok(install)
     dead = subprocess.Popen(["sleep", "0.1"])
     dead.wait()
     (tmp_path / "mainpid").write_text(str(dead.pid))
@@ -336,6 +369,7 @@ def test_health_check_fails_when_the_main_process_is_not_the_worker(tmp_path: Pa
     """A live but unrelated main process must not pass as the worker."""
     bin_dir, _, _ = _fake_bin(tmp_path, healthy_after=0)
     install = _install_tree(tmp_path)
+    _plant_heartbeat_ok(install)
 
     with _fake_worker(tmp_path, as_worker=False):
         proc = _run_helper(tmp_path, bin_dir, install, ["health-check"])
@@ -349,6 +383,7 @@ def test_health_check_fails_until_the_worker_has_been_up_long_enough(tmp_path: P
     is alive and is the worker, but none of them stays up."""
     bin_dir, _, _ = _fake_bin(tmp_path, healthy_after=0)
     install = _install_tree(tmp_path)
+    _plant_heartbeat_ok(install)
 
     with _fake_worker(tmp_path):
         proc = _run_helper(
@@ -412,3 +447,59 @@ def test_trigger_update_no_graceful_and_a_ref_is_required(tmp_path: Path):
         extra_env={"TAOS_WORKER_STATE_DIR": str(state_dir)},
     )
     assert proc.returncode != 0, proc.stdout + proc.stderr
+
+
+def test_health_check_fails_when_no_heartbeat_has_happened(tmp_path: Path):
+    """jaylfc (PR #1910): "Add a test where the process is alive but no
+    heartbeat has happened."
+
+    Every process check passes -- the service is active, the main process
+    is the worker and has stayed up -- but the worker has never completed
+    a heartbeat, so there is no heartbeat-ok timestamp in its state dir.
+    A worker that is running but not reaching the controller is not
+    healthy, however alive its process looks.
+    """
+    bin_dir, _, _ = _fake_bin(tmp_path, healthy_after=0)
+    install = _install_tree(tmp_path)
+
+    with _fake_worker(tmp_path):
+        proc = _run_helper(tmp_path, bin_dir, install, ["health-check"])
+
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert "no successful heartbeat" in proc.stdout + proc.stderr
+
+
+def test_health_check_fails_when_the_last_heartbeat_is_stale(tmp_path: Path):
+    """A heartbeat-ok timestamp far older than the freshness bound means
+    the heartbeats stopped landing: the worker is wedged, or the
+    controller has been unreachable for a while.  Either way the process
+    being alive must not pass the check on its own."""
+    bin_dir, _, _ = _fake_bin(tmp_path, healthy_after=0)
+    install = _install_tree(tmp_path)
+    _plant_heartbeat_ok(install, age_s=3600)
+
+    with _fake_worker(tmp_path):
+        proc = _run_helper(tmp_path, bin_dir, install, ["health-check"])
+
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert "heartbeat" in proc.stdout + proc.stderr
+
+
+def test_health_check_fails_when_the_launchd_entry_has_no_pid(tmp_path: Path):
+    """jaylfc (PR #1910): on macOS a launchd entry with no PID (shown as
+    "-") is loaded but not running.  It used to skip the process check
+    entirely and count as healthy; with no process to inspect it must
+    fail.  A fresh heartbeat is planted so the missing PID is the only
+    failure in the scenario."""
+    bin_dir, _, _ = _fake_bin(tmp_path, healthy_after=0)
+    _macos_like_path(bin_dir, tmp_path)
+    install = _install_tree(tmp_path)
+    _plant_heartbeat_ok(install)
+    (tmp_path / "mainpid").write_text("-")
+
+    proc = _run_helper(
+        tmp_path, bin_dir, install, ["health-check"], extra_env={"PATH": str(bin_dir)}
+    )
+
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert "no PID" in proc.stdout + proc.stderr

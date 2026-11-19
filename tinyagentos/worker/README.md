@@ -65,6 +65,13 @@ the same lifecycle:
    The helper's health-check verifies the worker service is active and
    that its main process is the worker entrypoint and has stayed up —
    the worker opens no listening port, so there is no port to probe.
+   It also requires proof the worker is reaching the controller: after
+   every successful heartbeat the worker rewrites a `last-heartbeat-ok`
+   timestamp in its state dir (and clears it when its run loop starts),
+   and the check fails when that timestamp is missing or older than
+   `TAOS_HEALTH_HEARTBEAT_MAX_AGE_S` seconds (default 60; the heartbeat
+   interval is 5s).  On macOS, a launchd entry with no PID (`-`) fails
+   the check — loaded is not running.
 4. **Outcome** — the worker reports `success`/`rollback` to
    `POST /api/cluster/workers/{name}/update-outcome` (HMAC-authenticated);
    on failure it rolls back to the previous version automatically.

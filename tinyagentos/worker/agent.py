@@ -25,6 +25,12 @@ _REPAIR_INTERVAL = 60
 # How often to re-log the re-pair instruction while in the needs-re-pair state.
 _REPAIR_LOG_INTERVAL = 300  # 5 minutes
 
+# Name of the state-dir file the worker rewrites after every successful
+# heartbeat ("last heartbeat OK": epoch seconds).  The deploy helper's
+# health check reads it as proof of work -- a worker process that is
+# alive but cannot reach the controller never refreshes it (PR #1910).
+HEARTBEAT_OK_FILENAME = "last-heartbeat-ok"
+
 
 # Marker dropped by install-worker.sh when it backs up an existing
 # taos-worker-pool. The worker forwards it to the controller once on
@@ -1037,6 +1043,44 @@ class WorkerAgent:
             logger.error(f"Failed to register: {e}")
             return False
 
+    @property
+    def _heartbeat_ok_path(self) -> Path:
+        return self._state_dir / HEARTBEAT_OK_FILENAME
+
+    def _record_heartbeat_ok(self) -> None:
+        """Rewrite the heartbeat-ok timestamp after a successful heartbeat.
+
+        The deploy helper's health check treats a fresh timestamp as the
+        proof that the worker is actually reaching the controller; the
+        process being alive is not enough, and the post-update check runs
+        inside the worker itself, so it cannot take the process's word
+        for it (PR #1910).  Written atomically (temp file + rename) so a
+        concurrent reader never sees a partial value.  Best-effort: a
+        failed write is logged, never raised -- it must not break the
+        heartbeat itself.
+        """
+        try:
+            self._state_dir.mkdir(parents=True, exist_ok=True)
+            tmp = self._state_dir / f".{HEARTBEAT_OK_FILENAME}.tmp.{os.getpid()}"
+            tmp.write_text(f"{time.time():.0f}\n")
+            os.replace(tmp, self._heartbeat_ok_path)
+        except OSError as exc:
+            logger.warning("could not record heartbeat-ok timestamp: %s", exc)
+
+    def _clear_heartbeat_ok(self) -> None:
+        """Drop any heartbeat-ok timestamp left by a previous process.
+
+        Called when the run loop starts: until THIS process completes a
+        successful heartbeat the file must say nothing, so a restarted
+        worker cannot pass the health check on its predecessor's last
+        heartbeat while it is itself wedged or unable to reach the
+        controller.
+        """
+        try:
+            self._heartbeat_ok_path.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("could not clear heartbeat-ok timestamp: %s", exc)
+
     async def heartbeat(self, status: str | None = None, drain_reason: str | None = None) -> int:
         """Send heartbeat to controller with live backend catalog.
 
@@ -1175,6 +1219,8 @@ class WorkerAgent:
                             )
                     except Exception as exc:  # noqa: BLE001
                         logger.warning(f"could not read generation from heartbeat response: {exc}")
+                if resp.status_code == 200:
+                    self._record_heartbeat_ok()
                 return resp.status_code
         except Exception as exc:  # noqa: BLE001
             # Log before swallowing: a payload-build bug (not just a network
@@ -1396,6 +1442,7 @@ class WorkerAgent:
         needed.
         """
         self._running = True
+        self._clear_heartbeat_ok()
         _in_repair = False
         _last_repair_log: float = 0.0
 
