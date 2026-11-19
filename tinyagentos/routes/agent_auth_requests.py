@@ -1099,29 +1099,98 @@ async def approve_request_record(
                 await registry.set_sponsorship(
                     existing_cid, project_id, sponsor_contact_id
                 )
-            await add_agent_to_project(
-                request,
-                canonical_id=existing_cid,
-                project_id=project_id,
-                granted_scopes=granted_scopes,
-                decided_by=decided_by,
-                is_lead=is_lead,
-                expires_at=expires_at,
-                renew=renew,
-            )
-            result = await auth_store.set_decision(
-                record["id"],
-                "accepted",
-                canonical_id=existing_cid,
-                token=token,
-                granted_scopes=granted_scopes,
-                decided_by=decided_by,
-            )
-            if result is None:
-                raise HTTPException(
-                    status_code=409,
-                    detail="request was decided concurrently; check current status",
+            # Snapshot what the identity already holds BEFORE
+            # add_agent_to_project writes, so a lost decision race below
+            # can undo exactly this approval's writes — the same
+            # treatment the activation arm gives its own writes. The
+            # identity itself was already active: this approval never
+            # activated it, so the undo leaves its status alone.
+            _snapshot = await grants_store.list_grants(existing_cid)
+            prior_grants = {
+                (g["scope"], g.get("project_id")) for g in _snapshot
+            }
+            prior_grant_expiry = {
+                (g["scope"], g.get("project_id")): g.get("expires_at")
+                for g in _snapshot
+            }
+            prior_grant_tier = {
+                (g["scope"], g.get("project_id")): g.get("tier") or "once"
+                for g in _snapshot
+            }
+            added_member = False
+            prior_lead: Optional[str] = None
+            lead_overwritten = False
+            _pstore = getattr(request.app.state, "project_store", None)
+            if _pstore is not None and (
+                "project_tasks" in granted_scopes
+                or set(granted_scopes) & _CANVAS_SCOPES
+            ):
+                added_member = (
+                    await _pstore.get_member(project_id, existing_cid) is None
                 )
+                if is_lead:
+                    _proj = await _pstore.get_project(project_id)
+                    prior_lead = _proj.get("lead_member_id") if _proj else None
+                    lead_overwritten = True
+
+            async def _undo_reuse_writes() -> None:
+                await _undo_lost_approval(
+                    request,
+                    record_id=record["id"],
+                    canonical_id=existing_cid,
+                    created_here=False,
+                    granted_scopes=granted_scopes,
+                    binding_project=project_id,
+                    prior_grants=prior_grants,
+                    prior_grants_known=True,
+                    prior_grant_expiry=prior_grant_expiry,
+                    prior_grant_tier=prior_grant_tier,
+                    renew=renew,
+                    added_member=added_member,
+                    prior_lead=prior_lead,
+                    lead_overwritten=lead_overwritten,
+                    revert_identity=False,
+                )
+
+            try:
+                await add_agent_to_project(
+                    request,
+                    canonical_id=existing_cid,
+                    project_id=project_id,
+                    granted_scopes=granted_scopes,
+                    decided_by=decided_by,
+                    is_lead=is_lead,
+                    expires_at=expires_at,
+                    renew=renew,
+                )
+                result = await auth_store.set_decision(
+                    record["id"],
+                    "accepted",
+                    canonical_id=existing_cid,
+                    token=token,
+                    granted_scopes=granted_scopes,
+                    decided_by=decided_by,
+                )
+                if result is None:
+                    # Another decision beat us — 409. What this approval
+                    # already wrote (grants, membership, the lead
+                    # pointer) would otherwise stay as usable
+                    # authorization on a refused request.
+                    await _undo_reuse_writes()
+                    raise HTTPException(
+                        status_code=409,
+                        detail="request was decided concurrently; check current status",
+                    )
+            except HTTPException:
+                # The lost-race path already undid its own writes via
+                # _undo_reuse_writes before raising its 409.
+                raise
+            except Exception:
+                # A failure part-way through the writes must not leave a
+                # half-applied approval behind: undo what this approval
+                # wrote, then surface the original error.
+                await _undo_reuse_writes()
+                raise
             await _retire_request_notification(request, record["id"])
             return {"status": "accepted", "canonical_id": existing_cid}
         raise HTTPException(
@@ -1252,6 +1321,35 @@ async def approve_request_record(
                 f"pick a different identity_claim"
             ),
         )
+    except HTTPException:
+        # The rotation re-check above raises its 409 before this span has
+        # written anything (it precedes set_status), so there is nothing
+        # to undo.
+        raise
+    except Exception:
+        # Any other failure in this span — e.g. a non-ValueError from
+        # set_sponsorship — can land AFTER set_status activated the
+        # identity, and without this handler it escaped with the
+        # identity left active and no undo. Run the same undo as a lost
+        # race, then surface the original error. This widens only the
+        # undo trigger: the ValueError mapping above (a lifecycle error
+        # becomes the concurrent-decision 409, anything else re-raises
+        # as itself) is unchanged. No grants snapshot exists yet at
+        # this point, so the undo is told the snapshot is unknown and
+        # leaves grants alone — none were written in this span anyway.
+        if canonical_id is not None:
+            await _undo_lost_approval(
+                request,
+                record_id=record["id"],
+                canonical_id=canonical_id,
+                created_here=created_here,
+                granted_scopes=granted_scopes,
+                binding_project=binding_project,
+                prior_grants=set(),
+                prior_grants_known=False,
+                added_member=False,
+            )
+        raise
 
     # State the failure handler below needs even when the failure happens
     # before the writes it describes (e.g. the token mint itself throws).
@@ -1444,6 +1542,7 @@ async def _undo_lost_approval(
     ] = None,
     prior_grant_tier: Optional[dict[tuple[str, Optional[str]], str]] = None,
     renew: bool = False,
+    revert_identity: bool = True,
 ) -> None:
     """Undo an approve's writes after it lost the decision race.
 
@@ -1455,6 +1554,11 @@ async def _undo_lost_approval(
     the lead pointer too, since both name the shared identity it is
     live on. Every step is independent and best-effort so one failing
     store neither skips the rest of the cleanup nor masks the caller's 409.
+
+    ``revert_identity=False`` is for a caller that never activated the
+    identity itself (the already-active reuse arm): there is no
+    activation to revert, though the winner-sparing above still governs
+    its grants, membership and lead cleanup.
     """
     auth_store = _get_auth_requests_store(request)
     # The winner check must not itself be able to kill the cleanup: if the
@@ -1627,7 +1731,12 @@ async def _undo_lost_approval(
                 exc_info=True,
             )
     try:
-        if winner is not None:
+        if not revert_identity:
+            # The caller found the identity already active and never
+            # activated it itself, so there is no activation to revert —
+            # whether or not another approval also holds the identity.
+            pass
+        elif winner is not None:
             # Another approval won this identity and is live on it; its
             # activation stands.
             pass

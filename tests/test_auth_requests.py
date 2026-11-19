@@ -1980,3 +1980,204 @@ class TestAuthRequestRoutes:
             g["scope"] for g in await app.state.agent_grants.list_grants(cid)
         )
         assert scopes == ["a2a_send"]
+
+    async def _active_identity(self, consent_client, handle):
+        """Register an identity and activate it directly, as an earlier
+        approval (or an out-of-band activation) would have left it."""
+        app = consent_client._transport.app
+        registry = app.state.agent_registry
+        reg = await registry.register(
+            framework="hermes",
+            display_name="Hermes",
+            handle=handle,
+            origin="external-selfjoin",
+        )
+        await registry.set_status(reg["canonical_id"], "active", actor="test")
+        return reg["canonical_id"]
+
+    async def test_a_denied_race_on_the_active_reuse_path_undoes_its_writes(
+        self, consent_client, monkeypatch
+    ):
+        """Follow-up to #3789: the already-active reuse arm writes grants
+        and project membership through add_agent_to_project, but losing
+        the decision race left them behind — the activation arm's undo
+        never ran for this arm. The loser's writes are now undone; the
+        identity stays active and what an earlier approval granted it
+        is untouched."""
+        app = consent_client._transport.app
+        pstore = app.state.project_store
+        if pstore._db is None:
+            await pstore.init()
+        await pstore.create_project_with_lead(
+            name="Reuse Race Project",
+            slug="reuse-race-project",
+            created_by="admin",
+            member_id="original-lead",
+        )
+        project_id = (await pstore.get_project_by_slug("reuse-race-project"))["id"]
+
+        cid = await self._active_identity(consent_client, "reuse-race")
+        store = app.state.auth_requests
+        # The earlier approval that left the identity active, holding a
+        # global a2a_send grant this race must not touch.
+        winner = await store.create(
+            identity_claim="reuse-race",
+            framework="hermes",
+            requested_scopes=["a2a_send"],
+            proven_canonical_id=cid,
+        )
+        assert await store.set_decision(
+            winner["id"],
+            "accepted",
+            canonical_id=cid,
+            granted_scopes=["a2a_send"],
+            decided_by="admin",
+        )
+        await app.state.agent_grants.add_grant(cid, "a2a_send", tier="once")
+
+        # A proven request to add the same identity to the project.
+        private_pem, _public_pem = app.state.agent_registry_keypair
+        proof = mint_registry_token(
+            cid, private_pem, user_id="test", framework="hermes"
+        )
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            create_resp = await bare.post(
+                "/api/agents/auth-requests",
+                json={
+                    **_CREATE_BODY,
+                    "identity_claim": "reuse-race",
+                    "requested_scopes": ["project_tasks"],
+                    "project_id": project_id,
+                },
+                headers={"Authorization": f"Bearer {proof}"},
+            )
+        assert create_resp.json()["proof_status"] == "accepted", create_resp.text
+        request_id = create_resp.json()["request_id"]
+        self._deny_wins_the_race(app, monkeypatch)
+
+        resp = await consent_client.post(
+            f"/api/agents/auth-requests/{request_id}/approve",
+            json={"granted_scopes": ["project_tasks"], "project_id": project_id},
+        )
+        assert resp.status_code == 409, resp.text
+        # The identity was already active and stays active...
+        assert (await app.state.agent_registry.get(cid))["status"] == "active"
+        # ...the earlier approval's grant is untouched...
+        grants = await app.state.agent_grants.list_grants(cid)
+        assert [(g["scope"], g["project_id"]) for g in grants] == [
+            ("a2a_send", None)
+        ]
+        # ...and the loser's membership write is gone.
+        assert await pstore.get_member(project_id, cid) is None
+        assert (await store.get(request_id))["status"] == "refused"
+
+    async def test_a_denied_race_on_the_active_reuse_path_spares_the_winners_writes(
+        self, consent_client, monkeypatch
+    ):
+        """Follow-up to #3789: when an earlier approval already added the
+        shared active identity to the SAME project, the loser's undo
+        spares what the winner holds there — its grants stay and the
+        membership is not removed — while the loser's own additional
+        grant is revoked."""
+        app = consent_client._transport.app
+        pstore = app.state.project_store
+        if pstore._db is None:
+            await pstore.init()
+        await pstore.create_project_with_lead(
+            name="Reuse Spare Project",
+            slug="reuse-spare-project",
+            created_by="admin",
+            member_id="original-lead",
+        )
+        project_id = (await pstore.get_project_by_slug("reuse-spare-project"))["id"]
+
+        cid = await self._active_identity(consent_client, "reuse-spare")
+        store = app.state.auth_requests
+
+        async def _request(scopes):
+            rec = await store.create(
+                identity_claim="reuse-spare",
+                framework="hermes",
+                requested_scopes=scopes,
+                project_id=project_id,
+                proven_canonical_id=cid,
+                proven_token_iat=0,
+            )
+            return rec["id"]
+
+        # Winner: an earlier approval adds the identity to the project
+        # holding project_tasks + canvas_read.
+        request_a = await _request(["project_tasks", "canvas_read"])
+        resp = await consent_client.post(
+            f"/api/agents/auth-requests/{request_a}/approve",
+            json={
+                "granted_scopes": ["project_tasks", "canvas_read"],
+                "project_id": project_id,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+
+        # Loser: a second approval for the same identity + project,
+        # adding project_tasks_update, loses its decision race to a deny.
+        request_b = await _request(["project_tasks", "project_tasks_update"])
+        self._deny_wins_the_race(app, monkeypatch)
+        resp = await consent_client.post(
+            f"/api/agents/auth-requests/{request_b}/approve",
+            json={
+                "granted_scopes": ["project_tasks", "project_tasks_update"],
+                "project_id": project_id,
+            },
+        )
+        assert resp.status_code == 409, resp.text
+        assert (await app.state.agent_registry.get(cid))["status"] == "active"
+        on_project = sorted(
+            g["scope"]
+            for g in await app.state.agent_grants.list_grants(cid)
+            if g["project_id"] == project_id
+        )
+        assert on_project == ["canvas_read", "project_tasks"]
+        # The winner's membership stands.
+        assert await pstore.get_member(project_id, cid) is not None
+        assert (await store.get(request_b))["status"] == "refused"
+
+    async def test_a_sponsorship_failure_after_activation_undoes_the_approval(
+        self, consent_client, monkeypatch
+    ):
+        """Follow-up to #3789: set_sponsorship runs after the identity is
+        activated, but only ValueError and IntegrityError were caught
+        around that span — a non-ValueError (a store outage, say)
+        escaped with the identity left active and no undo. The failure
+        now runs the same undo as a lost race and the original error
+        surfaces."""
+        from types import SimpleNamespace
+
+        from tinyagentos.routes.agent_auth_requests import approve_request_record
+
+        app = consent_client._transport.app
+        registry = app.state.agent_registry
+        cid, request_id = await self._pending_proof_request(
+            consent_client, "sponsor-boom"
+        )
+        record = await app.state.auth_requests.get(request_id)
+
+        async def boom(*args, **kwargs):
+            raise RuntimeError("sponsorship store unavailable")
+
+        monkeypatch.setattr(registry, "set_sponsorship", boom)
+        fake_request = SimpleNamespace(app=app)
+        with pytest.raises(RuntimeError, match="sponsorship store unavailable"):
+            await approve_request_record(
+                fake_request,
+                record=record,
+                granted_scopes=["a2a_send"],
+                effective_project="prj-sponsor",
+                decided_by="admin-user",
+                project_id="prj-sponsor",
+                sponsor_contact_id="contact-42",
+            )
+        # The activation is undone: the identity is pending again, holds
+        # no grants, and the request can be decided afresh.
+        assert (await registry.get(cid))["status"] == "pending"
+        assert await app.state.agent_grants.list_grants(cid) == []
+        assert (await app.state.auth_requests.get(request_id))["status"] == "pending"
