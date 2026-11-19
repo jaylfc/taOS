@@ -7,6 +7,7 @@ Item {
     id: item
     property bool interactive: false
     property string accessibleName: ""
+    property string accessibleHint: ""
     property int accessibleRole: interactive ? Accessible.Button : Accessible.StaticText
     property int hPad: 8
     default property alias content: row.data
@@ -20,7 +21,7 @@ Item {
 
     Accessible.role: accessibleRole
     Accessible.name: accessibleName
-    Accessible.description: ""
+    Accessible.description: accessibleHint
     Accessible.onPressAction: if (interactive) item.activated()
 
     Rectangle {

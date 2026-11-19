@@ -3,6 +3,7 @@
 #include <QGuiApplication>
 #include <QQmlContext>
 #include <QQmlEngine>
+#include <QDBusConnection>
 #include <QSocketNotifier>
 #include <QStandardPaths>
 #include <QtQml>
@@ -13,7 +14,10 @@
 #include "barmanager.h"
 #include "battery.h"
 #include "clock.h"
+#include "bluezclient.h"
 #include "launcher.h"
+#include "menuhost.h"
+#include "nmclient.h"
 #include "network.h"
 #include "theme.h"
 #include "volume.h"
@@ -105,7 +109,17 @@ int main(int argc, char **argv) {
     Clock clock;
     clock.setShowSeconds(p.isSet(optSeconds));
     clock.setUse24Hour(!p.isSet(opt12h));
+    // The system bus in the session; TAOS_BAR_DBUS_ADDRESS points both clients at another bus (tests, demos).
+    QDBusConnection netBus = QDBusConnection::systemBus();
+    if (!qEnvironmentVariableIsEmpty("TAOS_BAR_DBUS_ADDRESS"))
+        netBus = QDBusConnection::connectToBus(qEnvironmentVariable("TAOS_BAR_DBUS_ADDRESS"), QStringLiteral("taos-bar-net"));
+    NmClient nm(netBus);
+    BluezClient bluez(netBus);
+    MenuHost menuHost(&nm, &bluez);
     Network network;
+    network.attachNm(&nm);
+    nm.start();
+    bluez.start();
     Volume volume;
     Battery battery;
     Launcher launcher;
@@ -114,6 +128,9 @@ int main(int argc, char **argv) {
     qmlRegisterSingletonInstance("Taos.Bar", 1, 0, "Theme", &theme);
     qmlRegisterSingletonInstance("Taos.Bar", 1, 0, "Clock", &clock);
     qmlRegisterSingletonInstance("Taos.Bar", 1, 0, "Network", &network);
+    qmlRegisterSingletonInstance("Taos.Bar", 1, 0, "Wifi", &nm);
+    qmlRegisterSingletonInstance("Taos.Bar", 1, 0, "Bluetooth", &bluez);
+    qmlRegisterSingletonInstance("Taos.Bar", 1, 0, "MenuHost", &menuHost);
     qmlRegisterSingletonInstance("Taos.Bar", 1, 0, "Volume", &volume);
     qmlRegisterSingletonInstance("Taos.Bar", 1, 0, "Battery", &battery);
     qmlRegisterSingletonInstance("Taos.Bar", 1, 0, "Launcher", &launcher);
@@ -122,6 +139,8 @@ int main(int argc, char **argv) {
     o.height = height;
     o.onlyOutput = p.value(optOutput);
     o.qmlUrl = QStringLiteral("qrc:/taos/bar/qml/Bar.qml");
+    o.menuQmlUrl = QStringLiteral("qrc:/taos/bar/qml/NetMenu.qml");
+    o.host = &menuHost;
     BarManager mgr(o);
 
     fprintf(stderr, "taos-bar %s outputs=%s theme=%s/%s source=%s height=%d reduce-motion=%d\n", TAOS_BAR_VERSION,

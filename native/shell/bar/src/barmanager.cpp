@@ -1,6 +1,7 @@
 #include "barmanager.h"
 
 #include <LayerShellQt/Window>
+#include "menuhost.h"
 #include <QGuiApplication>
 #include <QQuickView>
 #include <QScreen>
@@ -11,6 +12,7 @@
 BarManager::BarManager(const Options &o, QObject *parent) : QObject(parent), m_o(o) {}
 
 BarManager::~BarManager() {
+    if (m_menu) { m_menu->destroy(); delete m_menu; }
     for (QQuickView *v : std::as_const(m_views)) {
         v->destroy();
         delete v;
@@ -24,7 +26,62 @@ QString BarManager::describeOutputs() const {
     return l.join(QLatin1Char(','));
 }
 
+void BarManager::openMenu(const QString &output, qreal anchorRight) {
+    if (m_o.menuQmlUrl.isEmpty()) return;
+    closeMenu();
+    QScreen *s = nullptr;
+    for (QScreen *c : QGuiApplication::screens())
+        if (c->name() == output) s = c;
+    if (!s) s = QGuiApplication::primaryScreen();
+    if (!s) return;
+    auto *v = new QQuickView(&m_engine, nullptr);
+    v->setScreen(s);
+    v->setColor(Qt::transparent);
+    v->setFlag(Qt::FramelessWindowHint);
+    v->setResizeMode(QQuickView::SizeRootObjectToView);
+    v->setTitle(QStringLiteral("taos-netmenu"));
+    v->setInitialProperties({{QStringLiteral("barHeight"), m_o.height}, {QStringLiteral("anchorRight"), anchorRight}});
+    v->resize(s->geometry().size());
+    v->setSource(QUrl(m_o.menuQmlUrl));
+    if (v->status() != QQuickView::Ready) {
+        for (const auto &e : v->errors()) fprintf(stderr, "taos-bar: menu qml: %s\n", qPrintable(e.toString()));
+        delete v;
+        return;
+    }
+    v->create();
+    if (auto *w = LayerShellQt::Window::get(v)) {
+        w->setScreen(s);
+        w->setLayer(LayerShellQt::Window::LayerOverlay);
+        w->setScope(QStringLiteral("taos-netmenu"));
+        // Whole output: the clear area behind the panel catches the click that dismisses the menu.
+        w->setAnchors(LayerShellQt::Window::Anchors(LayerShellQt::Window::AnchorTop | LayerShellQt::Window::AnchorBottom
+                                                    | LayerShellQt::Window::AnchorLeft | LayerShellQt::Window::AnchorRight));
+        w->setExclusiveZone(-1);
+        w->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivityExclusive);
+    } else {
+        fprintf(stderr, "taos-bar: layer shell is not available for the network menu\n");
+    }
+    v->show();
+    m_menu = v;
+    m_menuScreen = s;
+    if (m_o.host) m_o.host->setOpen(true);
+}
+
+void BarManager::closeMenu() {
+    if (!m_menu) return;
+    QQuickView *v = m_menu;
+    m_menu = nullptr;
+    m_menuScreen = nullptr;
+    if (m_o.host) m_o.host->setOpen(false);
+    v->hide();
+    v->deleteLater();  // may be called from inside the menu's own handler
+}
+
 void BarManager::start() {
+    if (m_o.host) {
+        connect(m_o.host, &MenuHost::openRequested, this, &BarManager::openMenu);
+        connect(m_o.host, &MenuHost::closeFinished, this, &BarManager::closeMenu, Qt::QueuedConnection);
+    }
     connect(qGuiApp, &QGuiApplication::screenAdded, this, &BarManager::addScreen);
     connect(qGuiApp, &QGuiApplication::screenRemoved, this, &BarManager::removeScreen);
     for (QScreen *s : QGuiApplication::screens()) addScreen(s);
@@ -70,6 +127,7 @@ void BarManager::addScreen(QScreen *s) {
 }
 
 void BarManager::removeScreen(QScreen *s) {
+    if (s == m_menuScreen) closeMenu();
     QQuickView *v = m_views.take(s);
     if (!v) return;
     fprintf(stderr, "taos-bar: bar removed from output %s\n", qPrintable(s->name()));

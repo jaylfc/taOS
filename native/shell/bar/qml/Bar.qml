@@ -106,8 +106,12 @@ Item {
         spacing: root.itemSpacing
 
         BarItem {
+            id: networkItem
+            interactive: true
             accessibleName: Network.description
-            NetworkIcon { kind: Network.kind; anchors.verticalCenter: parent.verticalCenter }
+            accessibleHint: qsTr("Opens the Wi-Fi, Ethernet and Bluetooth menu")
+            onActivated: MenuHost.openNetwork(root.outputName, networkItem.mapToItem(null, networkItem.width, 0).x)
+            NetworkIcon { kind: Network.kind; strength: Network.strength; anchors.verticalCenter: parent.verticalCenter }
         }
         BarItem {
             visible: Volume.available

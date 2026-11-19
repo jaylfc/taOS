@@ -3,14 +3,17 @@
 add_library(taosbar_core STATIC
     src/clock.cpp src/clock.h
     src/network.cpp src/network.h
+    src/dbusutil.cpp src/dbusutil.h
+    src/nmclient.cpp src/nmclient.h
+    src/bluezclient.cpp src/bluezclient.h
     src/volume.cpp src/volume.h
     src/battery.cpp src/battery.h
     src/launcher.cpp src/launcher.h)
 target_include_directories(taosbar_core PUBLIC src)
-target_link_libraries(taosbar_core PUBLIC taos_common Qt6::Core Qt6::Gui)
+target_link_libraries(taosbar_core PUBLIC taos_common Qt6::Core Qt6::Gui Qt6::DBus)
 target_compile_definitions(taosbar_core PUBLIC TAOS_BAR_VERSION="${PROJECT_VERSION}")
 
-qt_add_executable(taos-bar src/main.cpp src/barmanager.cpp src/barmanager.h)
+qt_add_executable(taos-bar src/main.cpp src/barmanager.cpp src/barmanager.h src/menuhost.cpp src/menuhost.h)
 qt_add_resources(taos-bar bar_resources
     PREFIX /taos/bar
     BASE ${CMAKE_CURRENT_SOURCE_DIR}
@@ -19,7 +22,17 @@ qt_add_resources(taos-bar bar_resources
         qml/BarItem.qml
         qml/NetworkIcon.qml
         qml/VolumeIcon.qml
-        qml/BatteryIcon.qml)
+        qml/BatteryIcon.qml
+        qml/NetMenu.qml
+        qml/MenuPanel.qml
+        qml/MenuRow.qml
+        qml/MenuSwitch.qml
+        qml/PillField.qml
+        qml/Spinner.qml
+        qml/SignalGlyph.qml
+        qml/LockGlyph.qml
+        qml/CheckGlyph.qml
+        qml/BluetoothGlyph.qml)
 qt_add_resources(taos-bar bar_theme
     PREFIX /taos/bar
     BASE ${TAOS_COMMON_DIR}
@@ -38,4 +51,11 @@ taos_bar_test(test_network)
 taos_bar_test(test_battery)
 taos_bar_test(test_volume)
 taos_bar_test(test_theme)
+taos_bar_test(test_nmclient)
+taos_bar_test(test_bluezclient)
+find_program(TAOS_DBUS_DAEMON dbus-daemon)
+foreach(t test_nmclient test_bluezclient)
+    target_link_libraries(${t} PRIVATE Qt6::DBus)
+    target_compile_definitions(${t} PRIVATE TAOS_DBUS_DAEMON="${TAOS_DBUS_DAEMON}")
+endforeach()
 target_compile_definitions(test_theme PRIVATE TAOS_BAR_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}" TAOS_COMMON_DIR="${TAOS_COMMON_DIR}")

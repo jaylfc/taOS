@@ -1,5 +1,7 @@
 #include "network.h"
 
+#include "nmclient.h"
+
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -59,8 +61,36 @@ Network::State Network::read(const QString &root) {
     return wifi;  // Offline with empty iface when neither is up
 }
 
+Network::Ethernet Network::readEthernet(const QString &root) {
+    const QDir dir(root + QStringLiteral("/sys/class/net"));
+    Ethernet best;
+    for (const QString &n : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name)) {
+        if (n == QLatin1String("lo")) continue;
+        const QString base = dir.filePath(n);
+        if (QFileInfo(base + QStringLiteral("/wireless")).isDir() || !QFileInfo::exists(base + QStringLiteral("/device"))) continue;
+        const QString oper = readFirstLine(base + QStringLiteral("/operstate"));
+        const bool up = oper == QLatin1String("up")
+                        || (oper == QLatin1String("unknown") && readFirstLine(base + QStringLiteral("/carrier")) == QLatin1String("1"));
+        QString text;
+        if (up) {
+            const int speed = readFirstLine(base + QStringLiteral("/speed")).toInt();
+            if (speed >= 1000) text = tr("Connected, %1 Gbit/s").arg(QLocale().toString(speed / 1000.0, 'g', 3));
+            else if (speed > 0) text = tr("Connected, %1 Mbit/s").arg(speed);
+            else text = tr("Connected");
+        } else {
+            text = tr("Cable unplugged");
+        }
+        if (!best.present || up) {
+            best = {true, text};
+            if (up) break;
+        }
+    }
+    return best;
+}
+
 Network::Network(const QString &root, QObject *parent) : QObject(parent), m_root(root) {
     m_state = read(m_root);
+    m_eth = readEthernet(m_root);
     m_timer.setInterval(5000);
     m_timer.setTimerType(Qt::VeryCoarseTimer);
     connect(&m_timer, &QTimer::timeout, this, &Network::refresh);
@@ -70,15 +100,48 @@ Network::Network(const QString &root, QObject *parent) : QObject(parent), m_root
 QString Network::description() const {
     switch (m_state.kind) {
     case Wired: return tr("Network: wired, connected");
-    case Wifi: return tr("Network: Wi-Fi, connected");
+    case Wifi:
+        if (!ssid().isEmpty())
+            return tr("Network: Wi-Fi, %1, signal %2").arg(ssid(), WifiModel::strengthWord(strength()));
+        return tr("Network: Wi-Fi, connected");
     default: return tr("Network: offline");
     }
 }
 
+bool Network::nmDriven() const { return m_nm && m_nm->available(); }
+int Network::nmStrength() const { return nmDriven() ? m_nm->activeStrength() : 0; }
+QString Network::ssid() const { return nmDriven() ? m_nm->activeSsid() : QString(); }
+bool Network::ethernetPresent() const { return nmDriven() ? m_nm->ethernetPresent() : m_eth.present; }
+QString Network::ethernetText() const { return nmDriven() ? m_nm->ethernetText() : m_eth.text; }
+
+void Network::attachNm(NmClient *nm) {
+    m_nm = nm;
+    connect(nm, &NmClient::changed, this, &Network::nmChanged);
+    nmChanged();
+}
+
+void Network::nmChanged() {
+    State s = m_state;
+    if (nmDriven()) {
+        m_timer.stop();  // the daemon tells us; no polling
+        const QString k = m_nm->kind();
+        s = {k == QLatin1String("wired") ? Wired : k == QLatin1String("wifi") ? Wifi : Offline, QString()};
+    } else {
+        if (!m_timer.isActive()) m_timer.start();
+        s = read(m_root);
+    }
+    // Signal strength and names change without the kind changing.
+    m_state = s;
+    emit changed();
+}
+
 void Network::refresh() {
+    if (nmDriven()) return;
     const State s = read(m_root);
-    if (!(s == m_state)) {
+    const Ethernet e = readEthernet(m_root);
+    if (!(s == m_state) || e.present != m_eth.present || e.text != m_eth.text) {
         m_state = s;
+        m_eth = e;
         emit changed();
     }
 }
