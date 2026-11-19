@@ -874,6 +874,7 @@ different project, and 403 when the agent lacks the `canvas_read` scope or the
   The DELETE `/api/memory/chunk/{content_hash}` route stays human-only and is not
   reachable by agent tokens, even with memory_read.
 - **memory_write**: `POST /api/memory/remember` writes a memory entry into the calling agent's OWN namespace; accepts a registry JWT with a memory_write grant or a bound per-agent local token; a body `agent` naming another agent returns 403; the unbound host token and admin sessions must pass `agent`; a non-admin human session that owns the target agent is accepted.
+- **secrets_read_own**: `GET /api/agents/self/secrets/{name}` reads a single secret value granted to the calling agent. Requires an agent bearer token with the `secrets_read_own` scope. The token's canonical_id is matched against `registry_canonical_id` in `config.agents` to determine which agent's grants apply. Returns the secret's plaintext value if granted to that agent; returns 404 with `{"detail": "Secret not found"}` if the secret is unknown or not granted to the bound agent (no existence oracle). Returns 401 `{"detail": "agent token required"}` without a valid agent token. Returns 403 if the token lacks the `secrets_read_own` scope.
 
 Access is per-project: a token is authorized for a project only when the agent
 holds an active grant + membership there; a request for a project it has no
@@ -2967,3 +2968,19 @@ Agents can delegate project work to another user's agent:
 - **Revocation cascades**: revoking a contact or membership revokes all sponsored identities and unassigns their board tasks.
 
 Routes: `POST /api/decisions` (delegation kind), peer inbox envelope handling, project-invite integration.
+
+## Agent identity reuse (#2114)
+
+An agent's canonical id is minted once. When approving an auth request for a
+handle that already maps to a **pending** agent (a half-finished earlier
+approval), the controller reuses that agent's existing canonical_id and
+reactivates it instead of minting a fresh one. The requester must still prove
+ownership by presenting a valid registry token for that canonical_id.
+
+Two exceptions mint a fresh `external-selfjoin` identity instead:
+
+- a non-active holder whose `origin` is not `external-selfjoin` (an internal
+  identity the external requester must not adopt), and
+- a suspended or revoked holder. Reversing a deliberate owner suspension
+  through the consent flow is an open maintainer decision, so approval keeps
+  the old mint-a-new-identity behaviour rather than silently reactivating it.

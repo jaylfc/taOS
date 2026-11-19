@@ -214,6 +214,7 @@ class LXCBackend(ContainerBackend):
             results.append(ContainerInfo(
                 name=name, status=status, ip=ip,
                 memory_mb=memory_mb, cpu_cores=cpu_cores,
+                project=c.get("project"),
             ))
         return results
 

@@ -51,7 +51,7 @@ if [ -z "${BASH_VERSION:-}" ]; then
         if command -v apk >/dev/null 2>&1; then
             sudo apk add --no-cache bash
         elif command -v apt-get >/dev/null 2>&1; then
-            sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq bash
+            sudo apt-get -o Acquire::Retries=3 update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3 install -y -qq bash
         elif command -v dnf >/dev/null 2>&1; then
             sudo dnf install -y -q bash
         elif command -v pacman >/dev/null 2>&1; then
@@ -78,7 +78,7 @@ if [ -z "${BASH_VERSION:-}" ]; then
     fi
     _taos_boot_url="${TAOS_BOOTSTRAP_URL:-https://raw.githubusercontent.com/jaylfc/taOS/${TAOS_BRANCH:-master}/scripts/install-server.sh}"
     _taos_self="$(mktemp)" || exit 1
-    if ! curl -fsSL "$_taos_boot_url" -o "$_taos_self"; then
+    if ! curl -fsSL --retry 5 --retry-delay 3 --connect-timeout 15 --max-time 300 "$_taos_boot_url" -o "$_taos_self"; then
         echo "[taos-install] FATAL: could not re-fetch the installer from $_taos_boot_url" >&2
         rm -f "$_taos_self"
         exit 1
@@ -195,6 +195,66 @@ if curl --help all 2>/dev/null | grep -- '--retry-all-errors' >/dev/null; then
     CURL_RETRY+=(--retry-all-errors)
 fi
 
+# apt download retries: Acquire::Retries is apt's native knob -- a .deb
+# download dropped mid-transfer is retried inside the same apt run
+# instead of failing the whole install (#2088). Applied to every
+# apt-get update/install below (the pre-bash bootstrap above uses the
+# literal option: it runs under sh, before this array exists).
+APT_RETRY=(-o Acquire::Retries=3)
+
+# retry <attempts> <cmd...>: re-run a command whose own retry flags do
+# not cover a mid-transfer drop, with growing delays (5s, 15s, 45s).
+# pip is the case in point: --retries covers connection setup, but a
+# wheel download truncated mid-body (IncompleteRead) still aborts the
+# whole pip run. Re-running pip is safe, and wheels already downloaded
+# come from the local cache, so the retry is cheap (#2088).
+#
+# Only network-shaped failures are retried. The command's output is
+# captured per attempt (and echoed through tee, so the install log
+# still shows it live), and a failed attempt is re-run only when its
+# output carries a network-drop marker -- IncompleteRead,
+# ProtocolError, a timeout, a broken connection. Anything else (a
+# dependency conflict, a failed source build) cannot be fixed by
+# re-running, so it fails on the first attempt and the real error
+# surfaces immediately instead of after two pointless retries.
+retry() {
+    local attempts="$1"; shift
+    local delay=5 n=1 rc
+    local out
+    out="$(mktemp)" || return 1
+    while true; do
+        "$@" 2>&1 | tee "$out"
+        rc=${PIPESTATUS[0]}
+        if (( rc == 0 )); then
+            rm -f "$out"
+            return 0
+        fi
+        if (( n >= attempts )); then
+            rm -f "$out"
+            return 1
+        fi
+        if ! grep -qiE 'incompleteread|protocolerror|timeout|connection broken' "$out"; then
+            warn "failure shows no sign of a network drop -- not retrying: $*"
+            rm -f "$out"
+            return 1
+        fi
+        warn "attempt $n of $attempts failed -- retrying in ${delay}s: $*"
+        sleep "$delay"
+        delay=$(( delay * 3 ))
+        n=$(( n + 1 ))
+    done
+}
+
+# The controller-deps pip pair, kept as a unit so retry() can re-run
+# it as a whole. The two command lines are verbatim and unindented on
+# purpose: the updater mirrors them, and
+# tests/test_updater_dep_install.py matches the editable-install
+# line literally.
+_install_controller_deps() {
+./.venv/bin/pip install --quiet --retries 10 --timeout 60 --upgrade pip -c scripts/install-constraints.txt &&
+./.venv/bin/pip install --quiet --retries 10 --timeout 60 -c scripts/install-constraints.txt -e ".${_taos_extras:+[$_taos_extras]}"
+}
+
 log "os=$os_name arch=$arch"
 # Environment banner: every user-posted install log should self-describe the
 # machine it ran on (distro, kernel, board, python, free disk) so a failure
@@ -235,11 +295,11 @@ ensure_linux_deps() {
         # Node 22 via NodeSource immediately after. Including apt's nodejs/npm
         # causes "held broken packages" when NodeSource's nodejs is already
         # present, because apt's npm conflicts with NodeSource's bundled npm.
-        sudo apt-get update -qq
+        sudo apt-get "${APT_RETRY[@]}" update -qq
         # vulkan-tools provides vulkaninfo, which the runtime hardware
         # probe shells out to for iGPU detection. Without it, taOS
         # silently reports vulkan: false on Intel / AMD iGPUs (#354).
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+        sudo DEBIAN_FRONTEND=noninteractive apt-get "${APT_RETRY[@]}" install -y -qq \
             python3 python3-venv python3-pip git curl ca-certificates \
             libtorrent-rasterbar-dev libboost-python-dev sqlite3 libsqlcipher-dev \
             vulkan-tools
@@ -337,7 +397,7 @@ ensure_node22() {
         trap "rm -f '$_ns_key_tmp'" RETURN
         curl -fsSL "${CURL_RETRY[@]}" https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
             -o "$_ns_key_tmp" \
-            || die "failed to download NodeSource repo GPG key"
+            || die "failed to download NodeSource repo GPG key after retries -- check the network connection and re-run; re-running this installer is safe"
         local _ns_actual_fp
         _ns_actual_fp="$(gpg --with-colons --import-options show-only \
             --import "$_ns_key_tmp" 2>/dev/null \
@@ -353,9 +413,9 @@ ensure_node22() {
         sudo chmod 644 /usr/share/keyrings/nodesource.gpg
         printf 'Types: deb\nURIs: https://deb.nodesource.com/node_22.x\nSuites: nodistro\nComponents: main\nSigned-By: /usr/share/keyrings/nodesource.gpg\n' \
             | sudo tee /etc/apt/sources.list.d/nodesource.sources > /dev/null
-        sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq \
+        sudo DEBIAN_FRONTEND=noninteractive apt-get "${APT_RETRY[@]}" update -qq \
             || die "apt-get update after NodeSource repo add failed"
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs \
+        sudo DEBIAN_FRONTEND=noninteractive apt-get "${APT_RETRY[@]}" install -y nodejs \
             || die "apt-get install nodejs (22) failed"
     elif command -v dnf >/dev/null 2>&1; then
         # Install Node 22 via NodeSource's GPG-signed dnf repository.
@@ -371,7 +431,7 @@ ensure_node22() {
         trap "rm -f '$_ns_rpm_key_tmp'" RETURN
         curl -fsSL "${CURL_RETRY[@]}" https://rpm.nodesource.com/gpgkey/ns-operations-public.key \
             -o "$_ns_rpm_key_tmp" \
-            || die "failed to download NodeSource RPM repo GPG key"
+            || die "failed to download NodeSource RPM repo GPG key after retries -- check the network connection and re-run; re-running this installer is safe"
         local _ns_rpm_actual_fp
         _ns_rpm_actual_fp="$(gpg --with-colons --import-options show-only \
             --import "$_ns_rpm_key_tmp" 2>/dev/null \
@@ -449,7 +509,7 @@ detect_and_advise_accelerators() {
                 # 'unknown' even though the GPU is fully operational (#370).
                 if command -v apt-get >/dev/null 2>&1 && apt-cache show nvidia-utils >/dev/null 2>&1; then
                     log "installing nvidia-utils for VRAM/capability reporting"
-                    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nvidia-utils
+                    sudo DEBIAN_FRONTEND=noninteractive apt-get "${APT_RETRY[@]}" install -y -qq nvidia-utils
                 elif command -v dnf >/dev/null 2>&1; then
                     # nvidia-smi lives in rpmfusion-nonfree — only install if
                     # the user already enabled RPM Fusion. Silently skip if
@@ -504,7 +564,7 @@ detect_and_advise_accelerators() {
             # reports as 'unknown' even though the GPU is fully operational (#370).
             if command -v apt-get >/dev/null 2>&1 && apt-cache show rocm-smi-lib >/dev/null 2>&1; then
                 log "installing rocm-smi-lib for VRAM/capability reporting"
-                sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq rocm-smi-lib
+                sudo DEBIAN_FRONTEND=noninteractive apt-get "${APT_RETRY[@]}" install -y -qq rocm-smi-lib
             elif command -v dnf >/dev/null 2>&1 && dnf list rocm-smi >/dev/null 2>&1; then
                 log "installing rocm-smi for VRAM/capability reporting"
                 sudo dnf install -y -q rocm-smi
@@ -546,7 +606,7 @@ detect_and_advise_accelerators() {
         # actually detect the GPU (#354, epic #370).
         if command -v apt-get >/dev/null 2>&1 && apt-cache show mesa-vulkan-drivers >/dev/null 2>&1; then
             log "installing mesa-vulkan-drivers for Intel Vulkan support"
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq mesa-vulkan-drivers
+            sudo DEBIAN_FRONTEND=noninteractive apt-get "${APT_RETRY[@]}" install -y -qq mesa-vulkan-drivers
         elif command -v dnf >/dev/null 2>&1 && dnf list mesa-vulkan-drivers >/dev/null 2>&1; then
             log "installing mesa-vulkan-drivers for Intel Vulkan support"
             sudo dnf install -y -q mesa-vulkan-drivers
@@ -1053,7 +1113,7 @@ ensure_container_runtime() {
         # to Zabbly for older Debian/Ubuntu where the package isn't there.
         # apt-cache madison is the lightest "is the package available?"
         # probe — empty output means no candidate, which is what we want.
-        sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq 2>/dev/null || true
+        sudo DEBIAN_FRONTEND=noninteractive apt-get "${APT_RETRY[@]}" update -qq 2>/dev/null || true
         # Prefer incus-base: the full `incus` metapackage pulls incus-ui and
         # other extras whose dependencies are unsatisfiable on Debian Bookworm
         # ARM64 ("held broken packages"), whereas incus-base is the minimal
@@ -1069,7 +1129,7 @@ ensure_container_runtime() {
             # No metapackage fallback: the exact failure this fix targets is the
             # full `incus` package being broken on the vendor image, so retrying
             # it would fail identically. The warn below covers the failure path.
-            if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$_incus_pkg"; then
+            if sudo DEBIAN_FRONTEND=noninteractive apt-get "${APT_RETRY[@]}" install -y -qq "$_incus_pkg"; then
                 installed=1
                 log "container runtime: $_incus_pkg installed from default apt repos"
             else
@@ -1134,8 +1194,8 @@ ensure_container_runtime() {
                 sudo install -m 0644 "$_zabbly_key_tmp" /etc/apt/keyrings/zabbly.asc
                 echo "deb [signed-by=/etc/apt/keyrings/zabbly.asc] https://pkgs.zabbly.com/incus/stable $codename main" \
                     | sudo tee /etc/apt/sources.list.d/zabbly-incus-stable.list > /dev/null
-                sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
-                if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq incus; then
+                sudo DEBIAN_FRONTEND=noninteractive apt-get "${APT_RETRY[@]}" update -qq
+                if sudo DEBIAN_FRONTEND=noninteractive apt-get "${APT_RETRY[@]}" install -y -qq incus; then
                     installed=1
                     log "container runtime: incus installed via Zabbly"
                 else
@@ -1285,12 +1345,12 @@ _apt_install_compose() {
     #       resolver error); callers must NOT silently swap repositories
     #       in this case -- the real apt error is the actionable signal.
     if [[ -n "$(apt-cache madison docker-compose-plugin 2>/dev/null)" ]]; then
-        if ! sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker-compose-plugin; then
+        if ! sudo DEBIAN_FRONTEND=noninteractive apt-get "${APT_RETRY[@]}" install -y -qq docker-compose-plugin; then
             warn "apt install docker-compose-plugin failed -- see /var/log/apt/term.log"
             return 1
         fi
     elif [[ -n "$(apt-cache madison docker-compose-v2 2>/dev/null)" ]]; then
-        if ! sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker-compose-v2; then
+        if ! sudo DEBIAN_FRONTEND=noninteractive apt-get "${APT_RETRY[@]}" install -y -qq docker-compose-v2; then
             warn "apt install docker-compose-v2 failed -- see /var/log/apt/term.log"
             return 1
         fi
@@ -1387,15 +1447,15 @@ _docker_restore_distro_pkgs() {
     [[ -n "$pkgs" ]] || return 0
     log "restoring the distro Docker packages: $pkgs"
     # shellcheck disable=SC2086
-    if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $pkgs; then
+    if sudo DEBIAN_FRONTEND=noninteractive apt-get "${APT_RETRY[@]}" install -y -qq $pkgs; then
         return 0
     fi
     # Whatever got us here may have left apt's lists inconsistent, and
     # docker.list has just been rolled back. Refresh once and retry -- a
     # "restore" that only narrates is worse than no restore at all.
-    sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
+    sudo DEBIAN_FRONTEND=noninteractive apt-get "${APT_RETRY[@]}" update -qq >/dev/null 2>&1 || true
     # shellcheck disable=SC2086
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $pkgs \
+    sudo DEBIAN_FRONTEND=noninteractive apt-get "${APT_RETRY[@]}" install -y -qq $pkgs \
         || warn "could not reinstall $pkgs -- this host has NO Docker now; run: sudo apt-get install $pkgs"
     return 0
 }
@@ -1556,14 +1616,14 @@ _apt_install_docker_official_repo() {
             || warn "could not remove $_docker_removed_pkgs -- apt may be left half-configured"
     fi
 
-    if ! sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq; then
+    if ! sudo DEBIAN_FRONTEND=noninteractive apt-get "${APT_RETRY[@]}" update -qq; then
         warn "apt-get update failed after adding Docker's repo -- rolling back the partial repo config"
         _docker_apt_restore "$_docker_list" "$_docker_list_backup" "$_docker_created_list"
         _docker_apt_restore "$_docker_keyring" "$_docker_keyring_backup" "$_docker_created_keyring"
         _docker_restore_distro_pkgs "$_docker_removed_pkgs"
         return 1
     fi
-    if ! sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+    if ! sudo DEBIAN_FRONTEND=noninteractive apt-get "${APT_RETRY[@]}" install -y -qq \
             docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
         warn "apt install from Docker's repo failed -- see /var/log/apt/term.log -- rolling back the partial repo config"
         _docker_apt_restore "$_docker_list" "$_docker_list_backup" "$_docker_created_list"
@@ -1613,7 +1673,7 @@ ensure_docker_for_apps() {
     else
         log "installing Docker Engine (for Store Docker apps)"
         if command -v apt-get >/dev/null 2>&1; then
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io \
+            sudo DEBIAN_FRONTEND=noninteractive apt-get "${APT_RETRY[@]}" install -y -qq docker.io \
                 || warn "apt install docker.io failed -- Store Docker apps will be unavailable"
         elif command -v dnf >/dev/null 2>&1; then
             sudo dnf install -y -q moby-engine \
@@ -1819,8 +1879,8 @@ fi
 # so the brackets are added only when there is an extra.
 _taos_extras="$(taos_controller_extras)"
 log "installing controller python deps into .venv (pip install -e '.${_taos_extras:+[$_taos_extras]}')"
-./.venv/bin/pip install --quiet --retries 10 --timeout 60 --upgrade pip -c scripts/install-constraints.txt
-./.venv/bin/pip install --quiet --retries 10 --timeout 60 -c scripts/install-constraints.txt -e ".${_taos_extras:+[$_taos_extras]}"
+retry 3 _install_controller_deps \
+    || die "installing controller python deps failed after 3 attempts -- check the network connection and re-run; re-running this installer is safe and completed downloads are cached"
 
 # litellm (and with it the proprietary litellm-enterprise wheel an older
 # litellm[proxy] pulled in) is no longer part of the install set. A FRESH

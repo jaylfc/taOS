@@ -124,12 +124,46 @@ class TestSecretsSelfReadGranted:
         assert r.json() == {"detail": "Secret not found"}
 
     async def test_unknown_name_returns_404(self, secrets_app, tmp_data_dir):
-        _cid, token = await _agent(secrets_app, "@myagent", scopes=("secrets_read_own",))
+        """Unknown secret name returns 404 for a BOUND agent. Also verifies that a
+        secret granted to a DIFFERENT agent name returns 404 (grant check), and
+        a secret granted to the bound agent returns 200 (positive control)."""
+        cid, token = await _agent(secrets_app, "@myagent", scopes=("secrets_read_own",))
+        # Bind the token's canonical_id to a config agent named 'myagent'
+        secrets_app.state.config.agents[:] = [
+            {"name": "myagent", "registry_canonical_id": cid}
+        ]
+
+        store = secrets_app.state.secrets
+        # Secret granted to a DIFFERENT agent name -> should 404 for bound caller
+        await store.add(
+            name="other-secret",
+            value="s3cr3t-other",
+            category="general",
+            description="Other agent's secret",
+            agents=["other-agent"],
+        )
+        # Secret granted to the bound agent -> should 200 (positive control)
+        await store.add(
+            name="mysecret",
+            value="s3cr3t-v4lu3",
+            category="general",
+            description="My secret",
+            agents=["myagent"],
+        )
 
         async with _bare(secrets_app) as c:
-            r = await c.get(f"{SECRETS_SELF}/nonexistent", headers=_hdr(token))
-        assert r.status_code == 404
-        assert r.json() == {"detail": "Secret not found"}
+            # Unknown name -> 404
+            r1 = await c.get(f"{SECRETS_SELF}/nonexistent", headers=_hdr(token))
+            assert r1.status_code == 404
+            assert r1.json() == {"detail": "Secret not found"}
+            # Secret granted to different agent -> 404 (grant check)
+            r2 = await c.get(f"{SECRETS_SELF}/other-secret", headers=_hdr(token))
+            assert r2.status_code == 404
+            assert r2.json() == {"detail": "Secret not found"}
+            # Secret granted to bound agent -> 200 (positive control)
+            r3 = await c.get(f"{SECRETS_SELF}/mysecret", headers=_hdr(token))
+            assert r3.status_code == 200
+            assert r3.json() == {"name": "mysecret", "value": "s3cr3t-v4lu3"}
 
     async def test_token_without_secrets_read_own_gets_403(self, secrets_app, tmp_data_dir):
         _cid, token = await _agent(secrets_app, "@myagent", scopes=("a2a_receive",))
@@ -175,9 +209,15 @@ class TestSecretsSelfReadMembership:
 
     async def test_case_sensitive_name_difference(self, secrets_app, tmp_data_dir):
         """A token for agent A cannot read a secret granted to agent whose name
-        differs from A's only by case."""
+        differs from A's only by case. Also verifies agent B can read its own secret (positive control)."""
         cid_a, token_a = await _agent(secrets_app, "@agent-a", scopes=("secrets_read_own",))
         cid_b, token_b = await _agent(secrets_app, "@agent-b", scopes=("secrets_read_own",))
+
+        # Bind both tokens to config agents
+        secrets_app.state.config.agents[:] = [
+            {"name": "agent-a", "registry_canonical_id": cid_a},
+            {"name": "agent-b", "registry_canonical_id": cid_b},
+        ]
 
         # Create a secret granted to agent-b (lowercase)
         store = secrets_app.state.secrets
@@ -194,11 +234,23 @@ class TestSecretsSelfReadMembership:
             r = await c.get(f"{SECRETS_SELF}/mysecret", headers=_hdr(token_a))
         assert r.status_code == 404
 
+        # Agent-b reads its own secret -> 200 (positive control)
+        async with _bare(secrets_app) as c:
+            r = await c.get(f"{SECRETS_SELF}/mysecret", headers=_hdr(token_b))
+        assert r.status_code == 200
+        assert r.json() == {"name": "mysecret", "value": "s3cr3t-b"}
+
     async def test_prefix_similar_name_difference(self, secrets_app, tmp_data_dir):
         """A token for agent A cannot read a secret granted to agent whose name
-        differs by a prefix from A's name."""
+        differs by a prefix from A's name. Also verifies agent can read its own secret (positive control)."""
         cid_a, token_a = await _agent(secrets_app, "@superagent", scopes=("secrets_read_own",))
         cid_b, token_b = await _agent(secrets_app, "@agent", scopes=("secrets_read_own",))
+
+        # Bind both tokens to config agents
+        secrets_app.state.config.agents[:] = [
+            {"name": "superagent", "registry_canonical_id": cid_a},
+            {"name": "agent", "registry_canonical_id": cid_b},
+        ]
 
         # Create a secret granted to agent (without "super" prefix)
         store = secrets_app.state.secrets
@@ -215,54 +267,11 @@ class TestSecretsSelfReadMembership:
             r = await c.get(f"{SECRETS_SELF}/mysecret", headers=_hdr(token_a))
         assert r.status_code == 404
 
-    async def test_grant_missing_for_secret_goes_red_then_restored(self, secrets_app, tmp_data_dir):
-        """Mutation check: temporarily drop the grant check and confirm that a
-        secret granted to another agent returns 404 instead of 200, then restore."""
-        import tinyagentos.routes.secrets as secrets_mod
-
-        cid_a, token_a = await _agent(secrets_app, "@agent-a", scopes=("secrets_read_own",))
-        cid_b, token_b = await _agent(secrets_app, "@agent-b", scopes=("secrets_read_own",))
-
-        # Create a secret granted to agent-b
-        store = secrets_app.state.secrets
-        await store.add(
-            name="top-secret",
-            value="s3cr3t-top",
-            category="general",
-            description="Top secret",
-            agents=["agent-b"],
-        )
-
-        # Verify 404 when grant check is active
+        # Agent reads its own secret -> 200 (positive control)
         async with _bare(secrets_app) as c:
-            r = await c.get(f"{SECRETS_SELF}/top-secret", headers=_hdr(token_a))
-        assert r.status_code == 404, "Grant check should return 404"
-
-        # --- Mutation: temporarily bypass the grant check ---
-        # (describe this in the PR body; the harness will verify the red state)
-        # Restore the grant check after the fix
-
-        # After restore, 404 should persist
-        async with _bare(secrets_app) as c:
-            r = await c.get(f"{SECRETS_SELF}/top-secret", headers=_hdr(token_a))
-        assert r.status_code == 404
-
-
-async def _get_session_client(secrets_app):
-    """Create an AsyncClient with a taos_session cookie (authenticated user)
-    but no Authorization Bearer header."""
-    from tinyagentos.auth import AuthManager
-    auth_mgr = secrets_app.state.auth
-    _record = auth_mgr.find_user("admin")
-    _uid = _record["id"] if _record else ""
-    _token = auth_mgr.create_session(user_id=_uid, long_lived=True)
-    transport = __import__("httpx").ASGITransport(app=secrets_app)
-    return __import__("httpx").AsyncClient(
-        transport=transport,
-        base_url="http://test",
-        cookies={"taos_session": _token},
-        event_hooks={},
-    )
+            r = await c.get(f"{SECRETS_SELF}/mysecret", headers=_hdr(token_b))
+        assert r.status_code == 200
+        assert r.json() == {"name": "mysecret", "value": "s3cr3t-plain"}
 
 
 @pytest.mark.asyncio
@@ -279,7 +288,7 @@ async def test_no_agent_token_for_config_agent_without_canonical_id_returns_401(
         "qmd_index": "testagent",
         "color": "#888",
     }
-    secrets_app.state.config.agents.append(agent)
+    secrets_app.state.config.agents[:] = [agent]
 
     # Grant the agent a secret
     store = secrets_app.state.secrets
@@ -308,6 +317,22 @@ async def test_no_agent_token_for_config_agent_without_canonical_id_returns_401(
     r = await c.get(f"{SECRETS_SELF}/mysecret")
     assert r.status_code == 401, f"Expected 401 but got {r.status_code}: {r.text}"
     assert "s3cr3t-v4lu3" not in r.text, "Secret value leaked in response body"
+
+
+@pytest.mark.asyncio
+async def test_agent_token_with_slash_in_name_returns_401_or_404(secrets_app, tmp_data_dir):
+    """An agent bearer token requesting a secret name containing a slash must
+    not return 200. The route treats the full path as the secret name, but no
+    such secret should exist or be granted."""
+    cid, token = await _agent(secrets_app, "@slash-agent", scopes=("secrets_read_own",))
+    # Bind the token's canonical_id to a config agent
+    secrets_app.state.config.agents[:] = [
+        {"name": "slash-agent", "registry_canonical_id": cid}
+    ]
+
+    async with _bare(secrets_app) as c:
+        r = await c.get(f"{SECRETS_SELF}/x/y", headers=_hdr(token))
+    assert r.status_code in (401, 404), f"Expected 401 or 404 but got {r.status_code}"
 
 
 def test_secrets_read_own_registered_in_both_sets():
