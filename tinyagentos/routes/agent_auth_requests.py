@@ -1185,6 +1185,14 @@ async def approve_request_record(
                 # The lost-race path already undid its own writes via
                 # _undo_reuse_writes before raising its 409.
                 raise
+            except asyncio.CancelledError:
+                # CancelledError is a BaseException, so the except
+                # Exception below would never see it: a cancellation
+                # landing mid-writes would leave the half-applied
+                # approval behind. Run the same undo, shielded so the
+                # cleanup itself is not cancelled, then re-raise.
+                await asyncio.shield(_undo_reuse_writes())
+                raise
             except Exception:
                 # A failure part-way through the writes must not leave a
                 # half-applied approval behind: undo what this approval
@@ -1325,6 +1333,27 @@ async def approve_request_record(
         # The rotation re-check above raises its 409 before this span has
         # written anything (it precedes set_status), so there is nothing
         # to undo.
+        raise
+    except asyncio.CancelledError:
+        # CancelledError is a BaseException, so the except Exception
+        # below would never see it: a cancellation landing after
+        # set_status would leave the identity active with no undo. Run
+        # the same undo as a failure, shielded so the cleanup itself is
+        # not cancelled, then re-raise.
+        if canonical_id is not None:
+            await asyncio.shield(
+                _undo_lost_approval(
+                    request,
+                    record_id=record["id"],
+                    canonical_id=canonical_id,
+                    created_here=created_here,
+                    granted_scopes=granted_scopes,
+                    binding_project=binding_project,
+                    prior_grants=set(),
+                    prior_grants_known=False,
+                    added_member=False,
+                )
+            )
         raise
     except Exception:
         # Any other failure in this span — e.g. a non-ValueError from

@@ -2181,3 +2181,135 @@ class TestAuthRequestRoutes:
         assert (await registry.get(cid))["status"] == "pending"
         assert await app.state.agent_grants.list_grants(cid) == []
         assert (await app.state.auth_requests.get(request_id))["status"] == "pending"
+    async def test_a_cancellation_after_activation_undoes_the_approval(
+        self, consent_client, monkeypatch
+    ):
+        """CodeRabbit on #4363: asyncio.CancelledError is a BaseException,
+        so the activation span's `except Exception` undo never runs when
+        the approve task is cancelled after set_status — the identity
+        stays active with no undo. The cancellation now runs the same
+        undo (shielded, so the cleanup itself is not cancelled) and
+        re-raises."""
+        from types import SimpleNamespace
+
+        from tinyagentos.routes.agent_auth_requests import approve_request_record
+
+        app = consent_client._transport.app
+        registry = app.state.agent_registry
+        cid, request_id = await self._pending_proof_request(
+            consent_client, "sponsor-cancel"
+        )
+        record = await app.state.auth_requests.get(request_id)
+
+        async def boom(*args, **kwargs):
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(registry, "set_sponsorship", boom)
+        fake_request = SimpleNamespace(app=app)
+        with pytest.raises(asyncio.CancelledError):
+            await approve_request_record(
+                fake_request,
+                record=record,
+                granted_scopes=["a2a_send"],
+                effective_project="prj-sponsor",
+                decided_by="admin-user",
+                project_id="prj-sponsor",
+                sponsor_contact_id="contact-42",
+            )
+        # The activation is undone exactly as for a failure: the identity
+        # is pending again, holds no grants, and the request is undecided.
+        assert (await registry.get(cid))["status"] == "pending"
+        assert await app.state.agent_grants.list_grants(cid) == []
+        assert (await app.state.auth_requests.get(request_id))["status"] == "pending"
+
+    async def test_a_cancellation_on_the_active_reuse_path_undoes_its_writes(
+        self, consent_client, monkeypatch
+    ):
+        """CodeRabbit on #4363: the reuse arm's undo is wired to
+        `except Exception`, but a cancellation landing after
+        add_agent_to_project wrote grants/membership — while the
+        decision itself never commits — is a BaseException: it bypassed
+        the undo and left the writes behind as usable authorization.
+        The cancellation now runs the same undo (shielded) and
+        re-raises."""
+        from types import SimpleNamespace
+
+        from tinyagentos.routes.agent_auth_requests import approve_request_record
+
+        app = consent_client._transport.app
+        pstore = app.state.project_store
+        if pstore._db is None:
+            await pstore.init()
+        await pstore.create_project_with_lead(
+            name="Reuse Cancel Project",
+            slug="reuse-cancel-project",
+            created_by="admin",
+            member_id="original-lead",
+        )
+        project_id = (await pstore.get_project_by_slug("reuse-cancel-project"))["id"]
+
+        cid = await self._active_identity(consent_client, "reuse-cancel")
+        store = app.state.auth_requests
+        # The earlier approval that left the identity active, holding a
+        # global a2a_send grant the cancellation undo must not touch.
+        winner = await store.create(
+            identity_claim="reuse-cancel",
+            framework="hermes",
+            requested_scopes=["a2a_send"],
+            proven_canonical_id=cid,
+        )
+        assert await store.set_decision(
+            winner["id"],
+            "accepted",
+            canonical_id=cid,
+            granted_scopes=["a2a_send"],
+            decided_by="admin",
+        )
+        await app.state.agent_grants.add_grant(cid, "a2a_send", tier="once")
+
+        # A proven request to add the same identity to the project.
+        private_pem, _public_pem = app.state.agent_registry_keypair
+        proof = mint_registry_token(
+            cid, private_pem, user_id="test", framework="hermes"
+        )
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            create_resp = await bare.post(
+                "/api/agents/auth-requests",
+                json={
+                    **_CREATE_BODY,
+                    "identity_claim": "reuse-cancel",
+                    "requested_scopes": ["project_tasks"],
+                    "project_id": project_id,
+                },
+                headers={"Authorization": f"Bearer {proof}"},
+            )
+        assert create_resp.json()["proof_status"] == "accepted", create_resp.text
+        request_id = create_resp.json()["request_id"]
+        record = await store.get(request_id)
+
+        async def cancelled(rid, decision, **kwargs):
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(store, "set_decision", cancelled)
+        fake_request = SimpleNamespace(app=app)
+        with pytest.raises(asyncio.CancelledError):
+            await approve_request_record(
+                fake_request,
+                record=record,
+                granted_scopes=["project_tasks"],
+                effective_project=project_id,
+                decided_by="admin",
+                project_id=project_id,
+            )
+        # The identity was already active and stays active...
+        assert (await app.state.agent_registry.get(cid))["status"] == "active"
+        # ...the earlier approval's grant is untouched...
+        grants = await app.state.agent_grants.list_grants(cid)
+        assert [(g["scope"], g["project_id"]) for g in grants] == [
+            ("a2a_send", None)
+        ]
+        # ...and the cancelled approval's membership write is gone, with
+        # its request still undecided.
+        assert await pstore.get_member(project_id, cid) is None
+        assert (await store.get(request_id))["status"] == "pending"
