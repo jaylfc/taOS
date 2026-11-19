@@ -93,8 +93,8 @@ Window {
             opacity: root.appear
             visible: Users.count > 0 && (Greeter.phase !== 5 || root.selecting)
 
-            readonly property real cell: Math.max(Plan.avatar + 56 * Plan.s, 190 * Plan.s)
-            readonly property real gap: 28 * Plan.s
+            readonly property real cell: Math.max(Plan.avatar + 56 * Plan.s, 150 * Plan.s)
+            readonly property real gap: 20 * Plan.s
             readonly property real fieldY: Plan.fieldTop
 
             function rowWidth() { return rep.count * cell + Math.max(0, rep.count - 1) * gap; }
@@ -137,7 +137,7 @@ Window {
                 id: entry
                 width: parent.width
                 y: users.fieldY
-                height: Plan.fieldH + 12 * Plan.s + 24 * Plan.s
+                height: Plan.fieldH + 10 * Plan.s + 20 * Plan.s
                 opacity: root.selecting ? 1 : 0
                 visible: opacity > 0.01
                 Behavior on opacity { enabled: !Style.reduceMotion; NumberAnimation { duration: 220 } }
@@ -157,8 +157,8 @@ Window {
                     id: msg
                     anchors.horizontalCenter: parent.horizontalCenter
                     anchors.top: field.bottom
-                    anchors.topMargin: 14 * Plan.s
-                    spacing: 8 * Plan.s
+                    anchors.topMargin: 10 * Plan.s
+                    spacing: 6 * Plan.s
                     opacity: Greeter.message !== "" ? 1 : 0
                     Behavior on opacity { enabled: !Style.reduceMotion; NumberAnimation { duration: 180 } }
                     Accessible.role: Accessible.StaticText
@@ -166,16 +166,16 @@ Window {
                     // An exclamation mark in a circle: the error is not colour alone.
                     Rectangle {
                         visible: Greeter.messageKind === "error"
-                        width: 20 * Plan.s; height: width; radius: width / 2
+                        width: 15 * Plan.s; height: width; radius: width / 2
                         anchors.verticalCenter: parent.verticalCenter
                         color: "transparent"
-                        border.width: Math.max(1.5, 1.5 * Plan.s); border.color: Style.text
+                        border.width: Math.max(1, 1.2 * Plan.s); border.color: Style.text
                         Text {
                             anchors.centerIn: parent
                             text: "!"
                             color: Style.text
                             font.family: "Inter"; font.weight: Font.Bold
-                            font.pixelSize: 13 * Plan.s
+                            font.pixelSize: 10 * Plan.s
                         }
                     }
                     Text {
@@ -183,7 +183,7 @@ Window {
                         text: Greeter.message
                         color: Style.text
                         font.family: "Inter"; font.weight: Font.Medium
-                        font.pixelSize: 17 * Plan.s
+                        font.pixelSize: 13 * Plan.s
                     }
                 }
             }
@@ -201,8 +201,8 @@ Window {
                 text: Greeter.hostname
                 color: Style.textSecondary
                 font.family: "Inter"; font.weight: Font.Medium
-                font.pixelSize: 16 * Plan.s
-                font.letterSpacing: 16 * Plan.s * 0.01
+                font.pixelSize: 13 * Plan.s
+                font.letterSpacing: 13 * Plan.s * 0.01
                 Accessible.role: Accessible.StaticText
                 Accessible.name: qsTr("This computer is called %1").arg(text)
             }

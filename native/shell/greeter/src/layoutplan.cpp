@@ -55,29 +55,35 @@ Plan plan(const QSizeF &sz) {
     p.clockBlock = QRectF((W - blockW) / 2, y0, blockW, blockH);
 
     // User block: below the wordmark box, above the bottom bar.
-    p.avatar = 104.0 * s;
-    p.fieldH = 58.0 * s;
-    p.fieldW = std::min(W * 0.8, 420.0 * s);
-    p.nameH = 30.0 * s;
-    p.captionH = 22.0 * s;
-    p.messageH = 26.0 * s;
+    // Proportions of a desktop login: a small avatar, the name close under
+    // it, and a compact pill about three avatars wide. Nothing shouts.
+    p.avatar = 68.0 * s;
+    p.fieldH = 34.0 * s;
+    p.fieldW = std::min(W * 0.8, 212.0 * s);
+    p.nameH = 22.0 * s;
+    p.captionH = 0.0;
+    p.messageH = 20.0 * s;
     const qreal bottomH = 44.0 * s;
     p.bottomBar = QRectF(p.margin, H - p.margin - bottomH, W - 2 * p.margin, bottomH);
     const qreal ugap = std::max(H * 0.03, 16.0 * s);
-    const qreal ytop = p.wordmark.bottom() + ugap;
+    qreal ytop = p.wordmark.bottom() + ugap;
     const qreal ybottom = p.bottomBar.top() - 8.0 * s;
     auto layoutFor = [&](qreal avatar) {
         p.avatar = avatar;
-        p.tileH = avatar + 14.0 * s + p.nameH + p.captionH;
-        p.fieldTop = p.tileH + 16.0 * s;
-        return p.fieldTop + p.fieldH + 12.0 * s + p.messageH;
+        p.tileH = avatar + 10.0 * s + p.nameH + p.captionH;
+        p.fieldTop = p.tileH + 10.0 * s;
+        return p.fieldTop + p.fieldH + 10.0 * s + p.messageH;
     };
     qreal need = layoutFor(p.avatar);
     if (ybottom - ytop < need) {
         // Tight screen: shrink the avatar (never below 64 px), never the field.
         const qreal fixed = need - p.avatar;
-        layoutFor(std::clamp(ybottom - ytop - fixed, 64.0 * s * 0.8, p.avatar));
-        need = p.fieldTop + p.fieldH + 12.0 * s + p.messageH;
+        layoutFor(std::clamp(ybottom - ytop - fixed, 48.0 * s, p.avatar));
+        need = p.fieldTop + p.fieldH + 10.0 * s + p.messageH;
+    } else {
+        // Room to spare: sit a little below the wordmark, not glued to it,
+        // and never drift into the lower third's empty middle.
+        ytop += std::min((ybottom - ytop - need) * 0.28, 56.0 * s);
     }
     const qreal ublockW = std::min(W * 0.94, 1100.0 * s);
     p.userBlock = QRectF((W - ublockW) / 2, ytop, ublockW, std::min(need, std::max(0.0, ybottom - ytop)));

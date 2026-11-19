@@ -8,7 +8,7 @@ FocusScope {
     id: pf
     property Item blurred: null
     readonly property alias text: input.text
-    readonly property real btn: height - 16 * Plan.s
+    readonly property real btn: height - 10 * Plan.s
     property real shakeX: 0
     property bool sent: false   // the text on screen was already sent to greetd
     property bool errored: false
@@ -31,9 +31,11 @@ FocusScope {
         anchors.fill: parent
         radius: height / 2
         color: "transparent"
-        border.width: Math.max(2, 2 * Plan.s)
-        border.color: Style.accent
-        opacity: input.activeFocus ? 0.85 : 0
+        // Focus is a quiet hairline, not a coloured ring: the field is the
+        // only thing on screen that takes typing.
+        border.width: Math.max(1, 1 * Plan.s)
+        border.color: Style.text
+        opacity: input.activeFocus ? 0.38 : 0
         transform: Translate { x: pf.shakeX }
         Behavior on opacity { enabled: !Style.reduceMotion; NumberAnimation { duration: 150 } }
     }
@@ -41,7 +43,7 @@ FocusScope {
         anchors.fill: parent
         radius: height / 2
         color: "transparent"
-        border.width: Math.max(2, 2 * Plan.s)
+        border.width: Math.max(1.5, 1.5 * Plan.s)
         border.color: Style.danger
         opacity: pf.errored ? 1 : 0
         transform: Translate { x: pf.shakeX }
@@ -56,23 +58,38 @@ FocusScope {
         TextInput {
             id: input
             focus: true
+            // Symmetric margins and centred text: the caret, the placeholder and
+            // the dots all share the pill's centre line, whatever sits on the right.
+            readonly property real side: Math.max(pf.btn, right.width) + 10 * Plan.s
             anchors.left: parent.left
-            anchors.right: right.left
-            anchors.leftMargin: pf.height * 0.5
-            anchors.rightMargin: 8 * Plan.s
+            anchors.right: parent.right
+            anchors.leftMargin: side
+            anchors.rightMargin: side
             anchors.verticalCenter: parent.verticalCenter
+            horizontalAlignment: TextInput.AlignHCenter
             clip: true
             color: Style.text
             selectionColor: Style.accent
             selectedTextColor: "#FFFFFF"
             font.family: "Inter"
-            font.weight: Font.Medium
-            font.pixelSize: 21 * Plan.s
+            font.weight: Font.Normal
+            font.pixelSize: 14 * Plan.s
             echoMode: Greeter.promptSecret ? TextInput.Password : TextInput.Normal
             passwordCharacter: "•"
             inputMethodHints: Greeter.promptSecret ? (Qt.ImhSensitiveData | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase) : Qt.ImhNoAutoUppercase
             readOnly: Greeter.phase === 3
-            cursorDelegate: Rectangle { width: Math.max(2, 2 * Plan.s); color: Style.text; radius: 1 }
+            // No caret over the placeholder: with centred text it would cut through
+            // the words. It appears with the first character and blinks as usual.
+            cursorDelegate: Rectangle {
+                id: caret
+                width: Math.max(1.5, 1.5 * Plan.s); color: Style.text; radius: 1
+                visible: input.activeFocus && input.text.length > 0
+                SequentialAnimation on opacity {
+                    running: caret.visible && !Style.reduceMotion; loops: Animation.Infinite
+                    NumberAnimation { to: 1; duration: 0 } PauseAnimation { duration: 530 }
+                    NumberAnimation { to: 0; duration: 0 } PauseAnimation { duration: 530 }
+                }
+            }
             Accessible.role: Accessible.EditableText
             Accessible.name: Greeter.placeholder
             Accessible.description: Greeter.promptSecret ? qsTr("Secret entry. Press Enter to sign in") : qsTr("Press Enter to continue")
@@ -81,6 +98,7 @@ FocusScope {
             Text {
                 anchors.fill: parent
                 verticalAlignment: Text.AlignVCenter
+                horizontalAlignment: Text.AlignHCenter
                 visible: input.text.length === 0 && !input.inputMethodComposing
                 text: Greeter.placeholder
                 color: Style.textSecondary
@@ -91,9 +109,9 @@ FocusScope {
         Row {
             id: right
             anchors.right: parent.right
-            anchors.rightMargin: 8 * Plan.s
+            anchors.rightMargin: 5 * Plan.s
             anchors.verticalCenter: parent.verticalCenter
-            spacing: 8 * Plan.s
+            spacing: 5 * Plan.s
             // Caps Lock mark: an up arrow over a bar, inside a small outline.
             Item {
                 id: caps
@@ -156,7 +174,7 @@ FocusScope {
                     visible: !action.busy
                     preferredRendererType: Shape.CurveRenderer
                     ShapePath {
-                        strokeColor: Style.ground; strokeWidth: Math.max(2, 2 * Plan.s)
+                        strokeColor: Style.ground; strokeWidth: Math.max(1.6, 1.6 * Plan.s)
                         fillColor: "transparent"
                         capStyle: ShapePath.RoundCap; joinStyle: ShapePath.RoundJoin
                         startX: 0; startY: arrow.height / 2
@@ -205,10 +223,10 @@ FocusScope {
 
     SequentialAnimation {
         id: shake
-        PropertyAnimation { target: pf; property: "shakeX"; to: -14 * Plan.s; duration: 55; easing.type: Easing.OutQuad }
-        PropertyAnimation { target: pf; property: "shakeX"; to: 12 * Plan.s; duration: 80; easing.type: Easing.InOutQuad }
-        PropertyAnimation { target: pf; property: "shakeX"; to: -8 * Plan.s; duration: 70; easing.type: Easing.InOutQuad }
-        PropertyAnimation { target: pf; property: "shakeX"; to: 5 * Plan.s; duration: 60; easing.type: Easing.InOutQuad }
+        PropertyAnimation { target: pf; property: "shakeX"; to: -9 * Plan.s; duration: 55; easing.type: Easing.OutQuad }
+        PropertyAnimation { target: pf; property: "shakeX"; to: 8 * Plan.s; duration: 80; easing.type: Easing.InOutQuad }
+        PropertyAnimation { target: pf; property: "shakeX"; to: -5 * Plan.s; duration: 70; easing.type: Easing.InOutQuad }
+        PropertyAnimation { target: pf; property: "shakeX"; to: 3 * Plan.s; duration: 60; easing.type: Easing.InOutQuad }
         PropertyAnimation { target: pf; property: "shakeX"; to: 0; duration: 60; easing.type: Easing.OutQuad }
     }
     function playFailure() {

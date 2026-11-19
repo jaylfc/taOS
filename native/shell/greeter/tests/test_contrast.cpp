@@ -82,9 +82,8 @@ private slots:
                     const qreal s = p.s;
                     // Rectangles, as laid out in Main.qml.
                     const QRectF field((img.width() - p.fieldW) / 2, p.userBlock.top() + p.fieldTop, p.fieldW, p.fieldH);
-                    const QRectF names(p.userBlock.left(), p.userBlock.top() + p.avatar + 14 * s, p.userBlock.width(), p.nameH + p.captionH);
-                    const QRectF caption(p.userBlock.left(), p.userBlock.top() + p.avatar + 14 * s + p.nameH, p.userBlock.width(), p.captionH);
-                    const QRectF message(field.left(), field.bottom() + 12 * s, p.fieldW, p.messageH);
+                    const QRectF names(p.userBlock.left(), p.userBlock.top() + p.avatar + 10 * s, p.userBlock.width(), p.nameH);
+                    const QRectF message(field.left(), field.bottom() + 10 * s, p.fieldW, p.messageH);
                     const QRectF power(p.bottomBar.right() - 260 * s, p.bottomBar.top(), 260 * s, p.bottomBar.height());
                     const QRectF host(p.bottomBar.left(), p.bottomBar.top(), 260 * s, p.bottomBar.height());
                     const QRectF clock(p.clockBlock.center().x() - p.clockPx * 1.5, p.clockBlock.top(), p.clockPx * 3.0, p.clockPx);
@@ -101,7 +100,6 @@ private slots:
                         {"weather condition", dateWx, 24, false, g.placeholder, 4.5},
                         {"user names", names, 24, false, g.text, 4.5},
                         {"hostname", host, 24, false, g.placeholder, 4.5},
-                        {"caption under the name", caption, 24, false, g.placeholder, 4.5},
                         {"error or info message", message, 24, false, g.text, 4.5},
                     };
                     for (const Check &c : checks) {

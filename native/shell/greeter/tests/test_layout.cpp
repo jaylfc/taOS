@@ -67,7 +67,9 @@ private slots:
         // Sizes stay sensible: nothing tiny, nothing absurd.
         QVERIFY(p.clockPx >= 56 && p.clockPx <= size.height() * 0.2);
         QVERIFY(p.avatar >= 50);
-        QVERIFY(p.fieldW > 200 && p.fieldW <= size.width());
+        QVERIFY(p.fieldW >= 150 && p.fieldW <= size.width());
+        // A compact pill: about three avatars wide, never the old wide slab.
+        QVERIFY2(p.fieldW <= p.avatar * 4.0 && p.fieldH <= p.avatar * 0.6, "field stays in proportion to the avatar");
         // The users block has room for what it must hold: avatar + name + field.
         QVERIFY2(p.userBlock.height() >= p.fieldTop + p.fieldH + p.messageH, "users block holds avatar, name and field");
         // The clock really fits its block: clock line + date + weather row.

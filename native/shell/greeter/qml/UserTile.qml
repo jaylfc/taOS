@@ -15,7 +15,7 @@ FocusScope {
     property real diameter: 96
     signal activated()
 
-    width: Math.max(diameter + 56 * Plan.s, 190 * Plan.s)
+    width: Math.max(diameter + 56 * Plan.s, 150 * Plan.s)
     height: Plan.tileH
     activeFocusOnTab: !selected
     scale: hover.hovered && !selected && !Style.reduceMotion ? 1.04 : 1.0
@@ -37,13 +37,14 @@ FocusScope {
     // Selection ring (not colour alone: also a size change and the name weight).
     Rectangle {
         id: ring
-        width: tile.diameter + 12 * Plan.s; height: width
-        x: (tile.width - width) / 2; y: -6 * Plan.s
+        width: tile.diameter + 8 * Plan.s; height: width
+        x: (tile.width - width) / 2; y: -4 * Plan.s
         radius: width / 2
         color: "transparent"
-        border.width: Math.max(2, 2.5 * Plan.s)
+        border.width: Math.max(1.5, 1.5 * Plan.s)
         border.color: Style.text
-        opacity: tile.selected ? 0.9 : 0
+        // A lone account needs no ring: there is nothing to tell it apart from.
+        opacity: tile.selected && Users.count > 1 ? 0.9 : 0
         scale: tile.selected ? 1 : 0.92
         Behavior on opacity { enabled: !Style.reduceMotion; NumberAnimation { duration: 180 } }
         Behavior on scale { enabled: !Style.reduceMotion; NumberAnimation { duration: 220; easing.type: Easing.OutBack } }
@@ -72,13 +73,13 @@ FocusScope {
             shadowColor: "black"
             shadowOpacity: Style.dark ? 0.45 : 0.22
             shadowBlur: 1.0
-            shadowVerticalOffset: 8 * Plan.s
+            shadowVerticalOffset: 4 * Plan.s
         }
     }
     Text {
         id: nameText
         anchors.top: avatar.bottom
-        anchors.topMargin: 14 * Plan.s
+        anchors.topMargin: 10 * Plan.s
         anchors.horizontalCenter: parent.horizontalCenter
         width: Math.min(implicitWidth, tile.width - 8 * Plan.s)
         elide: Text.ElideRight
@@ -86,26 +87,9 @@ FocusScope {
         text: tile.displayName
         color: Style.text
         font.family: "Inter"
-        font.weight: tile.selected ? Font.DemiBold : Font.Medium
-        font.pixelSize: (tile.selected ? 24 : 21) * Plan.s
-        Behavior on font.pixelSize { enabled: !Style.reduceMotion; NumberAnimation { duration: 200 } }
+        font.weight: Font.DemiBold
+        font.pixelSize: 16 * Plan.s
+        font.letterSpacing: -0.1 * Plan.s
         renderType: Text.QtRendering
-    }
-    // Under the selected name: says whose password this is, and that it is the
-    // computer's own account (not an email or an online one).
-    Text {
-        anchors.top: nameText.bottom
-        anchors.topMargin: 2 * Plan.s
-        anchors.horizontalCenter: parent.horizontalCenter
-        width: parent.width
-        horizontalAlignment: Text.AlignHCenter
-        elide: Text.ElideRight
-        text: qsTr("Account on this computer")
-        color: Style.textSecondary
-        opacity: tile.selected ? 1 : 0
-        Behavior on opacity { enabled: !Style.reduceMotion; NumberAnimation { duration: 220 } }
-        font.family: "Inter"; font.weight: Font.Medium
-        font.pixelSize: 15 * Plan.s
-        Accessible.ignored: !tile.selected
     }
 }
