@@ -77,3 +77,29 @@ def test_build_workflow_uses_tag_and_commit():
     assert "hermes-agent/v2026.8.31/scripts/install.sh" in text, "build-agent-images.yml does not use v2026.8.31 tag in installer URL"
     # Should pass --commit with the SHA
     assert "--commit" in text and "29112bef099274229cadff79cdff7bf7b99c4b77" in text, "build-agent-images.yml does not pass --commit with the correct SHA"
+
+
+def test_detect_job_does_not_read_hermes_main():
+    """The detect job must not read hermes-agent/commits/main for freshness."""
+    assert "hermes-agent/commits/main" not in BUILD_WORKFLOW.read_text(), "detect job reads Hermes freshness from main"
+
+
+def test_detect_job_hermes_signal_matches_pin():
+    """The detect job's HERMES signal must equal the install_hermes.sh pin and the bake step's --commit sha."""
+    workflow_text = BUILD_WORKFLOW.read_text()
+
+    hermes_signal_match = re.search(r'^\s*HERMES=([0-9a-f]{40})\s*$', workflow_text, re.M)
+    assert hermes_signal_match, "HERMES=<40-hex-sha> not found in build-agent-images.yml detect job"
+    hermes_signal = hermes_signal_match.group(1)
+
+    install_text = INSTALL_HERMES.read_text()
+    install_commit_match = re.search(r'HERMES_COMMIT\s*=\s*"[\$]\{HERMES_COMMIT:-([^}]+)\}"', install_text)
+    assert install_commit_match, "HERMES_COMMIT not found in install_hermes.sh"
+    install_commit = install_commit_match.group(1)
+
+    workflow_commit_match = re.search(r'--commit\s+"?([0-9a-f]{40})"?', workflow_text)
+    assert workflow_commit_match, "--commit <sha> not found in build-agent-images.yml"
+    workflow_commit = workflow_commit_match.group(1)
+
+    assert hermes_signal == install_commit, f"HERMES signal {hermes_signal} != install_hermes.sh HERMES_COMMIT {install_commit}"
+    assert hermes_signal == workflow_commit, f"HERMES signal {hermes_signal} != bake step --commit {workflow_commit}"
