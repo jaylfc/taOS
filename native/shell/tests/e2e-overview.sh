@@ -103,8 +103,8 @@ OVPID=$!
 wait_until 15 grep -q "ready in" "$LOG" || { failm "taos-overview did not start"; cat "$LOG"; exit 1; }
 pass "daemon started: $(grep -o 'ready in [0-9]* ms' "$LOG")"
 assert_eq "starts hidden" hidden "$(field mode)"
-wait_until 5 sh -c '[ "$("$0" status | python3 "$1" get windows)" = 5 ]' "$OV" "$HERE/overview_helper.py"
-assert_eq "knows five windows" 5 "$(field windows)"
+wait_until 5 sh -c '[ "$("$0" status | python3 "$1" get known)" = 5 ]' "$OV" "$HERE/overview_helper.py"
+assert_eq "knows five windows" 5 "$(field known)"
 assert_eq "capture protocols present" True "$(field capture)"
 assert_eq "socket mode" 600 "$(stat -c %a "$RT/taos-shell/overview.sock")"
 if "$OV" bogus 2>/dev/null; then failm "unknown command accepted"; else pass "unknown command refused"; fi
@@ -200,7 +200,7 @@ kill -TERM "$OVPID"; wait "$OVPID" 2>/dev/null; OVPID=""
 TAOS_OVERVIEW_IDLE_MS=2500 "$OV" daemon >"$LOG" 2>&1 &
 OVPID=$!
 wait_until 15 grep -q "ready in" "$LOG" || failm "second daemon did not start"
-wait_until 5 sh -c '[ "$("$0" status | python3 "$1" get windows)" = 5 ]' "$OV" "$HERE/overview_helper.py"
+wait_until 5 sh -c '[ "$("$0" status | python3 "$1" get known)" = 5 ]' "$OV" "$HERE/overview_helper.py"
 "$OV" switcher --sticky
 sleep 1.0
 assert_eq "idle: open" switcher "$(field mode)"

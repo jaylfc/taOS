@@ -501,6 +501,7 @@ QString Controller::statusJson() {
     QJsonObject o;
     o.insert(QStringLiteral("mode"), m_mode);
     o.insert(QStringLiteral("windows"), int(m_model.rowCount()));
+    o.insert(QStringLiteral("known"), int(m_snap.windows.size()));   // windows tracked, shown or not
     o.insert(QStringLiteral("selected"), m_selected);
     o.insert(QStringLiteral("output"), m_output);
     o.insert(QStringLiteral("filter"), m_filter);
