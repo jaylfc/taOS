@@ -1042,3 +1042,168 @@ class TestRollbackReportsBeforeRestoring:
         assert result["outcome"] == "rollback"
         assert seen == {"signals": ["rollback"], "marker": None}
 
+
+
+# ── Review round 2026-11 (comment 6589487246): Majors 2, 6, 7 residuals ──
+
+
+class TestPullUpdateLeavesHeadAttached:
+    """pull_update must leave HEAD attached to the local branch.
+
+    Checking out origin/<branch> detaches HEAD, and the old code's
+    ``git branch -f`` moved the branch ref without re-attaching HEAD, so
+    the worker repo was left detached after every update (and a later
+    ``git pull --ff-only`` in update-worker fails).  The mocked-git tests
+    above cannot see this, so this test drives real git repositories.
+    """
+
+    @pytest.mark.asyncio
+    async def test_pull_update_keeps_head_on_the_local_branch(
+        self, monkeypatch, tmp_path: Path,
+    ):
+        import subprocess
+
+        import tinyagentos.worker.self_update as su
+
+        def git(cwd: Path, *args: str) -> str:
+            proc = subprocess.run(
+                ["git", "-C", str(cwd), "-c", "user.email=t@example.com",
+                 "-c", "user.name=t", *args],
+                capture_output=True, text=True, check=True,
+            )
+            return proc.stdout.strip()
+
+        origin = tmp_path / "origin"
+        origin.mkdir()
+        git(origin, "init", "-b", "main")
+        (origin / "version.txt").write_text("a\n")
+        git(origin, "add", "-A")
+        git(origin, "commit", "-q", "-m", "A")
+
+        install_dir = tmp_path / "install"
+        install_dir.mkdir()
+        repo = install_dir / "tinyagentos"
+        subprocess.run(
+            ["git", "clone", "--quiet", str(origin), str(repo)],
+            capture_output=True, text=True, check=True,
+        )
+
+        (origin / "version.txt").write_text("b\n")
+        git(origin, "add", "-A")
+        git(origin, "commit", "-q", "-m", "B")
+        new_sha = git(origin, "rev-parse", "HEAD")
+
+        monkeypatch.setattr(su, "_repo_dir", lambda: repo)
+
+        result = await su.pull_update("origin/main")
+
+        assert result["ok"] is True
+        sym = subprocess.run(
+            ["git", "-C", str(repo), "symbolic-ref", "HEAD"],
+            capture_output=True, text=True,
+        )
+        assert sym.returncode == 0, "HEAD is detached after pull_update"
+        assert sym.stdout.strip() == "refs/heads/main"
+        assert git(repo, "rev-parse", "HEAD") == new_sha
+
+
+class TestPostUpdateStartupAfterHelperRollback:
+    """restart-and-verify rolls back on its own when the new code never
+    becomes healthy, then restarts the worker on the checkpoint code.  That
+    process runs post_update_startup with the marker still present and a
+    health check that passes (the old code is healthy) — the hook must not
+    report success for an update that did not take."""
+
+    @pytest.mark.asyncio
+    async def test_rolled_back_update_is_reported_as_rollback(
+        self, monkeypatch, tmp_path: Path,
+    ):
+        import tinyagentos.worker.self_update as su
+
+        state_dir = tmp_path / "worker-state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        _write_update_marker(state_dir, "tag-123", "old-sha", "new-sha")
+
+        agent = MagicMock()
+        agent.name = "test-worker"
+        agent._signing_key = b"fake-key"
+
+        call_log = []
+
+        async def mock_run_git(args, cwd=None, timeout=120):
+            # The repo is back at the checkpoint commit: the helper
+            # already rolled the update back before this process started.
+            return 0, "old-sha\n"
+
+        async def mock_health_check(timeout=30):
+            call_log.append("health-check")
+            return {"ok": True, "output": "healthy", "exit_code": 0}
+
+        async def mock_rollback(checkpoint_tag=None):
+            call_log.append(("rollback", checkpoint_tag))
+            return {"ok": True, "output": "rolled back", "exit_code": 0}
+
+        async def mock_signal(*args, **kwargs):
+            call_log.append(("signal", kwargs.get("outcome")))
+            return 200
+
+        monkeypatch.setattr(su, "_run_git", mock_run_git)
+        monkeypatch.setattr(su, "run_health_check", mock_health_check)
+        monkeypatch.setattr(su, "rollback_to_checkpoint", mock_rollback)
+        monkeypatch.setattr(su, "signal_update_outcome", mock_signal)
+        monkeypatch.setattr(su, "POST_RESTART_GRACE_PERIOD", 0)
+
+        result = await su.post_update_startup(
+            controller_url="http://controller:9898",
+            agent=agent,
+            state_dir=state_dir,
+        )
+
+        assert result is not None
+        assert result["ok"] is False
+        assert result["outcome"] == "rollback"
+        assert ("signal", "rollback") in call_log
+        assert ("signal", "success") not in call_log
+        # The helper already restored the code — no second rollback.
+        assert not any(
+            isinstance(c, tuple) and c[0] == "rollback" for c in call_log
+        )
+        # Marker settled so the next boot does not repeat this.
+        assert read_update_marker(state_dir) is None
+
+
+class TestRunDeployTimeout:
+    """run_deploy must kill a timed-out helper, like _run_helper does:
+    wait_for cancelling the wait alone leaves the sudo'd child running."""
+
+    @pytest.mark.asyncio
+    async def test_timeout_kills_the_deploy_process(self, monkeypatch):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from tinyagentos.worker import deploy
+
+        proc = MagicMock()
+        proc.returncode = None
+
+        async def never_finishes():
+            await asyncio.sleep(3600)
+
+        proc.communicate = never_finishes
+        proc.wait = AsyncMock(return_value=-9)
+        monkeypatch.setattr(deploy.shutil, "which", lambda _: deploy.DEPLOY_HELPER)
+        monkeypatch.setattr(
+            deploy.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)
+        )
+
+        real_wait_for = asyncio.wait_for
+
+        async def fast_wait_for(coro, timeout):
+            return await real_wait_for(coro, 0.01)
+
+        monkeypatch.setattr(deploy.asyncio, "wait_for", fast_wait_for)
+
+        result = await deploy.run_deploy("checkpoint")
+
+        assert result["ok"] is False
+        proc.kill.assert_called_once()
+        proc.wait.assert_awaited_once()

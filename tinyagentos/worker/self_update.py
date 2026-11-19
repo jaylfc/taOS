@@ -20,6 +20,8 @@ import re
 import shutil
 from pathlib import Path
 
+from tinyagentos.atomic_io import atomic_write_text
+
 logger = logging.getLogger(__name__)
 
 # Path to the deploy helper installed by install-worker.sh.
@@ -190,7 +192,7 @@ def _write_update_marker(
     }
     marker_path = state_dir / _UPDATE_IN_PROGRESS_MARKER
     marker_path.parent.mkdir(parents=True, exist_ok=True)
-    marker_path.write_text(json.dumps(marker, indent=2))
+    atomic_write_text(marker_path, json.dumps(marker, indent=2))
 
 
 def read_update_marker(state_dir: Path) -> dict | None:
@@ -326,24 +328,20 @@ async def pull_update(target_ref: str) -> dict:
             }
         branch = f"origin/{target_ref}"
 
-    rc, out = await _run_git(["checkout", "--quiet", branch])
-    if rc != 0:
-        return {"ok": False, "output": out, "exit_code": rc}
-
-    # Fast-forward the local tracking branch so it matches the remote
-    # we just checked out — avoids leaving the repo in detached HEAD
-    # after a direct origin/<ref> checkout.
+    # Check the fetched commit out on the local branch, creating or
+    # resetting it with -B.  Checking out origin/<branch> alone detaches
+    # HEAD, and moving the ref afterwards with `branch -f` does not
+    # re-attach it — the repo stayed detached after every update, and a
+    # later `git pull --ff-only` (update-worker) then fails.
     if "/" in target_ref:
         local_branch = target_ref.split("/", 1)[1]
-        await _run_git(
-            ["branch", "-f", local_branch, branch],
-            timeout=30,
-        )
-    elif target_ref and "/" not in target_ref:
-        await _run_git(
-            ["branch", "-f", target_ref, branch],
-            timeout=30,
-        )
+    else:
+        local_branch = target_ref
+    rc, out = await _run_git(
+        ["checkout", "--quiet", "-B", local_branch, branch],
+    )
+    if rc != 0:
+        return {"ok": False, "output": out, "exit_code": rc}
 
     rc, sha_out = await _run_git(["rev-parse", "HEAD"])
     return {
@@ -752,6 +750,19 @@ async def _wait_for_drain(agent, timeout: float = 120) -> bool:
     return saw_ok
 
 
+async def _current_head_sha() -> str:
+    """Return the worker repo's HEAD sha, or "" when it cannot be read.
+
+    Best-effort: any failure (no repo, git error) yields "", which the
+    caller treats as "unknown" and falls back to the health check.
+    """
+    try:
+        rc, out = await _run_git(["rev-parse", "HEAD"])
+    except Exception:
+        return ""
+    return out.strip() if rc == 0 else ""
+
+
 async def post_update_startup(
     controller_url: str,
     agent,  # WorkerAgent
@@ -781,6 +792,47 @@ async def post_update_startup(
     checkpoint_tag = marker.get("checkpoint_tag", "")
     from_sha = marker.get("from_sha", "")
     to_sha = marker.get("to_sha", "")
+
+    # ── Already-rolled-back guard ──────────────────────────────────
+    # restart-and-verify (in the deploy helper) rolls back on its own when
+    # the new code never becomes healthy, and restarts the worker on the
+    # checkpoint code.  This hook then runs in the old code with the marker
+    # still present, and the health check below passes — but the update did
+    # not take.  If the repo is known to sit at a different commit than the
+    # marker's target, that rollback already happened: report it instead
+    # of claiming success, and do not roll back a second time.
+    if to_sha:
+        head_sha = await _current_head_sha()
+        if (
+            head_sha
+            and head_sha != to_sha
+            and not head_sha.startswith(to_sha)
+            and not to_sha.startswith(head_sha)
+        ):
+            logger.error(
+                "self-update: repo is at %s, not the update target %s — "
+                "the update was already rolled back; reporting rollback",
+                head_sha[:8], to_sha[:8],
+            )
+            await signal_update_outcome(
+                controller_url=controller_url,
+                worker_name=agent.name,
+                outcome="rollback",
+                from_version=from_sha,
+                to_version=to_sha,
+                failure_reason=(
+                    "update already rolled back by restart verification "
+                    f"(running {head_sha[:8]}, target was {to_sha[:8]})"
+                ),
+                rollback_to=from_sha,
+                signing_key=agent._signing_key,
+            )
+            clear_update_marker(state_dir)
+            return {
+                "ok": False,
+                "outcome": "rollback",
+                "already_rolled_back": True,
+            }
 
     # ── Stale-marker guard ─────────────────────────────────────────
     # A healthy update clears this marker within ~1-2 minutes of the restart

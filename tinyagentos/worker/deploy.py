@@ -99,6 +99,13 @@ async def run_deploy(command: str) -> dict:
         }
     except asyncio.TimeoutError:
         logger.error("deploy: %s timed out after 600s", command)
+        # wait_for only cancels the wait; the helper itself is still
+        # running and must be killed, as _run_helper does.
+        try:
+            proc.kill()
+            await proc.wait()
+        except ProcessLookupError:
+            pass
         return {
             "ok": False,
             "command": command,

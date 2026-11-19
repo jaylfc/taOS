@@ -1314,6 +1314,7 @@ class WorkerAgent:
         request replaces the interrupted one; otherwise the claim goes back to
         being a trigger, up to UPDATE_TRIGGER_MAX_ATTEMPTS starts in all.
         """
+        from tinyagentos.atomic_io import atomic_write_text
         from tinyagentos.worker.self_update import read_update_marker
 
         if trigger_path.exists() or read_update_marker(self._state_dir) is not None:
@@ -1339,7 +1340,7 @@ class WorkerAgent:
             trigger.get("target_ref", "?"), attempts + 1,
         )
         trigger["attempts"] = attempts
-        claimed_path.write_text(json.dumps(trigger))
+        atomic_write_text(claimed_path, json.dumps(trigger))
         os.replace(claimed_path, trigger_path)
 
     def _schedule_post_update_hook(self) -> None:

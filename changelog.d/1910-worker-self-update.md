@@ -1,6 +1,6 @@
 ### Added
 
-- Worker self-update: `scripts/taos-deploy-helper.sh` gains install, restart, health-check, and rollback subcommands, with a cgroup-safe detached restart (#1910).
+- Worker self-update: `scripts/taos-deploy-helper.sh` gains install, restart, health-check, and rollback subcommands, with a detached restart that escapes the worker's service cgroup (#1910).
 
 ### Fixed
 
@@ -10,3 +10,11 @@
   HEAD, the health check finds the worker port on macOS, and a helper call that
   times out is killed instead of left running.
 - Worker self-update: a restart partway through an update resumes it instead of leaving the worker drained (up to three attempts), the rollback outcome is reported before the rollback restarts the worker, repeated registrations no longer start duplicate post-update checks, and expired leases no longer hold up a drain (#1910).
+- Worker self-update: `pull_update` checks the target out on its local
+  branch (`checkout -B`), so the worker repo is no longer left with a
+  detached HEAD after an update; the post-restart hook compares the repo's
+  HEAD with the update target and reports a rollback instead of success
+  when the deploy helper's restart verification already rolled the update
+  back; a timed-out deploy-helper call from the deploy path is killed
+  instead of left running; and the update marker and the claimed update
+  trigger are written atomically (#1910).
