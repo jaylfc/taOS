@@ -34,11 +34,9 @@ router = APIRouter()
 _update_jobs: dict[str, dict] = {}
 
 # Admin-only fleet mutations / worker execution (tsk-exyzu4). Uses
-# `require_admin`, which accepts an admin session or the host local token
-# (taosctl, the taOS agent). This is broader than the `_require_admin` gate
-# used by revoke/block/unblock, which accepts only an admin session cookie. Worker-facing
-# paths (heartbeat, pairing, leases, capabilities) keep their HMAC /
-# possession gates and are deliberately not covered by this.
+# `_require_admin`, which accepts only an admin session cookie.
+# This is the same gate used by revoke/block/unblock; deregister no longer
+# accepts the host local token.
 _ADMIN = [Depends(require_admin)]
 
 
@@ -715,8 +713,12 @@ async def worker_heartbeat(request: Request, body: HeartbeatBody):
     return {"status": "ok", "generation": cluster.generation}
 
 
-@router.delete("/api/cluster/workers/{name}", dependencies=_ADMIN)
+@router.delete("/api/cluster/workers/{name}")
 async def unregister_worker(request: Request, name: str):
+    # Admin check — only admin session, no local token
+    ok, err = _require_admin(request)
+    if not ok:
+        return err
     # Revoke the pairing key BEFORE deleting the worker row. If the store is
     # unavailable or revoke raises, refuse with 503 so the row is never deleted
     # while its key survives. Never skip revoke even if the worker row is absent.
