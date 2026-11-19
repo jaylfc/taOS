@@ -5,6 +5,8 @@ honours bearer <redacted> on GET requests:
 - valid local token -> is_admin=True (full view)
 - valid device token -> headless_full_view=True (full view)
 - valid registry JWT from an active agent -> headless_full_view=True (full view)
+- registry JWT with the cluster_read scope -> cluster_read_view=True
+  (full but not admin: no pairing state, host_lan_ip or hardware)
 - absent/invalid bearer token -> anonymous (stripped view, unchanged)
 
 signing_key is stripped in all cases.
@@ -67,6 +69,7 @@ def _run_dispatch(req: MagicMock, auth_mgr: MagicMock) -> MagicMock:
         seen["state"] = {
             "is_admin": getattr(r.state, "is_admin", None),
             "headless_full_view": getattr(r.state, "headless_full_view", None),
+            "cluster_read_view": getattr(r.state, "cluster_read_view", None),
             "via": getattr(r.state, "via", None),
         }
         return MagicMock(status_code=200)
@@ -349,7 +352,9 @@ def _make_worker() -> WorkerInfo:
     )
 
 
-def _route_app(*, is_admin: bool = False, headless_full_view: bool = False) -> FastAPI:
+def _route_app(*, is_admin: bool = False, headless_full_view: bool = False,
+               cluster_read_view: bool = False, worker=None,
+               pairing_state: dict | None = None) -> FastAPI:
     app = FastAPI()
 
     @app.middleware("http")
@@ -357,15 +362,22 @@ def _route_app(*, is_admin: bool = False, headless_full_view: bool = False) -> F
         request.state.is_admin = is_admin
         if headless_full_view:
             request.state.headless_full_view = True
+        if cluster_read_view:
+            request.state.cluster_read_view = True
         request.state.via = "test"
         return await call_next(request)
 
     app.include_router(cluster_router)
 
     cluster = MagicMock()
-    cluster.get_workers.return_value = [_make_worker()]
+    cluster.get_workers.return_value = [_make_worker() if worker is None else worker]
     app.state.cluster_manager = cluster
-    app.state.cluster_pairing = None
+    if pairing_state is None:
+        app.state.cluster_pairing = None
+    else:
+        pairing = AsyncMock()
+        pairing.pairing_state = AsyncMock(return_value=pairing_state)
+        app.state.cluster_pairing = pairing
     app.state.registry = None
     return app
 
@@ -401,3 +413,139 @@ class TestListWorkersView:
         body = r.json()
         assert body[0]["capabilities"] == ["chat"]
         assert "signing_key" not in body[0]
+
+
+# --- taOS #3227: the cluster_read scope tier --------------------------------
+#
+# jaylfc's ruling on #3227 (2026-10-01): a registry JWT carrying the new
+# cluster_read grant scope gets a "full but not admin" view of the worker
+# list -- capabilities, backends, resources, free_vram_mb and loaded models,
+# but NOT pairing state (revoked/blocked/live_token), host_lan_ip or
+# hardware. A JWT without the scope gets the anonymous view. The middleware
+# surfaces the scope as request.state.cluster_read_view; the route tiers on
+# it. The caller is never promoted to admin and never gets the unrestricted
+# headless_full_view on the strength of cluster_read alone.
+
+
+def _jwt_dispatch(grants_list, *, record=None, payload=None):
+    """Run the exempt-GET dispatch for a registry JWT with the given grants."""
+    mgr = _default_auth_mgr()
+    payload = payload or {"sub": "agent-20260101-000000", "principal_type": "agent"}
+    record = record or {"status": "active", "token_min_iat": 0}
+    registry = AsyncMock()
+    registry.get = AsyncMock(return_value=record)
+    grants = AsyncMock()
+    grants.list_grants = AsyncMock(return_value=grants_list)
+    req = _make_request(headers={"authorization": "Bearer <redacted>"})
+    with (
+        patch(
+            "tinyagentos.agent_token_auth.verify_registry_token",
+            return_value=payload,
+        ),
+        patch.object(am, "_get_keypair", return_value=(b"priv", b"pub")),
+        patch.object(am, "_get_store", return_value=registry),
+        patch.object(am, "_get_grants_store", return_value=grants),
+        patch.object(am, "_enforce_rotation_cutoff", return_value=None),
+    ):
+        return _run_dispatch(req, mgr)
+
+
+class TestExemptGetClusterReadScope:
+    def test_jwt_with_cluster_read_gets_cluster_read_view(self):
+        out = _jwt_dispatch([{"scope": "cluster_read", "expires_at": None}])
+        assert out.state_flags["is_admin"] is False
+        # cluster_read alone must NOT promote to the unrestricted full view.
+        assert out.state_flags["headless_full_view"] is None
+        assert out.state_flags["cluster_read_view"] is True
+        assert out.state_flags["via"] == "registry_jwt"
+
+    def test_jwt_without_cluster_read_stays_anonymous(self):
+        # Acceptance (#3227): a JWT without the scope gets the anonymous
+        # view -- here an agent holding only an unrelated scope.
+        out = _jwt_dispatch([{"scope": "memory_read", "expires_at": None}])
+        assert out.state_flags["is_admin"] is False
+        assert out.state_flags["headless_full_view"] is None
+        assert out.state_flags["cluster_read_view"] is None
+        assert out.state_flags["via"] == "exempt"
+
+    def test_jwt_with_expired_cluster_read_stays_anonymous(self):
+        out = _jwt_dispatch(
+            [{"scope": "cluster_read", "expires_at": "2020-01-01T00:00:00+00:00"}]
+        )
+        assert out.state_flags["cluster_read_view"] is None
+        assert out.state_flags["headless_full_view"] is None
+        assert out.state_flags["via"] == "exempt"
+
+    def test_jwt_with_cluster_read_but_inactive_agent_stays_anonymous(self):
+        out = _jwt_dispatch(
+            [{"scope": "cluster_read", "expires_at": None}],
+            record={"status": "suspended", "token_min_iat": 0},
+        )
+        assert out.state_flags["cluster_read_view"] is None
+        assert out.state_flags["via"] == "exempt"
+
+
+def _make_rich_worker() -> WorkerInfo:
+    return WorkerInfo(
+        name="gpu-box",
+        url="http://localhost:9000",
+        hardware={"gpu": "RTX 4090", "gpu_vram_mb": 24576},
+        capabilities=["chat"],
+        backends=[
+            {
+                "name": "ollama:11434",
+                "type": "ollama",
+                "loaded_models": ["llama3.1"],
+            }
+        ],
+        models=["llama3.1"],
+        resources=["gpu-cuda-0"],
+        status="online",
+        platform="linux",
+        tier_id="tier-1",
+        kind="worker",
+        signing_key=b"\x00\x01\x02",
+        host_lan_ip="192.168.1.50",
+        free_vram_mb=8192,
+    )
+
+
+class TestListWorkersClusterReadView:
+    def test_cluster_read_view_is_full_but_not_admin(self):
+        # Pairing state exists for this worker; the cluster_read tier must
+        # not surface it (that merge is admin-only).
+        app = _route_app(
+            cluster_read_view=True,
+            worker=_make_rich_worker(),
+            pairing_state={"revoked": True, "blocked": False},
+        )
+        with TestClient(app) as client:
+            r = client.get("/api/cluster/workers")
+        assert r.status_code == 200
+        body = r.json()
+        assert len(body) == 1
+        w = body[0]
+        # The full operational picture is visible...
+        assert w["capabilities"] == ["chat"]
+        assert w["resources"] == ["gpu-cuda-0"]
+        assert w["free_vram_mb"] == 8192
+        assert w["models"] == ["llama3.1"]
+        assert w["backends"][0]["loaded_models"] == ["llama3.1"]
+        # ...but nothing admin-only leaks.
+        assert "revoked" not in w
+        assert "blocked" not in w
+        assert "live_token" not in w
+        assert "host_lan_ip" not in w
+        assert "hardware" not in w
+        assert "signing_key" not in w
+
+    def test_cluster_read_view_without_pairing_store_adds_no_pairing_keys(self):
+        app = _route_app(cluster_read_view=True, worker=_make_rich_worker())
+        with TestClient(app) as client:
+            r = client.get("/api/cluster/workers")
+        assert r.status_code == 200
+        w = r.json()[0]
+        assert "revoked" not in w
+        assert "blocked" not in w
+        assert "live_token" not in w
+        assert w["free_vram_mb"] == 8192

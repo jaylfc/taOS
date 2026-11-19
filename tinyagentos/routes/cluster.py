@@ -324,9 +324,13 @@ async def list_workers(request: Request):
     is_admin = getattr(request.state, "is_admin", False)
     # taOS #3227: headless callers presenting a valid local token, device
     # token, or registry JWT on this exempt GET get the full worker view
-    # (the middleware sets headless_full_view). signing_key stays stripped
-    # for everyone -- see below.
+    # (the middleware sets headless_full_view). A registry JWT holding the
+    # cluster_read scope instead gets the full-but-not-admin tier below
+    # (the middleware sets cluster_read_view): the operational picture
+    # without pairing state, host_lan_ip or hardware. signing_key stays
+    # stripped for everyone -- see below.
     full_view = is_admin or getattr(request.state, "headless_full_view", False)
+    cluster_read_view = getattr(request.state, "cluster_read_view", False)
     cluster = request.app.state.cluster_manager
     pairing = getattr(request.app.state, "cluster_pairing", None)
     registry = getattr(request.app.state, "registry", None)
@@ -341,13 +345,24 @@ async def list_workers(request: Request):
         # non-utf8 signing key, and (2) even when serialization didn't
         # crash, the secret has no business being on the wire.
         d.pop("signing_key", None)
-        if not full_view:
+        if not full_view and not cluster_read_view:
             result.append({
                 "name": d["name"],
                 "status": d["status"],
                 "tier_id": d.get("tier_id", ""),
                 "kind": d.get("kind", "worker"),
             })
+            continue
+        if cluster_read_view and not is_admin:
+            # Full but not admin (taOS #3227): capabilities, backends,
+            # resources, free_vram_mb and models stay; the pairing-state
+            # merge below is skipped and the host-identifying fields are
+            # dropped. Least privilege wins: this tier applies even when
+            # the caller also qualified for headless_full_view (a JWT
+            # holding both agents:read and cluster_read).
+            d.pop("host_lan_ip", None)
+            d.pop("hardware", None)
+            result.append(d)
             continue
         # Surface the persistent auth state from the pairing store so the
         # Cluster UI can show whether a node's signing key is live (not

@@ -686,6 +686,12 @@ _CLUSTER_PAIRING_CLAIM = "/api/cluster/pairing/claim"
 # (/api/cluster/pairing/manual) stays admin-gated and is NOT exempt.
 _CLUSTER_PAIRING_MANUAL_CLAIM = "/api/cluster/pairing/manual-claim"
 _CLUSTER_WORKERS = "/api/cluster/workers"
+# taOS #3227: the registry grant scope (a member of VALID_SCOPES in
+# routes/agent_auth_requests.py) that entitles a registry-JWT caller to the
+# full-but-not-admin worker view. The exempt-GET branch below only surfaces
+# it as request.state.cluster_read_view; routes/cluster.py does the tiering
+# and no other route reads the flag, so the scope buys nothing elsewhere.
+_CLUSTER_READ_SCOPE = "cluster_read"
 _CLUSTER_HEARTBEAT = "/api/cluster/heartbeat"
 
 # Project-invite redeem: unauthenticated (the PIN is the proof of possession,
@@ -1035,33 +1041,46 @@ class AuthMiddleware(BaseHTTPMiddleware):
                                 record = await registry.get(canonical_id)
                                 if record is not None and record.get("status") == "active":
                                     _enforce_rotation_cutoff(record, payload)
-                                    # The promotion requires agents:read, the
-                                    # same scope the device-token branch enforces
-                                    # here: a deployed agent minted by deploy
+                                    # The promotion requires a qualifying
+                                    # grant: agents:read (the same scope the
+                                    # device-token branch enforces here) for
+                                    # the full headless view, or cluster_read
+                                    # (#3227) for the restricted workers tier.
+                                    # A deployed agent minted by deploy
                                     # carries owner user_id + memory_read only,
                                     # so its JWT must not read the full worker
-                                    # list. Without the grant it falls through
-                                    # to the anonymous view, never a 401.
+                                    # list. Without a qualifying grant it falls
+                                    # through to the anonymous view, never a 401.
                                     grants = _get_grants_store(request)
                                     now = datetime.now(UTC)
+                                    all_grants = await grants.list_grants(canonical_id)
                                     has_agents_read = any(
                                         g.get("scope") == AGENTS_READ
                                         and _grant_unexpired(g.get("expires_at"), now)
-                                        for g in await grants.list_grants(canonical_id)
+                                        for g in all_grants
                                     )
-                                    if not has_agents_read:
-                                        # No agents:read grant: fall through to the
-                                        # anonymous view, never a 403. A deployed
-                                        # agent minted by deploy carries owner
-                                        # user_id + memory_read only, so its JWT
-                                        # must not read the full worker list.
+                                    # cluster_read does NOT set
+                                    # headless_full_view: it only flags the
+                                    # request so GET /api/cluster/workers can
+                                    # serve its full-but-not-admin tier.
+                                    has_cluster_read = any(
+                                        g.get("scope") == _CLUSTER_READ_SCOPE
+                                        and _grant_unexpired(g.get("expires_at"), now)
+                                        for g in all_grants
+                                    )
+                                    if not has_agents_read and not has_cluster_read:
+                                        # No qualifying grant: fall through to
+                                        # the anonymous view, never a 403.
                                         promoted = False
                                     else:
                                         promoted = True
                                     if promoted:
                                         request.state.user_id = None
                                         request.state.is_admin = False
-                                        request.state.headless_full_view = True
+                                        if has_agents_read:
+                                            request.state.headless_full_view = True
+                                        if has_cluster_read:
+                                            request.state.cluster_read_view = True
                                         request.state.agent_canonical_id = canonical_id
                                         request.state.via = "registry_jwt"
                                         return await call_next(request)
