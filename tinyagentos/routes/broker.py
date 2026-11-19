@@ -142,7 +142,7 @@ def _validate_search_body(body: dict) -> tuple[dict | None, JSONResponse | None]
         return None, JSONResponse({"error": "query must be at most 500 characters"}, status_code=400)
 
     num_results = body.get("num_results", 5)
-    if not isinstance(num_results, int):
+    if isinstance(num_results, bool) or not isinstance(num_results, int):
         return None, JSONResponse({"error": "num_results must be an integer"}, status_code=400)
     if not (1 <= num_results <= 10):
         return None, JSONResponse({"error": "num_results must be between 1 and 10"}, status_code=400)
@@ -253,41 +253,6 @@ async def keenable_fetch_route(request: Request):
     try:
         results = await keenable_fetch(
             api_key, validated["url"], validated["max_chars"], allow_public=allow_public
-        )
-        return results
-    except RuntimeError:
-        return JSONResponse({"error": "keenable upstream error"}, status_code=502)
-
-
-async def _keenable_search(request: Request, body: dict) -> dict:
-    return await _keenable_call(request, "search", body=body)
-
-
-async def _keenable_fetch(request: Request, body: dict) -> dict:
-    return await _keenable_call(request, "fetch", body=body)
-
-
-async def _keenable_call(
-    request: Request, action: str, body: dict
-) -> dict:
-    # This is now only used for grant lifecycle operations (approve/deny/revoke)
-    # that don't need full authentication/authorization logic
-    
-    secret = await request.app.state.secrets.get("KEENABLE_API_KEY")
-    api_key = secret["value"] if secret else ""
-    allow_public = await public_fallback_enabled(request.app.state.desktop_settings)
-
-    if not api_key and not allow_public:
-        return JSONResponse({"error": "keenable not configured"}, status_code=409)
-
-    try:
-        if action == "search":
-            results = await keenable_search(
-                api_key, body["query"], body["num_results"], allow_public=allow_public
-            )
-            return {"results": results}
-        results = await keenable_fetch(
-            api_key, body["url"], body["max_chars"], allow_public=allow_public
         )
         return results
     except RuntimeError:
