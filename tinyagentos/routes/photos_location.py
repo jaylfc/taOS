@@ -259,34 +259,29 @@ async def api_delete_photo(request: Request, file_path: str):
     Only the parent directory is resolved, never the entry itself: an entry
     inside the folder that is a symlink (an alias for a photo) is the item the
     user sees, and moving its resolved target would trash the real photo and
-    leave the alias dangling. The whole path is still resolved once, exactly
-    as before, to refuse spellings that leave the base (``..``, or a link
-    pointing outside the folder).
+    leave the alias dangling. A link pointing outside the folder or nowhere at
+    all is therefore deleted as the link: the link moves, its target is never
+    touched. Spellings that leave the base through the parent (``..``, a
+    symlinked directory pointing outside) are still refused.
     """
     _require_photos_access(request)
     _refuse_agent_writes(request)
     base, err = _photos_root(request)
     if err is not None:
         return err
-    resolved = _resolve_safe(base, file_path)
-    if resolved is None:
-        return JSONResponse({"error": "Invalid path"}, status_code=400)
-    if resolved == base.resolve():
-        # "", "." and "sub/.." all resolve to the location itself. Trashing the
-        # base would take the entire camera roll (and the location with it), so
-        # the folder itself is not a delete target however it is spelled.
-        return JSONResponse({"error": "Invalid path"}, status_code=400)
     name = Path(file_path).name
-    if name in ("", ".."):
-        # A path whose last component is a directory dot spells the parent
-        # folder, not a deletable entry; refuse rather than move a directory
-        # the request did not name.
+    if name in ("", ".", ".."):
+        # "", "." and "sub/.." spell the folder itself or a parent, not a
+        # deletable entry. Trashing the base would take the entire camera roll
+        # (and the location with it), so refuse however it is spelled.
         return JSONResponse({"error": "Invalid path"}, status_code=400)
     parent = _resolve_safe(base, str(Path(file_path).parent))
     if parent is None:
         return JSONResponse({"error": "Invalid path"}, status_code=400)
     target = parent / name
-    if not target.exists():
+    # Judge existence by the directory entry: a dangling symlink is an entry the
+    # user sees and may delete, and ``exists()`` follows the link and says no.
+    if not (target.is_symlink() or target.exists()):
         return JSONResponse({"error": f"'{file_path}' not found"}, status_code=404)
     # The recorded path is the entry as it sits in the folder, never the raw
     # request string and never the target a symlink points at, so a restore

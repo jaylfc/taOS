@@ -15,3 +15,5 @@
 - Files app: the Upload button no longer appears for the Photos location. The
   camera folder has no upload endpoint, so the button did nothing when
   clicked; it is now shown only for locations that accept uploads.
+
+- Photos delete resolves only the parent and judges existence by the directory entry (`is_symlink() or exists()`): a dangling symlink, or a symlink pointing outside the Pictures folder, now moves the LINK to the trash (200, restorable) and never its target, instead of 400 or 404. The earlier test that expected 400 for an outside symlink is replaced.

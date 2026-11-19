@@ -249,8 +249,13 @@ class TestPhotosLocationRoutes:
         assert not (workspace_root / "wdot").exists()
 
     @pytest.mark.asyncio
-    async def test_delete_through_symlinks_outside_is_refused(self, client, monkeypatch, tmp_path):
-        """A delete follows no symlink out of the base, file or directory."""
+    async def test_delete_symlink_pointing_outside_trashes_the_link_only(
+        self, client, monkeypatch, tmp_path
+    ):
+        """A symlink inside the folder that points OUTSIDE it is an entry the user
+        sees and may delete: the LINK goes to the trash, the outside target (file
+        or directory) is never touched, and the request is neither 400 nor 404.
+        Restore puts the link back."""
         base = _photos_dir(monkeypatch, tmp_path)
         base.mkdir()
         outside_file = tmp_path / "outside" / "keep.jpg"
@@ -264,13 +269,40 @@ class TestPhotosLocationRoutes:
 
         for name in ("link.jpg", "link-dir"):
             resp = await client.delete(f"/api/photos/files/{name}")
-            assert resp.status_code == 400, name
-            assert resp.json() == {"error": "Invalid path"}, name
+            assert resp.status_code == 200, (name, resp.status_code, resp.text)
+            assert not (base / name).is_symlink(), name
 
         assert outside_file.read_bytes() == b"keep"
         assert (outside_dir / "inner.jpg").read_bytes() == b"inner"
+
+        items = (await client.get("/api/photos/trash")).json()["items"]
+        assert sorted(item["original_path"] for item in items) == ["link-dir", "link.jpg"]
+        for item in items:
+            restored = await client.post(f"/api/photos/trash/{item['id']}/restore")
+            assert restored.status_code == 200, restored.text
         assert (base / "link.jpg").is_symlink()
         assert (base / "link-dir").is_symlink()
+        assert outside_file.read_bytes() == b"keep"
+
+    @pytest.mark.asyncio
+    async def test_delete_dangling_symlink_trashes_the_link(self, client, monkeypatch, tmp_path):
+        """A dangling symlink is still a directory entry: deleting it is 200 (not
+        404, which ``exists()`` would give), the link moves to the trash and
+        restore puts it back."""
+        base = _photos_dir(monkeypatch, tmp_path)
+        base.mkdir()
+        (base / "gone.jpg").symlink_to(tmp_path / "no-longer-here.jpg")
+
+        resp = await client.delete("/api/photos/files/gone.jpg")
+        assert resp.status_code == 200, resp.text
+        assert not (base / "gone.jpg").is_symlink()
+
+        items = (await client.get("/api/photos/trash")).json()["items"]
+        assert [item["original_path"] for item in items] == ["gone.jpg"]
+
+        restored = await client.post(f"/api/photos/trash/{items[0]['id']}/restore")
+        assert restored.status_code == 200, restored.text
+        assert (base / "gone.jpg").is_symlink()
 
     @pytest.mark.asyncio
     async def test_delete_in_folder_symlink_trashes_the_link_not_its_target(
