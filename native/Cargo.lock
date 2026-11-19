@@ -1054,6 +1054,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "taos-client-ffi"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "taos-client",
+ "tokio",
+]
+
+[[package]]
 name = "thiserror"
 version = "2.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"

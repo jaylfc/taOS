@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["taos-client"]
+members = ["taos-client", "taos-client-ffi"]
 
 [workspace.package]
 edition = "2021"
@@ -10,3 +10,11 @@ repository = "https://github.com/jaylfc/taOS"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+
+# The release profile is shared by the workspace; the FFI staticlib is the
+# artefact that ships, so optimise for size (see taos-client-ffi/README).
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "unwind"
