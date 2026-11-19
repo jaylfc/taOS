@@ -52,7 +52,9 @@ Default name is the machine's hostname.
 ## Self-update (taOS #890 C3)
 
 The worker can update itself without manual SSH. The controller drives the
-flow; the worker executes it:
+flow via the deploy route below; a local trigger file is a second entry
+point (see "Local trigger" after the flow). Either way the worker executes
+the same lifecycle:
 
 1. **Install** — the controller calls `POST /api/cluster/workers/{name}/deploy`
    (admin-only); the worker runs the install via `taos-deploy-helper.sh`.
@@ -60,12 +62,33 @@ flow; the worker executes it:
 3. **Health-check** — post-restart, the worker runs its health-check hook
    (`tinyagentos.worker.self_update.post_update_startup`) as a fire-and-forget
    task so the heartbeat loop is never blocked by the grace period.
+   The helper's health-check verifies the worker service is active and
+   that its main process is the worker entrypoint and has stayed up —
+   the worker opens no listening port, so there is no port to probe.
 4. **Outcome** — the worker reports `success`/`rollback` to
    `POST /api/cluster/workers/{name}/update-outcome` (HMAC-authenticated);
    on failure it rolls back to the previous version automatically.
 5. **Drain** — the heartbeat response carries `drain_complete`; the worker
    waits for in-flight leases to release before proceeding, instead of
    waiting out the full timeout.
+
+### Local trigger
+
+An operator or cron job on the worker host can start the same update
+without the controller:
+
+```bash
+sudo taos-deploy-helper.sh trigger-update <target_ref> [--no-graceful]
+```
+
+This atomically writes `update-trigger.json` (`target_ref`, `graceful`)
+into the worker's state dir (`$TAOS_WORKER_STATE_DIR`); the worker's
+heartbeat loop claims it and runs the full lifecycle. It is the only
+writer of that file.
+
+Rollback is deliberately narrow: `taos-deploy-helper.sh rollback <tag>`
+only accepts the helper's own pre-update checkpoint tags
+(`taos-worker-pre-update-*`).
 
 Per-worker deploy locks prevent concurrent install/restart calls on the same
 worker from double-installing.

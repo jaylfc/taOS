@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # Path to the deploy helper installed by install-worker.sh.
 DEPLOY_HELPER = "/usr/local/bin/taos-deploy-helper"
 
-# How long to wait for the worker port to come back after restart (seconds).
+# How long the post-restart health check may take (seconds).
 POST_RESTART_HEALTH_TIMEOUT = 30
 
 # How long after restart to wait before the first health probe (seconds).

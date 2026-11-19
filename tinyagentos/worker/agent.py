@@ -1243,8 +1243,9 @@ class WorkerAgent:
     async def _check_update_trigger(self) -> bool:
         """Check for a pending self-update trigger file and execute it.
 
-        The trigger file is written atomically by an external mechanism
-        (e.g. the controller via a deploy command or a cron-managed poller).
+        The trigger file is written atomically by the deploy helper's
+        ``trigger-update`` subcommand, run by an operator or cron job on
+        the worker host.
         Its presence signals that the worker should run the full self-update
         lifecycle (checkpoint → drain → pull → deps → restart).
 

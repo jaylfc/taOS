@@ -1,6 +1,7 @@
 ### Added
 
 - Worker self-update: `scripts/taos-deploy-helper.sh` gains install, restart, health-check, and rollback subcommands, with a detached restart that escapes the worker's service cgroup (#1910).
+- Worker self-update: `taos-deploy-helper.sh trigger-update <target_ref> [--no-graceful]` writes the `update-trigger.json` the worker's heartbeat loop polls for, so a self-update can also be started from the worker host (operator or cron), not only via the controller's deploy route (#1910).
 
 ### Fixed
 
@@ -18,3 +19,4 @@
   back; a timed-out deploy-helper call from the deploy path is killed
   instead of left running; and the update marker and the claimed update
   trigger are written atomically (#1910).
+- Worker self-update: the health check no longer probes port 9898 — the worker opens no port, so a healthy worker failed the check and every update rolled back. It now verifies the worker service is active and that its main process is the worker entrypoint and has stayed up (an uptime floor catches crash loops); `rollback <tag>` only accepts the helper's own `taos-worker-pre-update-*` checkpoint tags (#1910).

@@ -6,18 +6,22 @@ code never boots (an import error, say) nothing rolls back.  The fix moves that
 decision into the helper's detached restart: it restarts the worker, waits for
 it to come healthy, and rolls back to the checkpoint when it does not.
 
-These tests execute the real shell script -- ``systemctl``, ``ss``, ``git``,
-``at`` and ``systemd-run`` are stubbed on PATH -- because whether a detached
+These tests execute the real shell script -- ``systemctl``, ``git``, ``at`` and ``systemd-run`` are stubbed on PATH;
+the health check's process inputs (the unit's MainPID, /proc, ps) are real -- because whether a detached
 job survives a failed boot is not something a Python mock can establish.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
+import socket
 import subprocess
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HELPER = REPO_ROOT / "scripts" / "taos-deploy-helper.sh"
@@ -49,6 +53,8 @@ def _fake_bin(tmp_path: Path, *, healthy_after: int | None, record_at: bool = Fa
     calls.write_text("")
     probes = tmp_path / "probes"
     probes.write_text("0")
+    mainpid = tmp_path / "mainpid"
+    mainpid.write_text("0")
     at_records = tmp_path / "at.records"
 
     if healthy_after is None:
@@ -63,12 +69,13 @@ if [ "${{1:-}}" = "is-active" ]; then
     echo "$n" > "{probes}"
     {active_check}
 fi
+if [ "${{1:-}}" = "show" ]; then
+    cat "{mainpid}" 2>/dev/null || echo 0
+    exit 0
+fi
 exit 0
 """)
 
-    # Always reports the worker port as listening, so "healthy" is decided by
-    # the service state alone.
-    _write_fake(bin_dir, "ss", 'echo "LISTEN 0 128 0.0.0.0:9898 0.0.0.0:*"\nexit 0\n')
 
     _write_fake(bin_dir, "git", f'echo "git $*" >> "{calls}"\nexit 0\n')
 
@@ -81,6 +88,29 @@ exit 0
     _write_fake(bin_dir, "systemd-run", "exit 1\n")
 
     return bin_dir, calls, at_records
+
+
+@contextlib.contextmanager
+def _fake_worker(tmp_path: Path, *, as_worker: bool = True):
+    """Spawn a real process for the health check to inspect.
+
+    With ``as_worker`` its cmdline is the worker entrypoint (via
+    ``exec -a``); without, it is a plain ``sleep``.  The PID is written to
+    the ``mainpid`` file the stubbed ``systemctl show`` reads, so the check
+    runs against a genuine process, not a stubbed probe.
+    """
+    argv0 = "python3 -m tinyagentos.worker --headless" if as_worker else "sleep"
+    proc = subprocess.Popen(
+        ["bash", "-c", f"exec -a '{argv0}' sleep 300"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    (tmp_path / "mainpid").write_text(str(proc.pid))
+    try:
+        yield proc
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
 
 
 def _install_tree(tmp_path: Path) -> Path:
@@ -110,7 +140,9 @@ def _run_helper(
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
     env["TAOS_INSTALL_DIR"] = str(install)
-    env["TAOS_WORKER_PORT"] = "9898"
+    # Freshly spawned test processes must pass the uptime floor; the
+    # floor itself is covered by its own test.
+    env["TAOS_HEALTH_MIN_UPTIME_S"] = "0"
     # Keep the verify window short: the loop still runs at least one probe.
     env["TAOS_RESTART_VERIFY_TIMEOUT"] = "1"
     env["TAOS_RESTART_VERIFY_INTERVAL"] = "1"
@@ -155,7 +187,8 @@ def test_does_not_roll_back_when_the_worker_comes_up(tmp_path: Path):
     bin_dir, calls, _ = _fake_bin(tmp_path, healthy_after=0)
     install = _install_tree(tmp_path)
 
-    proc = _run_helper(tmp_path, bin_dir, install, ["restart-and-verify"])
+    with _fake_worker(tmp_path):
+        proc = _run_helper(tmp_path, bin_dir, install, ["restart-and-verify"])
 
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "worker healthy after" in proc.stdout
@@ -179,11 +212,11 @@ def test_restart_self_schedules_the_health_verified_restart(tmp_path: Path):
     assert "restart-and-verify" in scheduled
     assert str(HELPER) in scheduled
     # The detached job runs under a different HOME and a minimal environment,
-    # so the resolved install dir and worker port have to be carried across
+    # so the resolved install dir and health-check tuning have to be carried across
     # explicitly or the verification would probe (and roll back) the wrong
     # target.
     assert f"TAOS_INSTALL_DIR={install}" in scheduled
-    assert "TAOS_WORKER_PORT=9898" in scheduled
+    assert "TAOS_HEALTH_MIN_UPTIME_S=0" in scheduled
 
 
 def test_rollback_stays_on_the_recorded_branch(tmp_path: Path):
@@ -232,40 +265,150 @@ def test_manifest_path_is_data_not_python_source(tmp_path: Path):
     assert f"checkout --quiet -B dev {CHECKPOINT_TAG}" in calls.read_text()
 
 
-def _macos_like_path(bin_dir: Path, *, port_listening: bool) -> None:
-    """A PATH with no `ss`, BSD `netstat` (which rejects -tlnp) and `lsof`."""
-    (bin_dir / "ss").unlink()
-    _write_fake(bin_dir, "netstat", 'echo "netstat: illegal option" >&2\nexit 64\n')
-    _write_fake(bin_dir, "lsof", "exit 0\n" if port_listening else "exit 1\n")
-    for tool in ("bash", "grep", "python3", "dirname", "basename", "id", "uname", "cat", "date", "sed"):
+def _macos_like_path(bin_dir: Path, tmp_path: Path) -> None:
+    """A PATH with no systemctl and no port tools: macOS has launchctl."""
+    (bin_dir / "systemctl").unlink()
+    _write_fake(bin_dir, "launchctl", f"""pid=$(cat "{tmp_path / 'mainpid'}" 2>/dev/null || echo -)
+printf '%s\t0\tlocal.tinyagentos-worker\n' "$pid"
+exit 0
+""")
+    for tool in ("bash", "grep", "python3", "dirname", "basename", "id", "uname", "cat", "date", "sed", "tr", "awk", "ps"):
         found = shutil.which(tool)
         if found:
             (bin_dir / tool).symlink_to(found)
 
 
-def test_health_check_finds_the_port_without_ss(tmp_path: Path):
-    """On macOS a healthy worker failed the port check, because BSD netstat
-    exits 64 on -tlnp, and post_update_startup then rolled it back."""
+def test_health_check_uses_launchd_where_there_is_no_systemd(tmp_path: Path):
+    """macOS has no systemctl (and the worker opens no port there either):
+    the launchd entry's PID gets the same process checks."""
     bin_dir, _, _ = _fake_bin(tmp_path, healthy_after=0)
-    _macos_like_path(bin_dir, port_listening=True)
+    _macos_like_path(bin_dir, tmp_path)
     install = _install_tree(tmp_path)
 
+    with _fake_worker(tmp_path):
+        proc = _run_helper(
+            tmp_path, bin_dir, install, ["health-check"], extra_env={"PATH": str(bin_dir)}
+        )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "found in launchd" in proc.stdout
+
+
+def test_health_check_passes_for_a_live_worker_with_nothing_on_the_worker_port(tmp_path: Path):
+    """jaylfc (PR #1910): the old check probed port 9898, which the worker
+    never opens -- a healthy worker failed it and every update rolled back.
+
+    The check now inspects the unit's main process.  Nothing listens on
+    9898 here and no ``ss`` is stubbed: the port is simply never consulted.
+    """
+    probe = socket.socket()
+    try:
+        if probe.connect_ex(("127.0.0.1", 9898)) == 0:
+            pytest.skip("something is listening on 9898; cannot establish the scenario")
+    finally:
+        probe.close()
+    bin_dir, _, _ = _fake_bin(tmp_path, healthy_after=0)
+    install = _install_tree(tmp_path)
+
+    with _fake_worker(tmp_path):
+        proc = _run_helper(tmp_path, bin_dir, install, ["health-check"])
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert '"healthy": true' in proc.stdout
+    assert "not listening" not in proc.stdout + proc.stderr
+
+
+def test_health_check_fails_when_the_main_process_is_gone(tmp_path: Path):
+    """Service 'active' with a dead main process is not healthy."""
+    bin_dir, _, _ = _fake_bin(tmp_path, healthy_after=0)
+    install = _install_tree(tmp_path)
+    dead = subprocess.Popen(["sleep", "0.1"])
+    dead.wait()
+    (tmp_path / "mainpid").write_text(str(dead.pid))
+
+    proc = _run_helper(tmp_path, bin_dir, install, ["health-check"])
+
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert "not running" in proc.stdout + proc.stderr
+
+
+def test_health_check_fails_when_the_main_process_is_not_the_worker(tmp_path: Path):
+    """A live but unrelated main process must not pass as the worker."""
+    bin_dir, _, _ = _fake_bin(tmp_path, healthy_after=0)
+    install = _install_tree(tmp_path)
+
+    with _fake_worker(tmp_path, as_worker=False):
+        proc = _run_helper(tmp_path, bin_dir, install, ["health-check"])
+
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert "not the worker" in proc.stdout + proc.stderr
+
+
+def test_health_check_fails_until_the_worker_has_been_up_long_enough(tmp_path: Path):
+    """The uptime floor is what catches a crash loop: each new main process
+    is alive and is the worker, but none of them stays up."""
+    bin_dir, _, _ = _fake_bin(tmp_path, healthy_after=0)
+    install = _install_tree(tmp_path)
+
+    with _fake_worker(tmp_path):
+        proc = _run_helper(
+            tmp_path, bin_dir, install, ["health-check"],
+            extra_env={"TAOS_HEALTH_MIN_UPTIME_S": "3600"},
+        )
+
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert "crash-looping" in proc.stdout + proc.stderr
+
+
+def test_rollback_refuses_a_tag_that_is_not_a_pre_update_checkpoint(tmp_path: Path):
+    """jaylfc (PR #1910): `rollback <tag>` must only accept the helper's own
+    checkpoint tags, or a deploy caller could check out any ref in the
+    worker repo.  The refusal has to happen before any checkout."""
+    bin_dir, calls, _ = _fake_bin(tmp_path, healthy_after=0)
+    install = _install_tree(tmp_path)
+
+    proc = _run_helper(tmp_path, bin_dir, install, ["rollback", "v1.2.3"])
+
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert "taos-worker-pre-update-*" in proc.stdout + proc.stderr
+    assert "checkout" not in calls.read_text()
+
+
+def test_trigger_update_writes_the_file_the_worker_reads(tmp_path: Path):
+    """The worker's `_check_update_trigger` reads `update-trigger.json` from
+    its state dir and requires `target_ref` (and honours `graceful`).
+    `trigger-update` is the writer that was missing."""
+    bin_dir, _, _ = _fake_bin(tmp_path, healthy_after=0)
+    install = _install_tree(tmp_path)
+    state_dir = tmp_path / "state"
+
     proc = _run_helper(
-        tmp_path, bin_dir, install, ["health-check"], extra_env={"PATH": str(bin_dir)}
+        tmp_path, bin_dir, install, ["trigger-update", "v2.1.0"],
+        extra_env={"TAOS_WORKER_STATE_DIR": str(state_dir)},
     )
 
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert "port 9898 is listening" in proc.stdout
+    trigger = json.loads((state_dir / "update-trigger.json").read_text())
+    assert trigger["target_ref"] == "v2.1.0"
+    assert trigger["graceful"] is True
+    # Written atomically (temp file + rename): no residue beside the trigger.
+    assert [entry.name for entry in state_dir.iterdir()] == ["update-trigger.json"]
 
 
-def test_health_check_still_fails_a_closed_port_without_ss(tmp_path: Path):
+def test_trigger_update_no_graceful_and_a_ref_is_required(tmp_path: Path):
     bin_dir, _, _ = _fake_bin(tmp_path, healthy_after=0)
-    _macos_like_path(bin_dir, port_listening=False)
     install = _install_tree(tmp_path)
+    state_dir = tmp_path / "state"
 
     proc = _run_helper(
-        tmp_path, bin_dir, install, ["health-check"], extra_env={"PATH": str(bin_dir)}
+        tmp_path, bin_dir, install, ["trigger-update", "v2.1.0", "--no-graceful"],
+        extra_env={"TAOS_WORKER_STATE_DIR": str(state_dir)},
     )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert json.loads((state_dir / "update-trigger.json").read_text())["graceful"] is False
 
+    proc = _run_helper(
+        tmp_path, bin_dir, install, ["trigger-update"],
+        extra_env={"TAOS_WORKER_STATE_DIR": str(state_dir)},
+    )
     assert proc.returncode != 0, proc.stdout + proc.stderr
-    assert "port 9898 not listening" in proc.stdout + proc.stderr

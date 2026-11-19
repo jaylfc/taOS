@@ -19,6 +19,7 @@
 #   taos-deploy-helper.sh restart-self
 #   taos-deploy-helper.sh restart-and-verify [<tag>]
 #   taos-deploy-helper.sh health-check
+#   taos-deploy-helper.sh trigger-update <target_ref> [--no-graceful]
 #
 # Security: this script is allowlisted in sudoers with a fixed path and
 # only the commands below are reachable. The worker cannot execute
@@ -308,6 +309,47 @@ MANIFEST
     echo "$tag"  # stdout = checkpoint tag for the caller to record
 }
 
+cmd_trigger_update() {
+    # Write the self-update trigger the worker's heartbeat loop polls for
+    # (tinyagentos.worker.agent._check_update_trigger).  This is the writer
+    # for update-trigger.json: an operator or cron job on the worker host
+    # runs it, and the worker claims the file on its next heartbeat and runs
+    # the full update lifecycle.  The write is atomic (temp file + rename in
+    # the same directory) because the worker may read it at any moment.
+    local target_ref="${1:-}"
+    local graceful="true"
+    if [[ "${2:-}" == "--no-graceful" ]]; then
+        graceful="false"
+    fi
+    if [[ -z "$target_ref" ]]; then
+        die "usage: taos-deploy-helper.sh trigger-update <target_ref> [--no-graceful]"
+    fi
+    # Must resolve to the directory the worker reads: the systemd unit sets
+    # TAOS_WORKER_STATE_DIR=$INSTALL_DIR/.taos-worker-state
+    # (scripts/install-worker.sh), and the worker's own default honours the
+    # same variable.
+    local state_dir="${TAOS_WORKER_STATE_DIR:-$INSTALL_DIR/.taos-worker-state}"
+    mkdir -p "$state_dir"
+    local trigger_file="$state_dir/update-trigger.json"
+    local tmp_file="$state_dir/.update-trigger.json.tmp.$$"
+    cat > "$tmp_file" <<TRIGGER
+{
+  "target_ref": $(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$target_ref"),
+  "graceful": $graceful,
+  "requested_at": "$(date -u -Iseconds)",
+  "requested_by": "taos-deploy-helper"
+}
+TRIGGER
+    mv "$tmp_file" "$trigger_file"
+    # The helper runs as root via sudo; the worker runs as the invoking user
+    # and must be able to claim (rename) and replace the trigger file.
+    if [[ -n "${SUDO_USER:-}" ]]; then
+        chown "$SUDO_USER" "$trigger_file" 2>/dev/null || true
+    fi
+    log "self-update trigger written: target=$target_ref graceful=$graceful"
+    echo "$trigger_file"
+}
+
 # ── Detached restart helper (taOS #890 C3) ─────────────────────────────────
 # The worker service runs with systemd KillMode=control-group, so the default
 # ``systemctl stop`` (and the stop phase of ``systemctl restart``) sends
@@ -391,12 +433,12 @@ _detached_restart_worker() {
 # Environment assignments for a detached job.  The job runs in its own process
 # with a different HOME and a minimal environment, so anything the helper
 # resolved from its own environment has to be carried across explicitly --
-# otherwise a worker on a non-default port or install dir would be probed (and
-# rolled back) against the wrong target.
+# otherwise a worker on a non-default install dir or with health-check
+# tuning would be probed (and rolled back) against the wrong target.
 _worker_env_prefix() {
     local prefix="TAOS_INSTALL_DIR=$(printf '%q' "$INSTALL_DIR")"
     local var
-    for var in TAOS_WORKER_PORT TAOS_CHECKPOINT_MANIFEST TAOS_VENV; do
+    for var in TAOS_CHECKPOINT_MANIFEST TAOS_VENV TAOS_HEALTH_MIN_UPTIME_S; do
         if [[ -n "${!var:-}" ]]; then
             prefix+=" $var=$(printf '%q' "${!var}")"
         fi
@@ -418,6 +460,13 @@ cmd_rollback() {
         if [[ -z "$checkpoint_tag" ]]; then
             die "no checkpoint tag provided and no manifest found at $manifest_file"
         fi
+    fi
+
+    # Only this helper's own checkpoint tags may be rolled back to: an
+    # arbitrary tag would let a deploy caller check out any ref in the
+    # worker repo.
+    if [[ "$checkpoint_tag" != taos-worker-pre-update-* ]]; then
+        die "refusing to roll back to '$checkpoint_tag': not a pre-update checkpoint tag (taos-worker-pre-update-*)"
     fi
 
     log "rolling back to checkpoint tag $checkpoint_tag"
@@ -519,57 +568,94 @@ cmd_restart_and_verify() {
     cmd_rollback "$checkpoint_tag"
 }
 
+# Verify the worker's main process directly: it must be alive, running the
+# worker entrypoint, and have stayed up at least TAOS_HEALTH_MIN_UPTIME_S
+# seconds.  The worker opens no port -- its heartbeat is an outbound POST to
+# the controller every 5s and leaves no local artifact the helper could
+# read -- so the unit's main process is the strongest health signal on the
+# worker host: a build that fails to boot either never produces one or
+# crash-loops below the uptime floor.  ($ok/$failures are cmd_health_check's
+# locals; bash dynamic scoping makes them visible here.)
+_check_worker_process() {
+    local pid="$1"
+    if [[ -z "$pid" || "$pid" == "0" ]]; then
+        ok=false
+        failures+=("worker service has no main process")
+        return
+    fi
+    if ! kill -0 "$pid" 2>/dev/null; then
+        ok=false
+        failures+=("worker main process $pid is not running")
+        return
+    fi
+    if [[ -r "/proc/$pid/cmdline" ]]; then
+        if tr '\0' ' ' < "/proc/$pid/cmdline" | grep -q "tinyagentos\.worker"; then
+            log "health-check: main process $pid is the worker"
+        else
+            ok=false
+            failures+=("main process $pid is not the worker entrypoint")
+            return
+        fi
+    fi
+    local min_uptime="${TAOS_HEALTH_MIN_UPTIME_S:-10}"
+    [[ "$min_uptime" =~ ^[0-9]+$ ]] || min_uptime=10
+    local etimes
+    etimes="$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d '[:space:]' || true)"
+    if [[ "$etimes" =~ ^[0-9]+$ ]]; then
+        if (( etimes >= min_uptime )); then
+            log "health-check: main process $pid up ${etimes}s"
+        else
+            ok=false
+            failures+=("worker main process only up ${etimes}s (< ${min_uptime}s) — still booting or crash-looping")
+        fi
+    else
+        log "health-check: main process age unavailable — skipping uptime check"
+    fi
+}
+
 cmd_health_check() {
     local manifest_file="${TAOS_CHECKPOINT_MANIFEST:-$INSTALL_DIR/rollback-manifest.json}"
 
     local ok=true
     local failures=()
 
-    # 1. Check service is active
+    # 1. The worker service is active (systemd), remembering which unit name
+    #    matched so its main process can be inspected in step 2.
+    local unit=""
     if systemctl is-active --quiet tinyagentos-worker.service 2>/dev/null; then
-        log "health-check: tinyagentos-worker.service is active"
+        unit="tinyagentos-worker.service"
     elif systemctl is-active --quiet taos-worker.service 2>/dev/null; then
-        log "health-check: taos-worker.service is active"
+        unit="taos-worker.service"
+    fi
+
+    if [[ -n "$unit" ]]; then
+        log "health-check: $unit is active"
+        # 2. The unit's main process is really the worker and has stayed up.
+        #    (The old step 2 probed the worker port, default 9898 — but the
+        #    worker process opens no port and the systemd units do not set
+        #    TAOS_WORKER_PORT, so a healthy worker failed the check and every
+        #    update rolled back.)
+        local main_pid
+        main_pid="$(systemctl show -p MainPID --value "$unit" 2>/dev/null || true)"
+        _check_worker_process "$(printf '%s' "$main_pid" | tr -d '[:space:]')"
+    elif command -v launchctl >/dev/null 2>&1; then
+        # macOS has no systemd: the launchd entry's first field is the PID,
+        # which gets the same process checks.
+        local launchd_line launchd_pid
+        launchd_line="$(launchctl list 2>/dev/null | grep tinyagentos-worker || true)"
+        if [[ -n "$launchd_line" ]]; then
+            log "health-check: tinyagentos-worker found in launchd"
+            launchd_pid="$(printf '%s' "$launchd_line" | awk '{print $1}')"
+            if [[ "$launchd_pid" =~ ^[0-9]+$ ]]; then
+                _check_worker_process "$launchd_pid"
+            fi
+        else
+            ok=false
+            failures+=("worker not found in systemd or launchd")
+        fi
     else
         ok=false
         failures+=("worker service not active")
-        # Try launchd (macOS)
-        if command -v launchctl >/dev/null 2>&1; then
-            if launchctl list | grep -q tinyagentos-worker 2>/dev/null; then
-                log "health-check: tinyagentos-worker found in launchd"
-                ok=true
-                failures=()
-            else
-                failures+=("worker not found in systemd or launchd")
-            fi
-        fi
-    fi
-
-    # 2. Check worker port is listening (default 9898)
-    local port="${TAOS_WORKER_PORT:-9898}"
-    if command -v ss >/dev/null 2>&1; then
-        if ss -tlnp 2>/dev/null | grep -q ":$port "; then
-            log "health-check: port $port is listening"
-        else
-            ok=false
-            failures+=("port $port not listening")
-        fi
-    elif command -v lsof >/dev/null 2>&1; then
-        # macOS has no ss, and BSD netstat rejects -tlnp, which would fail a
-        # healthy worker's check and roll it back.
-        if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
-            log "health-check: port $port is listening"
-        else
-            ok=false
-            failures+=("port $port not listening")
-        fi
-    elif command -v netstat >/dev/null 2>&1; then
-        if netstat -tlnp 2>/dev/null | grep -q ":$port "; then
-            log "health-check: port $port is listening"
-        else
-            ok=false
-            failures+=("port $port not listening")
-        fi
     fi
 
     # 3. Check the checkpoint manifest exists
@@ -603,12 +689,14 @@ case "${1:-help}" in
     restart-self)     cmd_restart_self ;;
     restart-and-verify) shift; cmd_restart_and_verify "$@" ;;
     health-check)     shift; cmd_health_check "$@" ;;
+    trigger-update)   shift; cmd_trigger_update "$@" ;;
     help|*)
         echo "usage: taos-deploy-helper.sh <command>"
         echo "commands: install-ollama, install-exo, install-llama-cpp [--cuda],"
         echo "          install-vllm, install-rknpu, update-worker, status"
         echo "          checkpoint, rollback [<tag>], restart-self,"
-        echo "          restart-and-verify [<tag>], health-check"
+        echo "          restart-and-verify [<tag>], health-check,"
+        echo "          trigger-update <target_ref> [--no-graceful]"
         exit 1
         ;;
 esac
