@@ -115,7 +115,7 @@ Item {
         }
         BarItem {
             id: audioItem
-            visible: Audio.available
+            // Always there, like the network icon: with no sound server it shows the "none" glyph and the menu says why.
             interactive: true
             accessibleName: Audio.description
             accessibleHint: qsTr("Opens the sound menu")

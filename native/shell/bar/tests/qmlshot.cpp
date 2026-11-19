@@ -62,8 +62,13 @@ static void fillAudio(FakeAudioBackend &b) {
 }
 
 int main(int argc, char **argv) {
-    qputenv("QT_QPA_PLATFORM", qgetenv("QT_QPA_PLATFORM").isEmpty() ? QByteArray("offscreen") : qgetenv("QT_QPA_PLATFORM"));
-    if (qEnvironmentVariableIsEmpty("QT_QUICK_BACKEND")) qputenv("QT_QUICK_BACKEND", "software");
+    // --live: a real window on whatever compositor is running (for grim); otherwise offscreen, software, saved to a PNG.
+    bool live = false;
+    for (int i = 1; i < argc; ++i) live |= QByteArray(argv[i]) == "--live";
+    if (!live) {
+        qputenv("QT_QPA_PLATFORM", qgetenv("QT_QPA_PLATFORM").isEmpty() ? QByteArray("offscreen") : qgetenv("QT_QPA_PLATFORM"));
+        if (qEnvironmentVariableIsEmpty("QT_QUICK_BACKEND")) qputenv("QT_QUICK_BACKEND", "software");
+    }
     QGuiApplication app(argc, argv);
     const QStringList a = app.arguments();
     if (a.size() < 3) { fprintf(stderr, "usage: qmlshot net|audio|bar|osd out.png [--light] [--size WxH] [--reduce-motion]\n"); return 2; }
@@ -133,8 +138,12 @@ int main(int argc, char **argv) {
     }
     if (what == "audio") { host.setOpen(true, "audio"); QTimer::singleShot(300, [&] { emit ab.meterLevel(0.55); }); }
     if (what == "net") host.setOpen(true, "network");
-    v.show();
+    if (live) v.showFullScreen(); else v.show();
     if (what == "osd") QTimer::singleShot(100, [&] { QMetaObject::invokeMethod(static_cast<QObject *>(v.rootObject()), "flash", Q_ARG(QVariant, QString("volume")), Q_ARG(QVariant, 72), Q_ARG(QVariant, false)); });
+    if (live) {
+        QTimer::singleShot(12000, [&] { app.quit(); });  // long enough for grim; the caller captures
+        return app.exec();
+    }
     QTimer::singleShot(1400, [&] {
         const QImage img = v.grabWindow();
         if (!img.save(out)) { fprintf(stderr, "cannot save %s\n", qPrintable(out)); app.exit(1); return; }
