@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Effects
 import Taos.Bar
 
 // taOS status bar, version 0. Left: taOS button and the (empty, reserved)
@@ -46,14 +47,28 @@ Item {
             interactive: true
             accessibleName: qsTr("taOS menu")
             onActivated: Launcher.launch()
+            // The wordmark in the text colour (white on dark, near-black on
+            // light) with a faint halo of the same colour, like the wallpaper's
+            // glowing wordmark, never the accent colour.
             Text {
+                id: wordmark
                 text: "taOS"
-                color: Theme.accent
+                color: Theme.text
                 font.family: root.fontFamily
                 font.pixelSize: 13
                 font.weight: Font.Bold
-                renderType: Text.NativeRendering
+                renderType: Text.QtRendering
                 anchors.verticalCenter: parent.verticalCenter
+                layer.enabled: true
+                layer.effect: MultiEffect {
+                    shadowEnabled: true
+                    shadowColor: Theme.text
+                    shadowOpacity: Theme.variant === "light" ? 0.22 : 0.55
+                    shadowBlur: 0.45
+                    blurMax: 12
+                    shadowHorizontalOffset: 0
+                    shadowVerticalOffset: 0
+                }
             }
         }
         Item {
