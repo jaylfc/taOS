@@ -1,44 +1,100 @@
 #include "taosqt/livequery.h"
 
 #include <QJsonArray>
+#include <QTimer>
 
 using namespace Qt::StringLiterals;
 
 namespace Taos {
 
+LiveQuery::LiveQuery(QObject *parent) : QObject(parent), m_model(new JsonListModel({}, u"id"_s, this)) {}
+
 LiveQuery::LiveQuery(Client *client, const QString &op, const QJsonObject &args, const QStringList &eventKinds,
                      const QStringList &roles, QObject *parent, const QString &keyField, const QString &resultKey)
-    : QObject(parent), m_client(client), m_op(op), m_args(args), m_kinds(eventKinds), m_resultKey(resultKey),
-      m_model(new JsonListModel(roles, keyField, this))
+    : QObject(parent), m_client(client), m_op(op), m_args(args), m_kinds(eventKinds), m_roles(roles),
+      m_keyField(keyField), m_resultKey(resultKey), m_model(new JsonListModel(roles, keyField, this))
 {
-    m_stream = client->osEvents({}, this);
+}
+
+LiveQuery::~LiveQuery()
+{
+    detach(); // releases the shared stream; the Client closes it with the last user
+}
+
+Client *LiveQuery::client() const
+{
+    return m_client ? m_client.data() : defaultClient();
+}
+
+void LiveQuery::setClient(Client *c)
+{
+    const bool was = m_attached;
+    detach();
+    m_client = c;
+    if (was)
+        applyRunning();
+}
+
+void LiveQuery::setOp(const QString &op) { m_op = op; Q_EMIT configChanged(); }
+void LiveQuery::setArgs(const QVariantMap &a) { m_args = QJsonObject::fromVariantMap(a); Q_EMIT configChanged(); }
+void LiveQuery::setEventKinds(const QStringList &k) { m_kinds = k; Q_EMIT configChanged(); }
+void LiveQuery::setRoles(const QStringList &r) { m_roles = r; m_model->setRoles(r); Q_EMIT configChanged(); }
+void LiveQuery::setKeyField(const QString &k) { m_keyField = k; m_model->setKeyField(k); Q_EMIT configChanged(); }
+
+void LiveQuery::setRunning(bool on)
+{
+    if (m_wantRunning == on)
+        return;
+    m_wantRunning = on;
+    Q_EMIT runningChanged();
+    // Deferred so that every property of a QML declaration is set first.
+    QTimer::singleShot(0, this, &LiveQuery::applyRunning);
+}
+
+void LiveQuery::applyRunning()
+{
+    if (m_wantRunning && !m_attached) {
+        if (Client *c = client())
+            attach(c);
+    } else if (!m_wantRunning && m_attached) {
+        detach();
+    }
+}
+
+void LiveQuery::attach(Client *c)
+{
+    m_client = c;
+    m_attached = true;
+    m_stream = c->sharedOsEvents();
     connect(m_stream, &EventStream::eventReceived, this, [this](const QString &, const QString &, const QJsonValue &d) {
         const QString kind = d.toObject().value(u"kind"_s).toString();
         if (m_kinds.isEmpty() || m_kinds.contains(kind) || kind == u"events.lagged"_s)
             refresh();
     });
-    connect(m_stream, &EventStream::stateChanged, this, &LiveQuery::onStreamState);
-    connect(client, &Client::credentialsChanged, this, [this] {
-        if (m_started)
-            refresh();
-    });
-}
-
-LiveQuery::~LiveQuery() = default; // the stream is a child: its destructor closes the connection
-
-void LiveQuery::start()
-{
-    if (m_started)
-        return;
-    m_started = true;
-    m_stream->start();
+    // Every (re)connection: events sent while we were not connected are gone,
+    // so fetch again. This also covers the gap between the first fetch below
+    // and the stream going live.
+    connect(m_stream, &EventStream::connected, this, &LiveQuery::refresh);
+    connect(m_stream, &EventStream::stateChanged, this,
+            [this](EventStream::State s) { setLive(s == EventStream::Live); });
+    connect(c, &Client::credentialsChanged, this, &LiveQuery::refresh);
+    setLive(m_stream->state() == EventStream::Live);
+    c->retainOsEvents();
     refresh();
 }
 
-void LiveQuery::stop()
+void LiveQuery::detach()
 {
-    m_started = false;
-    m_stream->stop();
+    if (!m_attached)
+        return;
+    m_attached = false;
+    if (m_stream)
+        disconnect(m_stream, nullptr, this, nullptr);
+    if (m_client) {
+        disconnect(m_client, nullptr, this, nullptr);
+        m_client->releaseOsEvents();
+    }
+    setLive(false);
 }
 
 void LiveQuery::setLoading(bool b)
@@ -49,30 +105,25 @@ void LiveQuery::setLoading(bool b)
     }
 }
 
-void LiveQuery::onStreamState(EventStream::State s)
+void LiveQuery::setLive(bool b)
 {
-    const bool nowLive = (s == EventStream::Live);
-    if (nowLive != m_live) {
-        m_live = nowLive;
+    if (m_live != b) {
+        m_live = b;
         Q_EMIT liveChanged();
-    }
-    // Catch up after a gap (the first Live is covered by start()'s fetch).
-    if (s == EventStream::Reconnecting || s == EventStream::AuthRequired)
-        m_hadLive = true; // reused as "a gap happened"
-    else if (nowLive && m_hadLive) {
-        m_hadLive = false;
-        refresh();
     }
 }
 
 void LiveQuery::refresh()
 {
+    Client *c = client();
+    if (!c || !m_attached)
+        return;
     if (m_loading) {
         m_pending = true;
         return;
     }
     setLoading(true);
-    m_client->call(m_op, m_args)->then(this, [this](const Result &r) {
+    c->call(m_op, m_args)->then(this, [this](const Result &r) {
         setLoading(false);
         if (r.ok()) {
             QJsonValue v = r.value;

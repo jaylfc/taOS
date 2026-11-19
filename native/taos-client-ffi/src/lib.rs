@@ -61,6 +61,9 @@ pub const TAOS_ERR_INTERNAL: c_int = 4;
 /// `taos_client_free` was called from inside a callback; nothing was freed.
 pub const TAOS_ERR_IN_CALLBACK: c_int = 5;
 
+/// A stream (re)connected: the response headers arrived. `json` is `null`.
+pub const TAOS_EV_STREAM_CONNECTED: c_int = 6;
+
 /// The C callback type.
 pub type TaosCallback = Option<
     unsafe extern "C" fn(user: *mut c_void, id: u64, kind: c_int, json: *const c_char, len: usize),
@@ -305,6 +308,7 @@ pub unsafe extern "C" fn taos_client_new(
                 ms(cfg.sse_backoff_cap_ms, Duration::from_secs(30)),
             ),
             idle_timeout: Some(ms(cfg.sse_idle_timeout_ms, Duration::from_secs(60))),
+            announce_connection: true,
         };
         let shared = Arc::new(Shared {
             cb,
@@ -460,6 +464,11 @@ pub unsafe extern "C" fn taos_stream_open(
             let mut stream = client.sse(path, query, opts);
             while let Some(item) = stream.next().await {
                 match item {
+                    Ok(ev) if ev.event.as_deref() == Some(taos_client::events::CONNECTED_EVENT) => {
+                        if !sh.emit(id, TAOS_EV_STREAM_CONNECTED, "null", false) {
+                            return;
+                        }
+                    }
                     Ok(ev) => {
                         let data = serde_json::from_str::<Value>(&ev.data)
                             .unwrap_or(Value::String(ev.data.clone()));

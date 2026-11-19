@@ -25,6 +25,9 @@ Test controls (no auth), all under /__fake/:
         burst: N      -> push N numbered events quickly
         add_notification: {...} -> insert a row (newest first) and push notification.added
         bearer: "tok" -> accept this bearer token
+        me_cookie_only: true -> /auth/me ignores a bearer (the controller today)
+        snapshot_delay_ms: GET /api/notifications answers with its snapshot this late
+        sse_delay_ms: the SSE connection is accepted this late
 Run: fake_controller.py [--port 0]; prints `LISTENING <port>` on stdout.
 """
 import argparse
@@ -66,6 +69,9 @@ def reset():
             notifications=json.loads(fx("notifications_list.json")),
             decisions=json.loads(fx("decisions_list.json"))["items"],
             seen_uas=set(),
+            me_cookie_only=False,
+            snapshot_delay_ms=0,
+            sse_delay_ms=0,
         )
 
 
@@ -155,8 +161,10 @@ class H(BaseHTTPRequestHandler):
         mutating = verb != "GET"
         if path == "/auth/login" and verb == "POST":
             return self.login()
-        if path == "/auth/me" and not self.cookies().get("taos_session"):
-            # Like the real route: it reads only the session cookie, never a bearer.
+        if path == "/auth/me" and state["me_cookie_only"] and not self.cookies().get("taos_session"):
+            # `me_cookie_only` reproduces the controller as of 2026-11 (routes/auth.py
+            # auth_me reads only the cookie). Default is the wanted behaviour: a valid
+            # bearer is accepted and answered with the local identity.
             return self.send_json({"error": "not authenticated"}, 401)
         err = self.authed(mutating)
         if err:
@@ -186,7 +194,8 @@ class H(BaseHTTPRequestHandler):
         if b.get("reset"):
             reset()
         with lock:
-            for k in ("delay_ms", "delay_path", "heartbeat_ms", "bearer"):
+            for k in ("delay_ms", "delay_path", "heartbeat_ms", "bearer", "me_cookie_only",
+                      "snapshot_delay_ms", "sse_delay_ms"):
                 if k in b:
                     state[k] = b[k]
             if "fail" in b:
@@ -234,12 +243,16 @@ class H(BaseHTTPRequestHandler):
             "/api/scheduler/stats": "scheduler_stats.json", "/api/scheduler/tasks": "scheduler_tasks.json",
             "/api/cluster/workers": "workers.json",
         }
+        if path == "/auth/me" and self.headers.get("Authorization", "").startswith("Bearer "):
+            return self.send_json({"user": {"id": "local", "username": "local", "is_admin": True, "via": "local_token"}})
         if path in simple:
             return self.send_json(fx(simple[path]))
         if path == "/api/notifications":
-            rows = state["notifications"]
+            rows = list(state["notifications"])
             if q.get("unread_only") == "true":
                 rows = [r for r in rows if not r.get("read")]
+            if state["snapshot_delay_ms"]:
+                time.sleep(state["snapshot_delay_ms"] / 1000.0)  # the answer is a stale snapshot
             return self.send_json(rows)
         if path == "/api/decisions":
             return self.send_json({"items": state["decisions"]})
@@ -287,6 +300,8 @@ class H(BaseHTTPRequestHandler):
 
     # ---- SSE ----------------------------------------------------------
     def sse(self):
+        if state["sse_delay_ms"]:
+            time.sleep(state["sse_delay_ms"] / 1000.0)  # connection not yet registered: events sent now are lost
         q = queue.Queue()
         with lock:
             live["sse_open"] += 1

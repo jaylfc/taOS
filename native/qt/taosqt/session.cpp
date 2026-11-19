@@ -143,15 +143,16 @@ void Session::useSavedSession(const QByteArray &savedSession)
 
 void Session::verify()
 {
-    // `/auth/me` reads only the session cookie (the controller ignores a bearer
-    // token there), so a cookie session is checked with it and a bearer-only
-    // credential with a cheap authenticated route that does accept the token.
-    const bool cookie = !m_client->exportSession().isEmpty();
-    Reply *r = cookie ? m_client->call(u"auth.me"_s)
-                      : m_client->http(u"GET"_s, u"/api/notifications"_s, {{u"unread_only"_s, u"true"_s}});
-    r->then(this, [this, cookie](const Result &res) {
+    // CONTROLLER CHANGE PENDING (carded by the coordinator): today
+    // `/auth/me` (routes/auth.py auth_me) reads only the session cookie, so a
+    // bearer-only credential (LocalTokenSource) gets 401 here on the real
+    // controller and falls back to the sign-in prompt. The fix belongs in the
+    // controller (accept Bearer on /auth/me), not here: do not probe another
+    // route. Cookie sessions (password sign-in, the desktop session store) work
+    // today.
+    m_client->call(u"auth.me"_s)->then(this, [this](const Result &res) {
         if (res.ok()) {
-            m_user = cookie ? res.value.toObject() : QJsonObject{{u"via"_s, u"token"_s}};
+            m_user = res.value.toObject(); // auth.me returns the user object
             m_acquireBudget = 3;
             setError(Error());
             Q_EMIT userChanged();

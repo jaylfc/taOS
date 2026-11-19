@@ -56,6 +56,20 @@ private Q_SLOTS:
         QCOMPARE(d.value(u"id"_s).toString(), u"n1"_s);
     }
 
+    void goesLiveWhenTheResponseHeadersArriveNotOnTheFirstFrame()
+    {
+        fake.config({{u"heartbeat_ms"_s, 600000}}); // no frame will come for ten minutes
+        Client c(fastOptions(fake.url()));
+        QVERIFY(signIn(c));
+        auto *s = c.osEvents();
+        QSignalSpy conn(s, &EventStream::connected);
+        s->start();
+        QTRY_COMPARE_WITH_TIMEOUT(s->state(), EventStream::Live, 2000);
+        QCOMPARE(conn.size(), 1);
+        fake.config({{u"drop_sse"_s, true}});
+        QTRY_COMPARE_WITH_TIMEOUT(conn.size(), 2, 3000); // announced again on the reconnect
+    }
+
     void reconnectsAfterTheServerDropsTheConnection()
     {
         Client c(fastOptions(fake.url()));
@@ -82,9 +96,11 @@ private Q_SLOTS:
 
         // Repeated drops keep recovering.
         for (int i = 0; i < 3; ++i) {
+            QSignalSpy conn(s, &EventStream::connected);
             fake.config({{u"drop_sse"_s, true}});
-            QTRY_COMPARE_WITH_TIMEOUT(s->state(), EventStream::Reconnecting, 3000);
-            QTRY_COMPARE_WITH_TIMEOUT(s->state(), EventStream::Live, 3000);
+            // Reconnecting can be very short now that Live is announced on connect.
+            QTRY_COMPARE_WITH_TIMEOUT(conn.size(), 1, 3000);
+            QCOMPARE(s->state(), EventStream::Live);
         }
     }
 

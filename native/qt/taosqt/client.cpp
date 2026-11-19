@@ -247,6 +247,29 @@ EventStream *Client::osEvents(const QStringList &kinds, QObject *parent)
     return openStream(u"/api/os/events"_s, q, parent);
 }
 
+EventStream *Client::sharedOsEvents()
+{
+    if (!m_osShared)
+        m_osShared = osEvents({}, this);
+    return m_osShared;
+}
+
+void Client::retainOsEvents()
+{
+    if (m_osRetain++ == 0)
+        sharedOsEvents()->start();
+}
+
+void Client::releaseOsEvents()
+{
+    if (m_osRetain > 0 && --m_osRetain == 0 && m_osShared)
+        m_osShared->stop();
+}
+
+static QPointer<Client> g_defaultClient;
+Client *defaultClient() { return g_defaultClient; }
+void setDefaultClient(Client *c) { g_defaultClient = c; }
+
 void Client::dispatch(quint64 generation, quint64 id, int kind, const QByteArray &json)
 {
     if (generation != d->generation)
@@ -278,7 +301,7 @@ void Client::dispatch(quint64 generation, quint64 id, int kind, const QByteArray
             return;
         if (kind == TAOS_EV_STREAM_ENDED)
             d->streams.remove(id);
-        if (kind == TAOS_EV_STREAM_EVENT)
+        if (kind == TAOS_EV_STREAM_EVENT || kind == TAOS_EV_STREAM_CONNECTED)
             setConnectionState(Online);
         else if (kind == TAOS_EV_STREAM_RETRYING)
             setConnectionState(Reconnecting);

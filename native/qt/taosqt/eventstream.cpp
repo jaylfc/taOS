@@ -73,6 +73,10 @@ void EventStream::handle(int kind, const QByteArray &json)
         emit eventReceived(o.value(u"event"_s).toString(), o.value(u"id"_s).toString(), data);
         break;
     }
+    case TAOS_EV_STREAM_CONNECTED:
+        setState(Live);
+        emit connected();
+        break;
     case TAOS_EV_STREAM_RETRYING:
         m_lastError = Error::fromJson(o);
         setState(Reconnecting);

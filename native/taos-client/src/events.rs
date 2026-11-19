@@ -188,7 +188,16 @@ pub struct SseOptions {
     /// folder is unchanged, so they must use `None` (the typed
     /// [`Files::watch`](crate::files::Files::watch) does).
     pub idle_timeout: Option<Duration>,
+    /// Send a synthetic [`CONNECTED_EVENT`] item each time a connection is
+    /// established (the response headers arrived with a success status). Off by
+    /// default; a UI turns it on to show "live" before the first frame and to
+    /// refetch whatever it missed while disconnected.
+    pub announce_connection: bool,
 }
+
+/// The `event` name of the synthetic item produced by
+/// [`SseOptions::announce_connection`]. Its `data` is empty.
+pub const CONNECTED_EVENT: &str = "taos.connected";
 
 impl Default for SseOptions {
     fn default() -> Self {
@@ -196,6 +205,7 @@ impl Default for SseOptions {
             resume: true,
             backoff: Backoff::default(),
             idle_timeout: Some(Duration::from_secs(60)),
+            announce_connection: false,
         }
     }
 }
@@ -313,6 +323,15 @@ async fn run_sse(
                 }
             }
             Ok(resp) => {
+                if opts.announce_connection {
+                    let ev = Event {
+                        event: Some(CONNECTED_EVENT.to_string()),
+                        ..Event::default()
+                    };
+                    if tx.send(Ok(ev)).await.is_err() {
+                        return;
+                    }
+                }
                 let mut parser = SseParser::default();
                 let body = resp.bytes_stream();
                 futures_util::pin_mut!(body);

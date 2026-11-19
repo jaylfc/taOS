@@ -1,9 +1,12 @@
 #include <QSignalSpy>
+#include <QFileInfo>
+#include <QTemporaryDir>
 #include <QTemporaryFile>
 #include <QtTest>
 
 #include "fakecontroller.h"
 #include "taosqt/api.h"
+#include "taosqt/desktopsession.h"
 #include "taosqt/session.h"
 
 using namespace Qt::StringLiterals;
@@ -78,6 +81,104 @@ private Q_SLOTS:
             s.start();
             QTRY_COMPARE(s.state(), Session::SignedIn);
         }
+    }
+
+    void aBearerIsRefusedWhileTheControllerIgnoresItOnAuthMe()
+    {
+        // Reproduces the controller as of 2026-11: /auth/me reads only the cookie.
+        fake.config({{u"me_cookie_only"_s, true}});
+        Session s(fastOptions(fake.url()));
+        s.setTokenSource(new LocalTokenSource(u"local-token-123"_s));
+        QSignalSpy need(&s, &Session::signInRequired);
+        s.start();
+        QTRY_COMPARE(need.size(), 1);
+        QCOMPARE(s.state(), Session::SignedOut);
+    }
+
+    void desktopSessionIsSharedBetweenApps()
+    {
+        QTemporaryDir run;
+        QVERIFY(run.isValid());
+        const QString file = run.filePath(u"taos/session"_s);
+
+        Session a(fastOptions(fake.url()));
+        a.setTokenSource(new DesktopSessionTokenSource(run.path()));
+        QSignalSpy needA(&a, &Session::signInRequired);
+        a.start();
+        QCOMPARE(needA.size(), 1); // nothing stored yet: ask once
+        a.signIn(u"jay"_s, FAKE_PASSWORD);
+        QTRY_COMPARE(a.state(), Session::SignedIn);
+
+        // Owner-only: directory 0700, file 0600.
+        QVERIFY(QFileInfo::exists(file));
+        const auto others = QFileDevice::ReadGroup | QFileDevice::WriteGroup | QFileDevice::ExeGroup
+            | QFileDevice::ReadOther | QFileDevice::WriteOther | QFileDevice::ExeOther;
+        const auto fp = QFileInfo(file).permissions();
+        QVERIFY((fp & QFileDevice::ReadOwner) && (fp & QFileDevice::WriteOwner) && !(fp & QFileDevice::ExeOwner));
+        QVERIFY(!(fp & others));
+        const auto dp = QFileInfo(run.filePath(u"taos"_s)).permissions();
+        QVERIFY((dp & QFileDevice::ReadOwner) && (dp & QFileDevice::WriteOwner) && (dp & QFileDevice::ExeOwner));
+        QVERIFY(!(dp & others));
+
+        // A second app starts later: signed in without a prompt.
+        Session b(fastOptions(fake.url()));
+        b.setTokenSource(new DesktopSessionTokenSource(run.path()));
+        QSignalSpy needB(&b, &Session::signInRequired);
+        b.start();
+        QTRY_COMPARE(b.state(), Session::SignedIn);
+        QCOMPARE(needB.size(), 0);
+
+        // A file others can read is never trusted.
+        QFile::setPermissions(file, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ReadGroup);
+        Session c(fastOptions(fake.url()));
+        c.setTokenSource(new DesktopSessionTokenSource(run.path()));
+        QSignalSpy needC(&c, &Session::signInRequired);
+        c.start();
+        QCOMPARE(needC.size(), 1);
+        QFile::setPermissions(file, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+
+        // Signing out in one app removes the file.
+        a.signOut();
+        QVERIFY(!QFileInfo::exists(file));
+    }
+
+    void anAppWaitingForSignInPicksUpAnotherAppsSignIn()
+    {
+        QTemporaryDir run;
+        QVERIFY(run.isValid());
+        Session waiting(fastOptions(fake.url()));
+        waiting.setTokenSource(new DesktopSessionTokenSource(run.path()));
+        QSignalSpy need(&waiting, &Session::signInRequired);
+        waiting.start();
+        QCOMPARE(need.size(), 1);
+
+        Session other(fastOptions(fake.url()));
+        other.setTokenSource(new DesktopSessionTokenSource(run.path()));
+        other.start();
+        other.signIn(u"jay"_s, FAKE_PASSWORD);
+        QTRY_COMPARE_WITH_TIMEOUT(waiting.state(), Session::SignedIn, 5000);
+        QCOMPARE(need.size(), 1); // no second prompt
+    }
+
+    void aStaleDesktopSessionIsDroppedAndTheUserIsAskedOnce()
+    {
+        QTemporaryDir run;
+        QVERIFY(run.isValid());
+        {
+            Session a(fastOptions(fake.url()));
+            a.setTokenSource(new DesktopSessionTokenSource(run.path()));
+            a.signIn(u"jay"_s, FAKE_PASSWORD);
+            QTRY_COMPARE(a.state(), Session::SignedIn);
+        }
+        const QString file = run.filePath(u"taos/session"_s);
+        QVERIFY(QFileInfo::exists(file));
+        fake.config({{u"expire"_s, true}}); // the controller forgot every session
+        Session b(fastOptions(fake.url()));
+        b.setTokenSource(new DesktopSessionTokenSource(run.path()));
+        QSignalSpy need(&b, &Session::signInRequired);
+        b.start();
+        QTRY_COMPARE(need.size(), 1);
+        QVERIFY(!QFileInfo::exists(file));
     }
 
     void savedSessionRoundTrip()

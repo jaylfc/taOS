@@ -19,7 +19,8 @@
  *
  * Lifetime guarantees
  *   - A request gets exactly one terminal event: TAOS_EV_RESULT or TAOS_EV_FAILED.
- *   - A stream gets any number of TAOS_EV_STREAM_EVENT / TAOS_EV_STREAM_RETRYING
+ *   - A stream gets TAOS_EV_STREAM_CONNECTED on every (re)connection, then any
+ *     number of TAOS_EV_STREAM_EVENT / TAOS_EV_STREAM_RETRYING
  *     and then at most one TAOS_EV_STREAM_ENDED (fatal error).
  *   - After taos_cancel(id) returns, no callback for id is running or will run.
  *   - After taos_client_free returns, no callback is running or will run, so
@@ -41,6 +42,7 @@ extern "C" {
 #define TAOS_EV_STREAM_EVENT 3    /* json = {"event","id","data"} */
 #define TAOS_EV_STREAM_RETRYING 4 /* connection lost, reconnecting; json = error object */
 #define TAOS_EV_STREAM_ENDED 5    /* stream is over (fatal); json = error object */
+#define TAOS_EV_STREAM_CONNECTED 6 /* (re)connected: response headers arrived; json = null */
 
 /* Return codes of the taos_* functions. */
 #define TAOS_OK 0

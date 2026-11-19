@@ -125,8 +125,18 @@ public:
     /// owned by `parent` (default: this) and is not started.
     EventStream *openStream(const QString &path, const QJsonObject &query = {}, QObject *parent = nullptr);
     /// `GET /api/os/events?kinds=...`: change notifications (no payload). An
-    /// empty list subscribes to every kind.
+    /// empty list subscribes to every kind. Prefer sharedOsEvents(): one
+    /// connection per app is enough.
     EventStream *osEvents(const QStringList &kinds = {}, QObject *parent = nullptr);
+
+    /// THE `/api/os/events` stream of this Client, shared by every LiveQuery:
+    /// one connection however many lists an app shows. Reference counted: it
+    /// connects on the first retainOsEvents() and closes on the last
+    /// releaseOsEvents(). Consumers filter by `data.kind` themselves and refetch
+    /// on every `connected()` (events sent while disconnected are not replayed).
+    EventStream *sharedOsEvents();
+    void retainOsEvents();
+    void releaseOsEvents();
 
     // ---- credentials (used by Session and TokenSource implementations) ----
     /// Opaque, serialisable session for the keyring; empty when there is no
@@ -169,8 +179,15 @@ private:
     ClientOptions m_options;
     ConnectionState m_state = Unknown;
     bool m_unauthNotified = false;
+    int m_osRetain = 0;
+    QPointer<EventStream> m_osShared;
     std::unique_ptr<Private> d;
 };
+
+/// The Client that QML-created objects (LiveQuery, Taos.call) use when they are
+/// not given one. The generated app entry point sets it; plain C++ apps may too.
+TAOSQT_EXPORT Client *defaultClient();
+TAOSQT_EXPORT void setDefaultClient(Client *client);
 
 } // namespace Taos
 

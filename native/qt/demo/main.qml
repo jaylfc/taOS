@@ -6,22 +6,29 @@ import Taos.Style 1.0
 TaosWindow {
     width: 480; height: 640
     title: qsTr("Notifications")
-    connectionText: session.client.connectionState === Client.Reconnecting ? qsTr("Can't reach the controller. Retrying.")
-                  : session.state === Session.SignedIn && !notifications.live ? qsTr("Reconnecting to live updates") : ""
+    connectionText: Taos.client.connectionState === Client.Reconnecting ? qsTr("Can't reach the controller. Retrying.")
+                  : q.running && !q.live ? qsTr("Reconnecting to live updates") : ""
 
+    LiveQuery {
+        id: q
+        op: "notifications.list"
+        eventKinds: ["notification.added"]
+        roles: ["id", "title", "message", "read"]
+        running: Taos.session.state === Session.SignedIn
+    }
     Column {   // sign-in form, shown only when the Session asks for it
         anchors.centerIn: parent; spacing: TaosStyle.spacing
-        visible: session.state !== Session.SignedIn
+        visible: Taos.session.state !== Session.SignedIn
         TextField { id: user; placeholderText: qsTr("Username"); text: "jay" }
         TextField { id: pass; placeholderText: qsTr("Password"); echoMode: TextInput.Password
-                    onAccepted: session.signIn(user.text, text) }
-        Button { text: qsTr("Sign in"); onClicked: session.signIn(user.text, pass.text) }
-        Text { text: session.errorText; color: TaosStyle.danger; font.pixelSize: TaosStyle.bodySize }
+                    onAccepted: Taos.session.signIn(user.text, text) }
+        Button { text: qsTr("Sign in"); onClicked: Taos.session.signIn(user.text, pass.text) }
+        Text { text: Taos.session.errorText; color: TaosStyle.danger; font.pixelSize: TaosStyle.bodySize }
     }
     ListView {
         anchors.fill: parent; anchors.topMargin: 40; clip: true
-        visible: session.state === Session.SignedIn
-        model: notifications.model
+        visible: Taos.session.state === Session.SignedIn
+        model: q.model
         delegate: Rectangle {
             width: ListView.view.width; height: 56; color: index % 2 ? TaosStyle.surface : TaosStyle.raised
             Column { anchors.fill: parent; anchors.margins: 8

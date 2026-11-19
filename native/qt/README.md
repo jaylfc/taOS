@@ -56,10 +56,32 @@ Rules the layer keeps for you:
   delivered afterwards.
 * All signals arrive on the thread that owns the `Client`.
 
+## Writing an app
+
+A first-party app is QML only. `taos_add_native_app(APP_ID my.taos.dashboard
+DISPLAY_NAME Activity QML_MAIN Main.qml QML_FILES ...)` generates `main()`
+(`Taos::runQmlApp`): single instance, a `Session` on `TAOS_URL` (default
+`http://127.0.0.1:6969`) whose credentials are the shared desktop session, the
+default client, the `Taos` QML module and `Taos.Style`. In QML: `Taos.session`,
+`Taos.client`, `Taos.call(op, args, function (ok, value, error) {})`, and
+`LiveQuery { op: ...; running: Taos.session.state === Session.SignedIn }`.
+All `LiveQuery` objects of an app share ONE `/api/os/events` connection and
+refetch on every (re)connection of it, so no event is lost in a gap.
+
+## Credentials
+
+Default for desktop apps: `DesktopSessionTokenSource`. One sign-in per desktop
+login: the session snapshot is `$XDG_RUNTIME_DIR/taos/session` (dir 0700, file
+0600, owner-only, atomic write, ignored if not owned by the user or readable by
+others). The first app to sign in writes it; the others pick it up (also while
+they are waiting at a sign-in prompt); sign-out deletes it; a session the
+controller refuses is dropped.
+
 ## Replacing the credential source
 
-`Session` asks a `TokenSource` for credentials (`session.h`). Shipped: password
-(the sign-in form), the host-local bearer token, a saved session from the
+`Session` asks a `TokenSource` for credentials (`session.h`). Shipped: the desktop session
+store (default), password (the sign-in form), the host-local bearer token
+(needs the controller to accept Bearer on `/auth/me`), a saved session from the
 keyring. For the per-person session of the accounts design
 (`files-and-accounts.md` section 4; apps hold a scoped token, never the user's
 session, `app-model.md` section 3) write a `TokenSource` whose `acquire()`
@@ -67,7 +89,11 @@ asks the account service and calls `Session::useBearerToken()`. No app changes.
 
 ## App conventions
 
-* App id: `my.taos.<name>` (lower case). The same string is the Wayland
+* App id: `my.taos.<web registry id>` (lower case, hyphens as in
+  `desktop/src/registry/app-registry.ts`: Activity is `my.taos.dashboard`,
+  Routines is `my.taos.tasks`, Decisions `my.taos.decisions`), so the agent's
+  open-app commands map to both the web and the native app. app-model.md has
+  no id scheme of its own. The same string is the Wayland
   `app_id` (`QGuiApplication::setDesktopFileName`, done by `Taos::App::configure`),
   the `.desktop` file base name, `StartupWMClass`, the icon name and the
   single-instance key, so the window switcher can show the name and icon.

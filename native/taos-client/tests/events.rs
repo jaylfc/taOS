@@ -427,3 +427,32 @@ async fn idle_timeout_reconnects_a_silent_stream_unless_disabled() {
     );
     assert_eq!(s.next().await.expect("item").expect("event").data, "x");
 }
+
+#[tokio::test]
+async fn announces_each_connection_when_asked_and_not_otherwise() {
+    use taos_client::events::CONNECTED_EVENT;
+    let (server, client) = signed_in().await;
+    Mock::given(method("GET"))
+        .and(path("/stream"))
+        .respond_with(sse("data: one\n\n"))
+        .mount(&server)
+        .await;
+
+    // Default: no synthetic item.
+    let mut plain = client.sse("/stream", vec![], fast());
+    assert_eq!(plain.next().await.unwrap().unwrap().data, "one");
+    drop(plain);
+
+    // Opt in: one announcement before the frames, and another after the drop.
+    let opts = SseOptions {
+        announce_connection: true,
+        ..fast()
+    };
+    let mut s = client.sse("/stream", vec![], opts);
+    let first = s.next().await.unwrap().unwrap();
+    assert_eq!(first.event.as_deref(), Some(CONNECTED_EVENT));
+    assert_eq!(s.next().await.unwrap().unwrap().data, "one");
+    assert!(matches!(s.next().await.unwrap(), Err(Error::Disconnected)));
+    let again = s.next().await.unwrap().unwrap();
+    assert_eq!(again.event.as_deref(), Some(CONNECTED_EVENT));
+}

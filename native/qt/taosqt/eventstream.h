@@ -16,9 +16,10 @@ namespace Taos {
 ///                                          Client's credentials change)
 ///                      \-> Ended          (a fatal error that signing in will not fix)
 ///
-/// "Live" means a frame (including the controller's 10 s heartbeat) arrived; a
-/// stream that connected but has been quiet for less than the heartbeat period
-/// still shows Connecting.
+/// "Live" means the controller accepted the connection (response headers
+/// arrived): `connected()` is emitted at that moment, on every (re)connection.
+/// Events sent while the stream was down are NOT replayed, so a consumer that
+/// holds fetched data must refetch on every `connected()` (LiveQuery does).
 ///
 /// Destroying the object closes the connection (verified by tests against the
 /// fake controller's open-connection count) and nothing is delivered after the
@@ -53,6 +54,8 @@ Q_SIGNALS:
     /// raw string when it was not JSON. For `/api/os/events` it is
     /// `{"kind": "notification.added", "id", "ts"}`: refetch what the kind names.
     void eventReceived(const QString &event, const QString &id, const QJsonValue &data);
+    /// The connection was (re)established. Refetch what you show.
+    void connected();
     void stateChanged(Taos::EventStream::State state);
     void errorOccurred(const Taos::Error &error);
 

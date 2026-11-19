@@ -296,6 +296,10 @@ fn stream_events_reconnect_cancel_and_free() {
 
     sign_in(c, &sink, 1);
     assert_eq!(open_stream(c, 101), TAOS_OK);
+    sink.wait_for(|e| {
+        e.iter()
+            .any(|x| x.0 == 101 && x.1 == TAOS_EV_STREAM_CONNECTED)
+    });
     sink.wait_for(|e| e.iter().any(|x| x.0 == 101 && x.1 == TAOS_EV_STREAM_EVENT));
     assert_eq!(fake.stat("sse_open"), 1);
 

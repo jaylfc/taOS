@@ -25,6 +25,9 @@ public:
     QVariant data(const QModelIndex &index, int role) const override;
     QHash<int, QByteArray> roleNames() const override;
 
+    /// Change the roles (resets the model; do it before the view is filled).
+    void setRoles(const QStringList &roles);
+    void setKeyField(const QString &keyField) { m_keyField = keyField; }
     void setRows(const QJsonArray &rows);
     Q_INVOKABLE QVariantMap get(int row) const;
     QJsonObject row(int row) const { return m_rows.value(row).obj; }

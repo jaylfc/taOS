@@ -17,7 +17,7 @@ void registerQmlTypes()
     qmlRegisterUncreatableType<Client>(uri, 1, 0, "Client", QStringLiteral("owned by the Session"));
     qmlRegisterUncreatableType<Session>(uri, 1, 0, "Session", QStringLiteral("created by the app"));
     qmlRegisterUncreatableType<EventStream>(uri, 1, 0, "EventStream", QStringLiteral("created by C++"));
-    qmlRegisterUncreatableType<LiveQuery>(uri, 1, 0, "LiveQuery", QStringLiteral("created by C++"));
+    qmlRegisterType<LiveQuery>(uri, 1, 0, "LiveQuery"); // declared in QML, uses the default Client
     qmlRegisterUncreatableType<JsonListModel>(uri, 1, 0, "JsonListModel", QStringLiteral("created by C++"));
     // Named TaosError: a QML type called Error would shadow the JavaScript global.
     qmlRegisterUncreatableMetaObject(Error::staticMetaObject, uri, 1, 0, "TaosError", QStringLiteral("enum only"));

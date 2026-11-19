@@ -55,6 +55,13 @@ QString JsonListModel::keyOf(const QJsonObject &o) const
     return v.toVariant().toString();
 }
 
+void JsonListModel::setRoles(const QStringList &roles)
+{
+    beginResetModel();
+    m_roles = roles;
+    endResetModel();
+}
+
 void JsonListModel::setRows(const QJsonArray &rows)
 {
     QList<Row> next;
