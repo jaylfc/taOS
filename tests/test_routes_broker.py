@@ -1,11 +1,24 @@
 import pytest
 from httpx import ASGITransport, AsyncClient
+from tinyagentos.auth import AuthManager
 
 
 async def _request_grant(client, provider_id="exa", agent="agent-x", **kw):
     body = {"provider_id": provider_id, "agent_identity": agent, **kw}
     resp = await client.post("/api/broker/request", json=body)
     return resp
+
+
+async def _client_with_agent_token(app, tmp_data_dir, agent_name="test-agent"):
+    """Create a test client authenticated with a per-agent local token."""
+    auth = AuthManager(tmp_data_dir)
+    agent_token = auth.mint_agent_local_token(agent_name)
+    transport = ASGITransport(app=app)
+    return AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {agent_token}"},
+    )
 
 
 @pytest.mark.asyncio
@@ -124,6 +137,72 @@ class TestBrokerRoutes:
         async with AsyncClient(transport=transport, base_url="http://test") as c:
             resp = await c.get("/api/broker/providers")
         assert resp.status_code in (401, 403)
+
+    async def test_keenable_search_empty_query_400(self, app, tmp_data_dir):
+        async with await _client_with_agent_token(app, tmp_data_dir) as c:
+            resp = await c.post("/api/broker/keenable/search", json={"query": ""})
+            assert resp.status_code == 400
+            assert resp.json()["error"] == "query must not be empty"
+
+    async def test_keenable_search_query_too_long_400(self, app, tmp_data_dir):
+        async with await _client_with_agent_token(app, tmp_data_dir) as c:
+            resp = await c.post("/api/broker/keenable/search", json={"query": "x" * 501})
+            assert resp.status_code == 400
+            assert resp.json()["error"] == "query must be at most 500 characters"
+
+    async def test_keenable_search_num_results_below_range_400(self, app, tmp_data_dir):
+        async with await _client_with_agent_token(app, tmp_data_dir) as c:
+            resp = await c.post("/api/broker/keenable/search", json={"query": "test", "num_results": 0})
+            assert resp.status_code == 400
+            assert resp.json()["error"] == "num_results must be between 1 and 10"
+
+    async def test_keenable_search_num_results_above_range_400(self, app, tmp_data_dir):
+        async with await _client_with_agent_token(app, tmp_data_dir) as c:
+            resp = await c.post("/api/broker/keenable/search", json={"query": "test", "num_results": 11})
+            assert resp.status_code == 400
+            assert resp.json()["error"] == "num_results must be between 1 and 10"
+
+    async def test_keenable_search_num_results_non_int_400(self, app, tmp_data_dir):
+        async with await _client_with_agent_token(app, tmp_data_dir) as c:
+            resp = await c.post("/api/broker/keenable/search", json={"query": "test", "num_results": "five"})
+            assert resp.status_code == 400
+            assert resp.json()["error"] == "num_results must be an integer"
+
+    async def test_keenable_fetch_invalid_url_400(self, app, tmp_data_dir):
+        async with await _client_with_agent_token(app, tmp_data_dir) as c:
+            resp = await c.post("/api/broker/keenable/fetch", json={"url": "ftp://example.com"})
+            assert resp.status_code == 400
+            assert resp.json()["error"] == "url must start with http:// or https://"
+
+    async def test_keenable_fetch_max_chars_below_range_400(self, app, tmp_data_dir):
+        async with await _client_with_agent_token(app, tmp_data_dir) as c:
+            resp = await c.post("/api/broker/keenable/fetch", json={"url": "https://example.com", "max_chars": 0})
+            assert resp.status_code == 400
+            assert resp.json()["error"] == "max_chars must be between 1 and 100000"
+
+    async def test_keenable_fetch_max_chars_above_range_400(self, app, tmp_data_dir):
+        async with await _client_with_agent_token(app, tmp_data_dir) as c:
+            resp = await c.post("/api/broker/keenable/fetch", json={"url": "https://example.com", "max_chars": 100001})
+            assert resp.status_code == 400
+            assert resp.json()["error"] == "max_chars must be between 1 and 100000"
+
+    async def test_keenable_fetch_max_chars_non_int_400(self, app, tmp_data_dir):
+        async with await _client_with_agent_token(app, tmp_data_dir) as c:
+            resp = await c.post("/api/broker/keenable/fetch", json={"url": "https://example.com", "max_chars": "large"})
+            assert resp.status_code == 400
+            assert resp.json()["error"] == "max_chars must be an integer"
+
+    async def test_keenable_fetch_url_non_string_400(self, app, tmp_data_dir):
+        async with await _client_with_agent_token(app, tmp_data_dir) as c:
+            resp = await c.post("/api/broker/keenable/fetch", json={"url": 123})
+            assert resp.status_code == 400
+            assert resp.json()["error"] == "url must be a string"
+
+    async def test_keenable_search_query_non_string_400(self, app, tmp_data_dir):
+        async with await _client_with_agent_token(app, tmp_data_dir) as c:
+            resp = await c.post("/api/broker/keenable/search", json={"query": 123})
+            assert resp.status_code == 400
+            assert resp.json()["error"] == "query must be a string"
 
 
 @pytest.mark.asyncio

@@ -9,12 +9,18 @@ no per-route guard of their own.
 """
 from __future__ import annotations
 
+import time
 from typing import Optional
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from tinyagentos.broker.clients.keenable import (
+    keenable_fetch,
+    keenable_search,
+    public_fallback_enabled,
+)
 from tinyagentos.broker.providers import PROVIDERS
 
 router = APIRouter()
@@ -25,6 +31,19 @@ class AccessRequest(BaseModel):
     scopes: Optional[list[str]] = None
     reason: Optional[str] = None
     agent_identity: Optional[str] = None
+
+
+def _local_token_caller(request: Request) -> tuple[bool, str | None]:
+    """Check if the request is from a bound local token.
+
+    Returns (True, agent_name) when request.state.via == "local_token" and
+    request.state.agent_name is set (bound agent token). Returns (True, None)
+    when request.state.via == "local_token" but no agent_name is bound
+    (host/unbound token). Returns (False, None) otherwise.
+    """
+    if getattr(request.state, "via", None) == "local_token":
+        return True, getattr(request.state, "agent_name", None)
+    return False, None
 
 
 class ApproveRequest(BaseModel):
@@ -113,3 +132,101 @@ async def revoke_grant(request: Request, grant_id: str):
     if not ok:
         return JSONResponse({"error": f"unknown grant_id: {grant_id!r}"}, status_code=404)
     return {"ok": True}
+
+
+def _validate_search_body(body: dict) -> tuple[dict | None, JSONResponse | None]:
+    query = body.get("query")
+    if not isinstance(query, str):
+        return None, JSONResponse({"error": "query must be a string"}, status_code=400)
+    stripped = query.strip()
+    if not stripped:
+        return None, JSONResponse({"error": "query must not be empty"}, status_code=400)
+    if len(stripped) > 500:
+        return None, JSONResponse({"error": "query must be at most 500 characters"}, status_code=400)
+    
+    num_results = body.get("num_results", 5)
+    if not isinstance(num_results, int):
+        return None, JSONResponse({"error": "num_results must be an integer"}, status_code=400)
+    if not (1 <= num_results <= 10):
+        return None, JSONResponse({"error": "num_results must be between 1 and 10"}, status_code=400)
+    
+    return {"query": stripped, "num_results": num_results}, None
+
+
+def _validate_fetch_body(body: dict) -> tuple[dict | None, JSONResponse | None]:
+    url = body.get("url")
+    if not isinstance(url, str):
+        return None, JSONResponse({"error": "url must be a string"}, status_code=400)
+    if not (url.startswith("http://") or url.startswith("https://")):
+        return None, JSONResponse({"error": "url must start with http:// or https://"}, status_code=400)
+    
+    max_chars = body.get("max_chars")
+    if max_chars is not None:
+        if not isinstance(max_chars, int):
+            return None, JSONResponse({"error": "max_chars must be an integer"}, status_code=400)
+        if not (1 <= max_chars <= 100000):
+            return None, JSONResponse({"error": "max_chars must be between 1 and 100000"}, status_code=400)
+    
+    return {"url": url, "max_chars": max_chars}, None
+
+
+@router.post("/api/broker/keenable/search")
+async def keenable_search_route(request: Request, body: dict):
+    validated, error = _validate_search_body(body)
+    if error:
+        return error
+    return await _keenable_search(request, validated)
+
+
+async def _keenable_search(request: Request, body: dict) -> dict:
+    return await _keenable_call(request, "search", body=body)
+
+
+@router.post("/api/broker/keenable/fetch")
+async def keenable_fetch_route(request: Request, body: dict):
+    validated, error = _validate_fetch_body(body)
+    if error:
+        return error
+    return await _keenable_fetch(request, body)
+
+
+async def _keenable_fetch(request: Request, body: dict) -> dict:
+    return await _keenable_call(request, "fetch", body=body)
+
+
+async def _keenable_call(
+    request: Request, action: str, body: dict
+) -> dict:
+    is_local, agent_name = _local_token_caller(request)
+    if not is_local or agent_name is None:
+        return JSONResponse({"error": "agent token required"}, status_code=403)
+
+    grant = await request.app.state.broker.store.find_active_grant(
+        agent_name, "keenable", time.time()
+    )
+    if grant is None:
+        return JSONResponse({"error": "no active keenable grant"}, status_code=403)
+    if action not in grant["scopes"]:
+        return JSONResponse(
+            {"error": f"scope not granted: {action}"}, status_code=403
+        )
+
+    secret = await request.app.state.secrets.get("KEENABLE_API_KEY")
+    api_key = secret["value"] if secret else ""
+    allow_public = await public_fallback_enabled(request.app.state.desktop_settings)
+
+    if not api_key and not allow_public:
+        return JSONResponse({"error": "keenable not configured"}, status_code=409)
+
+    try:
+        if action == "search":
+            results = await keenable_search(
+                api_key, body.query, body.num_results, allow_public=allow_public
+            )
+            return {"results": results}
+        results = await keenable_fetch(
+            api_key, body.url, body.max_chars, allow_public=allow_public
+        )
+        return results
+    except RuntimeError:
+        return JSONResponse({"error": "keenable upstream error"}, status_code=502)
