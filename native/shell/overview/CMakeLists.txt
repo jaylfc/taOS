@@ -45,7 +45,8 @@ qt_add_executable(taos-overview
     src/windowmodel.cpp src/windowmodel.h
     src/controller.cpp src/controller.h
     src/iconprovider.cpp src/iconprovider.h
-    src/overlayhost.cpp src/overlayhost.h)
+    src/overlayhost.cpp src/overlayhost.h
+    src/watchdog.cpp src/watchdog.h)
 qt_add_resources(taos-overview overview_resources
     PREFIX /taos/overview
     BASE ${CMAKE_CURRENT_SOURCE_DIR}

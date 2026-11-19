@@ -5,6 +5,7 @@
 #include <QTimer>
 
 #include "controller.h"
+#include "watchdog.h"
 
 // Owns the one layer-shell surface (layer OVERLAY, all four edges, exclusive keyboard) and shows it
 // on the right output only while the overlay is up. The QML scene stays loaded while hidden.
@@ -23,4 +24,7 @@ private:
     QQuickView *m_view = nullptr;
     QMetaObject::Connection m_frameConn;
     QTimer m_activateGuard;
+    QTimer m_beat;
+    Watchdog m_dog;
+    bool eventFilter(QObject *o, QEvent *e) override;
 };

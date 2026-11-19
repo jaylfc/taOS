@@ -1,6 +1,7 @@
 #include "overlayhost.h"
 
 #include <LayerShellQt/Window>
+#include <QEvent>
 #include <QGuiApplication>
 #include <QScreen>
 
@@ -12,6 +13,9 @@ OverlayHost::OverlayHost(QQmlEngine *engine, Controller *c, QObject *parent) : Q
         if (auto *w = LayerShellQt::Window::get(m_view)) w->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivityNone);
         m_view->requestUpdate();
     });
+    m_beat.setInterval(1000);
+    connect(&m_beat, &QTimer::timeout, this, [this] { m_dog.beat(); });
+    connect(qGuiApp, &QGuiApplication::aboutToQuit, this, [this] { if (m_view) m_view->hide(); });
     m_activateGuard.setSingleShot(true);
     m_activateGuard.setInterval(800);
     connect(&m_activateGuard, &QTimer::timeout, this, [this] {
@@ -38,6 +42,7 @@ bool OverlayHost::load(const QUrl &qml, QString *error) {
         if (error) *error = l.join(QLatin1Char('\n'));
         return false;
     }
+    m_view->installEventFilter(this);
     connect(m_view, &QQuickView::activeChanged, this, [this] {
         if (!m_view->isActive()) return;
         m_activateGuard.stop();
@@ -83,6 +88,8 @@ void OverlayHost::show(const QString &output) {
         disconnect(m_frameConn);
         m_c->noteFirstFrame();
     });
+    m_dog.setActive(true);
+    m_beat.start();
     m_view->show();
     if (m_c->mode() == QLatin1String("switcher") && !m_c->sticky()) m_activateGuard.start();
 }
@@ -92,5 +99,20 @@ void OverlayHost::hide() {
     m_activateGuard.stop();
     if (m_frameConn) disconnect(m_frameConn);
     m_view->hide();
+    m_beat.stop();
+    m_dog.setActive(false);
     m_c->noteHidden();
+}
+
+bool OverlayHost::eventFilter(QObject *o, QEvent *e) {
+    if (o == m_view) {
+        switch (e->type()) {
+        case QEvent::KeyPress: case QEvent::KeyRelease: case QEvent::MouseMove:
+        case QEvent::MouseButtonPress: case QEvent::Wheel:
+            m_c->touch();
+            break;
+        default: break;
+        }
+    }
+    return QObject::eventFilter(o, e);
 }

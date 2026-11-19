@@ -84,6 +84,7 @@ public:
     Q_INVOKABLE void clearFilter();
     Q_INVOKABLE void announce(const QString &text);
     Q_INVOKABLE void closeSelected();
+    Q_INVOKABLE void touch();                  // any input: restarts the idle fail-safe
     Q_INVOKABLE void setAccessibleTarget(QObject *o) { accessibleTarget = o; }
     Q_INVOKABLE int rowCountForFilter() const { return m_layoutIds.size(); }
 
@@ -139,6 +140,7 @@ private:
     QSize m_card = QSize(260, 160), m_mini = QSize(220, 124);
     qreal m_dpr = 1.0;
     QTimer m_refreshTimer;
+    QTimer m_idle;                      // fail-safe: closes the overlay after a quiet spell
     QHash<QString, QString> m_iconCache;
     bool m_haveSnapshot = false;
     qint64 m_lastStatusMs = 0;

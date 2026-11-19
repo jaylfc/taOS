@@ -19,6 +19,17 @@ Controller::Controller(AppInfo *apps, QObject *parent) : QObject(parent), m_apps
     m_refreshTimer.setSingleShot(true);
     m_refreshTimer.setInterval(20);
     connect(&m_refreshTimer, &QTimer::timeout, this, &Controller::refresh);
+    // The overlay owns the keyboard while it is up, so it never stays up on its own: after this much time
+    // without a key, click or command it closes itself.
+    m_idle.setSingleShot(true);
+    bool ok = false;
+    const int ms = qEnvironmentVariableIntValue("TAOS_OVERVIEW_IDLE_MS", &ok);
+    m_idle.setInterval(ok && ms > 0 ? ms : 30000);
+    connect(&m_idle, &QTimer::timeout, this, [this] {
+        if (m_mode == QLatin1String("hidden")) return;
+        fprintf(stderr, "taos-overview: no input for %d ms, closing\n", m_idle.interval());
+        cancel();
+    });
     connect(&m_ev, &SwayIpc::event, this, &Controller::onEvent);
     connect(&m_ev, &SwayIpc::disconnected, this, [] { /* sway is gone: the session ends with it */ QCoreApplication::quit(); });
 }
@@ -153,6 +164,7 @@ void Controller::onEvent(quint32 type, const QByteArray &payload) {
 QString Controller::handleCommand(const QStringList &w) {
     if (w.isEmpty()) return QStringLiteral("error: empty command");
     const QString v = w[0];
+    touch();   // a command is activity (a held Tab arrives as a stream of them)
     const bool reverse = w.contains(QStringLiteral("--reverse"));
     const bool sticky = w.contains(QStringLiteral("--sticky"));
     if (v == QLatin1String("ping")) return QStringLiteral("ok");
@@ -200,6 +212,7 @@ void Controller::open(const QString &mode, bool reverse, bool sticky) {
     m_windowVisible = true;
     m_showTimer.start();
     setMode(mode);
+    m_idle.start();
     recomputeLayout();
     rebuildWorkspaces();
     updateCapture();
@@ -210,8 +223,13 @@ void Controller::open(const QString &mode, bool reverse, bool sticky) {
     selectionAnnounce();
 }
 
+void Controller::touch() {
+    if (m_mode != QLatin1String("hidden")) m_idle.start();
+}
+
 void Controller::startClose() {
     if (m_mode == QLatin1String("hidden")) return;
+    m_idle.stop();
     setMode(QStringLiteral("hidden"));
     emit releaseKeyboard();
     updateCapture();
@@ -486,6 +504,8 @@ QString Controller::statusJson() {
     o.insert(QStringLiteral("selected"), m_selected);
     o.insert(QStringLiteral("output"), m_output);
     o.insert(QStringLiteral("filter"), m_filter);
+    o.insert(QStringLiteral("layout"), int(m_layoutIds.size()));
+    o.insert(QStringLiteral("workspace"), m_curWs);
     o.insert(QStringLiteral("last_show_ms"), double(m_lastShowMs));
     o.insert(QStringLiteral("capture"), m_cap && m_cap->available());
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
