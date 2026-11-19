@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import threading
 import time
 from ipaddress import ip_address
 from urllib.parse import urlparse
@@ -38,9 +39,20 @@ _VALIDATED_IP_TTL_SECS = 30.0
 # successful resolve_safe_public_ip calls; a failed validation caches
 # nothing. Only the chosen IP is stored: it is the one address the
 # pinning transport connects to, and nothing ever read the full set of
-# resolved addresses the cache used to carry. Plain dict: entries are
-# small, and a lost update under the GIL costs at most one re-validation.
+# resolved addresses the cache used to carry.
 _validated_ip_cache: dict[str, tuple[str, float]] = {}
+
+# Every cache access is serialised through this lock. The cache is
+# shared across threads -- the install route validates on a to_thread
+# worker and the pinning transport validates and looks up from
+# to_thread workers too -- and the mutation sequences are not
+# GIL-atomic: a sweep collects the expired keys and deletes them one
+# by one, so two threads sweeping concurrently deleted the same key
+# twice (KeyError out of resolve_safe_public_ip, failing an otherwise
+# valid install) or iterated the dict while another thread mutated it
+# (RuntimeError). DNS resolution stays OUTSIDE the lock: it happens in
+# resolve_safe_public_ip before the cache is touched.
+_validated_ip_cache_lock = threading.Lock()
 
 # Upper bound on cached hostnames. An install validates a handful of
 # source hosts, so this is generous; it exists so a caller validating
@@ -62,15 +74,18 @@ def _cache_validated_ip(hostname: str, chosen: str) -> None:
     every entry shares the same TTL, so oldest == soonest to expire).
     """
     now = time.monotonic()
-    expired = [key for key, entry in _validated_ip_cache.items() if now >= entry[1]]
-    for key in expired:
-        del _validated_ip_cache[key]
-    key = hostname.lower()
-    # Re-insert so a re-validated hostname counts as newest for eviction.
-    _validated_ip_cache.pop(key, None)
-    _validated_ip_cache[key] = (chosen, now + _VALIDATED_IP_TTL_SECS)
-    while len(_validated_ip_cache) > _VALIDATED_IP_CACHE_MAX_ENTRIES:
-        del _validated_ip_cache[next(iter(_validated_ip_cache))]
+    with _validated_ip_cache_lock:
+        expired = [
+            key for key, entry in _validated_ip_cache.items() if now >= entry[1]
+        ]
+        for key in expired:
+            del _validated_ip_cache[key]
+        key = hostname.lower()
+        # Re-insert so a re-validated hostname counts as newest for eviction.
+        _validated_ip_cache.pop(key, None)
+        _validated_ip_cache[key] = (chosen, now + _VALIDATED_IP_TTL_SECS)
+        while len(_validated_ip_cache) > _VALIDATED_IP_CACHE_MAX_ENTRIES:
+            del _validated_ip_cache[next(iter(_validated_ip_cache))]
 
 
 def _is_blocked_ip(ip) -> bool:
@@ -141,19 +156,21 @@ def cached_validated_ip(hostname: str) -> str | None:
     on None, validate again with resolve_safe_public_ip.
     """
     key = hostname.lower()
-    entry = _validated_ip_cache.get(key)
-    if entry is None:
-        return None
-    chosen, expiry = entry
-    if time.monotonic() >= expiry:
-        del _validated_ip_cache[key]
-        return None
-    return chosen
+    with _validated_ip_cache_lock:
+        entry = _validated_ip_cache.get(key)
+        if entry is None:
+            return None
+        chosen, expiry = entry
+        if time.monotonic() >= expiry:
+            del _validated_ip_cache[key]
+            return None
+        return chosen
 
 
 def clear_validated_ip_cache() -> None:
     """Drop every cached validation (tests, network reconfiguration)."""
-    _validated_ip_cache.clear()
+    with _validated_ip_cache_lock:
+        _validated_ip_cache.clear()
 
 
 class _ValidatedPinTransport(httpx.AsyncBaseTransport):

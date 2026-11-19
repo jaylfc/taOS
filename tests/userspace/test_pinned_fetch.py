@@ -14,6 +14,7 @@ made, so an answer that changed to an internal address is refused.
 from __future__ import annotations
 
 import socket
+import sys
 import threading
 from unittest.mock import patch
 
@@ -239,3 +240,71 @@ async def test_cache_miss_validation_runs_off_the_event_loop():
         "validation ran on the event-loop thread: "
         f"{resolve_threads} vs loop thread {loop_thread}"
     )
+
+
+def test_concurrent_cache_mutation_does_not_raise():
+    """The validated-IP cache is mutated from many threads at once.
+
+    The install route validates on a to_thread worker and the pinning
+    transport validates/looks up from to_thread workers too, so inserts
+    (with their sweep of expired entries and oldest-first eviction),
+    lookups that drop an expired entry, and clears all interleave in
+    production. Regression (CodeRabbit on #4364): the sweep collected
+    the expired keys and then deleted them one by one, so two threads
+    sweeping concurrently deleted the same key twice -- KeyError out of
+    resolve_safe_public_ip, failing an otherwise valid install (the
+    iteration itself could also raise RuntimeError). A tight GIL switch
+    interval makes the interleavings below fire on the unfixed code
+    with high reliability; the cache lock must make them all benign.
+    """
+    url_guard.clear_validated_ip_cache()
+    cache = url_guard._validated_ip_cache
+    # A large set of pre-expired entries: every concurrent insert sweeps.
+    for i in range(2000):
+        cache[f"stale{i}.test"] = (_PUBLIC, 0.0)
+    # One shared expired entry every lookup thread tries to drop.
+    cache["shared.test"] = (_PUBLIC, 0.0)
+
+    errors: list[BaseException] = []
+    barrier = threading.Barrier(18)
+
+    def run(fn):
+        def wrapped():
+            try:
+                barrier.wait()
+                fn()
+            except BaseException as exc:  # collected; asserted below
+                errors.append(exc)
+
+        return wrapped
+
+    def inserter(n: int) -> None:
+        for j in range(50):
+            url_guard._cache_validated_ip(f"t{n}-{j}.test", _PUBLIC)
+
+    def looker() -> None:
+        for _ in range(200):
+            url_guard.cached_validated_ip("shared.test")
+
+    def clearer() -> None:
+        for _ in range(20):
+            url_guard.clear_validated_ip_cache()
+
+    threads = [
+        threading.Thread(target=run(lambda n=n: inserter(n))) for n in range(8)
+    ]
+    threads += [threading.Thread(target=run(looker)) for _ in range(8)]
+    threads += [threading.Thread(target=run(clearer)) for _ in range(2)]
+
+    old_interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-5)
+    try:
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+    finally:
+        sys.setswitchinterval(old_interval)
+
+    assert errors == []
+    assert len(cache) <= url_guard._VALIDATED_IP_CACHE_MAX_ENTRIES

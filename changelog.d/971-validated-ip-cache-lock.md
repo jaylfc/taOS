@@ -1,0 +1,3 @@
+### Fixed
+
+- **Userspace install SSRF guard: validated-IP cache race (#971 follow-up)** — the TTL cache added by #4364 is shared across threads (the install route and the pinning transport both validate and look up from `asyncio.to_thread` workers), but its sweep, eviction and expired-lookup delete sequences were unguarded: two threads sweeping concurrently could delete the same expired key twice (KeyError out of `resolve_safe_public_ip`, failing an otherwise valid install) or iterate the dict while another thread mutated it (RuntimeError). All cache access is now serialised through one lock; DNS resolution stays outside it. Found by CodeRabbit on #4364.

@@ -799,6 +799,19 @@ The registry-JWT surface, by scope:
   (omitting or changing it has no effect, and it counts toward the 64 KiB cap). `DELETE`
   is a soft delete; the row stays recoverable.
 
+- **cluster_read**: `GET /api/cluster/workers` (an auth-exempt GET; the scope
+  is honoured by the exempt-path bearer handling, not the allowlist above).
+  The response is tiered by credential: anonymous callers get only
+  `name`/`status`/`tier_id`/`kind`; `agents:read` (or a device/local token)
+  gets the full worker record; **cluster_read gets an allowlist tier** --
+  exactly `name`, `status`, `tier_id`, `kind`, `capabilities`, `backends`,
+  `resources`, `free_vram_mb` and `models`, and nothing else: no `url` or
+  `worker_url`, no pairing state (`revoked`/`blocked`/`live_token`), no
+  `host_lan_ip` or `hardware`, no storage or TLS fields. Least privilege
+  wins when both scopes are present: a token holding BOTH `agents:read` and
+  `cluster_read` gets the narrower cluster_read view, not the full one.
+  `signing_key` is stripped at every tier.
+
 ### Recovering a user's drawing
 
 When a user accidentally deletes a canvas element, the row is soft-deleted
