@@ -17,6 +17,9 @@ def register_all_routers(app):
     from tinyagentos.routes.system import router as system_router
     app.include_router(system_router, dependencies=_csrf)
 
+    from tinyagentos.routes.other_systems import router as other_systems_router
+    app.include_router(other_systems_router, dependencies=_csrf)
+
     from tinyagentos.routes.hardware_wifi import router as hardware_wifi_router
     app.include_router(hardware_wifi_router, dependencies=_csrf)
 
