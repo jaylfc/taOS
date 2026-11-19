@@ -115,6 +115,29 @@ check "screen-on exits 0 with note" sh -c 'test "$0" = 0 && grep -q "not impleme
 "$SESSION" bogus 2>/dev/null; rc=$?
 check "unknown command exits 2" test "$rc" = 2
 
+# 6. tied to its desktop session: a supervisor from an ended session stops,
+#    and a new session replaces a leftover supervisor at once
+echo run >"$T/mode"; reset
+sleep 1000 >/dev/null 2>&1 & fakecomp1=$!
+TAOS_SHELL_SESSION_PID=$fakecomp1 "$SESSION" start 2>"$T/err6"
+check "session 1 component running" wait_for 10 test -e "$STATE/stubc.pid"
+sp1=$(head -n 1 "$STATE/supervisor-stubc.pid"); cp1=$(head -n 1 "$STATE/stubc.pid")
+check "supervisor records its session" test "$(cat "$STATE/supervisor-stubc.session")" = "$fakecomp1"
+sleep 1000 >/dev/null 2>&1 & fakecomp2=$!
+TAOS_SHELL_SESSION_PID=$fakecomp2 "$SESSION" start 2>"$T/err6b"
+check "new session replaces the leftover supervisor" grep -q "replacing the supervisor from an earlier session" "$T/err6b"
+check "old supervisor is gone" wait_for 10 sh -c '! kill -0 "$0" 2>/dev/null' "$sp1"
+check "old component is gone" wait_for 10 sh -c '! kill -0 "$0" 2>/dev/null' "$cp1"
+check "new session component running" wait_for 10 sh -c 'test -e "$0/stubc.pid" && test "$(cat "$0/supervisor-stubc.session")" = "$1"' "$STATE" "$fakecomp2"
+# the compositor of session 2 ends and the component crashes: no restart
+cp2=$(head -n 1 "$STATE/stubc.pid"); sp2=$(head -n 1 "$STATE/supervisor-stubc.pid")
+kill "$fakecomp2" 2>/dev/null; wait "$fakecomp2" 2>/dev/null
+kill -9 "$cp2" 2>/dev/null
+check "supervisor of an ended session exits" wait_for 10 sh -c '! kill -0 "$0" 2>/dev/null' "$sp2"
+check "says why it stopped" wait_for 5 grep -q "desktop session (compositor pid $fakecomp2) has ended" "$T/err6b"
+kill "$fakecomp1" 2>/dev/null
+"$SESSION" stop 2>/dev/null
+
 # 5. the script never signals by name
 check "no pkill or killall in the script" sh -c '! grep -E "(^|[^A-Za-z_-])(pkill|killall)([^A-Za-z_-]|$)" "$0"' "$SESSION"
 check "script is POSIX sh" sh -c 'head -n 1 "$0" | grep -q "^#!/bin/sh"' "$SESSION"

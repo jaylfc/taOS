@@ -41,6 +41,7 @@ SELF_DIR=$(dirname "$SELF")
 
 COMPONENTS=${TAOS_SHELL_COMPONENTS:-taos-bar}
 SLEEP_CMD=${TAOS_SHELL_SLEEP_CMD:-sleep}
+SLEEP_REAL=sleep
 BACKOFF_STEPS="1 2 5 30"
 MAX_FAILS=10
 WINDOW=300
@@ -73,6 +74,26 @@ pid_is() {
 
 read_pid() { [ -r "$1" ] && head -n 1 "$1" 2>/dev/null; }
 
+# The compositor this session belongs to: TAOS_SHELL_SESSION_PID when set,
+# otherwise the pid in sway's IPC socket name (sway-ipc.<uid>.<pid>.sock).
+# Empty when unknown (then components are not tied to a compositor).
+session_pid() {
+    if [ -n "${TAOS_SHELL_SESSION_PID:-}" ]; then
+        printf '%s' "$TAOS_SHELL_SESSION_PID"
+        return
+    fi
+    case ${SWAYSOCK:-} in
+        */sway-ipc.*.*.sock)
+            _s=${SWAYSOCK##*/sway-ipc.}; _s=${_s%.sock}; printf '%s' "${_s#*.}" ;;
+    esac
+}
+
+# True while the compositor this supervisor was started for is still running.
+session_alive() {
+    [ -z "$SESSION_PID" ] && return 0
+    kill -0 "$SESSION_PID" 2>/dev/null
+}
+
 args_for() {
     _v=TAOS_SHELL_ARGS_$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')
     eval "printf '%s' \"\${$_v:-}\""
@@ -94,11 +115,20 @@ supervise() {
     stopping=0
     trap 'stopping=1; [ -n "$child" ] && kill "$child" 2>/dev/null' TERM INT HUP
     echo $$ >"$STATE_DIR/supervisor-$name.pid"
+    SESSION_PID=$(session_pid)
+    printf '%s\n' "$SESSION_PID" >"$STATE_DIR/supervisor-$name.session"
 
     fails=""        # epoch seconds of recent failures
     idx=0           # position in the backoff schedule
     n_restarts=0
     while [ "$stopping" -eq 0 ]; do
+        # A component outlives its desktop only by mistake: when the compositor
+        # this supervisor was started for is gone, stop instead of restarting
+        # against a dead display.
+        if ! session_alive; then
+            log "$name: its desktop session (compositor pid $SESSION_PID) has ended; not restarting"
+            break
+        fi
         started=$(date +%s)
         # shellcheck disable=SC2046
         set -f
@@ -147,7 +177,7 @@ supervise() {
         while kill -0 "$child" 2>/dev/null; do wait "$child" 2>/dev/null; done
         child=""
     done
-    rm -f "$STATE_DIR/supervisor-$name.pid" "$STATE_DIR/$name.pid"
+    rm -f "$STATE_DIR/supervisor-$name.pid" "$STATE_DIR/$name.pid" "$STATE_DIR/supervisor-$name.session"
     exit 0
 }
 
@@ -159,8 +189,18 @@ cmd_start() {
     for c in $COMPONENTS; do
         sp=$(read_pid "$STATE_DIR/supervisor-$c.pid")
         if pid_is "$sp" "_supervise"; then
-            log "$c already supervised (pid $sp)"
-            continue
+            old=$(read_pid "$STATE_DIR/supervisor-$c.session")
+            new=$(session_pid)
+            if [ -z "$new" ] || [ "$old" = "$new" ]; then
+                log "$c already supervised (pid $sp)"
+                continue
+            fi
+            # Left over from an earlier desktop session: replace it now rather
+            # than wait for it to notice.
+            log "$c: replacing the supervisor from an earlier session (pid $sp)"
+            kill "$sp" 2>/dev/null
+            n=0
+            while kill -0 "$sp" 2>/dev/null && [ "$n" -lt 30 ]; do $SLEEP_REAL 0.1; n=$((n + 1)); done
         fi
         "$SELF" _supervise "$c" &
         log "started $c supervisor (pid $!)"
@@ -188,7 +228,7 @@ cmd_stop() {
             # the supervisor is gone but the component survived: it is ours (pidfile), stop it
             kill "$cp" 2>/dev/null
         fi
-        rm -f "$STATE_DIR/supervisor-$c.pid" "$STATE_DIR/$c.pid" "$STATE_DIR/$c.gaveup"
+        rm -f "$STATE_DIR/supervisor-$c.pid" "$STATE_DIR/supervisor-$c.session" "$STATE_DIR/$c.pid" "$STATE_DIR/$c.gaveup"
         log "stopped $c"
     done
 }

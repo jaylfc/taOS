@@ -42,5 +42,13 @@ elif [ -r /usr/share/glvnd/egl_vendor.d/50_mesa.json ]; then
 fi
 export LIBVA_DRIVER_NAME=none
 
-# -s lets Ctrl+Alt+Fn switch to the text consoles; -d no client-side decorations.
-exec cage -s -d -- "$bin" "$@"
+# The login VT is ours: blank it and hide its cursor, so whatever is left on
+# it never shows while the login screen hands over to the desktop.
+printf '\033[?25l\033[2J\033[3J\033[H' 2>/dev/null || true
+# Log to the journal, not to the VT: text written to the VT is what flashes
+# between the login screen and the desktop.
+if command -v systemd-cat >/dev/null 2>&1 && systemd-cat -t taos-greeter true >/dev/null 2>&1; then
+    # -s lets Ctrl+Alt+Fn switch to the text consoles; -d no client-side decorations.
+    exec systemd-cat -t taos-greeter cage -s -d -- "$bin" "$@"
+fi
+exec cage -s -d -- "$bin" "$@" >/dev/null 2>&1
