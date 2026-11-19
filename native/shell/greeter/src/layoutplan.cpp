@@ -81,9 +81,10 @@ Plan plan(const QSizeF &sz) {
         layoutFor(std::clamp(ybottom - ytop - fixed, 48.0 * s, p.avatar));
         need = p.fieldTop + p.fieldH + 10.0 * s + p.messageH;
     } else {
-        // Room to spare: sit a little below the wordmark, not glued to it,
-        // and never drift into the lower third's empty middle.
-        ytop += std::min((ybottom - ytop - need) * 0.28, 56.0 * s);
+        // Room to spare: the sign-in group belongs to the lower part of the
+        // screen, well clear of the wordmark, with the message line's space
+        // and a little air left above the bottom bar.
+        ytop += (ybottom - ytop - need) * 0.72;
     }
     const qreal ublockW = std::min(W * 0.94, 1100.0 * s);
     p.userBlock = QRectF((W - ublockW) / 2, ytop, ublockW, std::min(need, std::max(0.0, ybottom - ytop)));
