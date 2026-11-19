@@ -26,11 +26,9 @@ describe("CreateProjectDialog viewport-aware sizing (#mobile-keyboard)", () => {
     const dialog = screen.getByRole("dialog", { name: /create project/i });
     const form = document.querySelector("form")!;
 
-    // jsdom has no visualViewport, so the hook falls back to innerHeight (768).
-    expect(dialog.style.maxHeight).toBe("768px");
-
-    // The card itself is capped to the visible area and scrolls, so a focused
-    // field and the Create button stay in view when the keyboard is up.
+    // The backdrop stays full-screen; the card itself is capped to the visible
+    // area and scrolls, so a focused field and the Create button stay in view
+    // when the keyboard is up.
     // The bound is `min(viewport - 32, 92vh)` — parse it rather than asserting
     // substring order, which is brittle.
     const formBound = parseMaxHeight(form);
@@ -53,8 +51,9 @@ describe("CreateProjectDialog viewport-aware sizing (#mobile-keyboard)", () => {
     });
 
     render(<CreateProjectDialog onClose={vi.fn()} onCreated={vi.fn()} />);
-    const dialog = screen.getByRole("dialog", { name: /create project/i });
-    expect(dialog.style.maxHeight).toBe("420px");
+    const form = document.querySelector("form")!;
+    const formBound = parseMaxHeight(form);
+    expect(formBound.px).toBe(420 - 32);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     delete (window as any).visualViewport;

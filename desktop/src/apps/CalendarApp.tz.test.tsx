@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+process.env.TZ = "America/Los_Angeles";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { CalendarApp } from "./CalendarApp";

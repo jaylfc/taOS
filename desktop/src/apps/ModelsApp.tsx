@@ -436,7 +436,7 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
     if (downloadedRef.current.length === 0) {
       commit([], [], true, errMsg ?? "Failed to load models");
     } else {
-      setError(null);
+      setError(errMsg ?? "Failed to load models");
       setLoading(false);
     }
   },

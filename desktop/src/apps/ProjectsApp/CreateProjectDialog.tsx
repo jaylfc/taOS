@@ -100,8 +100,9 @@ export function CreateProjectDialog({
       aria-modal="true"
       aria-label="Create project"
       className="fixed inset-0 z-[10001] bg-black/50 flex flex-col items-center p-4"
-      style={{ maxHeight: viewportHeight || undefined, paddingTop: viewportOffsetTop + 4 }}
+      style={{}}
     >
+      <div style={{ paddingTop: viewportOffsetTop + 4 }} className="w-full flex flex-col items-center">
       <form
         onSubmit={step === 1 ? onSubmitStep1 : onSubmitStep2}
         className="bg-zinc-900 text-zinc-200 p-4 rounded shadow w-full max-w-sm space-y-3 overflow-y-auto"
@@ -250,6 +251,7 @@ export function CreateProjectDialog({
           )}
         </div>
       </form>
+      </div>
     </div>,
     document.body,
   );

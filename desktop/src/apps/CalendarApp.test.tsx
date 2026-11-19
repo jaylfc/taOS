@@ -103,6 +103,15 @@ describe("CalendarApp", () => {
 });
 
 describe("CalendarApp day selection", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2025, 5, 15));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("marks the tapped day selected (aria-pressed + accent style) and shows the day panel", () => {
     render(<CalendarApp windowId="test" />);
 
