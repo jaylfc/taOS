@@ -12011,11 +12011,18 @@ _LOCK_SCREEN_STATE: str | None = None
 #: A controller restart therefore reads "locked" until the next console unlock.
 _CONSOLE_LOCKED: bool = True
 
+#: Lock-session number: one value per locked period. Seeded from the clock at
+#: process start so a restart never repeats a number a client has seen, and
+#: bumped by one only on a transition unlocked -> locked (see the setter).
+_CONSOLE_SESSION: int = int(time.time())
+
 
 def _set_console_locked(request: Request, locked: bool) -> None:
     """Record a lock/unlock, but only when it came from the console itself."""
-    global _CONSOLE_LOCKED
+    global _CONSOLE_LOCKED, _CONSOLE_SESSION
     if _request_is_console(request):
+        if locked and not _CONSOLE_LOCKED:
+            _CONSOLE_SESSION += 1
         _CONSOLE_LOCKED = locked
 
 
@@ -12031,13 +12038,25 @@ async def lock_state(request: Request):
 
     No session needed. Answers only to a loopback peer with no forwarding
     header (``is_console_origin``) that also sends X-taOS-Console; anything else
-    gets the same 404 as an unknown route. Body is exactly ``{"locked": bool}``.
+    gets the same 404 as an unknown route. Body is exactly
+    ``{"locked": bool, "session": int}``.
+
+    ``session`` is the lock-session number: one number per locked period. It is
+    seeded from ``int(time.time())`` at process start, so a controller restart
+    can never repeat a number a client has already seen. It increases by one on
+    every transition INTO locked (unlocked -> locked: console lock, logout, or
+    the console being shown a sign-in surface). It does not change on unlock,
+    nor when a lock signal arrives while already locked (repeated /auth/status
+    polls or reloads on the lock screen), so a client can key data to it.
     """
     if not _request_is_console(request) or not request.headers.get(
         LOCK_CONSOLE_HEADER, ""
     ).strip():
         return JSONResponse({"detail": "Not Found"}, status_code=404)
-    return JSONResponse({"locked": bool(_CONSOLE_LOCKED)}, headers={"Cache-Control": "no-store"})
+    return JSONResponse(
+        {"locked": bool(_CONSOLE_LOCKED), "session": int(_CONSOLE_SESSION)},
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 def _push_lock_event(kind: str, payload: dict | None = None) -> int:
