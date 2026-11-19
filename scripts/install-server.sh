@@ -208,14 +208,34 @@ APT_RETRY=(-o Acquire::Retries=3)
 # wheel download truncated mid-body (IncompleteRead) still aborts the
 # whole pip run. Re-running pip is safe, and wheels already downloaded
 # come from the local cache, so the retry is cheap (#2088).
+#
+# Only network-shaped failures are retried. The command's output is
+# captured per attempt (and echoed through tee, so the install log
+# still shows it live), and a failed attempt is re-run only when its
+# output carries a network-drop marker -- IncompleteRead,
+# ProtocolError, a timeout, a broken connection. Anything else (a
+# dependency conflict, a failed source build) cannot be fixed by
+# re-running, so it fails on the first attempt and the real error
+# surfaces immediately instead of after two pointless retries.
 retry() {
     local attempts="$1"; shift
-    local delay=5 n=1
+    local delay=5 n=1 rc
+    local out
+    out="$(mktemp)" || return 1
     while true; do
-        if "$@"; then
+        "$@" 2>&1 | tee "$out"
+        rc=${PIPESTATUS[0]}
+        if (( rc == 0 )); then
+            rm -f "$out"
             return 0
         fi
         if (( n >= attempts )); then
+            rm -f "$out"
+            return 1
+        fi
+        if ! grep -qiE 'incompleteread|protocolerror|timeout|connection broken' "$out"; then
+            warn "failure shows no sign of a network drop -- not retrying: $*"
+            rm -f "$out"
             return 1
         fi
         warn "attempt $n of $attempts failed -- retrying in ${delay}s: $*"

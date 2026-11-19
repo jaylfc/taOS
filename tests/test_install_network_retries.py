@@ -157,6 +157,8 @@ def test_curl_retry_with_retry_all_errors(tmp_path):
     )
     curl_retry = result.stdout.strip().split()
     assert "--retry-all-errors" in curl_retry
+
+
 def _apt_get_fetch_lines(text: str) -> list[str]:
     """Command lines that make apt-get download something (update/install).
 
@@ -240,10 +242,12 @@ def _run_retry_harness(body: str) -> subprocess.CompletedProcess:
 
 
 def test_retry_helper_recovers_from_transient_failures(tmp_path):
+    """The flaky command fails the way pip fails on a dropped download
+    (IncompleteRead in its output) and succeeds on the third attempt."""
     body = "\n".join([
         f"count_file='{tmp_path}/n'",
         'echo 0 > "$count_file"',
-        'flaky() { local n; n=$(cat "$count_file"); n=$((n+1)); echo "$n" > "$count_file"; [ "$n" -ge 3 ]; }',
+        'flaky() { local n; n=$(cat "$count_file"); n=$((n+1)); echo "$n" > "$count_file"; if [ "$n" -lt 3 ]; then echo "ERROR: IncompleteRead(1234 bytes read, 5678 more expected)" >&2; return 1; fi; }',
         "retry 3 flaky || exit $?",
         'echo "attempts=$(cat "$count_file")"',
     ])
@@ -253,13 +257,48 @@ def test_retry_helper_recovers_from_transient_failures(tmp_path):
 
 
 def test_retry_helper_gives_up_after_the_bound(tmp_path):
+    """A command that keeps failing with a network-drop marker
+    (ProtocolError) is attempted exactly the bounded number of times."""
     body = "\n".join([
         f"count_file='{tmp_path}/n'",
         'echo 0 > "$count_file"',
-        'always_fail() { local n; n=$(cat "$count_file"); n=$((n+1)); echo "$n" > "$count_file"; return 1; }',
+        'always_fail() { local n; n=$(cat "$count_file"); n=$((n+1)); echo "$n" > "$count_file"; echo "ERROR: ProtocolError: connection aborted" >&2; return 1; }',
         "retry 3 always_fail || rc=$?",
         'echo "rc=${rc:-0} attempts=$(cat "$count_file")"',
     ])
     result = _run_retry_harness(body)
     assert result.returncode == 0, result.stderr
     assert "rc=1 attempts=3" in result.stdout
+
+
+def test_retry_helper_retries_network_drop_failures_the_full_count(tmp_path):
+    """A failure whose output carries a network-drop marker is retried
+    up to the bound before the helper gives up. The marker here is the
+    lowercase 'connection broken', pinning case-insensitive matching."""
+    body = "\n".join([
+        f"count_file='{tmp_path}/n'",
+        'echo 0 > "$count_file"',
+        'dropped() { local n; n=$(cat "$count_file"); n=$((n+1)); echo "$n" > "$count_file"; echo "error: connection broken by peer while downloading" >&2; return 1; }',
+        "retry 3 dropped || rc=$?",
+        'echo "rc=${rc:-0} attempts=$(cat "$count_file")"',
+    ])
+    result = _run_retry_harness(body)
+    assert result.returncode == 0, result.stderr
+    assert "rc=1 attempts=3" in result.stdout
+
+
+def test_retry_helper_fails_fast_on_non_network_failures(tmp_path):
+    """A failure whose output shows a real error rather than a network
+    drop (here a pip dependency conflict) must run exactly once:
+    re-running pip cannot fix a conflict, it only delays the real
+    error behind two pointless retries."""
+    body = "\n".join([
+        f"count_file='{tmp_path}/n'",
+        'echo 0 > "$count_file"',
+        'conflict() { local n; n=$(cat "$count_file"); n=$((n+1)); echo "$n" > "$count_file"; echo "ERROR: Cannot install pkg-a and pkg-b because these package versions have conflicting dependencies." >&2; return 1; }',
+        "retry 3 conflict || rc=$?",
+        'echo "rc=${rc:-0} attempts=$(cat "$count_file")"',
+    ])
+    result = _run_retry_harness(body)
+    assert result.returncode == 0, result.stderr
+    assert "rc=1 attempts=1" in result.stdout

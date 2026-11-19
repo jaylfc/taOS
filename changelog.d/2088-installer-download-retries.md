@@ -9,7 +9,12 @@
   shared `APT_RETRY` array; the pre-bash bootstrap uses the literal
   option), so a truncated download is retried inside the same apt
   run. The controller-deps pip pair is additionally wrapped in a
-  bounded `retry` helper (3 attempts, growing backoff): pip's
+  bounded `retry` helper (3 attempts, growing backoff) that re-runs
+  only when the failed attempt's output carries a network-drop
+  marker (`IncompleteRead`, `ProtocolError`, a timeout, a broken
+  connection) -- a dependency conflict or a failed source build
+  fails on the first attempt instead of being retried pointlessly:
+  pip's
   `--retries` covers connection setup, but a wheel truncated
   mid-body (`IncompleteRead`, the original report's headline
   failure) still aborts the run, and re-running is cheap because
