@@ -232,3 +232,139 @@ describe("DesktopDockSection wallpaper entry", () => {
     ).toBeInTheDocument();
   });
 });
+
+describe("BackupSection restore", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function mockAuthAndRestore(isAdmin: boolean, restoreResponse: { status: number; body: object }) {
+    return vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+      const url = String(input);
+      if (url.includes("/auth/status")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              configured: true,
+              authenticated: true,
+              user: { username: "jay", is_admin: isAdmin },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      if (url.includes("/api/restore")) {
+        return Promise.resolve(
+          new Response(JSON.stringify(restoreResponse.body), {
+            status: restoreResponse.status,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes("/api/account/me")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ username: "jay", is_admin: isAdmin }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+  }
+
+  async function renderBackupSection() {
+    mockAuthAndRestore(true, { status: 200, body: { status: "restored" } });
+    render(<SettingsApp windowId="w1" section="backup" />);
+    await waitFor(() => {
+      expect(screen.getByText("Restore from Backup")).toBeInTheDocument();
+    });
+    return screen.getByLabelText("Upload backup file");
+  }
+
+  it("uploads backup file on change, shows success message, and resets input", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const input = await renderBackupSection();
+
+    const file = new File(["backup content"], "backup.tar.gz", { type: "application/gzip" });
+
+    fireEvent.change(input, { target: { files: [file] } });
+
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith("/api/restore", expect.objectContaining({ method: "POST" }));
+    });
+
+    const restoreCalls = (fetch as vi.Mock).mock.calls.filter(([url]) => String(url).includes("/api/restore"));
+    expect(restoreCalls).toHaveLength(1);
+    const [url, options] = restoreCalls[0];
+    expect(url).toBe("/api/restore");
+    expect(options.method).toBe("POST");
+    expect(options.body).toBeInstanceOf(FormData);
+    const formData = options.body as FormData;
+    expect(formData.get("file")).toBe(file);
+
+    await waitFor(() => {
+      expect(screen.getByText("restored")).toBeInTheDocument();
+    });
+
+    expect(input.value).toBe("");
+
+    confirmSpy.mockRestore();
+  });
+
+  it("shows error message on 400 response", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    mockAuthAndRestore(true, { status: 400, body: { error: "Invalid backup file: not a tar.gz" } });
+    render(<SettingsApp windowId="w1" section="backup" />);
+    await waitFor(() => {
+      expect(screen.getByText("Restore from Backup")).toBeInTheDocument();
+    });
+    const input = screen.getByLabelText("Upload backup file");
+    const file = new File(["bad content"], "backup.zip", { type: "application/zip" });
+
+    fireEvent.change(input, { target: { files: [file] } });
+
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith("/api/restore", expect.objectContaining({ method: "POST" }));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Invalid backup file: not a tar.gz")).toBeInTheDocument();
+    });
+
+    expect(input.value).toBe("");
+
+    confirmSpy.mockRestore();
+  });
+
+  it("does nothing when user cancels confirm dialog", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const fetchSpy = mockAuthAndRestore(true, { status: 200, body: { status: "restored" } });
+    render(<SettingsApp windowId="w1" section="backup" />);
+    await waitFor(() => {
+      expect(screen.getByText("Restore from Backup")).toBeInTheDocument();
+    });
+    const input = screen.getByLabelText("Upload backup file");
+    const file = new File(["backup content"], "backup.tar.gz", { type: "application/gzip" });
+
+    fireEvent.change(input, { target: { files: [file] } });
+
+    await act(async () => { await Promise.resolve(); });
+    const restoreCalls = fetchSpy.mock.calls.filter(([url]) => String(url).includes("/api/restore"));
+    expect(restoreCalls).toHaveLength(0);
+
+    expect(input.value).toBe("");
+
+    confirmSpy.mockRestore();
+  });
+
+  it("has accept attribute limited to .tar.gz and .tgz", async () => {
+    mockAuthAndRestore(true, { status: 200, body: { status: "restored" } });
+    render(<SettingsApp windowId="w1" section="backup" />);
+    await waitFor(() => {
+      expect(screen.getByText("Restore from Backup")).toBeInTheDocument();
+    });
+    const input = screen.getByLabelText("Upload backup file");
+    expect(input.getAttribute("accept")).toBe(".tar.gz,.tgz");
+  });
+});
