@@ -271,7 +271,11 @@ class AuthRequestsStore(BaseStore):
         return _row_to_dict(row) if row else None
 
     async def find_accepted_for_canonical(
-        self, canonical_id: str, *, exclude_id: Optional[str] = None
+        self,
+        canonical_id: str,
+        *,
+        exclude_id: Optional[str] = None,
+        decided_after: Optional[str] = None,
     ) -> Optional[dict]:
         """Return an ACCEPTED record carrying *canonical_id*, if one exists.
 
@@ -280,15 +284,26 @@ class AuthRequestsStore(BaseStore):
         request for the identity was accepted, that approval is live on it
         and a losing approval must not revert its activation. ``exclude_id``
         skips the caller's own record.
+
+        ``decided_after`` bounds the lookup to decisions made after that
+        instant (an ISO timestamp in the ``decided_ts`` format): the undo
+        passes the moment its own approval began, so an approval accepted
+        before that — the one that merely left the identity active, say —
+        is not mistaken for the race winner. The pick is deterministic:
+        the earliest qualifying decision, record id as tie-break.
         """
         if self._db is None:
             raise RuntimeError("AuthRequestsStore not initialised")
-        cursor = await self._db.execute(
+        query = (
             "SELECT * FROM auth_requests "
-            "WHERE status = 'accepted' AND canonical_id = ? AND id != ? "
-            "LIMIT 1",
-            (canonical_id, exclude_id or ""),
+            "WHERE status = 'accepted' AND canonical_id = ? AND id != ?"
         )
+        params: tuple = (canonical_id, exclude_id or "")
+        if decided_after is not None:
+            query += " AND decided_ts > ?"
+            params += (decided_after,)
+        query += " ORDER BY decided_ts ASC, id ASC LIMIT 1"
+        cursor = await self._db.execute(query, params)
         row = await cursor.fetchone()
         return _row_to_dict(row) if row is not None else None
 
