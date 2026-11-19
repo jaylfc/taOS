@@ -21,9 +21,12 @@ from tinyagentos.llm_gateway.cutover import llm_gateway_live_port, llm_gateway_m
 from tinyagentos.agent_registry_store import mint_registry_token
 from tinyagentos.agent_token_auth import _get_grants_store, _get_keypair
 from tinyagentos.config import (
+    _reserved_agent_slugs,
+    _reserved_slugs_lock,
     release_agent_slug,
     reserve_agent_slug,
     save_config_locked,
+    slugify_agent_name,
     unique_agent_slug,
     validate_agent_name,
 )
@@ -1646,12 +1649,15 @@ async def _import_agent_json(request: Request, body: AgentImport):
     name_error = validate_agent_name(name)
     if name_error:
         return JSONResponse({"error": name_error}, status_code=400)
-    # Route name allocation through reserve_agent_slug so the import path
-    # consults the reserved set the same way deploy/import/restore do.
-    try:
-        slug = await reserve_agent_slug(config, name)
-    except ValueError:
+    # JSON import never suffixes: it reuses the slugified name verbatim
+    # and refuses to overwrite an existing or in-flight agent.
+    slug = slugify_agent_name(name)
+    if find_agent(config, slug) is not None:
         return JSONResponse({"error": f"Agent '{name}' already exists"}, status_code=409)
+    async with _reserved_slugs_lock:
+        if slug in _reserved_agent_slugs:
+            return JSONResponse({"error": f"Agent '{name}' already exists"}, status_code=409)
+        _reserved_agent_slugs.add(slug)
     try:
         # Build the persisted agent from the allowlisted model only, then
         # rewrite name/display_name exactly as the create route does.

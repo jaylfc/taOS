@@ -2785,9 +2785,6 @@ class TestNameReservationReleaseFixes:
                     "groups": [],
                 },
             )
-            assert resp.status_code == 200, resp.text
-            assert resp.json()["name"] == "import-helper-2"
-            names = [a["name"] for a in config.agents]
-            assert "import-helper-2" in names
+            assert resp.status_code == 409, resp.text
         finally:
             release_agent_slug("import-helper")

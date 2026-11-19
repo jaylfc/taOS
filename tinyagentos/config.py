@@ -68,14 +68,10 @@ async def reserve_agent_slug(config: "AppConfig", display_name: str) -> str:
     """
     async with _reserved_slugs_lock:
         unique_slug = unique_agent_slug(config, display_name)
-        # unique_agent_slug already excluded config.agents; also treat names
-        # reserved by other in-flight creates as taken so concurrent paths
-        # never pick the same slug. A suffix can land on an existing row, so
-        # re-check config.agents alongside the reserved set.
+        # unique_agent_slug already excluded config.agents; only the reserved
+        # set (in-flight creates) needs handling here.
         suffix = 2
-        while unique_slug in _reserved_agent_slugs or any(
-            a.get("name") == unique_slug for a in config.agents
-        ):
+        while unique_slug in _reserved_agent_slugs:
             tail = f"-{suffix}"
             unique_slug = unique_slug[: MAX_AGENT_SLUG_LEN - len(tail)].rstrip("-") + tail
             suffix += 1
