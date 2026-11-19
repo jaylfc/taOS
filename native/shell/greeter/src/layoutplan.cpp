@@ -63,8 +63,11 @@ Plan plan(const QSizeF &sz) {
     p.nameH = 22.0 * s;
     p.captionH = 0.0;
     p.messageH = 20.0 * s;
-    const qreal bottomH = 44.0 * s;
-    p.bottomBar = QRectF(p.margin, H - p.margin - bottomH, W - 2 * p.margin, bottomH);
+    // The side margin grows with a wide screen; the gap under the bar does
+    // not, or an ultrawide leaves the corner items floating.
+    const qreal bottomH = 38.0 * s;
+    const qreal vmargin = 14.0 * s;
+    p.bottomBar = QRectF(p.margin, H - vmargin - bottomH, W - 2 * p.margin, bottomH);
     const qreal ugap = std::max(H * 0.03, 16.0 * s);
     qreal ytop = p.wordmark.bottom() + ugap;
     const qreal ybottom = p.bottomBar.top() - 8.0 * s;
