@@ -68,7 +68,9 @@ def _build_agent_lookups(config):
     return by_id, by_name
 
 
-def _resolve_member_names(member_rows: list[dict], config) -> set[str]:
+async def _resolve_member_names(
+    member_rows: list[dict], config, agent_registry=None
+) -> set[str]:
     """Convert project_members rows to agent names for channel membership.
 
     project_members.member_id stores an agent's hex id (e.g. "91a640130122")
@@ -76,11 +78,20 @@ def _resolve_member_names(member_rows: list[dict], config) -> set[str]:
     clones. Both need resolving to a name before being stored in the channel's
     members list, which the @mention parser and router expect.
 
-    Resolution strategy:
-    - Build a lookup: id -> agent, name -> agent from config.agents.
-    - For each member_id, try id match first then name match (handles the case
-      where names are already stored for older rows that used names as member_id).
-    - Members with no match in config (deleted agents) are dropped with a debug log.
+    Resolution strategy, in order per member:
+    - config.agents: id match first, then name match (handles the case where
+      names are already stored for older rows that used names as member_id).
+    - Human members (member_kind="human"): kept under their contact id.
+      They are not agents, so no config entry will ever match them, and the
+      contact id is the identity the peer/collab paths address them by.
+    - Agent registry: a native member whose canonical id is absent from
+      config.agents (registered via the agent registry, not the static
+      config) resolves to its registry handle — the routing name the
+      @mention parser and router look up via get_by_handle. An identity
+      with no handle falls back to the slug of its display name/framework.
+    - Members matching none of the above (deleted agents) are dropped with
+      a debug log. A registry lookup that raises is treated as no match,
+      so an unusable registry cannot fail the whole channel sync.
 
     If config is None (test path), member_id is returned as-is so that tests
     that already store names in project_members continue to work unmodified.
@@ -93,14 +104,45 @@ def _resolve_member_names(member_rows: list[dict], config) -> set[str]:
     for m in member_rows:
         mid = m["member_id"]
         agent = by_id.get(mid) or by_name.get(mid)
-        if agent is None:
-            logger.debug(
-                "a2a: member_id %r not found in config agents — skipping", mid
-            )
+        if agent is not None:
+            name = agent.get("name")
+            if name:
+                resolved.add(name)
             continue
-        name = agent.get("name")
-        if name:
-            resolved.add(name)
+        if m.get("member_kind") == "human":
+            resolved.add(mid)
+            continue
+        if agent_registry is not None:
+            try:
+                identity = await agent_registry.get(mid)
+            except Exception:
+                # An unusable registry (e.g. uninitialised in a minimal
+                # app, or a transient store error) must not fail the
+                # whole channel sync: treat it as no match and drop
+                # the member like any other unknown id.
+                logger.debug(
+                    "a2a: registry lookup for member_id %r failed — skipping",
+                    mid,
+                    exc_info=True,
+                )
+                identity = None
+            if identity is not None:
+                handle = identity.get("handle")
+                if not handle:
+                    from tinyagentos.agent_registry_store import (
+                        agent_slug_or_fallback,
+                    )
+
+                    handle = agent_slug_or_fallback(
+                        identity.get("display_name")
+                        or identity.get("framework")
+                        or mid
+                    )
+                resolved.add(handle)
+                continue
+        logger.debug(
+            "a2a: member_id %r not found in config agents — skipping", mid
+        )
     return resolved
 
 
@@ -129,7 +171,8 @@ def _resolve_lead_names(project: dict, config) -> list[str]:
 
 
 async def ensure_a2a_channel(
-    channel_store, project_store, project_id: str, *, config=None
+    channel_store, project_store, project_id: str, *, config=None,
+    agent_registry=None
 ) -> dict:
     """Create the A2A channel for project_id if missing, sync its members
     to the project's current native+clone members, return the channel row.
@@ -139,6 +182,12 @@ async def ensure_a2a_channel(
     to agent names before being stored in the channel — the @mention parser and
     router both operate on names. When None (test path with name-keyed members),
     member_ids are used as-is.
+
+    agent_registry: the app's AgentRegistryStore (or None). When provided,
+    native members absent from config.agents resolve through the registry to
+    their handle; human members are always kept under their contact id.
+    Call sites that run without it keep the previous behaviour (registry-only
+    members are dropped on sync), so every production call site passes it.
 
     Also syncs settings.leads from the project's exclusive lead_member_id so that
     the router can give the lead visibility into all channel messages regardless
@@ -150,7 +199,9 @@ async def ensure_a2a_channel(
     async with _A2A_LOCKS[project_id]:
         project = await project_store.get_project(project_id)
         project_members = await project_store.list_members(project_id)
-        expected = _resolve_member_names(project_members, config)
+        expected = await _resolve_member_names(
+            project_members, config, agent_registry
+        )
         expected_leads = _resolve_lead_names(project, config)
 
         matches = await _find_a2a_channels(channel_store, project_id)
@@ -200,7 +251,9 @@ async def ensure_a2a_channel(
         return await channel_store.get_channel(existing["id"])
 
 
-async def backfill_all(channel_store, project_store, *, config=None) -> int:
+async def backfill_all(
+    channel_store, project_store, *, config=None, agent_registry=None
+) -> int:
     """Call ensure_a2a_channel for every active project. Returns count synced.
 
     Per-project failures are logged and do not stop the loop.
@@ -210,7 +263,8 @@ async def backfill_all(channel_store, project_store, *, config=None) -> int:
     for p in projects:
         try:
             await ensure_a2a_channel(
-                channel_store, project_store, p["id"], config=config
+                channel_store, project_store, p["id"], config=config,
+                agent_registry=agent_registry,
             )
             count += 1
         except Exception:

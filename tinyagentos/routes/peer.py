@@ -912,6 +912,7 @@ async def _handle_collab_response(
                     project_store,
                     project_id,
                     config=getattr(request.app.state, "config", None),
+                    agent_registry=getattr(request.app.state, "agent_registry", None),
                 )
             except Exception:
                 logger.warning(

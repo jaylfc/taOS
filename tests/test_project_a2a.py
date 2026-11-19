@@ -87,7 +87,7 @@ async def test_resolve_member_names_with_config(stores):
     config = _config(_agent("john", john_id), _agent("tom", tom_id))
 
     members = [{"member_id": john_id}, {"member_id": tom_id}]
-    resolved = _resolve_member_names(members, config)
+    resolved = await _resolve_member_names(members, config)
 
     assert resolved == {"john", "tom"}
 
@@ -105,7 +105,7 @@ async def test_resolve_member_names_with_deleted_member(stores):
         {"member_id": known_id},
         {"member_id": ghost_id},
     ]
-    resolved = _resolve_member_names(members, config)
+    resolved = await _resolve_member_names(members, config)
 
     assert resolved == {"alice"}
 
@@ -118,9 +118,79 @@ async def test_resolve_member_names_without_config(stores):
     member_ids = ["hex1", "hex2", "hex3"]
     members = [{"member_id": mid} for mid in member_ids]
 
-    resolved = _resolve_member_names(members, None)
+    resolved = await _resolve_member_names(members, None)
 
     assert resolved == set(member_ids)
+
+
+@pytest.mark.asyncio
+async def test_resolve_member_names_with_registry_agent(tmp_path):
+    """_resolve_member_names resolves a registry-backed agent absent from
+    config.agents to its registry handle (CodeRabbit #4373 item 2)."""
+    from tinyagentos.agent_registry_store import AgentRegistryStore
+    from tinyagentos.projects.a2a import _resolve_member_names
+
+    registry = AgentRegistryStore(tmp_path / "reg-resolve.db")
+    await registry.init()
+    try:
+        reg = await registry.register(
+            framework="openclaw", display_name="ext-bot",
+            user_id="u", origin="external-selfjoin", handle="ext-bot",
+        )
+        await registry.set_status(reg["canonical_id"], "active")
+
+        config = _config(_agent("alice", "111111111111"))
+        members = [
+            {"member_id": "111111111111", "member_kind": "native"},
+            {"member_id": reg["canonical_id"], "member_kind": "native"},
+        ]
+        resolved = await _resolve_member_names(members, config, registry)
+
+        assert resolved == {"alice", "ext-bot"}
+    finally:
+        await registry.close()
+
+
+@pytest.mark.asyncio
+async def test_resolve_member_names_keeps_human_members(stores):
+    """_resolve_member_names keeps human members under their contact id
+    even with a real config (CodeRabbit #4373 item 3)."""
+    from tinyagentos.projects.a2a import _resolve_member_names
+
+    config = _config(_agent("alice", "111111111111"))
+    members = [
+        {"member_id": "111111111111", "member_kind": "native"},
+        {"member_id": "contact-1", "member_kind": "human"},
+        {"member_id": "deadbeefcafe", "member_kind": "native"},
+    ]
+    resolved = await _resolve_member_names(members, config)
+
+    assert resolved == {"alice", "contact-1"}
+
+
+@pytest.mark.asyncio
+async def test_resolve_member_names_registry_failure_drops_member():
+    """_resolve_member_names treats a registry lookup that raises (e.g. an
+    uninitialised store) as no match, so one unusable registry cannot fail
+    the whole channel sync (CodeRabbit #4373 follow-up: the decisions
+    project_create path hit RuntimeError 'AgentRegistryStore not
+    initialised' and ensure_a2a_channel failed silently)."""
+    from tinyagentos.projects.a2a import _resolve_member_names
+
+    class _RaisingRegistry:
+        async def get(self, canonical_id):
+            raise RuntimeError("AgentRegistryStore not initialised")
+
+    config = _config(_agent("alice", "111111111111"))
+    members = [
+        {"member_id": "111111111111", "member_kind": "native"},
+        {"member_id": "deadbeefcafe", "member_kind": "native"},
+    ]
+    resolved = await _resolve_member_names(
+        members, config, _RaisingRegistry()
+    )
+
+    assert resolved == {"alice"}
 
 
 @pytest.mark.asyncio

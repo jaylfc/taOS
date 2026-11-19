@@ -174,6 +174,7 @@ async def create_project(
             request.app.state.project_store,
             p["id"],
             config=getattr(request.app.state, "config", None),
+            agent_registry=getattr(request.app.state, "agent_registry", None),
         )
     except Exception:
         logger.warning("a2a ensure failed for new project %s", p.get("id"), exc_info=True)
@@ -405,6 +406,7 @@ async def add_member(
             request.app.state.project_store,
             project_id,
             config=getattr(request.app.state, "config", None),
+            agent_registry=getattr(request.app.state, "agent_registry", None),
         )
     except Exception:
         logger.warning("a2a ensure failed for project %s on add_member", project_id, exc_info=True)
@@ -465,6 +467,7 @@ async def set_project_lead(
             pstore,
             project_id,
             config=getattr(request.app.state, "config", None),
+            agent_registry=getattr(request.app.state, "agent_registry", None),
         )
     except Exception:
         logger.warning("a2a ensure failed for project %s on set_lead", project_id, exc_info=True)
@@ -568,6 +571,7 @@ async def remove_member(
             request.app.state.project_store,
             project_id,
             config=getattr(request.app.state, "config", None),
+            agent_registry=getattr(request.app.state, "agent_registry", None),
         )
     except Exception:
         logger.warning("a2a ensure failed for project %s on remove_member", project_id, exc_info=True)

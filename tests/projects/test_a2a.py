@@ -259,6 +259,60 @@ async def test_ensure_drops_unknown_member_ids_silently(stores):
 
 
 @pytest.mark.asyncio
+async def test_ensure_resolves_registry_agent_absent_from_config(stores, tmp_path):
+    """ensure_a2a_channel keeps a registry-backed agent absent from
+    config.agents, under its registry handle (CodeRabbit #4373 item 2)."""
+    from tinyagentos.agent_registry_store import AgentRegistryStore
+
+    project_store, channel_store = stores
+    p = await project_store.create_project(
+        name="P", slug="registry-ensure", created_by="u1"
+    )
+
+    registry = AgentRegistryStore(tmp_path / "reg-ensure.db")
+    await registry.init()
+    try:
+        reg = await registry.register(
+            framework="openclaw", display_name="ext-bot",
+            user_id="u", origin="external-selfjoin", handle="ext-bot",
+        )
+        await registry.set_status(reg["canonical_id"], "active")
+
+        config = _config(_agent("alice", "111111111111"))
+        await project_store.add_member(p["id"], "111111111111", member_kind="native")
+        await project_store.add_member(
+            p["id"], reg["canonical_id"], member_kind="native"
+        )
+
+        ch = await ensure_a2a_channel(
+            channel_store, project_store, p["id"], config=config,
+            agent_registry=registry,
+        )
+
+        assert sorted(ch["members"]) == ["alice", "ext-bot"]
+    finally:
+        await registry.close()
+
+
+@pytest.mark.asyncio
+async def test_ensure_keeps_human_member_with_real_config(stores):
+    """ensure_a2a_channel keeps an accepted human collaborator in the
+    channel when a real config is in use (CodeRabbit #4373 item 3)."""
+    project_store, channel_store = stores
+    p = await project_store.create_project(
+        name="P", slug="human-ensure", created_by="u1"
+    )
+
+    config = _config(_agent("alice", "111111111111"))
+    await project_store.add_member(p["id"], "111111111111", member_kind="native")
+    await project_store.add_member(p["id"], "contact-1", member_kind="human")
+
+    ch = await ensure_a2a_channel(channel_store, project_store, p["id"], config=config)
+
+    assert sorted(ch["members"]) == ["alice", "contact-1"]
+
+
+@pytest.mark.asyncio
 async def test_ensure_diff_computed_in_name_space(stores):
     """When a project gains a new member, the diff is computed in name-space so
     there is no spurious add/remove of the hex ID that was previously in the

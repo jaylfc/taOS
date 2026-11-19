@@ -1534,6 +1534,7 @@ async def approve_request_record(
                             pstore,
                             binding_project,
                             config=getattr(request.app.state, "config", None),
+                            agent_registry=getattr(request.app.state, "agent_registry", None),
                         )
             except Exception:  # noqa: BLE001 - membership is best-effort, never blocks approval
                 logger.warning(
@@ -1817,6 +1818,7 @@ async def _undo_lost_approval(
                 pstore,
                 binding_project,
                 config=getattr(request.app.state, "config", None),
+                agent_registry=getattr(request.app.state, "agent_registry", None),
             )
         except Exception:  # noqa: BLE001 - never mask the caller's 409
             logger.warning(
@@ -2074,6 +2076,7 @@ async def add_agent_to_project(
                         pstore,
                         project_id,
                         config=getattr(request.app.state, "config", None),
+                        agent_registry=getattr(request.app.state, "agent_registry", None),
                     )
         except Exception:  # noqa: BLE001 - membership is best-effort
             logger.warning(
@@ -2098,6 +2101,7 @@ async def add_agent_to_project(
                     pstore,
                     project_id,
                     config=getattr(request.app.state, "config", None),
+                    agent_registry=getattr(request.app.state, "agent_registry", None),
                 )
         except Exception:  # noqa: BLE001 - membership sync is best-effort
             logger.warning(
@@ -2285,6 +2289,7 @@ async def revoke_agent_scopes_from_project(
                 pstore,
                 project_id,
                 config=getattr(request.app.state, "config", None),
+                agent_registry=getattr(request.app.state, "agent_registry", None),
             )
         except Exception:  # noqa: BLE001 - membership sync is best-effort
             logger.warning(
