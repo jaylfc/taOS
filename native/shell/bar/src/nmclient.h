@@ -113,7 +113,7 @@ private:
     void loadKnown();
     void scheduleRebuild();
     void rebuild();
-    void fail(const QString &ssid, uint reason);
+    void fail(QString ssid, uint reason);
     void addAndActivate(const QString &ssid, const QString &password, bool hidden, const Ap *ap);
     void setError(const QString &t);
     void announce(const QString &t) { emit announcement(t); }

@@ -244,10 +244,45 @@ prefix sets `LD_LIBRARY_PATH` and friends. `TAOS_SHELL_BIN_DIR` says where the
 component binaries are (default: next to the script, then `PATH`);
 `TAOS_SHELL_ARGS_TAOS_BAR="--height 48"` passes arguments to a component.
 
+## Network menu (Wi-Fi, Ethernet, Bluetooth)
+
+Clicking the network icon opens a frosted panel under it (a layer-shell surface
+on the OVERLAY layer covering the output, so a click outside, or Escape, closes
+it; Tab and the arrow keys move between rows, Enter or Space activates, Delete
+forgets or disconnects). It talks D-Bus from C++ (QtDBus), never through
+`nmcli` or `bluetoothctl`, and everything is signal driven: nothing polls while
+the menu is closed, and the scan, discovery and the Bluetooth pairing agent
+run only while it is open.
+
+| Section | Backend | Shows |
+|---|---|---|
+| Wi-Fi | NetworkManager (`org.freedesktop.NetworkManager`, system bus) | on/off switch, current network first with a tick, others by signal, padlock on secured ones, saved ones can be forgotten, "Other network..." for hidden SSIDs, password asked in a pill field and sent only over D-Bus |
+| Ethernet | NetworkManager, or `/sys/class/net` without it | "Connected, 1 Gbit/s", "Cable unplugged"; hidden when the machine has no wired port |
+| Bluetooth | BlueZ (`org.bluez`, system bus) | on/off switch, paired devices with connected state and battery, "Nearby" while discovering, pair; passkey confirm, PIN and permission requests are answered in the menu (a BlueZ `Agent1` registered while the menu is open) |
+
+The menu needs NetworkManager and BlueZ running. Without them it says so in
+plain words and does not fail: "Wi-Fi is not available on this computer",
+"This computer has no Wi-Fi adapter", "Bluetooth is not available on this
+computer", "This computer has no Bluetooth adapter". Without NetworkManager the
+bar icon falls back to the `/sys` reading (and polls it every 5 s, as before),
+and Ethernet still shows from `/sys`. Passwords, PSKs and link keys are never
+logged; BlueZ keeps the link keys itself.
+
+Permissions (Debian 13, NetworkManager 1.52): scanning and the Wi-Fi switch are
+allowed for the active local user; saving a connection needs
+`settings.modify.system`, which Debian's polkit rule grants to local active
+sessions of members of `sudo` or `netdev`. Anyone else gets "This account is
+not allowed to join Wi-Fi networks on this computer". BlueZ has no polkit
+policy. The compositor does not blur behind layer surfaces, so the panel tint is
+denser than the greeter's (`MenuPanel.qml`, `tintAlpha`).
+
+Tests: `test_nmclient` and `test_bluezclient` run the real clients against fake
+NetworkManager and BlueZ services on a private `dbus-daemon --session` started
+by the test. `TAOS_BAR_DBUS_ADDRESS` points the bar at such a bus (demos).
+
 ## Stubbed or not done yet
 
 No focused-window name or group chip (the slot is reserved), no notification
-UI, no real launcher, no volume control (click only refreshes), no Wi-Fi
-signal strength or SSID, no blur (the compositor does not blur behind layer
-surfaces), network state is polled rather than netlink driven, `screen-off` and
+UI, no real launcher, no volume control (click only refreshes), no blur (the compositor does not blur behind layer
+surfaces), `screen-off` and
 `screen-on` are not implemented, and the bar is not hidden for fullscreen apps.

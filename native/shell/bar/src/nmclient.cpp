@@ -2,6 +2,7 @@
 
 #include <QDBusObjectPath>
 #include <QDBusVariant>
+#include <QLocale>
 #include <QUuid>
 #include <algorithm>
 
@@ -305,7 +306,7 @@ void NmClient::onDeviceState(const QDBusMessage &m) {
             m_attemptSsid.clear(); m_attemptConn.clear(); m_attemptCreated = false;
             m_error.clear();
             emit errorChanged();
-            announce(tr("Connected to %1").arg(s));
+            announce(tr("Connected to %1").arg(q(s)));
         } else if (ns == StFailed || (ns == StDisconnected && os >= StPrepare && os <= StSecondaries)) {
             fail(m_attemptSsid, reason);
         }
@@ -313,7 +314,7 @@ void NmClient::onDeviceState(const QDBusMessage &m) {
     scheduleRebuild();
 }
 
-void NmClient::fail(const QString &ssid, uint reason) {
+void NmClient::fail(QString ssid, uint reason) {
     QString text;
     bool reprompt = false;
     if (authReason(reason)) {
@@ -447,7 +448,7 @@ void NmClient::scan() {
 }
 
 void NmClient::setWifiEnabled(bool on) {
-    setProperty(m_bus, m_service, QString::fromLatin1(kRoot), QString::fromLatin1(kNm), QStringLiteral("WirelessEnabled"), on,
+    dbusutil::setProperty(m_bus, m_service, QString::fromLatin1(kRoot), QString::fromLatin1(kNm), QStringLiteral("WirelessEnabled"), on,
                 this, [this, on](const QDBusMessage &r) {
                     if (isError(r)) {
                         setError(tr("This account is not allowed to turn Wi-Fi on or off."));

@@ -1,5 +1,6 @@
 #include "dbusutil.h"
 
+#include <QDBusMetaType>
 #include <QDBusPendingReply>
 #include <QDBusVariant>
 

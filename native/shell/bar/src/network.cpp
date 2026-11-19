@@ -3,6 +3,7 @@
 #include "nmclient.h"
 
 #include <QDir>
+#include <QLocale>
 #include <QFile>
 #include <QFileInfo>
 #include <QSet>

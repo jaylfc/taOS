@@ -386,7 +386,7 @@ void BluezClient::unregisterAgent() {
 
 void BluezClient::setPowered(bool on) {
     if (m_adapter.isEmpty()) return;
-    setProperty(m_bus, m_service, m_adapter, QString::fromLatin1(kAdapter), QStringLiteral("Powered"), on, this,
+    dbusutil::setProperty(m_bus, m_service, m_adapter, QString::fromLatin1(kAdapter), QStringLiteral("Powered"), on, this,
                 [this, on](const QDBusMessage &r) {
                     if (isError(r)) { setError(tr("This account is not allowed to turn Bluetooth on or off.")); return; }
                     m_powered = on;
@@ -420,7 +420,7 @@ void BluezClient::pair(const QString &path) {
             }
         }
         // Paired: trust it so it may reconnect by itself, then connect now.
-        setProperty(m_bus, m_service, path, QString::fromLatin1(kDevice), QStringLiteral("Trusted"), true, this);
+        dbusutil::setProperty(m_bus, m_service, path, QString::fromLatin1(kDevice), QStringLiteral("Trusted"), true, this);
         emit announcement(tr("Paired with %1").arg(q(name)));
         connectDevice(path);
     }, 90000);

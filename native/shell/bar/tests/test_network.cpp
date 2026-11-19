@@ -72,6 +72,27 @@ private slots:
         mk(d.path(), "eth0", "unknown", false, true, "1");
         QCOMPARE(Network::read(d.path()).kind, Network::Wired);
     }
+    void ethernetCableUnplugged() {
+        QTemporaryDir d;
+        mk(d.path(), "enp3s0", "down", false);
+        const auto e = Network::readEthernet(d.path());
+        QVERIFY(e.present);
+        QCOMPARE(e.text, QStringLiteral("Cable unplugged"));
+    }
+    void ethernetConnectedWithSpeed() {
+        QTemporaryDir d;
+        mk(d.path(), "enp3s0", "up", false);
+        QFile f(d.path() + "/sys/class/net/enp3s0/speed");
+        f.open(QIODevice::WriteOnly);
+        f.write("1000\n");
+        f.close();
+        QCOMPARE(Network::readEthernet(d.path()).text, QStringLiteral("Connected, 1 Gbit/s"));
+    }
+    void noEthernetHardware() {
+        QTemporaryDir d;
+        mk(d.path(), "wlan0", "up", true);
+        QVERIFY(!Network::readEthernet(d.path()).present);
+    }
     void kindNames() {
         QCOMPARE(Network::kindName(Network::Wired), QStringLiteral("wired"));
         QCOMPARE(Network::kindName(Network::Wifi), QStringLiteral("wifi"));
