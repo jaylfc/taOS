@@ -25,7 +25,7 @@ Security notes
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Coroutine, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -334,6 +334,36 @@ def _get_approve_lock(request: Request, request_id: str) -> asyncio.Lock:
     if request_id not in locks:
         locks[request_id] = asyncio.Lock()
     return locks[request_id]
+
+
+async def _await_cleanup(coro: Coroutine[Any, Any, None]) -> None:
+    """Run an approval-undo coroutine to completion, even if the current
+    task is cancelled again while waiting.
+
+    ``asyncio.shield`` alone does not give this: a second cancellation
+    interrupts the shielded await and returns control to the caller
+    while the cleanup keeps running detached — and the approve route
+    releases the per-request lock as soon as the handler returns, so a
+    retry could commit an approval in the window before the detached
+    cleanup revokes its grants. Keep a strong reference to the cleanup
+    task and keep waiting through repeated cancellations; the caller
+    re-raises its own CancelledError once this returns, so cancellation
+    is still propagated — just after the cleanup has finished, while
+    the lock is still held. A cleanup failure is dropped here: the undo
+    logs its own steps and must never mask the caller's cancellation.
+    """
+    task = asyncio.ensure_future(coro)
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            continue
+        except Exception:  # noqa: BLE001 - cleanup is best-effort
+            break
+    if task.done() and not task.cancelled():
+        # Retrieve any cleanup exception so it is not reported as an
+        # un-retrieved task exception; the undo has already logged it.
+        task.exception()
 
 
 async def _resolve_agent_identity(request: Request, identity_claim: str, *, strict: bool = False) -> str:
@@ -1198,9 +1228,11 @@ async def approve_request_record(
                 # CancelledError is a BaseException, so the except
                 # Exception below would never see it: a cancellation
                 # landing mid-writes would leave the half-applied
-                # approval behind. Run the same undo, shielded so the
-                # cleanup itself is not cancelled, then re-raise.
-                await asyncio.shield(_undo_reuse_writes())
+                # approval behind. Run the same undo and wait for it to
+                # complete — a further cancellation must not release
+                # the request lock while the cleanup is still running —
+                # then re-raise.
+                await _await_cleanup(_undo_reuse_writes())
                 raise
             except Exception:
                 # A failure part-way through the writes must not leave a
@@ -1347,10 +1379,11 @@ async def approve_request_record(
         # CancelledError is a BaseException, so the except Exception
         # below would never see it: a cancellation landing after
         # set_status would leave the identity active with no undo. Run
-        # the same undo as a failure, shielded so the cleanup itself is
-        # not cancelled, then re-raise.
+        # the same undo as a failure and wait for it to complete — a
+        # further cancellation must not release the request lock while
+        # the cleanup is still running — then re-raise.
         if canonical_id is not None:
-            await asyncio.shield(
+            await _await_cleanup(
                 _undo_lost_approval(
                     request,
                     record_id=record["id"],
