@@ -450,6 +450,54 @@ def _jwt_dispatch(grants_list, *, record=None, payload=None):
         return _run_dispatch(req, mgr)
 
 
+def _jwt_dispatch_expiring_during_lookup(*, expires_in_s: int, advance_s: int):
+    """Registry-JWT dispatch where the grants lookup advances the clock.
+
+    The middleware's clock is faked via a mutable cell; the list_grants
+    stub moves the cell forward before returning, simulating a lookup
+    that straddles the grant's expiry.
+    """
+    from datetime import datetime as _real_datetime
+    from datetime import timedelta, timezone
+
+    t0 = _real_datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    clock = {"now": t0}
+
+    class _FakeDatetime(_real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock["now"]
+
+    grants_list = [
+        {
+            "scope": "cluster_read",
+            "expires_at": (t0 + timedelta(seconds=expires_in_s)).isoformat(),
+        }
+    ]
+
+    async def _list_grants(_canonical_id):
+        clock["now"] = t0 + timedelta(seconds=advance_s)
+        return grants_list
+
+    registry = AsyncMock()
+    registry.get = AsyncMock(return_value={"status": "active", "token_min_iat": 0})
+    grants = AsyncMock()
+    grants.list_grants = AsyncMock(side_effect=_list_grants)
+    req = _make_request(headers={"authorization": "Bearer <redacted>"})
+    with (
+        patch(
+            "tinyagentos.agent_token_auth.verify_registry_token",
+            return_value={"sub": "agent-20260101-000000", "principal_type": "agent"},
+        ),
+        patch.object(am, "_get_keypair", return_value=(b"priv", b"pub")),
+        patch.object(am, "_get_store", return_value=registry),
+        patch.object(am, "_get_grants_store", return_value=grants),
+        patch.object(am, "_enforce_rotation_cutoff", return_value=None),
+        patch.object(am, "datetime", _FakeDatetime),
+    ):
+        return _run_dispatch(req, _default_auth_mgr())
+
+
 class TestExemptGetClusterReadScope:
     def test_jwt_with_cluster_read_gets_cluster_read_view(self):
         out = _jwt_dispatch([{"scope": "cluster_read", "expires_at": None}])
@@ -475,6 +523,23 @@ class TestExemptGetClusterReadScope:
         assert out.state_flags["cluster_read_view"] is None
         assert out.state_flags["headless_full_view"] is None
         assert out.state_flags["via"] == "exempt"
+
+    def test_grant_expiring_during_lookup_does_not_qualify(self):
+        # The authorization time must be read AFTER the awaited grants
+        # lookup (CodeRabbit, PR #4370): a grant that expires while
+        # list_grants is in flight must not qualify against a timestamp
+        # captured before the lookup began.
+        out = _jwt_dispatch_expiring_during_lookup(expires_in_s=30, advance_s=60)
+        assert out.state_flags["cluster_read_view"] is None
+        assert out.state_flags["headless_full_view"] is None
+        assert out.state_flags["via"] == "exempt"
+
+    def test_grant_still_unexpired_after_lookup_qualifies(self):
+        # Companion: the lookup advances the clock, but the grant outlives
+        # the advanced time, so it still qualifies.
+        out = _jwt_dispatch_expiring_during_lookup(expires_in_s=120, advance_s=60)
+        assert out.state_flags["cluster_read_view"] is True
+        assert out.state_flags["via"] == "registry_jwt"
 
     def test_jwt_with_cluster_read_but_inactive_agent_stays_anonymous(self):
         out = _jwt_dispatch(
@@ -576,7 +641,17 @@ def _make_fully_populated_worker() -> WorkerInfo:
             {
                 "name": "ollama:11434",
                 "type": "ollama",
+                # The backend's own url is the worker's LAN address under
+                # another key; kv_quant_support / available_models are
+                # likewise outside the cluster_read safe key set (jaylfc,
+                # PR #4370 round 3).
+                "url": "http://192.168.1.50:11434",
+                "capabilities": ["chat", "embed"],
+                "models": ["llama3.1"],
                 "loaded_models": ["llama3.1"],
+                "status": "running",
+                "kv_quant_support": {"k": ["fp16"], "v": ["fp16"]},
+                "available_models": [{"id": "llama3.1", "size_gb": 4.7}],
             }
         ],
         models=["llama3.1"],
@@ -636,9 +711,39 @@ class TestListWorkersClusterReadAllowlist:
         assert w["kind"] == "worker"
         assert w["capabilities"] == ["chat", "embed"]
         assert w["backends"][0]["loaded_models"] == ["llama3.1"]
+        # Backend entries are filtered to their own safe key set (exact
+        # dict equality): the backend url -- the LAN address again -- plus
+        # kv_quant_support and available_models must not reach this tier,
+        # while the safe keys survive with their values.
+        assert w["backends"] == [
+            {
+                "name": "ollama:11434",
+                "type": "ollama",
+                "capabilities": ["chat", "embed"],
+                "models": ["llama3.1"],
+                "loaded_models": ["llama3.1"],
+                "status": "running",
+            }
+        ]
         assert w["resources"] == ["gpu-cuda-0"]
         assert w["free_vram_mb"] == 8192
         assert w["models"] == ["llama3.1"]
+
+
+    def test_full_view_keeps_backend_entries_unchanged(self):
+        # The backend filtering applies ONLY to the cluster_read tier:
+        # the full (headless) view still receives backend entries exactly
+        # as the worker reported them, url included.
+        app = _route_app(
+            headless_full_view=True,
+            worker=_make_fully_populated_worker(),
+        )
+        with TestClient(app) as client:
+            r = client.get("/api/cluster/workers")
+        assert r.status_code == 200
+        w = r.json()[0]
+        assert w["backends"][0]["url"] == "http://192.168.1.50:11434"
+        assert w["backends"][0]["kv_quant_support"] == {"k": ["fp16"], "v": ["fp16"]}
 
 
 # --- taOS #3227 follow-up: real-token end-to-end ----------------------------

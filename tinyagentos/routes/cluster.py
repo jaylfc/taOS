@@ -319,6 +319,19 @@ class MoveRequest(BaseModel):
     to_worker: str
 
 
+# The cluster_read tier also filters each backend entry: a backend entry
+# carries its own url (the worker's LAN address), which the tier's
+# top-level allowlist exists to withhold (jaylfc, PR #4370). Only these
+# keys may reach a cluster_read caller.
+_CLUSTER_READ_BACKEND_KEYS = (
+    "name", "type", "capabilities", "models", "loaded_models", "status",
+)
+
+
+def _cluster_read_backend(backend: dict) -> dict:
+    return {key: backend[key] for key in _CLUSTER_READ_BACKEND_KEYS if key in backend}
+
+
 @router.get("/api/cluster/workers")
 async def list_workers(request: Request):
     is_admin = getattr(request.state, "is_admin", False)
@@ -367,7 +380,9 @@ async def list_workers(request: Request):
                 "tier_id": d.get("tier_id", ""),
                 "kind": d.get("kind", "worker"),
                 "capabilities": d.get("capabilities", []),
-                "backends": d.get("backends", []),
+                "backends": [
+                    _cluster_read_backend(b) for b in d.get("backends", [])
+                ],
                 "resources": d.get("resources", []),
                 "free_vram_mb": d.get("free_vram_mb"),
                 "models": d.get("models", []),

@@ -1052,8 +1052,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
                                     # list. Without a qualifying grant it falls
                                     # through to the anonymous view, never a 401.
                                     grants = _get_grants_store(request)
-                                    now = datetime.now(UTC)
                                     all_grants = await grants.list_grants(canonical_id)
+                                    # Read the authorization time AFTER the
+                                    # awaited lookup: a grant that expires
+                                    # while list_grants is in flight must not
+                                    # qualify against a timestamp captured
+                                    # before it (CodeRabbit, PR #4370).
+                                    now = datetime.now(UTC)
                                     has_agents_read = any(
                                         g.get("scope") == AGENTS_READ
                                         and _grant_unexpired(g.get("expires_at"), now)
