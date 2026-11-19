@@ -47,7 +47,11 @@ done
 # compositor comes up immediately and shows the boot wordmark as its background
 # while the server finishes starting. See sway-kiosk.conf.
 
+# The two IME flags let a compositor keyboard (squeekboard, opt-in) auto-show on
+# text focus; they do nothing when none runs.
 BROWSER_ARGS="--ozone-platform=wayland \
+--enable-wayland-ime \
+--wayland-text-input-version=3 \
 --kiosk \
 --no-first-run \
 --no-default-browser-check \

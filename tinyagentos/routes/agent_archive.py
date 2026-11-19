@@ -167,7 +167,7 @@ async def archive_agent_fully(request: Request, name: str) -> dict:
         # Always revoke the agent's credentials first; stop if the local token
         # cannot be revoked (see _revoke_gateway_keys).
         try:
-            _revoke_gateway_keys(request, slug, agent_id)
+            await asyncio.to_thread(_revoke_gateway_keys, request, slug, agent_id)
         except Exception as exc:  # noqa: BLE001
             logger.warning("archive(orphan): credential revoke failed for %s: %s", slug, exc)
             return {"error": f"archive failed: credential revoke failed: {exc}", "status_code": 500}
@@ -203,8 +203,11 @@ async def archive_agent_fully(request: Request, name: str) -> dict:
                     )
             config.agents = [a for a in config.agents if a["name"] != name]
             await save_config_locked(config, config.config_path)
+            _deploy_tasks = getattr(request.app.state, "deploy_tasks", None)
+            if _deploy_tasks is not None:
+                _deploy_tasks.pop(slug, None)
             try:
-                request.app.state.auth.unbind_local_token_agent(slug)
+                await asyncio.to_thread(request.app.state.auth.unbind_local_token_agent, slug)
             except Exception as exc:  # noqa: BLE001 - best-effort revocation
                 logger.warning("archive(orphan): unbind local token for %s failed: %s", slug, exc)
             return {
@@ -229,8 +232,11 @@ async def archive_agent_fully(request: Request, name: str) -> dict:
         config.agents = [a for a in config.agents if a["name"] != name]
         config.archived_agents.append(archive_entry)
         await save_config_locked(config, config.config_path)
+        _deploy_tasks = getattr(request.app.state, "deploy_tasks", None)
+        if _deploy_tasks is not None:
+            _deploy_tasks.pop(slug, None)
         try:
-            request.app.state.auth.unbind_local_token_agent(slug)
+            await asyncio.to_thread(request.app.state.auth.unbind_local_token_agent, slug)
         except Exception as exc:  # noqa: BLE001 - best-effort revocation
             logger.warning("archive(orphan): unbind local token for %s failed: %s", slug, exc)
         return {
@@ -343,7 +349,7 @@ async def archive_agent_fully(request: Request, name: str) -> dict:
     #    process. A failed local-token revoke stops here, before the config
     #    moves the agent out of agents, so the archive can be retried.
     try:
-        _revoke_gateway_keys(request, slug, agent_id)
+        await asyncio.to_thread(_revoke_gateway_keys, request, slug, agent_id)
     except Exception as exc:  # noqa: BLE001
         logger.warning("archive: credential revoke failed for %s: %s", slug, exc)
         return {"error": f"archive failed: credential revoke failed: {exc}", "status_code": 500}
@@ -389,6 +395,10 @@ async def archive_agent_fully(request: Request, name: str) -> dict:
     config.agents = [a for a in config.agents if a["name"] != name]
     config.archived_agents.append(archive_entry)
     await save_config_locked(config, config.config_path)
+
+    _deploy_tasks = getattr(request.app.state, "deploy_tasks", None)
+    if _deploy_tasks is not None:
+        _deploy_tasks.pop(slug, None)
 
     return {
         "status": "archived",
@@ -470,7 +480,9 @@ async def _restore_archived(request: Request, archive_id: str):
     #     records, and the restore can be retried.
     try:
         from tinyagentos.auth import AuthManager
-        local_token = AuthManager(request.app.state.data_dir).mint_agent_local_token(final_slug)
+        local_token = await asyncio.to_thread(
+            AuthManager(request.app.state.data_dir).mint_agent_local_token, final_slug
+        )
         env_result = await set_env(container, "TAOS_LOCAL_TOKEN", local_token)
         if not env_result.get("success"):
             raise RuntimeError(
@@ -600,6 +612,10 @@ async def _restore_archived(request: Request, archive_id: str):
     config.archived_agents = [a for a in config.archived_agents if a.get("id") != archive_id]
     await save_config_locked(config, config.config_path)
 
+    _deploy_tasks = getattr(request.app.state, "deploy_tasks", None)
+    if _deploy_tasks is not None:
+        _deploy_tasks.pop(final_slug, None)
+
     return {
         "status": "restored",
         "id": archive_id,
@@ -700,7 +716,9 @@ async def purge_archived(request: Request, archive_id: str):
     if original_name and not any(a.get("name") == original_name for a in config.agents):
         try:
             from tinyagentos.auth import AuthManager
-            AuthManager(data_dir).unbind_local_token_agent(original_name)
+            await asyncio.to_thread(
+                AuthManager(data_dir).unbind_local_token_agent, original_name
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("purge: local token revoke failed for %s: %s", original_name, exc)
             from fastapi.responses import JSONResponse
@@ -726,11 +744,18 @@ async def purge_archived(request: Request, archive_id: str):
             )
         else:
             try:
-                request.app.state.auth.unbind_local_token_agent(archived_slug)
+                await asyncio.to_thread(
+                    request.app.state.auth.unbind_local_token_agent, archived_slug
+                )
             except Exception as exc:  # noqa: BLE001 - best-effort revocation
                 logger.warning(
                     "purge: unbind local token for %s failed: %s",
                     archived_slug, exc,
                 )
+
+    _deploy_tasks = getattr(request.app.state, "deploy_tasks", None)
+    if _deploy_tasks is not None:
+        if not any(a.get("name") == original_name for a in config.agents):
+            _deploy_tasks.pop(original_name, None)
 
     return {"status": "purged", "id": archive_id}

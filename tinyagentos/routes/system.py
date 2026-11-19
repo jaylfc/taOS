@@ -131,9 +131,12 @@ async def _do_restart(app_state) -> None:
                 except Exception:
                     pass
 
-    # 2. Docker
+    # 2. Docker — exit non-zero so the container restart policy relaunches
+    # us on the new code (#203). `always`/`unless-stopped` restart on any
+    # exit, but `on-failure` only fires on a non-zero code; exiting 0 there
+    # would leave the updated container stopped.
     if os.path.exists("/.dockerenv"):
-        os._exit(0)
+        os._exit(1)
 
     # 2b. Darwin launchd helper bootstrap
     if sys.platform == "darwin":

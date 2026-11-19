@@ -1,0 +1,3 @@
+### Added
+
+- `POST /api/secrets` accepts a `write_once` boolean (default `false`). A write-once secret pins its encrypted value: `PUT /api/secrets/{name}` refuses any value change with 409 (metadata edits such as description, category, and grants still return 200), and `DELETE /api/secrets/{name}` refuses with 409 unless an explicit `?force=true` admin query is passed. Rotation for the taosmd archive key is a NEW secret name (new key id), never an in-place value change, so every span encrypted under the old key id stays readable.

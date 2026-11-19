@@ -117,3 +117,26 @@ class TestDevicePairRequests:
         assert poll["status"] == "expired"
         assert "scoped_token" not in poll and "device" not in poll
         assert await app.state.device_store.list_for_user(decision["user_id"]) == []
+
+
+@pytest.mark.asyncio
+class TestPairRequestNotificationFailure:
+    async def test_failed_bell_notification_is_logged_not_swallowed(
+        self, client, app, monkeypatch, caplog
+    ):
+        """#2485 item 13: the best-effort bell notification must not fail the
+        created request, but a failure must be logged, not silently swallowed
+        by a bare ``except Exception: pass``."""
+        import logging
+
+        class _BoomNotifs:
+            async def add(self, **kwargs):
+                raise RuntimeError("bell store down")
+
+        monkeypatch.setattr(app.state, "notifications", _BoomNotifs())
+        with caplog.at_level(
+            logging.WARNING, logger="tinyagentos.routes.device_pair_requests"
+        ):
+            body = await _create(client)
+        assert body["pair_request_id"]
+        assert "could not record bell notification" in caplog.text
