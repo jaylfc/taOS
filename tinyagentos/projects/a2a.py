@@ -125,7 +125,11 @@ async def _resolve_member_names_detailed(
     names of members a successful lookup positively rejected — a
     non-active identity, or a handle colliding with a configured
     non-member: those names are confirmed removals even when another
-    member's lookup failed in the same pass.
+    member's lookup failed in the same pass. One exception: a name is
+    NOT confirmed when an unresolved member actively owns the same
+    handle (handles are unique only among active rows, so a rejected
+    row and an active identity can share one), or when that ownership
+    cannot be checked — removing it could evict the active owner.
     """
     by_id, by_name = _build_agent_lookups(config)
     if by_id is None:
@@ -218,6 +222,36 @@ async def _resolve_member_names_detailed(
             confirmed_absent.add(handle)
             continue
         resolved.add(handle)
+    if unresolved and confirmed_absent:
+        # A rejected row's handle is a confirmed removal only if no
+        # unresolved member owns that name. Handles are unique only
+        # among active rows (ux_agent_active_handle), so the revoked
+        # row processed above can share its handle with an active
+        # identity whose lookup just failed; removing the name would
+        # evict that active owner. Ask the registry who actively owns
+        # each confirmed handle: if the owner is an unresolved member,
+        # or ownership cannot be checked at all, the name is not
+        # confirmed and stays until a clean sync.
+        for handle in sorted(confirmed_absent):
+            try:
+                owner = await agent_registry.get_by_handle(handle)
+            except Exception:
+                logger.debug(
+                    "a2a: active-owner check for handle %r failed"
+                    " — treating the name as unconfirmed",
+                    handle,
+                    exc_info=True,
+                )
+                confirmed_absent.discard(handle)
+                continue
+            if owner is not None and owner.get("canonical_id") in unresolved:
+                logger.warning(
+                    "a2a: handle %r is actively owned by unresolved"
+                    " member %r — keeping the channel name until a"
+                    " clean sync",
+                    handle, owner.get("canonical_id"),
+                )
+                confirmed_absent.discard(handle)
     return resolved, unresolved, confirmed_absent
 
 

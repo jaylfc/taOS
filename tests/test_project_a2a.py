@@ -840,6 +840,19 @@ class _KeyedRegistry:
             raise RuntimeError("transient store error")
         return self._identities.get(canonical_id)
 
+    async def get_by_handle(self, handle, *, status="active"):
+        """Mirror AgentRegistryStore.get_by_handle: the oldest row with
+        this handle and status, or None, with the row's canonical_id.
+        A different query path from get(), so the per-id ``failing``
+        set does not apply."""
+        for cid, identity in self._identities.items():
+            if identity.get("handle") != handle:
+                continue
+            if status is not None and identity.get("status") != status:
+                continue
+            return {**identity, "canonical_id": cid}
+        return None
+
 
 def _identity(handle, status="active"):
     return {"handle": handle, "status": status, "display_name": handle}
@@ -960,3 +973,46 @@ async def test_ensure_removes_colliding_handle_when_another_lookup_fails(stores)
         agent_registry=failing,
     )
     assert ch["members"] == ["ext-bot"]
+
+
+@pytest.mark.asyncio
+async def test_ensure_keeps_shared_handle_when_active_owner_unresolved(stores):
+    """CodeRabbit on #4373 (4635400056): a revoked identity and an active
+    identity can share one handle -- ux_agent_active_handle covers only
+    active rows. When the revoked row's lookup succeeds, its handle
+    looks like a confirmed removal; but if the ACTIVE identity's lookup
+    fails in the same sync, removing the name would evict the active
+    owner, whose membership is still valid. The handle must be kept
+    until its ownership is fully resolved."""
+    project_store, channel_store = stores
+    p = await project_store.create_project(
+        name="P", slug="shared-handle-during-failure", created_by="u1"
+    )
+    await project_store.add_member(p["id"], "reg-cid-1", member_kind="native")
+    await project_store.add_member(p["id"], "reg-cid-2", member_kind="native")
+    config = _config(_agent("alice", "111111111111"))
+    registry = _KeyedRegistry(
+        {
+            "reg-cid-1": _identity("shared-bot", status="revoked"),
+            "reg-cid-2": _identity("shared-bot"),
+        }
+    )
+
+    ch = await ensure_a2a_channel(
+        channel_store, project_store, p["id"], config=config,
+        agent_registry=registry,
+    )
+    assert ch["members"] == ["shared-bot"]
+
+    failing = _KeyedRegistry(
+        {
+            "reg-cid-1": _identity("shared-bot", status="revoked"),
+            "reg-cid-2": _identity("shared-bot"),
+        },
+        failing={"reg-cid-2"},
+    )
+    ch = await ensure_a2a_channel(
+        channel_store, project_store, p["id"], config=config,
+        agent_registry=failing,
+    )
+    assert ch["members"] == ["shared-bot"]
