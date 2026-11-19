@@ -46,6 +46,18 @@ class TestReserveAgentSlug:
         assert set(results) == {"helper", "helper-2"}
 
     @pytest.mark.asyncio
+    async def test_suffixed_candidate_existing_in_config_is_skipped(self):
+        """With 'foo' reserved and 'foo-2' already a live agent, a second
+        'foo' request must skip both and return 'foo-3'."""
+        config = FakeConfig([{"name": "foo-2"}])
+
+        first = await reserve_agent_slug(config, "foo")
+        assert first == "foo"
+        second = await reserve_agent_slug(config, "foo")
+        assert second == "foo-3"
+        assert second not in {a["name"] for a in config.agents}
+
+    @pytest.mark.asyncio
     async def test_released_name_can_be_reserved_again(self):
         """A name that was reserved and then released should be available
         for reservation again."""
