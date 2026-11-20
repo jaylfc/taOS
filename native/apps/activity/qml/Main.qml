@@ -27,8 +27,13 @@ TaosWindow {
     palette.text: TaosStyle.text
     palette.base: TaosStyle.surface
 
-    ActivityEngine { id: engine; active: win.seen && win.signedIn }
-    ModelActivityFeed { id: theFeed; active: engine.active }
+    ActivityEngine { id: engine; objectName: "engine"; active: win.seen && win.signedIn }
+    ModelActivityFeed { id: theFeed; objectName: "feed"; active: engine.active }
+    // Navigation for the phone layout (also used by the screenshot harness).
+    function showProcesses() { if (nav.depth === 1) nav.push(processesPage) }
+    function showModelActivity() { if (nav.depth === 1) nav.push(activityPage) }
+    function back() { if (nav.depth > 1) nav.pop() }
+
     // Refresh when the window becomes the active one (the web app's focus hook).
     onActiveChanged: if (active && engine.active) engine.refresh()
 

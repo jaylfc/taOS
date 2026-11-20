@@ -15,7 +15,7 @@ ColumnLayout {
     RowLayout {
         Layout.fillWidth: true
         spacing: 10
-        Txt { text: qsTr("PID"); font.pixelSize: 10; color: TaosStyle.textTertiary; Layout.preferredWidth: 52 }
+        Txt { text: qsTr("PID"); font.pixelSize: 10; color: TaosStyle.textTertiary; Layout.preferredWidth: 68 }
         Txt { text: qsTr("User"); font.pixelSize: 10; color: TaosStyle.textTertiary; Layout.preferredWidth: 72 }
         Txt { text: qsTr("Name"); font.pixelSize: 10; color: TaosStyle.textTertiary; Layout.fillWidth: true }
         Txt { text: qsTr("CPU"); font.pixelSize: 10; color: TaosStyle.textTertiary; horizontalAlignment: Text.AlignRight; Layout.preferredWidth: 48 }
@@ -31,7 +31,7 @@ ColumnLayout {
             spacing: 10
             Accessible.role: Accessible.Row
             Accessible.name: qsTr("%1, process %2, %3 percent CPU, %4").arg(modelData.name).arg(modelData.pid).arg(Math.round(modelData.cpu_percent)).arg(Fmt.mb(modelData.rss_mb))
-            Txt { text: modelData.pid; font.pixelSize: 12; color: TaosStyle.textTertiary; Layout.preferredWidth: 52 }
+            Txt { text: modelData.pid; font.pixelSize: 12; color: TaosStyle.textTertiary; Layout.preferredWidth: 68 }
             Txt { text: modelData.user; font.pixelSize: 12; color: TaosStyle.textSecondary; Layout.preferredWidth: 72 }
             Txt { text: modelData.name; font.pixelSize: 12; Layout.fillWidth: true }
             Txt { text: Math.round(modelData.cpu_percent) + "%"; font.pixelSize: 12; color: TaosStyle.textSecondary; horizontalAlignment: Text.AlignRight; Layout.preferredWidth: 48 }
