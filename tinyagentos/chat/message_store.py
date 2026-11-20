@@ -251,6 +251,29 @@ class ChatMessageStore(BaseStore):
                 return None
             return _parse(row, cursor.description)
 
+    async def find_message_by_metadata(
+        self,
+        channel_id: str,
+        key: str,
+        value: str,
+        author_id: str | None = None,
+        author_type: str | None = None,
+    ) -> dict | None:
+        sql = "SELECT * FROM chat_messages WHERE channel_id = ? AND json_extract(metadata, ?) = ?"
+        params = [channel_id, f"$.{key}", value]
+        if author_id is not None:
+            sql += " AND author_id = ?"
+            params.append(author_id)
+        if author_type is not None:
+            sql += " AND author_type = ?"
+            params.append(author_type)
+        sql += " LIMIT 1"
+        async with self._db.execute(sql, params) as cursor:
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            return _parse(row, cursor.description)
+
     async def get_messages(
         self,
         channel_id: str,
@@ -400,6 +423,9 @@ class ChatMessageStore(BaseStore):
         Existing blocks are kept first; new blocks are appended until the total
         reaches ``cap``. Any excess new blocks are dropped.
 
+        Blocks are matched by their ``id`` field if present, otherwise by their
+        full content. A block is only added if no existing block matches.
+
         Returns the resulting content_blocks list.
 
         This method holds ``self._content_lock`` for the duration of the read-
@@ -420,11 +446,30 @@ class ChatMessageStore(BaseStore):
                 except (json.JSONDecodeError, TypeError):
                     # If we can't parse or it's not a list, treat as empty
                     pass
+
+            # Build a set of existing block identifiers for idempotency
+            # Use 'id' field if present, otherwise use the entire block as a JSON string
+            def block_key(b: dict) -> str:
+                if isinstance(b, dict) and "id" in b:
+                    return f"id:{b['id']}"
+                return f"content:{json.dumps(b, sort_keys=True)}"
+
+            existing_keys = {block_key(b) for b in current}
+
+            # Filter new blocks to only add those not already present
+            to_add = []
+            for block in blocks:
+                key = block_key(block)
+                if key not in existing_keys:
+                    to_add.append(block)
+                    existing_keys.add(key)
+
             # Determine how many new blocks we can add without exceeding cap
             available = cap - len(current)
             if available < 0:
                 available = 0
-            to_add = blocks[:available]
+            to_add = to_add[:available]
+
             new_blocks = current + to_add
             # Write back
             await self._db.execute(

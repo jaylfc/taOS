@@ -61,10 +61,29 @@ class _FakeStore:
             current = self.messages[message_id].get("content_blocks") or []
             if not isinstance(current, list):
                 current = []
+
+        # Build a set of existing block identifiers for idempotency (match real store)
+        def block_key(b: dict) -> str:
+            if isinstance(b, dict) and "id" in b:
+                return f"id:{b['id']}"
+            return f"content:{json.dumps(b, sort_keys=True)}"
+
+        existing_keys = {block_key(b) for b in current}
+
+        # Filter new blocks to only add those not already present
+        to_add = []
+        for block in blocks:
+            key = block_key(block)
+            if key not in existing_keys:
+                to_add.append(block)
+                existing_keys.add(key)
+
+        # Determine how many new blocks we can add without exceeding cap
         available = cap - len(current)
         if available < 0:
             available = 0
-        to_add = blocks[:available]
+        to_add = to_add[:available]
+
         new_blocks = current + to_add
         # Only update if the message exists (real store's UPDATE would affect 0 rows if missing)
         if message_id in self.messages:
