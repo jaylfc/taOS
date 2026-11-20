@@ -913,6 +913,7 @@ class AuthManager:
                 return removed
         raise ValueError(f"user '{username}' not found")
 
+    @_serialized
     def check_pin(self, pin: str, username: str | None = None) -> tuple[bool, dict | None]:
         """Verify a PIN against the stored hash. Returns ``(ok, user_record)``.
 
@@ -921,6 +922,12 @@ class AuthManager:
         only it can see the request. Keeping the two apart makes the origin rule
         testable on its own and keeps this method honest about what it proves,
         which is solely "this PIN matches this account".
+
+        The hash read and the verify happen under the account-store lock, so a
+        concurrent ``set_pin``/``clear_pin`` cannot swap the hash out between the
+        read and the check. A login racing a PIN change must see one consistent
+        state or the other, never a hash from the new PIN verified against the
+        old.
         """
         record = self._pin_user(username)
         if record is None:
