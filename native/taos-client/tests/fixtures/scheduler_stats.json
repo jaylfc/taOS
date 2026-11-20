@@ -1,0 +1,1 @@
+{"submitted": 10, "completed": 8, "errors": 1, "rejected": 1, "active": 0, "resources": [{"name": "npu-rk3588", "platform": "linux", "runtime": "rknn", "runtime_version": "2.0", "concurrency": 1, "in_flight": 0, "tier": "npu", "capabilities": ["chat"], "potential_capabilities": []}]}

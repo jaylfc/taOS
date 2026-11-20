@@ -1,0 +1,1 @@
+{"tasks": [{"task_id": "t1", "capability": "chat", "submitter": "agent-a", "priority": 5, "resource": "npu-rk3588", "status": "complete", "submitted_at": 1, "started_at": 2, "completed_at": 3, "elapsed_seconds": 1.0, "error": null}, {"task_id": "t2", "capability": "embed", "status": "levitating"}]}

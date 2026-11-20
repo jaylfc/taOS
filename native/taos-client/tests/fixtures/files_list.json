@@ -1,0 +1,4 @@
+[
+  {"name": "docs", "path": "docs", "is_dir": true, "size": 0, "modified": 1760000000.5},
+  {"name": "a b.txt", "path": "docs/a b.txt", "is_dir": false, "size": 11, "modified": 1760000001.0, "mime": "text/plain"}
+]

@@ -1,0 +1,13 @@
+{"items": [
+  {"id": "dec_1", "from_agent": "agent-a", "project_id": "prj_1", "user_id": "usr_1", "question": "Which database?", "type": "single_select",
+   "options": [{"label": "Postgres", "value": "pg", "recommended": true, "rationale": "robust"}, {"label": "SQLite", "value": "sqlite", "recommended": false, "rationale": ""}],
+   "context": "", "priority": "blocking", "status": "pending", "answer": null, "created_at": 1760000000.25, "answered_at": null, "deadline": null,
+   "checkpoint_ref": null, "parent_decision_id": null, "timeline_id": null, "metadata": {}, "withdraw_reason": null, "withdrawn_at": null, "withdrawn_by": null,
+   "notes": [{"id": "note_1", "decision_id": "dec_1", "author": "usr_1", "source": "in_app", "text": "think about backups", "created_at": 1760000010.0}]},
+  {"id": "dec_2", "from_agent": "agent-b", "project_id": null, "user_id": "usr_1", "question": "Ship it?", "type": "approve_deny",
+   "options": [], "context": "release 1.0", "priority": "normal", "status": "answered",
+   "answer": {"value": "approve", "answered_by": "usr_1", "answered_at": 1760000500.0, "source": "in_app", "other_value": null, "note": "go"},
+   "created_at": "2026-11-14T10:00:00Z", "answered_at": 1760000500.0, "deadline": null, "parent_decision_id": "dec_0", "metadata": {"kind": "execution_gate"}, "notes": []},
+  {"id": "dec_3", "from_agent": "agent-c", "project_id": null, "user_id": "usr_1", "question": "Odd one", "type": "ranking",
+   "options": [], "priority": "someday", "status": "teleported", "created_at": 1, "brand_new_field": true}
+]}
