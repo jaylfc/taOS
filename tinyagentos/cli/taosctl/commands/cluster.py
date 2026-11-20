@@ -82,6 +82,8 @@ def register(subparsers) -> None:
     mp.add_argument("--item", required=True, help="Model id")
     mp.add_argument("--to", dest="to_worker", required=True, help="Target worker")
     mp.add_argument("--from", dest="from_worker", default=None, help="Source worker")
+    mp.add_argument("--wait", action="store_true", help="Wait for transfer to complete")
+    mp.add_argument("--timeout", type=int, default=300, help="Timeout in seconds when --wait is used")
     mp.set_defaults(func=_move)
 
     verbs.add_parser("promote-archived", help="Promote archived models to online workers (admin)") \
@@ -279,7 +281,36 @@ def _move(args, client):
     body = {"item": args.item, "to_worker": args.to_worker}
     if args.from_worker:
         body["from_worker"] = args.from_worker
-    return client.post("/api/cluster/move", body=body)
+    resp = client.post("/api/cluster/models/move", body=body)
+    # New endpoint returns 202 with job_id
+    if isinstance(resp, dict) and "job_id" in resp:
+        job_id = resp["job_id"]
+        if args.wait:
+            # Poll for completion
+            import time
+            deadline = time.time() + (args.timeout or 300)
+            while time.time() < deadline:
+                progress = client.get(f"/api/cluster/models/move/{job_id}")
+                if isinstance(progress, dict):
+                    status = progress.get("status")
+                    if status == "completed":
+                        print(f"Model move completed: {progress}")
+                        return progress
+                    if status == "failed":
+                        error = progress.get("error", "unknown")
+                        print(f"Model move failed: {error}")
+                        return {"error": error, "status": "failed"}
+                    # Print progress
+                    prog = progress.get("progress", 0)
+                    stage = progress.get("stage", "")
+                    print(f"Progress: {prog}% ({stage})")
+                time.sleep(2)
+            return {"error": "Timeout waiting for model move", "status": "timeout"}
+        else:
+            print(f"Model move started: job_id={job_id}")
+            return resp
+    # Old endpoint compatibility (returns 200 with status="moved")
+    return resp
 
 
 def _promote_archived(args, client):
