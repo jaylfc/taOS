@@ -70,7 +70,6 @@ describe("SettingsApp admin-only sections", () => {
     await waitFor(() => {
       expect(screen.queryByText("Updates")).not.toBeInTheDocument();
     });
-    expect(screen.queryByText("Users")).not.toBeInTheDocument();
     expect(screen.queryByText("Advanced")).not.toBeInTheDocument();
     // Demo mode changes the lock screen for everyone: admin-only.
     expect(within(nav).queryByText("Demo mode")).not.toBeInTheDocument();
@@ -366,5 +365,41 @@ describe("BackupSection restore", () => {
     });
     const input = screen.getByLabelText("Upload backup file");
     expect(input.getAttribute("accept")).toBe(".tar.gz,.tgz");
+  });
+});
+
+describe("Users section reachable by a member", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("shows the Users nav item and My Account card for a non-admin", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+      const url = String(input);
+      if (url.includes("/auth/status")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              configured: true,
+              authenticated: true,
+              user: { username: "m", is_admin: false },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+    render(<SettingsApp windowId="w1" />);
+    const nav = screen.getByRole("navigation", { name: "Settings sections" });
+
+    await waitFor(() => {
+      expect(within(nav).getByText("Users")).toBeInTheDocument();
+    });
+    fireEvent.click(within(nav).getByRole("button", { name: "Users" }));
+
+    expect(screen.getByRole("heading", { name: "My Account" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Change password" })).toBeInTheDocument();
+    expect(screen.queryByText("Team Members")).not.toBeInTheDocument();
   });
 });
