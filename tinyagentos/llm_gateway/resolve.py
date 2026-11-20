@@ -10,6 +10,9 @@ no second copy of the routing rules).
 chat model, which is the taOS agent's model preference (the "pick a model"
 step of first-run setup, ``PATCH /api/taos-agent/settings``). It is read on
 every request, so changing it takes effect immediately.
+
+The offline model (LFM3 1.7B on-device) is injected into the table when the
+user has enabled it in Settings. It is never the default.
 """
 from __future__ import annotations
 
@@ -17,6 +20,7 @@ from dataclasses import dataclass
 
 from tinyagentos import litellm_config
 from tinyagentos.llm_gateway.errors import model_not_found
+from tinyagentos.routes.offline_model import _build_offline_model_entry
 
 TAOS_DEFAULT = "taos-default"
 # desktop_settings preference that holds the default chat model; the same
@@ -57,18 +61,32 @@ def route_from_entry(entry: dict, name: str) -> Route:
     )
 
 
-def routing_table(state) -> list[dict]:
+async def routing_table(state) -> list[dict]:
     """The model list LiteLLM would be configured with, built now.
 
     ``discover=False``: never probe ollama ``/api/tags`` on the request path.
     That only drops probe-derived embedding entries, which are ollama-routed
     and so not servable by G1 anyway.
+
+    The offline model is appended when the user has enabled it.
     """
     config = getattr(state, "config", None)
     backends = getattr(config, "backends", None) or []
-    return litellm_config.build_model_list(
+    table = litellm_config.build_model_list(
         backends, registry=getattr(state, "registry", None), discover=False,
     )
+    # Inject offline model if enabled
+    store = getattr(state, "desktop_settings", None)
+    if store is not None:
+        try:
+            prefs = await store.get_preference("user", "offline_model") or {}
+            if prefs.get("enabled"):
+                entry = _build_offline_model_entry()
+                if entry:
+                    table.append(entry)
+        except Exception:
+            pass
+    return table
 
 
 def _is_chat(entry: dict) -> bool:
