@@ -8,10 +8,17 @@ set_target_properties(taosqt PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION 0
 # Keep the Rust runtime symbols out of the public surface of the .so.
 target_link_options(taosqt PRIVATE -Wl,--exclude-libs,ALL)
 
-if(Qt6Qml_FOUND)
+if(Qt6Qml_FOUND AND Qt6Quick_FOUND)
   target_sources(taosqt PRIVATE qmlregister.cpp appcontext.cpp qmlapp.cpp)
-  target_link_libraries(taosqt PUBLIC Qt6::Qml)
+  target_link_libraries(taosqt PUBLIC Qt6::Qml PRIVATE Qt6::Quick)
   target_compile_definitions(taosqt PUBLIC TAOSQT_WITH_QML)
+  if(TARGET taos_common)
+    # The shell's Theme and Style (native/shell/common) back the QML TaosStyle.
+    target_link_libraries(taosqt PRIVATE taos_common)
+    target_compile_definitions(taosqt PRIVATE TAOSQT_WITH_STYLE)
+    qt_add_resources(taosqt "taos_theme" PREFIX "/taos/qt" BASE ${TAOS_COMMON_DIR}/resources
+      FILES ${TAOS_COMMON_DIR}/resources/themes/taos-default/theme.json)
+  endif()
 endif()
 target_link_libraries(taosqt PUBLIC Qt6::Gui)
 

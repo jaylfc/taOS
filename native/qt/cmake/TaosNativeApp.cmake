@@ -14,7 +14,7 @@
 # StartupWMClass = APP_ID. The code defines TAOS_APP_ID and TAOS_APP_NAME for
 # Taos::App::configure().
 function(taos_add_native_app)
-  cmake_parse_arguments(A "" "APP_ID;DISPLAY_NAME;COMMENT;EXECUTABLE;VERSION;QML_MAIN" "CATEGORIES;SOURCES;LIBS;QML_MAIN;QML_FILES;VERSION" ${ARGN})
+  cmake_parse_arguments(A "" "APP_ID;DISPLAY_NAME;COMMENT;EXECUTABLE;VERSION;QML_MAIN" "CATEGORIES;SOURCES;LIBS;QML_FILES" ${ARGN})
   if(NOT A_APP_ID OR NOT A_DISPLAY_NAME OR (NOT A_SOURCES AND NOT A_QML_MAIN))
     message(FATAL_ERROR "taos_add_native_app needs APP_ID, DISPLAY_NAME and QML_MAIN or SOURCES")
   endif()

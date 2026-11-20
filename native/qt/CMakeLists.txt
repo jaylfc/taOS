@@ -6,6 +6,14 @@ project(taos-qt VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
+# The shell's shared theme/Style code (native/shell/common) is built before the
+# strict Qt flags below and reused by the QML entry point.
+find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui)
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/../shell/common/CMakeLists.txt)
+  set(TAOS_COMMON_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../shell/common)
+  add_subdirectory(${TAOS_COMMON_DIR} taos_common)
+  set_target_properties(taos_common PROPERTIES POSITION_INDEPENDENT_CODE ON)
+endif()
 add_compile_definitions(QT_DISABLE_DEPRECATED_BEFORE=0x060800 QT_NO_CAST_FROM_ASCII
                         QT_NO_CAST_TO_ASCII QT_NO_URL_CAST_FROM_STRING)
 

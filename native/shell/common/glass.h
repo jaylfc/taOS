@@ -23,6 +23,8 @@ class Style : public QObject {
     Q_PROPERTY(QColor ground READ ground CONSTANT)
     Q_PROPERTY(QColor text READ text CONSTANT)
     Q_PROPERTY(QColor textSecondary READ textSecondary CONSTANT)
+    Q_PROPERTY(QColor textTertiary READ textTertiary CONSTANT)
+    Q_PROPERTY(QColor stroke READ stroke CONSTANT)
     Q_PROPERTY(QColor accent READ accent CONSTANT)
     Q_PROPERTY(QColor danger READ danger CONSTANT)
     Q_PROPERTY(QColor warning READ warning CONSTANT)
@@ -38,6 +40,8 @@ public:
     QColor ground() const { return m_t->ground(); }
     QColor text() const { return m_t->text(); }
     QColor textSecondary() const { return m_t->textSecondary(); }
+    QColor textTertiary() const { return m_t->textTertiary(); }
+    QColor stroke() const { return m_t->stroke(); }
     QColor accent() const { return m_t->accent(); }
     QColor danger() const { return m_t->danger(); }
     QColor warning() const { return m_t->warning(); }
