@@ -1063,6 +1063,7 @@ class WorkerAgent:
         from tinyagentos.atomic_io import atomic_write_text
 
         try:
+            self._state_dir.mkdir(parents=True, exist_ok=True)
             atomic_write_text(self._heartbeat_ok_path, f"{time.time():.0f}\n")
         except OSError as exc:
             logger.warning("could not record heartbeat-ok timestamp: %s", exc)

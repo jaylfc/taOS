@@ -521,6 +521,23 @@ class TestHeartbeat:
         # Clearing an absent file is not an error.
         agent._clear_heartbeat_ok()
 
+    async def test_record_heartbeat_ok_creates_a_missing_state_dir(self, tmp_path):
+        """The timestamp write must not depend on the state dir already
+        existing.  If it were missing and the write failed quietly, no
+        timestamp would ever be recorded and the deploy helper's health
+        check would roll back a healthy update (PR #1910), so
+        _record_heartbeat_ok creates the directory itself."""
+        state_dir = tmp_path / "state"
+        agent = WorkerAgent("http://controller:6969", name="test-worker", state_dir=state_dir)
+        assert not state_dir.exists()
+
+        agent._record_heartbeat_ok()
+
+        hb_file = state_dir / "last-heartbeat-ok"
+        assert hb_file.exists()
+        written = int(hb_file.read_text().strip())
+        assert abs(time.time() - written) < 60
+
 
 @pytest.mark.asyncio
 class TestRunLoopRepairState:
