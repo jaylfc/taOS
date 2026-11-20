@@ -1,6 +1,7 @@
 """Tests for the cluster optimiser and related API endpoints."""
 from __future__ import annotations
 
+import asyncio
 import pytest
 
 from tinyagentos.cluster.manager import ClusterManager
@@ -208,7 +209,57 @@ async def test_optimise_api_with_workers(client, app, pair_and_register_worker):
 
 
 @pytest.mark.asyncio
-async def test_move_api_endpoint(client, app, pair_and_register_worker):
+async def test_move_api_endpoint(client, app, pair_and_register_worker, tmp_path):
+    """Test the NEW real model move endpoint (/api/cluster/models/move)."""
+    # Create a mock model file in the model store
+    from tinyagentos.installers.model_paths import models_root
+    models_dir = models_root()
+    models_dir.mkdir(parents=True, exist_ok=True)
+    mock_model = models_dir / "llama3.gguf"
+    mock_model.write_bytes(b"fake model content for testing")
+
+    await pair_and_register_worker(client, app, {
+        "name": "w1", "url": "http://10.0.0.1:9000",
+        "capabilities": ["chat"], "models": ["llama3"],
+    })
+    await pair_and_register_worker(client, app, {
+        "name": "w2", "url": "http://10.0.0.2:9000",
+        "capabilities": ["chat"],
+    })
+    resp = await client.post("/api/cluster/models/move", json={
+        "item": "llama3", "from_worker": "w1", "to_worker": "w2",
+    })
+    assert resp.status_code == 202
+    data = resp.json()
+    assert data["status"] == "started"
+    assert data["item"] == "llama3"
+    assert data["from"] == "w1"
+    assert data["to"] == "w2"
+    assert "job_id" in data
+    job_id = data["job_id"]
+
+    # Poll for completion
+    for _ in range(50):
+        progress_resp = await client.get(f"/api/cluster/models/move/{job_id}")
+        progress = progress_resp.json()
+        if progress["status"] in ("completed", "failed"):
+            break
+        await asyncio.sleep(0.1)
+
+    assert progress["status"] == "completed"
+    assert progress.get("checksum_verified") is True
+
+    # Verify model moved
+    workers = (await client.get("/api/cluster/workers")).json()
+    w1 = next(w for w in workers if w["name"] == "w1")
+    w2 = next(w for w in workers if w["name"] == "w2")
+    assert "llama3" not in w1["models"]
+    assert "llama3" in w2["models"]
+
+
+@pytest.mark.asyncio
+async def test_move_api_legacy_endpoint(client, app, pair_and_register_worker):
+    """Test the LEGACY model move endpoint (/api/cluster/move) still works for backward compat."""
     await pair_and_register_worker(client, app, {
         "name": "w1", "url": "http://10.0.0.1:9000",
         "capabilities": ["chat"], "models": ["llama3"],
@@ -226,7 +277,7 @@ async def test_move_api_endpoint(client, app, pair_and_register_worker):
     assert data["item"] == "llama3"
     assert data["to"] == "w2"
 
-    # Verify model moved
+    # Verify model moved (in-memory only, fake behavior)
     workers = (await client.get("/api/cluster/workers")).json()
     w1 = next(w for w in workers if w["name"] == "w1")
     w2 = next(w for w in workers if w["name"] == "w2")
