@@ -83,3 +83,85 @@ describe("ClusterApp Resources tab", () => {
     expect(screen.getByRole("tabpanel", { name: "Cluster resources" })).toBeInTheDocument();
   });
 });
+
+describe("ClusterApp drain", () => {
+  const onlineWorker = () => ({
+    name: "online-worker",
+    status: "online",
+    last_heartbeat: Date.now(),
+    url: "http://localhost:8000",
+    hardware: {},
+    tier_id: null,
+    potential_capabilities: [],
+    backends: [],
+    capabilities: [],
+    models: [],
+  });
+
+  const drainingWorker = () => ({
+    name: "draining-worker",
+    status: "draining",
+    last_heartbeat: Date.now(),
+    url: "http://localhost:8001",
+    hardware: {},
+    tier_id: null,
+    potential_capabilities: [],
+    backends: [],
+    capabilities: [],
+    models: [],
+  });
+
+  beforeEach(() => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => [onlineWorker()],
+    }) as typeof fetch;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("enables Drain for an online worker and posts to /drain on confirm", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<ClusterApp windowId="test" />);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    });
+    const drain = screen.getByRole("button", { name: /Drain/ });
+    expect(drain).not.toBeDisabled();
+    fireEvent.click(drain);
+    expect(window.confirm).toHaveBeenCalledWith(
+      "Drain online-worker? No new tasks will be routed; running tasks finish.",
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "/api/cluster/workers/online-worker/drain",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ graceful: true }) }),
+    );
+  });
+
+  it("shows Cancel drain for a draining worker and posts to /cancel-drain", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => [drainingWorker()],
+    }) as typeof fetch;
+    render(<ClusterApp windowId="test" />);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    });
+    const cancel = screen.getByRole("button", { name: /Cancel drain/ });
+    expect(cancel).not.toBeDisabled();
+    fireEvent.click(cancel);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "/api/cluster/workers/draining-worker/cancel-drain",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+});

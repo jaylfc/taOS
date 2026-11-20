@@ -307,6 +307,7 @@ function WorkerDetail({
   onNodeRevoke,
   onNodeBlock,
   onNodeUnblock,
+  onDrain,
   busy,
 }: {
   worker: ClusterWorker;
@@ -316,6 +317,7 @@ function WorkerDetail({
   onNodeRevoke: (name: string) => Promise<void>;
   onNodeBlock: (name: string) => Promise<void>;
   onNodeUnblock: (name: string) => Promise<void>;
+  onDrain: (name: string, draining: boolean) => void;
   busy: boolean;
 }) {
   const [copied, setCopied] = useState<"name" | "url" | null>(null);
@@ -646,12 +648,21 @@ function WorkerDetail({
             <Button
               size="sm"
               variant="outline"
-              disabled
-              aria-label="Drain worker (coming soon)"
-              title="Coming soon \u2014 no backend endpoint yet"
+              onClick={() => onDrain(worker.name, worker.status === "draining")}
+              disabled={busy}
+              aria-label={
+                worker.status === "draining"
+                  ? `Cancel drain ${worker.name}`
+                  : `Drain worker ${worker.name}`
+              }
+              title={
+                worker.status === "draining"
+                  ? "Cancel the drain and return the worker to online status"
+                  : "Drain the worker: no new tasks are routed; running tasks finish."
+              }
             >
               <X size={13} />
-              Drain
+              {worker.status === "draining" ? "Cancel drain" : "Drain"}
             </Button>
             <Button
               size="sm"
@@ -1428,6 +1439,50 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
     [fetchDevices, showToast],
   );
 
+  const handleDrain = useCallback(
+    async (name: string, draining: boolean) => {
+      const verb = draining ? "Cancel drain" : "Drain";
+      if (
+        !window.confirm(
+          draining
+            ? `Cancel drain ${name}? New tasks will be routed to the worker again.`
+            : `Drain ${name}? No new tasks will be routed; running tasks finish.`,
+        )
+      ) {
+        return;
+      }
+      setBusy(true);
+      try {
+        const res = await fetch(
+          `/api/cluster/workers/${encodeURIComponent(name)}/${draining ? "cancel-drain" : "drain"}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            ...(draining ? {} : { body: JSON.stringify({ graceful: true }) }),
+          },
+        );
+        if (res.ok) {
+          showToast(draining ? `Drain cancelled for "${name}"` : `Worker "${name}" is draining`);
+          await fetchWorkers();
+        } else {
+          let msg = `${verb} failed (${res.status})`;
+          try {
+            const err = await res.json();
+            if (err?.error) msg = String(err.error);
+            else if (err?.status) msg = String(err.status);
+          } catch {
+            /* ignore */
+          }
+          showToast(msg);
+        }
+      } catch (e) {
+        showToast(e instanceof Error ? e.message : "Network error");
+      }
+      setBusy(false);
+    },
+    [fetchWorkers, showToast],
+  );
+
   return (
     <div className="flex flex-col h-full min-h-0 overflow-hidden bg-shell-bg text-shell-text select-none">
        {/* Toolbar */}
@@ -1748,6 +1803,7 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
                 onNodeRevoke={handleNodeRevoke}
                 onNodeBlock={handleNodeBlock}
                 onNodeUnblock={handleNodeUnblock}
+                onDrain={handleDrain}
                 busy={busy}
               />
             ) : (
