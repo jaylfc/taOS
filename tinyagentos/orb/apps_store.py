@@ -1,15 +1,33 @@
 """Orb desktop apps store: manifest parse, validate, pick (spec s4.1)."""
+import asyncio
+import hashlib
+import os
 import platform
 import re
+import tempfile
 import urllib.parse
 from pathlib import Path
 
-from .frames import OrbError
-from . import catalog
+import httpx
+
+from tinyagentos import atomic_io
+from tinyagentos.orb import catalog
+from tinyagentos.orb import catalog_sig
+from tinyagentos.orb.catalog_fetch import SIG_MAX_BYTES, _get_capped
+from tinyagentos.orb.frames import OrbError
 
 
 MANIFEST_KIND = "orb-desktop-apps"
 PLATFORMS = ("macos-arm64", "macos-x64", "linux-x64", "linux-arm64", "windows-x64")
+MANIFEST_MAX_BYTES = 1 << 20
+APP_MAX_BYTES = 1 << 30
+MANIFEST_FILE_NAME = "desktop.json"
+MANIFEST_SIG_FILE_NAME = "desktop.json.sig"
+_REL_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+class AppDownloadError(OrbError):
+    """App download failed."""
 
 
 class DesktopManifestKindError(OrbError):
@@ -71,7 +89,7 @@ def validate_relative_url(url) -> str:
         raise DesktopManifestInvalid("url must not contain \\\\, ?, or #")
 
     for segment in url.split("/"):
-        if segment in ("", ".", ".."):
+        if not _REL_SEGMENT_RE.match(segment):
             raise DesktopManifestInvalid("url segment must not be empty, ., or ..")
 
     return url
@@ -116,8 +134,7 @@ def validate_manifest(doc) -> dict:
             if not isinstance(ver_str, str) or not ver_str:
                 raise DesktopManifestInvalid(f"{app_id}: version string must be a non-empty string")
 
-            yanked = version.get("yanked")
-            if yanked is not None and not isinstance(yanked, bool):
+            if "yanked" in version and not isinstance(version["yanked"], bool):
                 raise DesktopManifestInvalid(f"{app_id} {ver_str}: yanked must be a bool")
 
             files = version.get("files")
@@ -145,6 +162,121 @@ def validate_manifest(doc) -> dict:
                     raise DesktopManifestInvalid(f"{app_id} {ver_str} {platform_key}: size must be int > 0")
 
     return doc
+
+
+async def fetch_manifest(base_url, cache_dir, state_path, keys=None, timeout: float = 10.0, transport=None) -> dict:
+    if not base_url or not base_url.startswith("https://"):
+        raise catalog_sig.CatalogFetchError("base_url must start with https://")
+    base = base_url.rstrip("/")
+    manifest_url = f"{base}/{MANIFEST_FILE_NAME}"
+    sig_url = f"{base}/{MANIFEST_SIG_FILE_NAME}"
+
+    try:
+        async with asyncio.timeout(timeout):
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, transport=transport) as client:
+                manifest_bytes = await _get_capped(client, manifest_url, MANIFEST_MAX_BYTES)
+                if manifest_bytes is None:
+                    raise catalog_sig.CatalogFetchError("manifest not found")
+                sig_bytes = await _get_capped(client, sig_url, SIG_MAX_BYTES)
+                if sig_bytes is None:
+                    sig_bytes = None  # so accept_catalog raises CatalogSignatureMissing
+    except TimeoutError as e:
+        raise catalog_sig.CatalogFetchError(f"manifest fetch exceeded {timeout}s") from e
+
+    # A signed firmware catalog replayed at the manifest URL must be refused by kind before it can raise the manifest's serial high-water mark.
+    doc = catalog_sig.verify_catalog(manifest_bytes, sig_bytes, keys)
+    validate_manifest(doc)
+    catalog_sig.accept_catalog(manifest_bytes, sig_bytes, state_path, keys)
+
+    cache_dir_path = Path(cache_dir)
+    cache_dir_path.mkdir(parents=True, exist_ok=True)
+    atomic_io.atomic_write_bytes(cache_dir_path / MANIFEST_FILE_NAME, manifest_bytes)
+    atomic_io.atomic_write_bytes(cache_dir_path / MANIFEST_SIG_FILE_NAME, sig_bytes if sig_bytes is not None else b"")
+
+    return doc
+
+
+def load_cached_manifest(cache_dir, state_path, keys=None) -> dict:
+    cache_dir_path = Path(cache_dir)
+    manifest_path = cache_dir_path / MANIFEST_FILE_NAME
+    sig_path = cache_dir_path / MANIFEST_SIG_FILE_NAME
+
+    if not manifest_path.exists():
+        raise catalog_sig.CatalogFetchError("no cached manifest")
+
+    with manifest_path.open("rb") as f:
+        manifest_bytes = f.read(MANIFEST_MAX_BYTES + 1)
+    if len(manifest_bytes) > MANIFEST_MAX_BYTES:
+        raise catalog_sig.CatalogFetchError("cached manifest exceeds cap")
+
+    if not sig_path.exists():
+        sig_bytes = None
+    else:
+        with sig_path.open("rb") as f:
+            sig_bytes = f.read(SIG_MAX_BYTES + 1)
+        if len(sig_bytes) > SIG_MAX_BYTES:
+            raise catalog_sig.CatalogFetchError("cached manifest signature exceeds cap")
+        if len(sig_bytes) == 0:
+            sig_bytes = None
+
+    # A signed firmware catalog replayed at the manifest URL must be refused by kind before it can raise the manifest's serial high-water mark.
+    doc = catalog_sig.verify_catalog(manifest_bytes, sig_bytes, keys)
+    validate_manifest(doc)
+    catalog_sig.accept_catalog(manifest_bytes, sig_bytes, state_path, keys)
+    return doc
+
+
+async def download_app(manifest, app_id, base_url, dest_dir, version=None, platform=None, timeout: float = 300.0, transport=None) -> Path:
+    v, f = pick_file(manifest, app_id, version, platform)
+    if f["size"] > APP_MAX_BYTES:
+        raise AppDownloadError("file exceeds app size limit")
+    url = resolve_url(base_url, f["url"])
+    dest_dir_path = Path(dest_dir)
+    dest_dir_path.mkdir(parents=True, exist_ok=True)
+    final_path = dest_dir_path / f["url"].rsplit("/", 1)[-1]
+
+    temp_path = None
+    try:
+        fd, temp_path = tempfile.mkstemp(dir=str(dest_dir_path), prefix=".dl-")
+        os.close(fd)
+        try:
+            async with asyncio.timeout(timeout):
+                async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, transport=transport) as client:
+                    async with client.stream("GET", url) as resp:
+                        if resp.status_code != 200:
+                            raise AppDownloadError(f"failed to download {url}: status {resp.status_code}")
+                        content_encoding = resp.headers.get("content-encoding", "")
+                        if content_encoding and content_encoding.lower() != "identity":
+                            raise AppDownloadError(f"server returned compressed response for {url}: content-encoding {content_encoding}")
+                        h = hashlib.sha256()
+                        total = 0
+                        expected = f["size"]
+                        with open(temp_path, "wb") as tf:
+                            async for chunk in resp.aiter_bytes():
+                                total += len(chunk)
+                                if total > expected:
+                                    raise AppDownloadError("download exceeded declared size")
+                                h.update(chunk)
+                                tf.write(chunk)
+        except AppDownloadError:
+            raise
+        except TimeoutError as e:
+            raise AppDownloadError(f"download exceeded {timeout}s") from e
+        except httpx.HTTPError as e:
+            raise AppDownloadError(f"failed to download {url}: {e}") from e
+
+        if total != expected or h.hexdigest() != f["sha256"]:
+            raise AppDownloadError("download size or sha256 mismatch")
+        os.replace(temp_path, final_path)
+        temp_path = None
+        return final_path
+    except Exception:
+        if temp_path is not None and os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except Exception:
+                pass
+        raise
 
 
 def pick_file(manifest: dict, app_id: str, version: str | None = None, platform: str | None = None) -> tuple[dict, dict]:
