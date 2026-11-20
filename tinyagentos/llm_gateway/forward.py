@@ -16,6 +16,10 @@ is translated to OpenAI SSE chunks here (``_ndjson_to_sse``).
 
 After every successful completion the backend's lifecycle keep-alive timer is
 reset in-process (what LiteLLM's callback did over ``/api/lifecycle/notify``).
+
+The offline model (LFM3 1.7B on-device) is handled specially:
+- ``enable_thinking: false`` is sent in ``chat_template_kwargs`` on every request
+- If stopped, it is started via the helper and we wait for healthy before forwarding
 """
 from __future__ import annotations
 
@@ -62,6 +66,96 @@ PROVIDER_DEFAULT_BASES = {
     "openrouter": "https://openrouter.ai/api/v1",
     "deepseek": "https://api.deepseek.com/v1",
 }
+
+
+async def _ensure_offline_model_ready(state: Any) -> None:
+    """Ensure the offline model is running and healthy.
+
+    If the model is stopped, start it via the helper and wait for healthy.
+    Raises GatewayError with a clear message if startup fails.
+    """
+    import asyncio
+    import json
+    import os
+    from pathlib import Path
+
+    helper_path = Path(os.getenv("TAOS_LLM_HELPER", "/usr/local/sbin/taos-llm"))
+    if not helper_path.exists():
+        return  # Not available, let the normal error handling take over
+
+    # Check status first
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            str(helper_path), "status",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+        if proc.returncode == 0:
+            try:
+                status = json.loads((out or b"").decode(errors="replace").strip())
+                if status.get("running") and status.get("healthy"):
+                    return  # Already running and healthy
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Not running or not healthy - start it
+    logger.info("Starting offline model...")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "sudo", "-n", str(helper_path), "start",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=70.0)
+        if proc.returncode != 0:
+            raise GatewayError(
+                502,
+                f"Failed to start offline model: {(out or b'').decode(errors='replace').strip()}",
+                code="offline_model_start_failed",
+            )
+        try:
+            status = json.loads((out or b"").decode(errors="replace").strip())
+        except Exception:
+            status = {}
+        if not status.get("healthy"):
+            # Wait a bit more for healthy
+            for _ in range(30):  # Up to 30 seconds
+                await asyncio.sleep(1)
+                try:
+                    proc2 = await asyncio.create_subprocess_exec(
+                        str(helper_path), "status",
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.STDOUT,
+                    )
+                    out2, _ = await asyncio.wait_for(proc2.communicate(), timeout=5.0)
+                    if proc2.returncode == 0:
+                        status2 = json.loads((out2 or b"").decode(errors="replace").strip())
+                        if status2.get("healthy"):
+                            return
+                except Exception:
+                    pass
+            raise GatewayError(
+                502,
+                "Offline model started but did not become healthy in time",
+                code="offline_model_not_healthy",
+            )
+    except asyncio.TimeoutError:
+        raise GatewayError(
+            504,
+            "Offline model start timed out",
+            code="offline_model_start_timeout",
+        ) from None
+    except GatewayError:
+        raise
+    except Exception as exc:
+        raise GatewayError(
+            502,
+            f"Failed to start offline model: {exc}",
+            code="offline_model_start_failed",
+        ) from None
 
 
 def _ollama_404_error(route: Route, resp: httpx.Response) -> GatewayError:
@@ -383,10 +477,17 @@ async def _chat_completion_one(
     state: Any,
 ) -> dict:
     """Single non-streaming attempt against one backend, with ITS OWN key."""
+    # Handle offline model: ensure it's running and add enable_thinking=false
+    metadata = getattr(route, "metadata", {}) or {}
+    if metadata.get("offline"):
+        await _ensure_offline_model_ready(state)
+
     api_key = await resolve_api_key(state, route.api_key_ref)
     url = _build_url(route)
     payload = dict(body)
     payload["model"] = route.upstream_model
+    if metadata.get("offline"):
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
     headers = {"content-type": "application/json"}
     if api_key:
         headers["authorization"] = f"Bearer {api_key}"
