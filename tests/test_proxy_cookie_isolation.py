@@ -23,10 +23,19 @@ them and asserts NONE survives.
 import ast
 import pathlib
 
+import httpx
 import pytest
+from fastapi import FastAPI, Request
+from httpx import ASGITransport
 
+from tinyagentos import issued_cookies as _issued
 from tinyagentos.issued_cookies import TAOS_ISSUED_COOKIES
-from tinyagentos.routes import account_proxy, service_proxy, shortcut_proxy, userspace_apps
+from tinyagentos.routes import (
+    account_proxy,
+    service_proxy,
+    shortcut_proxy,
+    userspace_apps,
+)
 
 # A header shaped like the one a real signed-in browser sends: every cookie taOS
 # issues, plus one that genuinely belongs upstream and MUST survive. The
@@ -54,11 +63,12 @@ def _assert_no_taos_cookie_survives(relayed: str | None) -> None:
 
 
 def test_account_proxy_denies_every_taos_cookie():
-    """account_proxy -> taos.my. Its docstring claimed 'only the cookies that
-    belong upstream are forwarded'; it forwarded everything but taos_session."""
-    _assert_no_taos_cookie_survives(
-        account_proxy._strip_local_session_cookie(_BROWSER_HEADER)
-    )
+    """account_proxy -> taos.my is an ALLOW-list: only ``taosmy_*`` cookies go
+    upstream (prefix stripped), so no taOS-issued cookie can leak, whatever its
+    name. The header below holds every taOS cookie plus a namespaced upstream
+    one, which must be the only thing that survives."""
+    header = _BROWSER_HEADER + "; taosmy_upstream_sess=keepme"
+    assert account_proxy._upstream_cookie_header(header) == "upstream_sess=keepme"
 
 
 def test_service_proxy_denies_every_taos_cookie():
@@ -81,7 +91,6 @@ def test_shortcut_proxy_denies_every_taos_cookie():
 @pytest.mark.parametrize(
     "strip",
     [
-        pytest.param(account_proxy._strip_local_session_cookie, id="account_proxy"),
         pytest.param(service_proxy._strip_taos_cookies, id="service_proxy"),
         pytest.param(userspace_apps._strip_taos_session_cookie, id="userspace_apps"),
     ],
@@ -225,3 +234,214 @@ def test_the_scanner_resolves_a_name_held_in_a_constant(tmp_path):
         "held_as_a_literal",
         "held_as_a_kwarg",
     }
+
+
+# ---------------------------------------------------------------------------
+# The ``taosmy_`` account namespace is controller-owned too.
+#
+# The defect: account_proxy stores the taos.my session as ``taosmy_taos_session``
+# on this origin. That name is NOT in TAOS_ISSUED_COOKIES, so the three
+# app-facing proxies (whose backends are UNTRUSTED) forwarded the user's
+# ACCOUNT session to every proxied backend (leak), and relayed a backend's
+# ``Set-Cookie: taosmy_<x>`` to the browser, where account_proxy's allow-list
+# would forward it to taos.my as the user's session (fixation).
+#
+# Every test below drives the REAL route through ASGI with a stubbed upstream,
+# so it holds the same Cookie header a signed-in browser sends.
+# ---------------------------------------------------------------------------
+
+
+_FULL = (
+    "taos_session=L; csrf_token=C; taosmy_taos_session=ACCT; "
+    "taosmy_other=x; appcookie=keep"
+)
+
+
+class _Stub:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+def _fake_upstream(captured: dict, set_cookies: list[str]):
+    async def _send(req, **kwargs):
+        captured["cookie"] = req.headers.get("cookie")
+        headers = [("content-type", "text/plain")] + [("set-cookie", v) for v in set_cookies]
+        return httpx.Response(200, headers=headers, content=b"ok")
+
+    return _send
+
+
+def _service_harness(monkeypatch, captured, set_cookies):
+    app = FastAPI()
+    app.include_router(service_proxy.router)
+
+    async def _loc(app_id):
+        return {"runtime_host": "127.0.0.1", "runtime_port": 1, "ui_path": "/"}
+
+    async def _inst(app_id):
+        return True
+
+    app.state.installed_apps = _Stub(get_runtime_location=_loc, is_installed=_inst)
+    monkeypatch.setattr(
+        service_proxy._http_client, "send", _fake_upstream(captured, set_cookies)
+    )
+    return app, "/apps/x/p"
+
+
+def _userspace_harness(monkeypatch, captured, set_cookies):
+    app = FastAPI()
+    app.include_router(userspace_apps.router)
+
+    async def _get(app_id):
+        return {
+            "app_type": "container", "enabled": True, "container_host": "127.0.0.1",
+            "container_port": 1, "permissions_granted": [], "provenance": "user-uploaded",
+        }
+
+    app.state.userspace_apps = _Stub(get=_get)
+    monkeypatch.setattr(
+        userspace_apps._container_proxy_client, "send", _fake_upstream(captured, set_cookies)
+    )
+    return app, "/api/userspace-apps/x/proxy/p"
+
+
+def _shortcut_harness(monkeypatch, captured, set_cookies):
+    app = FastAPI()
+    shortcut = {"kind": "dashboard", "port": 1, "path": "/", "auth": {"type": "none"}}
+
+    @app.get("/sc")
+    async def _sc(request: Request):
+        return await shortcut_proxy.proxy_dashboard("agent", shortcut, request)
+
+    monkeypatch.setattr(shortcut_proxy, "_resolve_container_ip", lambda *a, **k: "10.0.0.5")
+    monkeypatch.setattr(
+        shortcut_proxy._proxy_client, "send", _fake_upstream(captured, set_cookies)
+    )
+    return app, "/sc"
+
+
+_HARNESSES = [
+    pytest.param(_service_harness, id="service_proxy"),
+    pytest.param(_userspace_harness, id="userspace_apps"),
+    pytest.param(_shortcut_harness, id="shortcut_proxy"),
+]
+
+
+async def _call(harness, monkeypatch, cookie=None, jar=None, set_cookies=()):
+    captured: dict = {}
+    app, url = harness(monkeypatch, captured, list(set_cookies))
+    headers = {"Cookie": cookie} if cookie is not None else {}
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test", cookies=jar
+    ) as c:
+        resp = await c.get(url, headers=headers)
+    assert resp.status_code == 200
+    return captured.get("cookie"), resp
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", _HARNESSES)
+async def test_account_namespace_never_reaches_backend(harness, monkeypatch):
+    relayed, _ = await _call(harness, monkeypatch, cookie=_FULL)
+    assert relayed == "appcookie=keep"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", _HARNESSES)
+async def test_prefix_case_and_whitespace_variants_stripped_lookalikes_kept(
+    harness, monkeypatch
+):
+    header = "TAOSMY_x=1;  taosmy_y=2 ; nottaosmy_x=3; taosmyx=4; Taosmy_Z=5; ok=6"
+    relayed, _ = await _call(harness, monkeypatch, cookie=header)
+    assert relayed == "nottaosmy_x=3; taosmyx=4; ok=6"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", _HARNESSES)
+@pytest.mark.parametrize(
+    "header",
+    [
+        "bad==value; taosmy_taos_session=ACCT; keep=1; ;;",
+        'a="x; taosmy_taos_session=ACCT"; keep=1',
+        "\x01bad; taosmy_taos_session=ACCT; keep=1",
+        "keep=1; =oops; taosmy_taos_session=ACCT",
+    ],
+)
+async def test_malformed_cookie_header_cannot_smuggle_account_cookie(
+    harness, monkeypatch, header
+):
+    relayed, _ = await _call(harness, monkeypatch, cookie=header)
+    assert "taosmy_" not in (relayed or ""), relayed
+    assert "ACCT" not in (relayed or ""), relayed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", _HARNESSES)
+async def test_signed_in_jar_does_not_expose_account_cookie(harness, monkeypatch):
+    """End to end: a real account sign-in is stored by account_proxy as
+    ``taosmy_taos_session`` in the browser jar; a call through each proxy must
+    not expose it (nor the local session next to it)."""
+    stored = account_proxy._rewrite_set_cookie(
+        "taos_session=ACCT; Path=/; Domain=taos.my", secure_ok=False
+    )
+    name, _, val = stored.split(";")[0].partition("=")
+    assert name == "taosmy_taos_session"
+    jar = {name: val, "taos_session": "L", "appcookie": "keep"}
+    relayed, _ = await _call(harness, monkeypatch, jar=jar)
+    assert relayed == "appcookie=keep"
+
+
+_EVIL = [
+    "taosmy_taos_session=EVIL; Path=/",
+    "TAOSMY_x=EVIL",
+    "taos_session=EVIL",
+    "csrf_token=EVIL; Path=/",
+    "no-equals-sign",
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", _HARNESSES)
+async def test_backend_cannot_set_controller_owned_cookies(harness, monkeypatch):
+    _, resp = await _call(
+        harness, monkeypatch, set_cookies=_EVIL + ["appcookie=1; Path=/x", "b=2; HttpOnly"]
+    )
+    relayed = resp.headers.get_list("set-cookie")
+    assert relayed == ["appcookie=1; Path=/x", "b=2; HttpOnly"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", _HARNESSES)
+async def test_set_cookie_without_owned_names_relayed_unchanged(harness, monkeypatch):
+    _, resp = await _call(
+        harness, monkeypatch, set_cookies=["appcookie=1; Path=/x", "nottaosmy_x=2"]
+    )
+    assert resp.headers.get_list("set-cookie") == ["appcookie=1; Path=/x", "nottaosmy_x=2"]
+
+
+def test_all_proxies_use_the_shared_predicate_not_a_private_list():
+    """Single source of truth: the prefix lives in issued_cookies, and each
+    proxy module imports the predicate and the shared filters from there."""
+    assert account_proxy._UPSTREAM_COOKIE_PREFIX is _issued.UPSTREAM_ACCOUNT_COOKIE_PREFIX
+    assert _issued.UPSTREAM_ACCOUNT_COOKIE_PREFIX == "taosmy_"
+    root = pathlib.Path(__file__).resolve().parent.parent / "tinyagentos" / "routes"
+    for mod in ("service_proxy", "shortcut_proxy", "userspace_apps"):
+        src = (root / f"{mod}.py").read_text()
+        assert "is_controller_owned_cookie" in src or "strip_controller_cookies" in src, mod
+        assert "relay_set_cookies" in src, mod
+        assert '"taosmy_"' not in src, f"{mod} keeps a private copy of the prefix"
+    ap = (root / "account_proxy.py").read_text()
+    assert '_UPSTREAM_COOKIE_PREFIX = "taosmy_"' not in ap
+
+
+@pytest.mark.parametrize(
+    "name,owned",
+    [
+        ("taos_session", True), ("CSRF_TOKEN", True), (" taosmy_x ", True),
+        ("TAOSMY_x", True), ("taosmy_", True), ("nottaosmy_x", False),
+        ("taosmyx", False), ("appcookie", False),
+    ],
+)
+def test_predicate(name, owned):
+    assert _issued.is_controller_owned_cookie(name) is owned

@@ -7,13 +7,28 @@ one importable set, because the alternative was tried and failed -- four proxies
 each carried a private hand-written list, and between them those lists named
 two of the five cookies below. The other three leaked.
 
-Why a DENY-list and not an allow-list: an allow-list is unimplementable here.
-Upstream's cookie names appear nowhere in this repo -- ``account_proxy`` relays
-upstream ``Set-Cookie`` verbatim (see ``_rewrite_set_cookie``) and never
-enumerates one. You cannot allow-list names you do not know. What this origin
-issues, by contrast, is knowable and finite, and
-``tests/test_proxy_cookie_isolation.py`` mechanically asserts this set covers
-every ``set_cookie`` call in the package.
+Why a DENY-list for service_proxy, userspace_apps and shortcut_proxy: those
+backends set and read cookies under names this repo cannot enumerate, so the
+only workable rule is "strip what taOS itself issues". What this origin issues
+is knowable and finite, and ``tests/test_proxy_cookie_isolation.py``
+mechanically asserts this set covers every ``set_cookie`` call in the package.
+
+``account_proxy`` does NOT use this set. It namespaces taos.my cookies under
+``taosmy_`` and forwards only ``taosmy_*`` cookies upstream (an allow-list), so
+a cookie this origin issues can never leak to taos.my even if it is missing
+here. The namespace also fixes a name collision: taos.my's session cookie is
+``taos_session``, the same name as ours.
+
+The ``taosmy_`` namespace is controller-owned too: it holds the user's taos.my
+ACCOUNT session. So the three app-facing proxies (service_proxy,
+shortcut_proxy, userspace_apps) strip everything the controller owns, which is
+the issued set PLUS the whole account namespace, via
+``is_controller_owned_cookie``. Both directions:
+  * request: the browser's ``taosmy_*`` cookies never reach an untrusted
+    backend (a deny-list on the issued set alone leaked the account session);
+  * response: a backend's ``Set-Cookie`` for an owned name is never relayed, or
+    a backend could plant ``taosmy_<x>`` (its own taos.my session id, i.e.
+    session fixation) or overwrite ``taos_session`` / ``csrf_token`` here.
 
 ADDING A COOKIE? Add it here too. The drift guard in that test file will fail
 until you do -- that is deliberate, and it is the check whose absence caused
@@ -39,3 +54,62 @@ TAOS_ISSUED_COOKIES = frozenset({
     # every future call site, and that is what drifted.
     "taos_cs",
 })
+
+# The cookie namespace for taos.my (account service) cookies on this origin.
+# account_proxy writes upstream cookies as ``taosmy_<name>`` and forwards only
+# these upstream; the app-facing proxies must treat the whole namespace as
+# controller-owned. One definition, imported by every user of it.
+UPSTREAM_ACCOUNT_COOKIE_PREFIX = "taosmy_"
+
+
+def is_controller_owned_cookie(name: str) -> bool:
+    """True when *name* is a cookie the controller owns and untrusted
+    backends must neither receive nor set: anything in TAOS_ISSUED_COOKIES or
+    anything in the ``taosmy_`` account namespace. Case-insensitive and
+    whitespace-tolerant on purpose (conservative: a look-alike is stripped, an
+    unrelated name like ``nottaosmy_x`` or ``taosmyx`` is not matched)."""
+    low = name.strip().lower()
+    return low in TAOS_ISSUED_COOKIES or low.startswith(UPSTREAM_ACCOUNT_COOKIE_PREFIX)
+
+
+def strip_controller_cookies(cookie_header: str) -> str:
+    """Remove every controller-owned cookie from a Cookie header; keep the rest.
+
+    Textual ';' split that does not depend on SimpleCookie's grammar, so a
+    malformed header can never smuggle an owned cookie through.
+    """
+    if not cookie_header:
+        return ""
+    kept = []
+    for part in cookie_header.split(";"):
+        stripped = part.strip()
+        if not stripped:
+            continue
+        if is_controller_owned_cookie(stripped.split("=", 1)[0]):
+            continue
+        kept.append(stripped)
+    return "; ".join(kept)
+
+
+def relay_set_cookies(response, upstream_headers) -> None:
+    """Append the backend's ``Set-Cookie`` headers to *response*, except any
+    whose cookie name the controller owns (or that has no ``name=``, which a
+    browser would store as a nameless cookie). Every other Set-Cookie is
+    relayed unchanged and as a separate header line (``dict(headers)`` would
+    have merged them into one comma-joined, broken header).
+    """
+    items = (
+        upstream_headers.multi_items()
+        if hasattr(upstream_headers, "multi_items")
+        else upstream_headers.items()
+    )
+    for key, value in items:
+        if key.lower() != "set-cookie":
+            continue
+        name, eq, _ = value.split(";", 1)[0].partition("=")
+        if not eq or not name.strip() or is_controller_owned_cookie(name):
+            continue
+        try:
+            response.raw_headers.append((b"set-cookie", value.encode("latin-1")))
+        except UnicodeEncodeError:
+            continue

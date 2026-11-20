@@ -70,7 +70,7 @@ async def test_account_me_forwards_body_and_relays_cookie(client, monkeypatch):
     assert r.json()["email"] == "a@b.c"
     assert captured["url"] == "https://taos.my/api/auth/me"
     assert captured["method"] == "GET"
-    assert "taosgo_session=abc" in r.headers.get("set-cookie", "")
+    assert "taosmy_taosgo_session=abc" in r.headers.get("set-cookie", "")
 
 
 @pytest.mark.asyncio
@@ -92,7 +92,7 @@ async def test_set_cookie_rescoped_to_proxy_origin(client, monkeypatch):
     _patch_upstream(monkeypatch, handler)
     r = await client.get("/api/account/me")
     sc = r.headers.get("set-cookie", "")
-    assert "taosgo_session=abc" in sc
+    assert "taosmy_taosgo_session=abc" in sc
     assert "domain=" not in sc.lower()
     assert "secure" not in sc.lower()
     assert "HttpOnly" in sc
@@ -657,7 +657,7 @@ async def test_forward_to_strips_local_session_cookie(client, monkeypatch):
     # the real session token so the request is authenticated; the fix must strip
     # it from what is relayed upstream while forwarding the upstream cookie.
     session = client.cookies.get("taos_session", "")
-    cookie_header = "taos_session=" + session + "; taosgo_session=upstream-value"
+    cookie_header = "taos_session=" + session + "; taosmy_taosgo_session=upstream-value"
     _patch_upstream(monkeypatch, handler)
     r = await client.post(
         "/api/account/hub/identity/register",
@@ -877,3 +877,209 @@ async def test_hub_relay_drop_accepts_matching_recipient(client, monkeypatch):
     assert r.status_code == 200
     assert r.json()["status"] == "queued"
     assert captured["url"] == "https://taos.my/api/hub/relay/drop"
+
+
+# --- Upstream cookie namespace (account proxy <-> taos.my) ---
+# taos.my names its session cookie ``taos_session`` -- the SAME name as this
+# controller's own session cookie. Relayed verbatim, a taos.my sign-in
+# overwrote the local session (user thrown to the lock screen) and the follow-up
+# /me had its cookie stripped by the deny-list (401 "Unexpected response").
+# The proxy therefore namespaces upstream cookies with ``taosmy_`` going down
+# and forwards ONLY ``taosmy_*`` cookies, prefix stripped, going up.
+
+_UPSTREAM_SESSION_COOKIE = "taos_session"  # taos.my server/auth.py COOKIE_NAME
+_NS = "taosmy_"
+
+
+def _relayed_cookie_names(resp) -> list[str]:
+    return [
+        line.split(";", 1)[0].split("=", 1)[0].strip()
+        for line in resp.headers.get_list("set-cookie")
+    ]
+
+
+def _relayed_upstream_lines(resp) -> list[str]:
+    """Set-Cookie lines the proxy relayed from upstream. The local middleware
+    may add its own (csrf_token ...) to the same response, so select by the
+    namespace prefix rather than assuming the proxy's are the only ones."""
+    return [l for l in resp.headers.get_list("set-cookie") if l.startswith(_NS)]
+
+
+def test_local_and_upstream_session_cookie_names_collide_today():
+    """Pin the two names. They are both ``taos_session`` today, and that
+    collision is the entire reason the ``taosmy_`` namespace exists. If either
+    side ever renames, this test should be revisited (the namespace is still
+    harmless, but the comment above stops being the reason)."""
+    from tinyagentos.issued_cookies import TAOS_ISSUED_COOKIES
+
+    local_session_cookie = "taos_session"
+    assert local_session_cookie in TAOS_ISSUED_COOKIES
+    assert _UPSTREAM_SESSION_COOKIE == local_session_cookie
+
+
+@pytest.mark.asyncio
+async def test_upstream_session_cookie_is_namespaced_not_clobbering(client, monkeypatch):
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+
+    async def handler(method, url, **kw):
+        return _FakeResp(
+            headers=[
+                ("content-type", "application/json"),
+                (
+                    "set-cookie",
+                    "taos_session=UP; Domain=taos.my; Path=/; HttpOnly; Secure; SameSite=Lax",
+                ),
+            ]
+        )
+
+    _patch_upstream(monkeypatch, handler)
+    r = await client.post("/api/account/login", json={"email": "a@b.c", "password": "x"})
+    lines = _relayed_upstream_lines(r)
+    assert len(lines) == 1
+    assert lines[0].startswith("taosmy_taos_session=UP")
+    assert "domain=" not in lines[0].lower()
+    assert "taos_session" not in [n for n in _relayed_cookie_names(r)]
+
+
+@pytest.mark.asyncio
+async def test_only_namespaced_cookies_are_forwarded_upstream(client, monkeypatch):
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+    captured: dict[str, str] = {}
+
+    async def handler(method, url, **kw):
+        captured["cookie"] = kw.get("headers", {}).get("Cookie", "")
+        return _FakeResp(headers={"content-type": "application/json"})
+
+    _patch_upstream(monkeypatch, handler)
+    local = client.cookies.get("taos_session", "")
+    assert local
+    header = f"taos_session={local}; csrf_token=C; taosmy_taos_session=UP; other=x; taosmy_=empty"
+    r = await client.get("/api/account/me", headers={"cookie": header})
+    assert r.status_code == 200
+    assert captured["cookie"] == "taos_session=UP"
+    for leaked in (local, "csrf_token", "C;", "other", "x", "empty"):
+        assert leaked not in captured["cookie"]
+
+
+@pytest.mark.asyncio
+async def test_signin_round_trip_keeps_local_session(client, monkeypatch):
+    """login sets the (namespaced) cookie, the next /me presents it upstream as
+    taos.my's own name and gets 200, and the local session never changes."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+    local_before = client.cookies.get("taos_session")
+    assert local_before
+
+    async def handler(method, url, **kw):
+        cookie = kw.get("headers", {}).get("Cookie", "")
+        if url.endswith("/api/auth/login"):
+            return _FakeResp(
+                headers=[
+                    ("content-type", "application/json"),
+                    ("set-cookie", "taos_session=UPSID; Domain=taos.my; Path=/; HttpOnly; Secure"),
+                ]
+            )
+        if url.endswith("/api/auth/me"):
+            if cookie == "taos_session=UPSID":
+                return _FakeResp(
+                    content=b'{"user_id":"u1","email":"a@b.c"}',
+                    headers={"content-type": "application/json"},
+                )
+            return _FakeResp(status=401, headers={"content-type": "application/json"})
+        raise AssertionError(url)
+
+    _patch_upstream(monkeypatch, handler)
+    r = await client.post("/api/account/login", json={"email": "a@b.c", "password": "x"})
+    assert r.status_code == 200
+    assert client.cookies.get("taos_session") == local_before
+    assert client.cookies.get("taosmy_taos_session") == "UPSID"
+    r = await client.get("/api/account/me")
+    assert r.status_code == 200
+    assert r.json()["email"] == "a@b.c"
+    assert client.cookies.get("taos_session") == local_before
+
+
+@pytest.mark.asyncio
+async def test_upstream_logout_deletes_namespaced_cookie(client, monkeypatch):
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+
+    async def handler(method, url, **kw):
+        if url.endswith("/api/auth/login"):
+            return _FakeResp(
+                headers=[("set-cookie", "taos_session=UPSID; Path=/; HttpOnly")]
+            )
+        return _FakeResp(
+            headers=[
+                (
+                    "set-cookie",
+                    'taos_session=""; Max-Age=0; Path=/; '
+                    "Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+                )
+            ]
+        )
+
+    _patch_upstream(monkeypatch, handler)
+    local_before = client.cookies.get("taos_session")
+    await client.post("/api/account/login", json={})
+    assert client.cookies.get("taosmy_taos_session") == "UPSID"
+    r = await client.post("/api/account/logout", json={})
+    lines = _relayed_upstream_lines(r)
+    assert len(lines) == 1
+    assert lines[0].startswith("taosmy_taos_session=")
+    assert "max-age=0" in lines[0].lower()
+    assert client.cookies.get("taosmy_taos_session") is None
+    assert client.cookies.get("taos_session") == local_before
+
+
+@pytest.mark.asyncio
+async def test_set_cookie_parsing_edge_cases(client, monkeypatch):
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+
+    async def handler(method, url, **kw):
+        return _FakeResp(
+            headers=[
+                ("set-cookie", "garbage-without-equals; Path=/"),
+                ("set-cookie", "=novalue; Path=/"),
+                ("set-cookie", "  =spaces; Path=/"),
+                ("set-cookie", "b64=YWJjZA==; Path=/; HttpOnly"),
+                ("set-cookie", "__Host-sid=Z; Path=/; Secure"),
+            ]
+        )
+
+    _patch_upstream(monkeypatch, handler)
+    r = await client.get("/api/account/me")
+    assert _relayed_upstream_lines(r) == [
+        "taosmy_b64=YWJjZA==; Path=/; HttpOnly",
+        "taosmy___Host-sid=Z; Path=/",
+    ]
+    # Nameless / equals-less lines are dropped, not relayed under any name.
+    everything = "\n".join(r.headers.get_list("set-cookie"))
+    for bad in ("garbage-without-equals", "novalue", "spaces"):
+        assert bad not in everything
+    assert "taosmy_=" not in everything
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "extra_headers",
+    [
+        pytest.param({}, id="no-cookie-header-from-caller"),
+        pytest.param("local-only", id="only-local-cookies"),
+    ],
+)
+async def test_no_cookie_sent_upstream_without_namespaced_cookies(
+    client, monkeypatch, extra_headers
+):
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+    seen: list[dict] = []
+
+    async def handler(method, url, **kw):
+        seen.append(dict(kw.get("headers", {})))
+        return _FakeResp(headers={"content-type": "application/json"})
+
+    _patch_upstream(monkeypatch, handler)
+    if extra_headers == "local-only":
+        local = client.cookies.get("taos_session", "")
+        extra_headers = {"cookie": f"taos_session={local}; csrf_token=C; taos_cs=x"}
+    r = await client.get("/api/account/me", headers=extra_headers)
+    assert r.status_code == 200
+    assert seen and all("Cookie" not in h and "cookie" not in h for h in seen)
