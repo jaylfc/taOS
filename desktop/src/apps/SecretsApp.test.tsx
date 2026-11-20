@@ -377,4 +377,83 @@ describe("SecretsApp", () => {
     // Alert should be shown
     expect(screen.getByRole("alert")).toBeTruthy();
   });
+
+  it("renders Keenable toggle unchecked when preference is string false", async () => {
+    const fetchMock = mockFetch({
+      "/api/secrets": { ok: true, body: [] },
+      "/api/preferences/broker": { ok: true, body: { keenable_public_fallback: "false" } },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SecretsApp windowId="win-1" />);
+    await flush();
+    await waitFor(() =>
+      expect(screen.getByLabelText(/allow keenable keyless search/i)).toBeTruthy(),
+    );
+    const toggle = screen.getByRole("switch", { name: /allow keenable keyless search/i });
+    expect(toggle).not.toBeChecked();
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("shows alert and disabled switch on failed initial load, retry enables switch", async () => {
+    let loadCallCount = 0;
+    const fetchMock = vi.fn().mockImplementation((input: string) => {
+      if (input === "/api/secrets") {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          headers: { get: () => "application/json" },
+          json: () => Promise.resolve([]),
+        });
+      }
+      if (input === "/api/preferences/broker") {
+        loadCallCount++;
+        if (loadCallCount === 1) {
+          // First load fails
+          return Promise.resolve({
+            ok: false,
+            status: 500,
+            headers: { get: () => "application/json" },
+            json: () => Promise.resolve({ error: "server error" }),
+          });
+        }
+        // Retry load succeeds
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          headers: { get: () => "application/json" },
+          json: () => Promise.resolve({ keenable_public_fallback: true }),
+        });
+      }
+      throw new Error(`Unmocked fetch: ${input}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<SecretsApp windowId="win-1" />);
+    await flush();
+    await waitFor(() =>
+      expect(screen.getByLabelText(/allow keenable keyless search/i)).toBeTruthy(),
+    );
+
+    // Alert should be shown
+    expect(screen.getByRole("alert")).toBeTruthy();
+    // Switch should be disabled
+    const toggle = screen.getByRole("switch", { name: /allow keenable keyless search/i });
+    expect(toggle).toBeDisabled();
+    expect(toggle).not.toBeChecked();
+
+    // Click retry button
+    const retryBtn = screen.getByRole("button", { name: /retry loading keenable preference/i });
+    fireEvent.click(retryBtn);
+    await flush();
+    await waitFor(() =>
+      expect(screen.getByRole("switch", { name: /allow keenable keyless search/i })).toBeChecked(),
+    );
+    // Switch should now be enabled and checked
+    const toggleAfterRetry = screen.getByRole("switch", { name: /allow keenable keyless search/i });
+    expect(toggleAfterRetry).not.toBeDisabled();
+    expect(toggleAfterRetry).toBeChecked();
+    expect(toggleAfterRetry).toHaveAttribute("aria-checked", "true");
+    // Alert should be gone
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
 });
