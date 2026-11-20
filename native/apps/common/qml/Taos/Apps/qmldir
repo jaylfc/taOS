@@ -1,0 +1,18 @@
+module Taos.Apps
+singleton Look 1.0 Look.qml
+singleton Format 1.0 Format.qml
+TaosText 1.0 TaosText.qml
+GlassPanel 1.0 GlassPanel.qml
+Glyph 1.0 Glyph.qml
+Chip 1.0 Chip.qml
+TaosButton 1.0 TaosButton.qml
+TaosField 1.0 TaosField.qml
+TaosArea 1.0 TaosArea.qml
+TaosCombo 1.0 TaosCombo.qml
+TaosCheck 1.0 TaosCheck.qml
+Backdrop 1.0 Backdrop.qml
+ScopeBadge 1.0 ScopeBadge.qml
+ConsentCard 1.0 ConsentCard.qml
+SignInCard 1.0 SignInCard.qml
+EmptyState 1.0 EmptyState.qml
+SignInForm 1.0 SignInForm.qml
