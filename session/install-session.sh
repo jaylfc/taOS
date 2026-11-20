@@ -228,6 +228,15 @@ install -d -m 755 /etc/taos
 install -m 644 "$CONF_SRC" /etc/taos/sway-kiosk.conf
 echo "installed /etc/taos/sway-kiosk.conf"
 
+# 5. Display timeout config (phone layer shares this setting).
+# Only install if missing so a chosen value survives an update.
+if [ ! -f /etc/taos/display.conf ]; then
+    install -m 644 "$HERE/etc/display.conf" /etc/taos/display.conf
+    echo "installed /etc/taos/display.conf"
+else
+    echo "/etc/taos/display.conf already exists, keeping current value"
+fi
+
 # --- verification -----------------------------------------------------------
 # Each check needs a control, or "absent" and "never looked" read the same.
 
