@@ -14,6 +14,7 @@ from tinyagentos.device_auth import require_device
 from tinyagentos.workspace_trash import (
     TrashItemNotFound,
     TrashRestoreConflict,
+    TrashRestoreOutsideRoot,
     empty_trash,
     get_trash_dir,
     list_trash_items,
@@ -400,6 +401,10 @@ async def api_project_restore_trash_item(request: Request, slug: str, item_id: s
     except TrashRestoreConflict:
         return JSONResponse(
             {"error": "a file already exists at the original path"}, status_code=409
+        )
+    except TrashRestoreOutsideRoot:
+        return JSONResponse(
+            {"error": "this item cannot be restored to its original place"}, status_code=400
         )
     return {"status": "restored", "path": metadata["original_path"]}
 

@@ -229,6 +229,20 @@ router-wide, and a per-agent local token may only reach its own agent's
 workspace. Before this any signed-in member could list, read, upload into or
 delete from any agent's workspace.
 
+**The built-in Photos location is the machine owner's, and read-only for agents.**
+`/api/photos/*` and its entry in `GET /api/files/locations`
+(`tinyagentos/routes/photos_location.py`) run the same owner-or-admin check the
+agent workspace routes run, with the resource owner taken to be the primary user
+while photo folders are still per-machine rather than per-user: a member session
+that is neither the owner nor an admin gets no Photos entry from
+`GET /api/files/locations` and `403` on every `/api/photos/*` route, trash
+included. A local token is mapped to the primary user and marked admin by the
+middleware, so a deployed agent clears that check; the routes then mirror
+`_local_token_caller` (`tinyagentos/routes/memory.py`) on `via == "local_token"`
+to keep it read-only: listing, download and `GET /api/photos/trash` work, while
+`DELETE /api/photos/files/{path}` and `POST /api/photos/trash/{id}/restore`
+answer `403`.
+
 **Agent reads are owner-only and never carry `llm_key`.** `GET /api/agents/{name}`,
 `/export`, `/logs`, `/budget` and `/deploy-status` (`tinyagentos/routes/agents.py`)
 require the agent's owner or an admin, with a per-agent local token fenced to its
