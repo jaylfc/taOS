@@ -117,6 +117,8 @@ class TestOtherSystemsSwitch:
         request.state.via = via
         request.app.state = MagicMock()
         request.app.state.notifications = AsyncMock()
+        request.app.state.orchestrator = AsyncMock()
+        request.app.state.orchestrator.prepare = AsyncMock(return_value={})
         return request
 
     @pytest.fixture(autouse=True)
@@ -144,21 +146,18 @@ elif sys.argv[1] == "go":
             request = self._make_request()
             request.json = AsyncMock(return_value={"confirm": True})
 
-            with patch("tinyagentos.routes.other_systems.RestartOrchestrator") as mock_orch:
-                mock_orch.return_value.prepare = AsyncMock(return_value={})
+            # Mock _run_list to return the system list
+            with patch("tinyagentos.routes.other_systems._run_list", AsyncMock(return_value=[{"id": "omarchy", "name": "Omarchy", "ready": True, "reason": ""}])):
+                # Mock the subprocess call for "go" to return success
+                mock_proc = AsyncMock()
+                mock_proc.communicate = AsyncMock(return_value=(b'{"ok": true, "id": "omarchy", "in_seconds": 2}', b""))
+                mock_proc.returncode = 0
 
-                # Mock _run_list to return the system list
-                with patch("tinyagentos.routes.other_systems._run_list", AsyncMock(return_value=[{"id": "omarchy", "name": "Omarchy", "ready": True, "reason": ""}])):
-                    # Mock the subprocess call for "go" to return success
-                    mock_proc = AsyncMock()
-                    mock_proc.communicate = AsyncMock(return_value=(b'{"ok": true, "id": "omarchy", "in_seconds": 2}', b""))
-                    mock_proc.returncode = 0
-
-                    with patch("tinyagentos.routes.other_systems.asyncio.create_subprocess_exec", return_value=mock_proc):
-                        result = await other_systems_routes.switch_other_system("omarchy", request)
+                with patch("tinyagentos.routes.other_systems.asyncio.create_subprocess_exec", return_value=mock_proc):
+                    result = await other_systems_routes.switch_other_system("omarchy", request)
 
             assert result == {"ok": True, "id": "omarchy", "in_seconds": 2}
-            mock_orch.return_value.prepare.assert_called_once_with("all", "system-shutdown")
+            request.app.state.orchestrator.prepare.assert_called_once_with("all", "system-shutdown")
         finally:
             os.unlink(helper_path)
             monkeypatch.delenv("TAOS_SWITCH_OS_HELPER", raising=False)
@@ -178,12 +177,9 @@ print(json.dumps([{"id": "omarchy", "name": "Omarchy", "ready": True, "reason": 
             request = self._make_request()
             request.json = AsyncMock(return_value={"confirm": True})
 
-            with patch("tinyagentos.routes.other_systems.RestartOrchestrator") as mock_orch:
-                mock_orch.return_value.prepare = AsyncMock(return_value={})
-
-                with patch("tinyagentos.routes.other_systems._run_list", AsyncMock(return_value=[{"id": "omarchy", "name": "Omarchy", "ready": True, "reason": ""}])):
-                    with pytest.raises(HTTPException) as exc:
-                        await other_systems_routes.switch_other_system("unknown", request)
+            with patch("tinyagentos.routes.other_systems._run_list", AsyncMock(return_value=[{"id": "omarchy", "name": "Omarchy", "ready": True, "reason": ""}])):
+                with pytest.raises(HTTPException) as exc:
+                    await other_systems_routes.switch_other_system("unknown", request)
 
             assert exc.value.status_code == 409
             assert exc.value.detail == "system not found"
@@ -206,12 +202,9 @@ print(json.dumps([{"id": "luma", "name": "Luma", "ready": False, "reason": "gues
             request = self._make_request()
             request.json = AsyncMock(return_value={"confirm": True})
 
-            with patch("tinyagentos.routes.other_systems.RestartOrchestrator") as mock_orch:
-                mock_orch.return_value.prepare = AsyncMock(return_value={})
-
-                with patch("tinyagentos.routes.other_systems._run_list", AsyncMock(return_value=[{"id": "luma", "name": "Luma", "ready": False, "reason": "guest kernel is stale"}])):
-                    with pytest.raises(HTTPException) as exc:
-                        await other_systems_routes.switch_other_system("luma", request)
+            with patch("tinyagentos.routes.other_systems._run_list", AsyncMock(return_value=[{"id": "luma", "name": "Luma", "ready": False, "reason": "guest kernel is stale"}])):
+                with pytest.raises(HTTPException) as exc:
+                    await other_systems_routes.switch_other_system("luma", request)
 
             assert exc.value.status_code == 409
             assert exc.value.detail == "guest kernel is stale"
@@ -237,17 +230,14 @@ elif sys.argv[1] == "go":
             request = self._make_request()
             request.json = AsyncMock(return_value={"confirm": True})
 
-            with patch("tinyagentos.routes.other_systems.RestartOrchestrator") as mock_orch:
-                mock_orch.return_value.prepare = AsyncMock(return_value={})
+            with patch("tinyagentos.routes.other_systems._run_list", AsyncMock(return_value=[{"id": "omarchy", "name": "Omarchy", "ready": True, "reason": ""}])):
+                mock_proc = AsyncMock()
+                mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+                mock_proc.returncode = 2
 
-                with patch("tinyagentos.routes.other_systems._run_list", AsyncMock(return_value=[{"id": "omarchy", "name": "Omarchy", "ready": True, "reason": ""}])):
-                    mock_proc = AsyncMock()
-                    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
-                    mock_proc.returncode = 2
-
-                    with patch("tinyagentos.routes.other_systems.asyncio.create_subprocess_exec", return_value=mock_proc):
-                        with pytest.raises(HTTPException) as exc:
-                            await other_systems_routes.switch_other_system("omarchy", request)
+                with patch("tinyagentos.routes.other_systems.asyncio.create_subprocess_exec", return_value=mock_proc):
+                    with pytest.raises(HTTPException) as exc:
+                        await other_systems_routes.switch_other_system("omarchy", request)
 
             assert exc.value.status_code == 400
             assert exc.value.detail == "bad switch request"
@@ -274,17 +264,14 @@ elif sys.argv[1] == "go":
             request = self._make_request()
             request.json = AsyncMock(return_value={"confirm": True})
 
-            with patch("tinyagentos.routes.other_systems.RestartOrchestrator") as mock_orch:
-                mock_orch.return_value.prepare = AsyncMock(return_value={})
+            with patch("tinyagentos.routes.other_systems._run_list", AsyncMock(return_value=[{"id": "omarchy", "name": "Omarchy", "ready": True, "reason": ""}])):
+                mock_proc = AsyncMock()
+                mock_proc.communicate = AsyncMock(return_value=(b"", b"guest kernel is stale: run refresh-guest-boot.sh"))
+                mock_proc.returncode = 3
 
-                with patch("tinyagentos.routes.other_systems._run_list", AsyncMock(return_value=[{"id": "omarchy", "name": "Omarchy", "ready": True, "reason": ""}])):
-                    mock_proc = AsyncMock()
-                    mock_proc.communicate = AsyncMock(return_value=(b"", b"guest kernel is stale: run refresh-guest-boot.sh"))
-                    mock_proc.returncode = 3
-
-                    with patch("tinyagentos.routes.other_systems.asyncio.create_subprocess_exec", return_value=mock_proc):
-                        with pytest.raises(HTTPException) as exc:
-                            await other_systems_routes.switch_other_system("omarchy", request)
+                with patch("tinyagentos.routes.other_systems.asyncio.create_subprocess_exec", return_value=mock_proc):
+                    with pytest.raises(HTTPException) as exc:
+                        await other_systems_routes.switch_other_system("omarchy", request)
 
             assert exc.value.status_code == 409
             assert "guest kernel is stale" in exc.value.detail
@@ -310,17 +297,14 @@ elif sys.argv[1] == "go":
             request = self._make_request()
             request.json = AsyncMock(return_value={"confirm": True})
 
-            with patch("tinyagentos.routes.other_systems.RestartOrchestrator") as mock_orch:
-                mock_orch.return_value.prepare = AsyncMock(return_value={})
+            with patch("tinyagentos.routes.other_systems._run_list", AsyncMock(return_value=[{"id": "omarchy", "name": "Omarchy", "ready": True, "reason": ""}])):
+                mock_proc = AsyncMock()
+                mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+                mock_proc.returncode = 1
 
-                with patch("tinyagentos.routes.other_systems._run_list", AsyncMock(return_value=[{"id": "omarchy", "name": "Omarchy", "ready": True, "reason": ""}])):
-                    mock_proc = AsyncMock()
-                    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
-                    mock_proc.returncode = 1
-
-                    with patch("tinyagentos.routes.other_systems.asyncio.create_subprocess_exec", return_value=mock_proc):
-                        with pytest.raises(HTTPException) as exc:
-                            await other_systems_routes.switch_other_system("omarchy", request)
+                with patch("tinyagentos.routes.other_systems.asyncio.create_subprocess_exec", return_value=mock_proc):
+                    with pytest.raises(HTTPException) as exc:
+                        await other_systems_routes.switch_other_system("omarchy", request)
 
             assert exc.value.status_code == 503
             assert exc.value.detail == "this phone is not set up to switch systems"
@@ -346,17 +330,14 @@ elif sys.argv[1] == "go":
             request = self._make_request()
             request.json = AsyncMock(return_value={"confirm": True})
 
-            with patch("tinyagentos.routes.other_systems.RestartOrchestrator") as mock_orch:
-                mock_orch.return_value.prepare = AsyncMock(return_value={})
+            with patch("tinyagentos.routes.other_systems._run_list", AsyncMock(return_value=[{"id": "omarchy", "name": "Omarchy", "ready": True, "reason": ""}])):
+                mock_proc = AsyncMock()
+                mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+                mock_proc.returncode = 99
 
-                with patch("tinyagentos.routes.other_systems._run_list", AsyncMock(return_value=[{"id": "omarchy", "name": "Omarchy", "ready": True, "reason": ""}])):
-                    mock_proc = AsyncMock()
-                    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
-                    mock_proc.returncode = 99
-
-                    with patch("tinyagentos.routes.other_systems.asyncio.create_subprocess_exec", return_value=mock_proc):
-                        with pytest.raises(HTTPException) as exc:
-                            await other_systems_routes.switch_other_system("omarchy", request)
+                with patch("tinyagentos.routes.other_systems.asyncio.create_subprocess_exec", return_value=mock_proc):
+                    with pytest.raises(HTTPException) as exc:
+                        await other_systems_routes.switch_other_system("omarchy", request)
 
             assert exc.value.status_code == 502
             assert exc.value.detail == "switch failed"
@@ -451,24 +432,23 @@ elif sys.argv[1] == "go":
 
             call_order = []
 
-            with patch("tinyagentos.routes.other_systems.RestartOrchestrator") as mock_orch:
-                async def mock_prepare(scope, reason):
-                    call_order.append("drain")
-                    return {}
+            async def mock_prepare(scope, reason):
+                call_order.append("drain")
+                return {}
 
-                mock_orch.return_value.prepare = mock_prepare
+            request.app.state.orchestrator.prepare = mock_prepare
 
-                with patch("tinyagentos.routes.other_systems._run_list", AsyncMock(return_value=[{"id": "omarchy", "name": "Omarchy", "ready": True, "reason": ""}])):
-                    mock_proc = AsyncMock()
-                    mock_proc.communicate = AsyncMock(return_value=(b'{"ok": true, "id": "omarchy", "in_seconds": 2}', b""))
-                    mock_proc.returncode = 0
+            with patch("tinyagentos.routes.other_systems._run_list", AsyncMock(return_value=[{"id": "omarchy", "name": "Omarchy", "ready": True, "reason": ""}])):
+                mock_proc = AsyncMock()
+                mock_proc.communicate = AsyncMock(return_value=(b'{"ok": true, "id": "omarchy", "in_seconds": 2}', b""))
+                mock_proc.returncode = 0
 
-                    async def tracking_create_subprocess_exec(*args, **kwargs):
-                        call_order.append("helper")
-                        return mock_proc
+                async def tracking_create_subprocess_exec(*args, **kwargs):
+                    call_order.append("helper")
+                    return mock_proc
 
-                    with patch("tinyagentos.routes.other_systems.asyncio.create_subprocess_exec", tracking_create_subprocess_exec):
-                        await other_systems_routes.switch_other_system("omarchy", request)
+                with patch("tinyagentos.routes.other_systems.asyncio.create_subprocess_exec", tracking_create_subprocess_exec):
+                    await other_systems_routes.switch_other_system("omarchy", request)
 
             assert call_order == ["drain", "helper"]
         finally:
@@ -493,17 +473,15 @@ elif sys.argv[1] == "go":
 
             request = self._make_request()
             request.json = AsyncMock(return_value={"confirm": True, "force": True})
+            request.app.state.orchestrator.prepare = AsyncMock(return_value={"agent1": {"status": "timeout"}})
 
-            with patch("tinyagentos.routes.other_systems.RestartOrchestrator") as mock_orch:
-                mock_orch.return_value.prepare = AsyncMock(return_value={"agent1": {"status": "timeout"}})
+            with patch("tinyagentos.routes.other_systems._run_list", AsyncMock(return_value=[{"id": "omarchy", "name": "Omarchy", "ready": True, "reason": ""}])):
+                mock_proc = AsyncMock()
+                mock_proc.communicate = AsyncMock(return_value=(b'{"ok": true, "id": "omarchy", "in_seconds": 2}', b""))
+                mock_proc.returncode = 0
 
-                with patch("tinyagentos.routes.other_systems._run_list", AsyncMock(return_value=[{"id": "omarchy", "name": "Omarchy", "ready": True, "reason": ""}])):
-                    mock_proc = AsyncMock()
-                    mock_proc.communicate = AsyncMock(return_value=(b'{"ok": true, "id": "omarchy", "in_seconds": 2}', b""))
-                    mock_proc.returncode = 0
-
-                    with patch("tinyagentos.routes.other_systems.asyncio.create_subprocess_exec", return_value=mock_proc):
-                        result = await other_systems_routes.switch_other_system("omarchy", request)
+                with patch("tinyagentos.routes.other_systems.asyncio.create_subprocess_exec", return_value=mock_proc):
+                    result = await other_systems_routes.switch_other_system("omarchy", request)
 
             assert result == {"ok": True, "id": "omarchy", "in_seconds": 2}
         finally:
@@ -528,12 +506,10 @@ elif sys.argv[1] == "go":
 
             request = self._make_request()
             request.json = AsyncMock(return_value={"confirm": True, "force": False})
+            request.app.state.orchestrator.prepare = AsyncMock(return_value={"agent1": {"status": "timeout"}})
 
-            with patch("tinyagentos.routes.other_systems.RestartOrchestrator") as mock_orch:
-                mock_orch.return_value.prepare = AsyncMock(return_value={"agent1": {"status": "timeout"}})
-
-                with pytest.raises(HTTPException) as exc:
-                    await other_systems_routes.switch_other_system("omarchy", request)
+            with pytest.raises(HTTPException) as exc:
+                await other_systems_routes.switch_other_system("omarchy", request)
 
             assert exc.value.status_code == 409
             assert "agents not ready" in exc.value.detail
@@ -592,3 +568,82 @@ class TestOtherSystemsRouteIntegration:
         assert response.status_code == 200
         assert response.json() == {"available": False, "systems": []}
         monkeypatch.delenv("TAOS_SWITCH_OS_HELPER", raising=False)
+
+
+class TestOtherSystemsHelperPathValidation:
+    """Tests for TAOS_SWITCH_OS_HELPER path validation."""
+
+    def _make_request(self, user_id="user1", is_admin=True, via="session"):
+        request = MagicMock()
+        request.state.user_id = user_id
+        request.state.is_admin = is_admin
+        request.state.via = via
+        request.app.state = MagicMock()
+        request.app.state.notifications = AsyncMock()
+        request.app.state.orchestrator = AsyncMock()
+        request.app.state.orchestrator.prepare = AsyncMock(return_value={})
+        return request
+
+    @pytest.fixture(autouse=True)
+    def _unlock_console(self):
+        """Unlock the console for all switch tests."""
+        with patch("tinyagentos.routes.auth._CONSOLE_LOCKED", False):
+            yield
+
+    @pytest.mark.asyncio
+    async def test_helper_non_absolute_path_returns_unavailable(self, monkeypatch):
+        """Non-absolute TAOS_SWITCH_OS_HELPER returns available=false."""
+        monkeypatch.setenv("TAOS_SWITCH_OS_HELPER", "relative/path/helper")
+        systems = await other_systems_routes._run_list("relative/path/helper")
+        # _run_list is called directly with the path, but the route uses _helper_path()
+        # which returns None for non-absolute paths
+        helper = other_systems_routes._helper_path()
+        assert helper is None
+        monkeypatch.delenv("TAOS_SWITCH_OS_HELPER", raising=False)
+
+    @pytest.mark.asyncio
+    async def test_helper_absolute_path_accepted(self, monkeypatch):
+        """Absolute TAOS_SWITCH_OS_HELPER is accepted."""
+        monkeypatch.setenv("TAOS_SWITCH_OS_HELPER", "/absolute/path/helper")
+        helper = other_systems_routes._helper_path()
+        assert helper == "/absolute/path/helper"
+        monkeypatch.delenv("TAOS_SWITCH_OS_HELPER", raising=False)
+
+    @pytest.mark.asyncio
+    async def test_switch_argv_passed_to_create_subprocess_exec(self, monkeypatch):
+        """Test that exact argv is passed to create_subprocess_exec."""
+        helper_script = """
+import json, sys
+if sys.argv[1] == "list":
+    print(json.dumps([{"id": "omarchy", "name": "Omarchy", "ready": True, "reason": ""}]))
+elif sys.argv[1] == "go":
+    print(json.dumps({"ok": True, "id": "omarchy", "in_seconds": 2}))
+    sys.exit(0)
+"""
+        helper_path = _write_helper(helper_script)
+
+        try:
+            monkeypatch.setenv("TAOS_SWITCH_OS_HELPER", helper_path)
+
+            request = self._make_request()
+            request.json = AsyncMock(return_value={"confirm": True})
+
+            captured_argv = []
+
+            with patch("tinyagentos.routes.other_systems._run_list", AsyncMock(return_value=[{"id": "omarchy", "name": "Omarchy", "ready": True, "reason": ""}])):
+                mock_proc = AsyncMock()
+                mock_proc.communicate = AsyncMock(return_value=(b'{"ok": true, "id": "omarchy", "in_seconds": 2}', b""))
+                mock_proc.returncode = 0
+
+                async def capture_argv(*args, **kwargs):
+                    captured_argv.extend(args)
+                    return mock_proc
+
+                with patch("tinyagentos.routes.other_systems.asyncio.create_subprocess_exec", capture_argv):
+                    await other_systems_routes.switch_other_system("omarchy", request)
+
+            # Assert the exact argv passed
+            assert captured_argv == ["sudo", "-n", helper_path, "go", "omarchy"]
+        finally:
+            os.unlink(helper_path)
+            monkeypatch.delenv("TAOS_SWITCH_OS_HELPER", raising=False)

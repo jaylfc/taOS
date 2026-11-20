@@ -90,6 +90,7 @@ export function OtherSystemsWidget() {
   const [selectedSystem, setSelectedSystem] = useState<OtherSystem | null>(null);
   const [switching, setSwitching] = useState(false);
   const [switchError, setSwitchError] = useState<string | null>(null);
+  const [drainFailed, setDrainFailed] = useState(false);
   const sheetRef = useRef<HTMLDivElement>(null);
   const previousActiveElement = useRef<HTMLElement | null>(null);
 
@@ -126,6 +127,24 @@ export function OtherSystemsWidget() {
             setSwitchError(null);
           }
         }
+        if ((e.key === "Tab" || e.key === "Shift") && sheetRef.current) {
+          const focusableElements = sheetRef.current.querySelectorAll<HTMLButtonElement>(
+            'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+          );
+          const focusableArray = Array.from(focusableElements).filter((el) => !el.disabled && el.style.display !== "none" && el.style.visibility !== "hidden");
+          if (focusableArray.length === 0) return;
+          
+          const firstElement = focusableArray[0];
+          const lastElement = focusableArray[focusableArray.length - 1];
+          
+          if (e.key === "Tab" && !e.shiftKey && document.activeElement === lastElement) {
+            e.preventDefault();
+            firstElement?.focus();
+          } else if (e.key === "Tab" && e.shiftKey && document.activeElement === firstElement) {
+            e.preventDefault();
+            lastElement?.focus();
+          }
+        }
       };
       document.addEventListener("keydown", handleGlobalKeyDown);
       return () => {
@@ -151,19 +170,28 @@ export function OtherSystemsWidget() {
     setSwitchError(null);
   };
 
-  const handleSwitch = async () => {
+  const handleSwitch = async (force = false) => {
     if (!selectedSystem) return;
     setSwitching(true);
     setSwitchError(null);
+    setDrainFailed(false);
     try {
       const res = await fetch(`/api/system/other-systems/${selectedSystem.id}/switch`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ confirm: true }),
+        body: JSON.stringify({ confirm: true, force }),
       });
       if (res.ok) {
-        closeSheet();
+        setSwitching(false);
+      } else if (res.status === 409) {
+        const err = await res.json().catch(() => ({ detail: "Switch failed" }));
+        if (err.detail && err.detail.includes("agents not ready")) {
+          setDrainFailed(true);
+          setSwitchError(err.detail);
+        } else {
+          setSwitchError(err.detail || "Switch failed");
+        }
         setSwitching(false);
       } else {
         const err = await res.json().catch(() => ({ detail: "Switch failed" }));
@@ -253,7 +281,7 @@ export function OtherSystemsWidget() {
                 <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
                   <button
                     type="button"
-                    onClick={handleSwitch}
+                    onClick={() => handleSwitch(false)}
                     disabled={switching}
                     style={{ ...SHEET_BUTTON_DANGER, flex: 1 }}
                   >
@@ -287,9 +315,25 @@ export function OtherSystemsWidget() {
                 <div style={{ fontSize: 13, color: "rgba(255,255,255,0.7)", textAlign: "center" }}>
                   {switchError}
                 </div>
-                <button type="button" onClick={closeSheet} style={SHEET_BUTTON}>
-                  OK
-                </button>
+                {drainFailed ? (
+                  <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                    <button
+                      type="button"
+                      onClick={() => handleSwitch(true)}
+                      disabled={switching}
+                      style={{ ...SHEET_BUTTON_DANGER, flex: 1 }}
+                    >
+                      {switching ? <Loader2 size={16} className="animate-spin" /> : "Switch anyway"}
+                    </button>
+                    <button type="button" onClick={closeSheet} disabled={switching} style={SHEET_BUTTON}>
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <button type="button" onClick={closeSheet} style={SHEET_BUTTON}>
+                    OK
+                  </button>
+                )}
               </div>
             )}
 

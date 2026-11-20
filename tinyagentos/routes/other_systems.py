@@ -11,7 +11,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from tinyagentos.auth_context import require_admin
-from tinyagentos.restart_orchestrator import RestartOrchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -20,8 +19,12 @@ _ID_REGEX = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 DEFAULT_HELPER = "/usr/local/sbin/taos-switch-os"
 
 
-def _helper_path() -> str:
-    return os.environ.get("TAOS_SWITCH_OS_HELPER", DEFAULT_HELPER)
+def _helper_path() -> str | None:
+    helper = os.environ.get("TAOS_SWITCH_OS_HELPER", DEFAULT_HELPER)
+    if not os.path.isabs(helper):
+        logger.warning("TAOS_SWITCH_OS_HELPER is not an absolute path: %s", helper)
+        return None
+    return helper
 
 
 def _validate_system_entry(entry: dict) -> bool:
@@ -97,7 +100,7 @@ router = APIRouter()
 async def get_other_systems(request: Request):
     """List other installed operating systems available for switching."""
     helper = _helper_path()
-    if not Path(helper).exists():
+    if helper is None or not Path(helper).exists():
         return {"available": False, "systems": []}
     systems = await _run_list(helper)
     return {"available": True, "systems": systems}
@@ -132,7 +135,7 @@ async def switch_other_system(sys_id: str, request: Request):
         raise HTTPException(status_code=423, detail="console is locked")
 
     helper = _helper_path()
-    if not Path(helper).exists():
+    if helper is None or not Path(helper).exists():
         raise HTTPException(status_code=503, detail="this phone is not set up to switch systems")
 
     # Get fresh list and validate the id is present and ready
@@ -153,8 +156,10 @@ async def switch_other_system(sys_id: str, request: Request):
     if not confirm:
         raise HTTPException(status_code=400, detail="confirmation required")
 
-    # Graceful agent drain (same as restart route)
-    orchestrator = RestartOrchestrator(request.app.state)
+    # Graceful agent drain (same as restart route) - use shared orchestrator
+    orchestrator = getattr(request.app.state, "orchestrator", None)
+    if orchestrator is None:
+        raise HTTPException(status_code=503, detail="orchestrator not available")
     drain_report = await orchestrator.prepare("all", "system-shutdown")
     drain_failed = any(v.get("status") in ("timeout", "error") for v in drain_report.values())
 
