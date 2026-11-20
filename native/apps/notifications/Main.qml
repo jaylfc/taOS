@@ -193,9 +193,6 @@ TaosWindow {
                     id: stack
                     y: 10
                     width: list.width
-                    add: Transition {
-                        NumberAnimation { property: "opacity"; from: 0; to: 1; duration: Look.base }
-                    }
                     move: Transition { NumberAnimation { properties: "y"; duration: Look.base; easing.type: Easing.OutCubic } }
                     Repeater {
                         id: rowRepeater

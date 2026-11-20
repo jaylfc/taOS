@@ -44,8 +44,8 @@ Rectangle {
             width: 18; height: 18
             radius: root.multi ? 5 : 9
             color: root.selected ? Look.accent : "transparent"
-            border.width: 1.5
-            border.color: root.selected ? Look.accent : Look.glassStroke
+            border.width: 2
+            border.color: root.selected ? Look.accent : Look.textTertiary
             Behavior on color { ColorAnimation { duration: Look.fast } }
             Glyph { anchors.centerIn: parent; name: "check"; size: 12; stroke: 2.6; color: Look.onAccent
                     opacity: root.selected ? 1 : 0; scale: root.selected ? 1 : 0.6

@@ -57,7 +57,7 @@ controller would not also hold, apart from unsent text and a short optimistic ov
 | Decision card: agent badge, Blocking badge, project chip, relative time (mixed formats), question, gate details, context, notes, type label | done | `GateGrantDetails` ported |
 | single_select, multi_select, approve_deny, free_text | done | Other row with a textarea (20000), answer note (500), submit rules as the web app |
 | Recommended tag and rationale | done | |
-| Answer POST with `error ?? detail` text | done | the controller's `{"error"}` sentence is shown verbatim; `source:"native"` is sent, `answered_by` is left empty |
+| Answer POST with `error ?? detail` text | done | the controller's `{"error"}` sentence is shown verbatim; `source:"native"` is sent and `answered_by` is left empty, but the controller records `in_app` for every session answer (`decisions.py:691-700`), so the native source is not visible afterwards |
 | Add note (500, Enter submits) | done | |
 | Archive and Withdrawn cards, lazy supersession history, "No earlier versions." | done | `decisions.history` on first expand |
 | States: Loading on first load only, silent refresh, empty states, failed refresh keeps the list | done | |
@@ -76,3 +76,10 @@ controller would not also hold, apart from unsent text and a short optimistic ov
 | Decisions answer through `decisions.answer` op | not used | the op drops `other` when `value` is a string and cannot send `source`; the answer goes through `Taos.http` with the web body plus `source` |
 | Inter | partial | declared as the family; not installed on the test host, so screenshots show the fallback face. Bundle the font files with the shell theme |
 | Glass | partial | tint, veil, hairlines and a window backdrop are drawn; the blur comes from the compositor and does not render offscreen |
+
+## Notes for whoever extends this
+
+- Lists are a `Flickable` with a `Column` and a `Repeater`, not a `ListView`: rows change height while their consent block loads, and a `ListView` was seen to spin in its refill loop on that. The counts involved are small (pinned requests plus at most 100 rows).
+- `LiveQuery` hands lists to QML as sequence wrappers, not JS arrays (`Array.isArray` is false). `Logic.arr()` normalises them; do the same for any new list field.
+- `native/apps/CMakeLists.txt` is a top-level project that adds `native/qt` as a subdirectory and builds `my.taos.notifications` and `my.taos.decisions`; another native app builder may add the same file, merge the two lists of `add_subdirectory`.
+- Tests: `tst_apps_logic` (routing, store, JS helpers), `tst_apps_ui` (both apps against `tests/fake_apps_controller.py`), `tst_apps_real` (skipped unless `TAOS_REAL_URL` is set). Screenshots: `tests/shots.sh`.

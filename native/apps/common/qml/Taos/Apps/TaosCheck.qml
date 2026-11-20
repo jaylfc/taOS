@@ -19,7 +19,7 @@ C.CheckBox {
         width: 16; height: 16; radius: 5
         color: root.checked ? Look.accent : Look.field
         border.width: root.visualFocus ? 2 : 1
-        border.color: root.visualFocus ? Look.accent : root.checked ? Look.accent : Look.glassStroke
+        border.color: root.visualFocus ? Look.accent : root.checked ? Look.accent : Look.textTertiary
         Behavior on color { ColorAnimation { duration: Look.fast } }
         Glyph { anchors.centerIn: parent; name: "check"; size: 11; stroke: 2.6; color: Look.onAccent
                 opacity: root.checked ? 1 : 0; Behavior on opacity { NumberAnimation { duration: Look.fast } } }

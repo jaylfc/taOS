@@ -19,3 +19,8 @@ shot notifications "$B/notifications/taos-notifications"
 shot decisions-pending "$B/decisions/taos-decisions"
 shot decisions-archive "$B/decisions/taos-decisions" --tab=archive
 shot decisions-withdrawn "$B/decisions/taos-decisions" --tab=withdrawn
+if [ "${6:-}" = "fake" ]; then   # the extended fake controller: also the questions on their own, and the notifications empty state
+  curl -s -X POST "$URL/__fake/config" -d '{"seed":true,"requests":false}' >/dev/null
+  shot decisions-questions "$B/decisions/taos-decisions"
+  curl -s -X POST "$URL/__fake/config" -d '{"seed":true}' >/dev/null
+fi

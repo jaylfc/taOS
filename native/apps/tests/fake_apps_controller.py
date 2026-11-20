@@ -210,6 +210,9 @@ def control(self, verb, path):
     if body.get("seed"):
         with fc.lock:
             seed()
+            if body.get("requests") is False:        # a quiet inbox: questions only
+                fc.state["auth_requests"] = []
+                fc.state["scope_requests"] = []
         self.send_json({"ok": True})
         return
     if "mutate_decision" in body:

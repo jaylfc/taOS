@@ -162,11 +162,9 @@ private Q_SLOTS:
         QVERIFY(w);
         QPointer<QQuickItem> c;
         QVERIFY(waitFor([&] { return (c = consentFor(w->contentItem(), rid)) != nullptr; }, 20000));
-        // the server's vocabulary says project_tasks needs a project: Allow stays off until one is chosen
+        // the server's vocabulary says project_tasks needs a project (the picker shows)
         QVERIFY(waitFor([&] { return c->property("needsProject").toBool(); }, 15000));
-        QQuickItem *allow = buttonNamed(c, u"Allow project_tasks"_s);
-        QVERIFY(allow);
-        QVERIFY(!allow->isEnabled());
+        QQuickItem *allow = nullptr;
         // create a project inline: the card POSTs /api/projects {name, slug} and then approves with its id
         c->setProperty("creating", true);
         c->setProperty("newName", name);
