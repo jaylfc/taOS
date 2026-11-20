@@ -1,0 +1,2 @@
+### Changed
+- Desktop preferences are now stored per person (keyed by signed-in user id). New people get the shipped taOS code defaults (dark mode, graphite wallpaper, default dock), never the admin's global choices. Existing global "user" row is migrated to the first admin (owner) on first startup after upgrade. PUT endpoints require a signed-in session (any member); local tokens and agent tokens are refused (403). UI no longer silently swallows save failures — errors are shown as notifications.

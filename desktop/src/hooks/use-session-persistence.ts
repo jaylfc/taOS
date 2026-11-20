@@ -8,6 +8,7 @@ import { useBrowserStore } from "@/stores/browser-store";
 import { loadWindows as loadBrowserWindows, saveWindows as saveBrowserWindows } from "@/lib/browser-windows-api";
 import type { BrowserWindowState } from "@/apps/BrowserApp/types";
 import { useAuthReadyStore } from "@/stores/auth-ready-store";
+import { useNotificationStore } from "@/stores/notification-store";
 
 interface SavedWindow {
   appId: string;
@@ -35,6 +36,7 @@ export function useSessionPersistence() {
   const browserWindows = useBrowserStore((s) => s.windows);
 
   const authReady = useAuthReadyStore((s) => s.ready);
+  const addNotification = useNotificationStore((s) => s.addNotification);
 
   // `restored` guards the whole restore effect below (fires once per
   // authenticated session). `dockRestored`/`wallpaperRestored` gate their own
@@ -212,13 +214,21 @@ export function useSessionPersistence() {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ pinned, iconSize: dockIconSize, position: dockPosition }),
-      }).catch(() => {});
+      }).catch((err) => {
+        console.error("Failed to save dock settings:", err);
+        addNotification({
+          source: "system",
+          title: "Failed to save dock",
+          body: "Your dock changes could not be saved. Please try again.",
+          level: "error",
+        });
+      });
     }, 1000);
 
     return () => {
       if (dockTimeout.current) clearTimeout(dockTimeout.current);
     };
-  }, [pinned, dockIconSize, dockPosition]);
+  }, [pinned, dockIconSize, dockPosition, addNotification]);
 
   // Auto-save wallpaper (debounced 500ms). Gated on wallpaperRestored (see
   // the dock effect above for why the outer `restored` flag isn't enough).
@@ -231,13 +241,21 @@ export function useSessionPersistence() {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ wallpaper: wallpaperId }),
-      }).catch(() => {});
+      }).catch((err) => {
+        console.error("Failed to save wallpaper:", err);
+        addNotification({
+          source: "system",
+          title: "Failed to save wallpaper",
+          body: "Your wallpaper change could not be saved. Please try again.",
+          level: "error",
+        });
+      });
     }, 500);
 
     return () => {
       if (wallpaperTimeout.current) clearTimeout(wallpaperTimeout.current);
     };
-  }, [wallpaperId]);
+  }, [wallpaperId, addNotification]);
 
   // Auto-save widgets (debounced 1s)
   useEffect(() => {
@@ -249,23 +267,39 @@ export function useSessionPersistence() {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ widgets }),
-      }).catch(() => {});
+      }).catch((err) => {
+        console.error("Failed to save widgets:", err);
+        addNotification({
+          source: "system",
+          title: "Failed to save widgets",
+          body: "Your widget changes could not be saved. Please try again.",
+          level: "error",
+        });
+      });
     }, 1000);
 
     return () => {
       if (widgetSaveTimeout.current) clearTimeout(widgetSaveTimeout.current);
     };
-  }, [widgets]);
+  }, [widgets, addNotification]);
 
   // Auto-save browser windows (debounced 2s)
   useEffect(() => {
     if (!restored.current) return;
     if (browserSaveTimeout.current) clearTimeout(browserSaveTimeout.current);
     browserSaveTimeout.current = setTimeout(() => {
-      saveBrowserWindows(browserWindows).catch(() => {});
+      saveBrowserWindows(browserWindows).catch((err) => {
+        console.error("Failed to save browser windows:", err);
+        addNotification({
+          source: "system",
+          title: "Failed to save browser windows",
+          body: "Your browser window layout could not be saved. Please try again.",
+          level: "error",
+        });
+      });
     }, 2000);
     return () => {
       if (browserSaveTimeout.current) clearTimeout(browserSaveTimeout.current);
     };
-  }, [browserWindows]);
+  }, [browserWindows, addNotification]);
 }
