@@ -18,6 +18,7 @@ const DEFAULT_PAGES: HomePage[] = [
       { type: "widget", widgetType: "weather" },
       { type: "widget", widgetType: "system-stats" },
       { type: "widget", widgetType: "agent-status" },
+      { type: "widget", widgetType: "other-systems" },
     ],
   },
   {
