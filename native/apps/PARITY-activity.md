@@ -1,6 +1,6 @@
 # Parity: Activity (`dashboard`, app id `my.taos.dashboard`)
 
-Spec: `/home/jay/.taos-team/native/specs/dashboard.md`. Code: `native/apps/activity/`
+Spec: the internal port spec for `dashboard`. Code: `native/apps/activity/`
 (`src/` C++ engine, feed and formatters; `qml/` the face; `tests/`; `screenshots/`).
 Build: `cmake -S native/apps/activity -B build -G Ninja -DCMAKE_PREFIX_PATH=<Qt 6.12> -DTAOS_CARGO_OFFLINE=ON`.
 
