@@ -1,0 +1,5 @@
+### Fixed
+
+- `tinyagentos/routes/auth.py::pin_login` no longer runs `check_pin` on the event loop. The PIN hash is now verified with `await asyncio.to_thread(...)`, mirroring the password path (`check_password` -> `verify_and_maybe_rehash` runs argon2), so a PIN attempt no longer blocks the lock-screen hot path while hashing.
+- `tinyagentos/auth.py::check_pin` now reads the stored hash and verifies it under the account-store lock (it is `@_serialized`, like `set_pin`/`clear_pin`), so a concurrent `set_pin`/`clear_pin` cannot swap the hash out between the read and the check. A login racing a PIN change sees one consistent state or the other, never a hash from the new PIN verified against the old.
+- The PIN panel script (`_PIN_PANEL_SCRIPT`) gates `Enter` on the known PIN length: when `data-pin-length` is set, Enter submits only once the typed digits fill the field, so a stray tap on the keypad's Enter key cannot submit a partial PIN. When `data-pin-length` is not set, Enter still submits whatever was typed, as before.

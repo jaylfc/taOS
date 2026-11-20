@@ -921,15 +921,35 @@ class AuthManager:
         only it can see the request. Keeping the two apart makes the origin rule
         testable on its own and keeps this method honest about what it proves,
         which is solely "this PIN matches this account".
+
+        The stored hash is read under the account-store lock, but the argon2
+        verify runs outside it so an account mutation (set_pin/clear_pin) is not
+        blocked for the duration of verification. The read sees one consistent
+        store state and the verify runs against that snapshot.
         """
-        record = self._pin_user(username)
-        if record is None:
+        with self._users_lock:
+            record = self._pin_user(username)
+            if record is None:
+                return (False, None)
+            stored_hash = record.get("pin_hash", "")
+            needs_learn = "pin_length" not in record or record.get("pin_length") is None
+            record_snapshot = dict(record)
+        if not verify_password(pin, stored_hash):
             return (False, None)
-        if not verify_password(pin, record.get("pin_hash", "")):
-            return (False, None)
-        if "pin_length" not in record or record.get("pin_length") is None:
-            self._learn_pin_length(record, pin)
-        return (True, record)
+        if needs_learn:
+            self._learn_pin_length(record_snapshot, pin)
+            if record_snapshot.get("pin_length") is not None:
+                with self._users_lock:
+                    current = self._pin_user(username)
+                    if current and current.get("id") == record_snapshot.get("id"):
+                        record_snapshot = dict(current)
+                    else:
+                        # re-resolve by id in case username context shifted
+                        for u in self._read_users().get("users", []):
+                            if u.get("id") == record_snapshot.get("id"):
+                                record_snapshot = dict(u)
+                                break
+        return (True, record_snapshot)
 
     @_serialized
     def _learn_pin_length(self, record: dict, pin: str) -> None:
