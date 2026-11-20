@@ -5,6 +5,8 @@ import Taos.Bar
 Item {
     id: icon
     property string kind: "offline"
+    property int strength: 0   // Wi-Fi signal 0..100; 0 means unknown, all bars lit
+    readonly property int lit: strength <= 0 ? 4 : Math.max(1, Math.min(4, Math.ceil(strength / 25)))
     property color color: Theme.text
     width: 18
     height: 16
@@ -24,6 +26,7 @@ Item {
                 anchors.bottom: parent.bottom
                 radius: 1
                 color: icon.kind === "wifi" ? icon.color : Theme.textTertiary
+                opacity: icon.kind === "wifi" && index >= icon.lit ? 0.3 : 1
             }
         }
     }

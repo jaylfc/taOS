@@ -106,17 +106,24 @@ Item {
         spacing: root.itemSpacing
 
         BarItem {
+            id: networkItem
+            interactive: true
             accessibleName: Network.description
-            NetworkIcon { kind: Network.kind; anchors.verticalCenter: parent.verticalCenter }
+            accessibleHint: qsTr("Opens the Wi-Fi, Ethernet and Bluetooth menu")
+            onActivated: MenuHost.openNetwork(root.outputName, networkItem.mapToItem(null, networkItem.width, 0).x)
+            NetworkIcon { kind: Network.kind; strength: Network.strength; anchors.verticalCenter: parent.verticalCenter }
         }
         BarItem {
-            visible: Volume.available
+            id: audioItem
+            // Always there, like the network icon: with no sound server it shows the "none" glyph and the menu says why.
             interactive: true
-            accessibleName: Volume.description
-            onActivated: Volume.refresh()
-            VolumeIcon { muted: Volume.muted; anchors.verticalCenter: parent.verticalCenter }
+            accessibleName: Audio.description
+            accessibleHint: qsTr("Opens the sound menu")
+            onActivated: MenuHost.openAudio(root.outputName, audioItem.mapToItem(null, audioItem.width, 0).x)
+            VolumeIcon { level: Audio.level; anchors.verticalCenter: parent.verticalCenter }
             Text {
-                text: Volume.muted ? qsTr("Muted") : Volume.percent + "%"
+                visible: Audio.hasOutput
+                text: Audio.muted ? qsTr("Muted") : Audio.percent + "%"
                 color: Theme.textSecondary
                 font.family: root.fontFamily
                 font.pixelSize: 13

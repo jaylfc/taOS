@@ -34,7 +34,7 @@ Data classes (C++, exposed to QML as singletons in module `Taos.Bar`):
 |---|---|---|
 | `Clock` | system time, locale aware, `HH:mm` and `ddd d MMM` | on the minute boundary (per second with `--seconds`) |
 | `Network` | `/sys/class/net` operstate, `wireless` dir or `/proc/net/wireless`; virtual links ignored; wired wins over Wi-Fi | every 5 s |
-| `Volume` | `wpctl get-volume @DEFAULT_AUDIO_SINK@`; hidden when `wpctl` is absent | every 5 s and on click |
+| `Audio` | PipeWire through libpulse (`pipewire-pulse`), subscribed to server events | on events only, never on a timer |
 | `Battery` | `/sys/class/power_supply/BAT*`; hidden when none | every 30 s |
 | `Theme` | `<themes dir>/<id>/theme.json`, see below | once |
 | `Launcher` | the command of the taOS button | on click |
@@ -330,10 +330,84 @@ prefix sets `LD_LIBRARY_PATH` and friends. `TAOS_SHELL_BIN_DIR` says where the
 component binaries are (default: next to the script, then `PATH`);
 `TAOS_SHELL_ARGS_TAOS_BAR="--height 48"` passes arguments to a component.
 
+## Sound menu and volume keys
+
+The volume icon opens a panel under it (same window kind, look and keys as the
+network menu; one menu at a time). Top to bottom: output volume with a mute
+switch; the outputs that are actually available, named for people ("USB
+headset", "Headphones (Sony WH-1000XM4)", "Monitor speakers (HDMI 2)",
+"Speakers", "Line out (rear jack)") with a tick on the current one; a mode
+choice where it matters ("High quality music" or "Headset with microphone"
+for Bluetooth, analog or HDMI on one card); then the microphone with a live
+level meter, its volume and mute, and the input list. The icon shows none
+(no output), muted, or one to three waves.
+
+Backend: libpulse, which PipeWire serves through `pipewire-pulse` (Debian's
+`pipewire-audio` pulls it in with WirePlumber and the Bluetooth plugin). It
+runs on its own libpulse thread and changes arrive from `pa_context_subscribe`
+events (sinks, sources, cards, streams, server): there is no polling and
+`wpctl` is not used. Unplugged ports and unavailable card profiles (the empty
+HDMI outputs of a graphics card) are hidden. Choosing an output sets the
+default and moves the streams that are already playing. The level meter is a
+peak-detect record stream that exists only while the menu is open. If the
+sound server is not running the menu says "Sound is not available on this
+computer" and the bar retries every 3 s until it appears; that retry timer
+runs only while disconnected.
+
+Keys: `taos-bar volume up|down|mute|mic-mute` (also `taos-bar mic-mute`) talk
+to the running bar over `$XDG_RUNTIME_DIR/taos-bar.sock` (`TAOS_BAR_SOCKET`
+overrides) and the bar flashes the level at the bottom centre of the main
+screen. Steps are 5 points and never go above 100%. Bind the keys with
+`sway/50-taos-audio-keys.conf`. `TAOS_BAR_PULSE_SERVER` points the bar at
+another sound server (tests, demos). `TAOS_BAR_OPEN_MENU=network|audio` opens
+that menu two seconds after start (screenshots).
+
+Tests: `test_audiostate` (naming, filtering, profile choices, from written-out
+data), `test_audio` (the controller against a recording fake), `test_baripc`,
+and `test_pulsebackend`, which starts a private PipeWire, WirePlumber and
+pipewire-pulse in a temporary runtime directory and is skipped when those
+tools are not on PATH. `tests/qmlshot.cpp` renders the bar and both menus with
+fake data to a PNG (offscreen, software renderer; no shadows there).
+
+## Network menu (Wi-Fi, Ethernet, Bluetooth)
+
+Clicking the network icon opens a frosted panel under it (a layer-shell surface
+on the OVERLAY layer covering the output, so a click outside, or Escape, closes
+it; Tab and the arrow keys move between rows, Enter or Space activates, Delete
+forgets or disconnects). It talks D-Bus from C++ (QtDBus), never through
+`nmcli` or `bluetoothctl`, and everything is signal driven: nothing polls while
+the menu is closed, and the scan, discovery and the Bluetooth pairing agent
+run only while it is open.
+
+| Section | Backend | Shows |
+|---|---|---|
+| Wi-Fi | NetworkManager (`org.freedesktop.NetworkManager`, system bus) | on/off switch, current network first with a tick, others by signal, padlock on secured ones, saved ones can be forgotten, "Other network..." for hidden SSIDs, password asked in a pill field and sent only over D-Bus |
+| Ethernet | NetworkManager, or `/sys/class/net` without it | "Connected, 1 Gbit/s", "Cable unplugged"; hidden when the machine has no wired port |
+| Bluetooth | BlueZ (`org.bluez`, system bus) | on/off switch, paired devices with connected state and battery, "Nearby" while discovering, pair; passkey confirm, PIN and permission requests are answered in the menu (a BlueZ `Agent1` registered while the menu is open) |
+
+The menu needs NetworkManager and BlueZ running. Without them it says so in
+plain words and does not fail: "Wi-Fi is not available on this computer",
+"This computer has no Wi-Fi adapter", "Bluetooth is not available on this
+computer", "This computer has no Bluetooth adapter". Without NetworkManager the
+bar icon falls back to the `/sys` reading (and polls it every 5 s, as before),
+and Ethernet still shows from `/sys`. Passwords, PSKs and link keys are never
+logged; BlueZ keeps the link keys itself.
+
+Permissions (Debian 13, NetworkManager 1.52): scanning and the Wi-Fi switch are
+allowed for the active local user; saving a connection needs
+`settings.modify.system`, which Debian's polkit rule grants to local active
+sessions of members of `sudo` or `netdev`. Anyone else gets "This account is
+not allowed to join Wi-Fi networks on this computer". BlueZ has no polkit
+policy. The compositor does not blur behind layer surfaces, so the panel tint is
+denser than the greeter's (`MenuPanel.qml`, `tintAlpha`).
+
+Tests: `test_nmclient` and `test_bluezclient` run the real clients against fake
+NetworkManager and BlueZ services on a private `dbus-daemon --session` started
+by the test. `TAOS_BAR_DBUS_ADDRESS` points the bar at such a bus (demos).
+
 ## Stubbed or not done yet
 
 No focused-window name or group chip (the slot is reserved), no notification
-UI, no real launcher, no volume control (click only refreshes), no Wi-Fi
-signal strength or SSID, no blur (the compositor does not blur behind layer
-surfaces), network state is polled rather than netlink driven, `screen-off` and
+UI, no real launcher, no blur (the compositor does not blur behind layer
+surfaces), `screen-off` and
 `screen-on` are not implemented, and the bar is not hidden for fullscreen apps.
