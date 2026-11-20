@@ -102,6 +102,8 @@ class _AgentSession:
         self._seen_final_ids: OrderedDict[str, None] = OrderedDict()
         # Set of trace_ids for which mark_seen has been called (idempotent guard).
         self._seen_trace_ids: set[str] = set()
+        # Per-session archive dedup set: reply_ids already archived, for idempotency.
+        self._archive_seen_ids: set[str] = set()
 
     def accumulate_delta(self, trace_id: str, content: str) -> None:
         if trace_id not in self._delta_buffers:
@@ -435,12 +437,10 @@ class BridgeSessionRegistry:
             reply_id = body.get("id")
             if not isinstance(reply_id, str) or not reply_id:
                 reply_id = None
-            if reply_id is not None and session.is_final_id_seen(reply_id):
-                logger.debug(
-                    "bridge_session: duplicate final reply id %s for agent %s, skipping",
-                    reply_id, slug,
-                )
-                return
+            # NOTE: we do NOT return early here. The existing
+            # is_final_id_seen / mark_final_id_seen mechanism (via _seen_final_ids)
+            # still runs at the end of this function for chat persistence tracking,
+            # but we do not short-circuit before the archive dedup below.
             accumulated = session.flush_delta(trace_id)
             final_content = content or accumulated
             pending_msg_id = session.pop_pending_msg(trace_id)
@@ -488,6 +488,32 @@ class BridgeSessionRegistry:
                     channel_id=channel_id,
                     payload={"content": final_content},
                 )
+            if self._archive is not None:
+                # Skip archive write if reply_id already archived (idempotency dedup).
+                if reply_id is not None and reply_id in session._archive_seen_ids:
+                    logger.debug(
+                        "bridge_session: duplicate final reply id %s already archived for agent %s, skipping",
+                        reply_id, slug,
+                    )
+                else:
+                    try:
+                        await self._archive.record(
+                            event_type="final",
+                            data={
+                                "content": final_content,
+                                "trace_id": trace_id,
+                                "reply_id": reply_id,
+                                "channel_id": channel_id,
+                            },
+                            agent_name=slug,
+                            summary=final_content[:120] if final_content else "",
+                        )
+                        # Mark as archived only after successful write (not on failure),
+                        # so a failed archive write is retried.
+                        if reply_id is not None:
+                            session._archive_seen_ids.add(reply_id)
+                    except Exception:
+                        logger.exception("archive dual-write failed (final)")
 
             persisted = None
             if channel_id:
