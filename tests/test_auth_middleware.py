@@ -103,6 +103,21 @@ class TestIsExempt:
         assert _is_exempt("POST", "/api/cluster/workers") is True
         assert _is_exempt("POST", "/api/cluster/heartbeat") is True
 
+    def test_cluster_task_report_and_leases_exempt(self):
+        # Worker HMAC endpoints - session-exempt, HMAC gate at route level
+        assert _is_exempt("POST", "/api/cluster/tasks/report") is True
+        assert _is_exempt("POST", "/api/cluster/leases/claim") is True
+        assert _is_exempt("POST", "/api/cluster/leases/release") is True
+        assert _is_exempt("POST", "/api/cluster/leases/renew") is True
+        assert _is_exempt("GET", "/api/cluster/leases") is True
+
+    def test_cluster_task_report_and_leases_not_exempt_wrong_method_or_path(self):
+        # Wrong method on exempt paths
+        assert _is_exempt("GET", "/api/cluster/tasks/report") is False
+        assert _is_exempt("POST", "/api/cluster/leases") is False
+        # Extra path segment
+        assert _is_exempt("POST", "/api/cluster/leases/claim/extra") is False
+
     def test_protected_api_not_exempt(self):
         assert _is_exempt("GET", "/api/system") is False
 

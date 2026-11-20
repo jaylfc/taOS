@@ -733,3 +733,67 @@ class TestClusterManagerLeases:
 
         assert await mgr.release_lease_result(lease2.lease_id, epoch="0.bogus") == (False, "")
         assert lease2.lease_id in mgr._leases
+
+
+# ── Worker HMAC tests for lease endpoints (taOS #4213) ─────────────────────
+
+@pytest.mark.asyncio
+async def test_claim_lease_worker_hmac_signed(client, app):
+    """Signed worker POST /api/cluster/leases/claim with no Authorization header -> not 401 and not 403."""
+    await app.state.cluster_pairing.init()
+
+    # Register a worker and get its signing key
+    key = await _register_worker(
+        client, app, "hmac-worker", "http://10.0.0.1:9000",
+        capabilities=["llm-chat"],
+        hardware={"gpu": {"model": "GTX 1080", "vram_mb": 8192}},
+    )
+    # Send a heartbeat with free VRAM so the worker can accept leases
+    await _heartbeat(client, key, "hmac-worker", free_vram_mb=6000, used_vram_mb=2000)
+
+    # Sign a claim request with the worker's key (no Authorization header)
+    import json
+    body = json.dumps({
+        "resource_id": "hmac-worker:gpu-cuda-0",
+        "caller": "hmac-worker",
+        "ttl_seconds": 30,
+        "required_vram_mb": 4000,
+    }).encode()
+    headers = sign_worker_request(key, "hmac-worker", "POST", "/api/cluster/leases/claim", body)
+    headers["content-type"] = "application/json"
+
+    # Use a client WITHOUT session cookie or Authorization header
+    from httpx import ASGITransport, AsyncClient
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as hm_client:
+        resp = await hm_client.post("/api/cluster/leases/claim", content=body, headers=headers)
+
+    # Should not be 401 (auth middleware) or 403 (route gate)
+    assert resp.status_code not in (401, 403), f"Expected non-auth error, got {resp.status_code}: {resp.text}"
+    # Could be 200 (success) or 409 (insufficient VRAM/already leased) but NOT 401/403
+
+    await app.state.cluster_pairing.close()
+
+
+@pytest.mark.asyncio
+async def test_claim_lease_unsigned_returns_403(client, app):
+    """Unsigned, cookie-less, token-less POST /api/cluster/leases/claim -> 403."""
+    # Drop any cookies
+    client.cookies.clear()
+
+    resp = await client.post("/api/cluster/leases/claim", json={
+        "resource_id": "gpu-node:gpu-cuda-0",
+    })
+    assert resp.status_code == 403
+    assert resp.json()["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_list_leases_unsigned_returns_403(client, app):
+    """Unsigned, cookie-less GET /api/cluster/leases -> 403."""
+    # Drop any cookies
+    client.cookies.clear()
+
+    resp = await client.get("/api/cluster/leases")
+    assert resp.status_code == 403
+    assert resp.json()["error"] == "forbidden"
