@@ -201,7 +201,11 @@ def _workers(args, client):
 
 
 def _remove(args, client):
-    return client.delete(f"/api/cluster/workers/{_q(args.name)}")
+    resp = client.delete(f"/api/cluster/workers/{_q(args.name)}")
+    if hasattr(resp, "status_code") and resp.status_code == 403:
+        print("Removing a worker needs a signed-in admin: use the Cluster app, or sign in with taosctl login")
+        raise SystemExit(1)
+    return resp
 
 
 def _revoke(args, client):
