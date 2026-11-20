@@ -16,6 +16,7 @@ from tinyagentos.auth import (
     verify_and_maybe_rehash,
     _hash_password_sha256,
 )
+from tinyagentos.agent_registry_store import mint_registry_token
 
 
 # --- Unit tests for password hashing ---
@@ -1470,6 +1471,104 @@ class TestAuthStatusUserAgentSymmetry:
             "/auth/me", headers={"user-agent": "TaosPWA/2.0 (updated browser)"}
         )
         assert rotated.status_code == 401
+
+
+class TestAuthMeBearer:
+    """/auth/me accepts the host local token as a bearer for native apps.
+
+    The cookie path is unchanged and wins when both credentials are present.
+    A bearer is only consulted when there is no valid session cookie, and only
+    the host local token counts as a person: agent-bound tokens and registry
+    JWTs are refused with 401.
+    """
+
+    def _bare(self, app):
+        return AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        )
+
+    async def _setup_user(self, auth_client):
+        await auth_client.post(
+            "/auth/setup",
+            json={"username": "admin", "full_name": "Admin", "email": "", "password": "adminpass", "auto_login": False},
+        )
+
+    @pytest.mark.asyncio
+    async def test_cookie_answer_unchanged(self, app, auth_client):
+        await self._setup_user(auth_client)
+        login = await auth_client.post(
+            "/auth/login",
+            data={"password": "adminpass"},
+            follow_redirects=False,
+        )
+        assert "taos_session" in login.headers.get("set-cookie", "")
+        resp = await auth_client.get("/auth/me", cookies=login.cookies)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body == {"user": app.state.auth.get_primary_user()}
+        assert "via" not in body
+
+    @pytest.mark.asyncio
+    async def test_cookie_wins_over_bearer(self, app, auth_client):
+        await self._setup_user(auth_client)
+        login = await auth_client.post(
+            "/auth/login",
+            data={"password": "adminpass"},
+            follow_redirects=False,
+        )
+        token = app.state.auth.get_local_token()
+        resp = await auth_client.get(
+            "/auth/me", headers={"Authorization": f"Bearer {token}"}
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"user": app.state.auth.get_primary_user()}
+        assert "via" not in resp.json()
+
+    @pytest.mark.asyncio
+    async def test_local_token_bearer(self, app, auth_client):
+        await self._setup_user(auth_client)
+        token = app.state.auth.get_local_token()
+        async with self._bare(app) as c:
+            resp = await c.get(
+                "/auth/me", headers={"Authorization": f"Bearer {token}"}
+            )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["via"] == "local_token"
+        assert body["user"] == app.state.auth.get_primary_user()
+
+    @pytest.mark.asyncio
+    async def test_wrong_bearer_refused(self, app, auth_client):
+        await self._setup_user(auth_client)
+        async with self._bare(app) as c:
+            resp = await c.get(
+                "/auth/me", headers={"Authorization": "Bearer wrong-token"}
+            )
+        assert resp.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_agent_registry_token_refused(self, app, auth_client):
+        await self._setup_user(auth_client)
+        registry = app.state.agent_registry
+        if registry._db is None:
+            await registry.init()
+        priv, _pub = app.state.agent_registry_keypair
+        rec = await registry.register(
+            framework="taosmd", display_name="agent", origin="taos-deployed", handle="@agent"
+        )
+        token = mint_registry_token(rec["canonical_id"], priv, user_id="u", framework="taosmd")
+        async with self._bare(app) as c:
+            resp = await c.get(
+                "/auth/me", headers={"Authorization": f"Bearer {token}"}
+            )
+        assert resp.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_no_credentials_refused(self, app):
+        # No setup: no user, no session, no bearer -> 401.
+        async with self._bare(app) as c:
+            resp = await c.get("/auth/me")
+        assert resp.status_code == 401
 
 
 # --- Non-object JSON bodies must be a 400, never a 500 -------------------------
