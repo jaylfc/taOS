@@ -10,7 +10,7 @@ function(taos_qt_test name)
   set_tests_properties(${name} PROPERTIES TIMEOUT 120 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endfunction()
 
-foreach(t tst_client tst_stream tst_session tst_jsonmodel tst_livequery tst_app)
+foreach(t tst_client tst_stream tst_session tst_jsonmodel tst_livequery tst_app tst_real)
   taos_qt_test(${t})
 endforeach()
 
