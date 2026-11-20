@@ -1,0 +1,23 @@
+### Added
+
+- Worker self-update: `scripts/taos-deploy-helper.sh` gains install, restart, health-check, and rollback subcommands, with a detached restart that escapes the worker's service cgroup (#1910).
+- Worker self-update: `taos-deploy-helper.sh trigger-update <target_ref> [--no-graceful]` writes the `update-trigger.json` the worker's heartbeat loop polls for, so a self-update can also be started from the worker host (operator or cron), not only via the controller's deploy route (#1910).
+
+### Fixed
+
+- Worker self-update: an aborted update (failed checkpoint, pull, dependency update or restart) now clears the worker's draining state, so the worker returns to routing instead of heartbeating `draining` forever and staying unroutable until a manual restart (#1910).
+- Worker self-update: the detached restart now waits for the worker to come back healthy and rolls back to the pre-update checkpoint when it does not, so a new build that fails to boot is rolled back even though the in-process rollback lives inside that build (#1910).
+  A rollback puts the checkpointed branch back on the tag instead of detaching
+  HEAD, the health check finds the worker port on macOS, and a helper call that
+  times out is killed instead of left running.
+- Worker self-update: a restart partway through an update resumes it instead of leaving the worker drained (up to three attempts), the rollback outcome is reported before the rollback restarts the worker, repeated registrations no longer start duplicate post-update checks, and expired leases no longer hold up a drain (#1910).
+- Worker self-update: `pull_update` checks the target out on its local
+  branch (`checkout -B`), so the worker repo is no longer left with a
+  detached HEAD after an update; the post-restart hook compares the repo's
+  HEAD with the update target and reports a rollback instead of success
+  when the deploy helper's restart verification already rolled the update
+  back; a timed-out deploy-helper call from the deploy path is killed
+  instead of left running; and the update marker and the claimed update
+  trigger are written atomically (#1910).
+- Worker self-update: the health check no longer probes port 9898 — the worker opens no port, so a healthy worker failed the check and every update rolled back. It now verifies the worker service is active and that its main process is the worker entrypoint and has stayed up (an uptime floor catches crash loops); `rollback <tag>` only accepts the helper's own `taos-worker-pre-update-*` checkpoint tags (#1910).
+- Worker self-update: the health check now requires proof of work — the worker rewrites a `last-heartbeat-ok` timestamp in its state dir after every successful heartbeat and clears it at startup, and the check fails when the timestamp is missing or stale (`TAOS_HEALTH_HEARTBEAT_MAX_AGE_S`, default 60s), so a worker that is running but not reaching the controller no longer passes on process checks alone; on macOS a launchd entry with no PID (`-`) now fails the check instead of skipping the process check (#1910).

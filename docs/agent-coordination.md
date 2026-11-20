@@ -3040,3 +3040,16 @@ Two exceptions mint a fresh `external-selfjoin` identity instead:
 - a suspended or revoked holder. Reversing a deliberate owner suspension
   through the consent flow is an open maintainer decision, so approval keeps
   the old mint-a-new-identity behaviour rather than silently reactivating it.
+## Worker self-update API (taOS #890 C3)
+
+The worker self-update flow adds one controller route and one auth exemption;
+both are worker-to-controller (HMAC), not agent-facing:
+
+- `POST /api/cluster/workers/{name}/update-outcome` — the worker reports its
+  post-restart outcome (`success`/`rollback`, with `from_version`/`to_version`).
+  Session-exempt in `AuthMiddleware`; the route verifies the worker's HMAC
+  signature itself (same pattern as `/api/cluster/heartbeat`). The agent-token
+  allowlist is unchanged.
+- `POST /api/cluster/workers/{name}/deploy` — documented inline: operator
+  session required (not session-exempt); per-worker deploy locks prevent
+  concurrent install/restart double-installs.
