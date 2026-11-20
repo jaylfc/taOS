@@ -33,10 +33,14 @@ router = APIRouter()
 
 _update_jobs: dict[str, dict] = {}
 
-# Admin-only fleet mutations / worker execution (tsk-exyzu4). Uses
-# `_require_admin`, which accepts only an admin session cookie.
-# This is the same gate used by revoke/block/unblock; deregister no longer
-# accepts the host local token.
+# Admin-only fleet mutations / worker execution (tsk-exyzu4).
+# _ADMIN = [Depends(require_admin)] accepts admin session cookie OR host
+# local token (via auth_context.require_admin). Routes using _ADMIN:
+#   POST /api/cluster/route, POST /api/cluster/workers/{name}/deploy,
+#   POST /api/cluster/workers/{name}/remote, POST /api/cluster/promote-archived.
+# Individual handlers that use _require_admin (from routes.auth) —
+# admin-only, no local token: unregister_worker, revoke/block/unblock,
+# drain, cancel-drain, update-worker, update-all.
 _ADMIN = [Depends(require_admin)]
 
 
