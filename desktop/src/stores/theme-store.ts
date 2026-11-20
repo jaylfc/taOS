@@ -3,6 +3,7 @@ import type { ThemeConfig } from "@/theme/theme-config";
 import { ALLOWED_TOKENS } from "@/theme/theme-config";
 import { BUILTIN_THEMES } from "@/theme/builtin-themes";
 import { randomId } from "@/lib/uid";
+import { useNotificationStore } from "@/stores/notification-store";
 
 // Wallpapers are split into (image, fallback) pairs rather than a single
 // background-shorthand so CSS media queries can control background-size
@@ -638,5 +639,13 @@ export function keepTheme(themeId: string, cfg: ThemeConfig) {
     credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ active_theme_id: themeId }),
-  }).catch(() => {});
+  }).catch((err) => {
+    console.error("Failed to persist theme preference:", err);
+    useNotificationStore.getState().addNotification({
+      source: "system",
+      title: "Failed to save theme",
+      body: "Your theme selection could not be saved. Please try again.",
+      level: "error",
+    });
+  });
 }

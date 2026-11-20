@@ -8,6 +8,7 @@ import { useBrowserStore } from "@/stores/browser-store";
 import { loadWindows as loadBrowserWindows, saveWindows as saveBrowserWindows } from "@/lib/browser-windows-api";
 import type { BrowserWindowState } from "@/apps/BrowserApp/types";
 import { useAuthReadyStore } from "@/stores/auth-ready-store";
+import { useNotificationStore } from "@/stores/notification-store";
 
 interface SavedWindow {
   appId: string;
@@ -35,6 +36,7 @@ export function useSessionPersistence() {
   const browserWindows = useBrowserStore((s) => s.windows);
 
   const authReady = useAuthReadyStore((s) => s.ready);
+  const addNotification = useNotificationStore((s) => s.addNotification);
 
   // `restored` guards the whole restore effect below (fires once per
   // authenticated session). `dockRestored`/`wallpaperRestored` gate their own
@@ -72,7 +74,10 @@ export function useSessionPersistence() {
 
     // Restore windows
     fetch("/api/desktop/windows")
-      .then((r) => r.json())
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
       .then((positions: SavedWindow[]) => {
         if (!Array.isArray(positions)) return;
         for (const saved of positions) {
@@ -94,11 +99,22 @@ export function useSessionPersistence() {
           }
         }
       })
-      .catch(() => {});
+      .catch((err) => {
+        console.error("Failed to restore windows:", err);
+        addNotification({
+          source: "system",
+          title: "Failed to restore windows",
+          body: "Your window layout could not be restored. Please try again.",
+          level: "error",
+        });
+      });
 
     // Restore dock
     fetch("/api/desktop/dock")
-      .then((r) => r.json())
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
       .then((data: { pinned?: string[]; iconSize?: string; position?: string }) => {
         if (data.pinned && Array.isArray(data.pinned)) {
           // Saved pins are restored verbatim. Resolving a redirect id to its
@@ -117,34 +133,64 @@ export function useSessionPersistence() {
           useDockStore.getState().setPosition(data.position);
         }
       })
-      .catch(() => {})
+      .catch((err) => {
+        console.error("Failed to restore dock:", err);
+        addNotification({
+          source: "system",
+          title: "Failed to restore dock",
+          body: "Your dock settings could not be restored. Please try again.",
+          level: "error",
+        });
+      })
       .finally(() => {
         dockRestored.current = true;
       });
 
     // Restore wallpaper
     fetch("/api/desktop/settings")
-      .then((r) => r.json())
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
       .then((data: { wallpaper?: string }) => {
         if (data.wallpaper) {
           useThemeStore.getState().setWallpaper(data.wallpaper);
         }
       })
-      .catch(() => {})
+      .catch((err) => {
+        console.error("Failed to restore wallpaper:", err);
+        addNotification({
+          source: "system",
+          title: "Failed to restore wallpaper",
+          body: "Your wallpaper could not be restored. Please try again.",
+          level: "error",
+        });
+      })
       .finally(() => {
         wallpaperRestored.current = true;
       });
 
     // Restore widgets
     fetch("/api/desktop/widgets")
-      .then((r) => r.json())
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
       .then((data: Widget[] | { widgets: Widget[] }) => {
         const list = Array.isArray(data) ? data : (data.widgets ?? []);
         if (list.length > 0) {
           useWidgetStore.setState({ widgets: list });
         }
       })
-      .catch(() => {});
+      .catch((err) => {
+        console.error("Failed to restore widgets:", err);
+        addNotification({
+          source: "system",
+          title: "Failed to restore widgets",
+          body: "Your widgets could not be restored. Please try again.",
+          level: "error",
+        });
+      });
 
     // Restore browser windows
     loadBrowserWindows()
@@ -167,7 +213,15 @@ export function useSessionPersistence() {
         }
         useBrowserStore.setState({ windows });
       })
-      .catch(() => {});
+      .catch((err) => {
+        console.error("Failed to restore browser windows:", err);
+        addNotification({
+          source: "system",
+          title: "Failed to restore browser windows",
+          body: "Your browser windows could not be restored. Please try again.",
+          level: "error",
+        });
+      });
   }, [authReady, openWindow, updatePosition, updateSize, maximizeWindow, snapWindow]);
 
   // Auto-save windows (debounced 2s)
@@ -190,7 +244,15 @@ export function useSessionPersistence() {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ positions: state }),
-      }).catch(() => {});
+      }).catch((err) => {
+        console.error("Failed to save windows:", err);
+        addNotification({
+          source: "system",
+          title: "Failed to save windows",
+          body: "Your window layout could not be saved. Please try again.",
+          level: "error",
+        });
+      });
     }, 2000);
 
     return () => {
@@ -212,13 +274,21 @@ export function useSessionPersistence() {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ pinned, iconSize: dockIconSize, position: dockPosition }),
-      }).catch(() => {});
+      }).catch((err) => {
+        console.error("Failed to save dock settings:", err);
+        addNotification({
+          source: "system",
+          title: "Failed to save dock",
+          body: "Your dock changes could not be saved. Please try again.",
+          level: "error",
+        });
+      });
     }, 1000);
 
     return () => {
       if (dockTimeout.current) clearTimeout(dockTimeout.current);
     };
-  }, [pinned, dockIconSize, dockPosition]);
+  }, [pinned, dockIconSize, dockPosition, addNotification]);
 
   // Auto-save wallpaper (debounced 500ms). Gated on wallpaperRestored (see
   // the dock effect above for why the outer `restored` flag isn't enough).
@@ -231,13 +301,21 @@ export function useSessionPersistence() {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ wallpaper: wallpaperId }),
-      }).catch(() => {});
+      }).catch((err) => {
+        console.error("Failed to save wallpaper:", err);
+        addNotification({
+          source: "system",
+          title: "Failed to save wallpaper",
+          body: "Your wallpaper change could not be saved. Please try again.",
+          level: "error",
+        });
+      });
     }, 500);
 
     return () => {
       if (wallpaperTimeout.current) clearTimeout(wallpaperTimeout.current);
     };
-  }, [wallpaperId]);
+  }, [wallpaperId, addNotification]);
 
   // Auto-save widgets (debounced 1s)
   useEffect(() => {
@@ -249,23 +327,39 @@ export function useSessionPersistence() {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ widgets }),
-      }).catch(() => {});
+      }).catch((err) => {
+        console.error("Failed to save widgets:", err);
+        addNotification({
+          source: "system",
+          title: "Failed to save widgets",
+          body: "Your widget changes could not be saved. Please try again.",
+          level: "error",
+        });
+      });
     }, 1000);
 
     return () => {
       if (widgetSaveTimeout.current) clearTimeout(widgetSaveTimeout.current);
     };
-  }, [widgets]);
+  }, [widgets, addNotification]);
 
   // Auto-save browser windows (debounced 2s)
   useEffect(() => {
     if (!restored.current) return;
     if (browserSaveTimeout.current) clearTimeout(browserSaveTimeout.current);
     browserSaveTimeout.current = setTimeout(() => {
-      saveBrowserWindows(browserWindows).catch(() => {});
+      saveBrowserWindows(browserWindows).catch((err) => {
+        console.error("Failed to save browser windows:", err);
+        addNotification({
+          source: "system",
+          title: "Failed to save browser windows",
+          body: "Your browser window layout could not be saved. Please try again.",
+          level: "error",
+        });
+      });
     }, 2000);
     return () => {
       if (browserSaveTimeout.current) clearTimeout(browserSaveTimeout.current);
     };
-  }, [browserWindows]);
+  }, [browserWindows, addNotification]);
 }

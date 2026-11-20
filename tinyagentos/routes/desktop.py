@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 
-from tinyagentos.auth_context import require_admin
+from tinyagentos.auth_context import CurrentUser, require_admin, require_session_user
 
 router = APIRouter()
 
@@ -15,64 +15,68 @@ _PROJECT_DIR = Path(__file__).resolve().parent.parent.parent
 SPA_DIR = Path(os.environ.get("TAOS_SPA_DIR") or (_PROJECT_DIR / "static" / "desktop")).resolve()
 
 
+def _get_store(request: Request):
+    return request.app.state.desktop_settings
+
+
 @router.get("/api/desktop/settings")
-async def get_settings(request: Request):
-    store = request.app.state.desktop_settings
-    settings = await store.get_settings("user")
+async def get_settings(request: Request, user: CurrentUser = Depends(require_session_user)):
+    store = _get_store(request)
+    settings = await store.get_settings(user.user_id)
     return JSONResponse(settings)
 
 
-@router.put("/api/desktop/settings", dependencies=[Depends(require_admin)])
-async def update_settings(request: Request):
-    store = request.app.state.desktop_settings
+@router.put("/api/desktop/settings")
+async def update_settings(request: Request, user: CurrentUser = Depends(require_session_user)):
+    store = _get_store(request)
     body = await request.json()
-    await store.update_settings("user", body)
+    await store.update_settings(user.user_id, body)
     return JSONResponse({"ok": True})
 
 
 @router.get("/api/desktop/dock")
-async def get_dock(request: Request):
-    store = request.app.state.desktop_settings
-    dock = await store.get_dock("user")
+async def get_dock(request: Request, user: CurrentUser = Depends(require_session_user)):
+    store = _get_store(request)
+    dock = await store.get_dock(user.user_id)
     return JSONResponse(dock)
 
 
-@router.put("/api/desktop/dock", dependencies=[Depends(require_admin)])
-async def update_dock(request: Request):
-    store = request.app.state.desktop_settings
+@router.put("/api/desktop/dock")
+async def update_dock(request: Request, user: CurrentUser = Depends(require_session_user)):
+    store = _get_store(request)
     body = await request.json()
-    await store.update_dock("user", body)
+    await store.update_dock(user.user_id, body)
     return JSONResponse({"ok": True})
 
 
 @router.get("/api/desktop/windows")
-async def get_windows(request: Request):
-    store = request.app.state.desktop_settings
-    windows = await store.get_windows("user")
+async def get_windows(request: Request, user: CurrentUser = Depends(require_session_user)):
+    store = _get_store(request)
+    windows = await store.get_windows(user.user_id)
     return JSONResponse(windows)
 
 
-@router.put("/api/desktop/windows", dependencies=[Depends(require_admin)])
-async def save_windows(request: Request):
-    store = request.app.state.desktop_settings
+@router.put("/api/desktop/windows")
+async def save_windows(request: Request, user: CurrentUser = Depends(require_session_user)):
+    store = _get_store(request)
     body = await request.json()
-    await store.save_windows("user", body.get("positions", []))
+    await store.save_windows(user.user_id, body.get("positions", []))
     return JSONResponse({"ok": True})
 
 
 @router.get("/api/desktop/widgets")
-async def get_widgets(request: Request):
-    store = request.app.state.desktop_settings
-    widgets = await store.get_widgets("user")
+async def get_widgets(request: Request, user: CurrentUser = Depends(require_session_user)):
+    store = _get_store(request)
+    widgets = await store.get_widgets(user.user_id)
     return JSONResponse(widgets)
 
 
-@router.put("/api/desktop/widgets", dependencies=[Depends(require_admin)])
-async def save_widgets(request: Request):
-    store = request.app.state.desktop_settings
+@router.put("/api/desktop/widgets")
+async def save_widgets(request: Request, user: CurrentUser = Depends(require_session_user)):
+    store = _get_store(request)
     body = await request.json()
     widgets = body.get("widgets", [])
-    await store.save_widgets("user", widgets)
+    await store.save_widgets(user.user_id, widgets)
     return JSONResponse({"ok": True})
 
 
@@ -85,24 +89,23 @@ async def save_widgets(request: Request):
 
 
 @router.get("/api/preferences/{namespace}")
-async def get_preference(request: Request, namespace: str):
-    store = request.app.state.desktop_settings
-    data = await store.get_preference("user", namespace)
+async def get_preference(request: Request, namespace: str, user: CurrentUser = Depends(require_session_user)):
+    store = _get_store(request)
+    data = await store.get_preference(user.user_id, namespace)
     return JSONResponse(data)
 
 
-@router.put("/api/preferences/{namespace}", dependencies=[Depends(require_admin)])
-async def save_preference(request: Request, namespace: str):
-    store = request.app.state.desktop_settings
+@router.put("/api/preferences/{namespace}")
+async def save_preference(request: Request, namespace: str, user: CurrentUser = Depends(require_session_user)):
+    store = _get_store(request)
     body = await request.json()
     if not isinstance(body, dict):
         return JSONResponse(
             {"error": "preference body must be a JSON object"},
             status_code=400,
         )
-    await store.save_preference("user", namespace, body)
+    await store.save_preference(user.user_id, namespace, body)
     return JSONResponse({"ok": True})
-
 
 
 @router.get("/chat-pwa")
