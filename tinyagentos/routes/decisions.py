@@ -1550,6 +1550,7 @@ async def _apply_project_create_grant(request: Request, decision: dict, value) -
                 pstore,
                 project["id"],
                 config=getattr(request.app.state, "config", None),
+                agent_registry=getattr(request.app.state, "agent_registry", None),
             )
         except Exception:
             logger.warning(

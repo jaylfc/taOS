@@ -73,6 +73,7 @@ async def execute_create_project(args: dict, request: Request) -> dict:
             store,
             project["id"],
             config=getattr(request.app.state, "config", None),
+            agent_registry=getattr(request.app.state, "agent_registry", None),
         )
     except Exception:
         logger.warning(
