@@ -641,9 +641,9 @@ class TestDetectGpusMulti:
         def fake_run(cmd):
             if cmd == ["lspci"]:
                 return ""
-            if cmd[:2] == ["nvidia-smi", "--query-gpu=index,name,utilization.gpu,clocks.gr,memory.used,memory.total"]:
-                return """0, NVIDIA GeForce RTX 3090, 45, 1800, 12288, 24576
-1, NVIDIA GeForce RTX 3060, 12, 1500, 4096, 12288"""
+            if cmd[:2] == ["nvidia-smi", "--query-gpu=index,name,utilization.gpu,clocks.gr,memory.used,memory.total,pci.bus_id"]:
+                return """0, NVIDIA GeForce RTX 3090, 45, 1800, 12288, 24576, 00000000:01:00.0
+1, NVIDIA GeForce RTX 3060, 12, 1500, 4096, 12288, 00000000:0a:00.0"""
             return ""
         monkeypatch.setattr(hw, "_run", fake_run)
         monkeypatch.setattr(hw.shutil, "which", lambda name: "/usr/bin/nvidia-smi" if name == "nvidia-smi" else None)

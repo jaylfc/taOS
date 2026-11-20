@@ -546,20 +546,22 @@ def _detect_amd_via_wsl() -> tuple[str, int]:
     return model, vram_mb
 
 
-def _parse_nvidia_smi_gpus(output: str) -> list[GpuInfo]:
-    """Parse nvidia-smi CSV output into a list of GpuInfo objects.
+def _parse_nvidia_smi_gpus(output: str) -> list[tuple[GpuInfo, str]]:
+    """Parse nvidia-smi CSV output into a list of (GpuInfo, pci_address) tuples.
 
-    Expected format (from --query-gpu=index,name,utilization.gpu,clocks.gr,memory.used,memory.total):
-    0, NVIDIA GeForce RTX 3090, 45, 1800, 12288, 24576
-    1, NVIDIA GeForce RTX 3060, 12, 1500, 4096, 12288
+    Expected format (from --query-gpu=index,name,utilization.gpu,clocks.gr,memory.used,memory.total,pci.bus_id):
+    0, NVIDIA GeForce RTX 3090, 45, 1800, 12288, 24576, 00000000:01:00.0
+    1, NVIDIA GeForce RTX 3060, 12, 1500, 4096, 12288, 00000000:0a:00.0
+
+    Also handles legacy 6-field format (without pci.bus_id) for compatibility.
     """
-    gpus: list[GpuInfo] = []
+    gpus: list[tuple[GpuInfo, str]] = []
     for line in output.strip().splitlines():
         line = line.strip()
         if not line:
             continue
         parts = [p.strip() for p in line.split(",")]
-        if len(parts) != 6:
+        if len(parts) not in (6, 7):
             continue
         try:
             idx = int(parts[0])
@@ -568,6 +570,7 @@ def _parse_nvidia_smi_gpus(output: str) -> list[GpuInfo]:
             freq_mhz = int(parts[3]) if parts[3] else 0
             mem_used = int(parts[4]) if parts[4] else 0
             mem_total = int(parts[5]) if parts[5] else 0
+            pci_addr = parts[6] if len(parts) == 7 else f"nvidia-index-{idx:02d}"
         except ValueError:
             continue
         gpu = GpuInfo()
@@ -576,24 +579,19 @@ def _parse_nvidia_smi_gpus(output: str) -> list[GpuInfo]:
         gpu.vram_mb = mem_total
         gpu.cuda = True
         gpu.vulkan = True
-        # Store runtime stats in a way the caller can use
-        gpu._nvidia_index = idx  # type: ignore[attr-defined]
-        gpu._nvidia_util = util  # type: ignore[attr-defined]
-        gpu._nvidia_freq_hz = freq_mhz * 1_000_000  # type: ignore[attr-defined]
-        gpu._nvidia_mem_used = mem_used  # type: ignore[attr-defined]
-        gpus.append(gpu)
-    # Sort by PCI index (nvidia-smi index matches PCI order)
-    gpus.sort(key=lambda g: getattr(g, "_nvidia_index", 0))
+        gpus.append((gpu, pci_addr))
+    # Sort by PCI address for stable cross-vendor ordering
+    gpus.sort(key=lambda t: t[1])
     return gpus
 
 
-def _detect_intel_gpus() -> list[GpuInfo]:
+def _detect_intel_gpus() -> list[tuple[GpuInfo, str]]:
     """Detect Intel integrated/discrete GPUs via DRM sysfs.
 
-    Returns a list of GpuInfo for each Intel GPU found (i915/xe drivers).
+    Returns a list of (GpuInfo, pci_address) tuples for each Intel GPU found (i915/xe drivers).
     Stats are not available without perf access; return devices with null stats.
     """
-    gpus: list[GpuInfo] = []
+    gpus: list[tuple[GpuInfo, str]] = []
     drm_path = Path("/sys/class/drm")
     if not drm_path.exists():
         return gpus
@@ -612,6 +610,19 @@ def _detect_intel_gpus() -> list[GpuInfo]:
                 continue
             if vendor_id != "0x8086":
                 continue
+            # Get PCI address from device symlink target
+            pci_addr = ""
+            try:
+                real_device = device_path.resolve()
+                # Path looks like /sys/devices/pci0000:00/0000:00:02.0/drm/card0/device
+                # Extract PCI address (0000:00:02.0)
+                parts = real_device.parts
+                for part in parts:
+                    if part.startswith("0000:") and part.count(":") >= 2:
+                        pci_addr = part
+                        break
+            except (OSError, RuntimeError):
+                pass
             # This is an Intel GPU
             gpu = GpuInfo()
             gpu.type = "intel"
@@ -635,18 +646,18 @@ def _detect_intel_gpus() -> list[GpuInfo]:
                 gpu.model = "Intel GPU (integrated)"
             gpu.vram_mb = 0  # Shared memory, no dedicated VRAM
             gpu.vulkan = shutil.which("vulkaninfo") is not None
-            gpus.append(gpu)
+            gpus.append((gpu, pci_addr))
     except OSError:
         pass
     return gpus
 
 
-def _detect_amd_gpus() -> list[GpuInfo]:
+def _detect_amd_gpus() -> list[tuple[GpuInfo, str]]:
     """Detect AMD GPUs via DRM sysfs (amdgpu driver).
 
-    Returns a list of GpuInfo for each AMD GPU found.
+    Returns a list of (GpuInfo, pci_address) tuples for each AMD GPU found.
     """
-    gpus: list[GpuInfo] = []
+    gpus: list[tuple[GpuInfo, str]] = []
     drm_path = Path("/sys/class/drm")
     if not drm_path.exists():
         return gpus
@@ -665,6 +676,17 @@ def _detect_amd_gpus() -> list[GpuInfo]:
                 continue
             if vendor_id != "0x1002":
                 continue
+            # Get PCI address from device symlink target
+            pci_addr = ""
+            try:
+                real_device = device_path.resolve()
+                parts = real_device.parts
+                for part in parts:
+                    if part.startswith("0000:") and part.count(":") >= 2:
+                        pci_addr = part
+                        break
+            except (OSError, RuntimeError):
+                pass
             # This is an AMD GPU
             gpu = GpuInfo()
             gpu.type = "amd"
@@ -698,18 +720,18 @@ def _detect_amd_gpus() -> list[GpuInfo]:
                     pass
             if not gpu.vram_mb:
                 gpu.vram_mb = _amd_vram_for_model(gpu.model)
-            gpus.append(gpu)
+            gpus.append((gpu, pci_addr))
     except OSError:
         pass
     return gpus
 
 
-def _detect_mali_gpus() -> list[GpuInfo]:
+def _detect_mali_gpus() -> list[tuple[GpuInfo, str]]:
     """Detect Mali/ARM GPUs via DRM sysfs.
 
-    Returns a list of GpuInfo for each Mali GPU found.
+    Returns a list of (GpuInfo, pci_address) tuples for each Mali GPU found.
     """
-    gpus: list[GpuInfo] = []
+    gpus: list[tuple[GpuInfo, str]] = []
     drm_path = Path("/sys/class/drm")
     if not drm_path.exists():
         return gpus
@@ -723,6 +745,18 @@ def _detect_mali_gpus() -> list[GpuInfo]:
             driver_lower = driver_name.lower()
             if "mali" not in driver_lower and "panfrost" not in driver_lower and "panthor" not in driver_lower:
                 continue
+            # Get PCI address from device symlink target
+            pci_addr = ""
+            try:
+                device_path = driver_link.parent
+                real_device = device_path.resolve()
+                parts = real_device.parts
+                for part in parts:
+                    if part.startswith("0000:") and part.count(":") >= 2:
+                        pci_addr = part
+                        break
+            except (OSError, RuntimeError):
+                pass
             gpu = GpuInfo()
             gpu.type = "mali"
             # Try to get specific variant from device tree
@@ -739,7 +773,7 @@ def _detect_mali_gpus() -> list[GpuInfo]:
                     gpu.model = "Mali (integrated)"
             else:
                 gpu.model = "Mali (integrated)"
-            gpus.append(gpu)
+            gpus.append((gpu, pci_addr))
     except OSError:
         pass
     return gpus
@@ -752,7 +786,7 @@ def _detect_gpus() -> list[GpuInfo]:
     a detection tool is missing.
     """
     import subprocess
-    all_gpus: list[GpuInfo] = []
+    all_gpus: list[tuple[GpuInfo, str]] = []  # (gpu, pci_address)
 
     # Apple Silicon - single unified GPU
     if platform.system() == "Darwin" and platform.machine() == "arm64":
@@ -771,6 +805,8 @@ def _detect_gpus() -> list[GpuInfo]:
         return [gpu]
 
     # Linux: detect all GPU types
+    # Collect all GPUs with their PCI addresses, then sort once at the end
+
     # 1. NVIDIA via /proc/driver/nvidia (kernel module + driver present, works in
     #    containers without nvidia-smi userspace utilities) - checked first
     #    because tests mock this path
@@ -782,25 +818,25 @@ def _detect_gpus() -> list[GpuInfo]:
         gpu.cuda = True
         gpu.vulkan = True
         gpu.vram_mb = _nvidia_vram_for_model(gpu.model)
-        all_gpus.append(gpu)
+        all_gpus.append((gpu, ""))  # No PCI address from /proc
 
-    # 2. NVIDIA via nvidia-smi (preferred - gives all GPUs with stats)
+    # 2. NVIDIA via nvidia-smi (preferred - gives all GPUs with stats and PCI addresses)
     if shutil.which("nvidia-smi"):
         nvidia_smi_out = _run([
             "nvidia-smi",
-            "--query-gpu=index,name,utilization.gpu,clocks.gr,memory.used,memory.total",
+            "--query-gpu=index,name,utilization.gpu,clocks.gr,memory.used,memory.total,pci.bus_id",
             "--format=csv,noheader,nounits",
         ])
         if nvidia_smi_out.strip():
             nvidia_gpus = _parse_nvidia_smi_gpus(nvidia_smi_out)
             # Replace any existing NVIDIA GPUs from /proc with the full list from nvidia-smi
-            all_gpus = [g for g in all_gpus if g.type != "nvidia"]
+            all_gpus = [(g, addr) for g, addr in all_gpus if g.type != "nvidia"]
             all_gpus.extend(nvidia_gpus)
 
     # 3. AMD via lspci (fallback if nvidia-smi/rocminfo not available)
     lspci = _run(["lspci"])
     if "AMD" in lspci.upper() and "VGA" in lspci.upper():
-        # Parse each AMD VGA line
+        # Parse each AMD VGA line - we can't easily get PCI address from lspci output here
         for line in lspci.split("\n"):
             if "AMD" in line.upper() and "VGA" in line:
                 gpu = GpuInfo()
@@ -809,10 +845,14 @@ def _detect_gpus() -> list[GpuInfo]:
                 gpu.rocm = Path("/opt/rocm").exists()
                 gpu.vulkan = gpu.rocm
                 gpu.vram_mb = _amd_vram_for_model(gpu.model)
-                all_gpus.append(gpu)
+                # Extract PCI address from lspci line (format: "01:00.0 VGA compatible controller: ...")
+                pci_addr = line.split()[0] if line.split() else ""
+                if pci_addr and not pci_addr.startswith("0000:"):
+                    pci_addr = "0000:" + pci_addr
+                all_gpus.append((gpu, pci_addr))
 
     # 4. WSL2 AMD via /dev/dxg + rocminfo
-    if not any(g.type == "amd" for g in all_gpus):
+    if not any(g.type == "amd" for g, _ in all_gpus):
         wsl_model, wsl_vram = _detect_amd_via_wsl()
         if wsl_model:
             gpu = GpuInfo()
@@ -820,32 +860,39 @@ def _detect_gpus() -> list[GpuInfo]:
             gpu.model = wsl_model
             gpu.rocm = True
             gpu.vram_mb = wsl_vram
-            all_gpus.append(gpu)
+            all_gpus.append((gpu, ""))
 
     # 5. AMD via DRM sysfs (amdgpu) - catches any missed
     amd_gpus = _detect_amd_gpus()
-    for agpu in amd_gpus:
+    for agpu, addr in amd_gpus:
         # Avoid duplicates by checking if we already have this model
-        if not any(g.model == agpu.model for g in all_gpus):
-            all_gpus.append(agpu)
+        if not any(g.model == agpu.model for g, _ in all_gpus):
+            all_gpus.append((agpu, addr))
 
     # 6. Intel via DRM sysfs (i915/xe)
     intel_gpus = _detect_intel_gpus()
-    for igpu in intel_gpus:
-        if not any(g.model == igpu.model for g in all_gpus):
-            all_gpus.append(igpu)
+    for igpu, addr in intel_gpus:
+        if not any(g.model == igpu.model for g, _ in all_gpus):
+            all_gpus.append((igpu, addr))
 
     # 7. Mali/ARM via DRM sysfs
     mali_gpus = _detect_mali_gpus()
-    for mgpu in mali_gpus:
-        if not any(g.model == mgpu.model for g in all_gpus):
-            all_gpus.append(mgpu)
+    for mgpu, addr in mali_gpus:
+        if not any(g.model == mgpu.model for g, _ in all_gpus):
+            all_gpus.append((mgpu, addr))
+
+    # Sort all GPUs by PCI address for stable cross-vendor ordering
+    # Empty PCI addresses sort to the end
+    all_gpus.sort(key=lambda t: t[1] or "zzzz")
+
+    # Extract just the GpuInfo objects
+    result = [g for g, _ in all_gpus]
 
     # If still no GPUs found, return a single "none" GPU for compatibility
-    if not all_gpus:
+    if not result:
         return [GpuInfo()]
 
-    return all_gpus
+    return result
 
 
 def _detect_gpu() -> GpuInfo:
