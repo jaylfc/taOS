@@ -74,7 +74,10 @@ export function useSessionPersistence() {
 
     // Restore windows
     fetch("/api/desktop/windows")
-      .then((r) => r.json())
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
       .then((positions: SavedWindow[]) => {
         if (!Array.isArray(positions)) return;
         for (const saved of positions) {
@@ -96,11 +99,22 @@ export function useSessionPersistence() {
           }
         }
       })
-      .catch(() => {});
+      .catch((err) => {
+        console.error("Failed to restore windows:", err);
+        addNotification({
+          source: "system",
+          title: "Failed to restore windows",
+          body: "Your window layout could not be restored. Please try again.",
+          level: "error",
+        });
+      });
 
     // Restore dock
     fetch("/api/desktop/dock")
-      .then((r) => r.json())
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
       .then((data: { pinned?: string[]; iconSize?: string; position?: string }) => {
         if (data.pinned && Array.isArray(data.pinned)) {
           // Saved pins are restored verbatim. Resolving a redirect id to its
@@ -119,34 +133,64 @@ export function useSessionPersistence() {
           useDockStore.getState().setPosition(data.position);
         }
       })
-      .catch(() => {})
+      .catch((err) => {
+        console.error("Failed to restore dock:", err);
+        addNotification({
+          source: "system",
+          title: "Failed to restore dock",
+          body: "Your dock settings could not be restored. Please try again.",
+          level: "error",
+        });
+      })
       .finally(() => {
         dockRestored.current = true;
       });
 
     // Restore wallpaper
     fetch("/api/desktop/settings")
-      .then((r) => r.json())
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
       .then((data: { wallpaper?: string }) => {
         if (data.wallpaper) {
           useThemeStore.getState().setWallpaper(data.wallpaper);
         }
       })
-      .catch(() => {})
+      .catch((err) => {
+        console.error("Failed to restore wallpaper:", err);
+        addNotification({
+          source: "system",
+          title: "Failed to restore wallpaper",
+          body: "Your wallpaper could not be restored. Please try again.",
+          level: "error",
+        });
+      })
       .finally(() => {
         wallpaperRestored.current = true;
       });
 
     // Restore widgets
     fetch("/api/desktop/widgets")
-      .then((r) => r.json())
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
       .then((data: Widget[] | { widgets: Widget[] }) => {
         const list = Array.isArray(data) ? data : (data.widgets ?? []);
         if (list.length > 0) {
           useWidgetStore.setState({ widgets: list });
         }
       })
-      .catch(() => {});
+      .catch((err) => {
+        console.error("Failed to restore widgets:", err);
+        addNotification({
+          source: "system",
+          title: "Failed to restore widgets",
+          body: "Your widgets could not be restored. Please try again.",
+          level: "error",
+        });
+      });
 
     // Restore browser windows
     loadBrowserWindows()
@@ -169,7 +213,15 @@ export function useSessionPersistence() {
         }
         useBrowserStore.setState({ windows });
       })
-      .catch(() => {});
+      .catch((err) => {
+        console.error("Failed to restore browser windows:", err);
+        addNotification({
+          source: "system",
+          title: "Failed to restore browser windows",
+          body: "Your browser windows could not be restored. Please try again.",
+          level: "error",
+        });
+      });
   }, [authReady, openWindow, updatePosition, updateSize, maximizeWindow, snapWindow]);
 
   // Auto-save windows (debounced 2s)
@@ -192,7 +244,15 @@ export function useSessionPersistence() {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ positions: state }),
-      }).catch(() => {});
+      }).catch((err) => {
+        console.error("Failed to save windows:", err);
+        addNotification({
+          source: "system",
+          title: "Failed to save windows",
+          body: "Your window layout could not be saved. Please try again.",
+          level: "error",
+        });
+      });
     }, 2000);
 
     return () => {

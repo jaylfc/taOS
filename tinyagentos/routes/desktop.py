@@ -89,14 +89,14 @@ async def save_widgets(request: Request, user: CurrentUser = Depends(require_ses
 
 
 @router.get("/api/preferences/{namespace}")
-async def get_preference(namespace: str, request: Request, user: CurrentUser = Depends(require_session_user)):
+async def get_preference(request: Request, namespace: str, user: CurrentUser = Depends(require_session_user)):
     store = _get_store(request)
     data = await store.get_preference(user.user_id, namespace)
     return JSONResponse(data)
 
 
 @router.put("/api/preferences/{namespace}")
-async def save_preference(namespace: str, request: Request, user: CurrentUser = Depends(require_session_user)):
+async def save_preference(request: Request, namespace: str, user: CurrentUser = Depends(require_session_user)):
     store = _get_store(request)
     body = await request.json()
     if not isinstance(body, dict):
