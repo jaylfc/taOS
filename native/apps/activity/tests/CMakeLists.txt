@@ -15,3 +15,8 @@ endfunction()
 
 activity_test(tst_fmt)
 activity_test(tst_engine)
+
+add_executable(tst_activity_real tst_activity_real.cpp)
+target_link_libraries(tst_activity_real PRIVATE activity_core Qt6::Test)
+add_test(NAME activity-real COMMAND tst_activity_real)
+set_tests_properties(activity-real PROPERTIES TIMEOUT 240 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

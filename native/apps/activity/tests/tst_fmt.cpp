@@ -25,7 +25,7 @@ private Q_SLOTS:
     {
         QCOMPARE(Fmt::mb(512), u"512 MB"_s);
         QCOMPARE(Fmt::mb(1536), u"1.5 GB"_s);
-        QCOMPARE(Fmt::mb(-1), u"—"_s);
+        QCOMPARE(Fmt::mb(-1), u"\u2014"_s);
     }
     void durations()
     {

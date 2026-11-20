@@ -35,7 +35,7 @@ QString Fmt::rate(double bps)
 QString Fmt::mb(double v)
 {
     if (v < 0 || std::isnan(v))
-        return u"—"_s;
+        return u"\u2014"_s;
     if (v >= 1024)
         return trimmedNumber(v / 1024, 1) + u" GB"_s;
     return QString::number(qRound64(v)) + u" MB"_s;

@@ -17,7 +17,7 @@ Card {
         font.pixelSize: 12
         font.italic: true
         color: TaosStyle.textTertiary
-        text: qsTr("No models currently loaded — backends report here when they hold a model in memory, on this host or any cluster worker.")
+        text: qsTr("No models currently loaded \u2014 backends report here when they hold a model in memory, on this host or any cluster worker.")
     }
     ColumnLayout {
         Layout.fillWidth: true
