@@ -49,6 +49,7 @@ from tinyagentos.model_activity import (
 )
 from tinyagentos.scheduler.loaded_model import (
     LoadedModel,
+    ModelClass,
     PriorityClass,
     priority_rank,
 )
@@ -209,6 +210,56 @@ class CoreAwareModelScheduler:
         return model
 
     # -----------------------------------------------------------------------
+    # Idle TTL sweep (taOS #62)
+    # -----------------------------------------------------------------------
+
+    def idle_expired(self, now: float | None = None) -> list[LoadedModel]:
+        """Residents that have sat unused past their idle TTL.
+
+        Pure query — nothing is evicted. Pinned / always_resident
+        models are never listed. Ordered oldest-idle first so a
+        caller that evicts one at a time frees the stalest model.
+        """
+        now = time.time() if now is None else now
+        expired = [m for m in self._residents.values() if m.is_idle_expired(now)]
+        expired.sort(key=lambda m: m.last_used_at)
+        return expired
+
+    async def sweep_idle(self, now: float | None = None) -> list[LoadedModel]:
+        """Evict every resident idle past its per-class TTL.
+
+        This is the proactive half of #62: without it, eviction only
+        fires when a new load creates core pressure, so an idle model
+        (e.g. a preloaded rkllama session) holds NPU RAM forever.
+        Each eviction goes through ``_evict_reload`` so ``evict_fn``
+        and the Model Activity feed see it exactly like a
+        pressure eviction. Returns the evicted residents.
+
+        The scheduler keeps no background task of its own. The
+        embedding process drives the sweep from an existing periodic
+        loop: at startup it calls
+        ``BackendCatalog.attach_idle_sweeper(scheduler.sweep_idle)``
+        and the catalog's poll loop invokes it on its tick (taOS
+        #62). Tests can drive it directly, so nothing here depends on
+        wall-clock scheduling.
+        """
+        evicted: list[LoadedModel] = []
+        now = time.time() if now is None else now
+        for model in self.idle_expired(now):
+            # The resident may have been touched (or evicted) between the
+            # query and now -- evict_fn and the registry are both externally
+            # reachable -- so re-check membership AND expiry before evicting.
+            # A model refreshed during an earlier eviction in this same sweep
+            # must not be evicted mid-request off the stale snapshot.
+            if model.model_id not in self._residents:
+                continue
+            if not model.is_idle_expired(now):
+                continue
+            await self._evict_reload(model)
+            evicted.append(model)
+        return evicted
+
+    # -----------------------------------------------------------------------
     # Core-aware load entry point
     # -----------------------------------------------------------------------
 
@@ -221,6 +272,8 @@ class CoreAwareModelScheduler:
         pinned: bool = False,
         memory_mb: int = 0,
         max_wait_ms: Optional[int] = None,
+        model_class: str = ModelClass.UNKNOWN,
+        ttl_seconds: float | None = None,
     ) -> LoadedModel:
         """Decide how to load model_id on backend_name.
 
@@ -240,6 +293,11 @@ class CoreAwareModelScheduler:
             pinned: if True, treat as always_resident regardless of priority.
             memory_mb: estimated memory requirement in MB. 0 means unknown.
             max_wait_ms: per-call override for the wait budget.
+            model_class: workload class for the idle TTL
+                (one of ModelClass). Defaults to UNKNOWN.
+            ttl_seconds: per-model idle TTL override in seconds.
+                None means the class default. 0 disables idle
+                eviction for this resident.
 
         Returns:
             A LoadedModel record with the chosen tp_mode and resource_holds
@@ -255,7 +313,8 @@ class CoreAwareModelScheduler:
         # Fast path: backend has no discrete cores -- memory-only check.
         if not shape.has_cores():
             return self._make_no_core_model(
-                model_id, backend_name, memory_mb, priority, pinned
+                model_id, backend_name, memory_mb, priority, pinned,
+                model_class=model_class, ttl_seconds=ttl_seconds,
             )
 
         # Core-bearing backend (RK3588 NPU path).
@@ -267,6 +326,8 @@ class CoreAwareModelScheduler:
             priority=priority,
             pinned=pinned,
             memory_mb=memory_mb,
+            model_class=model_class,
+            ttl_seconds=ttl_seconds,
         )
 
     # -----------------------------------------------------------------------
@@ -282,6 +343,8 @@ class CoreAwareModelScheduler:
         priority: str,
         pinned: bool,
         memory_mb: int,
+        model_class: str = ModelClass.UNKNOWN,
+        ttl_seconds: float | None = None,
     ) -> LoadedModel:
         """Core-aware load path for backends with NPU cores."""
 
@@ -322,6 +385,8 @@ class CoreAwareModelScheduler:
                 incoming_pinned=pinned,
                 memory_mb=memory_mb,
                 available_cores=available_cores,
+                model_class=model_class,
+                ttl_seconds=ttl_seconds,
             )
 
         # Check if the wanted cores are all free.
@@ -330,7 +395,8 @@ class CoreAwareModelScheduler:
         if not occupied:
             # All wanted cores are free -- no pressure.
             return self._build_npu_model(
-                model_id, backend_name, wanted, memory_mb, priority, pinned
+                model_id, backend_name, wanted, memory_mb, priority, pinned,
+                model_class=model_class, ttl_seconds=ttl_seconds,
             )
 
         # Some wanted cores are occupied -- resolve pressure.
@@ -343,6 +409,8 @@ class CoreAwareModelScheduler:
             incoming_pinned=pinned,
             memory_mb=memory_mb,
             available_cores=available_cores,
+            model_class=model_class,
+            ttl_seconds=ttl_seconds,
         )
 
     # -----------------------------------------------------------------------
@@ -388,6 +456,8 @@ class CoreAwareModelScheduler:
         incoming_pinned: bool,
         memory_mb: int,
         available_cores: list[int],
+        model_class: str = ModelClass.UNKNOWN,
+        ttl_seconds: float | None = None,
     ) -> LoadedModel:
         """Attempt to free cores via shrink-reload, evict-reload, or reject."""
 
@@ -463,6 +533,7 @@ class CoreAwareModelScheduler:
                 return self._build_npu_model(
                     model_id, backend_name, [freed_core],
                     memory_mb, incoming_priority, incoming_pinned,
+                    model_class=model_class, ttl_seconds=ttl_seconds,
                 )
 
         # Strategy 2: evict the lowest-priority victim entirely.
@@ -476,6 +547,7 @@ class CoreAwareModelScheduler:
         return self._build_npu_model(
             model_id, backend_name, [assigned],
             memory_mb, incoming_priority, incoming_pinned,
+            model_class=model_class, ttl_seconds=ttl_seconds,
         )
 
     # -----------------------------------------------------------------------
@@ -564,6 +636,8 @@ class CoreAwareModelScheduler:
         memory_mb: int,
         priority: str,
         pinned: bool,
+        model_class: str = ModelClass.UNKNOWN,
+        ttl_seconds: float | None = None,
     ) -> LoadedModel:
         """Build a LoadedModel for backends without discrete core allocation."""
         return LoadedModel(
@@ -574,6 +648,8 @@ class CoreAwareModelScheduler:
             tp_mode="",
             priority=priority,
             pinned=pinned,
+            model_class=model_class,
+            ttl_seconds=ttl_seconds,
         )
 
     def _build_npu_model(
@@ -584,6 +660,8 @@ class CoreAwareModelScheduler:
         memory_mb: int,
         priority: str,
         pinned: bool,
+        model_class: str = ModelClass.UNKNOWN,
+        ttl_seconds: float | None = None,
     ) -> LoadedModel:
         """Build a LoadedModel for the RK3588 NPU path."""
         tp = _cores_to_tp_mode(cores)
@@ -595,6 +673,8 @@ class CoreAwareModelScheduler:
             tp_mode=tp,
             priority=priority,
             pinned=pinned,
+            model_class=model_class,
+            ttl_seconds=ttl_seconds,
         )
 
     def _emit(self, event: str, data: dict) -> None:

@@ -58,6 +58,47 @@ def priority_rank(priority: str) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Model classes + idle TTL defaults (taOS #62)
+# ---------------------------------------------------------------------------
+
+class ModelClass:
+    """Workload classes for idle-eviction TTLs.
+
+    A resident's class decides how long it may sit unused before the
+    idle sweep evicts it. The class is descriptive, not authoritative:
+    a caller that knows better passes an explicit ``ttl_seconds``
+    override on the LoadedModel instead.
+    """
+    IMAGE_GEN = "image_gen"
+    STT = "stt"
+    TTS = "tts"
+    EMBEDDING = "embedding"
+    RERANKER = "reranker"
+    QUERY_EXPANSION = "query_expansion"
+    CHAT_SMALL = "chat_small"      # chat, <=4B params
+    CHAT_LARGE = "chat_large"      # chat, >=7B params
+    REASONING = "reasoning"
+    UNKNOWN = "unknown"
+
+
+#: Default idle TTL in seconds per model class (taOS #62). Unknown
+#: classes fall back to the chat-large value: long enough that a
+#: misclassified chat model is not evicted mid-conversation.
+DEFAULT_TTL_SECONDS: dict[str, float] = {
+    ModelClass.IMAGE_GEN: 5 * 60,          # 5 min
+    ModelClass.STT: 2 * 60,                # 2 min
+    ModelClass.TTS: 2 * 60,                 # 2 min
+    ModelClass.EMBEDDING: 30,              # 30 sec
+    ModelClass.RERANKER: 15,               # 15 sec
+    ModelClass.QUERY_EXPANSION: 15,        # 15 sec
+    ModelClass.CHAT_SMALL: 10 * 60,         # 10 min
+    ModelClass.CHAT_LARGE: 30 * 60,         # 30 min
+    ModelClass.REASONING: 30 * 60,          # 30 min
+    ModelClass.UNKNOWN: 30 * 60,            # 30 min (safe default)
+}
+
+
+# ---------------------------------------------------------------------------
 # LoadedModel record
 # ---------------------------------------------------------------------------
 
@@ -84,6 +125,12 @@ class LoadedModel:
         priority: one of PRIORITY_CLASSES.
         pinned: when True the model is treated as always_resident
             regardless of the priority field.
+        model_class: one of ModelClass (workload class). Decides the
+            default idle TTL; "unknown" falls back to the chat-large TTL.
+        ttl_seconds: per-model idle TTL override in seconds. When None
+            the class default from DEFAULT_TTL_SECONDS applies. Set to
+            0 to disable idle eviction for this resident (same effect
+            as pinning, but without the always_resident priority).
     """
 
     model_id: str
@@ -95,6 +142,8 @@ class LoadedModel:
     last_used_at: float = field(default_factory=time.time)
     priority: str = PriorityClass.INTERACTIVE
     pinned: bool = False
+    model_class: str = ModelClass.UNKNOWN
+    ttl_seconds: float | None = None
 
     # -----------------------------------------------------------------------
     # Helpers
@@ -122,6 +171,35 @@ class LoadedModel:
         """Update last_used_at to now. Call on every inference request."""
         self.last_used_at = time.time()
 
+    def idle_ttl_seconds(self) -> float:
+        """Effective idle TTL for this resident.
+
+        Per-model override wins; otherwise the class default. A
+        ``ttl_seconds`` of 0 disables idle eviction for this resident.
+        """
+        if self.ttl_seconds is not None:
+            return self.ttl_seconds
+        return DEFAULT_TTL_SECONDS.get(self.model_class, DEFAULT_TTL_SECONDS[ModelClass.UNKNOWN])
+
+    def idle_seconds(self, now: float | None = None) -> float:
+        """Seconds since the last inference request on this resident."""
+        return (time.time() if now is None else now) - self.last_used_at
+
+    def is_idle_expired(self, now: float | None = None) -> bool:
+        """True when this resident has sat unused past its idle TTL.
+
+        Pinned / always_resident models never expire, and a
+        ``ttl_seconds`` of 0 disables expiry. The clock runs from
+        ``last_used_at`` (not ``loaded_at``): a model that is being
+        used stays resident however long ago it loaded.
+        """
+        if self.is_always_resident():
+            return False
+        ttl = self.idle_ttl_seconds()
+        if ttl <= 0:
+            return False
+        return self.idle_seconds(now) >= ttl
+
     def to_dict(self) -> dict:
         return {
             "model_id": self.model_id,
@@ -133,4 +211,6 @@ class LoadedModel:
             "last_used_at": self.last_used_at,
             "priority": self.priority,
             "pinned": self.pinned,
+            "model_class": self.model_class,
+            "ttl_seconds": self.ttl_seconds,
         }
