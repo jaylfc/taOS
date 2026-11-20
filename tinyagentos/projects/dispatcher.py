@@ -340,7 +340,8 @@ class DispatcherService:
                     if chat_channels is not None and chat_messages is not None and project_store is not None:
                         try:
                             channel = await ensure_a2a_channel(
-                                chat_channels, project_store, task_row["project_id"], config=config
+                                chat_channels, project_store, task_row["project_id"], config=config,
+                                agent_registry=getattr(self.app_state, "agent_registry", None),
                             )
                             text = f"Dispatcher: you have a ready task {task_row['id']}: {task_row['title']}"
                             await chat_messages.send_message(

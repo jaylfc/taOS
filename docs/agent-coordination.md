@@ -1533,6 +1533,10 @@ each other's work.
 
 Every project gets a matching A2A channel at creation time, on all three creation paths: `POST /api/projects`, the agent `create_project` skill, and `project_create` decision approval. The channel lets project members coordinate on the bus. Channel creation is idempotent (`ensure_a2a_channel`), so later membership syncs are safe.
 
+Membership sync: every path that writes a project member also syncs the channel — approving an auth request and assigning an agent (any granted scope shape, including canvas-only grants), accepting a cross-instance collab invite via the peer inbox, adding or removing a member, changing the lead, and reconciling or revoking scopes. The sync is best-effort and never blocks the membership write itself. `ensure_a2a_channel` is the single source of truth: it creates the channel when missing, archives duplicate channels, and reconciles the member list to the project's current members.
+
+Member resolution: channel members are routing names, the form the @mention parser and router expect — not the ids stored in `project_members`. A member resolves through `config.agents` first (by id, then by name). A native member absent from `config.agents` resolves through the agent registry to its handle. An accepted human collaborator stays in the channel under their contact id. A member matching none of these (e.g. a deleted agent) is dropped from the channel, and a member removed from the project is removed from the channel on the next sync.
+
 ## Agent project-creation requests (auth-request kind=project_create)
 
 An external agent that is already registered in the agent registry can request to

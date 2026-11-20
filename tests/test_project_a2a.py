@@ -87,7 +87,7 @@ async def test_resolve_member_names_with_config(stores):
     config = _config(_agent("john", john_id), _agent("tom", tom_id))
 
     members = [{"member_id": john_id}, {"member_id": tom_id}]
-    resolved = _resolve_member_names(members, config)
+    resolved = await _resolve_member_names(members, config)
 
     assert resolved == {"john", "tom"}
 
@@ -105,7 +105,7 @@ async def test_resolve_member_names_with_deleted_member(stores):
         {"member_id": known_id},
         {"member_id": ghost_id},
     ]
-    resolved = _resolve_member_names(members, config)
+    resolved = await _resolve_member_names(members, config)
 
     assert resolved == {"alice"}
 
@@ -118,9 +118,264 @@ async def test_resolve_member_names_without_config(stores):
     member_ids = ["hex1", "hex2", "hex3"]
     members = [{"member_id": mid} for mid in member_ids]
 
-    resolved = _resolve_member_names(members, None)
+    resolved = await _resolve_member_names(members, None)
 
     assert resolved == set(member_ids)
+
+
+@pytest.mark.asyncio
+async def test_resolve_member_names_with_registry_agent(tmp_path):
+    """_resolve_member_names resolves a registry-backed agent absent from
+    config.agents to its registry handle (CodeRabbit #4373 item 2)."""
+    from tinyagentos.agent_registry_store import AgentRegistryStore
+    from tinyagentos.projects.a2a import _resolve_member_names
+
+    registry = AgentRegistryStore(tmp_path / "reg-resolve.db")
+    await registry.init()
+    try:
+        reg = await registry.register(
+            framework="openclaw", display_name="ext-bot",
+            user_id="u", origin="external-selfjoin", handle="ext-bot",
+        )
+        await registry.set_status(reg["canonical_id"], "active")
+
+        config = _config(_agent("alice", "111111111111"))
+        members = [
+            {"member_id": "111111111111", "member_kind": "native"},
+            {"member_id": reg["canonical_id"], "member_kind": "native"},
+        ]
+        resolved = await _resolve_member_names(members, config, registry)
+
+        assert resolved == {"alice", "ext-bot"}
+    finally:
+        await registry.close()
+
+
+@pytest.mark.asyncio
+async def test_resolve_member_names_keeps_human_members(stores):
+    """_resolve_member_names keeps human members under their contact id
+    even with a real config (CodeRabbit #4373 item 3)."""
+    from tinyagentos.projects.a2a import _resolve_member_names
+
+    config = _config(_agent("alice", "111111111111"))
+    members = [
+        {"member_id": "111111111111", "member_kind": "native"},
+        {"member_id": "contact-1", "member_kind": "human"},
+        {"member_id": "deadbeefcafe", "member_kind": "native"},
+    ]
+    resolved = await _resolve_member_names(members, config)
+
+    assert resolved == {"alice", "contact-1"}
+
+
+@pytest.mark.asyncio
+async def test_resolve_member_names_registry_failure_drops_member():
+    """_resolve_member_names treats a registry lookup that raises (e.g. an
+    uninitialised store) as no match, so one unusable registry cannot fail
+    the whole channel sync (CodeRabbit #4373 follow-up: the decisions
+    project_create path hit RuntimeError 'AgentRegistryStore not
+    initialised' and ensure_a2a_channel failed silently)."""
+    from tinyagentos.projects.a2a import _resolve_member_names
+
+    class _RaisingRegistry:
+        async def get(self, canonical_id):
+            raise RuntimeError("AgentRegistryStore not initialised")
+
+    config = _config(_agent("alice", "111111111111"))
+    members = [
+        {"member_id": "111111111111", "member_kind": "native"},
+        {"member_id": "deadbeefcafe", "member_kind": "native"},
+    ]
+    resolved = await _resolve_member_names(
+        members, config, _RaisingRegistry()
+    )
+
+    assert resolved == {"alice"}
+
+
+class _StubRegistry:
+    """Registry stub returning a fixed identity (or None) for any id."""
+
+    def __init__(self, identity):
+        self._identity = identity
+
+    async def get(self, canonical_id):
+        return self._identity
+
+
+@pytest.mark.asyncio
+async def test_resolve_member_names_skips_revoked_registry_identity(tmp_path):
+    """A revoked registry identity must not resolve into the channel: its
+    handle is reusable, so a later active identity holding the same handle
+    would receive this project's traffic (CodeRabbit review 5981821820
+    on PR #4373)."""
+    from tinyagentos.agent_registry_store import AgentRegistryStore
+    from tinyagentos.projects.a2a import _resolve_member_names
+
+    registry = AgentRegistryStore(tmp_path / "reg-revoked.db")
+    await registry.init()
+    try:
+        reg = await registry.register(
+            framework="openclaw", display_name="ext-bot",
+            user_id="u", origin="external-selfjoin", handle="ext-bot",
+        )
+        await registry.set_status(reg["canonical_id"], "active")
+        await registry.set_status(reg["canonical_id"], "revoked")
+
+        config = _config(_agent("alice", "111111111111"))
+        members = [
+            {"member_id": "111111111111", "member_kind": "native"},
+            {"member_id": reg["canonical_id"], "member_kind": "native"},
+        ]
+        resolved = await _resolve_member_names(members, config, registry)
+
+        assert resolved == {"alice"}
+    finally:
+        await registry.close()
+
+
+@pytest.mark.asyncio
+async def test_resolve_member_names_skips_pending_registry_identity(tmp_path):
+    """A pending (not yet approved) registry identity must not resolve
+    into the channel either — only active identities are members
+    (CodeRabbit review 5981821820 on PR #4373)."""
+    from tinyagentos.agent_registry_store import AgentRegistryStore
+    from tinyagentos.projects.a2a import _resolve_member_names
+
+    registry = AgentRegistryStore(tmp_path / "reg-pending.db")
+    await registry.init()
+    try:
+        # external-selfjoin registrations start out "pending".
+        reg = await registry.register(
+            framework="openclaw", display_name="ext-bot",
+            user_id="u", origin="external-selfjoin", handle="ext-bot",
+        )
+        assert (await registry.get(reg["canonical_id"]))["status"] == "pending"
+
+        config = _config(_agent("alice", "111111111111"))
+        members = [
+            {"member_id": "111111111111", "member_kind": "native"},
+            {"member_id": reg["canonical_id"], "member_kind": "native"},
+        ]
+        resolved = await _resolve_member_names(members, config, registry)
+
+        assert resolved == {"alice"}
+    finally:
+        await registry.close()
+
+
+@pytest.mark.asyncio
+async def test_resolve_member_names_rejects_handle_colliding_with_non_member():
+    """A registry handle equal to a configured agent's name must not be
+    added when that configured agent is not a project member: the router
+    resolves channel member names to configured agents, so the outsider
+    would receive the project's traffic (CodeRabbit review 5981821820
+    on PR #4373)."""
+    from tinyagentos.projects.a2a import _resolve_member_names
+
+    config = _config(
+        _agent("ext-bot", "cfg-9"), _agent("alice", "111111111111")
+    )
+    members = [
+        {"member_id": "111111111111", "member_kind": "native"},
+        {"member_id": "reg-cid-1", "member_kind": "native"},
+    ]
+    registry = _StubRegistry(
+        {"handle": "ext-bot", "status": "active", "display_name": "Ext Bot"}
+    )
+    resolved = await _resolve_member_names(members, config, registry)
+
+    assert resolved == {"alice"}
+
+
+@pytest.mark.asyncio
+async def test_resolve_member_names_allows_handle_when_config_agent_is_member():
+    """The collision guard must not over-block: when the configured agent
+    whose name matches the handle IS a project member, the name belongs
+    in the channel (it resolves there via the config path anyway)."""
+    from tinyagentos.projects.a2a import _resolve_member_names
+
+    config = _config(_agent("ext-bot", "cfg-9"))
+    members = [
+        {"member_id": "cfg-9", "member_kind": "native"},
+        {"member_id": "reg-cid-1", "member_kind": "native"},
+    ]
+    registry = _StubRegistry(
+        {"handle": "ext-bot", "status": "active", "display_name": "Ext Bot"}
+    )
+    resolved = await _resolve_member_names(members, config, registry)
+
+    assert resolved == {"ext-bot"}
+
+
+@pytest.mark.asyncio
+async def test_ensure_keeps_member_when_registry_lookup_fails(stores, tmp_path):
+    """A transient registry failure must not evict an existing channel
+    member: the project membership row is still valid, only the lookup
+    failed (CodeRabbit review 5981821820 on PR #4373)."""
+    from tinyagentos.agent_registry_store import AgentRegistryStore
+
+    project_store, channel_store = stores
+    p = await project_store.create_project(
+        name="P", slug="registry-failure-ensure", created_by="u1"
+    )
+    registry = AgentRegistryStore(tmp_path / "reg-fail-ensure.db")
+    await registry.init()
+    try:
+        reg = await registry.register(
+            framework="openclaw", display_name="ext-bot",
+            user_id="u", origin="external-selfjoin", handle="ext-bot",
+        )
+        await registry.set_status(reg["canonical_id"], "active")
+        await project_store.add_member(
+            p["id"], reg["canonical_id"], member_kind="native"
+        )
+        config = _config(_agent("alice", "111111111111"))
+
+        ch = await ensure_a2a_channel(
+            channel_store, project_store, p["id"], config=config,
+            agent_registry=registry,
+        )
+        assert ch["members"] == ["ext-bot"]
+
+        class _RaisingRegistry:
+            async def get(self, canonical_id):
+                raise RuntimeError("transient store error")
+
+        ch = await ensure_a2a_channel(
+            channel_store, project_store, p["id"], config=config,
+            agent_registry=_RaisingRegistry(),
+        )
+        assert ch["members"] == ["ext-bot"]
+    finally:
+        await registry.close()
+
+
+@pytest.mark.asyncio
+async def test_ensure_removes_member_when_registry_confirms_absence(stores):
+    """The lookup-failure guard must not freeze membership: when the
+    registry answers cleanly that the identity is gone (get returns
+    None), the member is removed from the channel as before."""
+    project_store, channel_store = stores
+    p = await project_store.create_project(
+        name="P", slug="registry-absent-ensure", created_by="u1"
+    )
+    await project_store.add_member(p["id"], "reg-cid-1", member_kind="native")
+    config = _config(_agent("alice", "111111111111"))
+
+    ch = await ensure_a2a_channel(
+        channel_store, project_store, p["id"], config=config,
+        agent_registry=_StubRegistry(
+            {"handle": "ext-bot", "status": "active", "display_name": "Ext Bot"}
+        ),
+    )
+    assert ch["members"] == ["ext-bot"]
+
+    ch = await ensure_a2a_channel(
+        channel_store, project_store, p["id"], config=config,
+        agent_registry=_StubRegistry(None),
+    )
+    assert ch["members"] == []
 
 
 @pytest.mark.asyncio
@@ -571,3 +826,193 @@ async def test_backfill_all_with_config_updates_leads(stores):
     chans = await channel_store.list_channels(project_id=p["id"])
     a2a = next(c for c in chans if (c.get("settings") or {}).get("kind") == A2A_KIND)
     assert a2a["settings"]["leads"] == ["coord"]
+
+class _KeyedRegistry:
+    """Registry stub keyed by canonical id; ids in ``failing`` raise,
+    like a transient store error on that one row."""
+
+    def __init__(self, identities, failing=()):
+        self._identities = identities
+        self._failing = set(failing)
+
+    async def get(self, canonical_id):
+        if canonical_id in self._failing:
+            raise RuntimeError("transient store error")
+        return self._identities.get(canonical_id)
+
+    async def get_by_handle(self, handle, *, status="active"):
+        """Mirror AgentRegistryStore.get_by_handle: the oldest row with
+        this handle and status, or None, with the row's canonical_id.
+        A different query path from get(), so the per-id ``failing``
+        set does not apply."""
+        for cid, identity in self._identities.items():
+            if identity.get("handle") != handle:
+                continue
+            if status is not None and identity.get("status") != status:
+                continue
+            return {**identity, "canonical_id": cid}
+        return None
+
+
+def _identity(handle, status="active"):
+    return {"handle": handle, "status": status, "display_name": handle}
+
+
+@pytest.mark.asyncio
+async def test_ensure_removes_confirmed_departure_when_another_lookup_fails(stores):
+    """CodeRabbit on #4373 (4635125135): the incomplete-resolution guard
+    must be per-member. alice (a config agent) leaves the project while
+    ext-bot's registry lookup fails: alice's removal is confirmed —
+    config resolution never touches the registry — and must still
+    apply, while the unresolved ext-bot is preserved."""
+    project_store, channel_store = stores
+    p = await project_store.create_project(
+        name="P", slug="departure-during-failure", created_by="u1"
+    )
+    await project_store.add_member(p["id"], "111111111111", member_kind="native")
+    await project_store.add_member(p["id"], "reg-cid-1", member_kind="native")
+    config = _config(_agent("alice", "111111111111"))
+    registry = _KeyedRegistry({"reg-cid-1": _identity("ext-bot")})
+
+    ch = await ensure_a2a_channel(
+        channel_store, project_store, p["id"], config=config,
+        agent_registry=registry,
+    )
+    assert ch["members"] == ["alice", "ext-bot"]
+
+    await project_store.remove_member(p["id"], "111111111111")
+    failing = _KeyedRegistry(
+        {"reg-cid-1": _identity("ext-bot")}, failing={"reg-cid-1"}
+    )
+    ch = await ensure_a2a_channel(
+        channel_store, project_store, p["id"], config=config,
+        agent_registry=failing,
+    )
+    assert ch["members"] == ["ext-bot"]
+
+
+@pytest.mark.asyncio
+async def test_ensure_removes_revoked_member_when_another_lookup_fails(stores):
+    """CodeRabbit on #4373 (4635170159): a revoked member's lookup
+    SUCCEEDS, so its absence is confirmed and its handle must be
+    removed even though another member's lookup fails in the same
+    sync; the unresolved member is preserved."""
+    project_store, channel_store = stores
+    p = await project_store.create_project(
+        name="P", slug="revoked-during-failure", created_by="u1"
+    )
+    await project_store.add_member(p["id"], "reg-cid-1", member_kind="native")
+    await project_store.add_member(p["id"], "reg-cid-2", member_kind="native")
+    config = _config(_agent("alice", "111111111111"))
+    registry = _KeyedRegistry(
+        {
+            "reg-cid-1": _identity("revoked-bot"),
+            "reg-cid-2": _identity("ext-bot"),
+        }
+    )
+
+    ch = await ensure_a2a_channel(
+        channel_store, project_store, p["id"], config=config,
+        agent_registry=registry,
+    )
+    assert ch["members"] == ["ext-bot", "revoked-bot"]
+
+    registry = _KeyedRegistry(
+        {
+            "reg-cid-1": _identity("revoked-bot", status="revoked"),
+            "reg-cid-2": _identity("ext-bot"),
+        },
+        failing={"reg-cid-2"},
+    )
+    ch = await ensure_a2a_channel(
+        channel_store, project_store, p["id"], config=config,
+        agent_registry=registry,
+    )
+    assert ch["members"] == ["ext-bot"]
+
+
+@pytest.mark.asyncio
+async def test_ensure_removes_colliding_handle_when_another_lookup_fails(stores):
+    """CodeRabbit on #4373 (4635146991): a handle colliding with a
+    configured agent who is not a project member is confirmed unsafe
+    from a successful lookup, so it must be removed even though
+    another member's lookup fails in the same sync; the unresolved
+    member is preserved."""
+    project_store, channel_store = stores
+    p = await project_store.create_project(
+        name="P", slug="collision-during-failure", created_by="u1"
+    )
+    await project_store.add_member(p["id"], "reg-cid-1", member_kind="native")
+    await project_store.add_member(p["id"], "reg-cid-2", member_kind="native")
+    registry = _KeyedRegistry(
+        {
+            "reg-cid-1": _identity("mallory"),
+            "reg-cid-2": _identity("ext-bot"),
+        }
+    )
+
+    ch = await ensure_a2a_channel(
+        channel_store, project_store, p["id"],
+        config=_config(_agent("alice", "111111111111")),
+        agent_registry=registry,
+    )
+    assert ch["members"] == ["ext-bot", "mallory"]
+
+    failing = _KeyedRegistry(
+        {
+            "reg-cid-1": _identity("mallory"),
+            "reg-cid-2": _identity("ext-bot"),
+        },
+        failing={"reg-cid-2"},
+    )
+    ch = await ensure_a2a_channel(
+        channel_store, project_store, p["id"],
+        config=_config(
+            _agent("alice", "111111111111"), _agent("mallory", "cfg-9")
+        ),
+        agent_registry=failing,
+    )
+    assert ch["members"] == ["ext-bot"]
+
+
+@pytest.mark.asyncio
+async def test_ensure_keeps_shared_handle_when_active_owner_unresolved(stores):
+    """CodeRabbit on #4373 (4635400056): a revoked identity and an active
+    identity can share one handle -- ux_agent_active_handle covers only
+    active rows. When the revoked row's lookup succeeds, its handle
+    looks like a confirmed removal; but if the ACTIVE identity's lookup
+    fails in the same sync, removing the name would evict the active
+    owner, whose membership is still valid. The handle must be kept
+    until its ownership is fully resolved."""
+    project_store, channel_store = stores
+    p = await project_store.create_project(
+        name="P", slug="shared-handle-during-failure", created_by="u1"
+    )
+    await project_store.add_member(p["id"], "reg-cid-1", member_kind="native")
+    await project_store.add_member(p["id"], "reg-cid-2", member_kind="native")
+    config = _config(_agent("alice", "111111111111"))
+    registry = _KeyedRegistry(
+        {
+            "reg-cid-1": _identity("shared-bot", status="revoked"),
+            "reg-cid-2": _identity("shared-bot"),
+        }
+    )
+
+    ch = await ensure_a2a_channel(
+        channel_store, project_store, p["id"], config=config,
+        agent_registry=registry,
+    )
+    assert ch["members"] == ["shared-bot"]
+
+    failing = _KeyedRegistry(
+        {
+            "reg-cid-1": _identity("shared-bot", status="revoked"),
+            "reg-cid-2": _identity("shared-bot"),
+        },
+        failing={"reg-cid-2"},
+    )
+    ch = await ensure_a2a_channel(
+        channel_store, project_store, p["id"], config=config,
+        agent_registry=failing,
+    )
+    assert ch["members"] == ["shared-bot"]
