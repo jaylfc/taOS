@@ -13544,6 +13544,27 @@ async def auth_status(request: Request):
     })
 
 
+# ------------------------------------------------------------------ #
+#  /auth/me bearer resolution (native apps)                          #
+# ------------------------------------------------------------------ #
+
+def _bearer_person(auth_mgr, presented: str) -> dict | None:
+    """Resolve the person a bearer token stands for, or ``None``.
+
+    Extension point: the accounts design will add per-person account session
+    tokens here (do not implement those now). Today only the host local token
+    counts as a person -- it maps to the admin, the first user. Agent-bound
+    local tokens and registry JWTs are not accepted here: they are not a
+    person.
+    """
+    if not presented or not auth_mgr.validate_local_token(presented):
+        return None
+    # Agent-bound local tokens authenticate an agent, never a person.
+    if auth_mgr.get_local_token_agent(presented) is not None:
+        return None
+    return auth_mgr.get_primary_user()
+
+
 @router.get("/me")
 async def auth_me(request: Request):
     """Return the current user's profile. 401 when not signed in."""
@@ -13552,6 +13573,16 @@ async def auth_me(request: Request):
     if not token or auth_mgr.validate_session(
         token, user_agent=request.headers.get("user-agent", "")
     ) is None:
+        # No valid session cookie: a native app may present the host local
+        # token as ``Authorization: Bearer <token>`` instead. The cookie path
+        # is unchanged and wins when both credentials are present, so this
+        # branch is reached only without a valid session cookie.
+        user = None
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            user = _bearer_person(auth_mgr, auth_header[7:].strip())
+        if user is not None:
+            return JSONResponse({"user": user, "via": "local_token"})
         _set_console_locked(request, True)
         return JSONResponse({"error": "not authenticated"}, status_code=401)
     user = auth_mgr.get_user(token=token, user_agent=request.headers.get("user-agent", ""))
