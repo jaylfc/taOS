@@ -615,3 +615,177 @@ class TestWsl2AmdDetection:
         model, vram = hw._detect_amd_via_wsl()
         assert model == ""
         assert vram == 0
+
+
+class TestDetectGpusMulti:
+    """Tests for the new _detect_gpus function that returns all GPUs."""
+
+    def test_detect_gpus_returns_multiple_nvidia_cards(self, monkeypatch):
+        """_detect_gpus should return a list with all NVIDIA GPUs, ordered by PCI address."""
+        import tinyagentos.hardware as hw
+        monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+
+        def fake_path_exists_safe(p):
+            s = str(p)
+            if "/proc/driver/nvidia/gpus" in s:
+                return False
+            if s == "/proc/driver/nvidia":
+                return False
+            if "/sys/class/misc/mali0" in s:
+                return False
+            if "/sys/class/drm" in s:
+                return False
+            return hw._path_exists_safe(p)
+        monkeypatch.setattr(hw, "_path_exists_safe", fake_path_exists_safe)
+
+        def fake_run(cmd):
+            if cmd == ["lspci"]:
+                return ""
+            if cmd[:2] == ["nvidia-smi", "--query-gpu=index,name,utilization.gpu,clocks.gr,memory.used,memory.total"]:
+                return """0, NVIDIA GeForce RTX 3090, 45, 1800, 12288, 24576
+1, NVIDIA GeForce RTX 3060, 12, 1500, 4096, 12288"""
+            return ""
+        monkeypatch.setattr(hw, "_run", fake_run)
+        monkeypatch.setattr(hw.shutil, "which", lambda name: "/usr/bin/nvidia-smi" if name == "nvidia-smi" else None)
+
+        gpus = hw._detect_gpus()
+
+        assert isinstance(gpus, list)
+        assert len(gpus) == 2
+        assert gpus[0].type == "nvidia"
+        assert "3090" in gpus[0].model
+        assert gpus[0].vram_mb == 24576
+        assert gpus[1].type == "nvidia"
+        assert "3060" in gpus[1].model
+        assert gpus[1].vram_mb == 12288
+
+    def test_detect_gpus_nvidia_smi_missing_falls_back_to_proc(self, monkeypatch):
+        """When nvidia-smi is missing, _detect_gpus should fall back to /proc/driver/nvidia."""
+        import tinyagentos.hardware as hw
+        monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(hw.shutil, "which", lambda name: None)
+
+        def fake_path_exists_safe(p):
+            s = str(p)
+            if "/proc/driver/nvidia/gpus" in s:
+                return True
+            if s == "/proc/driver/nvidia":
+                return True
+            # Block WSL detection and DRM
+            if "/proc/version" in s:
+                return False
+            if "/sys/class/drm" in s:
+                return False
+            return hw._path_exists_safe(p)
+        monkeypatch.setattr(hw, "_path_exists_safe", fake_path_exists_safe)
+
+        # Mock iterdir for /proc/driver/nvidia/gpus
+        original_iterdir = hw.Path.iterdir
+        def fake_iterdir(self):
+            if str(self) == "/proc/driver/nvidia/gpus":
+                class FakeGPUDir:
+                    def __truediv__(self, other):
+                        return Path("/proc/driver/nvidia/gpus/0/information")
+                return iter([FakeGPUDir()])
+            return original_iterdir(self)
+        monkeypatch.setattr(hw.Path, "iterdir", fake_iterdir)
+
+        # Mock read_text for the information file
+        original_read_text = hw.Path.read_text
+        def fake_read_text(self, *args, **kwargs):
+            if str(self) == "/proc/driver/nvidia/gpus/0/information":
+                return "Model:           NVIDIA GeForce RTX 3080\n"
+            return original_read_text(self, *args, **kwargs)
+        monkeypatch.setattr(hw.Path, "read_text", fake_read_text)
+
+        def fake_run(cmd):
+            return ""
+        monkeypatch.setattr(hw, "_run", fake_run)
+
+        gpus = hw._detect_gpus()
+        assert len(gpus) == 1
+        assert gpus[0].type == "nvidia"
+        assert "3080" in gpus[0].model
+
+    def test_detect_gpus_no_nvidia_no_crash(self, monkeypatch):
+        """_detect_gpus should not crash when no NVIDIA GPU present."""
+        import tinyagentos.hardware as hw
+        monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(hw.shutil, "which", lambda name: None)
+
+        def fake_path_exists_safe(p):
+            s = str(p)
+            if "/proc/driver/nvidia/gpus" in s:
+                return False
+            if "/sys/class/drm" in s:
+                return False
+            if "/proc/version" in s:
+                return False
+            return hw._path_exists_safe(p)
+        monkeypatch.setattr(hw, "_path_exists_safe", fake_path_exists_safe)
+
+        def fake_run(cmd):
+            return ""
+        monkeypatch.setattr(hw, "_run", fake_run)
+
+        gpus = hw._detect_gpus()
+        # Should return at least a "none" GPU
+        assert isinstance(gpus, list)
+        assert len(gpus) >= 1
+
+    def test_hardware_profile_has_gpus_list(self, monkeypatch):
+        """HardwareProfile should have a gpus list populated by detect_hardware."""
+        import tinyagentos.hardware as hw
+        monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(hw.shutil, "which", lambda name: None)
+
+        def fake_path_exists_safe(p):
+            s = str(p)
+            if "/proc/driver/nvidia/gpus" in s:
+                return False
+            if "/sys/class/drm" in s:
+                return False
+            if "/proc/version" in s:
+                return False
+            # Allow NPU detection paths
+            if "/dev/rknpu" in s:
+                return False
+            if "/sys/kernel/debug/rknpu" in s:
+                return False
+            if "/sys/class/devfreq/fdab0000.npu" in s:
+                return False
+            if "/sys/bus/platform/drivers/RKNPU" in s:
+                return False
+            if "/dev/hailo" in s:
+                return False
+            if "/dev/apex_" in s:
+                return False
+            return hw._path_exists_safe(p)
+        monkeypatch.setattr(hw, "_path_exists_safe", fake_path_exists_safe)
+
+        def fake_run(cmd):
+            return ""
+        monkeypatch.setattr(hw, "_run", fake_run)
+
+        # Mock DRM glob to return empty
+        original_glob = hw.Path.glob
+        def fake_glob(self, pattern):
+            if str(self) == "/sys/class/drm" and pattern == "renderD*":
+                return iter([])
+            return original_glob(self, pattern)
+        monkeypatch.setattr(hw.Path, "glob", fake_glob)
+
+        # Mock /dev glob for hailo/coral
+        def fake_dev_glob(self, pattern):
+            if str(self) == "/dev" and pattern in ("hailo*", "apex_*"):
+                return iter([])
+            return original_glob(self, pattern)
+        monkeypatch.setattr(hw.Path, "glob", fake_dev_glob)
+
+        profile = hw.detect_hardware()
+        assert hasattr(profile, "gpus")
+        assert isinstance(profile.gpus, list)
+        assert len(profile.gpus) >= 1
+        # First GPU should match the single gpu field
+        assert profile.gpu.type == profile.gpus[0].type
+        assert profile.gpu.model == profile.gpus[0].model

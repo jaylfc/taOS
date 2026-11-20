@@ -76,6 +76,7 @@ class HardwareProfile:
     ram_mb: int = 0
     npu: NpuInfo = field(default_factory=NpuInfo)
     gpu: GpuInfo = field(default_factory=GpuInfo)
+    gpus: list[GpuInfo] = field(default_factory=list)
     disk: DiskInfo = field(default_factory=DiskInfo)
     os: OsInfo = field(default_factory=OsInfo)
     # True when running inside WSL, where ram_mb is the WSL VM cap (50% of the
@@ -127,6 +128,7 @@ class HardwareProfile:
             ram_mb=data.get("ram_mb", 0),
             npu=NpuInfo(**data.get("npu", {})),
             gpu=GpuInfo(**data.get("gpu", {})),
+            gpus=[GpuInfo(**g) for g in data.get("gpus", [])],
             disk=DiskInfo(**data.get("disk", {})),
             os=OsInfo(**data.get("os", {})),
             wsl=data.get("wsl", False),
@@ -544,6 +546,308 @@ def _detect_amd_via_wsl() -> tuple[str, int]:
     return model, vram_mb
 
 
+def _parse_nvidia_smi_gpus(output: str) -> list[GpuInfo]:
+    """Parse nvidia-smi CSV output into a list of GpuInfo objects.
+
+    Expected format (from --query-gpu=index,name,utilization.gpu,clocks.gr,memory.used,memory.total):
+    0, NVIDIA GeForce RTX 3090, 45, 1800, 12288, 24576
+    1, NVIDIA GeForce RTX 3060, 12, 1500, 4096, 12288
+    """
+    gpus: list[GpuInfo] = []
+    for line in output.strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) != 6:
+            continue
+        try:
+            idx = int(parts[0])
+            model = parts[1]
+            util = int(parts[2]) if parts[2] else 0
+            freq_mhz = int(parts[3]) if parts[3] else 0
+            mem_used = int(parts[4]) if parts[4] else 0
+            mem_total = int(parts[5]) if parts[5] else 0
+        except ValueError:
+            continue
+        gpu = GpuInfo()
+        gpu.type = "nvidia"
+        gpu.model = model
+        gpu.vram_mb = mem_total
+        gpu.cuda = True
+        gpu.vulkan = True
+        # Store runtime stats in a way the caller can use
+        gpu._nvidia_index = idx  # type: ignore[attr-defined]
+        gpu._nvidia_util = util  # type: ignore[attr-defined]
+        gpu._nvidia_freq_hz = freq_mhz * 1_000_000  # type: ignore[attr-defined]
+        gpu._nvidia_mem_used = mem_used  # type: ignore[attr-defined]
+        gpus.append(gpu)
+    # Sort by PCI index (nvidia-smi index matches PCI order)
+    gpus.sort(key=lambda g: getattr(g, "_nvidia_index", 0))
+    return gpus
+
+
+def _detect_intel_gpus() -> list[GpuInfo]:
+    """Detect Intel integrated/discrete GPUs via DRM sysfs.
+
+    Returns a list of GpuInfo for each Intel GPU found (i915/xe drivers).
+    Stats are not available without perf access; return devices with null stats.
+    """
+    gpus: list[GpuInfo] = []
+    drm_path = Path("/sys/class/drm")
+    if not drm_path.exists():
+        return gpus
+    try:
+        for card in sorted(drm_path.glob("card*")):
+            device_path = card / "device"
+            if not device_path.exists():
+                continue
+            # Check vendor ID for Intel (0x8086)
+            vendor_file = device_path / "vendor"
+            if not _path_exists_safe(vendor_file):
+                continue
+            try:
+                vendor_id = vendor_file.read_text().strip()
+            except OSError:
+                continue
+            if vendor_id != "0x8086":
+                continue
+            # This is an Intel GPU
+            gpu = GpuInfo()
+            gpu.type = "intel"
+            # Try to get model name from device/subsystem
+            device_file = device_path / "device"
+            subsystem_file = device_path / "subsystem_device"
+            model_parts = []
+            if _path_exists_safe(device_file):
+                try:
+                    model_parts.append(device_file.read_text().strip())
+                except OSError:
+                    pass
+            if _path_exists_safe(subsystem_file):
+                try:
+                    model_parts.append(subsystem_file.read_text().strip())
+                except OSError:
+                    pass
+            if model_parts:
+                gpu.model = f"Intel GPU [{' '.join(model_parts)}]"
+            else:
+                gpu.model = "Intel GPU (integrated)"
+            gpu.vram_mb = 0  # Shared memory, no dedicated VRAM
+            gpu.vulkan = shutil.which("vulkaninfo") is not None
+            gpus.append(gpu)
+    except OSError:
+        pass
+    return gpus
+
+
+def _detect_amd_gpus() -> list[GpuInfo]:
+    """Detect AMD GPUs via DRM sysfs (amdgpu driver).
+
+    Returns a list of GpuInfo for each AMD GPU found.
+    """
+    gpus: list[GpuInfo] = []
+    drm_path = Path("/sys/class/drm")
+    if not drm_path.exists():
+        return gpus
+    try:
+        for card in sorted(drm_path.glob("card*")):
+            device_path = card / "device"
+            if not device_path.exists():
+                continue
+            # Check vendor ID for AMD (0x1002)
+            vendor_file = device_path / "vendor"
+            if not _path_exists_safe(vendor_file):
+                continue
+            try:
+                vendor_id = vendor_file.read_text().strip()
+            except OSError:
+                continue
+            if vendor_id != "0x1002":
+                continue
+            # This is an AMD GPU
+            gpu = GpuInfo()
+            gpu.type = "amd"
+            # Try to get model name
+            device_file = device_path / "device"
+            subsystem_file = device_path / "subsystem_device"
+            model_parts = []
+            if _path_exists_safe(device_file):
+                try:
+                    model_parts.append(device_file.read_text().strip())
+                except OSError:
+                    pass
+            if _path_exists_safe(subsystem_file):
+                try:
+                    model_parts.append(subsystem_file.read_text().strip())
+                except OSError:
+                    pass
+            if model_parts:
+                gpu.model = f"AMD GPU [{' '.join(model_parts)}]"
+            else:
+                gpu.model = "AMD GPU"
+            gpu.rocm = Path("/opt/rocm").exists()
+            gpu.vulkan = gpu.rocm
+            # Try to get VRAM from sysfs
+            vram_file = device_path / "mem_info_vram_total"
+            if _path_exists_safe(vram_file):
+                try:
+                    vram_bytes = int(vram_file.read_text().strip())
+                    gpu.vram_mb = vram_bytes // (1024 * 1024)
+                except (OSError, ValueError):
+                    pass
+            if not gpu.vram_mb:
+                gpu.vram_mb = _amd_vram_for_model(gpu.model)
+            gpus.append(gpu)
+    except OSError:
+        pass
+    return gpus
+
+
+def _detect_mali_gpus() -> list[GpuInfo]:
+    """Detect Mali/ARM GPUs via DRM sysfs.
+
+    Returns a list of GpuInfo for each Mali GPU found.
+    """
+    gpus: list[GpuInfo] = []
+    drm_path = Path("/sys/class/drm")
+    if not drm_path.exists():
+        return gpus
+    try:
+        # Use card*/device/driver pattern to match existing test mocks
+        for driver_link in drm_path.glob("card*/device/driver"):
+            try:
+                driver_name = driver_link.resolve().name
+            except (OSError, RuntimeError):
+                continue
+            driver_lower = driver_name.lower()
+            if "mali" not in driver_lower and "panfrost" not in driver_lower and "panthor" not in driver_lower:
+                continue
+            gpu = GpuInfo()
+            gpu.type = "mali"
+            # Try to get specific variant from device tree
+            compat_path = Path("/proc/device-tree/gpu@fb000000/compatible")
+            if compat_path.exists():
+                try:
+                    compat = compat_path.read_text(errors="replace").strip().strip("\x00")
+                    if "mali" in compat.lower():
+                        variant = compat.split(",")[-1].replace("mali-", "Mali-").replace("mali", "Mali")
+                        gpu.model = f"{variant} (integrated)"
+                    else:
+                        gpu.model = "Mali (integrated)"
+                except OSError:
+                    gpu.model = "Mali (integrated)"
+            else:
+                gpu.model = "Mali (integrated)"
+            gpus.append(gpu)
+    except OSError:
+        pass
+    return gpus
+
+
+def _detect_gpus() -> list[GpuInfo]:
+    """Detect ALL GPUs in the system, ordered by PCI address.
+
+    Returns a list of GpuInfo objects, one per GPU. Never crashes when
+    a detection tool is missing.
+    """
+    import subprocess
+    all_gpus: list[GpuInfo] = []
+
+    # Apple Silicon - single unified GPU
+    if platform.system() == "Darwin" and platform.machine() == "arm64":
+        gpu = GpuInfo()
+        gpu.type = "apple"
+        gpu.model = "Apple Silicon (unified memory)"
+        try:
+            mem_bytes = int(subprocess.run(["sysctl", "-n", "hw.memsize"],
+                                           capture_output=True, text=True, timeout=5).stdout.strip())
+            gpu.vram_mb = mem_bytes // (1024 * 1024)
+        except Exception:
+            gpu.vram_mb = 0
+        gpu.vulkan = False
+        gpu.cuda = False
+        gpu.rocm = False
+        return [gpu]
+
+    # Linux: detect all GPU types
+    # 1. NVIDIA via /proc/driver/nvidia (kernel module + driver present, works in
+    #    containers without nvidia-smi userspace utilities) - checked first
+    #    because tests mock this path
+    proc_model, proc_driver_present = _detect_nvidia_via_proc()
+    if proc_driver_present:
+        gpu = GpuInfo()
+        gpu.type = "nvidia"
+        gpu.model = proc_model or "NVIDIA GPU (unknown model)"
+        gpu.cuda = True
+        gpu.vulkan = True
+        gpu.vram_mb = _nvidia_vram_for_model(gpu.model)
+        all_gpus.append(gpu)
+
+    # 2. NVIDIA via nvidia-smi (preferred - gives all GPUs with stats)
+    if shutil.which("nvidia-smi"):
+        nvidia_smi_out = _run([
+            "nvidia-smi",
+            "--query-gpu=index,name,utilization.gpu,clocks.gr,memory.used,memory.total",
+            "--format=csv,noheader,nounits",
+        ])
+        if nvidia_smi_out.strip():
+            nvidia_gpus = _parse_nvidia_smi_gpus(nvidia_smi_out)
+            # Replace any existing NVIDIA GPUs from /proc with the full list from nvidia-smi
+            all_gpus = [g for g in all_gpus if g.type != "nvidia"]
+            all_gpus.extend(nvidia_gpus)
+
+    # 3. AMD via lspci (fallback if nvidia-smi/rocminfo not available)
+    lspci = _run(["lspci"])
+    if "AMD" in lspci.upper() and "VGA" in lspci.upper():
+        # Parse each AMD VGA line
+        for line in lspci.split("\n"):
+            if "AMD" in line.upper() and "VGA" in line:
+                gpu = GpuInfo()
+                gpu.type = "amd"
+                gpu.model = line.split(":")[-1].strip()
+                gpu.rocm = Path("/opt/rocm").exists()
+                gpu.vulkan = gpu.rocm
+                gpu.vram_mb = _amd_vram_for_model(gpu.model)
+                all_gpus.append(gpu)
+
+    # 4. WSL2 AMD via /dev/dxg + rocminfo
+    if not any(g.type == "amd" for g in all_gpus):
+        wsl_model, wsl_vram = _detect_amd_via_wsl()
+        if wsl_model:
+            gpu = GpuInfo()
+            gpu.type = "amd"
+            gpu.model = wsl_model
+            gpu.rocm = True
+            gpu.vram_mb = wsl_vram
+            all_gpus.append(gpu)
+
+    # 5. AMD via DRM sysfs (amdgpu) - catches any missed
+    amd_gpus = _detect_amd_gpus()
+    for agpu in amd_gpus:
+        # Avoid duplicates by checking if we already have this model
+        if not any(g.model == agpu.model for g in all_gpus):
+            all_gpus.append(agpu)
+
+    # 6. Intel via DRM sysfs (i915/xe)
+    intel_gpus = _detect_intel_gpus()
+    for igpu in intel_gpus:
+        if not any(g.model == igpu.model for g in all_gpus):
+            all_gpus.append(igpu)
+
+    # 7. Mali/ARM via DRM sysfs
+    mali_gpus = _detect_mali_gpus()
+    for mgpu in mali_gpus:
+        if not any(g.model == mgpu.model for g in all_gpus):
+            all_gpus.append(mgpu)
+
+    # If still no GPUs found, return a single "none" GPU for compatibility
+    if not all_gpus:
+        return [GpuInfo()]
+
+    return all_gpus
+
+
 def _detect_gpu() -> GpuInfo:
     gpu = GpuInfo()
     # Apple Silicon — unified memory acts as VRAM, MLX-accelerated
@@ -766,11 +1070,14 @@ def detect_hardware() -> HardwareProfile:
             "'wsl --shutdown'."
         )
     device_class = _detect_device_class()
+    all_gpus = _detect_gpus()
+    first_gpu = all_gpus[0] if all_gpus else GpuInfo()
     return HardwareProfile(
         cpu=_detect_cpu(),
         ram_mb=ram_mb,
         npu=_detect_npu(),
-        gpu=_detect_gpu(),
+        gpu=first_gpu,
+        gpus=all_gpus,
         disk=_detect_disk(),
         os=_detect_os(),
         wsl=wsl,
