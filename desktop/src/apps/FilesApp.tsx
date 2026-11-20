@@ -70,6 +70,12 @@ interface WorkspaceTrashItem {
   deleted_at: string; // ISO string
 }
 
+interface PhotosTrashItem {
+  id: string;
+  original_path: string;
+  deleted_at: string; // ISO string
+}
+
 interface FileEntry {
   name: string;
   path: string;
@@ -645,6 +651,11 @@ export function FilesApp({
   const [workspaceTrashLoading, setWorkspaceTrashLoading] = useState(false);
   const [workspaceTrashError, setWorkspaceTrashError] = useState<string | null>(null);
 
+  // Photos trash (built-in Photos location trash scope)
+  const [photosTrashItems, setPhotosTrashItems] = useState<PhotosTrashItem[]>([]);
+  const [photosTrashLoading, setPhotosTrashLoading] = useState(false);
+  const [photosTrashError, setPhotosTrashError] = useState<string | null>(null);
+
   // Doc-review stamp state (project: locations only)
   const [reviewStates, setReviewStates] = useState<Record<string, string | null>>({});
 
@@ -928,6 +939,76 @@ export function FilesApp({
       setError(msg);
     }
   }, [workspaceTrashItems.length, fetchWorkspaceTrash]);
+
+  /* ---- Photos trash ---- */
+  const fetchPhotosTrash = useCallback(async () => {
+    setPhotosTrashLoading(true);
+    setPhotosTrashError(null);
+    try {
+      const res = await fetch("/api/photos/trash", { headers: { Accept: "application/json" } });
+      if (!res.ok) {
+        // 403 means the user cannot access the Photos location (not owner/admin)
+        // Treat as empty rather than an error so the UI stays clean.
+        if (res.status === 403) {
+          setPhotosTrashItems([]);
+          return;
+        }
+        setPhotosTrashError(`Failed to load Photos trash (${res.status})`);
+        return;
+      }
+      const ct = res.headers.get("content-type") ?? "";
+      if (!ct.includes("application/json")) {
+        setPhotosTrashError("Unexpected response from server");
+        return;
+      }
+      const data = await res.json();
+      const items = Array.isArray(data.items) ? data.items : [];
+      setPhotosTrashItems(items);
+    } catch (e: unknown) {
+      setPhotosTrashError(e instanceof Error ? e.message : "Failed to load Photos trash");
+    } finally {
+      setPhotosTrashLoading(false);
+    }
+  }, []);
+
+  const handlePhotosTrashRestore = useCallback(async (item: PhotosTrashItem) => {
+    if (!window.confirm(`Restore \`${item.original_path}\` to its original location?`)) return;
+    try {
+      const res = await fetch(
+        `/api/photos/trash/${encodeURIComponent(item.id)}/restore`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+        }
+      );
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        setPhotosTrashError(`Restore failed: ${body || res.status}`);
+        return;
+      }
+      fetchPhotosTrash();
+    } catch (e: unknown) {
+      setPhotosTrashError(e instanceof Error ? e.message : "Restore failed");
+    }
+  }, [fetchPhotosTrash]);
+
+  const handlePhotosTrashPurge = useCallback(async (item: PhotosTrashItem) => {
+    if (!window.confirm(`Permanently delete? This cannot be undone.`)) return;
+    try {
+      const res = await fetch(
+        `/api/photos/trash/${encodeURIComponent(item.id)}`,
+        { method: "DELETE", headers: { Accept: "application/json" } }
+      );
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        setPhotosTrashError(`Delete failed: ${body || res.status}`);
+        return;
+      }
+      fetchPhotosTrash();
+    } catch (e: unknown) {
+      setPhotosTrashError(e instanceof Error ? e.message : "Delete failed");
+    }
+  }, [fetchPhotosTrash]);
 
   /* ---- Actions ---- */
   const handleNewFolder = useCallback(async () => {
@@ -1339,6 +1420,7 @@ export function FilesApp({
                 setSelectedLocation("recycle");
                 fetchRecycle();
                 fetchWorkspaceTrash();
+                fetchPhotosTrash();
               }}
               className={`w-full flex items-center justify-between px-4 py-3.5 text-sm text-shell-text active:bg-white/10 transition-colors ${location === "recycle" ? "bg-white/10" : ""}`}
               aria-label="Recycle Bin"
@@ -1358,6 +1440,7 @@ export function FilesApp({
               setCurrentPath("");
               fetchRecycle();
               fetchWorkspaceTrash();
+              fetchPhotosTrash();
             }}
             className="w-full justify-start mx-1.5 mt-1 px-3"
             aria-label="Recycle Bin"
@@ -1489,23 +1572,25 @@ export function FilesApp({
           onClick={() => {
             fetchRecycle();
             fetchWorkspaceTrash();
+            fetchPhotosTrash();
           }}
           className={`h-7 w-7 ${workspaceTrashItems.length > 0 ? "" : "ml-auto"}`}
           aria-label="Refresh recycle bin"
         >
-          <RefreshCw size={13} className={recycleLoading || workspaceTrashLoading ? "animate-spin" : ""} aria-hidden="true" />
+          <RefreshCw size={13} className={recycleLoading || workspaceTrashLoading || photosTrashLoading ? "animate-spin" : ""} aria-hidden="true" />
         </Button>
       </div>
 
       {/* Error */}
-      {(recycleError || workspaceTrashError) && (
+      {(recycleError || workspaceTrashError || photosTrashError) && (
         <div className="mx-3 mt-2 flex items-center gap-2 px-3 py-2 rounded-lg bg-red-500/10 text-red-400 text-xs">
           <AlertCircle size={14} className="shrink-0" aria-hidden="true" />
-          <span className="flex-1">{recycleError || workspaceTrashError}</span>
+          <span className="flex-1">{recycleError || workspaceTrashError || photosTrashError}</span>
           <button
             onClick={() => {
               setRecycleError(null);
               setWorkspaceTrashError(null);
+              setPhotosTrashError(null);
             }}
             className="hover:text-red-300"
             aria-label="Dismiss error"
@@ -1517,7 +1602,7 @@ export function FilesApp({
 
       {/* Content */}
       <div className="flex-1 overflow-auto p-3">
-        {(recycleLoading || workspaceTrashLoading) && recycleItems.length === 0 && workspaceTrashItems.length === 0 && (
+        {(recycleLoading || workspaceTrashLoading || photosTrashLoading) && recycleItems.length === 0 && workspaceTrashItems.length === 0 && photosTrashItems.length === 0 && (
           <div className="flex items-center justify-center h-full text-shell-text-tertiary">
             <RefreshCw size={20} className="animate-spin" aria-hidden="true" />
           </div>
@@ -1530,7 +1615,7 @@ export function FilesApp({
           </div>
         ))}
 
-        {!recycleLoading && !workspaceTrashLoading && recycleItems.length === 0 && workspaceTrashItems.length === 0 && recycleContainerOffline.length === 0 && (
+        {!recycleLoading && !workspaceTrashLoading && !photosTrashLoading && recycleItems.length === 0 && workspaceTrashItems.length === 0 && photosTrashItems.length === 0 && recycleContainerOffline.length === 0 && (
           <div className="flex flex-col items-center justify-center h-full text-shell-text-tertiary gap-2 text-center">
             <Recycle size={40} className="opacity-30" aria-hidden="true" />
             <span className="text-sm">Recycle bin is empty. Deleted files land here automatically.</span>
@@ -1575,6 +1660,57 @@ export function FilesApp({
                       size="icon"
                       className="h-7 w-7 hover:bg-red-500/15 hover:text-red-400"
                       onClick={() => handleWorkspaceTrashPurge(item)}
+                      aria-label={`Permanently delete ${item.original_path}`}
+                      title="Delete permanently"
+                    >
+                      <Trash2 size={13} aria-hidden="true" />
+                    </Button>
+                  </div>
+                </Card>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {/* Items deleted from the Photos location */}
+        {photosTrashItems.length > 0 && (
+          <section className="mb-4" aria-label="Trashed items from Photos">
+            <div className="flex items-center gap-1.5 mb-2">
+              <Images size={10} className="text-shell-text-tertiary" aria-hidden="true" />
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-shell-text-tertiary">
+                Photos
+              </span>
+            </div>
+            <div className="space-y-1.5">
+              {photosTrashItems.map((item) => (
+                <Card
+                  key={item.id}
+                  className="flex items-center gap-3 px-3 py-2.5 hover:bg-shell-surface/50 transition-colors"
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs truncate font-mono" title={item.original_path}>
+                      {item.original_path}
+                    </div>
+                    <div className="text-[10px] text-shell-text-tertiary mt-0.5">
+                      {formatDate(Math.floor(new Date(item.deleted_at).getTime() / 1000))}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 hover:bg-emerald-500/15 hover:text-emerald-400"
+                      onClick={() => handlePhotosTrashRestore(item)}
+                      aria-label={`Restore ${item.original_path}`}
+                      title="Restore"
+                    >
+                      <RotateCcw size={13} aria-hidden="true" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 hover:bg-red-500/15 hover:text-red-400"
+                      onClick={() => handlePhotosTrashPurge(item)}
                       aria-label={`Permanently delete ${item.original_path}`}
                       title="Delete permanently"
                     >
