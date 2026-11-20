@@ -1054,16 +1054,16 @@ class WorkerAgent:
         proof that the worker is actually reaching the controller; the
         process being alive is not enough, and the post-update check runs
         inside the worker itself, so it cannot take the process's word
-        for it (PR #1910).  Written atomically (temp file + rename) so a
-        concurrent reader never sees a partial value.  Best-effort: a
-        failed write is logged, never raised -- it must not break the
-        heartbeat itself.
+        for it (PR #1910).  Written through ``atomic_write_text`` so a
+        concurrent reader never sees a partial value and the write is
+        durable (fsync of the file and of the parent directory).
+        Best-effort: a failed write is logged, never raised -- it must
+        not break the heartbeat itself.
         """
+        from tinyagentos.atomic_io import atomic_write_text
+
         try:
-            self._state_dir.mkdir(parents=True, exist_ok=True)
-            tmp = self._state_dir / f".{HEARTBEAT_OK_FILENAME}.tmp.{os.getpid()}"
-            tmp.write_text(f"{time.time():.0f}\n")
-            os.replace(tmp, self._heartbeat_ok_path)
+            atomic_write_text(self._heartbeat_ok_path, f"{time.time():.0f}\n")
         except OSError as exc:
             logger.warning("could not record heartbeat-ok timestamp: %s", exc)
 
