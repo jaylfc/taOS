@@ -165,3 +165,82 @@ describe("ClusterApp drain", () => {
     );
   });
 });
+
+describe("ClusterApp fetch failures", () => {
+  const worker = () => ({
+    name: "node-1",
+    status: "online",
+    last_heartbeat: Date.now(),
+    hardware: {},
+    tier_id: null,
+    potential_capabilities: [],
+    backends: [],
+    capabilities: [],
+  });
+
+  const okFetch = () =>
+    vi.fn().mockResolvedValue({ ok: true, json: async () => [worker()] }) as typeof fetch;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    globalThis.fetch = okFetch();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("shows an alert on a 500 poll, keeps the stale node, and clears on ok", async () => {
+    render(<ClusterApp windowId="test" />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getAllByText("node-1")).not.toHaveLength(0);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 }) as typeof fetch;
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+      await Promise.resolve();
+    });
+
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent(/Could not refresh nodes \(500\)/);
+    expect(screen.getAllByText("node-1")).not.toHaveLength(0);
+
+    globalThis.fetch = okFetch();
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+      await Promise.resolve();
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("shows an alert when the poll is rejected", async () => {
+    render(<ClusterApp windowId="test" />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getAllByText("node-1")).not.toHaveLength(0);
+
+    globalThis.fetch = vi
+      .fn()
+      .mockRejectedValue(new TypeError("failed to fetch")) as typeof fetch;
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+      await Promise.resolve();
+    });
+
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent("Controller unreachable. Showing the last known list.");
+    expect(screen.getAllByText("node-1")).not.toHaveLength(0);
+
+    globalThis.fetch = okFetch();
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+      await Promise.resolve();
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+});
