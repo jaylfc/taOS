@@ -16,6 +16,7 @@ interface ActivityData {
     board?: string;
     cpu?: { model?: string; arch?: string; cores?: number; soc?: string };
     gpu?: { type?: string; model?: string; vram_mb?: number };
+    gpus?: Array<{ type?: string; model?: string; vram_mb?: number }>;
     npu?: { type?: string; tops?: number; cores?: number };
     ram_mb?: number;
   };
@@ -46,6 +47,14 @@ interface ActivityData {
     vram_total_mb: number | null;
     type?: string;
   };
+  gpus: Array<{
+    type?: string;
+    model?: string;
+    load: { load_percent: number; freq_hz: number | null } | null;
+    vram_percent: number | null;
+    vram_used_mb: number | null;
+    vram_total_mb: number | null;
+  }>;
   thermal: Array<{ name: string; temp_c: number }>;
   zram: Array<{ device: string; orig_mb: number; compr_mb: number; ratio: number }>;
   disk: {
@@ -325,7 +334,21 @@ export function ActivityApp({ windowId: _windowId }: { windowId: string }) {
     );
   }
 
-  const { hardware, cpu, memory, npu, gpu, thermal, zram, disk, network, processes } = data;
+const { hardware, cpu, memory, npu, gpu, gpus, thermal, zram, disk, network, processes } = data;
+
+  // Use gpus array if available, otherwise fall back to single gpu
+  // gpus[] includes model, but gpu doesn't; widen the type for the fallback case
+  type GpuDisplay = {
+    type?: string;
+    model?: string;
+    load: { load_percent: number; freq_hz: number | null } | null;
+    vram_percent: number | null;
+    vram_used_mb: number | null;
+    vram_total_mb: number | null;
+  };
+  const gpuList: GpuDisplay[] = (gpus && gpus.length > 0)
+    ? gpus
+    : (gpu.type && gpu.type !== "none" ? [{ ...gpu, model: hardware.gpu?.model }] : []);
 
   return (
     <div className="flex flex-col h-full bg-shell-bg-deep overflow-hidden">
@@ -440,7 +463,7 @@ export function ActivityApp({ windowId: _windowId }: { windowId: string }) {
                   <div key={z.device} className="flex items-center justify-between text-[10px]">
                     <span className="text-shell-text-secondary">{z.device}</span>
                     <span className="text-shell-text-tertiary">
-                      {formatMb(z.compr_mb)} ← {formatMb(z.orig_mb)} ({z.ratio.toFixed(1)}×)
+                      {formatMb(z.compr_mb)} ← {formatMb(z.orig_mb)} ({z.ratio.toFixed(1)}\u00d7)
                     </span>
                   </div>
                 ))}
@@ -449,34 +472,38 @@ export function ActivityApp({ windowId: _windowId }: { windowId: string }) {
           </CardContent>
         </Card>
 
-        {/* GPU */}
-        {gpu.type && gpu.type !== "none" && (
-          <Card className="col-span-12 md:col-span-6 lg:col-span-4 p-4">
+        {/* GPUs - one card per GPU */}
+        {gpuList.map((gpuItem, idx) => (
+          <Card key={`gpu-${idx}`} className="col-span-12 md:col-span-6 lg:col-span-4 p-4">
             <CardContent className="p-0">
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
                   <CircuitBoard size={14} className="text-cyan-400" />
-                  <h3 className="text-xs font-semibold text-shell-text">GPU</h3>
+                  <h3 className="text-xs font-semibold text-shell-text">
+                    GPU {gpuList.length > 1 ? idx + 1 : ""}
+                  </h3>
                 </div>
-                <span className="text-[10px] text-shell-text-tertiary">{gpu.type}</span>
+                <span className="text-[10px] text-shell-text-tertiary">
+                  {gpuItem.type}{gpuItem.model && ` — ${gpuItem.model}`}
+                </span>
               </div>
-              {gpu.load && (
-                <LoadBar label="Load" value={gpu.load.load_percent} />
+              {gpuItem.load && (
+                <LoadBar label="Load" value={gpuItem.load.load_percent} />
               )}
-              {gpu.vram_percent !== null && (
+              {gpuItem.vram_percent !== null && (
                 <div className="mt-2">
-                  <LoadBar label="VRAM" value={gpu.vram_percent} />
+                  <LoadBar label="VRAM" value={gpuItem.vram_percent} />
                   <p className="text-[10px] text-shell-text-tertiary mt-1">
-                    {formatMb(gpu.vram_used_mb)} / {formatMb(gpu.vram_total_mb)}
+                    {formatMb(gpuItem.vram_used_mb)} / {formatMb(gpuItem.vram_total_mb)}
                   </p>
                 </div>
               )}
-              {!gpu.load && gpu.vram_percent === null && (
+              {!gpuItem.load && gpuItem.vram_percent === null && (
                 <p className="text-xs text-shell-text-tertiary">Stats unavailable</p>
               )}
             </CardContent>
           </Card>
-        )}
+        ))}
 
         {/* Disk */}
         <Card className="col-span-12 md:col-span-6 lg:col-span-4 p-4">
