@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   Search, Download, Trash2, Check, Package, Loader2, Server,
   Compass, Grid2x2, Bot, Brain, Plug, Wrench, Star, Globe,
-  ArrowDownToLine, RefreshCw, Users, Cpu, Sparkles,
+  ArrowDownToLine, RefreshCw, Cpu, Sparkles,
 } from "lucide-react";
 import { Input } from "@/components/ui";
 import { fetchLatestFrameworks, LatestVersion } from "@/lib/framework-api";
@@ -37,7 +37,6 @@ type NavId =
   | "services"
   | "mcp"
   | "devtools"
-  | "community"
   | "installed"
   | "updates";
 
@@ -57,7 +56,6 @@ const NAV: NavItem[] = [
   { id: "services",  label: "Services",    icon: <Globe size={15} /> },
   { id: "mcp",       label: "MCP Servers", icon: <Plug size={15} /> },
   { id: "devtools",  label: "Dev Tools",   icon: <Wrench size={15} /> },
-  { id: "community", label: "Community",   icon: <Users size={15} /> },
   { id: "installed", label: "Installed",   icon: <ArrowDownToLine size={15} />, group: "Library" },
   { id: "updates",   label: "Updates",     icon: <RefreshCw size={15} />, group: "Library" },
 ];
@@ -251,64 +249,6 @@ const COVER_BY_ID: Record<string, { cover?: string; coverImage?: string }> = {
   "stable-diffusion-webui": { coverImage: "/desktop/store-covers/stable-diffusion.webp" },
   "sd-webui": { coverImage: "/desktop/store-covers/stable-diffusion-bw.webp" },
 };
-
-/* ------------------------------------------------------------------
-   Community showcase items (static mock -- no backend yet)
-   ------------------------------------------------------------------ */
-
-interface CommunityItem {
-  id: string;
-  name: string;
-  badge: string;
-  author: string;
-  description: string;
-  installs: number;
-  icon: React.ReactNode;
-  cover: string;
-}
-
-const COMMUNITY_ITEMS: CommunityItem[] = [
-  {
-    id: "matrix-terminal",
-    name: "Matrix Terminal",
-    badge: "Theme",
-    author: "@neo",
-    description: "Phosphor-green terminal theme with a code-rain wallpaper.",
-    installs: 1240,
-    icon: <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 14, color: "#39ff88" }}>&gt;_</span>,
-    cover: "radial-gradient(120% 120% at 35% 25%,#103a2a,transparent 60%),linear-gradient(140deg,#0c1a14,#08120d)",
-  },
-  {
-    id: "aurora-drift",
-    name: "Aurora Drift",
-    badge: "Live Wallpaper",
-    author: "@ria",
-    description: "Slow-flowing aurora ribbons that adapt to any screen.",
-    installs: 842,
-    icon: <span style={{ fontSize: 18, background: "linear-gradient(150deg,#5ad0ff,#7b5cff)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>✺</span>,
-    cover: "radial-gradient(120% 120% at 60% 25%,#2a3f7a,transparent 60%),linear-gradient(140deg,#141a2b,#0d1119)",
-  },
-  {
-    id: "habit-garden",
-    name: "Habit Garden",
-    badge: "App",
-    author: "@sol",
-    description: "Grow a plant as you keep streaks. Built with the App Builder.",
-    installs: 3110,
-    icon: <span style={{ fontSize: 18, color: "#ffb340" }}>❀</span>,
-    cover: "radial-gradient(120% 120% at 40% 25%,#5a3a1f,transparent 60%),linear-gradient(140deg,#231811,#16100a)",
-  },
-  {
-    id: "standup-bot",
-    name: "Standup Bot",
-    badge: "Agent",
-    author: "@max",
-    description: "Collects daily updates from your agents and posts a digest.",
-    installs: 567,
-    icon: <span style={{ fontSize: 18, background: "linear-gradient(150deg,#bf8cff,#8b5cff)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>◆</span>,
-    cover: "radial-gradient(120% 120% at 55% 25%,#4a2a5e,transparent 60%),linear-gradient(140deg,#1c1426,#120c18)",
-  },
-];
 
 /* ------------------------------------------------------------------
    Agent framework showcase for "Build agents with" section
@@ -778,38 +718,6 @@ function SubscriptionRow({
 }
 
 /* ------------------------------------------------------------------
-   CommunityCard
-   ------------------------------------------------------------------ */
-
-function CommunityCard({ item }: { item: CommunityItem }) {
-  return (
-    <div className="flex flex-col rounded-2xl border border-shell-border bg-shell-surface/60 overflow-hidden shrink-0" style={{ width: 264 }}>
-      <div className="h-28 relative shrink-0" style={{ background: item.cover }} />
-      <div className="flex flex-col gap-2 p-3 flex-1">
-        <div className="flex items-center gap-2.5">
-          <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 bg-white/[0.06]">
-            {item.icon}
-          </div>
-          <div>
-            <div className="text-[14px] font-semibold text-shell-text leading-snug">{item.name}</div>
-            <div className="text-[11.5px] text-shell-text-tertiary">{item.badge} · by {item.author}</div>
-          </div>
-        </div>
-        <p className="text-[12px] text-shell-text-secondary leading-relaxed flex-1">{item.description}</p>
-        <div className="flex items-center justify-between">
-          <span className="text-[11.5px] text-shell-text-tertiary">
-            <ArrowDownToLine className="w-3 h-3 inline mr-1" />{item.installs.toLocaleString()} installs
-          </span>
-          <button type="button" className="px-4 py-1.5 rounded-full bg-shell-surface-active text-shell-text text-[12px] font-bold hover:bg-white/10 transition-colors">
-            Get
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------
    HeroFeatured
    ------------------------------------------------------------------ */
 
@@ -920,16 +828,6 @@ function DiscoverView({
         </section>
       )}
 
-      {/* From the community */}
-      <section>
-        <SectionHeader title="From the community" action="See all" />
-        <div className="flex gap-4 overflow-x-auto pb-2" style={{ scrollbarWidth: "none" }}>
-          {COMMUNITY_ITEMS.map((item) => (
-            <CommunityCard key={item.id} item={item} />
-          ))}
-        </div>
-      </section>
-
       {/* Build agents with */}
       {(frameworkApps.length > 0 || FRAMEWORK_ITEMS.length > 0) && (
         <section>
@@ -958,31 +856,6 @@ function DiscoverView({
           </div>
         </section>
       )}
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------
-   CommunityView -- the community section
-   ------------------------------------------------------------------ */
-
-function CommunityView() {
-  return (
-    <div className="flex flex-col gap-7 pb-8">
-      <div>
-        <h3 className="text-[18px] font-bold text-shell-text mb-1">From the community</h3>
-        <p className="text-[13px] text-shell-text-secondary mb-4">Themes, wallpapers, apps and agents built by taOS users.</p>
-        <div className="flex gap-4 overflow-x-auto pb-2" style={{ scrollbarWidth: "none" }}>
-          {COMMUNITY_ITEMS.map((item) => (
-            <CommunityCard key={item.id} item={item} />
-          ))}
-        </div>
-      </div>
-      <div className="p-6 rounded-2xl border border-dashed border-shell-border text-center">
-        <Users className="w-8 h-8 text-shell-text-tertiary mx-auto mb-2" />
-        <div className="text-[14px] font-semibold text-shell-text mb-1">Share your creation</div>
-        <p className="text-[12.5px] text-shell-text-secondary">Build an app or agent with the App Builder and submit it to the community store.</p>
-      </div>
     </div>
   );
 }
@@ -1151,7 +1024,6 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
     services: ["service", "infrastructure"],
     mcp: ["mcp"],
     devtools: ["dev-tool"],
-    community: [],
     installed: [],
     updates: [],
   };
@@ -1163,7 +1035,7 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
   }, [apps, search]);
 
   const navFiltered = useMemo(() => {
-    if (activeNav === "discover" || activeNav === "community") return searchFiltered;
+    if (activeNav === "discover") return searchFiltered;
     if (activeNav === "installed") return searchFiltered.filter((a) => a.installed);
     // Updates lists only installed apps that actually have a newer version
     // available, not every installed app. No update-check feed exists yet, so
@@ -1216,9 +1088,9 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
   const profileSub = primaryTarget?.tier_id ? primaryTarget.tier_id.replace(/-/g, " ") : "Connect a device";
 
   // When the user is searching, show the results grid even on the curated
-  // Discover/Community/Studios views (which otherwise ignore the search box).
+  // Discover/Studios views (which otherwise ignore the search box).
   const searching = search.trim().length > 0;
-  const showGrid = searching || (activeNav !== "discover" && activeNav !== "community" && activeNav !== "studios");
+  const showGrid = searching || (activeNav !== "discover" && activeNav !== "studios");
 
   // Mobile reads like the Apple App Store: bottom tab bar, full-width feed,
   // snap-scroll carousels and a full-screen search. Same data and install
@@ -1318,8 +1190,6 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
             <div className="flex items-center justify-center h-40">
               <Loader2 className="w-6 h-6 text-shell-text-tertiary animate-spin" />
             </div>
-          ) : activeNav === "community" && !searching ? (
-            <CommunityView />
           ) : activeNav === "studios" && !searching ? (
             <StudiosView />
           ) : activeNav === "discover" && !searching ? (
