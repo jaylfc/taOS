@@ -862,6 +862,8 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
   const [sortKey, setSortKey] = useState<SortKey>("name");
   const [loading, setLoading] = useState(true);
   const [devicesLoading, setDevicesLoading] = useState(false);
+  const [workersError, setWorkersError] = useState<string | null>(null);
+  const [devicesError, setDevicesError] = useState<string | null>(null);
   // #897: read-only capability map + live placement aggregate.
   const [clusterMap, setClusterMap] = useState<ClusterMap | null>(null);
   const [selectedCapability, setSelectedCapability] = useState<string | null>(null);
@@ -899,15 +901,18 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
         const json = await res.json();
         if (Array.isArray(json)) {
           setWorkers(json as ClusterWorker[]);
+          setWorkersError(null);
           setSelected((cur) => {
             if (cur && json.some((w: ClusterWorker) => w.name === cur)) return cur;
             if (userNavigatedBack.current) return null;
             return json.length > 0 ? (json[0] as ClusterWorker).name : null;
           });
         }
+      } else {
+        setWorkersError(`Could not refresh nodes (${res.status})`);
       }
     } catch {
-      /* ignore */
+      setWorkersError("Controller unreachable. Showing the last known list.");
     }
     setLoading(false);
   }, []);
@@ -926,15 +931,18 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
         const json = await res.json();
         if (Array.isArray(json.items)) {
           setDevices(json.items as ClusterDevice[]);
+          setDevicesError(null);
           setSelectedDevice((cur) => {
             if (cur && json.items.some((d: ClusterDevice) => d.device_id === cur))
               return cur;
             return json.items.length > 0 ? json.items[0].device_id : null;
           });
         }
+      } else {
+        setDevicesError(`Could not refresh nodes (${res.status})`);
       }
     } catch {
-      /* ignore */
+      setDevicesError("Controller unreachable. Showing the last known list.");
     }
     setDevicesLoading(false);
   }, []);
@@ -1690,6 +1698,11 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
           list={
             activeTab === "devices" ? (
               <div className="p-3 space-y-2" aria-label="Cluster device list">
+                {devicesError && (
+                  <p className="text-[11px] text-red-300 mb-2" role="alert">
+                    {devicesError}
+                  </p>
+                )}
                 {devicesLoading ? (
                   <div className="text-[11px] text-shell-text-tertiary px-2 py-6 text-center">
                     Loading devices...
@@ -1733,6 +1746,11 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
               </div>
             ) : (
               <div className="p-3 space-y-2" aria-label="Cluster worker list">
+                {workersError && (
+                  <p className="text-[11px] text-red-300 mb-2" role="alert">
+                    {workersError}
+                  </p>
+                )}
                 {loading ? (
                   <div className="text-[11px] text-shell-text-tertiary px-2 py-6 text-center">
                     Loading workers...
