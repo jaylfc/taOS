@@ -1,0 +1,39 @@
+[Unit]
+Description=Cache the current weather for the taOS login screen
+# Opt in: nothing runs without a location the owner wrote down.
+ConditionPathExists=/etc/taos/weather.conf
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/taos-weather-cache
+# A fixed unprivileged account (see taos-weather.sysusers) rather than
+# DynamicUser: a dynamic user's cache directory lives under the root-only
+# /var/cache/private, which the greeter's own account could never read.
+User=taos-weather
+Group=taos-weather
+CacheDirectory=taos
+CacheDirectoryMode=0755
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+UMask=0022
+TimeoutStartSec=90
