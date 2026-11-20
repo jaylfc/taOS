@@ -38,6 +38,7 @@ import { projectsApi, type DocReviewState } from "@/lib/projects";
 import { useDragSource } from "@/shell/dnd/use-drag-source";
 import { DocViewer } from "@/apps/ProjectsApp/files/DocViewer";
 import { useRefreshOnFocus } from "@/hooks/use-refresh-on-focus";
+import { useOnBackendRecovered } from "@/hooks/use-on-backend-recovered";
 import { createSseConnection } from "@/lib/sse";
 
 /* ------------------------------------------------------------------ */
@@ -689,6 +690,10 @@ export function FilesApp({
     [fetchFiles, currentPath],
   );
   useRefreshOnFocus(refreshCurrentDir);
+
+  // Refetch current directory when the backend recovers so a window that
+  // was stuck on the initial loading state gets its data.
+  useOnBackendRecovered(refreshCurrentDir);
 
   // Live updates via SSE — supports both the user workspace and per-agent
   // workspaces. Shared folders don't expose a watch stream, so the SSE setup

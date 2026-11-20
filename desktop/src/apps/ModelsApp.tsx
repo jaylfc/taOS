@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useRefreshOnFocus } from "@/hooks/use-refresh-on-focus";
+import { useOnBackendRecovered } from "@/hooks/use-on-backend-recovered";
 import { Brain, Search, Download, Trash2, HardDrive, X, Cloud } from "lucide-react";
 import {
   Button,
@@ -427,6 +428,10 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
   }, [fetchModels]);
 
   useRefreshOnFocus(fetchModels);
+
+  // Refetch models when the backend recovers so a window that was stuck on
+  // the initial loading state gets its data.
+  useOnBackendRecovered(fetchModels);
 
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<Record<string, string>>({});

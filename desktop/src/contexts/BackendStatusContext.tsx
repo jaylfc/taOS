@@ -15,7 +15,6 @@ export function getBackendStatusSingleton(): BackendStatusController {
       healthUrl: "/api/health",
       onUp: () => {
         window.dispatchEvent(new CustomEvent("taos:backend-up"));
-        window.location.reload();
       },
     });
   }
@@ -31,12 +30,14 @@ interface ContextValue {
   status: BackendStatus;
   currentVersion: string | null;
   secondsReconnecting: number;
+  recoveredAt: number;
 }
 
 const Ctx = createContext<ContextValue>({
   status: "up",
   currentVersion: null,
   secondsReconnecting: 0,
+  recoveredAt: 0,
 });
 
 export function BackendStatusProvider({ children }: { children: ReactNode }) {
@@ -45,6 +46,7 @@ export function BackendStatusProvider({ children }: { children: ReactNode }) {
     status: bs.getStatus(),
     currentVersion: bs.getCurrentVersion(),
     secondsReconnecting: bs.getSecondsReconnecting(),
+    recoveredAt: 0,
   }));
 
   useEffect(() => {
@@ -53,11 +55,17 @@ export function BackendStatusProvider({ children }: { children: ReactNode }) {
         status: bs.getStatus(),
         currentVersion: bs.getCurrentVersion(),
         secondsReconnecting: bs.getSecondsReconnecting(),
+        recoveredAt: prev.recoveredAt,
       };
+      // Bump recoveredAt when transitioning from reconnecting to up
+      if (prev.status === "reconnecting" && next.status === "up") {
+        next.recoveredAt = prev.recoveredAt + 1;
+      }
       if (
         prev.status === next.status &&
         prev.currentVersion === next.currentVersion &&
-        prev.secondsReconnecting === next.secondsReconnecting
+        prev.secondsReconnecting === next.secondsReconnecting &&
+        prev.recoveredAt === next.recoveredAt
       ) {
         return prev;
       }
