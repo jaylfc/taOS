@@ -629,7 +629,7 @@ class TestIntelGpuName:
         self._stub_pci_ids(
             monkeypatch,
             tmp_path,
-            '8086  Intel Corporation\n\t4c8a "RocketLake-S GT1 [UHD Graphics 750]"\n',
+            "8086  Intel Corporation\n\t4c8a  RocketLake-S GT1 [UHD Graphics 750]\n",
         )
         assert hardware_mod._pci_model_name("0x8086", "0x4c8a") == "Intel UHD Graphics 750"
 
@@ -637,7 +637,7 @@ class TestIntelGpuName:
         self._stub_pci_ids(
             monkeypatch,
             tmp_path,
-            '8086  Intel Corporation\n\t0002 "Some other card"\n',
+            "8086  Intel Corporation\n\t0002  Some other card\n",
         )
         assert hardware_mod._pci_model_name("0x8086", "0x4c8a") == ""
 
@@ -648,7 +648,7 @@ class TestIntelGpuName:
         self._stub_pci_ids(
             monkeypatch,
             tmp_path,
-            '8086  Intel Corporation\n\t4c8a "RocketLake-S GT1 [UHD Graphics 750]"\n',
+            "8086  Intel Corporation\n\t4c8a  RocketLake-S GT1 [UHD Graphics 750]\n",
         )
 
         real_safe = hw._path_exists_safe
@@ -669,6 +669,8 @@ class TestIntelGpuName:
                 "/sys/class/drm",
                 "/sys/class/drm/card0",
                 "/sys/class/drm/card0/device",
+                "/sys/class/drm/card0/device/vendor",
+                "/sys/class/drm/card0/device/device",
             ):
                 return True
             return original_exists(self)
@@ -733,7 +735,13 @@ class TestIntelGpuName:
         original_exists = hw.Path.exists
         def fake_exists(self):
             s = str(self)
-            if s in ("/sys/class/drm", "/sys/class/drm/card0", "/sys/class/drm/card0/device"):
+            if s in (
+                "/sys/class/drm",
+                "/sys/class/drm/card0",
+                "/sys/class/drm/card0/device",
+                "/sys/class/drm/card0/device/vendor",
+                "/sys/class/drm/card0/device/device",
+            ):
                 return True
             return original_exists(self)
         monkeypatch.setattr(hw.Path, "exists", fake_exists)

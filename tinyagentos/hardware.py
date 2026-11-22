@@ -34,6 +34,7 @@ class GpuInfo:
     vulkan: bool = False
     cuda: bool = False
     rocm: bool = False
+    pci_address: str = ""
 
 
 @dataclass
@@ -670,15 +671,16 @@ _PCI_IDS_PATHS: tuple[Path, ...] = (
     Path("/usr/share/misc/pci.ids"),
 )
 
-_PCI_VENDOR_RE = re.compile(r"^([0-9a-fA-F]{4})\s")
-_PCI_DEVICE_RE = re.compile(r"^\t([0-9a-fA-F]{4})\s+\"([^\"]*)\"")
+_PCI_VENDOR_RE = re.compile(r"^([0-9a-fA-F]{4})\s+(.+)")
+_PCI_DEVICE_RE = re.compile(r"^\t([0-9a-fA-F]{4})\s+(.+)")
 
 
 def _pci_ids_db() -> dict[tuple[str, str], str]:
     """Parse (vendor, device) -> model name from the first available pci.ids file.
 
     pci.ids lists vendor blocks ("8086  Intel Corporation") followed by
-    indented device lines ("\t4c8a \"RocketLake-S GT1 [UHD Graphics 750]\"").
+    tab-indented device lines ("\t4c8a  RocketLake-S GT1 [UHD Graphics 750]").
+    Subsystem lines have two tabs and are ignored. Comments start with #.
     Returns an empty dict when no pci.ids file is readable.
     """
     for path in _PCI_IDS_PATHS:
@@ -691,11 +693,16 @@ def _pci_ids_db() -> dict[tuple[str, str], str]:
         for line in text.splitlines():
             if not line or line.startswith("#"):
                 continue
-            if line[0] in " \t":
+            if line.startswith("\t\t"):
+                # Subsystem line (two tabs) - ignore
+                continue
+            if line.startswith("\t"):
+                # Device line (one tab)
                 match = _PCI_DEVICE_RE.match(line)
                 if match and current_vendor:
-                    entries.setdefault((current_vendor, match.group(1)), match.group(2))
+                    entries.setdefault((current_vendor, match.group(1)), match.group(2).strip())
             else:
+                # Vendor line (no leading whitespace)
                 match = _PCI_VENDOR_RE.match(line)
                 if match:
                     current_vendor = match.group(1)
@@ -874,7 +881,7 @@ def _detect_gpus() -> list[GpuInfo]:
     # Linux: detect all GPU types
     # Collect all GPUs with their PCI addresses, then sort once at the end
 
-    # 1. NVIDIA via /proc/driver/nvidia (kernel module + driver present, works in
+# 1. NVIDIA via /proc/driver/nvidia (kernel module + driver present, works in
     #    containers without nvidia-smi userspace utilities) - checked first
     #    because tests mock this path
     proc_model, proc_driver_present = _detect_nvidia_via_proc()
@@ -885,7 +892,7 @@ def _detect_gpus() -> list[GpuInfo]:
         gpu.cuda = True
         gpu.vulkan = True
         gpu.vram_mb = _nvidia_vram_for_model(gpu.model)
-        all_gpus.append((gpu, ""))  # No PCI address from /proc
+        all_gpus.append((gpu, ""))
 
     # 2. NVIDIA via nvidia-smi (preferred - gives all GPUs with stats and PCI addresses)
     if shutil.which("nvidia-smi"):
@@ -898,6 +905,8 @@ def _detect_gpus() -> list[GpuInfo]:
             nvidia_gpus = _parse_nvidia_smi_gpus(nvidia_smi_out)
             # Replace any existing NVIDIA GPUs from /proc with the full list from nvidia-smi
             all_gpus = [(g, addr) for g, addr in all_gpus if g.type != "nvidia"]
+            for gpu, addr in nvidia_gpus:
+                gpu.pci_address = addr
             all_gpus.extend(nvidia_gpus)
 
     # 3. AMD via lspci (fallback if nvidia-smi/rocminfo not available)
@@ -916,6 +925,7 @@ def _detect_gpus() -> list[GpuInfo]:
                 pci_addr = line.split()[0] if line.split() else ""
                 if pci_addr and not pci_addr.startswith("0000:"):
                     pci_addr = "0000:" + pci_addr
+                gpu.pci_address = pci_addr
                 all_gpus.append((gpu, pci_addr))
 
     # 4. WSL2 AMD via /dev/dxg + rocminfo
@@ -932,27 +942,33 @@ def _detect_gpus() -> list[GpuInfo]:
     # 5. AMD via DRM sysfs (amdgpu) - catches any missed
     amd_gpus = _detect_amd_gpus()
     for agpu, addr in amd_gpus:
-        # Avoid duplicates by checking if we already have this model
-        if not any(g.model == agpu.model for g, _ in all_gpus):
-            all_gpus.append((agpu, addr))
+        # Avoid duplicates by PCI address
+        if addr and any(a == addr for _, a in all_gpus):
+            continue
+        agpu.pci_address = addr
+        all_gpus.append((agpu, addr))
 
     # 6. Intel via DRM sysfs (i915/xe)
     intel_gpus = _detect_intel_gpus()
     for igpu, addr in intel_gpus:
-        if not any(g.model == igpu.model for g, _ in all_gpus):
-            all_gpus.append((igpu, addr))
+        if addr and any(a == addr for _, a in all_gpus):
+            continue
+        igpu.pci_address = addr
+        all_gpus.append((igpu, addr))
 
     # 7. Mali/ARM via DRM sysfs
     mali_gpus = _detect_mali_gpus()
     for mgpu, addr in mali_gpus:
-        if not any(g.model == mgpu.model for g, _ in all_gpus):
-            all_gpus.append((mgpu, addr))
+        if addr and any(a == addr for _, a in all_gpus):
+            continue
+        mgpu.pci_address = addr
+        all_gpus.append((mgpu, addr))
 
     # Sort all GPUs by PCI address for stable cross-vendor ordering
     # Empty PCI addresses sort to the end
     all_gpus.sort(key=lambda t: t[1] or "zzzz")
 
-    # Extract just the GpuInfo objects
+    # Extract just the GpuInfo objects (with pci_address set)
     result = [g for g, _ in all_gpus]
 
     # If still no GPUs found, return a single "none" GPU for compatibility

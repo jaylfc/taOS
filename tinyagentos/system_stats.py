@@ -306,17 +306,29 @@ def _intel_freq_mhz(card: Path) -> int | None:
     """Current gt frequency in MHz.
 
     gt_act_freq_mhz reports 0 when idle, so fall back to gt_cur_freq_mhz.
+    i915 exposes frequency files directly under cardN/ (gt_act_freq_mhz, gt_cur_freq_mhz).
     xe keeps its frequency files under .../tile0/gt0/freq0/.
     """
+    # i915 paths (directly under cardN/)
     for path in (
-        card / "gt" / "gt0" / "gt_act_freq_mhz",
-        card / "device" / "tile0" / "gt0" / "freq0" / "gt_act_freq_mhz",
+        card / "gt_act_freq_mhz",
+        card / "gt_cur_freq_mhz",
     ):
         value = _read_int_file(path)
         if value is not None and value > 0:
             return value
+    # xe paths
     for path in (
-        card / "gt" / "gt0" / "gt_cur_freq_mhz",
+        card / "device" / "tile0" / "gt0" / "freq0" / "gt_act_freq_mhz",
+        card / "device" / "tile0" / "gt0" / "freq0" / "gt_cur_freq_mhz",
+    ):
+        value = _read_int_file(path)
+        if value is not None and value > 0:
+            return value
+    # i915 fallback: gt_cur_freq_mhz can be 0 when idle, but we already checked > 0 above
+    # Try gt_cur_freq_mhz even if 0 (idle)
+    for path in (
+        card / "gt_cur_freq_mhz",
         card / "device" / "tile0" / "gt0" / "freq0" / "gt_cur_freq_mhz",
     ):
         value = _read_int_file(path)
@@ -326,9 +338,13 @@ def _intel_freq_mhz(card: Path) -> int | None:
 
 
 def _intel_max_freq_mhz(card: Path) -> int | None:
-    """Maximum gt frequency in MHz, when exposed."""
+    """Maximum gt frequency in MHz, when exposed.
+
+    i915 exposes gt_max_freq_mhz directly under cardN/.
+    xe keeps it under .../tile0/gt0/freq0/.
+    """
     for path in (
-        card / "gt" / "gt0" / "gt_max_freq_mhz",
+        card / "gt_max_freq_mhz",
         card / "device" / "tile0" / "gt0" / "freq0" / "gt_max_freq_mhz",
     ):
         value = _read_int_file(path)
@@ -340,19 +356,20 @@ def _intel_max_freq_mhz(card: Path) -> int | None:
 def read_all_intel_gpus() -> list[dict] | None:
     """Return per-card stats for Intel integrated GPUs (i915/xe).
 
-    Each dict: index, name, load_percent, freq_hz, freq_max_hz,
+    Each dict: index, pci_address, name, load_percent, freq_hz, freq_max_hz,
     vram_percent/used/total (always None, shared system memory),
     shared_memory (always True).
 
     load_percent uses RC6 residency deltas between two samples:
     busy% = clamp(100 * (1 - delta_rc6_ms / delta_wall_ms), 0, 100).
     The first sample reports None because there is no previous point.
+    A residency counter that goes backwards (reset) yields null for that sample.
     Returns None when no Intel DRM card is present.
     """
     if not _DRM_ROOT.exists():
         return None
     entries: list[dict] = []
-    now = time.time()
+    now = time.monotonic()
     try:
         cards = sorted(_DRM_ROOT.glob("card*"))
     except OSError:
@@ -365,13 +382,25 @@ def read_all_intel_gpus() -> list[dict] | None:
             continue
         if vendor != "0x8086":
             continue
+        # Get PCI address from device symlink target
+        pci_addr = ""
+        try:
+            real_device = device.resolve()
+            parts = real_device.parts
+            for part in parts:
+                if part.startswith("0000:") and part.count(":") >= 2:
+                    pci_addr = part
+                    break
+        except (OSError, RuntimeError):
+            pass
         rc6_ms = _intel_rc6_ms(card)
         prev = _INTEL_LAST.get(str(card))
         load_percent = None
         if rc6_ms is not None and prev is not None and prev.get("rc6_ms") is not None:
             delta_wall_ms = (now - prev["ts"]) * 1000.0
             delta_rc6 = rc6_ms - prev["rc6_ms"]
-            if delta_wall_ms > 0:
+            # Residency counter reset (goes backwards) -> invalid sample, report null
+            if delta_wall_ms > 0 and delta_rc6 >= 0:
                 load_percent = max(
                     0, min(100, round(100.0 * (1.0 - delta_rc6 / delta_wall_ms)))
                 )
@@ -382,6 +411,7 @@ def read_all_intel_gpus() -> list[dict] | None:
         entries.append(
             {
                 "index": len(entries),
+                "pci_address": pci_addr,
                 "name": "",
                 "load_percent": load_percent,
                 "freq_hz": freq_mhz * 1_000_000 if freq_mhz is not None else None,
@@ -395,9 +425,12 @@ def read_all_intel_gpus() -> list[dict] | None:
     return entries if entries else None
 
 
-def _amd_device_dirs() -> list[Path]:
-    """DRM card device dirs bound to an AMD GPU (vendor 0x1002)."""
-    dirs: list[Path] = []
+def _amd_device_dirs() -> list[tuple[Path, str]]:
+    """DRM card device dirs bound to an AMD GPU (vendor 0x1002).
+    
+    Returns list of (device_path, pci_address) tuples.
+    """
+    dirs: list[tuple[Path, str]] = []
     if not _DRM_ROOT.exists():
         return dirs
     try:
@@ -408,7 +441,18 @@ def _amd_device_dirs() -> list[Path]:
                     continue
             except OSError:
                 continue
-            dirs.append(device)
+            # Get PCI address from device symlink target
+            pci_addr = ""
+            try:
+                real_device = device.resolve()
+                parts = real_device.parts
+                for part in parts:
+                    if part.startswith("0000:") and part.count(":") >= 2:
+                        pci_addr = part
+                        break
+            except (OSError, RuntimeError):
+                pass
+            dirs.append((device, pci_addr))
     except OSError:
         pass
     return dirs
@@ -418,6 +462,7 @@ def read_amd_sysfs_loads() -> list[dict] | None:
     """AMD iGPU load from device/gpu_busy_percent when the file is present.
 
     Returns one entry per AMD card, or None when no AMD DRM card exists.
+    Each entry includes pci_address.
     """
     dirs = _amd_device_dirs()
     if not dirs:
@@ -425,98 +470,133 @@ def read_amd_sysfs_loads() -> list[dict] | None:
     return [
         {
             "index": i,
+            "pci_address": pci_addr,
             "load_percent": _read_int_file(device / "gpu_busy_percent"),
             "freq_hz": None,
             "vram_percent": None,
             "vram_used_mb": None,
             "vram_total_mb": None,
         }
-        for i, device in enumerate(dirs)
+        for i, (device, pci_addr) in enumerate(dirs)
     ]
 
 
 # ─── GPU load (all vendors) ────────────────────────────────────
 
 
-def get_all_gpu_loads(gpu_types: list[str]) -> list[dict]:
+def get_all_gpu_loads(gpus: list[dict]) -> list[dict]:
     """Return load and VRAM stats for all GPUs.
 
     Args:
-        gpu_types: List of GPU type strings from hardware detection (e.g. ["nvidia", "nvidia", "intel"])
+        gpus: List of GPU dicts from hardware detection, each with keys:
+            type, model, vram_mb, pci_address (optional)
 
     Returns:
         List of dicts with keys: type, load_percent, freq_hz, freq_max_hz,
         vram_percent, vram_used_mb, vram_total_mb, shared_memory (intel only)
     """
     result: list[dict] = []
-    nvidia_stats = read_all_nvidia_gpus() if "nvidia" in gpu_types else None
-    amd_stats = read_all_amd_gpus() if "amd" in gpu_types else None
-    amd_sysfs = read_amd_sysfs_loads() if "amd" in gpu_types else None
-    intel_stats = read_all_intel_gpus() if "intel" in gpu_types else None
+    nvidia_stats = read_all_nvidia_gpus() if any(g.get("type") == "nvidia" for g in gpus) else None
+    amd_stats = read_all_amd_gpus() if any(g.get("type") == "amd" for g in gpus) else None
+    amd_sysfs = read_amd_sysfs_loads() if any(g.get("type") == "amd" for g in gpus) else None
+    intel_stats = read_all_intel_gpus() if any(g.get("type") == "intel" for g in gpus) else None
 
-    nvidia_idx = 0
-    amd_idx = 0
-    amd_sysfs_idx = 0
-    intel_idx = 0
+    # Build lookup maps by PCI address for stats that have them
+    nvidia_by_pci = {s.get("pci_bus_id", "").lower(): s for s in (nvidia_stats or []) if s.get("pci_bus_id")}
+    amd_by_pci = {s.get("pci_address", "").lower(): s for s in (amd_sysfs or []) if s.get("pci_address")}
+    intel_by_pci = {s.get("pci_address", "").lower(): s for s in (intel_stats or []) if s.get("pci_address")}
 
-    for gtype in gpu_types:
+    # Fallback lists for stats without PCI addresses (e.g., rocm-smi AMD)
+    nvidia_list = [s for s in (nvidia_stats or []) if not s.get("pci_bus_id")]
+    amd_rocm_list = list(amd_stats or [])
+    intel_list = [s for s in (intel_stats or []) if not s.get("pci_address")]
+
+    nvidia_fallback_idx = 0
+    amd_rocm_fallback_idx = 0
+    intel_fallback_idx = 0
+
+    for gpu in gpus:
+        gtype = gpu.get("type", "")
+        pci_addr = (gpu.get("pci_address") or "").lower()
         entry = {"type": gtype}
-        if gtype == "nvidia" and nvidia_stats and nvidia_idx < len(nvidia_stats):
-            s = nvidia_stats[nvidia_idx]
-            nvidia_idx += 1
-            entry["load_percent"] = s.get("util_percent")
-            entry["freq_hz"] = s.get("freq_hz")
-            used = s.get("mem_used_mb")
-            total = s.get("mem_total_mb")
-            if total and total > 0:
-                entry["vram_percent"] = round(used / total * 100.0, 1)
-            else:
-                entry["vram_percent"] = None
-            entry["vram_used_mb"] = used
-            entry["vram_total_mb"] = total
-        elif gtype == "amd":
-            if amd_stats and amd_idx < len(amd_stats):
-                s = amd_stats[amd_idx]
-                amd_idx += 1
-                entry["load_percent"] = s.get("util_percent")
-                entry["freq_hz"] = s.get("freq_hz")
-                used = s.get("mem_used_mb")
-                total = s.get("mem_total_mb")
+        if gtype == "nvidia":
+            # Try to match by PCI address first
+            stat = None
+            if pci_addr and pci_addr in nvidia_by_pci:
+                stat = nvidia_by_pci[pci_addr]
+            elif nvidia_fallback_idx < len(nvidia_list):
+                stat = nvidia_list[nvidia_fallback_idx]
+                nvidia_fallback_idx += 1
+            if stat:
+                entry["load_percent"] = stat.get("util_percent")
+                entry["freq_hz"] = stat.get("freq_hz")
+                used = stat.get("mem_used_mb")
+                total = stat.get("mem_total_mb")
                 if total and total > 0:
                     entry["vram_percent"] = round(used / total * 100.0, 1)
                 else:
                     entry["vram_percent"] = None
                 entry["vram_used_mb"] = used
                 entry["vram_total_mb"] = total
-            elif amd_sysfs and amd_sysfs_idx < len(amd_sysfs):
-                s = amd_sysfs[amd_sysfs_idx]
-                amd_sysfs_idx += 1
-                entry["load_percent"] = s.get("load_percent")
-                entry["freq_hz"] = None
-                entry["vram_percent"] = None
-                entry["vram_used_mb"] = None
-                entry["vram_total_mb"] = None
             else:
-                # No runtime stats available for this AMD GPU
                 entry["load_percent"] = None
                 entry["freq_hz"] = None
                 entry["vram_percent"] = None
                 entry["vram_used_mb"] = None
                 entry["vram_total_mb"] = None
-        elif gtype == "intel" and intel_stats and intel_idx < len(intel_stats):
-            s = intel_stats[intel_idx]
-            intel_idx += 1
-            entry["load_percent"] = s.get("load_percent")
-            entry["freq_hz"] = s.get("freq_hz")
-            entry["freq_max_hz"] = s.get("freq_max_hz")
-            entry["vram_percent"] = None
-            entry["vram_used_mb"] = None
-            entry["vram_total_mb"] = None
-            entry["shared_memory"] = True
+        elif gtype == "amd":
+            # Try sysfs first (has PCI address), then rocm-smi (fallback)
+            stat = None
+            if pci_addr and pci_addr in amd_by_pci:
+                stat = amd_by_pci[pci_addr]
+            elif amd_rocm_fallback_idx < len(amd_rocm_list):
+                stat = amd_rocm_list[amd_rocm_fallback_idx]
+                amd_rocm_fallback_idx += 1
+            if stat:
+                entry["load_percent"] = stat.get("util_percent") or stat.get("load_percent")
+                entry["freq_hz"] = stat.get("freq_hz")
+                used = stat.get("mem_used_mb")
+                total = stat.get("mem_total_mb")
+                if total and total > 0:
+                    entry["vram_percent"] = round(used / total * 100.0, 1)
+                else:
+                    entry["vram_percent"] = None
+                entry["vram_used_mb"] = used
+                entry["vram_total_mb"] = total
+            else:
+                entry["load_percent"] = None
+                entry["freq_hz"] = None
+                entry["vram_percent"] = None
+                entry["vram_used_mb"] = None
+                entry["vram_total_mb"] = None
+        elif gtype == "intel":
+            stat = None
+            if pci_addr and pci_addr in intel_by_pci:
+                stat = intel_by_pci[pci_addr]
+            elif intel_fallback_idx < len(intel_list):
+                stat = intel_list[intel_fallback_idx]
+                intel_fallback_idx += 1
+            if stat:
+                entry["load_percent"] = stat.get("load_percent")
+                entry["freq_hz"] = stat.get("freq_hz")
+                entry["freq_max_hz"] = stat.get("freq_max_hz")
+                entry["vram_percent"] = None
+                entry["vram_used_mb"] = None
+                entry["vram_total_mb"] = None
+                entry["shared_memory"] = True
+            else:
+                entry["load_percent"] = None
+                entry["freq_hz"] = None
+                entry["freq_max_hz"] = None
+                entry["vram_percent"] = None
+                entry["vram_used_mb"] = None
+                entry["vram_total_mb"] = None
+                entry["shared_memory"] = True
         else:
-            # Intel, Mali, Apple, or unknown - no runtime stats available
+            # Mali, Apple, or unknown - no runtime stats available
             entry["load_percent"] = None
             entry["freq_hz"] = None
+            entry["freq_max_hz"] = None
             entry["vram_percent"] = None
             entry["vram_used_mb"] = None
             entry["vram_total_mb"] = None

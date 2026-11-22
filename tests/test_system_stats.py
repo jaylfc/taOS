@@ -910,11 +910,11 @@ class TestReadAllIntelGpus:
             def __init__(self):
                 self.now = now
 
-            def time(self):
+            def monotonic(self):
                 return self.now
 
         fake = FakeTime()
-        monkeypatch.setattr(system_stats, "time", fake)
+        monkeypatch.setattr(system_stats.time, "monotonic", fake.monotonic)
         return fake
 
     def test_rc6_load_between_two_samples(self, monkeypatch, tmp_path):
@@ -927,9 +927,9 @@ class TestReadAllIntelGpus:
             "card0",
             **{
                 "gt/gt0/rc6_residency_ms": 100,
-                "gt/gt0/gt_act_freq_mhz": 0,
-                "gt/gt0/gt_cur_freq_mhz": 1100,
-                "gt/gt0/gt_max_freq_mhz": 1200,
+                "gt_act_freq_mhz": 0,
+                "gt_cur_freq_mhz": 1100,
+                "gt_max_freq_mhz": 1200,
             },
         )
         monkeypatch.setattr(system_stats, "_DRM_ROOT", drm)
@@ -1076,6 +1076,7 @@ class TestGetAllGpuLoadsIntel:
         mock_intel.return_value = [
             {
                 "index": 0,
+                "pci_address": "0000:00:02.0",
                 "name": "",
                 "load_percent": 5,
                 "freq_hz": 1100 * 1_000_000,
@@ -1087,7 +1088,7 @@ class TestGetAllGpuLoadsIntel:
             }
         ]
 
-        result = get_all_gpu_loads(["intel"])
+        result = get_all_gpu_loads([{"type": "intel", "pci_address": "0000:00:02.0"}])
         assert result == [
             {
                 "type": "intel",

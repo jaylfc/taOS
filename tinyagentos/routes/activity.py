@@ -42,18 +42,21 @@ async def activity(request: Request):
     npu_block = hw_data.get("npu") if isinstance(hw_data, dict) else None
 
     gpu_type = getattr(getattr(hw, "gpu", None), "type", None) or ""
-    gpu_types = []
+    gpus_for_stats = []
     if isinstance(gpus_block, list):
         for g in gpus_block:
             if isinstance(g, dict):
-                t = g.get("type")
-                if t:
-                    gpu_types.append(t)
-    if not gpu_types and gpu_type:
-        gpu_types = [gpu_type]
+                gpus_for_stats.append({
+                    "type": g.get("type"),
+                    "model": g.get("model"),
+                    "vram_mb": g.get("vram_mb"),
+                    "pci_address": g.get("pci_address"),
+                })
+    if not gpus_for_stats and gpu_type:
+        gpus_for_stats = [{"type": gpu_type}]
 
     try:
-        gpu_loads = get_all_gpu_loads(gpu_types)
+        gpu_loads = get_all_gpu_loads(gpus_for_stats)
     except Exception:
         gpu_loads = []
 

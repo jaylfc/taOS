@@ -42,7 +42,7 @@ interface ActivityData {
     tops?: number;
   };
   gpu: {
-    load: { load_percent: number; freq_hz: number | null } | null;
+    load: { load_percent: number | null; freq_hz: number | null } | null;
     vram_percent: number | null;
     vram_used_mb: number | null;
     vram_total_mb: number | null;
@@ -51,7 +51,7 @@ interface ActivityData {
   gpus: Array<{
     type?: string;
     model?: string;
-    load: { load_percent: number; freq_hz: number | null; freq_max_hz?: number | null } | null;
+    load: { load_percent: number | null; freq_hz: number | null; freq_max_hz?: number | null } | null;
     vram_percent: number | null;
     vram_used_mb: number | null;
     vram_total_mb: number | null;
@@ -192,7 +192,10 @@ function colourForLoad(pct: number): string {
   return "var(--color-traffic-close)";
 }
 
-function LoadBar({ value, label, unit = "%" }: { value: number; label?: string; unit?: string }) {
+function LoadBar({ value, label, unit = "%" }: { value: number | null; label?: string; unit?: string }) {
+  if (value === null) {
+    return null;
+  }
   return (
     <div className="flex items-center gap-2">
       {label && <span className="text-[10px] text-shell-text-tertiary w-12 shrink-0">{label}</span>}
@@ -348,7 +351,7 @@ const { hardware, cpu, memory, npu, gpu, gpus, thermal, zram, disk, network, pro
   type GpuDisplay = {
     type?: string;
     model?: string;
-    load: { load_percent: number; freq_hz: number | null; freq_max_hz?: number | null } | null;
+    load: { load_percent: number | null; freq_hz: number | null; freq_max_hz?: number | null } | null;
     vram_percent: number | null;
     vram_used_mb: number | null;
     vram_total_mb: number | null;
