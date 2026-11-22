@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useRefreshOnFocus } from "@/hooks/use-refresh-on-focus";
+import { useOnBackendRecovered } from "@/hooks/use-on-backend-recovered";
 import {
   Activity, Cpu, MemoryStick, Zap, HardDrive, Thermometer, Network, CircuitBoard,
   Gauge, Layers, RefreshCw, Loader2, Server,
@@ -262,6 +263,11 @@ export function ActivityApp({ windowId: _windowId }: { windowId: string }) {
     const interval = setInterval(fetchCluster, 10_000);
     return () => clearInterval(interval);
   }, [fetchCluster]);
+
+  // Refetch data when the backend recovers so a window that was stuck on
+  // the initial loading state gets its data.
+  useOnBackendRecovered(fetchData);
+  useOnBackendRecovered(fetchCluster);
 
   // Union the controller's locally loaded models with whatever the
   // cluster workers report as *in memory right now* in their heartbeats.

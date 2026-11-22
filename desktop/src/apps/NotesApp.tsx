@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useRefreshOnFocus } from "@/hooks/use-refresh-on-focus";
+import { useOnBackendRecovered } from "@/hooks/use-on-backend-recovered";
 import {
   StickyNote,
   Plus,
@@ -967,6 +968,10 @@ function DocsApp() {
   }, [loadNotes]);
 
   useRefreshOnFocus(loadNotes);
+
+  // Reload notes when the backend recovers so a window that was stuck on
+  // the initial loading state gets its data.
+  useOnBackendRecovered(loadNotes);
 
   function handleCreated(doc: NoteDoc) {
     setNotes((prev) => [doc, ...prev]);
