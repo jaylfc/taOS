@@ -1635,6 +1635,7 @@ async def import_agent(request: Request):
     ):
         form = await request.form()
         bundle = form.get("bundle")
+        pause_jobs = form.get("pause_jobs", "false").lower() == "true"
         return await agent_import.import_hermes_agent(
             request,
             framework=str(form.get("framework", "")),
@@ -1642,6 +1643,7 @@ async def import_agent(request: Request):
             name=str(form.get("name", "")),
             model=(str(form["model"]) if form.get("model") else None),
             secrets=(str(form["secrets"]) if form.get("secrets") else None),
+            pause_jobs=pause_jobs,
         )
 
     # JSON config import.
