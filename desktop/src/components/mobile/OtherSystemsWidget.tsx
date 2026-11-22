@@ -297,11 +297,8 @@ export function OtherSystemsWidget() {
             {selectedSystem && switching && (
               <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12, padding: "20px 0" }}>
                 <Loader2 size={32} className="animate-spin" style={{ color: "rgba(255,255,255,0.7)" }} />
-                <div style={{ fontSize: 16, fontWeight: 500, color: "rgba(255,255,255,0.95)", textAlign: "center" }}>
-                  Switching to {selectedSystem.name}...
-                </div>
-                <div style={{ fontSize: 13, color: "rgba(255,255,255,0.5)", textAlign: "center" }}>
-                  To come back, open Return to taOS there.
+                <div role="status" style={{ fontSize: 16, fontWeight: 500, color: "rgba(255,255,255,0.95)", textAlign: "center" }}>
+                  {`Switching to ${selectedSystem.name}. To come back, open Return to taOS there.`}
                 </div>
               </div>
             )}

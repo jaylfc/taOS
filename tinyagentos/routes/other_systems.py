@@ -10,7 +10,6 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from tinyagentos.auth_context import require_admin
 
 logger = logging.getLogger(__name__)
 

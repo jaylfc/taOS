@@ -346,72 +346,6 @@ elif sys.argv[1] == "go":
             monkeypatch.delenv("TAOS_SWITCH_OS_HELPER", raising=False)
 
     @pytest.mark.asyncio
-    async def test_switch_non_admin_refused_403(self, monkeypatch):
-        """Non-admin users are refused with 403."""
-        helper_script = """
-import json, sys
-print(json.dumps([{"id": "omarchy", "name": "Omarchy", "ready": True, "reason": ""}]))
-"""
-        helper_path = _write_helper(helper_script)
-
-        try:
-            monkeypatch.setenv("TAOS_SWITCH_OS_HELPER", helper_path)
-
-            request = self._make_request(is_admin=False)
-
-            with pytest.raises(HTTPException) as exc:
-                await other_systems_routes.switch_other_system("omarchy", request)
-
-            assert exc.value.status_code == 403
-        finally:
-            os.unlink(helper_path)
-            monkeypatch.delenv("TAOS_SWITCH_OS_HELPER", raising=False)
-
-    @pytest.mark.asyncio
-    async def test_switch_local_token_refused_403(self, monkeypatch):
-        """Local token (taosctl/deployed agents) is refused with 403."""
-        helper_script = """
-import json, sys
-print(json.dumps([{"id": "omarchy", "name": "Omarchy", "ready": True, "reason": ""}]))
-"""
-        helper_path = _write_helper(helper_script)
-
-        try:
-            monkeypatch.setenv("TAOS_SWITCH_OS_HELPER", helper_path)
-
-            request = self._make_request(via="local_token")
-
-            with pytest.raises(HTTPException) as exc:
-                await other_systems_routes.switch_other_system("omarchy", request)
-
-            assert exc.value.status_code == 403
-        finally:
-            os.unlink(helper_path)
-            monkeypatch.delenv("TAOS_SWITCH_OS_HELPER", raising=False)
-
-    @pytest.mark.asyncio
-    async def test_switch_agent_token_refused_403(self, monkeypatch):
-        """Agent token is refused with 403."""
-        helper_script = """
-import json, sys
-print(json.dumps([{"id": "omarchy", "name": "Omarchy", "ready": True, "reason": ""}]))
-"""
-        helper_path = _write_helper(helper_script)
-
-        try:
-            monkeypatch.setenv("TAOS_SWITCH_OS_HELPER", helper_path)
-
-            request = self._make_request(via="agent")
-
-            with pytest.raises(HTTPException) as exc:
-                await other_systems_routes.switch_other_system("omarchy", request)
-
-            assert exc.value.status_code == 403
-        finally:
-            os.unlink(helper_path)
-            monkeypatch.delenv("TAOS_SWITCH_OS_HELPER", raising=False)
-
-    @pytest.mark.asyncio
     async def test_switch_drain_called_before_helper(self, monkeypatch):
         """Agent drain is called before the helper."""
         helper_script = """
@@ -647,3 +581,141 @@ elif sys.argv[1] == "go":
         finally:
             os.unlink(helper_path)
             monkeypatch.delenv("TAOS_SWITCH_OS_HELPER", raising=False)
+
+
+# ---------------------------------------------------------------------------
+# Authorization THROUGH the real app and AuthMiddleware (conftest ``client``
+# supplies the app and an admin session; CSRF is armed so a 403 is the authz
+# gate, never the CSRF gate).
+# ---------------------------------------------------------------------------
+
+import pytest_asyncio  # noqa: E402
+from httpx import ASGITransport, AsyncClient  # noqa: E402
+
+from taos_test_csrf import csrf_event_hooks  # noqa: E402
+from tinyagentos.agent_registry_store import mint_registry_token  # noqa: E402
+
+_SWITCH_URL = "/api/system/other-systems/omarchy/switch"
+_FORBIDDEN = {"detail": "forbidden"}
+_LISTED = [{"id": "omarchy", "name": "Omarchy", "ready": True, "reason": ""}]
+
+
+@pytest.fixture
+def _switch_helper(client, monkeypatch):
+    """A helper that exists, lists omarchy as ready, an unlocked console, a
+    quiet orchestrator and a succeeding ``go``. Yields the spawn mock.
+
+    Every request that gets PAST the authz gate would really switch (spawn is
+    called and 200 comes back), so a refusal that is not the gate cannot be
+    mistaken for one, and a missing gate shows as a 200, not a side error."""
+    app = client._transport.app
+    app.state.orchestrator = MagicMock()
+    app.state.orchestrator.prepare = AsyncMock(return_value={})
+    proc = AsyncMock()
+    proc.communicate = AsyncMock(
+        return_value=(b'{"ok": true, "id": "omarchy", "in_seconds": 2}', b"")
+    )
+    proc.returncode = 0
+    helper_path = _write_helper("import sys\nsys.exit(0)\n")
+    monkeypatch.setenv("TAOS_SWITCH_OS_HELPER", helper_path)
+    try:
+        with patch("tinyagentos.routes.auth._CONSOLE_LOCKED", False), \
+                patch("tinyagentos.routes.other_systems._run_list", AsyncMock(return_value=_LISTED)), \
+                patch("tinyagentos.routes.other_systems.asyncio.create_subprocess_exec",
+                      return_value=proc) as spawn:
+            yield spawn
+    finally:
+        os.unlink(helper_path)
+
+
+def _anon_client(app, headers=None, cookies=None) -> AsyncClient:
+    return AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        headers=headers or {},
+        cookies=cookies or {},
+        event_hooks=csrf_event_hooks(),
+    )
+
+
+async def _member_session_client(app) -> AsyncClient:
+    auth_mgr = app.state.auth
+    code = auth_mgr.add_user_invite("member", "admin")
+    auth_mgr.complete_invite("member", code, "Test Member", "", "memberauthzpass123")
+    member = auth_mgr.find_user("member")
+    token = auth_mgr.create_session(user_id=member["id"], long_lived=True)
+    return _anon_client(app, cookies={"taos_session": token})
+
+
+async def _registry_agent_token(app) -> str:
+    registry = app.state.agent_registry
+    if registry._db is None:
+        await registry.init()
+    priv, _pub = app.state.agent_registry_keypair
+    rec = await registry.register(
+        framework="claude-code", display_name="taOS dev",
+        allow_reserved=True, origin="internal", handle="@taOS-dev",
+    )
+    cid = rec["canonical_id"]
+    if rec.get("status") != "active":
+        await registry.set_status(cid, "active")
+    return mint_registry_token(cid, priv, user_id="u", framework="claude-code")
+
+
+class TestOtherSystemsSwitchAuthzThroughApp:
+    """POST .../switch through the real app: member, host local token, agent
+    registry token are refused; an admin session is allowed."""
+
+    @pytest.mark.asyncio
+    async def test_member_session_refused_403(self, client, _switch_helper):
+        app = client._transport.app
+        mc = await _member_session_client(app)
+        try:
+            resp = await mc.post(_SWITCH_URL, json={"confirm": True})
+        finally:
+            await mc.aclose()
+        assert resp.status_code == 403, resp.text
+        assert resp.json() == _FORBIDDEN
+        _switch_helper.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_host_local_token_refused_403(self, client, _switch_helper):
+        app = client._transport.app
+        token = app.state.auth.get_local_token()
+        async with _anon_client(app, headers={"Authorization": f"Bearer {token}"}) as c:
+            resp = await c.post(_SWITCH_URL, json={"confirm": True})
+        assert resp.status_code == 403, resp.text
+        assert resp.json() == _FORBIDDEN
+        _switch_helper.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_agent_bound_local_token_refused_403(self, client, _switch_helper):
+        """A local token bound to a deployed agent reaches the route as
+        via=local_token and is refused by the route's own gate."""
+        app = client._transport.app
+        token = app.state.auth.mint_agent_local_token("helper")
+        async with _anon_client(app, headers={"Authorization": f"Bearer {token}"}) as c:
+            resp = await c.post(_SWITCH_URL, json={"confirm": True})
+        assert resp.status_code == 403, resp.text
+        _switch_helper.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_agent_registry_token_refused(self, client, _switch_helper):
+        """The registry JWT is not on the middleware's closed agent allowlist
+        for this path, so it is refused (401) before the route runs; it must
+        never reach the helper."""
+        app = client._transport.app
+        token = await _registry_agent_token(app)
+        async with _anon_client(app, headers={"Authorization": f"Bearer {token}"}) as c:
+            resp = await c.post(_SWITCH_URL, json={"confirm": True})
+        assert resp.status_code in (401, 403), resp.text
+        _switch_helper.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_admin_session_allowed(self, client, _switch_helper):
+        app = client._transport.app
+        resp = await client.post(_SWITCH_URL, json={"confirm": True})
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"ok": True, "id": "omarchy", "in_seconds": 2}
+        assert _switch_helper.call_args.args[:2] == ("sudo", "-n")
+        app.state.orchestrator.prepare.assert_awaited_once_with("all", "system-shutdown")

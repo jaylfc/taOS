@@ -88,8 +88,9 @@ describe("OtherSystemsWidget", () => {
     fireEvent.click(screen.getByText("Switch"));
 
     await waitFor(() => {
-      expect(screen.getByText("Switching to Omarchy...")).toBeInTheDocument();
+      expect(screen.getByText("Switching to Omarchy. To come back, open Return to taOS there.")).toBeInTheDocument();
     });
+    expect(screen.queryByText(/Switching to Omarchy\.\.\./)).not.toBeInTheDocument();
 
     // Verify API was called
     expect(mockFetch).toHaveBeenCalledTimes(2); // list + switch
@@ -156,32 +157,48 @@ describe("OtherSystemsWidget", () => {
     fireEvent.click(screen.getByText("Switch"));
 
     await waitFor(() => {
-      expect(screen.getByText("Switching to Omarchy...")).toBeInTheDocument();
+      expect(screen.getByText("Switching to Omarchy. To come back, open Return to taOS there.")).toBeInTheDocument();
     });
   });
 
-  test("Tab and Shift+Tab focusable buttons exist in confirm sheet", async () => {
+  test("Tab from the last button lands on the first, Shift+Tab from the first lands on the last", async () => {
     renderWidget();
     await waitFor(() => {
       expect(screen.getByRole("button", { name: /other systems/i })).toBeInTheDocument();
     });
-
-    // Open list sheet
     fireEvent.click(screen.getByRole("button", { name: /other systems/i }));
     await waitFor(() => {
-      expect(screen.getByRole("heading", { name: /other systems/i })).toBeInTheDocument();
       expect(screen.getByText("Omarchy")).toBeInTheDocument();
     });
-
-    // Click Omarchy to open confirm sheet (but don't click Switch)
     fireEvent.click(screen.getByText("Omarchy"));
     await waitFor(() => {
       expect(screen.getByText("Switch to Omarchy?")).toBeInTheDocument();
     });
 
-    // In the confirm sheet, verify focusable buttons exist
-    expect(screen.getByRole("button", { name: "Switch" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
+    const close = screen.getByRole("button", { name: "Close" });
+    const cancel = screen.getByRole("button", { name: "Cancel" });
+    // Let the sheet's own deferred focus() settle before moving focus.
+    await waitFor(() => {
+      expect(screen.getByRole("document")).toHaveFocus();
+    });
+
+    // Tab from the last button wraps to the first.
+    cancel.focus();
+    expect(cancel).toHaveFocus();
+    const tab = fireEvent.keyDown(document.activeElement as Element, { key: "Tab" });
+    expect(tab).toBe(false); // default prevented: the trap moved focus itself
+    expect(close).toHaveFocus();
+
+    // Shift+Tab from the first button wraps to the last.
+    const shiftTab = fireEvent.keyDown(document.activeElement as Element, { key: "Tab", shiftKey: true });
+    expect(shiftTab).toBe(false);
+    expect(cancel).toHaveFocus();
+
+    // Tab from a middle button is left to the browser (not trapped).
+    const middle = screen.getByRole("button", { name: "Switch" });
+    middle.focus();
+    expect(fireEvent.keyDown(middle, { key: "Tab" })).toBe(true);
+    expect(middle).toHaveFocus();
   });
 
   test("Switch anyway resends with force true when drain fails", async () => {
