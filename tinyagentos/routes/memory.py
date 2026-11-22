@@ -30,6 +30,7 @@ from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from tinyagentos.auth_context import current_user, require_agent_owner_or_admin
 from tinyagentos.otel.trace_context import build_trace_context_headers
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,40 @@ class SearchRequest(BaseModel):
     # Optional W3C trace context — callers (adapters, librarian) pass the
     # active conversation_id so the memory backend can nest its spans.
     conversation_id: str | None = None
+
+
+async def _authorize_agent_memory(
+    request: Request, agent: str | None, *, allow_bound: bool = True,
+) -> str | None:
+    """Authorise access to *agent*'s memory and return the agent to use.
+
+    Runs BEFORE ``_agent_db_path`` (which creates the agent's directory), so a
+    refused request touches nothing on disk.
+
+    - Agent-bound local token: fenced to its own agent (it maps to the admin
+      user, so an owner check alone would let agent A read agent B). An omitted
+      agent defaults to the bound one. ``allow_bound=False`` (delete) refuses it
+      outright: deletion is human-only.
+    - Unbound host local token: admin-equivalent, unchanged.
+    - Signed-in session: the agent's owner or an admin, via the same helper and
+      identifier form as ``routes/agent_workspace``.
+    - Without an agent the request targets the shared user index and no
+      per-agent ownership applies.
+    """
+    if getattr(request.state, "via", None) == "local_token":
+        bound = getattr(request.state, "agent_name", None)
+        if bound:
+            if not allow_bound:
+                raise HTTPException(status_code=403, detail="Memory deletion is human-only")
+            if agent is not None and agent.strip() != bound:
+                raise HTTPException(status_code=403, detail="forbidden")
+            return bound
+        return agent
+    if not agent:
+        return agent
+    # Authorise the exact component _agent_db_path will use.
+    await require_agent_owner_or_admin(request, current_user(request), agent.strip())
+    return agent
 
 
 def _qmd_base(request: Request) -> str:
@@ -103,6 +138,7 @@ async def memory_browse(
     conversation_id: str | None = None,
 ):
     """Browse memory chunks via qmd serve GET /browse."""
+    agent = await _authorize_agent_memory(request, agent)
     http_client = request.app.state.http_client
     params: dict = {"limit": limit, "offset": offset}
     if collection:
@@ -174,6 +210,7 @@ async def memory_search(request: Request, body: SearchRequest):
     Aggregating across agents is a separate concern that belongs in a
     future ``/api/memory/all`` endpoint, gated by user permission.
     """
+    body.agent = await _authorize_agent_memory(request, body.agent)
     db_path = _agent_db_path(request, body.agent)
     search_fn = _qmd_vsearch if body.mode == "semantic" else _qmd_search
 
@@ -197,6 +234,7 @@ async def memory_collections(
     request: Request, agent_name: str, conversation_id: str | None = None,
 ):
     """List memory collections for an agent via qmd serve GET /collections."""
+    agent_name = await _authorize_agent_memory(request, agent_name)
     http_client = request.app.state.http_client
     params: dict = {"dbPath": _agent_db_path(request, agent_name)}
     headers = build_trace_context_headers(conversation_id=conversation_id)
@@ -219,6 +257,7 @@ async def memory_delete_chunk(
     Routes to the per-agent index when ``agent`` is set, otherwise to
     the default user index.
     """
+    agent = await _authorize_agent_memory(request, agent, allow_bound=False)
     http_client = request.app.state.http_client
     payload: dict = {"hash": content_hash, "dbPath": _agent_db_path(request, agent)}
     headers = build_trace_context_headers(conversation_id=conversation_id)
