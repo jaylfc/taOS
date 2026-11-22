@@ -11,9 +11,20 @@ let singleton: BackendStatusController | null = null;
 
 export function getBackendStatusSingleton(): BackendStatusController {
   if (!singleton) {
-    singleton = createBackendStatus({ healthUrl: "/api/health" });
+    singleton = createBackendStatus({
+      healthUrl: "/api/health",
+      onUp: () => {
+        window.dispatchEvent(new CustomEvent("taos:backend-up"));
+        window.location.reload();
+      },
+    });
   }
   return singleton;
+}
+
+// Test-only helper to replace the singleton with a test instance
+export function __setBackendStatusSingletonForTest(bs: BackendStatusController): void {
+  singleton = bs;
 }
 
 interface ContextValue {
