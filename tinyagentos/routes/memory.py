@@ -73,6 +73,25 @@ def _local_token_caller(request: Request) -> tuple[bool, str | None]:
     return False, None
 
 
+async def _require_session_agent_access(request: Request, agent: str | None) -> None:
+    """Gate a human session's access to *agent*'s memory: owner or admin only.
+
+    Runs BEFORE ``_agent_db_path`` (which creates the agent's directory), so a
+    refused request touches nothing on disk. Agent-bound local tokens and
+    registry JWTs are fenced by their own branches in each route; this covers
+    the remaining caller, a signed-in session, which would otherwise reach any
+    agent's index by naming it. The unbound host token is admin-equivalent and
+    keeps working. Without ``agent`` the request targets the shared user index
+    and no per-agent ownership applies.
+    """
+    if not agent:
+        return
+    if getattr(request.state, "via", None) == "local_token":
+        return
+    # Authorise the exact component _agent_db_path will use.
+    await require_agent_owner_or_admin(request, current_user(request), agent.strip())
+
+
 class SearchRequest(BaseModel):
     query: str
     mode: str = "keyword"
@@ -162,7 +181,10 @@ async def memory_browse(
                 raise HTTPException(status_code=403, detail="Agent can only browse its own memory")
             # Use the resolved config agent name for the agent namespace
             agent = agent_config_name
-    
+        else:
+            # Signed-in session: owner or admin only
+            await _require_session_agent_access(request, agent)
+
     http_client = request.app.state.http_client
     params: dict = {"limit": limit, "offset": offset}
     if collection:
@@ -257,7 +279,10 @@ async def memory_search(request: Request, body: SearchRequest):
                 raise HTTPException(status_code=403, detail="Agent can only search its own memory")
             # Use the resolved config agent name for the agent namespace
             body.agent = agent_config_name
-    
+        else:
+            # Signed-in session: owner or admin only
+            await _require_session_agent_access(request, body.agent)
+
     db_path = _agent_db_path(request, body.agent)
     search_fn = _qmd_vsearch if body.mode == "semantic" else _qmd_search
 
@@ -304,7 +329,10 @@ async def memory_collections(
                 raise HTTPException(status_code=403, detail="Agent can only access its own collections")
             # Use the resolved config agent name
             agent_name = agent_config_name
-    
+        else:
+            # Signed-in session: owner or admin only
+            await _require_session_agent_access(request, agent_name)
+
     http_client = request.app.state.http_client
     params: dict = {"dbPath": _agent_db_path(request, agent_name)}
     headers = build_trace_context_headers(conversation_id=conversation_id)
@@ -341,7 +369,9 @@ async def memory_delete_chunk(
         agent_canonical_id = await check_agent_scope(request, "memory_read")
         if agent_canonical_id is not None:
             raise HTTPException(status_code=403, detail="Memory deletion is human-only")
-    
+        # Signed-in session: owner or admin only
+        await _require_session_agent_access(request, agent)
+
     http_client = request.app.state.http_client
     payload: dict = {"hash": content_hash, "dbPath": _agent_db_path(request, agent)}
     headers = build_trace_context_headers(conversation_id=conversation_id)
