@@ -417,9 +417,9 @@ class BridgeSessionRegistry:
                     if msg:
                         receipt_row = await self._chat_messages.mark_seen(trace_id, slug)
                         if receipt_row and self._chat_hub:
-                            channel_id = msg.get("channel_id")
-                            if channel_id:
-                                await self._chat_hub.broadcast(channel_id, {
+                            channel_id_seen = msg.get("channel_id")
+                            if channel_id_seen:
+                                await self._chat_hub.broadcast(channel_id_seen, {
                                     "type": "receipt",
                                     "seq": self._chat_hub.next_seq(),
                                     "message_id": receipt_row["message_id"],
@@ -443,8 +443,25 @@ class BridgeSessionRegistry:
                 return
             accumulated = session.flush_delta(trace_id)
             final_content = content or accumulated
-            pending_msg_id = session.pop_pending_msg(trace_id)
+            # Do NOT pop pending_msg yet - keep it until edits succeed
+            pending_msg_id = session._pending_msg_ids.get(trace_id)
             channel_id = body.get("channel_id") or await self._resolve_channel(slug)
+
+            # If a previous attempt committed the final message but failed before
+            # marking the reply id seen, recover it and finalize idempotently.
+            existing_msg = None
+            if reply_id is not None and channel_id and self._chat_messages:
+                finder = getattr(self._chat_messages, "find_message_by_metadata", None)
+                if finder is not None:
+                    try:
+                        existing_msg = await finder(
+                            channel_id, "openclaw_msg_id", reply_id,
+                            author_id=slug, author_type="agent",
+                        )
+                    except Exception:
+                        logger.exception(
+                            "bridge_session: reply-id lookup failed for %s", slug,
+                        )
 
             # --- Begin: content_blocks handling ---
             raw_blocks = body.get("content_blocks")
@@ -479,6 +496,64 @@ class BridgeSessionRegistry:
                     )
             # --- End: content_blocks handling ---
 
+            if existing_msg is not None:
+                # If the found message is a streaming placeholder, it's not a committed
+                # final message - let the normal streaming finalization path handle it.
+                if existing_msg.get("state") == "streaming":
+                    existing_msg = None
+                else:
+                    # Already committed; finalize without creating another row.
+                    existing_id = existing_msg.get("id")
+                    if existing_id and self._chat_messages:
+                        await self._chat_messages.edit_message(existing_id, final_content)
+                        await self._chat_messages.update_state(existing_id, "complete")
+                        if validated_blocks is not None:
+                            await self._chat_messages.extend_content_blocks(existing_id, validated_blocks)
+                        existing_meta = existing_msg.get("metadata") or {}
+                        if not isinstance(existing_meta, dict):
+                            existing_meta = {}
+                        existing_meta["openclaw_msg_id"] = reply_id or msg_id
+                        existing_meta.setdefault("trace_id", trace_id)
+                        setter = getattr(self._chat_messages, "set_metadata", None)
+                        if setter is not None:
+                            await setter(existing_id, existing_meta)
+                    session.pending_hops.pop(trace_id, None)
+                    # Also clear any pending_msg_id for this trace since we recovered
+                    session._pending_msg_ids.pop(trace_id, None)
+                    if self._chat_channels and channel_id:
+                        await self._chat_channels.update_last_message_at(channel_id)
+                    if reply_id is not None:
+                        session.mark_final_id_seen(reply_id)
+                    # Broadcast on recovery so clients/agents see the reply.
+                    if self._chat_hub and existing_id:
+                        # Broadcast message_edit with content and optionally content_blocks
+                        broadcast_payload = {
+                            "type": "message_edit",
+                            "seq": self._chat_hub.next_seq(),
+                            "message_id": existing_id,
+                            "content": final_content,
+                            "edited_at": time.time(),
+                        }
+                        if validated_blocks is not None:
+                            broadcast_payload["content_blocks"] = validated_blocks
+                        await self._chat_hub.broadcast(channel_id, broadcast_payload)
+                        await self._chat_hub.broadcast(channel_id, {
+                            "type": "message_state",
+                            "seq": self._chat_hub.next_seq(),
+                            "message_id": existing_id,
+                            "state": "complete",
+                        })
+                    # Re-dispatch so other agents in the channel see this reply.
+                    router = self._router
+                    if router is not None:
+                        try:
+                            channel = await self._chat_channels.get_channel(channel_id)
+                            if channel is not None:
+                                await router.dispatch(existing_msg, channel)
+                        except Exception:
+                            logger.warning("re-dispatch on agent reply recovery failed", exc_info=True)
+                    return
+
             # Write trace event.
             if self._trace_registry:
                 store = await self._trace_registry.get(slug)
@@ -492,6 +567,19 @@ class BridgeSessionRegistry:
             persisted = None
             if channel_id:
                 if pending_msg_id and self._chat_messages:
+                    # Write reply_id to placeholder metadata BEFORE first edit,
+                    # so a failure during edit doesn't lose the idempotency key.
+                    if reply_id is not None:
+                        pending = await self._chat_messages.get_message(pending_msg_id)
+                        pending_meta = (pending or {}).get("metadata") or {}
+                        if not isinstance(pending_meta, dict):
+                            pending_meta = {}
+                        pending_meta["openclaw_msg_id"] = reply_id
+                        pending_meta.setdefault("trace_id", trace_id)
+                        setter = getattr(self._chat_messages, "set_metadata", None)
+                        if setter is not None:
+                            await setter(pending_msg_id, pending_meta)
+
                     # Edit the streaming placeholder to final content.
                     await self._chat_messages.edit_message(pending_msg_id, final_content)
                     await self._chat_messages.update_state(pending_msg_id, "complete")
@@ -501,6 +589,9 @@ class BridgeSessionRegistry:
                         validated_blocks_for_broadcast = merged
                     else:
                         validated_blocks_for_broadcast = None
+
+                    # Only pop pending_msg_id AFTER all edits succeed
+                    session._pending_msg_ids.pop(trace_id, None)
                     session.pending_hops.pop(trace_id, None)
                     if self._chat_hub:
                         # Broadcast message_edit with content and optionally content_blocks
@@ -520,6 +611,7 @@ class BridgeSessionRegistry:
                             "message_id": pending_msg_id,
                             "state": "complete",
                         })
+                    persisted = await self._chat_messages.get_message(pending_msg_id)
                 elif self._chat_messages and self._chat_channels:
                     # No streaming placeholder — create the message directly.
                     _final_hops = session.pending_hops.get(trace_id, 0)
@@ -531,7 +623,7 @@ class BridgeSessionRegistry:
                         content=final_content,
                         state="complete",
                         content_blocks=validated_blocks,  # passes None or list, which send_message handles
-                        metadata={"trace_id": trace_id, "openclaw_msg_id": msg_id, "hops_since_user": _final_hops},
+                        metadata={"trace_id": trace_id, "openclaw_msg_id": reply_id or msg_id, "hops_since_user": _final_hops},
                     )
                     await self._chat_channels.update_last_message_at(channel_id)
                     if self._chat_hub:
