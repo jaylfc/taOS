@@ -99,6 +99,9 @@ class TestAgentDbPath:
         from tinyagentos.routes.memory import _agent_db_path
         req = MagicMock()
         req.app.state.agent_memory_dir = tmp_path / "agent-memory"
+        req.state.agent_name = None
+        req.state.via = "session"
+        req.state.is_admin = True  # the install owner keeps the existing index
         p = _agent_db_path(req, None)
         assert p is not None  # never None / never omits dbPath
         assert p.endswith("user-qmd-index/index.sqlite")

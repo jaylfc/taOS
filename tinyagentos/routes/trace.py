@@ -21,6 +21,8 @@ from tinyagentos.otel.span_store import _safe_slug
 
 logger = logging.getLogger(__name__)
 
+from tinyagentos.auth_context import require_agent_access
+
 router = APIRouter()
 
 
@@ -52,6 +54,9 @@ async def post_trace(request: Request, body: TraceIn):
         return JSONResponse({"error": f"unknown kind {body.kind!r}"}, status_code=400)
     agent_name = getattr(request.state, "agent_name", None) or body.agent_name
     safe_slug = _safe_slug(agent_name)
+    # A bound token is already pinned to its own agent above; a person (or the
+    # host token) may record only for an agent they may act on.
+    await require_agent_access(request, safe_slug)
     if not agent_name or safe_slug == "_system":
         return JSONResponse({"error": f"invalid agent_name {agent_name!r}"}, status_code=400)
     store = await registry.get(safe_slug)
@@ -70,6 +75,7 @@ async def list_agent_trace(
     until: float | None = None,
     limit: int = 100,
 ):
+    await require_agent_access(request, _safe_slug(name))
     registry = getattr(request.app.state, "trace_registry", None)
     if registry is None:
         return JSONResponse({"error": "trace registry not configured"}, status_code=503)
@@ -101,6 +107,7 @@ async def list_agent_otel_spans(
     no spans exist yet — never 503 on a missing registry (the store is
     lazily created on first write).
     """
+    await require_agent_access(request, name)
     registry = getattr(request.app.state, "span_store_registry", None)
     if registry is None:
         return {"agent_name": name, "spans": []}

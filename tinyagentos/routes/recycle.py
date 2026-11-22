@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from tinyagentos.agent_db import find_agent
+from tinyagentos.auth_context import can_access_agent, require_agent_access
 from tinyagentos.containers import exec_in_container
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,7 @@ async def _list_for_agent(container: str) -> tuple[str, list[dict]]:
 @router.get("/api/agents/{name}/recycle")
 async def list_agent_recycle(request: Request, name: str):
     """List trashed items for one agent's container."""
+    await require_agent_access(request, name)
     config = request.app.state.config
     agent = find_agent(config, name)
     if agent is None:
@@ -97,6 +99,8 @@ async def list_all_recycle(request: Request):
         agent_name = agent.get("name")
         if not agent_name:
             continue
+        if not await can_access_agent(request, agent_name):
+            continue
         container = f"taos-agent-{agent_name}"
         _status, items = await _list_for_agent(container)
         for item in items:
@@ -112,6 +116,7 @@ class RestoreBody(BaseModel):
 
 @router.post("/api/agents/{name}/recycle/restore")
 async def restore_item(request: Request, name: str, body: RestoreBody):
+    await require_agent_access(request, name)
     """Restore a single trashed item back to its original path.
 
     Accepts either 'id' (base64url of original_path) or 'original_path' directly.
@@ -165,6 +170,7 @@ async def restore_item(request: Request, name: str, body: RestoreBody):
 @router.delete("/api/agents/{name}/recycle/{item_id}")
 async def purge_item(request: Request, name: str, item_id: str):
     """Permanently purge a single trashed item by id."""
+    await require_agent_access(request, name)
     config = request.app.state.config
     agent = find_agent(config, name)
     if agent is None:

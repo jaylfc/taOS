@@ -126,3 +126,61 @@ async def require_agent_owner_or_admin(
     if owner is None:
         raise HTTPException(status_code=403, detail="forbidden")
     require_owner_or_admin(user, owner)
+
+
+def agent_bound_name(request: Request) -> str | None:
+    """The agent a per-agent local token is bound to, or None."""
+    return getattr(request.state, "agent_name", None) or None
+
+
+def is_host_caller(request: Request) -> bool:
+    """True for the unbound host local token (no agent binding)."""
+    return (
+        getattr(request.state, "via", None) == "local_token"
+        and not agent_bound_name(request)
+    )
+
+
+def is_human_admin(request: Request) -> bool:
+    """True for an admin session or the unbound host token, never an agent token.
+
+    A per-agent local token maps to the admin user, so ``is_admin`` alone cannot
+    tell a person from an agent holding its own credential.
+    """
+    if agent_bound_name(request):
+        return False
+    return bool(getattr(request.state, "is_admin", False)) or is_host_caller(request)
+
+
+async def require_agent_access(
+    request: Request, agent_id: str | None, *, allow_bound: bool = True, exact: bool = False
+) -> None:
+    """403 unless the caller may act on *agent_id*.
+
+    - agent-bound local token: only its own agent (and only when *allow_bound*);
+      it maps to the admin user, so an owner check alone would let agent A touch
+      agent B;
+    - the unbound host token: allowed;
+    - a session: the agent's registry owner or an admin, via
+      ``require_agent_owner_or_admin`` on the stripped identifier.
+
+    Call it BEFORE any lookup, write or directory creation for the agent.
+    """
+    name = (agent_id or "").strip()
+    bound = agent_bound_name(request)
+    if bound:
+        if not allow_bound or name != bound:
+            raise HTTPException(status_code=403, detail="forbidden")
+        return
+    if is_host_caller(request):
+        return
+    await require_agent_owner_or_admin(request, current_user(request), name, exact=exact)
+
+
+async def can_access_agent(request: Request, agent_id: str | None) -> bool:
+    """Boolean form of :func:`require_agent_access`, for filtering lists."""
+    try:
+        await require_agent_access(request, agent_id)
+    except HTTPException:
+        return False
+    return True

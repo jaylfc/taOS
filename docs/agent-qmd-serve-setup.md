@@ -14,7 +14,7 @@ Host (Orange Pi / x86)
 │   ├── data/agent-memory/agent-alpha/index.sqlite
 │   ├── data/agent-memory/agent-beta/index.sqlite
 │   ├── data/agent-memory/agent-gamma/index.sqlite
-│   └── data/user-qmd-index/index.sqlite   (taOS user memory)
+│   └── data/user-qmd-index/index.sqlite   (install owner/admin user memory; each other person: data/user-qmd-index/<user_id>/index.sqlite)
 ├── taOS (port 6969) — web app, routes memory ops through qmd serve
 │
 ├── LXC: agent-alpha

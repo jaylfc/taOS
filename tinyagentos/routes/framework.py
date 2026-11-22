@@ -3,11 +3,12 @@ from __future__ import annotations
 import asyncio
 import platform
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from tinyagentos.agent_db import find_agent
+from tinyagentos.auth_context import is_human_admin
 from tinyagentos.config import save_config_locked
 from tinyagentos.frameworks import FRAMEWORKS
 from tinyagentos import framework_update as _runner
@@ -59,6 +60,9 @@ class UpdateRequest(BaseModel):
 
 @router.post("/api/agents/{slug}/framework/update")
 async def post_update(request: Request, slug: str, body: UpdateRequest):
+    # Installs software inside the agent's container: the install owner only.
+    if not is_human_admin(request):
+        raise HTTPException(status_code=403, detail="forbidden")
     config = request.app.state.config
     agent = find_agent(config, slug)
     if not agent:

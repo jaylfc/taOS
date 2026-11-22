@@ -50,6 +50,7 @@ def _fake_qmd(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         db = body["dbPath"]
     con = sqlite3.connect(db)
+    con.execute("CREATE TABLE IF NOT EXISTS chunks (hash TEXT PRIMARY KEY, collection TEXT, body TEXT)")
     rows = lambda sql, *a: [  # noqa: E731
         {"hash": h, "collection": c, "body": b} for h, c, b in con.execute(sql, a).fetchall()
     ]
@@ -257,3 +258,111 @@ async def test_lookalike_names_resolve_to_the_configured_owner(world, route):
         allowed = await _call(alice, route, "helper")
     assert refused.status_code == 403, refused.text
     assert allowed.status_code in (200,), allowed.text
+
+
+# ------------------------------------------------ no-agent form: per-person index
+
+def _no_agent_row(mem, who_dir, h, body):
+    root = mem.parent / "user-qmd-index"
+    p = (root / who_dir / "index.sqlite") if who_dir else (root / "index.sqlite")
+    _make_index(p, [(h, "notes", body)])
+    return p
+
+
+def _has(path, h):
+    con = sqlite3.connect(path)
+    try:
+        return bool(con.execute("SELECT 1 FROM chunks WHERE hash=?", (h,)).fetchone())
+    finally:
+        con.close()
+
+
+@pytest.mark.asyncio
+async def test_no_agent_form_is_per_person(world):
+    app, mem = world["app"], world["mem"]
+    root = mem.parent / "user-qmd-index"
+    legacy = _no_agent_row(mem, None, "ADMIN-H", "admin private note")
+    bob_p = _no_agent_row(mem, world["bob"], "BOB-H", "bob private note")
+    async with _session_client(app, world["alice"]) as alice:
+        for r in (await alice.get("/api/memory/browse"),
+                  await alice.post("/api/memory/search", json={"query": "private", "mode": "keyword"})):
+            assert r.status_code == 200
+            assert "bob private note" not in r.text and "admin private note" not in r.text
+        # alice writes nothing here, but a delete aimed at another person's hash touches only alice's own index
+        assert (await alice.delete("/api/memory/chunk/BOB-H")).status_code == 200
+        assert (await alice.delete("/api/memory/chunk/ADMIN-H")).status_code == 200
+    assert _has(bob_p, "BOB-H") and _has(legacy, "ADMIN-H")
+    assert (root / world["alice"] / "index.sqlite").parent.is_dir()  # created for alice, after authorisation
+    async with _session_client(app, world["bob"]) as bob:
+        assert "bob private note" in (await bob.get("/api/memory/browse")).text
+        assert (await bob.delete("/api/memory/chunk/BOB-H")).status_code == 200
+    assert not _has(bob_p, "BOB-H")
+    # the install owner and the host token keep the existing index
+    async with _session_client(app, world["admin"]) as admin:
+        r = await admin.get("/api/memory/browse")
+        assert "admin private note" in r.text and "bob" not in r.text
+    host = world["app"].state.auth.get_local_token()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
+                           headers={"Authorization": f"Bearer {host}"}) as h:
+        assert "admin private note" in (await h.get("/api/memory/browse")).text
+
+
+@pytest.mark.asyncio
+async def test_no_agent_anonymous_creates_nothing(world):
+    app, mem = world["app"], world["mem"]
+    root = mem.parent / "user-qmd-index"
+    before = set(root.iterdir()) if root.exists() else set()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
+                           event_hooks=csrf_event_hooks()) as anon:
+        assert (await anon.get("/api/memory/browse")).status_code == 401
+        assert (await anon.post("/api/memory/search", json={"query": "x"})).status_code == 401
+        assert (await anon.delete("/api/memory/chunk/h")).status_code == 401
+    after = set(root.iterdir()) if root.exists() else set()
+    assert before == after
+
+
+@pytest.mark.asyncio
+async def test_person_index_is_never_addressable_as_an_agent(world):
+    app, mem = world["app"], world["mem"]
+    bob_id = world["bob"]
+    _no_agent_row(mem, bob_id, "BOB-H", "PERSON-CANARY")
+    _make_index(mem / "bob-agent" / "index.sqlite", [(BOB_HASH, "private", "AGENT-CANARY")])
+    # an admin may address ANY agent name; none of these reaches the person's index
+    async with _session_client(app, world["admin"]) as admin:
+        for name in (bob_id, f"person:{bob_id}", "user-qmd-index", f"user-qmd-index-{bob_id}"):
+            r = await admin.get("/api/memory/browse", params={"agent": name})
+            assert "PERSON-CANARY" not in r.text, name
+            r = await admin.post("/api/memory/search", json={"query": "CANARY", "agent": name})
+            assert "PERSON-CANARY" not in r.text, name
+        for bad in ("..", f"../user-qmd-index/{bob_id}", f"{bob_id}/.."):
+            r = await admin.get("/api/memory/browse", params={"agent": bad})
+            assert r.status_code == 400, bad
+    # a member cannot address them either (not an owner of any of those names)
+    async with _session_client(app, world["alice"]) as alice:
+        for name in (bob_id, f"person:{bob_id}", "user-qmd-index", ".."):
+            r = await alice.get("/api/memory/browse", params={"agent": name})
+            assert r.status_code in (400, 403), name
+            assert "PERSON-CANARY" not in r.text
+        # and no-agent never lands on an agent's index
+        r = await alice.get("/api/memory/browse")
+        assert "AGENT-CANARY" not in r.text and "PERSON-CANARY" not in r.text
+    # the person's index file is untouched and lives outside the agent-memory tree
+    assert _has(mem.parent / "user-qmd-index" / bob_id / "index.sqlite", "BOB-H")
+    assert not (mem / bob_id / "index.sqlite").samefile(mem.parent / "user-qmd-index" / bob_id / "index.sqlite") \
+        if (mem / bob_id / "index.sqlite").exists() else True
+
+
+@pytest.mark.asyncio
+async def test_unsafe_user_id_is_refused(world):
+    app = world["app"]
+    from tinyagentos.routes import memory as memmod
+    class R:  # minimal request stand-in for the resolver only
+        class state:  # noqa: N801
+            user_id = "../x"; is_admin = False; via = "session"; agent_name = None
+        class app:  # noqa: N801
+            class state:  # noqa: N801
+                agent_memory_dir = world["mem"]
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as e:
+        memmod._user_index_path(R)
+    assert e.value.status_code == 403
