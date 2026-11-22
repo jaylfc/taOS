@@ -1,7 +1,7 @@
 id: context7-mcp
 name: Context7 MCP
 type: plugin
-runtime: none
+runtime: either
 version: 0.1.0
 description: "Fetch up-to-date library and framework documentation for agents"
 homepage: https://github.com/upstash/context7

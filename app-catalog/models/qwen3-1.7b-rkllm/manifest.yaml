@@ -1,7 +1,7 @@
 id: qwen3-1.7b-rkllm
 name: Qwen 3 1.7B (RKLLM)
 type: model
-runtime: none
+runtime: either
 version: 3.0.0
 description: RK3588 NPU-accelerated Qwen 3 1.7B — small, fast chat model for Orange
   Pi NPU

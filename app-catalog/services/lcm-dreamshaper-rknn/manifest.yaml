@@ -14,7 +14,7 @@ requires:
 
 install:
   method: script
-  runtime: none
+  runtime: either
   script: scripts/install-lcm-dreamshaper.sh
 
 hardware_tiers:

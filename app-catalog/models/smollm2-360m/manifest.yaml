@@ -1,7 +1,7 @@
 id: smollm2-360m
 name: SmolLM2 360M Instruct
 type: model
-runtime: none
+runtime: either
 version: 2.0.0
 description: Tiny 360M — sweet spot for edge classifier/router tasks, runs on Pi 3
 homepage: https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct

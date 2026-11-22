@@ -1,7 +1,7 @@
 id: exa-mcp-server
 name: Exa MCP Server
 type: plugin
-runtime: none
+runtime: either
 version: 0.1.0
 description: "Neural search and web crawling powered by Exa"
 homepage: https://github.com/exa-labs/exa-mcp-server

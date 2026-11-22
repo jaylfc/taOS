@@ -1,7 +1,7 @@
 id: qwen2.5-1.5b
 name: Qwen 2.5 1.5B Instruct
 type: model
-runtime: none
+runtime: either
 version: 2.5.0
 description: Small 1.5B model — balance of capability and speed
 homepage: https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct

@@ -20,7 +20,7 @@ requires:
 
 install:
   method: script
-  runtime: none
+  runtime: either
   script: scripts/install-flux-fill.sh
 
 lifecycle:

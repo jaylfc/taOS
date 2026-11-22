@@ -1,7 +1,7 @@
 id: tesseract-ocr
 name: Tesseract OCR
 type: service
-runtime: none
+runtime: either
 category: productivity
 version: 5.3.4
 description: "Classic OCR engine — fast, lightweight, 100+ languages. The baseline for plain text extraction from images and scans."

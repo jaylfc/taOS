@@ -1,7 +1,7 @@
 id: mcp-time
 name: MCP Time
 type: plugin
-runtime: none
+runtime: either
 version: 0.1.0
 description: "Timezone conversion and current time lookup for agents"
 homepage: https://github.com/modelcontextprotocol/servers

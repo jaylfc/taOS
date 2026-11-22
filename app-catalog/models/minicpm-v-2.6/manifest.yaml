@@ -1,7 +1,7 @@
 id: minicpm-v-2.6
 name: MiniCPM-V 2.6
 type: model
-runtime: none
+runtime: either
 version: 2.6.0
 description: 8B vision-language model — rivals GPT-4V on many benchmarks, multi-image
   support

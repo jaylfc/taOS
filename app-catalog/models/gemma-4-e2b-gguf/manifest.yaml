@@ -1,7 +1,7 @@
 id: gemma-4-e2b-gguf
 name: Gemma 4 E2B Instruct (GGUF)
 type: model
-runtime: none
+runtime: either
 version: 4.0.0
 description: Google Gemma 4 E2B (~5B raw / 2.3B effective via PLE), Q4_K_M GGUF —
   runs on Pi NPU via rk-llama.cpp

@@ -13,7 +13,7 @@ requires:
 
 install:
   method: pip
-  runtime: none
+  runtime: either
   package: nemo_toolkit[asr]
 
 hardware_tiers:

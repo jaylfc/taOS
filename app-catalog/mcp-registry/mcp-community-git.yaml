@@ -5,7 +5,7 @@ description: >-
   branch. Scoped to the repository in its own private workspace, which the
   installer provisions — put the repository to work on there.
 version: 2026.8.18
-runtime: none
+runtime: either
 author: modelcontextprotocol
 homepage: https://github.com/modelcontextprotocol/servers
 license: MIT

@@ -1,7 +1,7 @@
 id: mongodb-mcp-server
 name: MongoDB MCP Server
 type: plugin
-runtime: none
+runtime: either
 version: 0.1.0
 description: "Official MongoDB and Atlas MCP server for database operations and queries"
 homepage: https://github.com/mongodb-labs/mongodb-mcp-server

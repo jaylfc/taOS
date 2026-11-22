@@ -1,7 +1,7 @@
 id: sd-v1.5-lcm
 name: Stable Diffusion 1.5 (GGUF)
 type: model
-runtime: none
+runtime: either
 version: 1.5.0
 description: Classic Stable Diffusion 1.5 in GGUF format — works on any CPU via stable-diffusion.cpp,
   including ARM

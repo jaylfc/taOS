@@ -1,7 +1,7 @@
 id: gemma-2-2b
 name: Gemma 2 2B Instruct
 type: model
-runtime: none
+runtime: either
 version: 2.0.0
 description: Google's compact 2B — strong quality for size, ideal for Pi and edge
 homepage: https://huggingface.co/google/gemma-2-2b-it

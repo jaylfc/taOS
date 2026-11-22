@@ -1,7 +1,7 @@
 id: qwen3-vl-2b-rkllm
 name: Qwen 3 VL 2B Instruct (RKLLM)
 type: model
-runtime: none
+runtime: either
 version: 3.0.0
 description: RK3588 NPU-accelerated Qwen 3 VL 2B — vision-language multimodal model
   for Orange Pi NPU

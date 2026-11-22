@@ -63,15 +63,15 @@ def _docker_available() -> bool:
 def _get_app_runtime(manifest) -> str:
     """Get the container runtime requirement from a manifest.
     
-    Returns 'docker', 'lxc', or 'none'.
+    Returns 'docker', 'lxc', or 'either'.
     """
     install_block = getattr(manifest, "install", None) or {}
     if isinstance(install_block, dict):
-        return install_block.get("runtime", "none")
+        return install_block.get("runtime", "either")
     elif hasattr(install_block, "get"):
-        return install_block.get("runtime", "none")
+        return install_block.get("runtime", "either")
     # For manifests without install block (e.g., models), check top-level
-    return getattr(manifest, "runtime", "none")
+    return getattr(manifest, "runtime", "either")
 
 
 _KNOWN_BACKENDS = {

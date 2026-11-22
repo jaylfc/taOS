@@ -1,7 +1,7 @@
 id: qwen3-8b
 name: Qwen 3 8B
 type: model
-runtime: none
+runtime: either
 version: 3.0.0
 description: General-purpose chat model with strong tool calling and reasoning
 homepage: https://huggingface.co/Qwen/Qwen3-8B

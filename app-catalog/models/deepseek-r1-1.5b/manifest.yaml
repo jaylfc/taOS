@@ -1,7 +1,7 @@
 id: deepseek-r1-1.5b
 name: DeepSeek R1 1.5B Distill
 type: model
-runtime: none
+runtime: either
 version: 1.5.0
 description: "Hailo-10H NPU-accelerated DeepSeek R1 1.5B Distill — reasoning model for Raspberry Pi 5 + AI HAT+2 via hailo-ollama"
 homepage: https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B

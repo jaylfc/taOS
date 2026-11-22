@@ -1,7 +1,7 @@
 id: auraflow-v0.3
 name: AuraFlow v0.3
 type: model
-runtime: none
+runtime: either
 version: 0.3.0
 description: Fal's fully open flow-matching text-to-image — Apache 2.0, 6.8B params
 homepage: https://huggingface.co/fal/AuraFlow-v0.3

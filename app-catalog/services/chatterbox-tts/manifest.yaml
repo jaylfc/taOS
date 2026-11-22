@@ -14,7 +14,7 @@ requires:
 
 install:
   method: pip
-  runtime: none
+  runtime: either
   package: chatterbox-tts
 
 hardware_tiers:

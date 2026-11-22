@@ -1,7 +1,7 @@
 id: phi-3.5-mini
 name: Phi 3.5 Mini Instruct
 type: model
-runtime: none
+runtime: either
 version: 3.5.0
 description: Microsoft's compact 3.8B — strong reasoning in a small package, 128K
   context

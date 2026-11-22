@@ -1,7 +1,7 @@
 id: controlnet-canny
 name: ControlNet Canny (SD 1.5)
 type: model
-runtime: none
+runtime: either
 version: 1.0.0
 description: Canny edge-based ControlNet — control image generation from edge maps
 homepage: https://huggingface.co/lllyasviel/sd-controlnet-canny

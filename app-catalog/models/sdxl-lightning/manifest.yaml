@@ -1,7 +1,7 @@
 id: sdxl-lightning
 name: SDXL Lightning
 type: model
-runtime: none
+runtime: either
 version: 1.0.0
 description: ByteDance's SDXL distillation — 2-step and 4-step variants, fast generation
 homepage: https://huggingface.co/ByteDance/SDXL-Lightning

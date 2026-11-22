@@ -43,7 +43,7 @@ class TestManifestRuntimeField:
         assert not missing_runtime, f"Manifests missing runtime field: {missing_runtime}"
 
     def test_runtime_values_are_valid(self):
-        """Verify runtime values are one of docker, lxc, none."""
+        """Verify runtime values are one of docker, lxc, either."""
         import yaml
         from pathlib import Path
 
@@ -52,7 +52,7 @@ class TestManifestRuntimeField:
         mcp_files = list((catalog_dir / "mcp-registry").glob("*.yaml"))
 
         invalid_runtime = []
-        valid_values = {"docker", "lxc", "none"}
+        valid_values = {"docker", "lxc", "either"}
         for mf in manifest_files + mcp_files:
             with open(mf) as f:
                 data = yaml.safe_load(f)
@@ -111,22 +111,22 @@ class TestGetAppRuntime:
         manifest.install = {"method": "lxc", "runtime": "lxc"}
         assert _get_app_runtime(manifest) == "lxc"
 
-    def test_none_runtime_from_install_block(self):
+    def test_either_runtime_from_install_block(self):
         manifest = MagicMock()
-        manifest.install = {"method": "script", "runtime": "none"}
-        assert _get_app_runtime(manifest) == "none"
+        manifest.install = {"method": "script", "runtime": "either"}
+        assert _get_app_runtime(manifest) == "either"
 
     def test_runtime_from_top_level_for_models(self):
         manifest = MagicMock()
         manifest.install = None
-        manifest.runtime = "none"
-        assert _get_app_runtime(manifest) == "none"
+        manifest.runtime = "either"
+        assert _get_app_runtime(manifest) == "either"
 
-    def test_default_none_when_missing(self):
+    def test_default_either_when_missing(self):
         manifest = MagicMock()
         manifest.install = {}
         del manifest.runtime
-        assert _get_app_runtime(manifest) == "none"
+        assert _get_app_runtime(manifest) == "either"
 
 
 class TestLegacyInstallDockerRequired:
@@ -196,7 +196,7 @@ class TestLegacyInstallDockerRequired:
         request.app.state.registry = MagicMock()
         request.app.state.installed_apps = None
         
-        install_dict = {"method": "script", "runtime": "none", "script": "scripts/install.sh"}
+        install_dict = {"method": "script", "runtime": "either", "script": "scripts/install.sh"}
         manifest = self._make_manifest(install_dict, "test-script")
         
         with patch("tinyagentos.routes.store_install._registry_get", return_value=manifest):

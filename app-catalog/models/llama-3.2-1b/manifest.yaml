@@ -1,7 +1,7 @@
 id: llama-3.2-1b
 name: Llama 3.2 1B
 type: model
-runtime: none
+runtime: either
 version: 3.2.0
 description: Meta's lightest model -- 2GB RAM, ARM-optimized, perfect for mobile workers
   and Pi 4

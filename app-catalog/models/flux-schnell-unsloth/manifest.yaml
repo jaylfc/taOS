@@ -1,7 +1,7 @@
 id: flux-schnell-unsloth
 name: Flux.1 Schnell (Unsloth GGUF)
 type: model
-runtime: none
+runtime: either
 version: 1.0.0
 description: Unsloth's Flux Schnell GGUFs — Apache 2.0, 4-step generation, wide quant
   coverage

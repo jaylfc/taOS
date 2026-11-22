@@ -1,7 +1,7 @@
 id: tinyllama-1.1b
 name: TinyLlama 1.1B Chat v1.0
 type: model
-runtime: none
+runtime: either
 version: 1.0.0
 description: Lightweight 1.1B Llama clone — fast, simple, great for testing pipelines
 homepage: https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0

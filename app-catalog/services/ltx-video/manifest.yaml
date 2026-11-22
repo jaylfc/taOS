@@ -14,7 +14,7 @@ requires:
 
 install:
   method: script
-  runtime: none
+  runtime: either
   script: scripts/install-ltx-video.sh
 
 hardware_tiers:

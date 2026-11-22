@@ -1,7 +1,7 @@
 id: controlnet-depth
 name: ControlNet Depth (SD 1.5)
 type: model
-runtime: none
+runtime: either
 version: 1.0.0
 description: Depth-map based ControlNet — control generation from depth estimation
 homepage: https://huggingface.co/lllyasviel/sd-controlnet-depth

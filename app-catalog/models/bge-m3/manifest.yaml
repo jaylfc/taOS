@@ -1,7 +1,7 @@
 id: bge-m3
 name: BGE M3 (Multilingual)
 type: model
-runtime: none
+runtime: either
 version: 1.0.0
 description: Multilingual embedding — dense, sparse, and multi-vector in one model.
   100+ languages.

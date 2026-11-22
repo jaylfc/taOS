@@ -1,7 +1,7 @@
 id: phi-4
 name: Phi 4 (14B)
 type: model
-runtime: none
+runtime: either
 version: 4.0.0
 description: Microsoft's 14B — trained on synthetic data, strong reasoning and math
 homepage: https://huggingface.co/microsoft/phi-4

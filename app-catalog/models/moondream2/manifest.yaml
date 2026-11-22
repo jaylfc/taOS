@@ -1,7 +1,7 @@
 id: moondream2
 name: Moondream 2
 type: model
-runtime: none
+runtime: either
 version: 2.0.0
 description: Tiny 2B vision model — fast image captioning and Q&A, runs on CPU
 homepage: https://huggingface.co/vikhyatk/moondream2

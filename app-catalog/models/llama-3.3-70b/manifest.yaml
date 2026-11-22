@@ -1,7 +1,7 @@
 id: llama-3.3-70b
 name: Llama 3.3 70B Instruct
 type: model
-runtime: none
+runtime: either
 version: 3.3.0
 description: Meta's flagship 70B — matches Llama 3.1 405B on many benchmarks. Requires
   clusters or distributed inference.

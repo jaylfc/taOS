@@ -1,7 +1,7 @@
 id: nomic-embed-text-v1.5
 name: Nomic Embed Text v1.5
 type: model
-runtime: none
+runtime: either
 version: 1.5.0
 description: Open embedding model — 768 dimensions, Matryoshka, outperforms OpenAI
   text-embedding-ada-002

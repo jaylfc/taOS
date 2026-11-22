@@ -1,7 +1,7 @@
 id: nemotron-mini-4b
 name: Nemotron Mini 4B Instruct
 type: model
-runtime: none
+runtime: either
 version: 1.0.0
 description: NVIDIA's 4B fine-tune of Minitron — strong roleplay and function calling
 homepage: https://huggingface.co/nvidia/Nemotron-Mini-4B-Instruct

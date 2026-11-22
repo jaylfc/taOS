@@ -1,7 +1,7 @@
 id: playwright-mcp
 name: Playwright MCP
 type: plugin
-runtime: none
+runtime: either
 version: 0.1.0
 description: "Official Playwright browser automation MCP server for web interaction and testing"
 homepage: https://github.com/microsoft/playwright-mcp

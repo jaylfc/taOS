@@ -1,7 +1,7 @@
 id: whisper-large-v3-turbo
 name: Whisper Large v3 Turbo (ggml)
 type: model
-runtime: none
+runtime: either
 version: 3.0.0
 description: Distilled Whisper Large v3 — 8x faster, near-large quality
 homepage: https://huggingface.co/ggerganov/whisper.cpp

@@ -1,7 +1,7 @@
 id: deepseek-r1-14b
 name: DeepSeek R1 14B
 type: model
-runtime: none
+runtime: either
 version: 1.0.0
 description: DeepSeek's reasoning model distilled to 14B — strong at math, code, and
   logical reasoning

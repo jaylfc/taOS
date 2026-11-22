@@ -1,7 +1,7 @@
 id: markdownify-mcp
 name: Markdownify MCP
 type: plugin
-runtime: none
+runtime: either
 version: 0.1.0
 description: "Convert PDF, HTML, DOCX, and images to Markdown for agent consumption"
 homepage: https://github.com/zcaceres/markdownify-mcp

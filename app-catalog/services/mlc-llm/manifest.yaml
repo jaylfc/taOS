@@ -15,7 +15,7 @@ requires:
 
 install:
   method: pip
-  runtime: none
+  runtime: either
   package: mlc-llm
 
 lifecycle:

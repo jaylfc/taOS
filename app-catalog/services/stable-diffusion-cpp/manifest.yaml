@@ -14,7 +14,7 @@ requires:
 
 install:
   method: script
-  runtime: none
+  runtime: either
   script: scripts/install-sd-cpp.sh
 
 hardware_tiers:

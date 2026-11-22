@@ -1,7 +1,7 @@
 id: ltx-video
 name: LTX-Video
 type: model
-runtime: none
+runtime: either
 version: 0.9.5
 description: Lightricks open video gen — 2B params, real-time generation on H100,
   24 fps, 768×512. Apache-2.0 weights, fastest open video model in its class.

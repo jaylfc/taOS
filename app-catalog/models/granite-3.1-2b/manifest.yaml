@@ -1,7 +1,7 @@
 id: granite-3.1-2b
 name: IBM Granite 3.1 2B Instruct
 type: model
-runtime: none
+runtime: either
 version: 3.1.0
 description: IBM's 2B enterprise model — 128K context, Apache 2.0, strong at code
   and structured tasks

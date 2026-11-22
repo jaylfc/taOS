@@ -1,7 +1,7 @@
 id: notion-mcp-server
 name: Notion MCP Server
 type: plugin
-runtime: none
+runtime: either
 version: 0.1.0
 description: "Official Notion MCP server for pages, databases, and workspace management"
 homepage: https://github.com/makenotion/notion-mcp-server

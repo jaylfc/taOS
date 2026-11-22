@@ -1,7 +1,7 @@
 id: kokoro-tts
 name: Kokoro 82M TTS
 type: model
-runtime: none
+runtime: either
 version: 1.0.0
 description: Compact 82M TTS — Apache 2.0 licensed, rivals much larger models, CPU-friendly
 homepage: https://huggingface.co/hexgrad/Kokoro-82M

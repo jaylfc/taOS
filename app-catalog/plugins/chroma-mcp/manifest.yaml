@@ -11,7 +11,7 @@ requires:
 
 install:
   method: pip
-  runtime: none
+  runtime: either
   package: chroma-mcp
 
 hardware_tiers:

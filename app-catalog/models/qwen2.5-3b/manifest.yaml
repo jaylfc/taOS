@@ -1,7 +1,7 @@
 id: qwen2.5-3b
 name: Qwen 2.5 3B Instruct
 type: model
-runtime: none
+runtime: either
 version: 2.5.0
 description: Compact 3B with tool calling — excellent edge model
 homepage: https://huggingface.co/Qwen/Qwen2.5-3B-Instruct

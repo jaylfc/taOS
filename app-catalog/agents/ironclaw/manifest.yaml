@@ -10,7 +10,7 @@ requires:
   ram_mb: 128
 install:
   method: pip
-  runtime: none
+  runtime: either
   package: ironclaw
 hardware_tiers:
   arm-npu-16gb: full

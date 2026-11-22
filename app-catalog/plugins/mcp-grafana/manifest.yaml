@@ -11,7 +11,7 @@ requires:
 
 install:
   method: script
-  runtime: none
+  runtime: either
   package: "go install github.com/grafana/mcp-grafana@latest"
 
 hardware_tiers:

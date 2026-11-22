@@ -1,7 +1,7 @@
 id: bge-large-en-v1.5
 name: BGE Large EN v1.5
 type: model
-runtime: none
+runtime: either
 version: 1.5.0
 description: BAAI's English embedding model — 1024 dimensions, strong MTEB ranking
 homepage: https://huggingface.co/BAAI/bge-large-en-v1.5
