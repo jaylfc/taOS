@@ -17,6 +17,9 @@ def register_all_routers(app):
     from tinyagentos.routes.system import router as system_router
     app.include_router(system_router, dependencies=_csrf)
 
+    from tinyagentos.routes.offline_model import router as offline_model_router
+    app.include_router(offline_model_router, dependencies=_csrf)
+
     from tinyagentos.routes.other_systems import router as other_systems_router
     app.include_router(other_systems_router, dependencies=_csrf)
 

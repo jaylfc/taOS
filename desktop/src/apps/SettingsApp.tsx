@@ -22,6 +22,7 @@ import {
   Presentation,
   Wifi,
   Bluetooth,
+  Cpu,
 } from "lucide-react";
 import {
   Button,
@@ -47,13 +48,33 @@ import { LockScreenPanel } from "@/apps/SettingsApp/LockScreenPanel";
 import { DemoModePanel } from "@/apps/SettingsApp/DemoModePanel";
 import { WifiPanel } from "@/apps/SettingsApp/WifiPanel";
 import { BluetoothPanel } from "@/apps/SettingsApp/BluetoothPanel";
+import { OfflineModelPanel } from "@/apps/SettingsApp/OfflineModelPanel";
 import { copyText } from "@/lib/clipboard";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
-type Section = "account" | "system" | "storage" | "memory" | "backup" | "updates" | "advanced" | "shortcuts" | "accessibility" | "desktop" | "users" | "themes" | "logs" | "notifications" | "lock" | "demo" | "wifi" | "bluetooth";
+type Section =
+  | "account"
+  | "system"
+  | "storage"
+  | "memory"
+  | "backup"
+  | "updates"
+  | "advanced"
+  | "shortcuts"
+  | "accessibility"
+  | "desktop"
+  | "users"
+  | "themes"
+  | "logs"
+  | "notifications"
+  | "lock"
+  | "demo"
+  | "wifi"
+  | "bluetooth"
+  | "offline_model";
 
 interface SectionDef {
   id: Section;
@@ -107,11 +128,12 @@ const SECTIONS: SectionDef[] = [
   { id: "notifications", label: "Notifications", icon: Bell },
   { id: "lock", label: "Lock screen", icon: Lock },
   { id: "demo", label: "Demo mode", icon: Presentation },
+  { id: "offline_model", label: "Offline model", icon: Cpu },
 ];
 
 // Sections that require admin privileges to view (GHSA-47g9: backend already
 // 403s these for non-admins, this hides them from the sidebar/content too).
-const ADMIN_ONLY = new Set(["system", "storage", "memory", "backup", "updates", "advanced", "logs", "demo", "wifi", "bluetooth"]);
+const ADMIN_ONLY = new Set(["system", "storage", "memory", "backup", "updates", "advanced", "logs", "demo", "wifi", "bluetooth", "offline_model"]);
 
 const PLACEHOLDER_SYSTEM: SystemInfo = {
   cpu: "Detecting...",
@@ -1097,6 +1119,7 @@ export function SettingsApp({ windowId: _windowId, section: initialSection }: { 
     demo: <DemoModePanel />,
     wifi: <WifiPanel />,
     bluetooth: <BluetoothPanel />,
+    offline_model: <OfflineModelPanel />,
   };
 
   const handleSelectSection = (id: Section) => {

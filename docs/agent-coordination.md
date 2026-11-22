@@ -2852,6 +2852,38 @@ the LiteLLM hook's 429 before anything is forwarded. Revoking, blocking or
 deleting a cluster node, and archiving an agent, revoke the keys bound to it
 in the same request.
 
+## Offline model (on-device LFM3 1.7B)
+
+`tinyagentos/routes/offline_model.py` mounts `GET /api/system/offline-model` and
+`PUT /api/system/offline-model` for the on-device offline model (the ref pin is
+LFM3 1.7B). Its availability and metadata come from `TAOS_LLM_HELPER`
+(default `/usr/local/sbin/taos-llm`) and `/usr/share/taos/models/lfm3-1.7b.json`; when either is missing the model reports
+`available: false` and is not offered.
+
+- `GET /api/system/offline-model` returns availability, the saved enable
+  preference (desktop settings namespace `offline_model`, user row) and the
+  runtime status from `helper status`, plus `licence`, `licence_note` and
+  `performance_note` from the metadata. No auth gate (any signed-in caller can
+  read it).
+- `PUT /api/system/offline-model` flips the preference. It is session-only
+  admin: a signed-in admin session is required, and the host local token
+  (`via == "local_token"`) and agent tokens (`via == "registry_jwt"`) are
+  refused with 403 -- `require_admin` is deliberately not used because it
+  accepts the local token. start/stop run through passwordless
+  `sudo -n <helper> start|stop`; status runs without sudo. A start that exits
+  1 returns 502 with the helper's own message; any other non-zero start is
+  logged and 502 too. A failing stop is surfaced as 502 and the preference is
+  left untouched. On success the enable preference is saved.
+
+Routing: `llm_gateway/resolve.py` injects an offline-model routing-table entry
+(backend type `offline`, `enable_thinking: false`) only when it is available
+and enabled, and it is never the default (`taos-default` keeps resolving to the
+account's chosen chat model). `llm_gateway/forward.py` starts the model via the
+helper on the first request when it is stopped, waits for healthy, then
+forwards; every forwarded offline-model request sends
+`chat_template_kwargs: { enable_thinking: false }`. The phone Settings app
+exposes a switch for it showing `licence_note` and `performance_note`.
+
 ## The system taOS Agent's harness (opencode, PicoClaw on a handset, Claude Code or Kilo)
 
 The built-in taOS Agent runs on opencode (a host `opencode serve`) on every
