@@ -709,6 +709,7 @@ class TestPinKeyLockWaiterRefcount:
         holder_lock = threading.Lock()
         verify_started = threading.Event()
         allow_finish = threading.Event()
+        responses = []
 
         def slow_verify(pin, stored):
             nonlocal holder_count, max_holders
@@ -748,7 +749,8 @@ class TestPinKeyLockWaiterRefcount:
 
                 # Late arrivals: start AFTER the first release (we'll trigger release now)
                 allow_finish.set()
-                await first_task
+                first_resp = await first_task
+                responses.append(first_resp)
 
                 # Now fire late arrivals while waiters are still acquiring
                 late_tasks = [
@@ -758,12 +760,20 @@ class TestPinKeyLockWaiterRefcount:
                     for _ in range(5)
                 ]
 
-                await asyncio.gather(*waiter_tasks, *late_tasks)
+                all_responses = await asyncio.gather(*waiter_tasks, *late_tasks)
+                responses.extend(all_responses)
         finally:
             monkeypatch.undo()
 
         # At most one holder at any time
         assert max_holders <= 1, f"max concurrent holders was {max_holders}, expected <= 1"
+
+        # Attempt count never exceeds the limit: at most 5 failures (401) before rate limit (429)
+        status_codes = [r.status_code for r in responses]
+        failures = status_codes.count(401)
+        rate_limited = status_codes.count(429)
+        assert failures <= 5, f"failures {failures} exceeded limit of 5"
+        assert failures + rate_limited == 11, f"expected 11 total responses, got {len(responses)}"
 
     @pytest.mark.asyncio
     async def test_lock_entry_not_dropped_while_waiters_exist(self):
@@ -809,10 +819,9 @@ class TestPinKeyLockWaiterRefcount:
         await asyncio.gather(*waiter_tasks)
 
         # Now the entry should be popped (no more waiters)
-        # Note: this happens asynchronously, so we check after a small delay
-        await asyncio.sleep(0.05)
-        # The entry may or may not be popped depending on timing, but it should not
-        # have been popped while waiters were active
+        # The release of the last waiter pops the entry synchronously under the guard
+        assert key not in auth_routes._pin_key_locks, "Lock entry was not popped after all waiters released"
+        assert key not in auth_routes._pin_key_waiters, "Waiter count was not cleaned up"
 
 
 # --------------------------------------------------------------------------- #
