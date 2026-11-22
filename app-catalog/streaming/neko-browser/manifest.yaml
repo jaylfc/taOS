@@ -1,6 +1,7 @@
 id: neko-browser
 name: Neko Browser
 type: streaming-app
+runtime: none
 version: 2.0.0
 description: "Full Firefox or Chrome browser streamed via WebRTC — real browser experience inside TinyAgentOS with multi-user support and <300ms latency"
 homepage: https://github.com/m1k1o/neko

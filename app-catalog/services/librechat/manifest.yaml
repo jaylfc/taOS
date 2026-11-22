@@ -15,6 +15,7 @@ install:
     HOST: 0.0.0.0
   image: ghcr.io/danny-avila/librechat:0.7.6
   method: docker
+  runtime: docker
   ports:
   - 3080
 license: MIT

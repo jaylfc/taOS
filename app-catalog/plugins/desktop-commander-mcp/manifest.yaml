@@ -1,6 +1,7 @@
 id: desktop-commander-mcp
 name: Desktop Commander MCP
 type: plugin
+runtime: none
 version: 0.1.0
 description: "Terminal control, filesystem search, and diff-based file editing for agents"
 homepage: https://github.com/wonderwhy-er/DesktopCommanderMCP

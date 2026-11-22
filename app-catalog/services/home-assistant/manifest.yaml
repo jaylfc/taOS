@@ -14,6 +14,7 @@ install:
     TZ: UTC
   image: ghcr.io/home-assistant/home-assistant:stable
   method: docker
+  runtime: docker
   ports:
   - 8123
   volumes:

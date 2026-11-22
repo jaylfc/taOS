@@ -1,6 +1,7 @@
 id: lcm-dreamshaper-v7
 name: LCM Dreamshaper V7
 type: model
+runtime: none
 version: 7.0.0
 description: Fast image generation — 4-step LCM acceleration, 512x512 in seconds on
   CPU or GPU

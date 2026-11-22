@@ -1,6 +1,7 @@
 id: llama-3.2-3b
 name: Llama 3.2 3B
 type: model
+runtime: none
 version: 3.2.0
 description: Meta's edge model — explicit ARM support, tool calling, 6GB RAM. Great
   for mobile/Pi workers.

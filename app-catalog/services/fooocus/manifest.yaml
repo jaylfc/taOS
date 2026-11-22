@@ -15,6 +15,7 @@ id: fooocus
 install:
   image: ghcr.io/lllyasviel/fooocus:2.5.0
   method: docker
+  runtime: docker
   ports:
   - 7865
   volumes:

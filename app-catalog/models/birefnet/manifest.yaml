@@ -1,6 +1,7 @@
 id: birefnet
 name: BiRefNet (Background Removal)
 type: model
+runtime: none
 version: 1.0.0
 description: State-of-the-art bilateral reference network — high-quality matting and
   segmentation

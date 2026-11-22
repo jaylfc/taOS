@@ -1,6 +1,7 @@
 id: snowflake-arctic-embed-m
 name: Snowflake Arctic Embed M v1.5
 type: model
+runtime: none
 version: 1.5.0
 description: Snowflake's 110M embedding — small, fast, strong retrieval performance
 homepage: https://huggingface.co/Snowflake/snowflake-arctic-embed-m-v1.5

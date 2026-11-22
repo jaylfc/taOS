@@ -1,6 +1,7 @@
 id: supergateway
 name: Supergateway
 type: plugin
+runtime: none
 version: 0.1.0
 description: "Run stdio-based MCP servers over SSE transport"
 homepage: https://github.com/nicepkg/supergateway

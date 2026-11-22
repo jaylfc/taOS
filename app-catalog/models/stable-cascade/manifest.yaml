@@ -1,6 +1,7 @@
 id: stable-cascade
 name: Stable Cascade
 type: model
+runtime: none
 version: 1.0.0
 description: Stability AI's efficient 3-stage cascade — strong quality at reduced
   compute

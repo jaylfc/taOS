@@ -10,6 +10,7 @@ requires:
   ram_mb: 64
 install:
   method: script
+  runtime: none
   script: scripts/install-moltis.sh
 hardware_tiers:
   arm-npu-16gb: full

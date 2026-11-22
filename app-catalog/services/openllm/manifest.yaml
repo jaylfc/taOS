@@ -15,6 +15,7 @@ requires:
 
 install:
   method: pip
+  runtime: none
   package: openllm
 
 lifecycle:

@@ -1,6 +1,7 @@
 id: qwen3-reranker-0.6b
 name: Qwen 3 Reranker 0.6B
 type: model
+runtime: none
 version: 3.0.0
 description: Cross-encoder reranker for search result scoring — multilingual
 homepage: https://huggingface.co/Qwen/Qwen3-Reranker-0.6B

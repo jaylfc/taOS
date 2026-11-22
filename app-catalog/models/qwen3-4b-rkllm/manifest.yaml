@@ -1,6 +1,7 @@
 id: qwen3-4b-rkllm
 name: Qwen 3 4B Instruct (RKLLM)
 type: model
+runtime: none
 version: 3.0.0
 description: RK3588 NPU-accelerated Qwen 3 4B (Instruct-2507) — strong general-purpose
   chat model for Orange Pi NPU

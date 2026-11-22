@@ -13,6 +13,7 @@ id: comfyui
 install:
   image: ghcr.io/ai-dock/comfyui:0.3.0
   method: docker
+  runtime: docker
   ports:
   - 8188
   volumes:

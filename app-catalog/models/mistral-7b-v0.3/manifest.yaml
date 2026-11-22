@@ -1,6 +1,7 @@
 id: mistral-7b-v0.3
 name: Mistral 7B Instruct v0.3
 type: model
+runtime: none
 version: 0.3.0
 description: Mistral's classic 7B v0.3 — function calling, extended vocabulary, reliable
   workhorse

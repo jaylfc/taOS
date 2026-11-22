@@ -1,6 +1,7 @@
 id: qwen2.5-coder-14b
 name: Qwen 2.5 Coder 14B Instruct
 type: model
+runtime: none
 version: 2.5.0
 description: Higher-capacity code model — strong full-stack code generation and refactoring
 homepage: https://huggingface.co/Qwen/Qwen2.5-Coder-14B-Instruct

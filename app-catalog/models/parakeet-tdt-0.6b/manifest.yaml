@@ -1,6 +1,7 @@
 id: parakeet-tdt-0.6b
 name: NVIDIA Parakeet TDT 0.6B v2
 type: model
+runtime: none
 version: 2.0.0
 description: NVIDIA's 600M ASR — tops Open ASR leaderboard, fast real-time transcription
 homepage: https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2

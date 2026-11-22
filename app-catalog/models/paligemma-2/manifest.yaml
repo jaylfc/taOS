@@ -1,6 +1,7 @@
 id: paligemma-2
 name: PaliGemma 2 3B Mix
 type: model
+runtime: none
 version: 2.0.0
 description: "Google's lightweight vision-language model — strong at image captioning, OCR, segmentation, visual Q&A. 3B params; 224/448/896 input resolutions."
 homepage: https://huggingface.co/google/paligemma2-3b-mix-224

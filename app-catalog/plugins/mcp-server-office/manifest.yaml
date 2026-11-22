@@ -11,6 +11,7 @@ requires:
 
 install:
   method: pip
+  runtime: none
   package: mcp-server-office
 
 hardware_tiers:

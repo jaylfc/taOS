@@ -1,6 +1,7 @@
 id: qwen2.5-72b
 name: Qwen 2.5 72B Instruct
 type: model
+runtime: none
 version: 2.5.0
 description: Flagship 72B — competes with GPT-4 class models on reasoning and code
 homepage: https://huggingface.co/Qwen/Qwen2.5-72B-Instruct

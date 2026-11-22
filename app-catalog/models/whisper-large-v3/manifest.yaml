@@ -1,6 +1,7 @@
 id: whisper-large-v3
 name: Whisper Large v3 (ggml)
 type: model
+runtime: none
 version: 3.0.0
 description: Largest Whisper v3 — 1550M params, best quality, 99 languages
 homepage: https://huggingface.co/ggerganov/whisper.cpp

@@ -1,6 +1,7 @@
 id: mxbai-embed-large
 name: MixedBread mxbai-embed-large v1
 type: model
+runtime: none
 version: 1.0.0
 description: 1024-dim English embedding — strong MTEB performance, Apache 2.0
 homepage: https://huggingface.co/mixedbread-ai/mxbai-embed-large-v1

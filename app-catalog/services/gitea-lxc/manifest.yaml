@@ -15,6 +15,7 @@ install:
   image: images:debian/bookworm
   memory_limit: 512MiB
   method: lxc
+  runtime: lxc
   ports:
     http: 3000
     ssh: 2222

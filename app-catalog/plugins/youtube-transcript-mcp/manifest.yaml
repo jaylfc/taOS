@@ -1,6 +1,7 @@
 id: youtube-transcript-mcp
 name: YouTube Transcript MCP
 type: plugin
+runtime: none
 version: 0.1.0
 description: "Download and extract YouTube video transcripts"
 homepage: https://github.com/nicholasgriffintn/youtube-transcript-mcp

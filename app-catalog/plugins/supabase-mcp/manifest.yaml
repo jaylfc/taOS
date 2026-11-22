@@ -1,6 +1,7 @@
 id: supabase-mcp
 name: Supabase MCP
 type: plugin
+runtime: none
 version: 0.1.0
 description: "Supabase project management — database, auth, storage, and edge functions"
 homepage: https://github.com/supabase-community/supabase-mcp

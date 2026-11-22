@@ -1,6 +1,7 @@
 id: gemma-4-e2b-uncensored-gguf
 name: Gemma 4 E2B Uncensored (GGUF)
 type: model
+runtime: none
 version: 4.0.0
 description: 'Google Gemma 4 E2B (~5B raw / 2.3B effective via PLE), abliterated/uncensored
   GGUF (no refusals, original Google behaviour). Natively multimodal: text, image,

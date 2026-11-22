@@ -16,6 +16,7 @@ requires:
 
 install:
   method: docker
+  runtime: docker
   # Floating tag on purpose: SearXNG is never version-pinned, so every install
   # and every Store update must resolve the current upstream release. The
   # installer gives an untagged/`:latest` image `pull_policy: always`, so

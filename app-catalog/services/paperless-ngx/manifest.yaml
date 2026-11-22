@@ -11,6 +11,7 @@ id: paperless-ngx
 install:
   image: ghcr.io/paperless-ngx/paperless-ngx:2.14.0
   method: docker
+  runtime: docker
   ports:
   - 8000
   volumes:

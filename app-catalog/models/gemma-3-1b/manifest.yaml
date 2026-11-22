@@ -1,6 +1,7 @@
 id: gemma-3-1b
 name: Gemma 3 1B Instruct
 type: model
+runtime: none
 version: 3.0.0
 description: Google's smallest Gemma 3 — 1B params, fast on any hardware
 homepage: https://huggingface.co/google/gemma-3-1b-it

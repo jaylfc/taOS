@@ -1,6 +1,7 @@
 id: qwen2.5-1.5b-rkllm
 name: Qwen 2.5 1.5B Instruct (RKLLM)
 type: model
+runtime: none
 version: 2.5.0
 description: RK3588 NPU-accelerated Qwen 2.5 1.5B — runs on Orange Pi 5 NPU via rkllama
 homepage: https://huggingface.co/c01zaut/Qwen2.5-1.5B-Instruct-rk3588-1.1.1

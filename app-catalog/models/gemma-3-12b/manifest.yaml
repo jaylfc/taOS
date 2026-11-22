@@ -1,6 +1,7 @@
 id: gemma-3-12b
 name: Gemma 3 12B Instruct
 type: model
+runtime: none
 version: 3.0.0
 description: Google's Gemma 3 12B — multimodal, 128K context, strong benchmarks
 homepage: https://huggingface.co/google/gemma-3-12b-it

@@ -1,6 +1,7 @@
 id: qwen2.5-7b
 name: Qwen 2.5 7B Instruct
 type: model
+runtime: none
 version: 2.5.0
 description: General-purpose 7B — strong tool calling, 128K context
 homepage: https://huggingface.co/Qwen/Qwen2.5-7B-Instruct

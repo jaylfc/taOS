@@ -11,6 +11,7 @@ id: libretranslate
 install:
   image: libretranslate/libretranslate:1.6.0
   method: docker
+  runtime: docker
   ports:
   - 5000
   volumes:

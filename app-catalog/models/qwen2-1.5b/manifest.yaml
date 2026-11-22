@@ -1,6 +1,7 @@
 id: qwen2-1.5b
 name: Qwen2 1.5B Instruct
 type: model
+runtime: none
 version: 2.0.0
 description: "Hailo-10H NPU-accelerated Qwen2 1.5B Instruct — runs on Raspberry Pi 5 + AI HAT+2 via hailo-ollama"
 homepage: https://huggingface.co/Qwen/Qwen2-1.5B-Instruct

@@ -11,6 +11,7 @@ id: stirling-pdf
 install:
   image: frooodle/s-pdf:0.36.0
   method: docker
+  runtime: docker
   ports:
   - 8080
   volumes:

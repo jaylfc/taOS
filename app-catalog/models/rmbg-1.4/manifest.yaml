@@ -1,6 +1,7 @@
 id: rmbg-1.4
 name: RMBG 1.4 (Background Removal)
 type: model
+runtime: none
 version: 1.4.0
 description: BRIA's state-of-the-art background removal — runs on CPU, non-commercial
   license

@@ -14,6 +14,7 @@ install:
     PIPER_VOICE: en_US-lessac-medium
   image: rhasspy/wyoming-piper:1.7.0
   method: docker
+  runtime: docker
   ports:
   - 10200
   volumes:

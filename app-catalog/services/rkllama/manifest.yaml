@@ -18,6 +18,7 @@ requires:
 
 install:
   method: script
+  runtime: none
   script: scripts/install-rkllama.sh
 
 hardware_tiers:

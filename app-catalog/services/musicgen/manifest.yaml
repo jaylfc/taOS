@@ -18,6 +18,7 @@ requires:
 
 install:
   method: pip
+  runtime: none
   package: audiocraft
 
 hardware_tiers:

@@ -1,6 +1,7 @@
 id: mixtral-8x7b
 name: Mixtral 8x7B Instruct v0.1
 type: model
+runtime: none
 version: 0.1.0
 description: Sparse MoE with 12.9B active params out of 46.7B — competitive with 70B
   dense models

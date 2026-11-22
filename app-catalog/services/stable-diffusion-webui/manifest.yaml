@@ -15,6 +15,7 @@ id: stable-diffusion-webui
 install:
   image: ghcr.io/ai-dock/stable-diffusion-webui:1.10.0
   method: docker
+  runtime: docker
   ports:
   - 7860
   volumes:

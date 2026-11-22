@@ -1,6 +1,7 @@
 id: ministral-3b
 name: Ministral 3B Instruct
 type: model
+runtime: none
 version: 25.12.0
 description: Mistral's edge-optimized 3B model — built-in function calling, vision,
   multilingual. Ideal for tool-using agents on low-power hardware.

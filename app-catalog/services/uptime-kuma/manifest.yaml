@@ -12,6 +12,7 @@ id: uptime-kuma
 install:
   image: louislam/uptime-kuma:1.23
   method: docker
+  runtime: docker
   ports:
   - 3001
   volumes:

@@ -12,6 +12,7 @@ id: memos
 install:
   image: neosmemo/memos:stable
   method: docker
+  runtime: docker
   ports:
   - 5230
   volumes:

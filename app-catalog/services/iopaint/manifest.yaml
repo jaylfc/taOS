@@ -15,6 +15,7 @@ requires:
 
 install:
   method: script
+  runtime: none
   script: scripts/install-iopaint.sh
 
 lifecycle:

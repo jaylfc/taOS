@@ -1,6 +1,7 @@
 id: whisper-small
 name: Whisper Small (ggml)
 type: model
+runtime: none
 version: 1.0.0
 description: Small Whisper — 244M params, strong multilingual transcription
 homepage: https://huggingface.co/ggerganov/whisper.cpp

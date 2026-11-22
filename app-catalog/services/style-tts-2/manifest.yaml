@@ -13,6 +13,7 @@ requires:
 
 install:
   method: pip
+  runtime: none
   package: styletts2
 
 hardware_tiers:

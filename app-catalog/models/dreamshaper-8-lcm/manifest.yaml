@@ -1,6 +1,7 @@
 id: dreamshaper-8-lcm
 name: Dreamshaper 8 LCM
 type: model
+runtime: none
 version: "8.0"
 capabilities:
 - image-generation

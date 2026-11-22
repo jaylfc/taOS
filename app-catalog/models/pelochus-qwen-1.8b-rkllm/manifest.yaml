@@ -1,6 +1,7 @@
 id: pelochus-qwen-1.8b-rkllm
 name: Qwen 1.8B Chat (Pelochus RKLLM)
 type: model
+runtime: none
 version: 1.0.0
 description: Pelochus' original Qwen 1.8B rkllm port for RK3588 — the classic ezrknpu
   model

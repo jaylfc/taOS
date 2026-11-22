@@ -1,6 +1,7 @@
 id: smollm2
 name: SmolLM2 1.7B
 type: model
+runtime: none
 version: 2.0.0
 description: Quality leader among small LLMs — best for nuanced text tasks on CPU.
   HuggingFace's tiny powerhouse.

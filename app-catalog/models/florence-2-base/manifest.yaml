@@ -1,6 +1,7 @@
 id: florence-2-base
 name: Florence-2 Base
 type: model
+runtime: none
 version: 2.0.0
 description: Microsoft's 0.23B unified vision model — captioning, OCR, detection,
   segmentation in one small model

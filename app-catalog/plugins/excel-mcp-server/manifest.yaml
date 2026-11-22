@@ -11,6 +11,7 @@ requires:
 
 install:
   method: pip
+  runtime: none
   package: excel-mcp-server
 
 hardware_tiers:

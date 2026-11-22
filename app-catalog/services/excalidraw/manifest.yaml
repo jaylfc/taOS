@@ -12,6 +12,7 @@ id: excalidraw
 install:
   image: excalidraw/excalidraw:0.17.0
   method: docker
+  runtime: docker
   ports:
   - 3000
 license: MIT

@@ -1,6 +1,7 @@
 id: jina-embeddings-v3
 name: Jina Embeddings v3
 type: model
+runtime: none
 version: 3.0.0
 description: Multilingual embedding model — 89 languages, 8192 token context, task-specific
   LoRA adapters. 570M params, 1024 dim.

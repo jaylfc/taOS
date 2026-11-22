@@ -13,6 +13,7 @@ requires:
 
 install:
   method: script
+  runtime: none
   note: |
     In-repo installer: tinyagentos/scripts/install_thclaws.sh
     Downloads thClaws release binary, verifies SHA256, installs to /usr/local/bin.

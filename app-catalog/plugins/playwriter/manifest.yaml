@@ -12,6 +12,7 @@ requires:
 
 install:
   method: script
+  runtime: none
   command: "npm install -g playwriter"
 
 config_schema:

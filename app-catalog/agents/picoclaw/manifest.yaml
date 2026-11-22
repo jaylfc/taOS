@@ -10,6 +10,7 @@ requires:
   ram_mb: 10
 install:
   method: script
+  runtime: none
   script: scripts/install-picoclaw.sh
   security_notes: >
     PicoClaw's custom_allow_patterns is NOT an allowlist.

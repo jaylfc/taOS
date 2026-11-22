@@ -4,6 +4,7 @@ description: >-
   Current time and timezone conversion. Declares no permissions — it reads
   neither the filesystem nor the network.
 version: 2025.7.1
+runtime: none
 author: modelcontextprotocol
 homepage: https://github.com/modelcontextprotocol/servers
 license: MIT

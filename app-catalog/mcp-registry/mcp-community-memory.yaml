@@ -4,6 +4,7 @@ description: >-
   A knowledge-graph memory server: store entities, relations and observations
   and recall them in later sessions.
 version: 2025.8.4
+runtime: none
 author: modelcontextprotocol
 homepage: https://github.com/modelcontextprotocol/servers
 license: MIT

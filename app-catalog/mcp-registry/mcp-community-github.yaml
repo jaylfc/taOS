@@ -18,6 +18,7 @@ verified: true
 
 install:
   method: docker
+  runtime: docker
   package: ghcr.io/github/github-mcp-server
   command:
     - docker

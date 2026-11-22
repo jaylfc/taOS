@@ -1,6 +1,7 @@
 id: llama-3.1-8b
 name: Llama 3.1 8B Instruct
 type: model
+runtime: none
 version: 3.1.0
 description: Meta's 8B instruct — strong tool calling, 128K context, multilingual
 homepage: https://huggingface.co/meta-llama/Meta-Llama-3.1-8B-Instruct

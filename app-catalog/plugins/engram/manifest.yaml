@@ -11,6 +11,7 @@ requires:
 
 install:
   method: script
+  runtime: none
   package: "go install github.com/nicepkg/engram@v0.1.0"
 
 hardware_tiers:

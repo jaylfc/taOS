@@ -14,6 +14,7 @@ requires:
 
 install:
   method: script
+  runtime: none
   script: scripts/install-piper.sh
 
 hardware_tiers:

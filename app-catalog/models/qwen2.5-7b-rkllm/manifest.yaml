@@ -1,6 +1,7 @@
 id: qwen2.5-7b-rkllm
 name: Qwen 2.5 7B Instruct (RKLLM)
 type: model
+runtime: none
 version: 2.5.0
 description: RK3588 NPU-accelerated Qwen 2.5 7B — full-capability model on Orange
   Pi 5 Plus 16GB

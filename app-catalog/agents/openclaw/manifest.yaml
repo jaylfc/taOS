@@ -13,6 +13,7 @@ requires:
 
 install:
   method: script
+  runtime: none
   script: scripts/install.sh
   note: |
     Clones openclaw/openclaw into /opt/openclaw and installs with pip.

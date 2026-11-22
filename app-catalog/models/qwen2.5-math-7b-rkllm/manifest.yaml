@@ -1,6 +1,7 @@
 id: qwen2.5-math-7b-rkllm
 name: Qwen 2.5 Math 7B Instruct (RKLLM)
 type: model
+runtime: none
 version: 2.5.0
 description: RK3588 NPU-accelerated Qwen 2.5 Math 7B — strong math/reasoning for Orange
   Pi NPU

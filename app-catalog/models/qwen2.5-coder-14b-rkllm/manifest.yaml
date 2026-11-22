@@ -1,6 +1,7 @@
 id: qwen2.5-coder-14b-rkllm
 name: Qwen 2.5 Coder 14B Instruct (RKLLM)
 type: model
+runtime: none
 version: 2.5.0
 description: RK3588 NPU-accelerated Qwen 2.5 Coder 14B — large code-focused model;
   needs 32GB Pi (very tight on 16GB)

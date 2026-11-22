@@ -1,6 +1,7 @@
 id: flux-schnell-gguf
 name: Flux.1 Schnell (GGUF)
 type: model
+runtime: none
 version: "1.0"
 capabilities:
 - image-generation

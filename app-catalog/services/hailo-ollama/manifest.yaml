@@ -13,6 +13,7 @@ requires:
   ports: [7836]
 install:
   method: script
+  runtime: none
   script: scripts/install-hailo.sh
 hardware_tiers:
   arm-npu-8gb: full

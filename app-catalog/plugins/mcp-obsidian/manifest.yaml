@@ -1,6 +1,7 @@
 id: mcp-obsidian
 name: MCP Obsidian
 type: plugin
+runtime: none
 version: 0.1.0
 description: "Obsidian vault interaction — read, search, and manage notes"
 homepage: https://github.com/MarkusPfworking/mcp-obsidian

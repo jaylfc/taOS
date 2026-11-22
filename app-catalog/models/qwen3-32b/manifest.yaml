@@ -1,6 +1,7 @@
 id: qwen3-32b
 name: Qwen 3 32B
 type: model
+runtime: none
 version: 3.0.0
 description: Premium reasoning model — exceptional at complex tasks, code, and multi-step
   reasoning

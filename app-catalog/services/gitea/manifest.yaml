@@ -14,6 +14,7 @@ install:
     GITEA__server__SSH_PORT: '2222'
   image: gitea/gitea:1.22
   method: docker
+  runtime: docker
   ports:
   - 3000
   volumes:

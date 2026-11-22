@@ -1,6 +1,7 @@
 id: smollm2-135m
 name: SmolLM2 135M Instruct
 type: model
+runtime: none
 version: 2.0.0
 description: Ultra-tiny 135M — runs on microcontrollers and Raspberry Pi Zero 2W
 homepage: https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct

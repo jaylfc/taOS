@@ -1,6 +1,7 @@
 id: exo
 name: Exo Distributed Inference
 type: service
+runtime: none
 category: llm-runtime
 version: 0.1.0
 description: "Split large models across multiple devices — peer-to-peer distributed AI inference. Run 70B+ models across your cluster by pooling VRAM from multiple machines."
