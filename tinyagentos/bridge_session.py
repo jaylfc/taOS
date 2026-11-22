@@ -505,10 +505,16 @@ class BridgeSessionRegistry:
                     # Already committed; finalize without creating another row.
                     existing_id = existing_msg.get("id")
                     if existing_id and self._chat_messages:
-                        await self._chat_messages.edit_message(existing_id, final_content)
+                        # Skip the edit when the content is empty so a retry never
+                        # overwrites committed text with blank.
+                        if final_content:
+                            await self._chat_messages.edit_message(existing_id, final_content)
                         await self._chat_messages.update_state(existing_id, "complete")
+                        merged_blocks = None
                         if validated_blocks is not None:
-                            await self._chat_messages.extend_content_blocks(existing_id, validated_blocks)
+                            merged_blocks = await self._chat_messages.extend_content_blocks(
+                                existing_id, validated_blocks
+                            )
                         existing_meta = existing_msg.get("metadata") or {}
                         if not isinstance(existing_meta, dict):
                             existing_meta = {}
@@ -526,7 +532,8 @@ class BridgeSessionRegistry:
                         session.mark_final_id_seen(reply_id)
                     # Broadcast on recovery so clients/agents see the reply.
                     if self._chat_hub and existing_id:
-                        # Broadcast message_edit with content and optionally content_blocks
+                        # Broadcast message_edit with content and optionally the merged
+                        # content_blocks list (not just the incoming blocks).
                         broadcast_payload = {
                             "type": "message_edit",
                             "seq": self._chat_hub.next_seq(),
@@ -534,8 +541,8 @@ class BridgeSessionRegistry:
                             "content": final_content,
                             "edited_at": time.time(),
                         }
-                        if validated_blocks is not None:
-                            broadcast_payload["content_blocks"] = validated_blocks
+                        if merged_blocks is not None:
+                            broadcast_payload["content_blocks"] = merged_blocks
                         await self._chat_hub.broadcast(channel_id, broadcast_payload)
                         await self._chat_hub.broadcast(channel_id, {
                             "type": "message_state",
@@ -543,13 +550,29 @@ class BridgeSessionRegistry:
                             "message_id": existing_id,
                             "state": "complete",
                         })
+                        # Broadcast a full `message` event so a client that never saw
+                        # the original can render the reply (a bare `message_edit`
+                        # references an unknown id to a fresh client).
+                        persisted = await self._chat_messages.get_message(existing_id)
+                        if persisted is not None:
+                            await self._chat_hub.broadcast(channel_id, {
+                                "type": "message",
+                                "seq": self._chat_hub.next_seq(),
+                                **persisted,
+                            })
                     # Re-dispatch so other agents in the channel see this reply.
+                    # Reload the row after the edit so dispatch carries the post-edit
+                    # state rather than the pre-edit snapshot.
                     router = self._router
                     if router is not None:
                         try:
                             channel = await self._chat_channels.get_channel(channel_id)
                             if channel is not None:
-                                await router.dispatch(existing_msg, channel)
+                                reloaded = None
+                                if existing_id and self._chat_messages:
+                                    reloaded = await self._chat_messages.get_message(existing_id)
+                                if reloaded is not None:
+                                    await router.dispatch(reloaded, channel)
                         except Exception:
                             logger.warning("re-dispatch on agent reply recovery failed", exc_info=True)
                     return

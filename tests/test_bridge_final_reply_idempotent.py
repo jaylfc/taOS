@@ -83,7 +83,9 @@ class _FakeStore:
                 continue
             meta = m.get("metadata") or {}
             if meta.get(key) == value:
-                return m
+                # Return a copy so callers get a fresh row (mirrors the real
+                # store: edits do not mutate the looked-up reference).
+                return dict(m)
         return None
 
     async def set_metadata(self, message_id: str, metadata: dict) -> None:
@@ -465,3 +467,179 @@ async def test_record_reply_drives_code_path_not_handle_reply_directly():
     # Broadcast should have fired
     broadcasts = [b for _, b in hub.broadcasts if b["type"] == "message"]
     assert len(broadcasts) == 1
+
+
+# --- NEW TESTS FOR THE LEAD REVIEW FINDINGS ---
+
+@pytest.mark.asyncio
+async def test_recovery_broadcasts_full_message_event():
+    """On recovery the bridge must broadcast a full `message` event, not just
+    `message_edit`, so a client that never saw the original can render it."""
+    ch_store = _FakeChannelStore(fail_update_after=0)
+    reg, msg_store, ch_store, hub, tr = _make_registry(ch_store=ch_store)
+
+    body = {
+        "kind": "final",
+        "id": "reply-1",
+        "trace_id": "t1",
+        "content": "hello",
+        "channel_id": "ch1",
+    }
+
+    # First call fails during update_last_message_at (message already committed).
+    await reg.record_reply("bot1", body)
+
+    # Retry recovers and broadcasts.
+    ch_store._fail_update_after = 999
+    await reg.record_reply("bot1", body)
+
+    messages = [b for _, b in hub.broadcasts if b["type"] == "message"]
+    assert len(messages) == 1, f"Expected 1 message broadcast on recovery, got {len(messages)}"
+    assert messages[0]["content"] == "hello"
+    assert messages[0]["id"] == list(msg_store.messages.keys())[0]
+
+
+@pytest.mark.asyncio
+async def test_recovery_broadcasts_merged_blocks():
+    """On recovery the broadcast must carry the merged content_blocks list,
+    not just the incoming blocks."""
+    ch_store = _FakeChannelStore(fail_update_after=0)
+    reg, msg_store, ch_store, hub, tr = _make_registry(ch_store=ch_store)
+
+    # Pre-seed a committed message with existing blocks.
+    msg_store.messages["seed-1"] = {
+        "id": "seed-1",
+        "channel_id": "ch1",
+        "author_id": "bot1",
+        "author_type": "agent",
+        "content": "hello",
+        "state": "complete",
+        "content_blocks": [{"kind": "text", "text": "preexisting"}],
+        "metadata": {"openclaw_msg_id": "reply-1", "trace_id": "t1"},
+    }
+
+    body = {
+        "kind": "final",
+        "id": "reply-1",
+        "trace_id": "t1",
+        "content": "hello",
+        "channel_id": "ch1",
+        "content_blocks": [{"kind": "text", "text": "newblock"}],
+    }
+
+    # First call extends blocks, then fails during update_last_message_at.
+    await reg.record_reply("bot1", body)
+
+    # Retry recovers and broadcasts the merged list.
+    ch_store._fail_update_after = 999
+    await reg.record_reply("bot1", body)
+
+    edits = [b for _, b in hub.broadcasts if b["type"] == "message_edit" and b["message_id"] == "seed-1"]
+    assert len(edits) == 1, f"Expected 1 message_edit for seed-1, got {len(edits)}"
+    assert edits[0]["content_blocks"] == [
+        {"kind": "text", "text": "preexisting"},
+        {"kind": "text", "text": "newblock"},
+    ], f"Got {edits[0].get('content_blocks')}"
+
+
+@pytest.mark.asyncio
+async def test_recovery_dispatches_reloaded_row():
+    """On recovery, router.dispatch must receive the reloaded (post-edit) row,
+    not the pre-edit row."""
+    ch_store = _FakeChannelStore(fail_update_after=999)
+    msg_store = _FakeStore()
+    orig_edit = msg_store.edit_message
+    calls = {"n": 0}
+
+    async def flaky_edit(message_id: str, content: str):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("edit failed on first attempt")
+        return await orig_edit(message_id, content)
+
+    msg_store.edit_message = flaky_edit  # type: ignore[method-assign]
+
+    router_calls = []
+
+    class _FakeRouter:
+        async def dispatch(self, msg, channel):
+            router_calls.append((dict(msg), channel))
+
+    router = _FakeRouter()
+    reg, msg_store, ch_store, hub, tr = _make_registry(msg_store=msg_store, ch_store=ch_store, router=router)
+
+    # Pre-seed a committed message with old content.
+    msg_store.messages["seed-1"] = {
+        "id": "seed-1",
+        "channel_id": "ch1",
+        "author_id": "bot1",
+        "author_type": "agent",
+        "content": "old content",
+        "state": "complete",
+        "content_blocks": [],
+        "metadata": {"openclaw_msg_id": "reply-1", "trace_id": "t1"},
+    }
+
+    body = {
+        "kind": "final",
+        "id": "reply-1",
+        "trace_id": "t1",
+        "content": "new content",
+        "channel_id": "ch1",
+    }
+
+    # First attempt: edit raises before any edit/dispatch, so the row still
+    # holds "old content" and nothing is broadcast.
+    await reg.record_reply("bot1", body)
+    assert router_calls == []
+
+    # Retry: edit succeeds, recovery path dispatches the reloaded row.
+    calls["n"] = 0
+    msg_store.edit_message = orig_edit  # type: ignore[method-assign]
+    await reg.record_reply("bot1", body)
+
+    assert len(router_calls) == 1, f"Expected 1 dispatch, got {len(router_calls)}"
+    dispatched_msg, dispatched_channel = router_calls[0]
+    assert dispatched_msg["content"] == "new content", f"Got {dispatched_msg.get('content')!r}"
+    assert dispatched_channel["id"] == "ch1"
+
+
+@pytest.mark.asyncio
+async def test_empty_final_content_does_not_overwrite_committed_on_retry():
+    """An empty final_content on a retry must not overwrite committed text."""
+    ch_store = _FakeChannelStore(fail_update_after=0)
+    reg, msg_store, ch_store, hub, tr = _make_registry(ch_store=ch_store)
+
+    # Pre-seed a committed message.
+    msg_store.messages["seed-1"] = {
+        "id": "seed-1",
+        "channel_id": "ch1",
+        "author_id": "bot1",
+        "author_type": "agent",
+        "content": "committed text",
+        "state": "complete",
+        "content_blocks": [],
+        "metadata": {"openclaw_msg_id": "reply-1", "trace_id": "t1"},
+    }
+
+    body = {
+        "kind": "final",
+        "id": "reply-1",
+        "trace_id": "t1",
+        "content": "",
+        "channel_id": "ch1",
+    }
+
+    # First call: edit would overwrite committed text, then update_last_message_at fails.
+    await reg.record_reply("bot1", body)
+
+    stored = msg_store.messages["seed-1"]
+    assert stored["content"] == "committed text", f"Content was overwritten: {stored['content']!r}"
+
+    # Retry.
+    ch_store._fail_update_after = 999
+    await reg.record_reply("bot1", body)
+
+    stored = msg_store.messages["seed-1"]
+    assert stored["content"] == "committed text", f"Content was overwritten on retry: {stored['content']!r}"
+    assert stored.get("state") == "complete"

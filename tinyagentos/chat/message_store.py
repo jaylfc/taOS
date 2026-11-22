@@ -448,9 +448,10 @@ class ChatMessageStore(BaseStore):
                     pass
 
             # Build a set of existing block identifiers for idempotency
-            # Use 'id' field if present, otherwise use the entire block as a JSON string
+            # Use 'id' field if present and non-null, otherwise use the entire
+            # block as a JSON string. A null id must not collide across blocks.
             def block_key(b: dict) -> str:
-                if isinstance(b, dict) and "id" in b:
+                if isinstance(b, dict) and b.get("id") is not None:
                     return f"id:{b['id']}"
                 return f"content:{json.dumps(b, sort_keys=True)}"
 

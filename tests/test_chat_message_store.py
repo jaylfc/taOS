@@ -137,3 +137,18 @@ async def test_find_message_by_metadata_with_author_filters(store):
     # Lookup with non-existent key should return None
     found = await store.find_message_by_metadata(ch1, "openclaw_msg_id", "reply-999", author_id="agent1", author_type="agent")
     assert found is None
+
+
+@pytest.mark.asyncio
+async def test_extend_content_blocks_null_id_does_not_collide(store):
+    """Blocks with a null ``id`` must not collide in the dedupe key; they are
+    matched by content so distinct null-id blocks are both kept."""
+    msg = await _send(store, content_blocks=[{"kind": "text", "text": "first", "id": None}])
+    mid = msg["id"]
+
+    result = await store.extend_content_blocks(mid, [{"kind": "text", "text": "second", "id": None}])
+    fetched = await store.get_message(mid)
+    assert len(result) == 2
+    assert len(fetched["content_blocks"]) == 2
+    assert {"kind": "text", "text": "first", "id": None} in fetched["content_blocks"]
+    assert {"kind": "text", "text": "second", "id": None} in fetched["content_blocks"]
