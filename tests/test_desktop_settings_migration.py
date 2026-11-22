@@ -15,7 +15,7 @@ from tinyagentos.desktop_settings import (
     _LEGACY_GLOBAL_SCOPE,
 )
 
-_SYSTEM_NAMESPACES = ("setup", "auto-update", "gpg", "taos_agent")
+_SYSTEM_NAMESPACES = ("setup", "auto-update", "gpg", "taos_agent", "offline_model")
 
 
 @pytest_asyncio.fixture
@@ -53,6 +53,8 @@ async def test_migration_moves_only_desktop_prefs_to_owner(store):
                       '{"enabled": true, "required": true, "key_fingerprint": "fp"}')
     await _insert_raw(store, _LEGACY_GLOBAL_SCOPE, "pref:taos_agent",
                       '{"model": "gpt-4", "permitted_models": ["gpt-4"]}')
+    await _insert_raw(store, _LEGACY_GLOBAL_SCOPE, "pref:offline_model",
+                      '{"model_id": "llama-3", "enabled": true}')
 
     # Desktop preferences under the legacy "user" scope (should move to owner).
     await _insert_raw(store, _LEGACY_GLOBAL_SCOPE, "settings",
@@ -78,6 +80,10 @@ async def test_migration_moves_only_desktop_prefs_to_owner(store):
         "model": "gpt-4",
         "permitted_models": ["gpt-4"],
     }
+    assert await store.get_preference(_LEGACY_GLOBAL_SCOPE, "offline_model") == {
+        "model_id": "llama-3",
+        "enabled": True,
+    }
 
     # Desktop preferences moved to the owner.
     owner_settings = await store.get_settings(owner_uid)
@@ -97,6 +103,10 @@ async def test_migration_moves_only_desktop_prefs_to_owner(store):
     assert await store.get_preference(_LEGACY_GLOBAL_SCOPE, "taos_agent") == {
         "model": "gpt-4",
         "permitted_models": ["gpt-4"],
+    }
+    assert await store.get_preference(_LEGACY_GLOBAL_SCOPE, "offline_model") == {
+        "model_id": "llama-3",
+        "enabled": True,
     }
 
 

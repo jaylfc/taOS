@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 
 from tinyagentos.auth_context import CurrentUser, require_admin, require_session_or_local_token, require_session_user
+from tinyagentos.desktop_settings import _SYSTEM_NAMESPACES, _LEGACY_GLOBAL_SCOPE
 
 router = APIRouter()
 
@@ -17,6 +18,16 @@ SPA_DIR = Path(os.environ.get("TAOS_SPA_DIR") or (_PROJECT_DIR / "static" / "des
 
 def _get_store(request: Request):
     return request.app.state.desktop_settings
+
+
+def _pref_scope(user_id: str, namespace: str) -> str:
+    """Return the scope (user_id) to use for a preference namespace.
+
+    System-global namespaces always use the legacy global scope.
+    """
+    if namespace in _SYSTEM_NAMESPACES:
+        return _LEGACY_GLOBAL_SCOPE
+    return user_id
 
 
 @router.get("/api/desktop/settings")
@@ -83,7 +94,8 @@ async def save_widgets(request: Request, user: CurrentUser = Depends(require_ses
 @router.get("/api/preferences/{namespace}")
 async def get_preference(request: Request, namespace: str, user: CurrentUser = Depends(require_session_or_local_token)):
     store = _get_store(request)
-    data = await store.get_preference(user.user_id, namespace)
+    scope = _pref_scope(user.user_id, namespace)
+    data = await store.get_preference(scope, namespace)
     return JSONResponse(data)
 
 
@@ -96,7 +108,14 @@ async def save_preference(request: Request, namespace: str, user: CurrentUser = 
             {"error": "preference body must be a JSON object"},
             status_code=400,
         )
-    await store.save_preference(user.user_id, namespace, body)
+    scope = _pref_scope(user.user_id, namespace)
+    # Admin-only for system-global namespaces
+    if namespace in _SYSTEM_NAMESPACES:
+        from tinyagentos.routes.auth import _require_admin
+        ok, err = _require_admin(request)
+        if not ok:
+            return err
+    await store.save_preference(scope, namespace, body)
     return JSONResponse({"ok": True})
 
 

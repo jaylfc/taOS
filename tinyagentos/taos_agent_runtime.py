@@ -303,11 +303,8 @@ async def _ensure_taos_opencode_server_locked(app_state, model: str) -> OpenCode
         stored_key: str | None = None
         prefs: dict = {}
         desktop_settings = getattr(app_state, "desktop_settings", None)
-        # Use the primary user's ID for the taOS agent's preferences (per-person storage).
-        # Falls back to a dedicated scope if no primary user exists yet (pre-setup).
-        auth = getattr(app_state, "auth", None)
-        primary_user = auth.get_primary_user() if auth is not None else None
-        taos_agent_user_id = primary_user["id"] if primary_user else "taos-agent"
+        # Use the global scope for the taOS agent's preferences (system agent).
+        taos_agent_user_id = "user"
         if desktop_settings is not None:
             try:
                 prefs = await desktop_settings.get_preference(taos_agent_user_id, "taos_agent") or {}

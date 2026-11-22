@@ -30,9 +30,9 @@ _LEGACY_GLOBAL_SCOPE = "user"
 _DESKTOP_KEYS = ("settings", "dock", "windows", "widgets")
 
 # Namespaced preferences (stored as "pref:<namespace>") that are SYSTEM-GLOBAL:
-# read/written by system routes (setup, auto-update, GPG, taOS agent) and must
-# stay under the legacy "user" scope; the migration must NOT move or delete them.
-_SYSTEM_NAMESPACES = ("setup", "auto-update", "gpg", "taos_agent")
+# read/written by system routes (setup, auto-update, GPG, taOS agent, offline_model)
+# and must stay under the legacy "user" scope; the migration must NOT move or delete them.
+_SYSTEM_NAMESPACES = ("setup", "auto-update", "gpg", "taos_agent", "offline_model")
 
 
 class DesktopSettingsStore(BaseStore):
