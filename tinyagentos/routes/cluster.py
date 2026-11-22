@@ -37,7 +37,8 @@ _update_jobs: dict[str, dict] = {}
 # _ADMIN = [Depends(require_admin)] accepts admin session cookie OR host
 # local token (via auth_context.require_admin). Routes using _ADMIN:
 #   POST /api/cluster/route, POST /api/cluster/workers/{name}/deploy,
-#   POST /api/cluster/workers/{name}/remote, POST /api/cluster/promote-archived.
+#   POST /api/cluster/workers/{name}/remote, POST /api/cluster/move,
+#   POST /api/cluster/promote-archived.
 # Individual handlers that use _require_admin (from routes.auth) —
 # admin-only, no local token: unregister_worker, revoke/block/unblock,
 # drain, cancel-drain, update-worker, update-all.
@@ -720,9 +721,9 @@ async def worker_heartbeat(request: Request, body: HeartbeatBody):
 @router.delete("/api/cluster/workers/{name}")
 async def unregister_worker(request: Request, name: str):
     # Admin check — only admin session, no local token
-    ok, err = _require_admin(request)
+    ok, _ = _require_admin(request)
     if not ok:
-        return err
+        return JSONResponse({"detail": "forbidden"}, status_code=403)
     # Revoke the pairing key BEFORE deleting the worker row. If the store is
     # unavailable or revoke raises, refuse with 503 so the row is never deleted
     # while its key survives. Never skip revoke even if the worker row is absent.

@@ -830,7 +830,7 @@ class TestClusterMemberRejected:
         finally:
             await member.aclose()
         assert resp.status_code == 403, resp.text
-        assert resp.json() in (FORBIDDEN, {"error": "forbidden"})
+        assert resp.json() == FORBIDDEN
         cluster.get_worker.assert_not_called()
         cluster.get_workers.assert_not_called()
         cluster.unregister_worker.assert_not_called()
@@ -845,7 +845,7 @@ class TestClusterMemberRejected:
         finally:
             await member.aclose()
         assert resp.status_code == 403, resp.text
-        assert resp.json() in (FORBIDDEN, {"error": "forbidden"})
+        assert resp.json() == FORBIDDEN
 
 
 @pytest.mark.asyncio
@@ -887,6 +887,7 @@ class TestClusterAdminAllowed:
         try:
             resp = await bare.delete("/api/cluster/workers/w1")
             assert resp.status_code == 403, resp.text
+            cluster.unregister_worker.assert_not_called()
             resp = await bare.post("/api/cluster/promote-archived")
             assert resp.status_code == 200, resp.text
         finally:
@@ -947,7 +948,6 @@ class TestClusterAdminDeleteWithoutPairingStore:
         cluster._workers["local-test-worker"] = worker
 
         # Local token DELETE should also fail with 403 when pairing store is unavailable
-        from tests.test_global_routers_authz import _local_token_client
         bare = _local_token_client(app)
         try:
             resp = await bare.delete("/api/cluster/workers/local-test-worker")

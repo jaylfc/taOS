@@ -21,6 +21,8 @@
 
 `DELETE /api/cluster/workers/{name}`: `403 {"detail": "forbidden"}` unless admin session.
 
+`POST .../{name}/deploy`, `POST .../{name}/remote`, `POST /api/cluster/move`, `/route`, `/promote-archived`: `403 {"detail": "forbidden"}` unless admin session or the local token. Workers (heartbeat, pairing, leases, capabilities) keep their HMAC / possession gates.
+
 ## Common behaviour
 
 - `404` when the node is absent from the PAIRING store; `503` when the pairing store is unavailable

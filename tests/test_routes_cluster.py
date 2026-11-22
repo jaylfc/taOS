@@ -318,16 +318,6 @@ async def test_unregister_with_admin_session_200(client, app):
 
 
 @pytest.mark.asyncio
-async def test_unregister_with_member_403(client, app):
-    """Member session must be rejected for deregister."""
-    await app.state.cluster_pairing.init()
-    resp = await client.delete("/api/cluster/workers/ghost-member")
-    # Ghost worker not paired, and client has admin session, so this depends on implementation
-    assert resp.status_code in (403, 404)
-    await app.state.cluster_pairing.close()
-
-
-@pytest.mark.asyncio
 async def test_capabilities_api(client, app):
     import json as _json
     key1 = await pair_worker(client, app, "w1", "http://10.0.0.1:9000")
