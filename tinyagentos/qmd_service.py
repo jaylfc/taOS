@@ -17,6 +17,8 @@ import re
 import time
 from pathlib import Path
 
+import httpx
+
 logger = logging.getLogger(__name__)
 
 PINNED_QMD_VERSION = "2.8.3-taos.2"
@@ -40,11 +42,33 @@ def upgrade_command(project_dir: Path | None = None) -> str:
     return f"sudo bash {base / 'scripts' / 'upgrade-qmd.sh'}"
 
 
-async def qmd_honours_dbpath(state, *, force: bool = False) -> bool | None:
-    """True if qmd honours per-request ``dbPath``, False if it cannot, None if unknown.
+def _is_new_qmd_answer(resp) -> bool:
+    """True only for the answer a qmd that understands ``dbPath`` gives.
 
-    Cached on ``state`` for a short TTL (unknown results for even less) so the
-    routes do not probe on every request.
+    Measured on ``@jaylfc/qmd@2.8.3-taos.2`` (and the older multi-tenant 2.1.1):
+    ``POST /delete-chunk`` with ``{}`` answers HTTP 400 with a JSON object
+    carrying a string ``error``. Anything else is not recognised: a 404 (a qmd
+    without the endpoint, such as 2.5.3 to 2.6.1), a 200, a redirect, an HTML
+    page from a proxy, a truncated or non-JSON body.
+    """
+    try:
+        if resp.status_code != 400:
+            return False
+        body = resp.json()
+        return isinstance(body, dict) and isinstance(body.get("error"), str) and bool(body["error"])
+    except Exception:
+        return False
+
+
+async def qmd_honours_dbpath(state, *, force: bool = False) -> bool | None:
+    """True only for a positively recognised new qmd; None only when qmd is unreachable.
+
+    Fails closed: every answer that is not the recognised one returns False, so
+    the routes refuse rather than risk an index shared across callers. A
+    transport failure (connection refused, timeout) returns None and the real
+    request then fails with its usual 502.
+
+    Cached on ``state`` for a short TTL (unreachable for even less).
     """
     now = time.monotonic()
     cached = getattr(state, "_qmd_dbpath_probe", None)
@@ -54,10 +78,13 @@ async def qmd_honours_dbpath(state, *, force: bool = False) -> bool | None:
     try:
         base = state.qmd_client.base_url
         resp = await state.http_client.post(f"{base}/delete-chunk", json={}, timeout=3)
-        result = False if resp.status_code == 404 else True
-    except Exception as exc:  # qmd down or unreachable: the real call will 502
-        logger.debug("qmd capability probe failed: %s", exc)
+        result = _is_new_qmd_answer(resp)
+    except httpx.TransportError as exc:  # qmd down or unreachable: the real call will 502
+        logger.debug("qmd capability probe could not connect: %s", exc)
         result = None
+    except Exception as exc:  # anything unexpected is not a recognised new qmd
+        logger.warning("qmd capability probe failed unexpectedly: %s", exc)
+        result = False
     ttl = UNKNOWN_TTL_SECONDS if result is None else PROBE_TTL_SECONDS
     state._qmd_dbpath_probe = (now + ttl, result)
     return result

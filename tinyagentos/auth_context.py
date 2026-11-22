@@ -155,7 +155,7 @@ def is_legacy_owner(request: Request) -> bool:
         return False
     auth = getattr(request.app.state, "auth", None)
     try:
-        return auth is not None and auth.get_primary_user() is None
+        return auth is not None and auth.is_legacy_single_password() is True
     except Exception:
         return False
 
