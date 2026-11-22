@@ -24,6 +24,7 @@ The headers are built by ``build_trace_context_headers()``.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -34,7 +35,12 @@ from pydantic import BaseModel, field_validator
 
 from tinyagentos.agent_db import find_agent
 from tinyagentos.agent_token_auth import check_agent_scope
-from tinyagentos.auth_context import current_user, require_agent_owner_or_admin
+from tinyagentos.auth_context import (
+    agent_bound_name,
+    current_user,
+    is_host_caller,
+    require_agent_owner_or_admin,
+)
 from tinyagentos.otel.trace_context import build_trace_context_headers
 from tinyagentos.routes.delegation import _resolve_agent_name
 
@@ -108,6 +114,42 @@ def _qmd_base(request: Request) -> str:
     return request.app.state.qmd_client.base_url
 
 
+_USER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _user_index_path(request: Request) -> Path:
+    """The index for a request that names no agent (the single no-agent resolver).
+
+    Keyed ONLY on the authenticated caller, never on a request parameter:
+
+    - an admin session and the unbound host token keep the install-wide
+      ``user-qmd-index/index.sqlite`` (no data migration);
+    - any other signed-in person gets ``user-qmd-index/<user_id>/index.sqlite``,
+      so one member can never see or delete another member's entries, nor the
+      admin's;
+    - no identity at all is refused (there is no anonymous index).
+
+    The root sits beside, not inside, ``agent_memory_dir``, and agent names are
+    single path components under ``agent_memory_dir``, so no agent name can
+    address a person's index and no person's index is an agent's.
+    """
+    root = request.app.state.agent_memory_dir.parent / "user-qmd-index"
+    if agent_bound_name(request):
+        # A bound agent token defaults to its own agent before reaching here.
+        raise HTTPException(status_code=403, detail="forbidden")
+    if is_host_caller(request) or getattr(request.state, "is_admin", False):
+        return root / "index.sqlite"
+    uid = getattr(request.state, "user_id", None)
+    if not uid:
+        raise HTTPException(status_code=401, detail="authentication required")
+    if not isinstance(uid, str) or not _USER_ID_RE.match(uid):
+        raise HTTPException(status_code=403, detail="forbidden")
+    target = root / uid / "index.sqlite"
+    if not target.resolve().is_relative_to(root.resolve()):
+        raise HTTPException(status_code=403, detail="forbidden")
+    return target
+
+
 def _agent_db_path(request: Request, agent: str | None) -> str:
     """Resolve the SQLite path for a memory index. ALWAYS taOS-owned.
 
@@ -128,7 +170,7 @@ def _agent_db_path(request: Request, agent: str | None) -> str:
     """
     base: Path = request.app.state.agent_memory_dir
     if not agent:
-        target = base.parent / "user-qmd-index" / "index.sqlite"
+        target = _user_index_path(request)
     else:
         agent = agent.strip()
         if (

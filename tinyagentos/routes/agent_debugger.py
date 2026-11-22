@@ -15,12 +15,20 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+
+from tinyagentos.auth_context import require_agent_access
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+async def _require_debug_access(request: Request, agent_id: str) -> None:
+    """Owner or admin only; a bound agent token only for its own agent (it pushes
+    its own trace events through POST .../debug/trace)."""
+    await require_agent_access(request, agent_id)
+
+
+router = APIRouter(dependencies=[Depends(_require_debug_access)])
 
 # In-memory trace store: {agent_id: [{"type": "tool_call"|"tool_result"|"prompt", ...}]}
 _traces: dict[str, list[dict]] = defaultdict(list)
