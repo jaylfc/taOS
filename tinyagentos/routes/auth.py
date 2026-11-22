@@ -9081,6 +9081,7 @@ def _lock_post_refusal(request: Request) -> JSONResponse | None:
 #: loopback address, an IP-keyed counter would be one shared bucket for all.
 _pin_limiter = _PinAttemptLimiter()
 _pin_key_locks: "OrderedDict[str, asyncio.Lock]" = OrderedDict()
+_pin_key_waiters: "dict[str, int]" = {}
 _pin_key_locks_guard = asyncio.Lock()
 _PIN_KEY_LOCKS_MAX = 1024
 
@@ -9092,12 +9093,13 @@ async def _acquire_pin_key_lock(limiter_key: str) -> asyncio.Lock:
             lock = asyncio.Lock()
             _pin_key_locks[limiter_key] = lock
         _pin_key_locks.move_to_end(limiter_key)
+        _pin_key_waiters[limiter_key] = _pin_key_waiters.get(limiter_key, 0) + 1
         # Bound growth for attacker-controlled keys (e.g. unknown:<username>).
         # Only evict unlocked entries that are not currently in use.
         while len(_pin_key_locks) > _PIN_KEY_LOCKS_MAX:
             evicted = False
             for k, v in list(_pin_key_locks.items()):
-                if k == limiter_key or v.locked():
+                if k == limiter_key or v.locked() or _pin_key_waiters.get(k, 0) > 0:
                     continue
                 del _pin_key_locks[k]
                 evicted = True
@@ -9108,13 +9110,18 @@ async def _acquire_pin_key_lock(limiter_key: str) -> asyncio.Lock:
     return lock
 
 
-def _release_pin_key_lock(limiter_key: str, lock: asyncio.Lock) -> None:
+async def _release_pin_key_lock(limiter_key: str, lock: asyncio.Lock) -> None:
     try:
         lock.release()
     finally:
-        # Drop idle entries so one-off keys do not accumulate forever.
-        if not lock.locked():
-            _pin_key_locks.pop(limiter_key, None)
+        async with _pin_key_locks_guard:
+            count = _pin_key_waiters.get(limiter_key, 0) - 1
+            if count <= 0:
+                _pin_key_waiters.pop(limiter_key, None)
+                if _pin_key_locks.get(limiter_key) is lock:
+                    _pin_key_locks.pop(limiter_key, None)
+            else:
+                _pin_key_waiters[limiter_key] = count
 
 
 @router.get("/osk.js")
@@ -13045,7 +13052,7 @@ async def pin_login(request: Request):
 
         _pin_limiter.reset(limiter_key)
     finally:
-        _release_pin_key_lock(limiter_key, key_lock)
+        await _release_pin_key_lock(limiter_key, key_lock)
     auth_mgr.update_last_login(user_record["id"])
     # A PIN unlocks THIS device, so the session it mints is the long-lived kind
     # the kiosk needs to survive a reboot without a keyboard being found.
