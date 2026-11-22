@@ -3,21 +3,17 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NotesApp } from "./NotesApp";
 import { BackendStatusProvider } from "@/contexts/BackendStatusContext";
 
-function baseResponses() {
-  return {
-    "/api/notes": { ok: true, body: [] },
-  };
-}
-
-function createFetchMock(healthFailThenSucceed: boolean, dataResponses: Record<string, { ok: boolean; status?: number; body: unknown }>) {
+function createFetchMock() {
   let healthCallCount = 0;
+  let notesCallCount = 0;
   const calls: string[] = [];
   return {
     mock: vi.fn().mockImplementation((input: string) => {
       calls.push(input);
       if (input === "/api/health") {
         healthCallCount++;
-        if (healthFailThenSucceed && healthCallCount === 1) {
+        // The backend is down for the first health probe, then comes back.
+        if (healthCallCount === 1) {
           return Promise.reject(new TypeError("network"));
         }
         return Promise.resolve({
@@ -28,15 +24,21 @@ function createFetchMock(healthFailThenSucceed: boolean, dataResponses: Record<s
           text: () => Promise.resolve(""),
         });
       }
-      const hit = dataResponses[input];
-      if (!hit) throw new Error(`Unmocked fetch: ${input}`);
-      return Promise.resolve({
-        ok: hit.ok,
-        status: hit.status ?? (hit.ok ? 200 : 500),
-        headers: { get: () => "application/json" },
-        json: () => Promise.resolve(hit.body),
-        text: () => Promise.resolve(""),
-      });
+      if (input === "/api/notes") {
+        notesCallCount++;
+        // The first DATA load fails because the backend is down.
+        if (notesCallCount === 1) {
+          return Promise.reject(new TypeError("network"));
+        }
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          headers: { get: () => "application/json" },
+          json: () => Promise.resolve([]),
+          text: () => Promise.resolve(""),
+        });
+      }
+      throw new Error(`Unmocked fetch: ${input}`);
     }),
     getCalls: () => calls,
   };
@@ -83,8 +85,7 @@ describe("NotesApp backend recovery", () => {
   });
 
   it("refetches notes when the backend recovers after a failed first load", async () => {
-    const dataResponses = baseResponses();
-    const fetchTracker = createFetchMock(true, dataResponses);
+    const fetchTracker = createFetchMock();
     vi.stubGlobal("fetch", fetchTracker.mock);
 
     renderWithProvider(<NotesApp windowId="w1" />);
@@ -93,7 +94,7 @@ describe("NotesApp backend recovery", () => {
     await act(async () => { await Promise.resolve(); });
     
     const callsAfterMount = fetchTracker.getCalls();
-    // Initial fetch: notes
+    // Initial data load: /api/notes (this one rejects)
     expect(callsAfterMount.filter(c => c === "/api/notes")).toHaveLength(1);
     expect(callsAfterMount.filter(c => c === "/api/health")).toHaveLength(0);
 
@@ -109,8 +110,11 @@ describe("NotesApp backend recovery", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
 
     const callsAfterRecovery = fetchTracker.getCalls();
-    // Should have: initial notes + 1 health (failed) + 1 health (success) + 1 notes (recovery) = relevant calls
-    expect(callsAfterRecovery.filter(c => c === "/api/notes")).toHaveLength(2); // Initial + recovery
+    // Initial failed notes load + exactly one refetch caused by recovery.
+    expect(callsAfterRecovery.filter(c => c === "/api/notes")).toHaveLength(2);
+    // The refetch happened after the successful health probe, not before it.
+    const lastHealth = callsAfterRecovery.lastIndexOf("/api/health");
+    expect(callsAfterRecovery.lastIndexOf("/api/notes")).toBeGreaterThan(lastHealth);
     expect(callsAfterRecovery.filter(c => c === "/api/health")).toHaveLength(2);
   });
 });

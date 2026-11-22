@@ -1,2 +1,2 @@
 ### Fixed
-- Mobile shell: app window no longer sticks on "taOS is restarting..." after controller recovers. Backend health probe now retries with capped 5s backoff indefinitely, re-probes immediately on `visibilitychange`/`online`, and triggers reload via `onUp` callback when backend returns. Home action (F13) now works while restarting banner is shown.
+- Mobile shell: app window no longer sticks on "taOS is restarting..." after the controller recovers. The backend health probe retries with a capped 5s backoff indefinitely, re-probes immediately on `visibilitychange`/`online`, and signals recovery through the `onUp` callback so apps refetch their data without a page reload. Home action (F13) now works while the restarting banner is shown.
