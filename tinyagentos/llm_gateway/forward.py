@@ -28,6 +28,7 @@ import logging
 import os
 import time
 import uuid
+import weakref
 from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
 from typing import Any, Awaitable
@@ -68,12 +69,33 @@ PROVIDER_DEFAULT_BASES = {
 }
 
 
+_OFFLINE_START_LOCKS: "weakref.WeakKeyDictionary[Any, Any]" = weakref.WeakKeyDictionary()
+
+
+def _offline_start_lock() -> Any:
+    """One start lock per running event loop (a Lock binds to its loop)."""
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    lock = _OFFLINE_START_LOCKS.get(loop)
+    if lock is None:
+        lock = _OFFLINE_START_LOCKS[loop] = asyncio.Lock()
+    return lock
+
+
 async def _ensure_offline_model_ready(state: Any) -> None:
     """Ensure the offline model is running and healthy.
 
     If the model is stopped, start it via the helper and wait for healthy.
-    Raises GatewayError with a clear message if startup fails.
+    Raises GatewayError with a clear message if startup fails. Serialised so
+    concurrent first requests run ``sudo start`` once: the later callers wait
+    on the lock, then see the model healthy on their own status check.
     """
+    async with _offline_start_lock():
+        await _ensure_offline_model_ready_locked(state)
+
+
+async def _ensure_offline_model_ready_locked(state: Any) -> None:
     import asyncio
     import json
     import os
@@ -545,6 +567,7 @@ def _event_stream_for_route(
     url = _build_url(route)
     payload = dict(body)
     payload["model"] = route.upstream_model
+    offline = bool((getattr(route, "metadata", {}) or {}).get("offline"))
 
     ndjson = route.backend_type in NDJSON_STREAM_BACKEND_TYPES
 
@@ -558,6 +581,8 @@ def _event_stream_for_route(
     if not caller_asked_for_usage and not ndjson:
         payload = dict(ensure_stream_usage(body))
         payload["model"] = route.upstream_model
+    if offline:
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
 
     request_text = json.dumps(body)
 
@@ -574,6 +599,12 @@ def _event_stream_for_route(
             _record_request_finish(state, route, principal, started, usage=usage, reason=reason)
 
         async def _pump():
+            if offline:
+                try:
+                    await _ensure_offline_model_ready(state)
+                except GatewayError:
+                    _finish(reason="offline_model_not_ready")
+                    raise
             api_key = await resolve_api_key(state, route.api_key_ref)
             headers = {"content-type": "application/json"}
             if api_key:

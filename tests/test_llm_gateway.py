@@ -1029,6 +1029,92 @@ async def test_offline_model_forwards_enable_thinking_false(
     assert sent.get("chat_template_kwargs") == {"enable_thinking": False}
 
 
+class _StatefulOfflineHelper:
+    """Fake helper whose status turns healthy only after ``sudo start`` ran."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, ...]] = []
+        self.running = False
+
+    async def __call__(self, *args, **kwargs):
+        argv = tuple(str(a) for a in args)
+        self.calls.append(argv)
+        proc = MagicMock()
+        proc.returncode = 0
+        if argv[-1] == "start":
+            async def _start():
+                await asyncio.sleep(0.05)  # let concurrent callers pile up
+                self.running = True
+                return (b'{"running": true, "healthy": true}', b"")
+            proc.communicate = _start
+        else:
+            body = (b'{"running": true, "healthy": true}' if self.running
+                    else b'{"running": false, "healthy": false}')
+            proc.communicate = AsyncMock(return_value=(body, b""))
+        return proc
+
+    def starts(self) -> int:
+        return sum(1 for c in self.calls if c[-1] == "start")
+
+
+@_ASYNC
+@respx.mock
+async def test_offline_model_stream_starts_stopped_model_and_disables_thinking(
+    client, monkeypatch, tmp_path
+):
+    """stream:true on a stopped offline model starts it, then streams with
+    enable_thinking false in the forwarded body."""
+    await _offline_available(client, monkeypatch, tmp_path)
+    store = _app(client).state.desktop_settings
+    await store.save_preference("user", "offline_model", {"enabled": True})
+
+    helper = tmp_path / "taos-llm"
+    fake = _StatefulOfflineHelper()
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake)
+
+    route = respx.post(_OFFLINE_URL).mock(return_value=httpx.Response(
+        200, content=_sse_chunk("hi") + _sse_done(),
+        headers={"content-type": "text/event-stream"},
+    ))
+    resp = await client.post(BASE + "/chat/completions", json=_chat(_OFFLINE, stream=True))
+    assert resp.status_code == 200, resp.text
+    text = resp.read().decode("utf-8")
+    assert '"content": "hi"' in text and text.endswith("data: [DONE]\n\n")
+    assert any(
+        c[0] == "sudo" and "-n" in c and str(helper) in c and c[-1] == "start"
+        for c in fake.calls
+    ), fake.calls
+    # The model was started BEFORE the upstream call went out.
+    assert fake.starts() == 1
+    sent = json.loads(route.calls.last.request.content)
+    assert sent["model"] == "offline-model"
+    assert sent["stream"] is True
+    assert sent.get("chat_template_kwargs") == {"enable_thinking": False}
+
+
+@_ASYNC
+@respx.mock
+async def test_concurrent_first_requests_start_offline_model_once(
+    client, monkeypatch, tmp_path
+):
+    """Concurrent first requests on a stopped offline model run sudo start once."""
+    await _offline_available(client, monkeypatch, tmp_path)
+    store = _app(client).state.desktop_settings
+    await store.save_preference("user", "offline_model", {"enabled": True})
+
+    fake = _StatefulOfflineHelper()
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake)
+
+    respx.post(_OFFLINE_URL).mock(
+        return_value=httpx.Response(200, json=_completion("offline-model"))
+    )
+    resps = await asyncio.gather(*(
+        client.post(BASE + "/chat/completions", json=_chat(_OFFLINE)) for _ in range(4)
+    ))
+    assert [r.status_code for r in resps] == [200] * 4, [r.text for r in resps]
+    assert fake.starts() == 1, fake.calls
+
+
 # ---------------------------------------------------------------------------
 # Agent-as-a-Model (/v1) is untouched with the gateway mounted
 # ---------------------------------------------------------------------------
