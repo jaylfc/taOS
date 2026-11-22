@@ -23,7 +23,7 @@ Run `python3 scripts/build-agent-manual.py` to compile these into `docs/taos-age
 | `12-memory-mode-both.md` | Memory mode `both`: framework memory for live state, taOSmd for durable facts, turn-boundary rules |
 | `13-memory-mode-framework.md` | Memory mode `framework`: native memory only, no taOSmd calls, redeploy clears all |
 | `14-memory-mode-taosmd.md` | Memory mode `taosmd`: taOSmd only, for frameworks with no native memory, single source of truth |
-| `mobile/15-mobile.md` | The taOS phone: lock screen, home screen, Launchpad, nav bar, volume keys, on-screen keyboard, battery, location, weather, demo mode. Not compiled in -- the build glob does not recurse into mobile/. |
+| `mobile/15-mobile.md` | The taOS phone: lock screen, home screen, Launchpad, nav bar, volume keys, on-screen keyboard, battery, location, weather, demo mode. Compiled in as the final chapter. |
 
 ## Companion skills
 
