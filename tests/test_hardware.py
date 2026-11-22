@@ -617,6 +617,164 @@ class TestWsl2AmdDetection:
         assert vram == 0
 
 
+class TestIntelGpuName:
+    """Intel GPU model names come from pci.ids, never raw PCI ids."""
+
+    def _stub_pci_ids(self, monkeypatch, tmp_path, contents):
+        pci = tmp_path / "pci.ids"
+        pci.write_text(contents)
+        monkeypatch.setattr(hardware_mod, "_PCI_IDS_PATHS", (pci,))
+
+    def test_pci_ids_lookup_shows_marketing_name(self, monkeypatch, tmp_path):
+        self._stub_pci_ids(
+            monkeypatch,
+            tmp_path,
+            '8086  Intel Corporation\n\t4c8a "RocketLake-S GT1 [UHD Graphics 750]"\n',
+        )
+        assert hardware_mod._pci_model_name("0x8086", "0x4c8a") == "Intel UHD Graphics 750"
+
+    def test_unknown_device_returns_empty(self, monkeypatch, tmp_path):
+        self._stub_pci_ids(
+            monkeypatch,
+            tmp_path,
+            '8086  Intel Corporation\n\t0002 "Some other card"\n',
+        )
+        assert hardware_mod._pci_model_name("0x8086", "0x4c8a") == ""
+
+    def test_detect_intel_gpus_uses_resolved_name(self, monkeypatch, tmp_path):
+        import tinyagentos.hardware as hw
+
+        monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+        self._stub_pci_ids(
+            monkeypatch,
+            tmp_path,
+            '8086  Intel Corporation\n\t4c8a "RocketLake-S GT1 [UHD Graphics 750]"\n',
+        )
+
+        real_safe = hw._path_exists_safe
+        def fake_path_exists_safe(p):
+            s = str(p)
+            if "/proc/driver/nvidia" in s:
+                return False
+            if "/sys/class/misc/mali0" in s:
+                return False
+            return real_safe(p)
+
+        monkeypatch.setattr(hw, "_path_exists_safe", fake_path_exists_safe)
+
+        original_exists = hw.Path.exists
+        def fake_exists(self):
+            s = str(self)
+            if s in (
+                "/sys/class/drm",
+                "/sys/class/drm/card0",
+                "/sys/class/drm/card0/device",
+            ):
+                return True
+            return original_exists(self)
+        monkeypatch.setattr(hw.Path, "exists", fake_exists)
+
+        device_path = hw.Path("/sys/class/drm/card0/device")
+        original_truediv = hw.Path.__truediv__
+        def mock_truediv(self, other):
+            if str(self) == "/sys/class/drm/card0" and other == "device":
+                return device_path
+            return original_truediv(self, other)
+        monkeypatch.setattr(hw.Path, "__truediv__", mock_truediv)
+
+        original_resolve = hw.Path.resolve
+        def fake_resolve(self, *args, **kwargs):
+            if str(self) == "/sys/class/drm/card0/device":
+                return hw.Path("/sys/devices/pci0000:00/0000:00:02.0/drm/card0/device")
+            return original_resolve(self, *args, **kwargs)
+        monkeypatch.setattr(hw.Path, "resolve", fake_resolve)
+
+        original_read_text = hw.Path.read_text
+        def fake_read_text(self, *args, **kwargs):
+            s = str(self)
+            if s.endswith("/device/vendor"):
+                return "0x8086\n"
+            if s.endswith("/device/device"):
+                return "0x4c8a\n"
+            return original_read_text(self, *args, **kwargs)
+        monkeypatch.setattr(hw.Path, "read_text", fake_read_text)
+
+        original_glob = hw.Path.glob
+        def fake_glob(self, pattern):
+            if str(self) == "/sys/class/drm" and pattern == "card*":
+                return iter([hw.Path("/sys/class/drm/card0")])
+            return original_glob(self, pattern)
+        monkeypatch.setattr(hw.Path, "glob", fake_glob)
+
+        gpus = hw._detect_intel_gpus()
+        assert len(gpus) == 1
+        assert gpus[0][0].model == "Intel UHD Graphics 750"
+        assert gpus[0][0].vram_mb == 0
+        assert gpus[0][1] == "0000:00:02.0"
+
+    def test_detect_intel_gpus_missing_pci_ids_fallback(self, monkeypatch, tmp_path):
+        import tinyagentos.hardware as hw
+
+        monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+        # No pci.ids file at all.
+        monkeypatch.setattr(hw, "_PCI_IDS_PATHS", (tmp_path / "does-not-exist.ids",))
+
+        real_safe = hw._path_exists_safe
+        def fake_path_exists_safe(p):
+            s = str(p)
+            if "/proc/driver/nvidia" in s:
+                return False
+            if "/sys/class/misc/mali0" in s:
+                return False
+            return real_safe(p)
+
+        monkeypatch.setattr(hw, "_path_exists_safe", fake_path_exists_safe)
+
+        original_exists = hw.Path.exists
+        def fake_exists(self):
+            s = str(self)
+            if s in ("/sys/class/drm", "/sys/class/drm/card0", "/sys/class/drm/card0/device"):
+                return True
+            return original_exists(self)
+        monkeypatch.setattr(hw.Path, "exists", fake_exists)
+
+        device_path = hw.Path("/sys/class/drm/card0/device")
+        original_truediv = hw.Path.__truediv__
+        def mock_truediv(self, other):
+            if str(self) == "/sys/class/drm/card0" and other == "device":
+                return device_path
+            return original_truediv(self, other)
+        monkeypatch.setattr(hw.Path, "__truediv__", mock_truediv)
+
+        original_resolve = hw.Path.resolve
+        def fake_resolve(self, *args, **kwargs):
+            if str(self) == "/sys/class/drm/card0/device":
+                return hw.Path("/sys/devices/pci0000:00/0000:00:02.0/drm/card0/device")
+            return original_resolve(self, *args, **kwargs)
+        monkeypatch.setattr(hw.Path, "resolve", fake_resolve)
+
+        original_read_text = hw.Path.read_text
+        def fake_read_text(self, *args, **kwargs):
+            s = str(self)
+            if s.endswith("/device/vendor"):
+                return "0x8086\n"
+            if s.endswith("/device/device"):
+                return "0x4c8a\n"
+            return original_read_text(self, *args, **kwargs)
+        monkeypatch.setattr(hw.Path, "read_text", fake_read_text)
+
+        original_glob = hw.Path.glob
+        def fake_glob(self, pattern):
+            if str(self) == "/sys/class/drm" and pattern == "card*":
+                return iter([hw.Path("/sys/class/drm/card0")])
+            return original_glob(self, pattern)
+        monkeypatch.setattr(hw.Path, "glob", fake_glob)
+
+        gpus = hw._detect_intel_gpus()
+        assert len(gpus) == 1
+        assert gpus[0][0].model == "Intel integrated graphics"
+
+
 class TestDetectGpusMulti:
     """Tests for the new _detect_gpus function that returns all GPUs."""
 

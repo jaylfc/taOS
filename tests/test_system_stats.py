@@ -884,6 +884,225 @@ class TestGetNetworkRates:
 
 
 # ---------------------------------------------------------------------------
+# read_all_intel_gpus
+# ---------------------------------------------------------------------------
+
+
+class TestReadAllIntelGpus:
+    def setup_method(self):
+        from tinyagentos import system_stats
+
+        system_stats._INTEL_LAST.clear()
+
+    def _add_intel_card(self, root, name="card0", vendor="0x8086", device="0x4c8a", **files):
+        card = root / name
+        (card / "device").mkdir(parents=True, exist_ok=True)
+        (card / "device" / "vendor").write_text(vendor + "\n")
+        (card / "device" / "device").write_text(device + "\n")
+        for rel, value in files.items():
+            target = card / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(str(value) + "\n")
+        return card
+
+    def _fake_time(self, monkeypatch, system_stats, now=1000.0):
+        class FakeTime:
+            def __init__(self):
+                self.now = now
+
+            def time(self):
+                return self.now
+
+        fake = FakeTime()
+        monkeypatch.setattr(system_stats, "time", fake)
+        return fake
+
+    def test_rc6_load_between_two_samples(self, monkeypatch, tmp_path):
+        from tinyagentos import system_stats
+
+        drm = tmp_path / "sys" / "class" / "drm"
+        drm.mkdir(parents=True)
+        self._add_intel_card(
+            drm,
+            "card0",
+            **{
+                "gt/gt0/rc6_residency_ms": 100,
+                "gt/gt0/gt_act_freq_mhz": 0,
+                "gt/gt0/gt_cur_freq_mhz": 1100,
+                "gt/gt0/gt_max_freq_mhz": 1200,
+            },
+        )
+        monkeypatch.setattr(system_stats, "_DRM_ROOT", drm)
+        fake_time = self._fake_time(monkeypatch, system_stats)
+
+        first = system_stats.read_all_intel_gpus()
+        assert first is not None
+        assert len(first) == 1
+        # First sample reports null load.
+        assert first[0]["load_percent"] is None
+        # act_freq 0 falls back to cur_freq.
+        assert first[0]["freq_hz"] == 1100 * 1_000_000
+        assert first[0]["freq_max_hz"] == 1200 * 1_000_000
+        assert first[0]["shared_memory"] is True
+        assert first[0]["vram_percent"] is None
+        assert first[0]["vram_used_mb"] is None
+        assert first[0]["vram_total_mb"] is None
+
+        # Second sample 2000 ms later with 1900 ms more RC6 residency -> 5% busy.
+        fake_time.now = 1002.0
+        (drm / "card0" / "gt" / "gt0" / "rc6_residency_ms").write_text("2000\n")
+        second = system_stats.read_all_intel_gpus()
+        assert second[0]["load_percent"] == 5
+
+    def test_missing_files_nulls_no_crash(self, monkeypatch, tmp_path):
+        from tinyagentos import system_stats
+
+        drm = tmp_path / "sys" / "class" / "drm"
+        drm.mkdir(parents=True)
+        self._add_intel_card(drm, "card0")
+        monkeypatch.setattr(system_stats, "_DRM_ROOT", drm)
+        self._fake_time(monkeypatch, system_stats)
+
+        result = system_stats.read_all_intel_gpus()
+        assert result is not None
+        assert len(result) == 1
+        entry = result[0]
+        assert entry["load_percent"] is None
+        assert entry["freq_hz"] is None
+        assert entry["freq_max_hz"] is None
+        assert entry["shared_memory"] is True
+        assert entry["vram_percent"] is None
+        assert entry["vram_used_mb"] is None
+        assert entry["vram_total_mb"] is None
+
+    def test_xe_driver_paths(self, monkeypatch, tmp_path):
+        from tinyagentos import system_stats
+
+        drm = tmp_path / "sys" / "class" / "drm"
+        drm.mkdir(parents=True)
+        card = drm / "card0"
+        (card / "device").mkdir(parents=True)
+        (card / "device" / "vendor").write_text("0x8086\n")
+        (card / "device" / "device").write_text("0x4c8a\n")
+        (card / "device" / "tile0" / "gt0" / "gtidle").mkdir(parents=True)
+        (card / "device" / "tile0" / "gt0" / "gtidle" / "idle_residency_ms").write_text("100\n")
+        (card / "device" / "tile0" / "gt0" / "freq0").mkdir(parents=True)
+        (card / "device" / "tile0" / "gt0" / "freq0" / "gt_act_freq_mhz").write_text("1300\n")
+        (card / "device" / "tile0" / "gt0" / "freq0" / "gt_max_freq_mhz").write_text("1400\n")
+        monkeypatch.setattr(system_stats, "_DRM_ROOT", drm)
+        fake_time = self._fake_time(monkeypatch, system_stats)
+
+        first = system_stats.read_all_intel_gpus()
+        assert first[0]["load_percent"] is None
+        assert first[0]["freq_hz"] == 1300 * 1_000_000
+        assert first[0]["freq_max_hz"] == 1400 * 1_000_000
+
+        fake_time.now = 1002.0
+        (card / "device" / "tile0" / "gt0" / "gtidle" / "idle_residency_ms").write_text("2000\n")
+        second = system_stats.read_all_intel_gpus()
+        assert second[0]["load_percent"] == 5
+
+    def test_non_intel_card_skipped(self, monkeypatch, tmp_path):
+        from tinyagentos import system_stats
+
+        drm = tmp_path / "sys" / "class" / "drm"
+        drm.mkdir(parents=True)
+        self._add_intel_card(drm, "card0", vendor="0x1002")
+        monkeypatch.setattr(system_stats, "_DRM_ROOT", drm)
+        self._fake_time(monkeypatch, system_stats)
+
+        assert system_stats.read_all_intel_gpus() is None
+
+    def test_no_drm_dir(self, monkeypatch, tmp_path):
+        from tinyagentos import system_stats
+
+        monkeypatch.setattr(system_stats, "_DRM_ROOT", tmp_path / "sys" / "class" / "drm")
+        self._fake_time(monkeypatch, system_stats)
+        assert system_stats.read_all_intel_gpus() is None
+
+    def test_amd_gpu_busy_percent(self, monkeypatch, tmp_path):
+        from tinyagentos import system_stats
+
+        drm = tmp_path / "sys" / "class" / "drm"
+        drm.mkdir(parents=True)
+        card = drm / "card0"
+        (card / "device").mkdir(parents=True)
+        (card / "device" / "vendor").write_text("0x1002\n")
+        (card / "device" / "gpu_busy_percent").write_text("42\n")
+        monkeypatch.setattr(system_stats, "_DRM_ROOT", drm)
+
+        result = system_stats.read_amd_sysfs_loads()
+        assert result is not None
+        assert len(result) == 1
+        assert result[0]["load_percent"] == 42
+
+    def test_amd_gpu_busy_percent_missing_file_null(self, monkeypatch, tmp_path):
+        from tinyagentos import system_stats
+
+        drm = tmp_path / "sys" / "class" / "drm"
+        drm.mkdir(parents=True)
+        card = drm / "card0"
+        (card / "device").mkdir(parents=True)
+        (card / "device" / "vendor").write_text("0x1002\n")
+        monkeypatch.setattr(system_stats, "_DRM_ROOT", drm)
+
+        result = system_stats.read_amd_sysfs_loads()
+        assert result is not None
+        assert result[0]["load_percent"] is None
+
+    def test_amd_skips_non_amd_cards(self, monkeypatch, tmp_path):
+        from tinyagentos import system_stats
+
+        drm = tmp_path / "sys" / "class" / "drm"
+        drm.mkdir(parents=True)
+        card = drm / "card0"
+        (card / "device").mkdir(parents=True)
+        (card / "device" / "vendor").write_text("0x8086\n")
+        monkeypatch.setattr(system_stats, "_DRM_ROOT", drm)
+
+        assert system_stats.read_amd_sysfs_loads() is None
+
+
+# ---------------------------------------------------------------------------
+# get_all_gpu_loads intel wiring
+# ---------------------------------------------------------------------------
+
+
+class TestGetAllGpuLoadsIntel:
+    @patch("tinyagentos.system_stats.read_all_intel_gpus")
+    def test_intel_entry_has_shared_memory(self, mock_intel):
+        from tinyagentos.system_stats import get_all_gpu_loads
+
+        mock_intel.return_value = [
+            {
+                "index": 0,
+                "name": "",
+                "load_percent": 5,
+                "freq_hz": 1100 * 1_000_000,
+                "freq_max_hz": 1200 * 1_000_000,
+                "vram_percent": None,
+                "vram_used_mb": None,
+                "vram_total_mb": None,
+                "shared_memory": True,
+            }
+        ]
+
+        result = get_all_gpu_loads(["intel"])
+        assert result == [
+            {
+                "type": "intel",
+                "load_percent": 5,
+                "freq_hz": 1100 * 1_000_000,
+                "freq_max_hz": 1200 * 1_000_000,
+                "vram_percent": None,
+                "vram_used_mb": None,
+                "vram_total_mb": None,
+                "shared_memory": True,
+            }
+        ]
+
+
+# ---------------------------------------------------------------------------
 # get_top_processes
 # ---------------------------------------------------------------------------
 

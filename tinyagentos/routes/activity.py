@@ -144,6 +144,9 @@ async def activity(request: Request):
                     "load_percent": load_percent,
                     "freq_hz": freq_hz,
                 }
+                freq_max_hz = load_info.get("freq_max_hz")
+                if freq_max_hz is not None:
+                    load_obj["freq_max_hz"] = freq_max_hz
             gpus_response.append({
                 "type": g.get("type"),
                 "model": g.get("model"),
@@ -151,6 +154,7 @@ async def activity(request: Request):
                 "vram_percent": load_info.get("vram_percent"),
                 "vram_used_mb": load_info.get("vram_used_mb"),
                 "vram_total_mb": load_info.get("vram_total_mb"),
+                "shared_memory": load_info.get("shared_memory"),
             })
 
     return JSONResponse({

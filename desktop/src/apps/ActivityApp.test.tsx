@@ -228,6 +228,33 @@ describe("ActivityApp", () => {
     expect(screen.getByText("Stats unavailable")).toBeTruthy();
   });
 
+  it("shows load, frequency and 'Shares system memory' for an Intel iGPU", async () => {
+    const activity = makeActivity({
+      gpu: { load: null, vram_percent: null, vram_used_mb: null, vram_total_mb: null, type: "none" },
+      gpus: [
+        {
+          type: "intel",
+          model: "Intel UHD Graphics 750",
+          load: { load_percent: 5, freq_hz: 1100000000, freq_max_hz: 1200000000 },
+          vram_percent: null,
+          vram_used_mb: null,
+          vram_total_mb: null,
+          shared_memory: true,
+        },
+      ],
+    });
+    vi.stubGlobal("fetch", mockFetch(baseResponses(activity)));
+    render(<ActivityApp windowId="win-1" />);
+    await flush();
+
+    expect(screen.getByRole("heading", { name: "GPU" })).toBeTruthy();
+    expect(screen.getByText((content) => String(content).includes("UHD Graphics 750"))).toBeTruthy();
+    expect(screen.getAllByText("Load")).toHaveLength(1);
+    expect(screen.getByText((content) => String(content).includes("1100 MHz"))).toBeTruthy();
+    expect(screen.getByText("Shares system memory")).toBeTruthy();
+    expect(screen.queryByText("Stats unavailable")).toBeNull();
+  });
+
   it("falls back to single gpu when gpus array is empty", async () => {
     const activity = makeActivity({
       hardware: {

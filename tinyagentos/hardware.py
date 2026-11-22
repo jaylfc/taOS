@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import platform
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field, asdict
@@ -604,7 +605,9 @@ def _detect_intel_gpus() -> list[tuple[GpuInfo, str]]:
     """Detect Intel integrated/discrete GPUs via DRM sysfs.
 
     Returns a list of (GpuInfo, pci_address) tuples for each Intel GPU found (i915/xe drivers).
-    Stats are not available without perf access; return devices with null stats.
+    Runtime stats (RC6 residency load, gt frequency) are collected by system_stats on each
+    /api/activity sample; detection here resolves the card's marketing name via pci.ids.
+    Integrated GPUs share system memory (no dedicated VRAM).
     """
     gpus: list[tuple[GpuInfo, str]] = []
     drm_path = Path("/sys/class/drm")
@@ -638,33 +641,82 @@ def _detect_intel_gpus() -> list[tuple[GpuInfo, str]]:
                         break
             except (OSError, RuntimeError):
                 pass
+            # Resolve the marketing name from pci.ids (vendor:device). Never expose raw
+            # PCI ids like "[0x4c8a 0x8694]"; fall back to a generic name when unknown.
+            device_id = ""
+            device_file = device_path / "device"
+            if _path_exists_safe(device_file):
+                try:
+                    device_id = device_file.read_text().strip()
+                except OSError:
+                    pass
+            model = _pci_model_name(vendor_id, device_id) or "Intel integrated graphics"
             # This is an Intel GPU
             gpu = GpuInfo()
             gpu.type = "intel"
-            # Try to get model name from device/subsystem
-            device_file = device_path / "device"
-            subsystem_file = device_path / "subsystem_device"
-            model_parts = []
-            if _path_exists_safe(device_file):
-                try:
-                    model_parts.append(device_file.read_text().strip())
-                except OSError:
-                    pass
-            if _path_exists_safe(subsystem_file):
-                try:
-                    model_parts.append(subsystem_file.read_text().strip())
-                except OSError:
-                    pass
-            if model_parts:
-                gpu.model = f"Intel GPU [{' '.join(model_parts)}]"
-            else:
-                gpu.model = "Intel GPU (integrated)"
+            gpu.model = model
             gpu.vram_mb = 0  # Shared memory, no dedicated VRAM
             gpu.vulkan = shutil.which("vulkaninfo") is not None
             gpus.append((gpu, pci_addr))
     except OSError:
         pass
     return gpus
+
+
+# PCI id -> marketing name resolution ---------------------------------------
+
+_PCI_IDS_PATHS: tuple[Path, ...] = (
+    Path("/usr/share/hwdata/pci.ids"),
+    Path("/usr/share/misc/pci.ids"),
+)
+
+_PCI_VENDOR_RE = re.compile(r"^([0-9a-fA-F]{4})\s")
+_PCI_DEVICE_RE = re.compile(r"^\t([0-9a-fA-F]{4})\s+\"([^\"]*)\"")
+
+
+def _pci_ids_db() -> dict[tuple[str, str], str]:
+    """Parse (vendor, device) -> model name from the first available pci.ids file.
+
+    pci.ids lists vendor blocks ("8086  Intel Corporation") followed by
+    indented device lines ("\t4c8a \"RocketLake-S GT1 [UHD Graphics 750]\"").
+    Returns an empty dict when no pci.ids file is readable.
+    """
+    for path in _PCI_IDS_PATHS:
+        try:
+            text = path.read_text(errors="replace")
+        except OSError:
+            continue
+        entries: dict[tuple[str, str], str] = {}
+        current_vendor = ""
+        for line in text.splitlines():
+            if not line or line.startswith("#"):
+                continue
+            if line[0] in " \t":
+                match = _PCI_DEVICE_RE.match(line)
+                if match and current_vendor:
+                    entries.setdefault((current_vendor, match.group(1)), match.group(2))
+            else:
+                match = _PCI_VENDOR_RE.match(line)
+                if match:
+                    current_vendor = match.group(1)
+        return entries
+    return {}
+
+
+def _pci_model_name(vendor_id: str, device_id: str) -> str:
+    """Resolve a PCI vendor:device pair to a short model name, or "".
+
+    pci.ids names look like "RocketLake-S GT1 [UHD Graphics 750]"; we strip the
+    bracket and prefix the vendor, yielding "Intel UHD Graphics 750".
+    """
+    entries = _pci_ids_db()
+    name = entries.get(
+        (vendor_id.lower().removeprefix("0x"), device_id.lower().removeprefix("0x"))
+    )
+    if not name:
+        return ""
+    match = re.search(r"\[([^\]]+)\]", name)
+    return f"Intel {match.group(1)}" if match else name
 
 
 def _detect_amd_gpus() -> list[tuple[GpuInfo, str]]:
