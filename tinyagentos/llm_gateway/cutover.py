@@ -150,7 +150,7 @@ async def models_problem(state, models: Iterable[str]) -> str | None:
     models = [m for m in (models or []) if isinstance(m, str) and m]
     if not models:
         return "its key allows no models, so there is nothing to serve"
-    table = routing_table(state)
+    table = await routing_table(state)
     from tinyagentos.litellm_config import EMBEDDING_ALIAS
 
     for requested in models:
