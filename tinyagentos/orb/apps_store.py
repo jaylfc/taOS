@@ -98,7 +98,7 @@ def validate_relative_url(url) -> str:
         raise DesktopManifestInvalid("url must not contain \\\\, ?, or #")
 
     for segment in url.split("/"):
-        if not _REL_SEGMENT_RE.match(segment):
+        if not _REL_SEGMENT_RE.fullmatch(segment):
             raise DesktopManifestInvalid("url segment must not be empty, ., or ..")
 
     return url
@@ -192,18 +192,39 @@ async def fetch_manifest(base_url, cache_dir, state_path, keys=None, timeout: fl
 
     # Verify, check+record the serial high-water mark, and write the cache all
     # under one lock so concurrent fetches cannot leave an older manifest
-    # cached behind a newer recorded serial.
+    # cached behind a newer recorded serial.  The blocking verify/accept/cache
+    # work runs in a worker thread (held under the lock) so it cannot block the
+    # event loop, and the lock then genuinely serialises that work across
+    # threads: without it two concurrent fetches can interleave and leave an
+    # older manifest cached behind a newer recorded serial.
     async with _fetch_manifest_lock:
-        # A signed firmware catalog replayed at the manifest URL must be refused by kind before it can raise the manifest's serial high-water mark.
-        doc = catalog_sig.verify_catalog(manifest_bytes, sig_bytes, keys)
-        validate_manifest(doc)
-        catalog_sig.accept_catalog(manifest_bytes, sig_bytes, state_path, keys)
+        doc = await asyncio.to_thread(
+            _verify_accept_and_cache,
+            manifest_bytes,
+            sig_bytes,
+            keys,
+            state_path,
+            cache_dir,
+        )
 
-        cache_dir_path = Path(cache_dir)
-        cache_dir_path.mkdir(parents=True, exist_ok=True)
-        atomic_io.atomic_write_bytes(cache_dir_path / MANIFEST_FILE_NAME, manifest_bytes)
-        atomic_io.atomic_write_bytes(cache_dir_path / MANIFEST_SIG_FILE_NAME, sig_bytes if sig_bytes is not None else b"")
+    return doc
 
+
+def _verify_accept_and_cache(manifest_bytes, sig_bytes, keys, state_path, cache_dir) -> dict:
+    """Blocking verify + serial accept + cache write for one manifest fetch.
+
+    Runs under ``_fetch_manifest_lock`` (via ``asyncio.to_thread``) so the
+    verify/accept/cache sequence is atomic with respect to concurrent fetches.
+    """
+    # A signed firmware catalog replayed at the manifest URL must be refused by kind before it can raise the manifest's serial high-water mark.
+    doc = catalog_sig.verify_catalog(manifest_bytes, sig_bytes, keys)
+    validate_manifest(doc)
+    catalog_sig.accept_catalog(manifest_bytes, sig_bytes, state_path, keys)
+
+    cache_dir_path = Path(cache_dir)
+    cache_dir_path.mkdir(parents=True, exist_ok=True)
+    atomic_io.atomic_write_bytes(cache_dir_path / MANIFEST_FILE_NAME, manifest_bytes)
+    atomic_io.atomic_write_bytes(cache_dir_path / MANIFEST_SIG_FILE_NAME, sig_bytes if sig_bytes is not None else b"")
     return doc
 
 
@@ -254,46 +275,45 @@ async def download_app(manifest, app_id, base_url, dest_dir, version=None, platf
         fd, temp_path = tempfile.mkstemp(dir=str(dest_dir_path), prefix=".dl-")
         os.close(fd)
         try:
-            async with asyncio.timeout(timeout):
-                async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, transport=transport) as client:
-                    async with client.stream("GET", url) as resp:
-                        if resp.status_code != 200:
-                            raise AppDownloadError(f"failed to download {url}: status {resp.status_code}")
-                        content_encoding = resp.headers.get("content-encoding", "")
-                        if content_encoding and content_encoding.lower() != "identity":
-                            raise AppDownloadError(f"server returned compressed response for {url}: content-encoding {content_encoding}")
-                        h = hashlib.sha256()
-                        total = 0
-                        expected = f["size"]
-                        with open(temp_path, "wb") as tf:
-                            iterator = resp.aiter_bytes()
-                            while True:
-                                try:
-                                    chunk = await asyncio.wait_for(iterator.__anext__(), idle_timeout)
-                                except StopAsyncIteration:
-                                    break
-                                except TimeoutError as e:
-                                    raise AppDownloadError("download stalled: no chunk within idle timeout") from e
-                                total += len(chunk)
-                                if total > expected:
-                                    raise AppDownloadError("download exceeded declared size")
-                                h.update(chunk)
-                                # Offload the blocking write so a multi-gibibyte
-                                # transfer does not block the event loop.
-                                await asyncio.to_thread(tf.write, chunk)
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, transport=transport) as client, client.stream("GET", url) as resp:
+                if resp.status_code != 200:
+                    raise AppDownloadError(f"failed to download {url}: status {resp.status_code}")
+                content_encoding = resp.headers.get("content-encoding", "")
+                if content_encoding and content_encoding.lower() != "identity":
+                    raise AppDownloadError(f"server returned compressed response for {url}: content-encoding {content_encoding}")
+                h = hashlib.sha256()
+                total = 0
+                expected = f["size"]
+                with open(temp_path, "wb") as tf:
+                    iterator = resp.aiter_bytes()
+                    while True:
+                        try:
+                            chunk = await asyncio.wait_for(iterator.__anext__(), idle_timeout)
+                        except StopAsyncIteration:
+                            break
+                        except TimeoutError as e:
+                            raise AppDownloadError("download stalled: no chunk within idle timeout") from e
+                        total += len(chunk)
+                        if total > expected:
+                            raise AppDownloadError("download exceeded declared size")
+                        h.update(chunk)
+                        # Offload the blocking write so a multi-gibibyte
+                        # transfer does not block the event loop.
+                        await asyncio.to_thread(tf.write, chunk)
         except AppDownloadError:
             raise
-        except TimeoutError as e:
-            raise AppDownloadError(f"download exceeded {timeout}s") from e
         except httpx.HTTPError as e:
             raise AppDownloadError(f"failed to download {url}: {e}") from e
 
         if total != expected or h.hexdigest() != f["sha256"]:
             raise AppDownloadError("download size or sha256 mismatch")
-        atomic_io.durable_replace(temp_path, final_path)
+        # durable_replace fsyncs the whole temp file (up to the 1 GiB app cap),
+        # so promote off the event loop; the per-read idle_timeout above bounds
+        # how long a stalled stream can hold the temp file and the caller.
+        await asyncio.to_thread(atomic_io.durable_replace, temp_path, final_path)
         temp_path = None
         return final_path
-    except Exception:
+    except BaseException:
         if temp_path is not None and os.path.exists(temp_path):
             try:
                 os.unlink(temp_path)

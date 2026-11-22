@@ -351,7 +351,7 @@ async def test_download_sends_more_than_size_plus1_raises_app_download_error_no_
     from tinyagentos.orb.apps_store import AppDownloadError
     with pytest.raises(AppDownloadError):
         await apps_store.download_app(manifest, "openharness-taos", "https://example.com/", dest_dir, transport=transport)
-    assert list(dest_dir.glob("oh-linux-x64.zip")) == []
+    assert list(dest_dir.glob(f"{h[:16]}-oh-linux-x64.zip")) == []
     assert list(dest_dir.glob(".dl-*")) == []
 
 
@@ -365,7 +365,7 @@ async def test_download_right_size_wrong_content_raises_app_download_error_exist
 
     dest_dir = tmp_path / "downloads"
     dest_dir.mkdir(parents=True)
-    final = dest_dir / "oh-linux-x64.zip"
+    final = dest_dir / f"{h[:16]}-oh-linux-x64.zip"
     final.write_bytes(b"oldcontent")
 
     def handler(request: httpx.Request):
@@ -400,7 +400,7 @@ async def test_download_short_body_raises_app_download_error(tmp_path):
     from tinyagentos.orb.apps_store import AppDownloadError
     with pytest.raises(AppDownloadError):
         await apps_store.download_app(manifest, "openharness-taos", "https://example.com/", dest_dir, transport=transport)
-    assert list(dest_dir.glob("oh-linux-x64.zip")) == []
+    assert list(dest_dir.glob(f"{h[:16]}-oh-linux-x64.zip")) == []
     assert list(dest_dir.glob(".dl-*")) == []
 
 
@@ -545,7 +545,7 @@ async def test_download_stalled_stream_times_out_no_partial_file(tmp_path):
             manifest, "openharness-taos", "https://example.com/", dest_dir,
             transport=transport, idle_timeout=1,
         )
-    assert list(dest_dir.glob("oh-linux-x64.zip")) == []
+    assert list(dest_dir.glob(f"{h[:16]}-oh-linux-x64.zip")) == []
     assert list(dest_dir.glob(".dl-*")) == []
 
 
