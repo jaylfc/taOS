@@ -290,7 +290,7 @@ resolve_desktop_mode
 
 ensure_linux_deps() {
     if command -v apt-get >/dev/null 2>&1; then
-        log "installing apt deps (python3, venv, git, curl, libtorrent, sqlite3, sqlcipher)"
+        log "installing apt deps (python3, venv, git, curl, libtorrent, sqlite3, sqlcipher, gnupg)"
         # nodejs/npm are intentionally excluded here: ensure_node22() installs
         # Node 22 via NodeSource immediately after. Including apt's nodejs/npm
         # causes "held broken packages" when NodeSource's nodejs is already
@@ -302,9 +302,9 @@ ensure_linux_deps() {
         sudo DEBIAN_FRONTEND=noninteractive apt-get "${APT_RETRY[@]}" install -y -qq \
             python3 python3-venv python3-pip git curl ca-certificates \
             libtorrent-rasterbar-dev libboost-python-dev sqlite3 libsqlcipher-dev \
-            vulkan-tools
+            vulkan-tools gnupg
     elif command -v dnf >/dev/null 2>&1; then
-        log "installing dnf deps (python3, git, curl, libtorrent, nodejs, sqlcipher, vulkan-tools)"
+        log "installing dnf deps (python3, git, curl, libtorrent, nodejs, sqlcipher, vulkan-tools, gnupg)"
         # rb_libtorrent: Fedora's libtorrent-rasterbar is split into the C++
         # library (rb_libtorrent), its devel headers (rb_libtorrent-devel), and
         # the Python bindings (rb_libtorrent-python3). The bindings are NOT on
@@ -315,14 +315,14 @@ ensure_linux_deps() {
         # across recent Fedora releases.
         sudo dnf install -y -q python3 python3-pip git curl \
             rb_libtorrent-devel rb_libtorrent-python3 boost-python3 \
-            sqlite nodejs npm sqlcipher-devel vulkan-tools
+            sqlite nodejs npm sqlcipher-devel vulkan-tools gnupg2
     elif command -v pacman >/dev/null 2>&1; then
         log "installing pacman deps"
         sudo pacman -Sy --noconfirm --needed python python-pip git curl \
-            libtorrent-rasterbar boost sqlite nodejs npm sqlcipher vulkan-tools
+            libtorrent-rasterbar boost sqlite nodejs npm sqlcipher vulkan-tools gnupg
     elif command -v apk >/dev/null 2>&1; then
         log "installing apk deps"
-        sudo apk add --no-cache bash python3 py3-pip git curl libtorrent-rasterbar sqlite nodejs npm sqlcipher-dev vulkan-tools py3-onnxruntime
+        sudo apk add --no-cache bash python3 py3-pip git curl libtorrent-rasterbar sqlite nodejs npm sqlcipher-dev vulkan-tools py3-onnxruntime gnupg
     else
         warn "unrecognised package manager — assuming python3/git/curl/libtorrent/nodejs already present"
     fi
@@ -378,6 +378,10 @@ ensure_node22() {
     log "node ${node_major:-not found} is too old (need >=22) — upgrading to Node 22 LTS via NodeSource"
 
     if command -v apt-get >/dev/null 2>&1; then
+        # Ensure gpg is available for key verification (installed by ensure_linux_deps)
+        if ! command -v gpg >/dev/null 2>&1; then
+            die "gpg (gnupg) is required for NodeSource key verification but not found — ensure_linux_deps should have installed it; install gnupg manually and re-run"
+        fi
         # Install Node 22 via NodeSource's GPG-signed apt repository.
         # This mirrors how Zabbly/Caddy keys are handled in this file: download
         # the key, verify its fingerprint against a known-good value, import to a
@@ -418,6 +422,10 @@ ensure_node22() {
         sudo DEBIAN_FRONTEND=noninteractive apt-get "${APT_RETRY[@]}" install -y nodejs \
             || die "apt-get install nodejs (22) failed"
     elif command -v dnf >/dev/null 2>&1; then
+        # Ensure gpg is available for key verification (installed by ensure_linux_deps)
+        if ! command -v gpg >/dev/null 2>&1; then
+            die "gpg (gnupg) is required for NodeSource RPM key verification but not found — ensure_linux_deps should have installed it; install gnupg2 manually and re-run"
+        fi
         # Install Node 22 via NodeSource's GPG-signed dnf repository.
         # Key fingerprint verified 2026-06-08 against
         # https://rpm.nodesource.com/gpgkey/ns-operations-public.key
@@ -1160,6 +1168,12 @@ ensure_container_runtime() {
                 warn "  otherwise: https://github.com/zabbly/incus"
             else
                 log "incus not in default repos — using Zabbly for codename '$codename'"
+                # Ensure gpg is available for key verification (installed by ensure_linux_deps)
+                if ! command -v gpg >/dev/null 2>&1; then
+                    warn "gpg (gnupg) is required for Zabbly key verification but not found — skipping Incus install via Zabbly"
+                    warn "  install gnupg manually and re-run"
+                    return 0
+                fi
                 sudo install -d -m 0755 /etc/apt/keyrings
 
                 # Fetch and verify Zabbly GPG key before importing.
@@ -1508,6 +1522,12 @@ _apt_install_docker_official_repo() {
         fi
     fi
 
+    # Ensure gpg is available for key verification (installed by ensure_linux_deps)
+    if ! command -v gpg >/dev/null 2>&1; then
+        warn "gpg (gnupg) is required for Docker key verification but not found — skipping Docker official-repo fallback"
+        warn "  install gnupg manually and re-run"
+        return 1
+    fi
     sudo install -d -m 0755 /etc/apt/keyrings
 
     local _docker_key_tmp _docker_bak_dir
