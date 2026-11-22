@@ -37,7 +37,7 @@ describe("backendStatus", () => {
     bs.stop();
   });
 
-  it("backs off 2s -> 4s -> 8s -> 16s -> 30s (capped)", async () => {
+  it("backs off 2s -> 4s -> 5s -> 5s -> 5s (capped)", async () => {
     const fetchMock = vi.fn().mockRejectedValue(new TypeError("network"));
     const bs = createBackendStatus({ healthUrl: "/api/health", fetchImpl: fetchMock });
     bs.start();
@@ -47,18 +47,15 @@ describe("backendStatus", () => {
     // Next at +4s
     await vi.advanceTimersByTimeAsync(4000);
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    // +8s
-    await vi.advanceTimersByTimeAsync(8000);
+    // +5s (cap, not 8s)
+    await vi.advanceTimersByTimeAsync(5000);
     expect(fetchMock).toHaveBeenCalledTimes(3);
-    // +16s
-    await vi.advanceTimersByTimeAsync(16000);
+    // +5s (still capped)
+    await vi.advanceTimersByTimeAsync(5000);
     expect(fetchMock).toHaveBeenCalledTimes(4);
-    // +30s (cap)
-    await vi.advanceTimersByTimeAsync(30000);
+    // +5s (still capped)
+    await vi.advanceTimersByTimeAsync(5000);
     expect(fetchMock).toHaveBeenCalledTimes(5);
-    // +30s (still capped)
-    await vi.advanceTimersByTimeAsync(30000);
-    expect(fetchMock).toHaveBeenCalledTimes(6);
     bs.stop();
   });
 
@@ -170,6 +167,96 @@ describe("backendStatus", () => {
     cb.mockClear();
     await vi.advanceTimersByTimeAsync(90_000);
     expect(cb).not.toHaveBeenCalled();
+    bs.stop();
+  });
+
+  it("caps backoff at 5s (not 30s) while reconnecting", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError("network"));
+    const bs = createBackendStatus({ healthUrl: "/api/health", fetchImpl: fetchMock });
+    bs.start();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // +5s (cap, not 8s)
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    // +5s (still capped)
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    // +5s (still capped)
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+    bs.stop();
+  });
+
+  it("triggers onUp callback when status returns to 'up' after reconnecting", async () => {
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new TypeError("network"))
+      .mockResolvedValue(new Response("{}", { status: 200 }));
+    const onUp = vi.fn();
+    const bs = createBackendStatus({ healthUrl: "/api/health", fetchImpl: fetchMock, onUp });
+    bs.start();
+    await vi.advanceTimersByTimeAsync(2000); // first poll fails
+    expect(bs.getStatus()).toBe("reconnecting");
+    expect(onUp).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(4000); // backoff, succeeds
+    expect(bs.getStatus()).toBe("up");
+    expect(onUp).toHaveBeenCalledTimes(1);
+    bs.stop();
+  });
+
+  it("visibilitychange to visible triggers immediate re-probe while reconnecting", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError("network"));
+    const bs = createBackendStatus({ healthUrl: "/api/health", fetchImpl: fetchMock });
+    bs.start();
+    await vi.advanceTimersByTimeAsync(2000); // first poll fails
+    expect(bs.getStatus()).toBe("reconnecting");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // Simulate visibilitychange to visible
+    const event = new Event("visibilitychange");
+    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+    document.dispatchEvent(event);
+    // Should trigger an immediate poll (not wait for backoff)
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    bs.stop();
+  });
+
+  it("online event triggers immediate re-probe while reconnecting", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError("network"));
+    const bs = createBackendStatus({ healthUrl: "/api/health", fetchImpl: fetchMock });
+    bs.start();
+    await vi.advanceTimersByTimeAsync(2000); // first poll fails
+    expect(bs.getStatus()).toBe("reconnecting");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // Simulate online event
+    const event = new Event("online");
+    window.dispatchEvent(event);
+    // Should trigger an immediate poll
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    bs.stop();
+  });
+
+  it("superseded probes are dropped: only one in-flight probe at a time", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError("network"));
+    const bs = createBackendStatus({ healthUrl: "/api/health", fetchImpl: fetchMock });
+    bs.start();
+    await vi.advanceTimersByTimeAsync(2000); // first poll fails → status → reconnecting
+    expect(bs.getStatus()).toBe("reconnecting");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // Dispatch visibilitychange to visible while already waiting for backoff
+    const visibleEvent = new Event("visibilitychange");
+    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+    document.dispatchEvent(visibleEvent);
+    // Dispatch online event while the visibility probe is in-flight
+    const onlineEvent = new Event("online");
+    window.dispatchEvent(onlineEvent);
+    // Only one extra poll should be triggered (the latter one supersedes the former)
+    await vi.advanceTimersByTimeAsync(0);
+    // fetchMock should have been called at most 2 times (1 initial + 1 superseding)
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     bs.stop();
   });
 });
