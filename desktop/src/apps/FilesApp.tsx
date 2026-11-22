@@ -992,24 +992,6 @@ export function FilesApp({
     }
   }, [fetchPhotosTrash]);
 
-  const handlePhotosTrashPurge = useCallback(async (item: PhotosTrashItem) => {
-    if (!window.confirm(`Permanently delete? This cannot be undone.`)) return;
-    try {
-      const res = await fetch(
-        `/api/photos/trash/${encodeURIComponent(item.id)}`,
-        { method: "DELETE", headers: { Accept: "application/json" } }
-      );
-      if (!res.ok) {
-        const body = await res.text().catch(() => "");
-        setPhotosTrashError(`Delete failed: ${body || res.status}`);
-        return;
-      }
-      fetchPhotosTrash();
-    } catch (e: unknown) {
-      setPhotosTrashError(e instanceof Error ? e.message : "Delete failed");
-    }
-  }, [fetchPhotosTrash]);
-
   /* ---- Actions ---- */
   const handleNewFolder = useCallback(async () => {
     const mkdirUrl = workspaceMkdirUrl(location);
@@ -1705,16 +1687,6 @@ export function FilesApp({
                       title="Restore"
                     >
                       <RotateCcw size={13} aria-hidden="true" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 hover:bg-red-500/15 hover:text-red-400"
-                      onClick={() => handlePhotosTrashPurge(item)}
-                      aria-label={`Permanently delete ${item.original_path}`}
-                      title="Delete permanently"
-                    >
-                      <Trash2 size={13} aria-hidden="true" />
                     </Button>
                   </div>
                 </Card>

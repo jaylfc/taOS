@@ -224,41 +224,6 @@ describe("FilesApp Recycle Bin Photos trash", () => {
     expect(urls.some((u) => u.includes("/api/photos/trash/photo-1/restore"))).toBe(true);
   });
 
-  it("purge calls the photos delete route", async () => {
-    const photosTrash: PhotosTrashItemStub[] = [
-      {
-        id: "photo-1",
-        original_path: "IMG_0001.jpg",
-        deleted_at: new Date(Date.now() - 1000 * 60 * 60).toISOString(),
-      },
-    ];
-    const urls = stubFetch(
-      [{ id: "photos", label: "Photos" }],
-      {},
-      [],
-      [],
-      [],
-      photosTrash,
-    );
-
-    render(<FilesApp windowId="w1" />);
-    await flush();
-
-    await openRecycleBin();
-    await flush();
-
-    // Find and click the purge button for the photo
-    const purgeBtn = screen.getByLabelText("Permanently delete IMG_0001.jpg");
-    await act(async () => {
-      fireEvent.click(purgeBtn);
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    // The purge call should go to /api/photos/trash/photo-1
-    expect(urls.some((u) => u.includes("/api/photos/trash/photo-1"))).toBe(true);
-  });
-
   it("shows no Photos section when user has no Photos access (403)", async () => {
     const urls = stubFetchWithPhotosForbidden(
       [{ id: "photos", label: "Photos" }],
