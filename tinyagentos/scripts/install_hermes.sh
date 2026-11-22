@@ -8,8 +8,8 @@ set -euo pipefail
 log() { echo "[$(date -u +%H:%M:%S)] hermes-install: $*"; }
 
 # Pin Hermes to a known tag; bumps go via a card + smoke test
-HERMES_TAG="${HERMES_TAG:-v2026.8.31}"
-HERMES_COMMIT="${HERMES_COMMIT:-29112bef099274229cadff79cdff7bf7b99c4b77}"
+HERMES_TAG="${HERMES_TAG:-v0.23.2}"
+HERMES_COMMIT="${HERMES_COMMIT:-ae2a81ccc00e9b7c06301523e5bb09608397149c}"
 
 AGENT_NAME="${TAOS_AGENT_NAME:?TAOS_AGENT_NAME required}"
 LLM_KEY="${LITELLM_API_KEY:?LITELLM_API_KEY required}"

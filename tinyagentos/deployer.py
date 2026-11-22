@@ -87,6 +87,30 @@ def _explain_container_failure(raw_error: object) -> str:
         )
     return f"Container creation failed: {text}"
 
+
+def _idmap_subid_range_ok(
+    uid: int,
+    *,
+    subuid_path: str = "/etc/subuid",
+    subgid_path: str = "/etc/subgid",
+) -> bool:
+    """True when /etc/subuid and /etc/subgid both grant root the single-id
+    range ``root:<uid>:1`` that incus needs for ``raw.idmap "both <uid> 0"``.
+
+    newuidmap refuses a mapping the subid files do not permit, which leaves
+    the container stuck starting and the deploy reporting the opaque "Instance
+    is not running". Parsing the files here lets us fail fast with a clear
+    one-line fix instead of waiting ~34s for the timeout."""
+    want = f"root:{uid}:1"
+    for path in (subuid_path, subgid_path):
+        try:
+            with open(path, encoding="ascii") as fh:
+                if not any(line.strip() == want for line in fh):
+                    return False
+        except FileNotFoundError:
+            return False
+    return True
+
 def _secret_env_name(name: str) -> str:
     """Sanitize a secret name into a valid POSIX env identifier.
 
@@ -180,6 +204,13 @@ class DeployRequest:
     # When non-empty, injected as TAOS_AGENT_TOKEN into the container env.
     # Additive: TAOS_LOCAL_TOKEN is unchanged.
     agent_token: str = ""
+    # Hermes pin passthrough: when the agent config carries a framework
+    # version (a Hermes profile import asking for the exact version the
+    # profile came from), pass HERMES_TAG / HERMES_COMMIT into the container
+    # so install_hermes.sh installs that version instead of the default pin.
+    # None = use install_hermes.sh's built-in default pin.
+    hermes_tag: str | None = None
+    hermes_commit: str | None = None
 
 
 # Where an agent container reaches its LLM: its OWN loopback, port 4000, the
@@ -278,6 +309,24 @@ async def deploy_agent(req: DeployRequest) -> dict:
             "start (still starting, its port is taken, or it is disabled), so "
             "the agent would have no route to the controller; retry once the "
             "controller has finished starting"
+        )
+        logger.error("deploy %s: %s", req.name, msg)
+        return {"success": False, "error": msg, "steps": steps}
+
+    # Preflight: incus maps container root -> host UID via raw.idmap, which
+    # newuidmap only allows when /etc/subuid + /etc/subgid grant root that
+    # range. Fail fast with a clear one-line fix instead of the opaque
+    # "Instance is not running" ~34s into the deploy. A root controller maps
+    # uid 0 -> 0 and needs no subid range, so skip it there.
+    if not req.remote and os.getuid() != 0 and not _idmap_subid_range_ok(os.getuid()):
+        uid = os.getuid()
+        msg = (
+            f"Agent deploy blocked: incus maps container root to host UID "
+            f"{uid} (raw.idmap 'both {uid} 0') so the trace bind-mount is "
+            f"writable, but /etc/subuid and /etc/subgid do not grant root the "
+            f"range root:{uid}:1, so newuidmap refuses the mapping and the "
+            f"container never starts. Fix: add one line to each file -- "
+            f"root:{uid}:1 -- then 'sudo systemctl restart incus' and redeploy."
         )
         logger.error("deploy %s: %s", req.name, msg)
         return {"success": False, "error": msg, "steps": steps}
@@ -402,6 +451,17 @@ async def deploy_agent(req: DeployRequest) -> dict:
         env["OPENAI_API_KEY"] = ""
     if "LITELLM_API_KEY" not in env:
         env["LITELLM_API_KEY"] = ""
+
+    # Hermes pin passthrough: when the agent config carries a framework
+    # version (a Hermes profile import asking for the exact version the
+    # profile came from), install that exact Hermes instead of the default
+    # pin. install_hermes.sh reads HERMES_TAG / HERMES_COMMIT from the
+    # container env, falling back to its built-in default pin when unset.
+    if req.framework == "hermes":
+        if req.hermes_tag:
+            env["HERMES_TAG"] = req.hermes_tag
+        if req.hermes_commit:
+            env["HERMES_COMMIT"] = req.hermes_commit
 
     # Agent-granted secrets — injected as env vars so frameworks pick them up
     # at startup (e.g. OPENROUTER_API_KEY for Hermes). Each secret name is

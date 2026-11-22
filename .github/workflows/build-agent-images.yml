@@ -55,7 +55,7 @@ jobs:
           OPENCLAW=$(npm view openclaw version)
           # hermes: the commit pinned in tinyagentos/scripts/install_hermes.sh (HERMES_COMMIT) and the bake step's --commit;
           # keep all three in sync (tests/test_hermes_pin.py enforces it).
-          HERMES=29112bef099274229cadff79cdff7bf7b99c4b77
+          HERMES=ae2a81ccc00e9b7c06301523e5bb09608397149c
           echo "openclaw=$OPENCLAW" >> "$GITHUB_OUTPUT"
           echo "hermes=$HERMES" >> "$GITHUB_OUTPUT"
           echo "current openclaw=$OPENCLAW hermes=$HERMES"
@@ -291,8 +291,8 @@ jobs:
           echo 'export PATH="/root/.local/bin:$PATH"' >> /root/.bashrc
 
           # NousResearch hermes-agent prerequisites (no setup; config is per-agent).
-          curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/v2026.8.31/scripts/install.sh \
-            | bash -s -- --skip-setup --commit "29112bef099274229cadff79cdff7bf7b99c4b77"
+          curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/v0.23.2/scripts/install.sh \
+            | bash -s -- --skip-setup --commit "ae2a81ccc00e9b7c06301523e5bb09608397149c"
 
           # Deps the deploy-time config patch step relies on.
           pip3 install --break-system-packages --quiet pyyaml httpx
