@@ -164,6 +164,173 @@ def get_vram_usage(gpu_type: str) -> tuple[float | None, int | None, int | None]
     return None, None, None
 
 
+def read_all_nvidia_gpus() -> list[dict] | None:
+    """Return list of dicts with stats for all NVIDIA GPUs.
+
+    Each dict has: index, name, util_percent, freq_mhz, mem_used_mb, mem_total_mb, pci_bus_id.
+    Returns None if nvidia-smi is unavailable.
+    """
+    if not shutil.which("nvidia-smi"):
+        return None
+    try:
+        out = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,name,utilization.gpu,clocks.gr,memory.used,memory.total,pci.bus_id",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return None
+    if out.returncode != 0:
+        return None
+    gpus: list[dict] = []
+    for line in out.stdout.strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) != 7:
+            continue
+        try:
+            idx = int(parts[0])
+            name = parts[1]
+            util = float(parts[2]) if parts[2] else 0.0
+            freq = int(parts[3]) if parts[3] else 0
+            mem_used = int(parts[4]) if parts[4] else 0
+            mem_total = int(parts[5]) if parts[5] else 0
+            pci_bus_id = parts[6]
+        except ValueError:
+            continue
+        # Normalize PCI address to standard 4-digit domain format
+        # nvidia-smi returns 8-digit domain (00000000:01:00.0), convert to 4-digit (0000:01:00.0)
+        pci_parts = pci_bus_id.split(":")
+        if len(pci_parts) >= 3 and len(pci_parts[0]) == 8:
+            pci_bus_id = ":".join([pci_parts[0][-4:].lower()] + pci_parts[1:])
+        else:
+            pci_bus_id = pci_bus_id.lower()
+        gpus.append({
+            "index": idx,
+            "name": name,
+            "util_percent": util,
+            "freq_hz": freq * 1_000_000,
+            "mem_used_mb": mem_used,
+            "mem_total_mb": mem_total,
+            "pci_bus_id": pci_bus_id,
+        })
+    # Sort by PCI bus ID for stable cross-vendor ordering
+    gpus.sort(key=lambda g: g["pci_bus_id"])
+    return gpus if gpus else None
+
+
+def read_all_amd_gpus() -> list[dict] | None:
+    """Return list of dicts with stats for all AMD GPUs via rocm-smi.
+
+    Each dict has: index, name, util_percent, freq_hz, mem_used_mb, mem_total_mb.
+    Returns None if rocm-smi is unavailable.
+    """
+    if not shutil.which("rocm-smi"):
+        return None
+    try:
+        out = subprocess.run(
+            ["rocm-smi", "--showmeminfo", "vram", "--showuse", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return None
+    if out.returncode != 0:
+        return None
+    try:
+        import json
+
+        data = json.loads(out.stdout)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict) or not data:
+        return None
+    gpus: list[dict] = []
+    for idx, (card_key, card) in enumerate(sorted(data.items())):
+        if not isinstance(card, dict):
+            continue
+        try:
+            total_b = int(card.get("VRAM Total Memory (B)", 0))
+            used_b = int(card.get("VRAM Total Used Memory (B)", 0))
+            util = float(card.get("GPU use (%)", 0)) if card.get("GPU use (%)") else 0.0
+            # Frequency not easily available from rocm-smi JSON
+            freq_hz = 0
+        except (KeyError, ValueError):
+            continue
+        gpus.append({
+            "index": idx,
+            "name": card.get("Card series", f"AMD GPU {idx}"),
+            "util_percent": util,
+            "freq_hz": freq_hz,
+            "mem_used_mb": used_b // (1024 * 1024) if used_b else 0,
+            "mem_total_mb": total_b // (1024 * 1024) if total_b else 0,
+        })
+    return gpus if gpus else None
+
+
+def get_all_gpu_loads(gpu_types: list[str]) -> list[dict]:
+    """Return load and VRAM stats for all GPUs.
+
+    Args:
+        gpu_types: List of GPU type strings from hardware detection (e.g. ["nvidia", "nvidia", "intel"])
+
+    Returns:
+        List of dicts with keys: type, load_percent, freq_hz, vram_percent, vram_used_mb, vram_total_mb
+    """
+    result: list[dict] = []
+    nvidia_stats = read_all_nvidia_gpus() if "nvidia" in gpu_types else None
+    amd_stats = read_all_amd_gpus() if "amd" in gpu_types else None
+
+    nvidia_idx = 0
+    amd_idx = 0
+
+    for gtype in gpu_types:
+        entry = {"type": gtype}
+        if gtype == "nvidia" and nvidia_stats and nvidia_idx < len(nvidia_stats):
+            s = nvidia_stats[nvidia_idx]
+            nvidia_idx += 1
+            entry["load_percent"] = s.get("util_percent")
+            entry["freq_hz"] = s.get("freq_hz")
+            used = s.get("mem_used_mb")
+            total = s.get("mem_total_mb")
+            if total and total > 0:
+                entry["vram_percent"] = round(used / total * 100.0, 1)
+            else:
+                entry["vram_percent"] = None
+            entry["vram_used_mb"] = used
+            entry["vram_total_mb"] = total
+        elif gtype == "amd" and amd_stats and amd_idx < len(amd_stats):
+            s = amd_stats[amd_idx]
+            amd_idx += 1
+            entry["load_percent"] = s.get("util_percent")
+            entry["freq_hz"] = s.get("freq_hz")
+            used = s.get("mem_used_mb")
+            total = s.get("mem_total_mb")
+            if total and total > 0:
+                entry["vram_percent"] = round(used / total * 100.0, 1)
+            else:
+                entry["vram_percent"] = None
+            entry["vram_used_mb"] = used
+            entry["vram_total_mb"] = total
+        else:
+            # Intel, Mali, Apple, or unknown - no runtime stats available
+            entry["load_percent"] = None
+            entry["freq_hz"] = None
+            entry["vram_percent"] = None
+            entry["vram_used_mb"] = None
+            entry["vram_total_mb"] = None
+        result.append(entry)
+    return result
+
+
 # ─── NPU per-core (RK3588 specific) ────────────────────────────
 
 _NPU_CORE_RE = re.compile(r"Core(\d+):\s*(\d+)%")

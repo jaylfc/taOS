@@ -244,3 +244,90 @@ async def test_activity_process_entries_have_expected_keys(client):
     for proc in data["processes"]:
         for key in ("pid", "name", "user", "rss_mb", "cpu_percent"):
             assert key in proc, f"missing process key: {key}"
+
+
+@pytest.mark.asyncio
+async def test_activity_gpus_array_exists(client):
+    """The response should include a gpus array (multi-GPU support)."""
+    data = (await client.get("/api/activity")).json()
+    assert "gpus" in data
+    assert isinstance(data["gpus"], list)
+
+
+@pytest.mark.asyncio
+async def test_activity_gpus_entries_have_expected_keys(client):
+    """Each gpus array entry should have type, model, load, vram fields."""
+    data = (await client.get("/api/activity")).json()
+    for gpu in data["gpus"]:
+        for key in ("type", "model", "load", "vram_percent", "vram_used_mb", "vram_total_mb"):
+            assert key in gpu, f"missing gpu key: {key}"
+        # load should be null or an object with load_percent and freq_hz
+        if gpu["load"] is not None:
+            assert "load_percent" in gpu["load"]
+            assert "freq_hz" in gpu["load"]
+
+
+@pytest.mark.asyncio
+async def test_activity_gpus_load_null_for_intel(client, monkeypatch):
+    """Intel GPUs (no runtime stats) should report load: null, not an object with null fields."""
+    # Create a hardware profile with an Intel GPU
+    @dataclass
+    class _IntelGpuInfo:
+        type: str = "intel"
+        model: str = "Intel UHD Graphics 630"
+        vram_mb: int = 0
+        vulkan: bool = False
+        cuda: bool = False
+        rocm: bool = False
+
+    @dataclass
+    class _ProfileWithIntelGpu:
+        cpu: _CpuInfo = field(default_factory=_CpuInfo)
+        ram_mb: int = 8192
+        npu: _NpuInfo = field(default_factory=_NpuInfo)
+        gpu: _IntelGpuInfo = field(default_factory=_IntelGpuInfo)
+        gpus: list = field(default_factory=lambda: [_IntelGpuInfo()])
+        disk: _DiskInfo = field(default_factory=_DiskInfo)
+        os: _OsInfo = field(default_factory=_OsInfo)
+
+    profile = _ProfileWithIntelGpu()
+    monkeypatch.setattr(client._transport.app.state, "hardware_profile", profile, raising=False)
+    data = (await client.get("/api/activity")).json()
+    
+    # Find the Intel GPU in the gpus array
+    intel_gpus = [g for g in data["gpus"] if g["type"] == "intel"]
+    assert len(intel_gpus) >= 1
+    for gpu in intel_gpus:
+        assert gpu["load"] is None, f"Intel GPU should have load: null, got {gpu['load']}"
+
+
+@pytest.mark.asyncio
+async def test_activity_gpus_sorted_by_pci_bus_id(client, monkeypatch):
+    """GPUs in the gpus array should be sorted by PCI bus ID.
+    
+    This test uses a hardware profile with multiple GPUs to verify
+    the gpus array is populated and ordered correctly.
+    """
+    @dataclass
+    class _MultiGpuProfile:
+        cpu: _CpuInfo = field(default_factory=_CpuInfo)
+        ram_mb: int = 8192
+        npu: _NpuInfo = field(default_factory=_NpuInfo)
+        gpu: _GpuInfo = field(default_factory=_GpuInfo)
+        gpus: list = field(default_factory=lambda: [
+            # Profile order is PCI bus order: iGPU 00:02.0 before dGPU 01:00.0.
+            _GpuInfo(type="intel", model="Intel UHD Graphics 630", vram_mb=0),
+            _GpuInfo(type="nvidia", model="NVIDIA GeForce RTX 3090", vram_mb=24576),
+        ])
+        disk: _DiskInfo = field(default_factory=_DiskInfo)
+        os: _OsInfo = field(default_factory=_OsInfo)
+
+    profile = _MultiGpuProfile()
+    monkeypatch.setattr(client._transport.app.state, "hardware_profile", profile, raising=False)
+    data = (await client.get("/api/activity")).json()
+    assert isinstance(data["gpus"], list)
+    # The route must keep the profile's PCI order, not regroup by vendor.
+    assert [(g["type"], g["model"]) for g in data["gpus"]] == [
+        ("intel", "Intel UHD Graphics 630"),
+        ("nvidia", "NVIDIA GeForce RTX 3090"),
+    ]

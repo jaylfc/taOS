@@ -862,6 +862,8 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
   const [sortKey, setSortKey] = useState<SortKey>("name");
   const [loading, setLoading] = useState(true);
   const [devicesLoading, setDevicesLoading] = useState(false);
+  const [workersError, setWorkersError] = useState<string | null>(null);
+  const [devicesError, setDevicesError] = useState<string | null>(null);
   // #897: read-only capability map + live placement aggregate.
   const [clusterMap, setClusterMap] = useState<ClusterMap | null>(null);
   const [selectedCapability, setSelectedCapability] = useState<string | null>(null);
@@ -873,6 +875,15 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
   const [resourcesError, setResourcesError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [optimiseResult, setOptimiseResult] = useState<{
+    suggestions: Array<{
+      model_or_service: string;
+      suggested_worker: string;
+      reason: string;
+      improvement?: string;
+    }>;
+    summary: string;
+  } | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<{
     title: string;
     message: string;
@@ -899,15 +910,18 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
         const json = await res.json();
         if (Array.isArray(json)) {
           setWorkers(json as ClusterWorker[]);
+          setWorkersError(null);
           setSelected((cur) => {
             if (cur && json.some((w: ClusterWorker) => w.name === cur)) return cur;
             if (userNavigatedBack.current) return null;
             return json.length > 0 ? (json[0] as ClusterWorker).name : null;
           });
         }
+      } else {
+        setWorkersError(`Could not refresh nodes (${res.status})`);
       }
     } catch {
-      /* ignore */
+      setWorkersError("Controller unreachable. Showing the last known list.");
     }
     setLoading(false);
   }, []);
@@ -926,15 +940,18 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
         const json = await res.json();
         if (Array.isArray(json.items)) {
           setDevices(json.items as ClusterDevice[]);
+          setDevicesError(null);
           setSelectedDevice((cur) => {
             if (cur && json.items.some((d: ClusterDevice) => d.device_id === cur))
               return cur;
             return json.items.length > 0 ? json.items[0].device_id : null;
           });
         }
+      } else {
+        setDevicesError(`Could not refresh nodes (${res.status})`);
       }
     } catch {
-      /* ignore */
+      setDevicesError("Controller unreachable. Showing the last known list.");
     }
     setDevicesLoading(false);
   }, []);
@@ -1083,9 +1100,12 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
 
   const handleOptimise = useCallback(async () => {
     setBusy(true);
+    setOptimiseResult(null);
     try {
       const res = await fetch("/api/cluster/optimise", { headers: { Accept: "application/json" } });
       if (res.ok) {
+        const json = await res.json();
+        setOptimiseResult(json);
         showToast("Optimiser run complete");
       } else {
         showToast(`Optimiser failed (${res.status})`);
@@ -1642,6 +1662,50 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
         </div>
       </div>
 
+      {/* Optimiser suggestions panel */}
+      {optimiseResult && (
+        <div
+          role="region"
+          aria-label="Optimiser suggestions"
+          className="px-4 py-2 border-b border-white/5 bg-white/[0.02] shrink-0"
+        >
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-medium text-shell-text-tertiary mb-1">Summary</p>
+              <p className="text-xs text-shell-text">{optimiseResult.summary}</p>
+              {(optimiseResult.suggestions?.length ?? 0) > 0 && (
+                <div className="mt-2 space-y-1">
+                  <p className="text-xs font-medium text-shell-text-tertiary">Suggestions</p>
+                  <ul className="space-y-1" role="list">
+                    {(optimiseResult.suggestions ?? []).map((s, i) => (
+                      <li
+                        key={`suggestion-${i}`}
+                        className="text-xs text-shell-text bg-white/[0.03] rounded p-2 border border-white/5"
+                      >
+                        <div className="font-medium">{s.model_or_service}</div>
+                        <div className="text-shell-text-tertiary">
+                          → {s.suggested_worker}
+                        </div>
+                        <div className="text-shell-text-tertiary">{s.reason}</div>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setOptimiseResult(null)}
+              aria-label="Dismiss optimiser suggestions"
+              className="shrink-0 text-shell-text-tertiary hover:text-shell-text"
+            >
+              <X size={14} />
+            </Button>
+          </div>
+        </div>
+      )}
+
       {/* Master-detail */}
       <div className="flex-1 min-h-0 overflow-hidden">
         {activeTab === "resources" ? (
@@ -1690,6 +1754,11 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
           list={
             activeTab === "devices" ? (
               <div className="p-3 space-y-2" aria-label="Cluster device list">
+                {devicesError && (
+                  <p className="text-[11px] text-red-300 mb-2" role="alert">
+                    {devicesError}
+                  </p>
+                )}
                 {devicesLoading ? (
                   <div className="text-[11px] text-shell-text-tertiary px-2 py-6 text-center">
                     Loading devices...
@@ -1733,6 +1802,11 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
               </div>
             ) : (
               <div className="p-3 space-y-2" aria-label="Cluster worker list">
+                {workersError && (
+                  <p className="text-[11px] text-red-300 mb-2" role="alert">
+                    {workersError}
+                  </p>
+                )}
                 {loading ? (
                   <div className="text-[11px] text-shell-text-tertiary px-2 py-6 text-center">
                     Loading workers...
