@@ -634,18 +634,22 @@ export function keepTheme(themeId: string, cfg: ThemeConfig) {
   });
   applyThemeDefaultWallpaper(themeId, cfg);
   // persist active theme id
-  void fetch("/api/preferences/themes", {
+  fetch("/api/preferences/themes", {
     method: "PUT",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ active_theme_id: themeId }),
-  }).catch((err) => {
-    console.error("Failed to persist theme preference:", err);
-    useNotificationStore.getState().addNotification({
-      source: "system",
-      title: "Failed to save theme",
-      body: "Your theme selection could not be saved. Please try again.",
-      level: "error",
+  })
+    .then((r) => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    })
+    .catch((err) => {
+      console.error("Failed to persist theme preference:", err);
+      useNotificationStore.getState().addNotification({
+        source: "system",
+        title: "Failed to save theme",
+        body: "Your theme selection could not be saved. Please try again.",
+        level: "error",
+      });
     });
-  });
 }

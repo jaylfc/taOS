@@ -244,15 +244,19 @@ export function useSessionPersistence() {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ positions: state }),
-      }).catch((err) => {
-        console.error("Failed to save windows:", err);
-        addNotification({
-          source: "system",
-          title: "Failed to save windows",
-          body: "Your window layout could not be saved. Please try again.",
-          level: "error",
+      })
+        .then((r) => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        })
+        .catch((err) => {
+          console.error("Failed to save windows:", err);
+          addNotification({
+            source: "system",
+            title: "Failed to save windows",
+            body: "Your window layout could not be saved. Please try again.",
+            level: "error",
+          });
         });
-      });
     }, 2000);
 
     return () => {
@@ -274,15 +278,19 @@ export function useSessionPersistence() {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ pinned, iconSize: dockIconSize, position: dockPosition }),
-      }).catch((err) => {
-        console.error("Failed to save dock settings:", err);
-        addNotification({
-          source: "system",
-          title: "Failed to save dock",
-          body: "Your dock changes could not be saved. Please try again.",
-          level: "error",
+      })
+        .then((r) => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        })
+        .catch((err) => {
+          console.error("Failed to save dock settings:", err);
+          addNotification({
+            source: "system",
+            title: "Failed to save dock",
+            body: "Your dock changes could not be saved. Please try again.",
+            level: "error",
+          });
         });
-      });
     }, 1000);
 
     return () => {
@@ -301,15 +309,19 @@ export function useSessionPersistence() {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ wallpaper: wallpaperId }),
-      }).catch((err) => {
-        console.error("Failed to save wallpaper:", err);
-        addNotification({
-          source: "system",
-          title: "Failed to save wallpaper",
-          body: "Your wallpaper change could not be saved. Please try again.",
-          level: "error",
+      })
+        .then((r) => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        })
+        .catch((err) => {
+          console.error("Failed to save wallpaper:", err);
+          addNotification({
+            source: "system",
+            title: "Failed to save wallpaper",
+            body: "Your wallpaper change could not be saved. Please try again.",
+            level: "error",
+          });
         });
-      });
     }, 500);
 
     return () => {
@@ -327,15 +339,19 @@ export function useSessionPersistence() {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ widgets }),
-      }).catch((err) => {
-        console.error("Failed to save widgets:", err);
-        addNotification({
-          source: "system",
-          title: "Failed to save widgets",
-          body: "Your widget changes could not be saved. Please try again.",
-          level: "error",
+      })
+        .then((r) => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        })
+        .catch((err) => {
+          console.error("Failed to save widgets:", err);
+          addNotification({
+            source: "system",
+            title: "Failed to save widgets",
+            body: "Your widget changes could not be saved. Please try again.",
+            level: "error",
+          });
         });
-      });
     }, 1000);
 
     return () => {

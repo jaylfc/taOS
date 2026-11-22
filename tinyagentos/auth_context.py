@@ -76,6 +76,24 @@ def require_session_user(request: Request) -> CurrentUser:
     return user
 
 
+def require_session_or_local_token(request: Request) -> CurrentUser:
+    """FastAPI dependency: require a signed-in session OR the host local token.
+
+    Accepts `via == "session"` (any member) and `via == "local_token"` (the
+    host local token, which maps to the primary user / owner). Refuses agent
+    tokens (registry JWT), device tokens, and any non-session authentication.
+
+    Use for read-only per-user endpoints that native apps and the agent need to
+    read (the owner's own preferences). Writes stay session-only
+    (``require_session_user``).
+    """
+    user = current_user(request)  # 401 if no auth
+    via = getattr(request.state, "via", None)
+    if via not in ("session", "local_token"):
+        raise HTTPException(status_code=403, detail="forbidden: session or local token required")
+    return user
+
+
 async def resolve_agent_owner(request: Request, agent_id: str, *, exact: bool = False) -> str | None:
     """Return the ``user_id`` that owns *agent_id* per the agent registry, or ``None``.
 

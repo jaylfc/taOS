@@ -25,6 +25,15 @@ DEFAULT_DOCK = {
 # Real auth user ids are token_urlsafe values and never equal this string.
 _LEGACY_GLOBAL_SCOPE = "user"
 
+# Keys stored directly under a user scope (no "pref:" prefix) that are
+# per-person desktop preferences and must move to the owner at migration.
+_DESKTOP_KEYS = ("settings", "dock", "windows", "widgets")
+
+# Namespaced preferences (stored as "pref:<namespace>") that are SYSTEM-GLOBAL:
+# read/written by system routes (setup, auto-update, GPG, taOS agent) and must
+# stay under the legacy "user" scope; the migration must NOT move or delete them.
+_SYSTEM_NAMESPACES = ("setup", "auto-update", "gpg", "taos_agent")
+
 
 class DesktopSettingsStore(BaseStore):
     SCHEMA = """
@@ -124,44 +133,69 @@ class DesktopSettingsStore(BaseStore):
         await self._set(user_id, safe_key, value)
 
     async def migrate_legacy_global_to_owner(self, owner_user_id: str) -> bool:
-        """One-time idempotent migration: move legacy global "user" rows to owner's user_id.
+        """One-time idempotent migration: move legacy global "user" desktop
+        preferences to the owner's user_id.
 
-        Returns True if migration ran (rows were moved), False if already migrated
-        (no legacy global rows found or owner already has data).
+        System-global preferences (setup, auto-update, GPG, taOS agent) remain
+        under the legacy "user" scope -- they are read/written there by the
+        system routes and are NOT moved or deleted here.
 
-        After migration, the legacy global scope is no longer read for anyone.
+        Returns True if migration ran (desktop rows were moved), False if there
+        are no legacy global desktop-preference rows to move (already migrated
+        or a fresh install with no legacy data).
         """
         assert self._db is not None
 
-        # Check if migration already happened: owner has any data, or no legacy rows exist
-        cursor = await self._db.execute(
-            "SELECT 1 FROM desktop_settings WHERE user_id = ? LIMIT 1",
-            (owner_user_id,),
-        )
-        if await cursor.fetchone():
-            return False  # Owner already has data, migration not needed
+        desktop_placeholders = ",".join("?" for _ in _DESKTOP_KEYS)
+        system_placeholders = ",".join("?" for _ in _SYSTEM_NAMESPACES)
 
+        # Are there any legacy global desktop-preference rows to migrate?
         cursor = await self._db.execute(
-            "SELECT 1 FROM desktop_settings WHERE user_id = ? LIMIT 1",
-            (_LEGACY_GLOBAL_SCOPE,),
+            f"""
+            SELECT 1 FROM desktop_settings
+            WHERE user_id = ? AND (
+                key IN ({desktop_placeholders})
+                OR (key LIKE 'pref:%' AND substr(key, 6) NOT IN ({system_placeholders}))
+            )
+            LIMIT 1
+            """,
+            (_LEGACY_GLOBAL_SCOPE, *_DESKTOP_KEYS, *_SYSTEM_NAMESPACES),
         )
         if not await cursor.fetchone():
-            return False  # No legacy global rows, nothing to migrate
+            return False  # Nothing to migrate
 
-        # Move all legacy global rows to owner's user_id
-        # Use INSERT OR REPLACE to handle any conflicts (owner might have some keys)
+        # Move desktop key rows (settings, dock, windows, widgets) to owner.
         await self._db.execute(
-            """
+            f"""
             INSERT INTO desktop_settings (user_id, key, value)
-            SELECT ?, key, value FROM desktop_settings WHERE user_id = ?
+            SELECT ?, key, value FROM desktop_settings
+            WHERE user_id = ? AND key IN ({desktop_placeholders})
             ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value
             """,
-            (owner_user_id, _LEGACY_GLOBAL_SCOPE),
+            (owner_user_id, _LEGACY_GLOBAL_SCOPE, *_DESKTOP_KEYS),
         )
-        # Delete the legacy global rows
+        # Move non-system namespaced preferences to owner.
         await self._db.execute(
-            "DELETE FROM desktop_settings WHERE user_id = ?",
-            (_LEGACY_GLOBAL_SCOPE,),
+            f"""
+            INSERT INTO desktop_settings (user_id, key, value)
+            SELECT ?, key, value FROM desktop_settings
+            WHERE user_id = ? AND key LIKE 'pref:%'
+              AND substr(key, 6) NOT IN ({system_placeholders})
+            ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value
+            """,
+            (owner_user_id, _LEGACY_GLOBAL_SCOPE, *_SYSTEM_NAMESPACES),
+        )
+        # Delete the migrated desktop rows from the legacy global scope.
+        # System-global pref:* rows stay at the "user" scope, untouched.
+        await self._db.execute(
+            f"""
+            DELETE FROM desktop_settings
+            WHERE user_id = ? AND (
+                key IN ({desktop_placeholders})
+                OR (key LIKE 'pref:%' AND substr(key, 6) NOT IN ({system_placeholders}))
+            )
+            """,
+            (_LEGACY_GLOBAL_SCOPE, *_DESKTOP_KEYS, *_SYSTEM_NAMESPACES),
         )
         await self._db.commit()
         return True

@@ -219,6 +219,27 @@ class TestPerPersonPreferences:
             assert resp.status_code == 403
 
     @pytest.mark.asyncio
+    async def test_agent_token_refused_on_put(self, app):
+        """An agent (local) token may read but must be refused (403) on PUT endpoints.
+
+        Writes to per-user desktop preferences stay session-only: an agent token
+        authenticates as ``via == "local_token"``, which is not a session.
+        """
+        _init_stores_and_admin(app)
+        agent_token = app.state.auth.mint_agent_local_token("test-agent")
+        
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers={"Authorization": f"Bearer {agent_token}"},
+        ) as client:
+            resp = await client.put("/api/desktop/settings", json={"wallpaper": "hacked"})
+            assert resp.status_code == 403, (
+                f"Agent token should be refused (403) on PUT, got {resp.status_code}"
+            )
+
+    @pytest.mark.asyncio
     async def test_get_returns_callers_merged_view(self, app, member_client):
         """GET endpoints should return the caller's merged view (code defaults < user row)."""
         # Member has no saved settings yet

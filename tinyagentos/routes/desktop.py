@@ -5,7 +5,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 
-from tinyagentos.auth_context import CurrentUser, require_admin, require_session_user
+from tinyagentos.auth_context import CurrentUser, require_admin, require_session_or_local_token, require_session_user
 
 router = APIRouter()
 
@@ -20,7 +20,7 @@ def _get_store(request: Request):
 
 
 @router.get("/api/desktop/settings")
-async def get_settings(request: Request, user: CurrentUser = Depends(require_session_user)):
+async def get_settings(request: Request, user: CurrentUser = Depends(require_session_or_local_token)):
     store = _get_store(request)
     settings = await store.get_settings(user.user_id)
     return JSONResponse(settings)
@@ -35,7 +35,7 @@ async def update_settings(request: Request, user: CurrentUser = Depends(require_
 
 
 @router.get("/api/desktop/dock")
-async def get_dock(request: Request, user: CurrentUser = Depends(require_session_user)):
+async def get_dock(request: Request, user: CurrentUser = Depends(require_session_or_local_token)):
     store = _get_store(request)
     dock = await store.get_dock(user.user_id)
     return JSONResponse(dock)
@@ -50,7 +50,7 @@ async def update_dock(request: Request, user: CurrentUser = Depends(require_sess
 
 
 @router.get("/api/desktop/windows")
-async def get_windows(request: Request, user: CurrentUser = Depends(require_session_user)):
+async def get_windows(request: Request, user: CurrentUser = Depends(require_session_or_local_token)):
     store = _get_store(request)
     windows = await store.get_windows(user.user_id)
     return JSONResponse(windows)
@@ -65,7 +65,7 @@ async def save_windows(request: Request, user: CurrentUser = Depends(require_ses
 
 
 @router.get("/api/desktop/widgets")
-async def get_widgets(request: Request, user: CurrentUser = Depends(require_session_user)):
+async def get_widgets(request: Request, user: CurrentUser = Depends(require_session_or_local_token)):
     store = _get_store(request)
     widgets = await store.get_widgets(user.user_id)
     return JSONResponse(widgets)
@@ -80,16 +80,8 @@ async def save_widgets(request: Request, user: CurrentUser = Depends(require_ses
     return JSONResponse({"ok": True})
 
 
-# ---------------------------------------------------------------------------
-# Generic preferences — namespaced JSON blobs that follow the user across
-# devices. Use this for any cross-session setting (weather home location,
-# temperature units, quick notes content, etc.) so the experience resumes
-# on any device the user signs into.
-# ---------------------------------------------------------------------------
-
-
 @router.get("/api/preferences/{namespace}")
-async def get_preference(request: Request, namespace: str, user: CurrentUser = Depends(require_session_user)):
+async def get_preference(request: Request, namespace: str, user: CurrentUser = Depends(require_session_or_local_token)):
     store = _get_store(request)
     data = await store.get_preference(user.user_id, namespace)
     return JSONResponse(data)

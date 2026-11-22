@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it } from "vitest";
-import { useThemeStore, loadAppTypeIndicator } from "./theme-store";
+import { beforeEach, describe, expect, it, vi, afterEach } from "vitest";
+import { useThemeStore, keepTheme, loadAppTypeIndicator, type ThemeConfig } from "./theme-store";
+import { useNotificationStore } from "./notification-store";
 
 const reset = () => {
   useThemeStore.setState({
@@ -175,5 +176,28 @@ describe("theme-store", () => {
   it("loadAppTypeIndicator falls back to badge for an unknown stored value", () => {
     localStorage.setItem("taos-app-type-indicator", "bogus");
     expect(loadAppTypeIndicator()).toBe("badge");
+  });
+
+  it("keepTheme surfaces a plain error when the persist PUT is rejected (non-ok / 403)", async () => {
+    // fetch does not reject on 403, so keepTheme must treat non-ok as a failure
+    // and surface a plain error notification instead of silently succeeding.
+    vi.spyOn(globalThis, "fetch").mockImplementation(() =>
+      Promise.resolve(new Response(JSON.stringify({}), { status: 403 })),
+    );
+    useThemeStore.setState({ activeThemeId: "default" });
+    keepTheme("custom-a", {
+      tokens: {},
+      structure: {},
+      effects: [],
+      requires: [],
+    } as ThemeConfig);
+    // Flush the fetch promise chain (non-async function).
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    const notifs = useNotificationStore.getState().notifications;
+    expect(
+      notifs.some((n) => n.title === "Failed to save theme" && n.level === "error"),
+    ).toBe(true);
+    vi.restoreAllMocks();
   });
 });
