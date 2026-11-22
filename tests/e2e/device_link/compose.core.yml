@@ -1,0 +1,82 @@
+# Control plane of the device-link test bed: the taOS Headscale (pinned 0.29.1,
+# the version taos.my deploys), a second Headscale standing in for a personal
+# tailnet, and a local taos.my built from a checkout of the taos.my repo.
+#
+# Do not run this file by hand; `bed.sh up` exports the variables below, mints
+# the keys, and starts compose.nodes.yml on top. Nothing here needs a secret:
+# the Headscale API key and every node key are minted at run time.
+#
+#   BED_DIR        this directory (bed.sh sets it)
+#   TAOS_MY_DIR    a checkout (or git archive) of the taos.my repo at the commit
+#                  under test: it is the build context and supplies policy.hujson
+#                  (copied to .state/ at run time)
+#   HEADSCALE_API_KEY  minted by bed.sh after Headscale is up
+name: device-link-bed
+
+services:
+  headscale:
+    image: headscale/headscale:0.29.1
+    command: ["serve"]
+    volumes:
+      - ./.state/headscale-config.yaml:/etc/headscale/config.yaml:ro
+      # The repo's own isolation policy. bed.sh up writes it here at run time from the
+      # taos.my checkout (nothing is committed); `bed.sh policy allow-all|repo`
+      # rewrites it for MT5 and signals Headscale to reload.
+      - ./.state/policy.hujson:/etc/headscale/policy.hujson:ro
+      - headscale-data:/var/lib/headscale
+    tmpfs:
+      - /var/run/headscale
+    healthcheck:
+      test: ["CMD", "headscale", "health"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  headscale-personal:
+    image: headscale/headscale:0.29.1
+    command: ["serve"]
+    volumes:
+      - ./.state/headscale-personal.yaml:/etc/headscale/config.yaml:ro
+      - headscale-personal-data:/var/lib/headscale
+    tmpfs:
+      - /var/run/headscale
+    healthcheck:
+      test: ["CMD", "headscale", "health"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  taosmy:
+    build:
+      context: ${TAOS_MY_DIR:?bed.sh sets this}
+    volumes:
+      - taosmy-data:/data
+    environment:
+      DATA_DIR: /data
+      # A value for the local bed only; taos.my needs one at import time.
+      SESSION_SECRET: bed-local-session-secret
+      SITE_BASE_URL: http://taosmy:8080
+      SITE_HOST: taosmy
+      SIGNUPS_OPEN: "0"
+      OPERATOR_EMAILS: operator@bed.test
+      HEADSCALE_API_URL: http://headscale:8080
+      HEADSCALE_LOGIN_URL: http://headscale:8080
+      HEADSCALE_API_KEY: ${HEADSCALE_API_KEY:-}
+    depends_on:
+      headscale:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request;urllib.request.urlopen('http://localhost:8080/healthz', timeout=3)\""]
+      interval: 3s
+      timeout: 4s
+      retries: 40
+
+# No route out of the host: nothing in the bed may connect to anything outside it.
+networks:
+  default:
+    internal: true
+
+volumes:
+  headscale-data:
+  headscale-personal-data:
+  taosmy-data:
