@@ -45,7 +45,7 @@ def _strip_purpose_comment(text: str) -> str:
 
 
 def build(output_path: pathlib.Path = DEFAULT_OUTPUT) -> str:
-    source_files = sorted(SOURCE_DIR.glob("**/[0-9]*.md"))
+    source_files = sorted(SOURCE_DIR.glob("[0-9]*.md"))
     if not source_files:
         print(f"ERROR: no numbered source files found in {SOURCE_DIR}", file=sys.stderr)
         sys.exit(1)
