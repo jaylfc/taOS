@@ -152,7 +152,7 @@ async def test_routes_work_on_new_qmd(old_qmd_world):
 @pytest.mark.asyncio
 async def test_legacy_session_is_the_install_owner(app):
     """No user records: the session has an empty user_id; it must keep using the existing index."""
-    assert app.state.auth.get_primary_user() is None
+    app.state.auth.set_password("legacy-password-1")  # the legacy single-password file
     tok = app.state.auth.create_session(user_id="", long_lived=True)
     app.state._startup_complete = True
     app.state.qmd_client.base_url = "http://qmd.test"
@@ -210,3 +210,149 @@ def test_bind_exposure_detection(tmp_path):
     defaults.write_text("QMD_BIND=0.0.0.0\n")
     assert qmd_service.qmd_bind_exposed(unit, defaults) is True
     assert qmd_service.qmd_bind_exposed(tmp_path / "missing", defaults) is False
+
+
+# ------------------------------------------- probe fails closed on anything unexpected
+
+def _answer(status=200, body=b"{}", headers=None):
+    def handler(request):
+        return httpx.Response(status, content=body, headers=headers or {})
+    return handler
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("label,handler", [
+    ("200 ok", _answer(200, b'{"status":"ok"}')),
+    ("404 old qmd", _answer(404, b'{"error":"Not found"}')),
+    ("html proxy page", _answer(400, b"<html><body>Bad request</body></html>", {"content-type": "text/html"})),
+    ("html 200", _answer(200, b"<html>login</html>", {"content-type": "text/html"})),
+    ("truncated json", _answer(400, b'{"error": "hash must')),
+    ("json list", _answer(400, b'["x"]')),
+    ("json without error", _answer(400, b'{"detail": "x"}')),
+    ("empty error", _answer(400, b'{"error": ""}')),
+    ("non-string error", _answer(400, b'{"error": 5}')),
+    ("redirect", _answer(302, b"", {"location": "http://elsewhere/"})),
+    ("500", _answer(500, b'{"error":"boom"}')),
+    ("empty 400", _answer(400, b"")),
+])
+async def test_probe_refuses_anything_unrecognised(label, handler):
+    assert await qmd_service.qmd_honours_dbpath(_state(handler)) is False, label
+
+
+@pytest.mark.asyncio
+async def test_probe_accepts_only_the_measured_new_answer():
+    ok = _answer(400, b'{"error":"hash must be a hex content hash"}', {"content-type": "application/json"})
+    assert await qmd_service.qmd_honours_dbpath(_state(ok)) is True
+    older_multitenant = _answer(400, b'{"error":"hash is required"}')  # 2.1.1 wording
+    assert await qmd_service.qmd_honours_dbpath(_state(older_multitenant)) is True
+
+
+@pytest.mark.asyncio
+async def test_probe_non_transport_exception_is_a_refusal_not_unknown():
+    def boom(request):
+        raise RuntimeError("unexpected")
+    assert await qmd_service.qmd_honours_dbpath(_state(boom)) is False
+
+    def timeout(request):
+        raise httpx.ConnectTimeout("slow")
+    assert await qmd_service.qmd_honours_dbpath(_state(timeout)) is None
+
+
+@pytest.mark.asyncio
+async def test_routes_503_on_unrecognised_answer_but_502_when_unreachable(old_qmd_world):
+    app = old_qmd_world["app"]
+    for handler, expected in ((_answer(200, b"<html>proxy</html>"), 503),
+                              (_answer(400, b"{trunc"), 503),
+                              (lambda r: (_ for _ in ()).throw(httpx.ConnectError("refused")), 502)):
+        app.state.http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        app.state._qmd_dbpath_probe = (0.0, None)
+        async with _session(app, old_qmd_world["bob"]) as c:
+            r = await c.get("/api/memory/browse", params={"agent": "bob-agent"})
+        assert r.status_code == expected, (r.status_code, r.text)
+
+
+# --------------------------------------------- legacy owner: the refusing direction
+
+def _legacy_app(app, *, password=True, users_file=None):
+    if password:
+        app.state.auth.set_password("legacy-password-1")
+    if users_file is not None:
+        app.state.auth._user_file.write_text(users_file)
+    return app
+
+
+def _legacy_request(app, via="session", user_id=""):
+    return SimpleNamespace(state=SimpleNamespace(via=via, user_id=user_id), app=SimpleNamespace(state=app.state))
+
+
+def test_legacy_owner_positive_only_for_empty_store_plus_password(app):
+    from tinyagentos.auth_context import is_legacy_owner
+    assert is_legacy_owner(_legacy_request(app)) is False  # no password file, nothing configured
+    _legacy_app(app)
+    assert is_legacy_owner(_legacy_request(app)) is True
+    assert is_legacy_owner(_legacy_request(app, user_id="someone")) is False  # a real account id
+    assert is_legacy_owner(_legacy_request(app, via="local_token")) is False
+
+
+@pytest.mark.parametrize("store", [
+    "{not json", "[]", "{}", '{"users": null}', '{"users": "x"}', "",
+])
+def test_legacy_owner_refused_when_account_store_is_unreadable_or_partial(app, store):
+    from tinyagentos.auth_context import is_legacy_owner
+    _legacy_app(app, users_file=store)
+    assert is_legacy_owner(_legacy_request(app)) is False
+
+
+def test_legacy_owner_refused_when_read_raises(app, monkeypatch):
+    from tinyagentos.auth_context import is_legacy_owner
+    _legacy_app(app)
+    monkeypatch.setattr(app.state.auth, "_read_users", lambda: (_ for _ in ()).throw(OSError("disk")))
+    assert is_legacy_owner(_legacy_request(app)) is False
+
+
+@pytest.mark.asyncio
+async def test_empty_user_id_session_is_refused_once_accounts_exist(client):
+    """Through the real middleware: a stale empty-id session on an install with accounts is nobody."""
+    app = client._transport.app
+    app.state.auth.set_password("legacy-password-1")  # leftover legacy password file
+    tok = app.state.auth.create_session(user_id="", long_lived=True)
+    app.state._startup_complete = True
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
+                           cookies={"taos_session": tok}, event_hooks=csrf_event_hooks()) as c:
+        assert (await c.get("/api/channels/agent/test-agent")).status_code in (401, 403)
+        assert (await c.get("/api/memory/browse")).status_code in (401, 403)
+        assert (await c.get("/api/memory/browse", params={"agent": "test-agent"})).status_code in (401, 403)
+        assert (await c.post("/api/agents/test-agent/framework/update", json={})).status_code in (401, 403)
+
+
+# ------------------------------- knowledge search must not expose agent memory to members
+
+@pytest.mark.asyncio
+async def test_knowledge_semantic_search_never_returns_default_index_memory_to_a_member(old_qmd_world):
+    """Knowledge search queries qmd's DEFAULT index, where an old qmd put every agent's memory."""
+    app = old_qmd_world["app"]
+    ks = app.state.knowledge_store
+    if ks._db is None:
+        await ks.init()
+
+    async def add(title, uid):
+        return await ks.add_item(source_type="article", source_url=f"https://x/{title}", title=title,
+                                 author="a", content=f"c {title}", summary="", categories=[], tags=[],
+                                 metadata={}, user_id=uid)
+    mine = await add("mine", old_qmd_world["bob"])
+    admins = await add("admins", old_qmd_world["admin"])
+
+    def qmd(request):
+        if urlparse(str(request.url)).path == "/vsearch":
+            return httpx.Response(200, json={"results": [
+                {"body": "AGENT-MEMORY-SECRET", "hash": "h1"},      # agent memory: no knowledge id
+                {"id": admins, "body": "ADMIN-ITEM"},               # somebody else's knowledge item
+                {"id": mine, "body": "MY-ITEM"},
+            ]})
+        return httpx.Response(404)
+    app.state.http_client = httpx.AsyncClient(transport=httpx.MockTransport(qmd))
+    async with _session(app, old_qmd_world["bob"]) as c:
+        r = await c.get("/api/knowledge/search", params={"q": "x", "mode": "semantic"})
+    assert r.status_code == 200
+    assert "AGENT-MEMORY-SECRET" not in r.text and "ADMIN-ITEM" not in r.text
+    assert "MY-ITEM" in r.text

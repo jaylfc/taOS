@@ -50,6 +50,12 @@ def _stub_http(app, responses: dict[str, dict]):
         raise AssertionError(f"unexpected GET {url}")
 
     async def _post(url: str, *, json=None, timeout=None, **kw):
+        if url.endswith("/delete-chunk") and json == {}:
+            # the memory routes' qmd capability probe: a qmd that honours dbPath rejects it
+            probe = MagicMock()
+            probe.status_code = 400
+            probe.json = MagicMock(return_value={"error": "hash is required"})
+            return probe
         for suffix, body in responses.items():
             if url.endswith(suffix):
                 return _response_for(suffix)
