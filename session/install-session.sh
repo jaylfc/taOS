@@ -138,6 +138,27 @@ echo "installed $DESTDIR/etc/systemd/system/taos-kiosk.service"
 if [ -z "$DESTDIR" ] && command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload
 fi
+
+# Display timeout config (the phone layer shares this setting). Only install if
+# missing so a chosen value survives an update.
+install_display_conf() {
+    [ -z "$DESTDIR" ] || install -d -m 755 "$DESTDIR/etc/taos"
+    if [ ! -f "$DESTDIR/etc/taos/display.conf" ]; then
+        install -m 644 "$HERE/etc/display.conf" "$DESTDIR/etc/taos/display.conf"
+        echo "installed $DESTDIR/etc/taos/display.conf"
+    else
+        echo "$DESTDIR/etc/taos/display.conf already exists, keeping current value"
+    fi
+}
+
+# Staging hook: with DESTDIR set, lay down only the files this script owns under
+# that root and stop. No packages, user, audio group, services or on-device
+# verification run -- those mutate the live system and have no place in a staging
+# root. Used by tests/session to exercise the real installer in a temp tree.
+if [ -n "$DESTDIR" ]; then
+    install_display_conf
+    exit 0
+fi
 # 3b-end.
 
 # 3b2. Session settings: the theme/keyboard command, theme packages and the
@@ -227,6 +248,10 @@ echo "installed chromium policy /etc/chromium/policies/managed/taos-kiosk.json"
 install -d -m 755 /etc/taos
 install -m 644 "$CONF_SRC" /etc/taos/sway-kiosk.conf
 echo "installed /etc/taos/sway-kiosk.conf"
+
+# 5. Display timeout config (phone layer shares this setting). Only installed if
+#    missing so a chosen value survives an update; body is install_display_conf.
+install_display_conf
 
 # --- verification -----------------------------------------------------------
 # Each check needs a control, or "absent" and "never looked" read the same.
