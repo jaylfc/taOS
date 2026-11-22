@@ -1,6 +1,5 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { OtherSystemsWidget } from "@/components/mobile/OtherSystemsWidget";
-import userEvent from "@testing-library/user-event";
 
 const mockFetch = vi.fn();
 global.fetch = mockFetch;
@@ -99,7 +98,7 @@ describe("OtherSystemsWidget", () => {
     expect(switchCall[1]).toEqual(
       expect.objectContaining({
         method: "POST",
-        body: JSON.stringify({ confirm: true }),
+        body: JSON.stringify({ confirm: true, force: false }),
       })
     );
   });
@@ -119,5 +118,136 @@ describe("OtherSystemsWidget", () => {
     await waitFor(() => {
       expect(screen.queryByRole("heading", { name: /other systems/i })).not.toBeInTheDocument();
     });
+  });
+
+  test("success text appears after switch", async () => {
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          available: true,
+          systems: defaultSystems,
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ ok: true, id: "omarchy", in_seconds: 2 }),
+      });
+
+    renderWidget();
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /other systems/i })).toBeInTheDocument();
+    });
+
+    // Open list sheet
+    fireEvent.click(screen.getByRole("button", { name: /other systems/i }));
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: /other systems/i })).toBeInTheDocument();
+      expect(screen.getByText("Omarchy")).toBeInTheDocument();
+    });
+
+    // Click Omarchy to open confirm sheet
+    fireEvent.click(screen.getByText("Omarchy"));
+    await waitFor(() => {
+      expect(screen.getByText("Switch to Omarchy?")).toBeInTheDocument();
+    });
+
+    // Click Switch
+    fireEvent.click(screen.getByText("Switch"));
+
+    await waitFor(() => {
+      expect(screen.getByText("Switching to Omarchy...")).toBeInTheDocument();
+    });
+  });
+
+  test("Tab and Shift+Tab focusable buttons exist in confirm sheet", async () => {
+    renderWidget();
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /other systems/i })).toBeInTheDocument();
+    });
+
+    // Open list sheet
+    fireEvent.click(screen.getByRole("button", { name: /other systems/i }));
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: /other systems/i })).toBeInTheDocument();
+      expect(screen.getByText("Omarchy")).toBeInTheDocument();
+    });
+
+    // Click Omarchy to open confirm sheet (but don't click Switch)
+    fireEvent.click(screen.getByText("Omarchy"));
+    await waitFor(() => {
+      expect(screen.getByText("Switch to Omarchy?")).toBeInTheDocument();
+    });
+
+    // In the confirm sheet, verify focusable buttons exist
+    expect(screen.getByRole("button", { name: "Switch" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
+  });
+
+  test("Switch anyway resends with force true when drain fails", async () => {
+    // Mock list return
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          available: true,
+          systems: defaultSystems,
+        }),
+      })
+      // Mock switch returning 409 with agents not ready
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        json: async () => ({
+          detail: "agents not ready; use force to override",
+        }),
+      });
+
+    renderWidget();
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /other systems/i })).toBeInTheDocument();
+    });
+
+    // Open list sheet
+    fireEvent.click(screen.getByRole("button", { name: /other systems/i }));
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: /other systems/i })).toBeInTheDocument();
+      expect(screen.getByText("Omarchy")).toBeInTheDocument();
+    });
+
+    // Click Omarchy to open confirm sheet
+    fireEvent.click(screen.getByText("Omarchy"));
+    await waitFor(() => {
+      expect(screen.getByText("Switch to Omarchy?")).toBeInTheDocument();
+    });
+
+    // Click Switch - this time the helper returns exit code 3 (agents not ready)
+    fireEvent.click(screen.getByText("Switch"));
+
+    // Wait for the 409 error state to appear with drainFailed and "Switch anyway" button
+    await waitFor(() => {
+      // The switchError and drainFailed should now be set
+      const errorDiv = screen.getByText("agents not ready; use force to override");
+      expect(errorDiv).toBeInTheDocument();
+    });
+
+    // The "Switch anyway" button should be visible when drainFailed is true
+    const switchAnywayBtn = screen.getByRole("button", { name: "Switch anyway" });
+    expect(switchAnywayBtn).toBeInTheDocument();
+    expect(switchAnywayBtn).toBeEnabled();
+
+    // Click Switch anyway - this should resend with force=true
+    fireEvent.click(switchAnywayBtn);
+
+    // Verify the API was called with force: true on the second attempt
+    expect(mockFetch).toHaveBeenCalledTimes(3); // list + first switch + second switch with force
+    const secondSwitchCall = mockFetch.mock.calls[2];
+    expect(secondSwitchCall[0]).toBe("/api/system/other-systems/omarchy/switch");
+    expect(secondSwitchCall[1]).toEqual(
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ confirm: true, force: true }),
+      })
+    );
   });
 });

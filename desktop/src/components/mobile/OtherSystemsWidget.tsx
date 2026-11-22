@@ -183,7 +183,7 @@ export function OtherSystemsWidget() {
         body: JSON.stringify({ confirm: true, force }),
       });
       if (res.ok) {
-        setSwitching(false);
+        setSwitching(true);
       } else if (res.status === 409) {
         const err = await res.json().catch(() => ({ detail: "Switch failed" }));
         if (err.detail && err.detail.includes("agents not ready")) {
