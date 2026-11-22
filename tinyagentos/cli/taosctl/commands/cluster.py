@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
+from tinyagentos.cli.taosctl.client import ApiError
+
 # Note: options named like the global --url/--token flags use a distinct dest so
 # they do not overwrite the server URL / API token the client is built from.
 
@@ -201,7 +203,13 @@ def _workers(args, client):
 
 
 def _remove(args, client):
-    return client.delete(f"/api/cluster/workers/{_q(args.name)}")
+    try:
+        return client.delete(f"/api/cluster/workers/{_q(args.name)}")
+    except ApiError as exc:
+        if exc.status == 403:
+            print("Removing a worker needs a signed-in admin: use the Cluster app, or sign in with taosctl login")
+            raise SystemExit(1)
+        raise
 
 
 def _revoke(args, client):
