@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import pytest
+import threading
 from pathlib import Path
 
 import httpx
@@ -471,6 +472,14 @@ async def test_download_file_entry_with_size_app_max_bytes_plus1_raises_app_down
 
 @pytest.mark.asyncio
 async def test_fetch_manifest_concurrent_high_water_cache_matches_serial(tmp_path, test_key, keys_dict):
+    """Concurrent fetches serialize verify+accept+cache under _fetch_manifest_lock.
+
+    Serial 5 answers instantly and accepts first (state 5); serial 6 answers after
+    a short delay and accepts second (state 6).  Without the lock, serial 5's
+    cache write is held until serial 6's completes, so serial 5 writes last and
+    leaves an older manifest (serial 5) cached behind serial 6 state.  With the
+    lock the sequence is serialized so the cache ends at serial 6.
+    """
     private_key, _, key_id = test_key
 
     def signed(serial: int) -> tuple[bytes, bytes]:
@@ -485,27 +494,43 @@ async def test_fetch_manifest_concurrent_high_water_cache_matches_serial(tmp_pat
     cache_dir = tmp_path / "cache"
     state_path = tmp_path / "state.json"
 
-    def handler(serial_bytes: bytes, serial_sig: bytes):
-        def handle(request: httpx.Request):
+    six_done = threading.Event()
+    original_awb = apps_store.atomic_io.atomic_write_bytes
+
+    def awb(path, data, *a, **kwargs):
+        path = Path(path)
+        if path.name == "desktop.json" and b'"serial": 6' in data:
+            result = original_awb(path, data, *a, **kwargs)
+            six_done.set()
+            return result
+        if path.name == "desktop.json":
+            six_done.wait(timeout=0.5)
+        return original_awb(path, data, *a, **kwargs)
+
+    apps_store.atomic_io.atomic_write_bytes = awb
+    try:
+        async def handler(request, serial_bytes, serial_sig, delay_s: float):
+            if delay_s:
+                await asyncio.sleep(delay_s)
             if request.url.path.endswith("/desktop.json.sig"):
                 return httpx.Response(200, content=serial_sig)
             if request.url.path.endswith("/desktop.json"):
                 return httpx.Response(200, content=serial_bytes)
             return httpx.Response(404)
 
-        return handle
-
-    results = await asyncio.gather(
-        apps_store.fetch_manifest(
-            "https://example.com/", cache_dir, state_path, keys=keys_dict,
-            transport=httpx.MockTransport(handler(m5_bytes, m5_sig)),
-        ),
-        apps_store.fetch_manifest(
-            "https://example.com/", cache_dir, state_path, keys=keys_dict,
-            transport=httpx.MockTransport(handler(m6_bytes, m6_sig)),
-        ),
-        return_exceptions=True,
-    )
+        results = await asyncio.gather(
+            apps_store.fetch_manifest(
+                "https://example.com/", cache_dir, state_path, keys=keys_dict,
+                transport=httpx.MockTransport(lambda req, sb=m5_bytes, ss=m5_sig: handler(req, sb, ss, 0.0)),
+            ),
+            apps_store.fetch_manifest(
+                "https://example.com/", cache_dir, state_path, keys=keys_dict,
+                transport=httpx.MockTransport(lambda req, sb=m6_bytes, ss=m6_sig: handler(req, sb, ss, 0.15)),
+            ),
+            return_exceptions=True,
+        )
+    finally:
+        apps_store.atomic_io.atomic_write_bytes = original_awb
 
     for result in results:
         assert not isinstance(result, Exception) or isinstance(result, catalog_sig.CatalogSerialRegression)
