@@ -555,6 +555,21 @@ def _parse_nvidia_smi_gpus(output: str) -> list[tuple[GpuInfo, str]]:
 
     Also handles legacy 6-field format (without pci.bus_id) for compatibility.
     """
+    def _normalize_pci_addr(addr: str) -> str:
+        """Normalize PCI address to standard 4-digit domain format.
+
+        nvidia-smi returns 8-digit domain (00000000:01:00.0), sysfs returns 4-digit (0000:00:02.0).
+        Convert 8-digit to 4-digit by taking the lower 16 bits.
+        """
+        if addr.startswith("nvidia-index-"):
+            return addr
+        parts = addr.split(":")
+        if len(parts) >= 3 and len(parts[0]) == 8:
+            # 00000000:01:00.0 -> 0000:01:00.0
+            domain = parts[0][-4:].lower()
+            return ":".join([domain] + parts[1:])
+        return addr.lower()
+
     gpus: list[tuple[GpuInfo, str]] = []
     for line in output.strip().splitlines():
         line = line.strip()
@@ -570,7 +585,7 @@ def _parse_nvidia_smi_gpus(output: str) -> list[tuple[GpuInfo, str]]:
             freq_mhz = int(parts[3]) if parts[3] else 0
             mem_used = int(parts[4]) if parts[4] else 0
             mem_total = int(parts[5]) if parts[5] else 0
-            pci_addr = parts[6] if len(parts) == 7 else f"nvidia-index-{idx:02d}"
+            pci_addr = _normalize_pci_addr(parts[6]) if len(parts) == 7 else f"nvidia-index-{idx:02d}"
         except ValueError:
             continue
         gpu = GpuInfo()

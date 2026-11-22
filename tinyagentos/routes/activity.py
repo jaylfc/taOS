@@ -135,13 +135,19 @@ async def activity(request: Request):
             if not isinstance(g, dict):
                 continue
             load_info = gpu_loads[i] if i < len(gpu_loads) else {}
+            load_percent = load_info.get("load_percent")
+            freq_hz = load_info.get("freq_hz")
+            # GPUs without stats (Intel, Mali, Apple) should report load: null
+            load_obj = None
+            if load_percent is not None or freq_hz is not None:
+                load_obj = {
+                    "load_percent": load_percent,
+                    "freq_hz": freq_hz,
+                }
             gpus_response.append({
                 "type": g.get("type"),
                 "model": g.get("model"),
-                "load": {
-                    "load_percent": load_info.get("load_percent"),
-                    "freq_hz": load_info.get("freq_hz"),
-                },
+                "load": load_obj,
                 "vram_percent": load_info.get("vram_percent"),
                 "vram_used_mb": load_info.get("vram_used_mb"),
                 "vram_total_mb": load_info.get("vram_total_mb"),

@@ -463,7 +463,7 @@ const { hardware, cpu, memory, npu, gpu, gpus, thermal, zram, disk, network, pro
                   <div key={z.device} className="flex items-center justify-between text-[10px]">
                     <span className="text-shell-text-secondary">{z.device}</span>
                     <span className="text-shell-text-tertiary">
-                      {formatMb(z.compr_mb)} ← {formatMb(z.orig_mb)} ({z.ratio.toFixed(1)}\u00d7)
+                      {formatMb(z.compr_mb)} ← {formatMb(z.orig_mb)} ({z.ratio.toFixed(1)}×)
                     </span>
                   </div>
                 ))}

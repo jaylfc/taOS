@@ -167,7 +167,7 @@ def get_vram_usage(gpu_type: str) -> tuple[float | None, int | None, int | None]
 def read_all_nvidia_gpus() -> list[dict] | None:
     """Return list of dicts with stats for all NVIDIA GPUs.
 
-    Each dict has: index, name, util_percent, freq_mhz, mem_used_mb, mem_total_mb.
+    Each dict has: index, name, util_percent, freq_mhz, mem_used_mb, mem_total_mb, pci_bus_id.
     Returns None if nvidia-smi is unavailable.
     """
     if not shutil.which("nvidia-smi"):
@@ -176,7 +176,7 @@ def read_all_nvidia_gpus() -> list[dict] | None:
         out = subprocess.run(
             [
                 "nvidia-smi",
-                "--query-gpu=index,name,utilization.gpu,clocks.gr,memory.used,memory.total",
+                "--query-gpu=index,name,utilization.gpu,clocks.gr,memory.used,memory.total,pci.bus_id",
                 "--format=csv,noheader,nounits",
             ],
             capture_output=True,
@@ -193,7 +193,7 @@ def read_all_nvidia_gpus() -> list[dict] | None:
         if not line:
             continue
         parts = [p.strip() for p in line.split(",")]
-        if len(parts) != 6:
+        if len(parts) != 7:
             continue
         try:
             idx = int(parts[0])
@@ -202,8 +202,16 @@ def read_all_nvidia_gpus() -> list[dict] | None:
             freq = int(parts[3]) if parts[3] else 0
             mem_used = int(parts[4]) if parts[4] else 0
             mem_total = int(parts[5]) if parts[5] else 0
+            pci_bus_id = parts[6]
         except ValueError:
             continue
+        # Normalize PCI address to standard 4-digit domain format
+        # nvidia-smi returns 8-digit domain (00000000:01:00.0), convert to 4-digit (0000:01:00.0)
+        pci_parts = pci_bus_id.split(":")
+        if len(pci_parts) >= 3 and len(pci_parts[0]) == 8:
+            pci_bus_id = ":".join([pci_parts[0][-4:].lower()] + pci_parts[1:])
+        else:
+            pci_bus_id = pci_bus_id.lower()
         gpus.append({
             "index": idx,
             "name": name,
@@ -211,9 +219,10 @@ def read_all_nvidia_gpus() -> list[dict] | None:
             "freq_hz": freq * 1_000_000,
             "mem_used_mb": mem_used,
             "mem_total_mb": mem_total,
+            "pci_bus_id": pci_bus_id,
         })
-    # Sort by index (PCI order)
-    gpus.sort(key=lambda g: g["index"])
+    # Sort by PCI bus ID for stable cross-vendor ordering
+    gpus.sort(key=lambda g: g["pci_bus_id"])
     return gpus if gpus else None
 
 
