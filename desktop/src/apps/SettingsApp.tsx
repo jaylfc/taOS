@@ -111,7 +111,7 @@ const SECTIONS: SectionDef[] = [
 
 // Sections that require admin privileges to view (GHSA-47g9: backend already
 // 403s these for non-admins, this hides them from the sidebar/content too).
-const ADMIN_ONLY = new Set(["system", "storage", "memory", "backup", "updates", "advanced", "users", "logs", "demo", "wifi", "bluetooth"]);
+const ADMIN_ONLY = new Set(["system", "storage", "memory", "backup", "updates", "advanced", "logs", "demo", "wifi", "bluetooth"]);
 
 const PLACEHOLDER_SYSTEM: SystemInfo = {
   cpu: "Detecting...",
@@ -567,6 +567,7 @@ function MemorySection() {
 function BackupSection() {
   const [backupStatus, setBackupStatus] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [restoreStatus, setRestoreStatus] = useState<string | null>(null);
 
   const createBackup = async () => {
     setCreating(true);
@@ -582,6 +583,29 @@ function BackupSection() {
       setBackupStatus("Could not reach backup endpoint. API not available yet.");
     }
     setCreating(false);
+  };
+
+  const handleRestore = async (file: File) => {
+    const confirmed = window.confirm(
+      "Restore will overwrite config.yaml and installed data. Continue?",
+    );
+    if (!confirmed) {
+      return;
+    }
+    setRestoreStatus(null);
+    const formData = new FormData();
+    formData.append("file", file);
+    try {
+      const res = await fetch("/api/restore", { method: "POST", body: formData });
+      const data = await res.json();
+      if (res.ok) {
+        setRestoreStatus(data.status ?? "Restore completed.");
+      } else {
+        setRestoreStatus(data.error ?? `Restore failed (${res.status}).`);
+      }
+    } catch {
+      setRestoreStatus("Could not reach restore endpoint.");
+    }
   };
 
   return (
@@ -615,8 +639,25 @@ function BackupSection() {
           <label className="flex flex-col items-center gap-2 p-6 rounded-lg border-2 border-dashed border-white/10 hover:border-white/20 transition-colors cursor-pointer">
             <Upload size={24} className="text-shell-text-tertiary" />
             <span className="text-xs text-shell-text-tertiary">Click to select a backup file</span>
-            <input type="file" accept=".tar.gz,.zip,.bak" className="hidden" aria-label="Upload backup file" />
+            <input
+              type="file"
+              accept=".tar.gz,.tgz"
+              className="hidden"
+              aria-label="Upload backup file"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) {
+                  handleRestore(file);
+                  e.target.value = "";
+                }
+              }}
+            />
           </label>
+          {restoreStatus && (
+            <p className={`mt-2 text-xs ${restoreStatus.toLowerCase().includes("error") || restoreStatus.toLowerCase().includes("failed") ? "text-amber-400" : "text-emerald-400"}`}>
+              {restoreStatus}
+            </p>
+          )}
         </div>
       </Card>
     </section>

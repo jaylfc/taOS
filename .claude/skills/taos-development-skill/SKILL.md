@@ -24,13 +24,14 @@ Procedures and architecture for contributing to
     channel_hub/               ← framework-agnostic messaging: connectors + MessageRouter
     adapters/                  ← per-framework agent adapters (generic ~20 lines, acp ~500); each declares verification_status
     cluster/                   ← distributed compute: worker registry, task routing, GPU lease
-    worker/                    ← cross-platform worker apps (system tray, Android, iOS)
+    worker/                    ← cross-platform worker apps (system tray, Android, iOS); self-update: tinyagentos/worker/self_update.py, POST /api/cluster/workers/{name}/update-outcome, scripts/taos-deploy-helper.sh trigger-update (README section "Self-update")
     *_store.py, base_store.py  ← data layer: top-level BaseStore subclasses (aiosqlite); one SQLite file per store; no stores/ dir
     chat/ projects/ mcp/       ← chat, project board/canvas/A2A, MCP proxy+permissions
     installers/ containers/    ← model/app installers; Docker + LXC backends
     migrations/                ← DB migrations
   desktop/                     ← React + TypeScript SPA (Vite)
   app-catalog/                 ← YAML app manifests + catalog.yaml
+  session/                     ← phone kiosk: taos-session, taos-kiosk-*, themes, install-session.sh
   tests/                       ← pytest suite (large; counts rot - trust the tree)
   docs/                        ← documentation; agent manual compiled from docs/agent-manual/
 ```

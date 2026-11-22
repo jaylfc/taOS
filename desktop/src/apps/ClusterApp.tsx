@@ -307,6 +307,7 @@ function WorkerDetail({
   onNodeRevoke,
   onNodeBlock,
   onNodeUnblock,
+  onDrain,
   busy,
 }: {
   worker: ClusterWorker;
@@ -316,6 +317,7 @@ function WorkerDetail({
   onNodeRevoke: (name: string) => Promise<void>;
   onNodeBlock: (name: string) => Promise<void>;
   onNodeUnblock: (name: string) => Promise<void>;
+  onDrain: (name: string, draining: boolean) => void;
   busy: boolean;
 }) {
   const [copied, setCopied] = useState<"name" | "url" | null>(null);
@@ -646,12 +648,21 @@ function WorkerDetail({
             <Button
               size="sm"
               variant="outline"
-              disabled
-              aria-label="Drain worker (coming soon)"
-              title="Coming soon \u2014 no backend endpoint yet"
+              onClick={() => onDrain(worker.name, worker.status === "draining")}
+              disabled={busy}
+              aria-label={
+                worker.status === "draining"
+                  ? `Cancel drain ${worker.name}`
+                  : `Drain worker ${worker.name}`
+              }
+              title={
+                worker.status === "draining"
+                  ? "Cancel the drain and return the worker to online status"
+                  : "Drain the worker: no new tasks are routed; running tasks finish."
+              }
             >
               <X size={13} />
-              Drain
+              {worker.status === "draining" ? "Cancel drain" : "Drain"}
             </Button>
             <Button
               size="sm"
@@ -851,6 +862,8 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
   const [sortKey, setSortKey] = useState<SortKey>("name");
   const [loading, setLoading] = useState(true);
   const [devicesLoading, setDevicesLoading] = useState(false);
+  const [workersError, setWorkersError] = useState<string | null>(null);
+  const [devicesError, setDevicesError] = useState<string | null>(null);
   // #897: read-only capability map + live placement aggregate.
   const [clusterMap, setClusterMap] = useState<ClusterMap | null>(null);
   const [selectedCapability, setSelectedCapability] = useState<string | null>(null);
@@ -897,15 +910,18 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
         const json = await res.json();
         if (Array.isArray(json)) {
           setWorkers(json as ClusterWorker[]);
+          setWorkersError(null);
           setSelected((cur) => {
             if (cur && json.some((w: ClusterWorker) => w.name === cur)) return cur;
             if (userNavigatedBack.current) return null;
             return json.length > 0 ? (json[0] as ClusterWorker).name : null;
           });
         }
+      } else {
+        setWorkersError(`Could not refresh nodes (${res.status})`);
       }
     } catch {
-      /* ignore */
+      setWorkersError("Controller unreachable. Showing the last known list.");
     }
     setLoading(false);
   }, []);
@@ -924,15 +940,18 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
         const json = await res.json();
         if (Array.isArray(json.items)) {
           setDevices(json.items as ClusterDevice[]);
+          setDevicesError(null);
           setSelectedDevice((cur) => {
             if (cur && json.items.some((d: ClusterDevice) => d.device_id === cur))
               return cur;
             return json.items.length > 0 ? json.items[0].device_id : null;
           });
         }
+      } else {
+        setDevicesError(`Could not refresh nodes (${res.status})`);
       }
     } catch {
-      /* ignore */
+      setDevicesError("Controller unreachable. Showing the last known list.");
     }
     setDevicesLoading(false);
   }, []);
@@ -1440,6 +1459,50 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
     [fetchDevices, showToast],
   );
 
+  const handleDrain = useCallback(
+    async (name: string, draining: boolean) => {
+      const verb = draining ? "Cancel drain" : "Drain";
+      if (
+        !window.confirm(
+          draining
+            ? `Cancel drain ${name}? New tasks will be routed to the worker again.`
+            : `Drain ${name}? No new tasks will be routed; running tasks finish.`,
+        )
+      ) {
+        return;
+      }
+      setBusy(true);
+      try {
+        const res = await fetch(
+          `/api/cluster/workers/${encodeURIComponent(name)}/${draining ? "cancel-drain" : "drain"}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            ...(draining ? {} : { body: JSON.stringify({ graceful: true }) }),
+          },
+        );
+        if (res.ok) {
+          showToast(draining ? `Drain cancelled for "${name}"` : `Worker "${name}" is draining`);
+          await fetchWorkers();
+        } else {
+          let msg = `${verb} failed (${res.status})`;
+          try {
+            const err = await res.json();
+            if (err?.error) msg = String(err.error);
+            else if (err?.status) msg = String(err.status);
+          } catch {
+            /* ignore */
+          }
+          showToast(msg);
+        }
+      } catch (e) {
+        showToast(e instanceof Error ? e.message : "Network error");
+      }
+      setBusy(false);
+    },
+    [fetchWorkers, showToast],
+  );
+
   return (
     <div className="flex flex-col h-full min-h-0 overflow-hidden bg-shell-bg text-shell-text select-none">
        {/* Toolbar */}
@@ -1610,11 +1673,11 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
             <div className="flex-1 min-w-0">
               <p className="text-xs font-medium text-shell-text-tertiary mb-1">Summary</p>
               <p className="text-xs text-shell-text">{optimiseResult.summary}</p>
-              {optimiseResult.suggestions.length > 0 && (
+              {(optimiseResult.suggestions?.length ?? 0) > 0 && (
                 <div className="mt-2 space-y-1">
                   <p className="text-xs font-medium text-shell-text-tertiary">Suggestions</p>
                   <ul className="space-y-1" role="list">
-                    {optimiseResult.suggestions.map((s, i) => (
+                    {(optimiseResult.suggestions ?? []).map((s, i) => (
                       <li
                         key={`suggestion-${i}`}
                         className="text-xs text-shell-text bg-white/[0.03] rounded p-2 border border-white/5"
@@ -1691,6 +1754,11 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
           list={
             activeTab === "devices" ? (
               <div className="p-3 space-y-2" aria-label="Cluster device list">
+                {devicesError && (
+                  <p className="text-[11px] text-red-300 mb-2" role="alert">
+                    {devicesError}
+                  </p>
+                )}
                 {devicesLoading ? (
                   <div className="text-[11px] text-shell-text-tertiary px-2 py-6 text-center">
                     Loading devices...
@@ -1734,6 +1802,11 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
               </div>
             ) : (
               <div className="p-3 space-y-2" aria-label="Cluster worker list">
+                {workersError && (
+                  <p className="text-[11px] text-red-300 mb-2" role="alert">
+                    {workersError}
+                  </p>
+                )}
                 {loading ? (
                   <div className="text-[11px] text-shell-text-tertiary px-2 py-6 text-center">
                     Loading workers...
@@ -1804,6 +1877,7 @@ export function ClusterApp({ windowId: _windowId }: { windowId: string }) {
                 onNodeRevoke={handleNodeRevoke}
                 onNodeBlock={handleNodeBlock}
                 onNodeUnblock={handleNodeUnblock}
+                onDrain={handleDrain}
                 busy={busy}
               />
             ) : (

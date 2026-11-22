@@ -229,6 +229,20 @@ router-wide, and a per-agent local token may only reach its own agent's
 workspace. Before this any signed-in member could list, read, upload into or
 delete from any agent's workspace.
 
+**The built-in Photos location is the machine owner's, and read-only for agents.**
+`/api/photos/*` and its entry in `GET /api/files/locations`
+(`tinyagentos/routes/photos_location.py`) run the same owner-or-admin check the
+agent workspace routes run, with the resource owner taken to be the primary user
+while photo folders are still per-machine rather than per-user: a member session
+that is neither the owner nor an admin gets no Photos entry from
+`GET /api/files/locations` and `403` on every `/api/photos/*` route, trash
+included. A local token is mapped to the primary user and marked admin by the
+middleware, so a deployed agent clears that check; the routes then mirror
+`_local_token_caller` (`tinyagentos/routes/memory.py`) on `via == "local_token"`
+to keep it read-only: listing, download and `GET /api/photos/trash` work, while
+`DELETE /api/photos/files/{path}` and `POST /api/photos/trash/{id}/restore`
+answer `403`.
+
 **Agent reads are owner-only and never carry `llm_key`.** `GET /api/agents/{name}`,
 `/export`, `/logs`, `/budget` and `/deploy-status` (`tinyagentos/routes/agents.py`)
 require the agent's owner or an admin, with a per-agent local token fenced to its
@@ -1533,6 +1547,10 @@ each other's work.
 
 Every project gets a matching A2A channel at creation time, on all three creation paths: `POST /api/projects`, the agent `create_project` skill, and `project_create` decision approval. The channel lets project members coordinate on the bus. Channel creation is idempotent (`ensure_a2a_channel`), so later membership syncs are safe.
 
+Membership sync: every path that writes a project member also syncs the channel — approving an auth request and assigning an agent (any granted scope shape, including canvas-only grants), accepting a cross-instance collab invite via the peer inbox, adding or removing a member, changing the lead, and reconciling or revoking scopes. The sync is best-effort and never blocks the membership write itself. `ensure_a2a_channel` is the single source of truth: it creates the channel when missing, archives duplicate channels, and reconciles the member list to the project's current members.
+
+Member resolution: channel members are routing names, the form the @mention parser and router expect — not the ids stored in `project_members`. A member resolves through `config.agents` first (by id, then by name). A native member absent from `config.agents` resolves through the agent registry to its handle. An accepted human collaborator stays in the channel under their contact id. A member matching none of these (e.g. a deleted agent) is dropped from the channel, and a member removed from the project is removed from the channel on the next sync.
+
 ## Agent project-creation requests (auth-request kind=project_create)
 
 An external agent that is already registered in the agent registry can request to
@@ -2566,6 +2584,31 @@ to receive it, create is `409`. In addition, an agent may hold at most 3 pending
 A request expires 10 minutes after it was created; once the agent has read the
 code it has another 10 minutes to post the token.
 
+## Secrets broker (`/api/broker/keenable/*`)
+
+The Secrets broker exposes Keenable (web search + page fetch) to agents that
+hold an active Keenable grant. Routes: `tinyagentos/routes/broker.py`.
+
+- `POST /api/broker/keenable/search` (agent only: a bound per-agent local token)
+  with `{"query": "...", "num_results": 5}`. The `query` is required, 1 to 500
+  characters after stripping; `num_results` is optional, 1 to 10 (default 5).
+  Returns `{"results": [...]}`. The caller must have an ACTIVE Keenable grant
+  whose scopes include `search`. The Keenable API key is injected server-side
+  from the `KEENABLE_API_KEY` secret. Returns 403 without a bound token, grant,
+  or scope; 409 when Keenable is not configured (no key and public fallback off);
+  502 on upstream error with no upstream text echoed. Invalid request bodies
+  return 400 with `{"error": "<reason>"}`.
+
+- `POST /api/broker/keenable/fetch` (agent only: a bound per-agent local token)
+  with `{"url": "https://...", "max_chars": 50000}`. The `url` is required and
+  must start with `http://` or `https://`; `max_chars` is optional, 1 to 100000.
+  Returns the fetched page content. The caller must have an ACTIVE Keenable grant
+  whose scopes include `fetch`. The Keenable API key is injected server-side from
+  the `KEENABLE_API_KEY` secret. Returns 403 without a bound token, grant, or
+  scope; 409 when Keenable is not configured (no key and public fallback off);
+  502 on upstream error with no upstream text echoed. Invalid request bodies
+  return 400 with `{"error": "<reason>"}`.
+
 ## Skill-exec agent identity (credential-bound, not body-supplied)
 
 `POST /api/skill-exec/{skill_id}/call` and `GET /api/skill-exec/tools` now
@@ -2997,3 +3040,16 @@ Two exceptions mint a fresh `external-selfjoin` identity instead:
 - a suspended or revoked holder. Reversing a deliberate owner suspension
   through the consent flow is an open maintainer decision, so approval keeps
   the old mint-a-new-identity behaviour rather than silently reactivating it.
+## Worker self-update API (taOS #890 C3)
+
+The worker self-update flow adds one controller route and one auth exemption;
+both are worker-to-controller (HMAC), not agent-facing:
+
+- `POST /api/cluster/workers/{name}/update-outcome` — the worker reports its
+  post-restart outcome (`success`/`rollback`, with `from_version`/`to_version`).
+  Session-exempt in `AuthMiddleware`; the route verifies the worker's HMAC
+  signature itself (same pattern as `/api/cluster/heartbeat`). The agent-token
+  allowlist is unchanged.
+- `POST /api/cluster/workers/{name}/deploy` — documented inline: operator
+  session required (not session-exempt); per-worker deploy locks prevent
+  concurrent install/restart double-installs.
