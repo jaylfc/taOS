@@ -11,6 +11,7 @@ import { AgentStatusWidget } from "@/components/widgets/AgentStatusWidget";
 import { SystemStatsWidget } from "@/components/widgets/SystemStatsWidget";
 import { WeatherWidget } from "@/components/widgets/WeatherWidget";
 import { QuickNotesWidget } from "@/components/widgets/QuickNotesWidget";
+import { OtherSystemsWidget } from "@/components/mobile/OtherSystemsWidget";
 import { SIDE_WIDGETS, getWidgetSize, isSideWidget, setWidgetSize, type WidgetSize } from "@/stores/mobile-widget-size";
 
 interface Props {
@@ -189,6 +190,8 @@ function renderWidgetContent(widgetType: string): React.ReactNode {
       return <WeatherWidget />;
     case "quick-notes":
       return <QuickNotesWidget />;
+    case "other-systems":
+      return <OtherSystemsWidget />;
     default:
       return null;
   }

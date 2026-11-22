@@ -1898,6 +1898,76 @@ class TestAuthRequestRoutes:
         # the loser's undo leaves the membership row in place.
         assert await pstore.get_member(project_id, cid) is not None
 
+    async def test_a_lost_race_undo_keeps_registry_bystander_in_a2a_channel(
+        self, consent_client, monkeypatch
+    ):
+        """PR #4373 (jaylfc): the lost-race undo removes the loser's member
+        row and re-syncs the project channel. The sync must resolve through
+        the agent registry, or a registry-backed bystander member — absent
+        from config.agents — is dropped from the channel by the undo."""
+        from tinyagentos.projects.a2a import ensure_a2a_channel
+
+        app = consent_client._transport.app
+        pstore = app.state.project_store
+        if pstore._db is None:
+            await pstore.init()
+        if app.state.chat_channels._db is None:
+            await app.state.chat_channels.init()
+        project = await pstore.create_project(
+            name="Undo A2A", slug="undo-a2a", created_by="admin"
+        )
+        project_id = project["id"]
+
+        registry = app.state.agent_registry
+        bystander = await registry.register(
+            framework="hermes",
+            display_name="Bystander",
+            handle="undo-bystander",
+            origin="external-selfjoin",
+        )
+        await registry.set_status(bystander["canonical_id"], "active")
+        await pstore.add_member(
+            project_id, bystander["canonical_id"], "native"
+        )
+        channel = await ensure_a2a_channel(
+            app.state.chat_channels,
+            pstore,
+            project_id,
+            config=getattr(app.state, "config", None),
+            agent_registry=registry,
+        )
+        assert "undo-bystander" in (channel.get("members") or [])
+
+        cid, request_id = await self._pending_proof_request(
+            consent_client,
+            "undo-loser",
+            requested_scopes=["a2a_send", "project_tasks"],
+            project_id=project_id,
+        )
+        self._deny_wins_the_race(app, monkeypatch)
+
+        resp = await consent_client.post(
+            f"/api/agents/auth-requests/{request_id}/approve",
+            json={
+                "granted_scopes": ["project_tasks"],
+                "project_id": project_id,
+            },
+        )
+        assert resp.status_code == 409, resp.text
+
+        # The undo removed the loser's membership...
+        assert await pstore.get_member(project_id, cid) is None
+        # ...and its channel sync left the registry bystander in place.
+        channels = await app.state.chat_channels.list_channels(
+            project_id=project_id, archived=False
+        )
+        a2a = [
+            c for c in channels
+            if (c.get("settings") or {}).get("kind") == "a2a"
+        ]
+        assert len(a2a) == 1
+        assert (a2a[0].get("members") or []) == ["undo-bystander"]
+
     async def test_a_lost_race_to_a_same_project_winner_keeps_the_lead(
         self, consent_client, monkeypatch
     ):

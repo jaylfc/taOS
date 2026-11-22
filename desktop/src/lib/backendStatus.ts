@@ -18,12 +18,13 @@ const IS_VALID_VERSION = (v: string) => VERSION_PATTERN.test(v) && /^[0-9]/.test
 // Predicate used by both the health poll (:85) and reportVersion (:119) to reject
 // the coarsened sentinel and leave currentVersion unchanged.
 export const isValidVersion = (v: string): boolean => IS_VALID_VERSION(v);
-const POLL_DELAYS_MS = [2_000, 4_000, 8_000, 16_000, 30_000];
+const POLL_DELAYS_MS = [2_000, 4_000, 5_000, 5_000, 5_000];
 const LONG_RECONNECTING_MS = 60_000;
 
 interface Options {
   healthUrl: string;
   fetchImpl?: typeof fetch;
+  onUp?: () => void;
 }
 
 export interface BackendStatusController {
@@ -38,6 +39,7 @@ export interface BackendStatusController {
 
 export function createBackendStatus(opts: Options): BackendStatusController {
   const fetchImpl = opts.fetchImpl ?? fetch;
+  const onUp = opts.onUp;
   let status: BackendStatus = "up";
   let currentVersion: string | null = null;
   let reconnectingSince: number | null = null;
@@ -55,6 +57,7 @@ export function createBackendStatus(opts: Options): BackendStatusController {
 
   const setStatus = (s: BackendStatus) => {
     if (status === s) return;
+    const wasReconnecting = status === "reconnecting";
     status = s;
     if (s === "reconnecting" && reconnectingSince === null) {
       reconnectingSince = Date.now();
@@ -63,6 +66,10 @@ export function createBackendStatus(opts: Options): BackendStatusController {
       attemptIndex = 0;
       // Bug 3 fix: reset the latch when we leave reconnecting.
       longReconnectingNotified = false;
+      // Call onUp callback when transitioning from reconnecting to up
+      if (wasReconnecting && onUp) {
+        try { onUp(); } catch (err) { console.warn("[backendStatus] onUp callback threw:", err); }
+      }
     }
     notify();
   };
@@ -81,6 +88,7 @@ export function createBackendStatus(opts: Options): BackendStatusController {
   };
 
   const poll = async () => {
+    inFlight = true;
     try {
       // Bug 4 fix: 5-second fetch timeout so a hung backend doesn't wedge.
       const r = await fetchImpl(opts.healthUrl, {
@@ -105,6 +113,7 @@ export function createBackendStatus(opts: Options): BackendStatusController {
       setStatus("reconnecting");
       attemptIndex += 1;
     } finally {
+      inFlight = false;
       // Bug 3 fix: notify exactly once when crossing the 60s threshold.
       if (status === "reconnecting" && reconnectingSince !== null && !longReconnectingNotified) {
         const elapsed = Date.now() - reconnectingSince;
@@ -115,6 +124,43 @@ export function createBackendStatus(opts: Options): BackendStatusController {
       }
       schedule();
     }
+  };
+
+  // Trigger an immediate poll (used by visibilitychange/online handlers)
+  const probeNow = () => {
+    if (stopped) return;
+    if (inFlight) return; // skip if a probe is already in-flight
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(poll, 0);
+  };
+
+  // Visibility/online handlers for immediate re-probe when tab becomes visible or network returns
+  let visibilityHandler: (() => void) | null = null;
+  let onlineHandler: (() => void) | null = null;
+  let inFlight = false; // track one in-flight probe at a time
+
+  const attachLifecycleHandlers = () => {
+    if (typeof window === "undefined") return;
+    visibilityHandler = () => {
+      if (document.visibilityState === "visible" && status === "reconnecting") {
+        probeNow();
+      }
+    };
+    onlineHandler = () => {
+      if (status === "reconnecting") {
+        probeNow();
+      }
+    };
+    document.addEventListener("visibilitychange", visibilityHandler);
+    window.addEventListener("online", onlineHandler);
+  };
+
+  const detachLifecycleHandlers = () => {
+    if (typeof window === "undefined") return;
+    if (visibilityHandler) document.removeEventListener("visibilitychange", visibilityHandler);
+    if (onlineHandler) window.removeEventListener("online", onlineHandler);
+    visibilityHandler = null;
+    onlineHandler = null;
   };
 
   return {
@@ -138,6 +184,7 @@ export function createBackendStatus(opts: Options): BackendStatusController {
       // Bug 1 fix: reset stopped so schedule() is allowed to arm the timer.
       stopped = false;
       if (timer) return;
+      attachLifecycleHandlers();
       schedule();
     },
     stop() {
@@ -148,6 +195,7 @@ export function createBackendStatus(opts: Options): BackendStatusController {
         clearTimeout(timer);
         timer = null;
       }
+      detachLifecycleHandlers();
     },
   };
 }

@@ -61,6 +61,30 @@ async def _ensure_cluster_pairing_store(client, tmp_path_factory):
     if store is not None and store._db is not None:
         await store.close()
 
+
+@pytest_asyncio.fixture(autouse=True)
+async def _ensure_notifications_store(client, tmp_path_factory):
+    """Init app.state.notifications on a fresh DB; the test client does not run the lifespan."""
+    store = client._transport.app.state.notifications
+    if store._db is not None:
+        await store.close()
+    store.db_path = tmp_path_factory.mktemp("notifications_authz") / "notifications.db"
+    await store.init()
+    yield
+    await store.close()
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _ensure_user_memory_store(client, tmp_path_factory):
+    """Init app.state.user_memory on a fresh DB; the test client does not run the lifespan."""
+    store = client._transport.app.state.user_memory
+    if store._db is not None:
+        await store.close()
+    store.db_path = tmp_path_factory.mktemp("user_memory_authz") / "user_memory.db"
+    await store.init()
+    yield
+    await store.close()
+
 # A non-loopback peer address so the loopback-only prepare-shutdown carve-out
 # in AuthMiddleware does not apply (the default ASGITransport peer is loopback).
 _LAN_PEER = ("192.168.1.10", 51234)
@@ -445,6 +469,119 @@ class TestMcpMemberRejected:
             assert await app.state.secrets.get("mcp:mcp-fetch:TOKEN") is None
         finally:
             await _close_mcp(app)
+
+
+@pytest.mark.asyncio
+class TestNotificationsPrefsMemberRejected:
+    async def test_put_pref_rejected_and_not_applied(self, client, app):
+        """Member cannot mute/unmute global notification event types."""
+        # First, verify the default state (unmuted)
+        event_type = "app.failed"
+        resp = await client.get("/api/notifications/prefs")
+        assert resp.status_code == 200
+        prefs = resp.json()
+        pref = next(p for p in prefs if p["event_type"] == event_type)
+        assert pref["muted"] is False
+
+        # Member tries to mute it
+        member = await _member_client(app)
+        try:
+            resp = await member.put(
+                f"/api/notifications/prefs/{event_type}", json={"muted": True}
+            )
+        finally:
+            await member.aclose()
+        assert resp.status_code == 403, resp.text
+        assert resp.json() == FORBIDDEN
+
+        # Verify the value is unchanged
+        resp = await client.get("/api/notifications/prefs")
+        assert resp.status_code == 200
+        prefs = resp.json()
+        pref = next(p for p in prefs if p["event_type"] == event_type)
+        assert pref["muted"] is False
+
+    async def test_admin_put_pref_allowed(self, client, app):
+        """Admin can mute/unmute global notification event types."""
+        event_type = "app.failed"
+        resp = await client.put(f"/api/notifications/prefs/{event_type}", json={"muted": True})
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"event_type": event_type, "muted": True}
+
+        # Verify it's changed
+        resp = await client.get("/api/notifications/prefs")
+        assert resp.status_code == 200
+        prefs = resp.json()
+        pref = next(p for p in prefs if p["event_type"] == event_type)
+        assert pref["muted"] is True
+
+    async def test_local_token_put_pref_allowed(self, client, app):
+        """Local token can mute/unmute global notification event types."""
+        bare = _local_token_client(app)
+        try:
+            event_type = "app.failed"
+            resp = await bare.put(f"/api/notifications/prefs/{event_type}", json={"muted": True})
+            assert resp.status_code == 200, resp.text
+            assert resp.json() == {"event_type": event_type, "muted": True}
+        finally:
+            await bare.aclose()
+
+
+@pytest.mark.asyncio
+class TestUserMemorySettingsMemberRejected:
+    async def test_put_settings_rejected_and_not_applied(self, client, app):
+        """Member cannot change global user-memory settings."""
+        # First, verify the default state
+        resp = await client.get("/api/user-memory/settings")
+        assert resp.status_code == 200
+        original_capture = resp.json().get("capture_notes", True)
+
+        # Member tries to change it
+        member = await _member_client(app)
+        try:
+            resp = await member.put("/api/user-memory/settings", json={"capture_notes": not original_capture})
+        finally:
+            await member.aclose()
+        assert resp.status_code == 403, resp.text
+        assert resp.json() == FORBIDDEN
+
+        # Verify the value is unchanged
+        resp = await client.get("/api/user-memory/settings")
+        assert resp.status_code == 200
+        assert resp.json().get("capture_notes") == original_capture
+
+    async def test_admin_put_settings_allowed(self, client, app):
+        """Admin can change global user-memory settings."""
+        resp = await client.get("/api/user-memory/settings")
+        assert resp.status_code == 200
+        original_capture = resp.json().get("capture_notes", True)
+
+        resp = await client.put("/api/user-memory/settings", json={"capture_notes": not original_capture})
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"ok": True}
+
+        # Verify it's changed
+        resp = await client.get("/api/user-memory/settings")
+        assert resp.status_code == 200
+        assert resp.json().get("capture_notes") == (not original_capture)
+
+    async def test_local_token_put_settings_allowed(self, client, app):
+        """Local token can change global user-memory settings."""
+        bare = _local_token_client(app)
+        try:
+            resp = await bare.get("/api/user-memory/settings")
+            assert resp.status_code == 200
+            original_capture = resp.json().get("capture_notes", True)
+
+            resp = await bare.put("/api/user-memory/settings", json={"capture_notes": not original_capture})
+            assert resp.status_code == 200, resp.text
+            assert resp.json() == {"ok": True}
+
+            resp = await bare.get("/api/user-memory/settings")
+            assert resp.status_code == 200
+            assert resp.json().get("capture_notes") == (not original_capture)
+        finally:
+            await bare.aclose()
 
 
 @pytest.mark.asyncio

@@ -16,6 +16,10 @@ is translated to OpenAI SSE chunks here (``_ndjson_to_sse``).
 
 After every successful completion the backend's lifecycle keep-alive timer is
 reset in-process (what LiteLLM's callback did over ``/api/lifecycle/notify``).
+
+The offline model (LFM3 1.7B on-device) is handled specially:
+- ``enable_thinking: false`` is sent in ``chat_template_kwargs`` on every request
+- If stopped, it is started via the helper and we wait for healthy before forwarding
 """
 from __future__ import annotations
 
@@ -24,6 +28,7 @@ import logging
 import os
 import time
 import uuid
+import weakref
 from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
 from typing import Any, Awaitable
@@ -62,6 +67,117 @@ PROVIDER_DEFAULT_BASES = {
     "openrouter": "https://openrouter.ai/api/v1",
     "deepseek": "https://api.deepseek.com/v1",
 }
+
+
+_OFFLINE_START_LOCKS: "weakref.WeakKeyDictionary[Any, Any]" = weakref.WeakKeyDictionary()
+
+
+def _offline_start_lock() -> Any:
+    """One start lock per running event loop (a Lock binds to its loop)."""
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    lock = _OFFLINE_START_LOCKS.get(loop)
+    if lock is None:
+        lock = _OFFLINE_START_LOCKS[loop] = asyncio.Lock()
+    return lock
+
+
+async def _ensure_offline_model_ready(state: Any) -> None:
+    """Ensure the offline model is running and healthy.
+
+    If the model is stopped, start it via the helper and wait for healthy.
+    Raises GatewayError with a clear message if startup fails. Serialised so
+    concurrent first requests run ``sudo start`` once: the later callers wait
+    on the lock, then see the model healthy on their own status check.
+    """
+    async with _offline_start_lock():
+        await _ensure_offline_model_ready_locked(state)
+
+
+async def _ensure_offline_model_ready_locked(state: Any) -> None:
+    import asyncio
+    import json
+    import os
+    from pathlib import Path
+
+    helper_path = Path(os.getenv("TAOS_LLM_HELPER", "/usr/local/sbin/taos-llm"))
+    if not helper_path.exists():
+        return  # Not available, let the normal error handling take over
+
+    # Check status first
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            str(helper_path), "status",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+        if proc.returncode == 0:
+            try:
+                status = json.loads((out or b"").decode(errors="replace").strip())
+                if status.get("running") and status.get("healthy"):
+                    return  # Already running and healthy
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Not running or not healthy - start it
+    logger.info("Starting offline model...")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "sudo", "-n", str(helper_path), "start",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=70.0)
+        if proc.returncode != 0:
+            raise GatewayError(
+                502,
+                f"Failed to start offline model: {(out or b'').decode(errors='replace').strip()}",
+                code="offline_model_start_failed",
+            )
+        try:
+            status = json.loads((out or b"").decode(errors="replace").strip())
+        except Exception:
+            status = {}
+        if not status.get("healthy"):
+            # Wait a bit more for healthy
+            for _ in range(30):  # Up to 30 seconds
+                await asyncio.sleep(1)
+                try:
+                    proc2 = await asyncio.create_subprocess_exec(
+                        str(helper_path), "status",
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.STDOUT,
+                    )
+                    out2, _ = await asyncio.wait_for(proc2.communicate(), timeout=5.0)
+                    if proc2.returncode == 0:
+                        status2 = json.loads((out2 or b"").decode(errors="replace").strip())
+                        if status2.get("healthy"):
+                            return
+                except Exception:
+                    pass
+            raise GatewayError(
+                502,
+                "Offline model started but did not become healthy in time",
+                code="offline_model_not_healthy",
+            )
+    except asyncio.TimeoutError:
+        raise GatewayError(
+            504,
+            "Offline model start timed out",
+            code="offline_model_start_timeout",
+        ) from None
+    except GatewayError:
+        raise
+    except Exception as exc:
+        raise GatewayError(
+            502,
+            f"Failed to start offline model: {exc}",
+            code="offline_model_start_failed",
+        ) from None
 
 
 def _ollama_404_error(route: Route, resp: httpx.Response) -> GatewayError:
@@ -383,10 +499,17 @@ async def _chat_completion_one(
     state: Any,
 ) -> dict:
     """Single non-streaming attempt against one backend, with ITS OWN key."""
+    # Handle offline model: ensure it's running and add enable_thinking=false
+    metadata = getattr(route, "metadata", {}) or {}
+    if metadata.get("offline"):
+        await _ensure_offline_model_ready(state)
+
     api_key = await resolve_api_key(state, route.api_key_ref)
     url = _build_url(route)
     payload = dict(body)
     payload["model"] = route.upstream_model
+    if metadata.get("offline"):
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
     headers = {"content-type": "application/json"}
     if api_key:
         headers["authorization"] = f"Bearer {api_key}"
@@ -444,6 +567,7 @@ def _event_stream_for_route(
     url = _build_url(route)
     payload = dict(body)
     payload["model"] = route.upstream_model
+    offline = bool((getattr(route, "metadata", {}) or {}).get("offline"))
 
     ndjson = route.backend_type in NDJSON_STREAM_BACKEND_TYPES
 
@@ -457,6 +581,8 @@ def _event_stream_for_route(
     if not caller_asked_for_usage and not ndjson:
         payload = dict(ensure_stream_usage(body))
         payload["model"] = route.upstream_model
+    if offline:
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
 
     request_text = json.dumps(body)
 
@@ -473,6 +599,12 @@ def _event_stream_for_route(
             _record_request_finish(state, route, principal, started, usage=usage, reason=reason)
 
         async def _pump():
+            if offline:
+                try:
+                    await _ensure_offline_model_ready(state)
+                except GatewayError:
+                    _finish(reason="offline_model_not_ready")
+                    raise
             api_key = await resolve_api_key(state, route.api_key_ref)
             headers = {"content-type": "application/json"}
             if api_key:

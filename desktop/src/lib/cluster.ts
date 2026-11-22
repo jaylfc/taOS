@@ -144,11 +144,16 @@ export type WorkerStatus = "online" | "stale" | "offline" | "unknown";
  */
 export function workerStatus(worker: ClusterWorker, nowSec = Date.now() / 1000): WorkerStatus {
   const hb = worker.last_heartbeat;
-  if (!hb || typeof hb !== "number") return "unknown";
-  const age = nowSec - hb;
-  if (age < 60) return "online";
-  if (age < 300) return "stale";
-  return "offline";
+  if (hb && typeof hb === "number") {
+    const age = nowSec - hb;
+    if (age < 60) return "online";
+    if (age < 300) return "stale";
+    return "offline";
+  }
+  const status = worker.status;
+  if (status === "online" || status === "stale" || status === "offline") return status;
+  if (status === "draining" || status === "updating" || status === "update-available") return "online";
+  return "unknown";
 }
 
 export const STATUS_PILL_CLASS: Record<WorkerStatus, string> = {

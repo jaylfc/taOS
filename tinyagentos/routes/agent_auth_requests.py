@@ -1522,15 +1522,20 @@ async def approve_request_record(
                                 can_read=("canvas_read" in granted_canvas),
                                 can_write=("canvas_write" in granted_canvas),
                             )
-                        if "project_tasks" in granted_scopes:
-                            from tinyagentos.projects.a2a import ensure_a2a_channel
+                        # Membership was just written above, so sync the a2a
+                        # channel for every grant shape that adds a member,
+                        # not only project_tasks (taOS #2115: canvas-only
+                        # grants used to skip this, leaving the project with
+                        # members but no channel). Ensure is idempotent.
+                        from tinyagentos.projects.a2a import ensure_a2a_channel
 
-                            await ensure_a2a_channel(
-                                request.app.state.chat_channels,
-                                pstore,
-                                binding_project,
-                                config=getattr(request.app.state, "config", None),
-                            )
+                        await ensure_a2a_channel(
+                            request.app.state.chat_channels,
+                            pstore,
+                            binding_project,
+                            config=getattr(request.app.state, "config", None),
+                            agent_registry=getattr(request.app.state, "agent_registry", None),
+                        )
             except Exception:  # noqa: BLE001 - membership is best-effort, never blocks approval
                 logger.warning(
                     "auth-approve: could not sync %s membership/a2a channel for project %s",
@@ -1577,6 +1582,35 @@ async def approve_request_record(
     except HTTPException:
         # The lost-decision-race path already undid its own writes via
         # _undo_lost_approval before raising its 409; nothing more to undo.
+        raise
+    except asyncio.CancelledError:
+        # CancelledError is a BaseException, so the except Exception
+        # below would never see it: a cancellation landing mid-writes
+        # — on the a2a channel sync after the membership write, say —
+        # would leave the half-applied approval behind (identity
+        # active, grants and membership written, request undecided).
+        # Run the same undo and wait for it to complete — a further
+        # cancellation must not release the request lock while the
+        # cleanup is still running — then re-raise.
+        await _await_cleanup(
+            _undo_lost_approval(
+                request,
+                record_id=record["id"],
+                canonical_id=canonical_id,
+                created_here=created_here,
+                granted_scopes=granted_scopes,
+                binding_project=binding_project,
+                prior_grants=prior_grants,
+                prior_grants_known=prior_grants_known,
+                prior_grant_expiry=prior_grant_expiry,
+                prior_grant_tier=prior_grant_tier,
+                renew=renew,
+                added_member=added_member,
+                prior_lead=prior_lead,
+                lead_overwritten=lead_overwritten,
+                approval_started_ts=approval_started_ts,
+            )
+        )
         raise
     except Exception:
         # A failure part-way (token mint, a grant write, the decision
@@ -1813,6 +1847,7 @@ async def _undo_lost_approval(
                 pstore,
                 binding_project,
                 config=getattr(request.app.state, "config", None),
+                agent_registry=getattr(request.app.state, "agent_registry", None),
             )
         except Exception:  # noqa: BLE001 - never mask the caller's 409
             logger.warning(
@@ -2058,15 +2093,20 @@ async def add_agent_to_project(
                                 canonical_id, project_id,
                             )
 
-                    if "project_tasks" in granted_scopes:
-                        from tinyagentos.projects.a2a import ensure_a2a_channel
+                    # Membership was just written above, so sync the a2a
+                    # channel for every grant shape that adds a member,
+                    # not only project_tasks (taOS #2115: canvas-only
+                    # grants used to skip this, leaving the project with
+                    # members but no channel). Ensure is idempotent.
+                    from tinyagentos.projects.a2a import ensure_a2a_channel
 
-                        await ensure_a2a_channel(
-                            request.app.state.chat_channels,
-                            pstore,
-                            project_id,
-                            config=getattr(request.app.state, "config", None),
-                        )
+                    await ensure_a2a_channel(
+                        request.app.state.chat_channels,
+                        pstore,
+                        project_id,
+                        config=getattr(request.app.state, "config", None),
+                        agent_registry=getattr(request.app.state, "agent_registry", None),
+                    )
         except Exception:  # noqa: BLE001 - membership is best-effort
             logger.warning(
                 "add_agent_to_project: could not sync %s membership/a2a for project %s",
@@ -2090,6 +2130,7 @@ async def add_agent_to_project(
                     pstore,
                     project_id,
                     config=getattr(request.app.state, "config", None),
+                    agent_registry=getattr(request.app.state, "agent_registry", None),
                 )
         except Exception:  # noqa: BLE001 - membership sync is best-effort
             logger.warning(
@@ -2277,6 +2318,7 @@ async def revoke_agent_scopes_from_project(
                 pstore,
                 project_id,
                 config=getattr(request.app.state, "config", None),
+                agent_registry=getattr(request.app.state, "agent_registry", None),
             )
         except Exception:  # noqa: BLE001 - membership sync is best-effort
             logger.warning(
