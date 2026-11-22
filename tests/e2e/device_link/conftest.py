@@ -29,6 +29,15 @@ def enabled() -> bool:
     return os.environ.get(ENV_VAR) == "1"
 
 
+def pytest_configure(config):
+    # Registered here, not in pyproject.toml: pyproject is a protected gate file,
+    # and this marker only matters inside this opt-in directory.
+    config.addinivalue_line(
+        "markers",
+        "device_link_e2e: needs the device-link test bed (bed.sh up); opt-in via TAOS_E2E_DEVICE_LINK=1",
+    )
+
+
 def pytest_collection_modifyitems(config, items):
     for item in items:
         path = Path(str(item.path)).resolve()

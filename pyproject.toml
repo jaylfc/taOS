@@ -171,9 +171,6 @@ markers = [
     # workflow); inert in a normal test run.
     "guards(target, replace=None, must_kill=None): guard test's protected function; see scripts/check_non_discriminating.py",
     "skip_if_no_embed_backend: skip when no embed backend can serve the test (qmd unreachable and onnxruntime absent)",
-    # Opt-in device-link test bed (tests/e2e/device_link/). Applied to every test in that
-    # directory by its conftest, which also skips them unless TAOS_E2E_DEVICE_LINK=1.
-    "device_link_e2e: needs the device-link test bed (bed.sh up); opt-in via TAOS_E2E_DEVICE_LINK=1",
     "no_opencode_spawn_guard: opt out of the autouse fixture that blocks real opencode spawns (for tests that test resolve_opencode_binary directly)",
 ]
 filterwarnings = [
