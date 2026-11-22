@@ -10,6 +10,7 @@ error. After the fix, gnupg should be installed first or the installer
 should die with a clear message.
 """
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -200,9 +201,6 @@ def _run_ensure_node22_apt(tmp_path, *, gpg_available: bool, gnupg_installed: bo
     return proc.returncode, proc.stdout, proc.stderr
 
 
-import shutil
-
-
 @pytest.mark.skipif(os.name != "posix", reason="bash-only test")
 def test_ensure_node22_fails_without_gpg(tmp_path):
     """RED: ensure_node22 should not silently exit when gpg is missing.
@@ -241,22 +239,3 @@ def test_ensure_node22_succeeds_with_gpg(tmp_path):
     print(f"stdout={stdout}")
     print(f"stderr={stderr}")
     assert rc == 0, f"ensure_node22 should succeed when gpg is available; stderr={stderr}"
-
-
-if __name__ == "__main__":
-    import tempfile
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-        print("Testing without gpg (should fail before fix)...")
-        try:
-            test_ensure_node22_fails_without_gpg(tmp_path)
-            print("TEST PASSED (unexpected - fix may be applied)")
-        except AssertionError as e:
-            print(f"TEST FAILED (expected before fix): {e}")
-        print()
-        print("Testing with gpg (should pass)...")
-        try:
-            test_ensure_node22_succeeds_with_gpg(tmp_path)
-            print("TEST PASSED")
-        except AssertionError as e:
-            print(f"TEST FAILED: {e}")
