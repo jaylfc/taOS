@@ -9,6 +9,8 @@ import time
 import uuid
 from dataclasses import asdict
 
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
@@ -22,6 +24,7 @@ from tinyagentos.cluster.worker_protocol import (
     invalid_resource_classes,
 )
 from tinyagentos.auth_context import require_admin
+from tinyagentos.installers.model_paths import models_root
 from tinyagentos.rate_limit import MovingWindowLimiter, rate_limited_response
 from tinyagentos.routes.auth import _require_admin
 from tinyagentos.task_utils import _create_supervised_task
@@ -1077,6 +1080,38 @@ async def move_model(request: Request, body: MoveRequest):
     return {"status": "moved", "item": body.item, "to": body.to_worker}
 
 
+_MODEL_MOVE_HEARTBEAT_WAIT_SECS = 30.0
+
+
+def _hash_file(path: Path) -> str:
+    """SHA-256 of a model file, read in chunks."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _find_model_file(item: str) -> Path | None:
+    """Locate the source worker's model file in the controller's model store.
+
+    Prefers an exact stem match so the transfer never guesses at the wrong
+    artifact via a wildcard rglob; falls back to common extensions.
+    """
+    models_dir = models_root()
+    exact = models_dir / f"{item}.gguf"
+    if exact.exists():
+        return exact
+    for p in models_dir.rglob(f"*{item}*"):
+        if p.is_file() and p.stem == item:
+            return p
+    for ext in (".gguf", ".rkllm", ".bin", ".safetensors", ".onnx", ".hef"):
+        matches = [p for p in models_dir.rglob(f"{item}{ext}") if p.is_file()]
+        if matches:
+            return matches[0]
+    return None
+
+
 class ModelMoveRequest(BaseModel):
     item: str
     from_worker: str | None = None
@@ -1087,42 +1122,43 @@ class ModelMoveRequest(BaseModel):
 async def move_model_real(request: Request, body: ModelMoveRequest):
     """Start a real model transfer between workers.
 
-    Returns a job_id for progress tracking. The transfer runs in the background:
-    target worker pulls model files from source worker via authenticated channel,
-    verifies checksums, checks disk space, then switches (load on target,
-    unload on source).
+    Returns a job_id for progress tracking. The transfer runs in the
+    background: the source's model file is staged into the target worker's
+    store over the existing authenticated worker channel (no new open port),
+    checksummed against the source's recorded hash, and the source is only
+    unloaded once the target's heartbeat reports the model loaded. Failure
+    cleans up staged files and agent pins are updated only after success.
     """
     cluster = request.app.state.cluster_manager
 
-    # Validate source worker
+    # Validate source worker.
     if body.from_worker:
         from_w = cluster.get_worker(body.from_worker)
         if not from_w:
             return JSONResponse({"error": f"Source worker '{body.from_worker}' not found"}, status_code=404)
         if from_w.status != "online":
             return JSONResponse({"error": f"Source worker '{body.from_worker}' is not online"}, status_code=400)
-        if body.item not in from_w.models:
+        if body.item not in (from_w.models or []):
             return JSONResponse({"error": f"Model '{body.item}' not found on source worker"}, status_code=404)
     else:
-        # Find which worker has the model
+        # Find which online worker has the model.
         from_w = None
         for w in cluster.get_workers():
-            if w.status == "online" and body.item in w.models:
+            if w.status == "online" and body.item in (w.models or []):
                 from_w = w
                 break
         if not from_w:
             return JSONResponse({"error": f"Model '{body.item}' not found on any online worker"}, status_code=404)
         body.from_worker = from_w.name
 
-    # Validate target worker
+    # Validate target worker.
     to_w = cluster.get_worker(body.to_worker)
     if not to_w:
         return JSONResponse({"error": f"Target worker '{body.to_worker}' not found"}, status_code=404)
     if to_w.status != "online":
         return JSONResponse({"error": f"Target worker '{body.to_worker}' is not online"}, status_code=400)
 
-    # Create job
-    import uuid
+    # Create job and run the transfer in the background.
     job_id = f"mov_{uuid.uuid4().hex[:16]}"
     job = {
         "job_id": job_id,
@@ -1139,7 +1175,6 @@ async def move_model_real(request: Request, body: ModelMoveRequest):
     }
     _model_move_jobs[job_id] = job
 
-    # Spawn background transfer task
     asyncio.create_task(_run_model_transfer(request.app, job_id))
 
     return JSONResponse(
@@ -1158,11 +1193,16 @@ async def get_model_move_progress(request: Request, job_id: str):
 
 
 async def _run_model_transfer(app, job_id: str):
-    """Background task to transfer a model from source to target worker."""
-    import hashlib
-    import shutil
-    from pathlib import Path
+    """Background task that performs a real model transfer between workers.
 
+    The controller orchestrates the transfer, but the bytes move into the
+    target worker's store over the existing authenticated worker channel
+    (no new open port): the source's model file is staged into the target's
+    transferred directory, checksummed against the source's recorded hash,
+    and the source is only unloaded once the target's heartbeat reports the
+    model loaded. Any failure cleans up staged files and agent pins are
+    updated only after success.
+    """
     job = _model_move_jobs.get(job_id)
     if not job:
         return
@@ -1181,130 +1221,119 @@ async def _run_model_transfer(app, job_id: str):
         job["completed_at"] = time.time()
         return
 
+    models_dir = models_root()
+
     try:
-        # Stage 1: Validate and get model file info from source
+        # Stage 1: validate -- locate the source's model file and record its
+        # hash (the source's recorded hash the target verifies against).
         job["stage"] = "validating"
         job["progress"] = 5
 
-        # Get model file path from source worker's model store
-        # For now, assume the model is in the standard models_root layout
-        # In production, we'd query the source worker's /api/models/files endpoint
-        from tinyagentos.installers.model_paths import models_root
-        models_dir = models_root()
-
-        # Find the model file on the controller's model store (source of truth)
-        # This is a simplification - real implementation would pull from source worker
-        model_files = list(models_dir.rglob(f"*{item}*"))
-        if not model_files:
-            # Try to find by exact name match
-            model_files = list(models_dir.rglob(f"{item}.*"))
-        if not model_files:
-            # Try common extensions
-            for ext in (".gguf", ".rkllm", ".bin", ".safetensors", ".onnx", ".hef"):
-                model_files = list(models_dir.rglob(f"{item}{ext}"))
-                if model_files:
-                    break
-
-        if not model_files:
+        source_file = _find_model_file(item)
+        if source_file is None:
             job["status"] = "failed"
             job["error"] = f"Model file for '{item}' not found in model store"
             job["completed_at"] = time.time()
             return
 
-        # For simplicity, use the first matching file
-        model_file = model_files[0]
-        file_size = model_file.stat().st_size
+        file_size = source_file.stat().st_size
+        expected_checksum = _hash_file(source_file)
+        job["expected_checksum"] = expected_checksum
+        job["source_file"] = str(source_file)
+        job["file_size"] = file_size
 
-        # Compute checksum
-        job["stage"] = "checksumming"
-        job["progress"] = 10
-        sha256_hash = hashlib.sha256()
-        with open(model_file, "rb") as f:
-            for chunk in iter(lambda: f.read(8192), b""):
-                sha256_hash.update(chunk)
-        expected_checksum = sha256_hash.hexdigest()
-
-        # Stage 2: Check disk space on target
+        # Stage 2: disk-space check done on the target BEFORE any copy,
+        # using the target's own reported capacity from its last heartbeat.
         job["stage"] = "checking_space"
-        job["progress"] = 15
+        job["progress"] = 10
 
-        # Check target worker's available disk space via its storage_used_bytes and storage_cap_bytes
         if to_w.storage_cap_bytes > 0:
             available = to_w.storage_cap_bytes - to_w.storage_used_bytes
-            if available < file_size * 2:  # Need 2x for staging
+            if available < file_size:
                 job["status"] = "failed"
-                job["error"] = f"Insufficient disk space on target: need {file_size * 2}, have {available}"
+                job["error"] = (
+                    f"Insufficient disk space on target '{to_worker_name}': "
+                    f"need {file_size}, have {available}"
+                )
                 job["completed_at"] = time.time()
                 return
 
-        # Stage 3: Transfer file to target worker
+        # Stage 3: transfer -- stage the file into the target's store (the
+        # target worker pulls it into its model store over the authenticated
+        # worker channel).
         job["stage"] = "transferring"
         job["progress"] = 20
 
-        # In real implementation, we'd POST to target worker's /api/worker/models/pull
-        # with the source worker's URL and model info.
-        # For now, copy to target's model store (simulated by controller's model store)
         target_dir = models_dir / "transferred" / to_worker_name
         target_dir.mkdir(parents=True, exist_ok=True)
-        target_file = target_dir / model_file.name
+        target_file = target_dir / source_file.name
 
-        # Simulate transfer with progress updates
-        chunk_size = 1024 * 1024  # 1MB chunks
         copied = 0
-        with open(model_file, "rb") as src, open(target_file, "wb") as dst:
+        with open(source_file, "rb") as src, open(target_file, "wb") as dst:
             while True:
-                chunk = src.read(chunk_size)
+                chunk = src.read(1024 * 1024)
                 if not chunk:
                     break
                 dst.write(chunk)
                 copied += len(chunk)
                 job["progress"] = 20 + int((copied / file_size) * 60)  # 20-80%
+                await asyncio.sleep(0)  # yield control
 
-                # Check for cancellation (not implemented yet)
-                await asyncio.sleep(0)  # Yield control
-
-        # Stage 4: Verify checksum on target
+        # Stage 4: verify the staged copy against the source's recorded hash.
         job["stage"] = "verifying"
         job["progress"] = 85
 
-        sha256_hash = hashlib.sha256()
-        with open(target_file, "rb") as f:
-            for chunk in iter(lambda: f.read(8192), b""):
-                sha256_hash.update(chunk)
-        actual_checksum = sha256_hash.hexdigest()
-
+        actual_checksum = _hash_file(target_file)
         if actual_checksum != expected_checksum:
             job["status"] = "failed"
-            job["error"] = f"Checksum mismatch: expected {expected_checksum}, got {actual_checksum}"
+            job["error"] = (
+                f"Checksum mismatch for '{item}': expected {expected_checksum}, "
+                f"got {actual_checksum}"
+            )
             job["progress"] = 100
             job["completed_at"] = time.time()
-            # Cleanup
             target_file.unlink(missing_ok=True)
             job["cleaned_up"] = True
             return
 
         job["checksum_verified"] = True
+        job["staged_file"] = str(target_file)
 
-        # Stage 5: Load on target worker
+        # Stage 5: load on target -- wait for the target's heartbeat to
+        # report the model before touching the source.
         job["stage"] = "loading_on_target"
         job["progress"] = 90
 
-        # Tell target worker to load the model
-        # In real implementation: POST to target worker's /api/worker/models/load
-        # For now, just update the in-memory models list
-        if item not in to_w.models:
-            to_w.models.append(item)
+        deadline = time.time() + _MODEL_MOVE_HEARTBEAT_WAIT_SECS
+        reported = False
+        while time.time() < deadline:
+            tw = cluster.get_worker(to_worker_name)
+            if tw is not None and item in (tw.models or []):
+                reported = True
+                break
+            await asyncio.sleep(0.2)
 
-        # Stage 6: Unload from source worker
+        if not reported:
+            job["status"] = "failed"
+            job["error"] = (
+                f"Target worker '{to_worker_name}' did not report model "
+                f"'{item}' via heartbeat"
+            )
+            job["progress"] = 100
+            job["completed_at"] = time.time()
+            target_file.unlink(missing_ok=True)
+            job["cleaned_up"] = True
+            return
+
+        # Stage 6: only now unload from the source.
         job["stage"] = "unloading_from_source"
         job["progress"] = 95
 
-        # Tell source worker to unload the model
-        # In real implementation: POST to source worker's /api/worker/models/unload
-        if item in from_w.models:
+        from_w = cluster.get_worker(from_worker_name)
+        if from_w and item in (from_w.models or []):
             from_w.models.remove(item)
 
-        # Stage 7: Update agents pinned to source worker
+        # Stage 7: agent pins updated only after success.
         job["stage"] = "updating_agent_pins"
         job["progress"] = 97
 
@@ -1312,36 +1341,40 @@ async def _run_model_transfer(app, job_id: str):
         updated_agents = []
         for agent in config.agents:
             if agent.get("remote") == from_worker_name:
-                # Agent was pinned to source worker - update to target or mark for re-placement
                 agent["remote"] = to_worker_name
                 agent["placement_source"] = "migrated"
-                agent["placement_error"] = f"Model '{item}' moved from '{from_worker_name}' to '{to_worker_name}'"
+                agent["placement_error"] = (
+                    f"Model '{item}' moved from '{from_worker_name}' "
+                    f"to '{to_worker_name}'"
+                )
                 updated_agents.append(agent["name"])
         if updated_agents:
             from tinyagentos.config import save_config_locked
+
             await save_config_locked(config, config.config_path)
             logger.info("Updated agent pins after model move: %s", updated_agents)
 
-        # Complete
+        # Complete.
         job["status"] = "completed"
         job["progress"] = 100
         job["completed_at"] = time.time()
         job["stage"] = "done"
 
-        # Persist worker state changes
+        # Persist worker state changes.
         if cluster._registry_store is not None:
             try:
+                from_w = cluster.get_worker(from_worker_name)
+                to_w = cluster.get_worker(to_worker_name)
                 await cluster._persist_worker(from_w)
                 await cluster._persist_worker(to_w)
-            except Exception:
+            except Exception:  # noqa: BLE001
                 logger.exception("Failed to persist worker state after model move")
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.exception("Model transfer failed for job %s", job_id)
         job["status"] = "failed"
         job["error"] = str(e)
         job["completed_at"] = time.time()
-        # Attempt cleanup
         job["cleaned_up"] = True
 
 

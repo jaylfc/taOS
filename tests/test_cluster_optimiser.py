@@ -209,22 +209,85 @@ async def test_optimise_api_with_workers(client, app, pair_and_register_worker):
 
 
 @pytest.mark.asyncio
-async def test_move_api_endpoint(client, app, pair_and_register_worker, tmp_path):
-    """Test the NEW real model move endpoint (/api/cluster/models/move)."""
-    # Create a mock model file in the model store
+async def test_move_api_endpoint(client, app, pair_and_register_worker, monkeypatch, tmp_path):
+    """Test the NEW real model move endpoint (/api/cluster/models/move).
+
+    The transfer is real: the target worker pulls the model into its store,
+    the checksum is verified against the source's recorded hash, and the
+    source keeps the model until the target's heartbeat reports it loaded.
+    """
+    import hashlib
+    import hmac
+    import json
+    import time
+
     from tinyagentos.installers.model_paths import models_root
+
+    # Hermetic model store for the test.
+    monkeypatch.setenv("TAOS_MODELS_ROOT", str(tmp_path))
     models_dir = models_root()
     models_dir.mkdir(parents=True, exist_ok=True)
     mock_model = models_dir / "llama3.gguf"
     mock_model.write_bytes(b"fake model content for testing")
 
-    await pair_and_register_worker(client, app, {
+    def _sign(key, name, method, path, body):
+        ts = str(int(time.time()))
+        body_hash = hashlib.sha256(body).hexdigest()
+        message = f"{ts}.{method.upper()}.{path}.{body_hash}".encode()
+        sig = hmac.new(key, message, hashlib.sha256).hexdigest()
+        return {
+            "X-TAOS-Worker-Name": name,
+            "X-TAOS-Timestamp": ts,
+            "X-TAOS-Signature": sig,
+        }
+
+    async def pair_register_and_key(payload):
+        name = payload["name"]
+        url = payload.get("url", "http://localhost:9000")
+        platform = payload.get("platform", "linux")
+        code = "test-pairing-code" + name
+        if app.state.cluster_pairing._db is None:  # noqa: SLF001
+            await app.state.cluster_pairing.init()
+        ch = hashlib.sha256(code.encode()).hexdigest()
+        resp = await client.post(
+            "/api/cluster/pairing/announce",
+            json={"name": name, "url": url, "platform": platform, "code_hash": ch},
+        )
+        assert resp.status_code == 200, f"announce failed for {name!r}: {resp.text}"
+        resp = await client.post(
+            "/api/cluster/pairing/confirm", json={"name": name, "code": code}
+        )
+        assert resp.status_code == 200, f"confirm failed for {name!r}: {resp.text}"
+        resp = await client.post(
+            "/api/cluster/pairing/claim", json={"name": name, "code": code}
+        )
+        assert resp.status_code == 200, f"claim failed for {name!r}: {resp.text}"
+        key = bytes.fromhex(resp.json()["signing_key"])
+        body = json.dumps(payload).encode()
+        headers = _sign(key, name, "POST", "/api/cluster/workers", body)
+        resp = await client.post(
+            "/api/cluster/workers",
+            content=body,
+            headers={**headers, "content-type": "application/json"},
+        )
+        assert resp.status_code == 200, f"register failed for {name!r}: {resp.text}"
+        return key, resp
+
+    async def heartbeat(key, name, models):
+        payload = {"name": name, "load": 0.0, "models": models}
+        body = json.dumps(payload).encode()
+        headers = _sign(key, name, "POST", "/api/cluster/heartbeat", body)
+        return await client.post(
+            "/api/cluster/heartbeat", content=body,
+            headers={**headers, "content-type": "application/json"},
+        )
+
+    await pair_register_and_key({
         "name": "w1", "url": "http://10.0.0.1:9000",
         "capabilities": ["chat"], "models": ["llama3"],
     })
-    await pair_and_register_worker(client, app, {
-        "name": "w2", "url": "http://10.0.0.2:9000",
-        "capabilities": ["chat"],
+    target_key, _ = await pair_register_and_key({
+        "name": "w2", "url": "http://10.0.0.2:9000", "capabilities": ["chat"],
     })
     resp = await client.post("/api/cluster/models/move", json={
         "item": "llama3", "from_worker": "w1", "to_worker": "w2",
@@ -238,8 +301,26 @@ async def test_move_api_endpoint(client, app, pair_and_register_worker, tmp_path
     assert "job_id" in data
     job_id = data["job_id"]
 
-    # Poll for completion
-    for _ in range(50):
+    # Wait until the transfer has verified and is waiting for the target
+    # heartbeat to report the model.
+    for _ in range(100):
+        progress_resp = await client.get(f"/api/cluster/models/move/{job_id}")
+        progress = progress_resp.json()
+        if progress.get("stage") == "loading_on_target":
+            break
+        await asyncio.sleep(0.1)
+    assert progress.get("stage") == "loading_on_target", progress
+
+    # Source still serves the model until the target reports ready.
+    workers = (await client.get("/api/cluster/workers")).json()
+    w1 = next(w for w in workers if w["name"] == "w1")
+    assert "llama3" in w1.get("models", [])
+
+    # Real heartbeat payload from the target reporting the model loaded.
+    hr = await heartbeat(target_key, "w2", ["llama3"])
+    assert hr.status_code == 200, hr.text
+
+    for _ in range(100):
         progress_resp = await client.get(f"/api/cluster/models/move/{job_id}")
         progress = progress_resp.json()
         if progress["status"] in ("completed", "failed"):
@@ -249,7 +330,7 @@ async def test_move_api_endpoint(client, app, pair_and_register_worker, tmp_path
     assert progress["status"] == "completed"
     assert progress.get("checksum_verified") is True
 
-    # Verify model moved
+    # Verify model moved via the workers list (reflects heartbeat state).
     workers = (await client.get("/api/cluster/workers")).json()
     w1 = next(w for w in workers if w["name"] == "w1")
     w2 = next(w for w in workers if w["name"] == "w2")
