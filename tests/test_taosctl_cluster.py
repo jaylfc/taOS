@@ -76,9 +76,9 @@ CASES = [
     (["install-targets"], ("GET", "/api/cluster/install-targets", None)),
     (["map"], ("GET", "/api/cluster/map", None)),
     (["move", "--item", "qwen", "--to", "w2"],
-     ("POST", "/api/cluster/move", {"item": "qwen", "to_worker": "w2"})),
+     ("POST", "/api/cluster/models/move", {"item": "qwen", "to_worker": "w2"})),
     (["move", "--item", "qwen", "--to", "w2", "--from", "w1"],
-     ("POST", "/api/cluster/move", {"item": "qwen", "to_worker": "w2", "from_worker": "w1"})),
+     ("POST", "/api/cluster/models/move", {"item": "qwen", "to_worker": "w2", "from_worker": "w1"})),
     (["promote-archived"], ("POST", "/api/cluster/promote-archived", None)),
     # pairing
     (["pairing-pending"], ("GET", "/api/cluster/pairing/pending", None)),

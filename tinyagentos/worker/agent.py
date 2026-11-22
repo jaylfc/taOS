@@ -437,6 +437,10 @@ class WorkerAgent:
         # Created eagerly so callers can inspect state; started in run().
         self._update_service: "WorkerUpdateService | None" = None
 
+        # Worker HTTP API server (for deploy, remote, model ops).
+        self._http_server: "uvicorn.Server | None" = None
+        self._http_task: "asyncio.Task | None" = None
+
     async def detect_backends(self) -> list[dict]:
         """Discover locally running inference backends via live probing.
 
@@ -1222,6 +1226,17 @@ class WorkerAgent:
         _in_repair = False
         _last_repair_log: float = 0.0
 
+        # Start the worker HTTP API server (only if worker_port is set).
+        if self.worker_port > 0:
+            from tinyagentos.worker.api import create_worker_app
+            import uvicorn
+
+            worker_app = create_worker_app()
+            config = uvicorn.Config(worker_app, host="0.0.0.0", port=self.worker_port, log_level="warning")
+            self._http_server = uvicorn.Server(config)
+            self._http_task = asyncio.create_task(self._http_server.serve())
+            logger.info(f"worker '{self.name}' HTTP API listening on port {self.worker_port}")
+
         # Start the worker update-check service (background version polling).
         from tinyagentos.worker.update_check import WorkerUpdateService
         self._update_service = WorkerUpdateService(
@@ -1287,8 +1302,14 @@ class WorkerAgent:
         finally:
             if self._update_service is not None:
                 await self._update_service.stop()
+            if self._http_server is not None:
+                self._http_server.should_exit = True
+            if self._http_task is not None:
+                await asyncio.wait_for(self._http_task, timeout=5.0)
 
     def stop(self):
         self._running = False
         if self._update_service is not None:
             self._update_service._stop_event.set()
+        if self._http_server is not None:
+            self._http_server.should_exit = True
