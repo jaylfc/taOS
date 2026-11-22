@@ -16,7 +16,7 @@ user has enabled it in Settings. It is never the default.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from tinyagentos import litellm_config
 from tinyagentos.llm_gateway.errors import model_not_found
@@ -41,6 +41,7 @@ class Route:
     # rkllama from hailo-ollama (both ``ollama_chat``), and they stream
     # differently.
     backend_type: str = ""
+    metadata: dict = field(default_factory=dict)
 
 
 def route_from_entry(entry: dict, name: str) -> Route:
@@ -58,6 +59,7 @@ def route_from_entry(entry: dict, name: str) -> Route:
         api_key_ref=params.get("api_key") or None,
         backend_name=str(metadata.get("backend_name", "")),
         backend_type=str(metadata.get("backend_type") or ""),
+        metadata=metadata,
     )
 
 
@@ -138,7 +140,7 @@ async def resolve(state, requested: str) -> Route:
                 "taos-default has nothing behind it: no default chat model is set. "
                 "Pick one in the taOS agent settings."
             )
-    route = find_route(routing_table(state), name)
+    route = find_route(await routing_table(state), name)
     if route is None:
         suffix = f" (taos-default points at it)" if name != requested else ""
         raise model_not_found(f"model {name!r} not found{suffix}")

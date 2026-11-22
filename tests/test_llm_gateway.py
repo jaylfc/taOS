@@ -11,12 +11,14 @@ import copy
 import json
 import logging
 
+import asyncio
 import httpx
 import pytest
 import pytest_asyncio
 import respx
 import yaml
 from httpx import ASGITransport, AsyncClient
+from unittest.mock import AsyncMock, MagicMock
 
 from taos_test_csrf import csrf_event_hooks
 from tinyagentos.app import create_app
@@ -167,6 +169,9 @@ async def _reset_state(app) -> None:
     app.dependency_overrides.clear()
     # taos-default: the account default chat model preference.
     await state.desktop_settings.save_preference(*_TAOS_AGENT_PREF, {})
+    # Offline model: each test starts with it disabled so availability in one
+    # test cannot leak into another.
+    await state.desktop_settings.save_preference("user", "offline_model", {})
     # Backend keys held in the secrets store.
     await state.secrets.delete(SECRET_BACKED["api_key_secret"])
     # Agent-as-a-Model consent keys minted by tests.
@@ -891,11 +896,137 @@ async def test_gateway_reads_the_one_model_table(client, monkeypatch):
     assert calls and calls[-1] is _app(client).state.config.backends
 
     from tinyagentos.llm_gateway.resolve import routing_table
-    table = routing_table(_app(client).state)
+    table = await routing_table(_app(client).state)
     assert table == real(
         _app(client).state.config.backends,
         discovered={b["url"]: [] for b in _app(client).state.config.backends},
     )
+
+
+# ---------------------------------------------------------------------------
+# Offline model (on-device LFM3 1.7B)
+# ---------------------------------------------------------------------------
+
+_OFFLINE = "LFM3 1.7B (on this phone, offline)"
+_OFFLINE_URL = "http://127.0.0.1:7835/v1/chat/completions"
+
+
+async def _offline_available(client, monkeypatch, tmp_path) -> None:
+    """Point the route and the forwarder at a fake helper + metadata."""
+    helper = tmp_path / "taos-llm"
+    helper.write_text("#!/bin/sh\n", encoding="utf-8")
+    helper.chmod(0o755)
+    metadata = tmp_path / "lfm3-1.7b.json"
+    metadata.write_text('{"name": "LFM3 1.7B"}', encoding="utf-8")
+    monkeypatch.setattr("tinyagentos.routes.offline_model.HELPER_PATH", helper)
+    monkeypatch.setattr("tinyagentos.routes.offline_model.METADATA_PATH", metadata)
+    monkeypatch.setenv("TAOS_LLM_HELPER", str(helper))
+    store = _app(client).state.desktop_settings
+    if store._db is None:
+        await store.init()
+
+
+class _OfflineHelper:
+    """Fake create_subprocess_exec: status reports stopped until start runs."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, ...]] = []
+
+    async def __call__(self, *args, **kwargs):
+        self.calls.append(tuple(str(a) for a in args))
+        proc = MagicMock()
+        proc.returncode = 0
+        if args and args[-1] == "status":
+            proc.communicate = AsyncMock(
+                return_value=(b'{"running": false, "healthy": false}', b"")
+            )
+        else:
+            proc.communicate = AsyncMock(
+                return_value=(b'{"running": true, "healthy": true}', b"")
+            )
+        return proc
+
+
+@_ASYNC
+@respx.mock
+async def test_offline_model_registered_only_when_enabled_never_default(
+    client, monkeypatch, tmp_path
+):
+    """The offline model enters the routing table only when enabled, and is
+    never the default: taos-default keeps resolving to the account default."""
+    await _offline_available(client, monkeypatch, tmp_path)
+    from tinyagentos.llm_gateway.resolve import model_names, routing_table
+
+    route = respx.post(UPSTREAM_CHAT).mock(
+        return_value=httpx.Response(200, json=_completion("qwen3-8b"))
+    )
+
+    # Disabled: absent from the table.
+    await _set_default(client, "qwen3-8b")
+    table = await routing_table(_app(client).state)
+    assert _OFFLINE not in model_names(table)
+
+    # Enabled: present in the table, but taos-default still resolves to the
+    # account default (qwen3-8b), never to the offline model.
+    store = _app(client).state.desktop_settings
+    await store.save_preference("user", "offline_model", {"enabled": True})
+    table = await routing_table(_app(client).state)
+    assert _OFFLINE in model_names(table)
+    r1 = await client.post(BASE + "/chat/completions", json=_chat("taos-default"))
+    assert r1.status_code == 200, r1.text
+    assert json.loads(route.calls.last.request.content)["model"] == "qwen3-8b"
+
+
+@_ASYNC
+@respx.mock
+async def test_first_request_on_stopped_offline_model_starts_then_forwards(
+    client, monkeypatch, tmp_path
+):
+    """The first request on a stopped offline model starts it via sudo, waits
+    for healthy, then forwards to the local backend."""
+    await _offline_available(client, monkeypatch, tmp_path)
+    store = _app(client).state.desktop_settings
+    await store.save_preference("user", "offline_model", {"enabled": True})
+
+    helper = tmp_path / "taos-llm"
+    fake = _OfflineHelper()
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake)
+
+    route = respx.post(_OFFLINE_URL).mock(
+        return_value=httpx.Response(200, json=_completion("offline-model"))
+    )
+    resp = await client.post(BASE + "/chat/completions", json=_chat(_OFFLINE))
+    assert resp.status_code == 200, resp.text
+    # sudo start was invoked, then the request was forwarded.
+    assert any(
+        c[0] == "sudo" and "-n" in c and str(helper) in c and "start" in c
+        for c in fake.calls
+    ), fake.calls
+    assert route.called
+    sent = json.loads(route.calls.last.request.content)
+    assert sent["model"] == "offline-model"
+
+
+@_ASYNC
+@respx.mock
+async def test_offline_model_forwards_enable_thinking_false(
+    client, monkeypatch, tmp_path
+):
+    """Forwarded offline-model requests carry enable_thinking: false."""
+    await _offline_available(client, monkeypatch, tmp_path)
+    store = _app(client).state.desktop_settings
+    await store.save_preference("user", "offline_model", {"enabled": True})
+
+    fake = _OfflineHelper()
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake)
+
+    route = respx.post(_OFFLINE_URL).mock(
+        return_value=httpx.Response(200, json=_completion("offline-model"))
+    )
+    resp = await client.post(BASE + "/chat/completions", json=_chat(_OFFLINE))
+    assert resp.status_code == 200, resp.text
+    sent = json.loads(route.calls.last.request.content)
+    assert sent.get("chat_template_kwargs") == {"enable_thinking": False}
 
 
 # ---------------------------------------------------------------------------

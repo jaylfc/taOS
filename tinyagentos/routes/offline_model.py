@@ -6,10 +6,9 @@ import logging
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from tinyagentos.auth_context import require_admin
 from tinyagentos.desktop_settings import DesktopSettingsStore
 
 logger = logging.getLogger(__name__)
@@ -19,6 +18,20 @@ METADATA_PATH = Path("/usr/share/taos/models/lfm3-1.7b.json")
 PREF_NAMESPACE = "offline_model"
 
 router = APIRouter()
+
+
+def _require_admin_session(request: Request) -> None:
+    """403 unless the caller is a signed-in admin *session*.
+
+    The host local token (``via == "local_token"``) and agent tokens
+    (``via == "registry_jwt"``) are refused: flipping the offline model on or
+    off is a user-visible, session-only admin action.
+    """
+    if (
+        getattr(request.state, "via", None) != "session"
+        or not getattr(request.state, "is_admin", False)
+    ):
+        raise HTTPException(status_code=403, detail="forbidden")
 
 
 def _is_available() -> bool:
@@ -61,10 +74,17 @@ def _build_offline_model_entry() -> dict | None:
 
 
 async def _run_helper(args: list[str], timeout: float = 70.0) -> tuple[int, str]:
-    """Run the taos-llm helper with the given args. Never uses shell."""
+    """Run the taos-llm helper with the given args. Never uses shell.
+
+    start/stop need root and run through passwordless sudo; status runs as the
+    service user without sudo.
+    """
+    cmd = [str(HELPER_PATH), *args]
+    if args and args[0] in ("start", "stop"):
+        cmd = ["sudo", "-n", str(HELPER_PATH), *args]
     try:
         proc = await asyncio.create_subprocess_exec(
-            str(HELPER_PATH), *args,
+            *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
@@ -131,9 +151,9 @@ async def get_offline_model(request: Request):
     }
 
 
-@router.put("/api/system/offline-model", dependencies=[Depends(require_admin)])
+@router.put("/api/system/offline-model", dependencies=[Depends(_require_admin_session)])
 async def set_offline_model(request: Request):
-    """Enable or disable the offline model. Admin or host local token only."""
+    """Enable or disable the offline model. Signed-in admin session only."""
     available = _is_available()
     if not available:
         return JSONResponse({"error": "offline model not available on this device"}, status_code=404)
@@ -148,7 +168,11 @@ async def set_offline_model(request: Request):
     if enabled:
         rc, out = await _run_helper(["start"], timeout=70.0)
         if rc != 0:
-            return JSONResponse({"error": out or "failed to start offline model"}, status_code=502)
+            if rc == 1:
+                # The helper's own message tells the admin what went wrong.
+                return JSONResponse({"error": out or "failed to start offline model"}, status_code=502)
+            logger.error("offline model start failed (rc=%s): %s", rc, out)
+            return JSONResponse({"error": "failed to start offline model"}, status_code=502)
         try:
             status = json.loads(out)
         except Exception:
@@ -162,6 +186,9 @@ async def set_offline_model(request: Request):
         }
     else:
         rc, out = await _run_helper(["stop"], timeout=30.0)
+        if rc != 0:
+            logger.error("offline model stop failed (rc=%s): %s", rc, out)
+            return JSONResponse({"error": out or "failed to stop offline model"}, status_code=502)
         await store.save_preference("user", PREF_NAMESPACE, {"enabled": False})
         try:
             status = json.loads(out) if out else {}
