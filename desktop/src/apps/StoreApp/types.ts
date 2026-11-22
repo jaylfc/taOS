@@ -60,6 +60,8 @@ export interface CatalogApp {
   /** "permissive" | "non-commercial" | "" (unknown/code-only). Drives the
    * "Non-commercial weights" badge and the install-time license gate. */
   license_class?: string;
+  /** Container runtime requirement: "docker", "lxc", or "either". */
+  runtime?: "docker" | "lxc" | "either";
 }
 
 export interface InstallTarget {

@@ -25,7 +25,7 @@ from tinyagentos.agent_image import (
     base_image_url_for_alias,
     ensure_image_present,
 )
-from tinyagentos.auth_context import require_admin
+from tinyagentos.auth_context import require_admin, require_human_admin
 from tinyagentos.catalog.resolver import (
     DeviceCapability,
     ResolveErr,
@@ -72,6 +72,80 @@ def _get_app_runtime(manifest) -> str:
         return install_block.get("runtime", "either")
     # For manifests without install block (e.g., models), check top-level
     return getattr(manifest, "runtime", "either")
+
+
+async def _check_docker_runtime(request: Request, body: dict, manifest, app_id: str) -> JSONResponse | None:
+    """Check Docker availability for apps with runtime: docker.
+    
+    Returns a JSONResponse if Docker is required but not available (with consent
+    handling), or None if Docker is available or not required.
+    """
+    app_runtime = _get_app_runtime(manifest) if manifest else "either"
+    if app_runtime != "docker":
+        return None
+    
+    if _docker_available():
+        return None
+    
+    # Docker required but not available
+    if not body.get("docker_consent", False):
+        return JSONResponse(
+            {
+                "docker_required": True,
+                "app_id": app_id,
+                "message": (
+                    "This app requires Docker to run. Installing Docker will:"
+                    "\n- Add a network bridge (docker0) for container networking"
+                    "\n- Configure IP forwarding and firewall rules (iptables FORWARD chain)"
+                    "\n- Install Docker Engine and Docker Compose v2 plugin"
+                    "\n- Add the current user to the docker group (requires re-login)"
+                ),
+                "detail": "Set docker_consent=true in the request body to proceed with Docker installation.",
+            },
+            status_code=412,
+        )
+    
+    # User consented — verify this is a human admin session (not an agent or token).
+    if getattr(request.state, "via", None) != "session":
+        return JSONResponse(
+            {"error": "Docker installation requires a signed-in human admin session"},
+            status_code=403,
+        )
+    if not getattr(request.state, "is_admin", False):
+        return JSONResponse(
+            {"error": "Docker installation requires admin privileges"},
+            status_code=403,
+        )
+    
+    # User consented — check Docker availability via the audited helper.
+    # This returns docker_required with the exact command if Docker is not installed.
+    from tinyagentos.docker_setup import ensure_docker_on_demand
+    docker_result = await ensure_docker_on_demand()
+    if docker_result.get("docker_required"):
+        return JSONResponse(
+            {
+                "docker_required": True,
+                "app_id": app_id,
+                "command": docker_result.get("command", ""),
+                "message": docker_result.get("message", "Docker installation required"),
+            },
+            status_code=412,
+        )
+    if not docker_result.get("success"):
+        return JSONResponse(
+            {"error": f"Docker installation failed: {docker_result.get('error', 'unknown error')}"},
+            status_code=500,
+        )
+    
+    # Docker is now available (either pre-existing or just installed)
+    # Verify it works before proceeding
+    if not _docker_available():
+        return JSONResponse(
+            {"error": "Docker installation reported success but daemon is not reachable"},
+            status_code=500,
+        )
+    
+    return None
 
 
 _KNOWN_BACKENDS = {
@@ -664,42 +738,9 @@ async def _legacy_install(request: Request, body: dict, app_id: str | None, targ
         # If this app requires Docker (runtime: docker), check Docker availability.
         # Only owner/admin sessions can approve Docker install; agents cannot.
         if backend == "docker":
-            app_runtime = _get_app_runtime(manifest) if manifest else "none"
-            if app_runtime == "docker":
-                if not _docker_available():
-                    # Check if user has provided consent via docker_consent=true
-                    if not body.get("docker_consent", False):
-                        return JSONResponse(
-                            {
-                                "docker_required": True,
-                                "app_id": app_id,
-                                "message": (
-                                    "This app requires Docker to run. Installing Docker will:"
-                                    "\n- Add a network bridge (docker0) for container networking"
-                                    "\n- Configure IP forwarding and firewall rules (iptables FORWARD chain)"
-                                    "\n- Install Docker Engine and Docker Compose v2 plugin"
-                                    "\n- Add the current user to the docker group (requires re-login)"
-                                ),
-                                "detail": "Set docker_consent=true in the request body to proceed with Docker installation.",
-                            },
-                            status_code=412,
-                        )
-                    # User consented — install Docker on-demand via the audited helper.
-                    # This runs the same logic as the installer script's ensure_docker_for_apps().
-                    from tinyagentos.docker_setup import ensure_docker_on_demand
-                    docker_result = await ensure_docker_on_demand()
-                    if not docker_result.get("success"):
-                        return JSONResponse(
-                            {"error": f"Docker installation failed: {docker_result.get('error', 'unknown error')}"},
-                            status_code=500,
-                        )
-                # Docker is now available (either pre-existing or just installed)
-                # Verify it works before proceeding
-                if not _docker_available():
-                    return JSONResponse(
-                        {"error": "Docker installation reported success but daemon is not reachable"},
-                        status_code=500,
-                    )
+            runtime_check = await _check_docker_runtime(request, body, manifest, app_id)
+            if runtime_check is not None:
+                return runtime_check
         # Apps_dir defaults to data_dir/apps so an unprivileged install
         # works without /opt write access. Tests can override via
         # app.state.apps_dir on a tmp path.
@@ -1117,6 +1158,13 @@ async def install_app(request: Request):
             )
         if accepted_now and not already_accepted and license_store is not None:
             await license_store.record_acceptance(user_id, manifest.id, license_id)
+
+    # Runtime check: any app with runtime: docker gets the Docker check before install.
+    # This applies to both model and non-model manifests.
+    runtime_check = await _check_docker_runtime(request, body, manifest, manifest_id)
+    if runtime_check is not None:
+        progress.finish(install_id, success=False, error=runtime_check.body.decode() if hasattr(runtime_check, 'body') else "docker_required")
+        return runtime_check
 
     # Non-model manifests use the legacy method-driven path.
     if getattr(manifest, "type", "model") != "model":

@@ -61,6 +61,20 @@ def require_admin(request: Request) -> None:
     raise HTTPException(status_code=403, detail="forbidden")
 
 
+def require_human_admin(request: Request) -> None:
+    """FastAPI dependency: 403 unless the caller is a signed-in human admin session.
+
+    Unlike ``require_admin``, this refuses the host local token and any agent-bound
+    tokens. Only a session cookie from an authenticated admin user passes.
+    Use for irreversible system-wide actions that require explicit human consent
+    (e.g. Docker installation via the Store).
+    """
+    if getattr(request.state, "via", None) != "session":
+        raise HTTPException(status_code=403, detail="human admin session required")
+    if not getattr(request.state, "is_admin", False):
+        raise HTTPException(status_code=403, detail="admin privileges required")
+
+
 async def resolve_agent_owner(request: Request, agent_id: str, *, exact: bool = False) -> str | None:
     """Return the ``user_id`` that owns *agent_id* per the agent registry, or ``None``.
 

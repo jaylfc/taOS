@@ -228,14 +228,21 @@ class TestDockerConsentFlow:
         
         return SimpleManifest(install_dict, manifest_id, manifest_type, version)
 
-    @pytest.mark.asyncio
-    async def test_consent_proceeds_with_docker_install(self):
-        """When docker_consent=true, Docker is installed and app install proceeds."""
+    def _make_request(self, *, via: str = "session", is_admin: bool = True):
+        """Create a mock request with the given auth state."""
         request = MagicMock()
         request.app.state.registry = MagicMock()
         request.app.state.installed_apps = AsyncMock()
         request.app.state.apps_dir = None
         request.app.state.data_dir = "/tmp/test-data"
+        request.state.via = via
+        request.state.is_admin = is_admin
+        return request
+
+    @pytest.mark.asyncio
+    async def test_consent_proceeds_with_docker_install(self):
+        """When docker_consent=true from a human admin session, Docker is installed and app install proceeds."""
+        request = self._make_request(via="session", is_admin=True)
         
         install_dict = {"method": "docker", "runtime": "docker", "image": "test:latest", "ports": [8080]}
         manifest = self._make_manifest(install_dict, "test-app")
@@ -260,11 +267,7 @@ class TestDockerConsentFlow:
     @pytest.mark.asyncio
     async def test_docker_install_failure_returns_error(self):
         """If Docker installation fails, return error."""
-        request = MagicMock()
-        request.app.state.registry = MagicMock()
-        request.app.state.installed_apps = None
-        request.app.state.apps_dir = None
-        request.app.state.data_dir = "/tmp/test-data"
+        request = self._make_request(via="session", is_admin=True)
         
         install_dict = {"method": "docker", "runtime": "docker", "image": "test:latest"}
         manifest = self._make_manifest(install_dict, "test-app")
@@ -281,23 +284,101 @@ class TestDockerConsentFlow:
                     data = response.body.decode()
                     assert "Docker installation failed" in data
 
+    @pytest.mark.asyncio
+    async def test_agent_token_cannot_consent(self):
+        """Agent-bound token (via=registry_jwt) gets 403 even with docker_consent=true."""
+        request = self._make_request(via="registry_jwt", is_admin=True)
+        
+        install_dict = {"method": "docker", "runtime": "docker", "image": "test:latest"}
+        manifest = self._make_manifest(install_dict, "test-app")
+        
+        with patch("tinyagentos.routes.store_install._registry_get", return_value=manifest):
+            with patch("tinyagentos.routes.store_install._docker_available", return_value=False):
+                body = {"metadata": {}, "docker_consent": True}
+                response = await _legacy_install(request, body, "test-app", None)
+                
+                assert response.status_code == 403
+                data = response.body.decode()
+                assert "signed-in human admin session" in data.lower()
+
+    @pytest.mark.asyncio
+    async def test_local_token_cannot_consent(self):
+        """Host local token (via=local_token) gets 403 even with docker_consent=true."""
+        request = self._make_request(via="local_token", is_admin=True)
+        
+        install_dict = {"method": "docker", "runtime": "docker", "image": "test:latest"}
+        manifest = self._make_manifest(install_dict, "test-app")
+        
+        with patch("tinyagentos.routes.store_install._registry_get", return_value=manifest):
+            with patch("tinyagentos.routes.store_install._docker_available", return_value=False):
+                body = {"metadata": {}, "docker_consent": True}
+                response = await _legacy_install(request, body, "test-app", None)
+                
+                assert response.status_code == 403
+                data = response.body.decode()
+                assert "signed-in human admin session" in data.lower()
+
+    @pytest.mark.asyncio
+    async def test_non_admin_session_cannot_consent(self):
+        """Non-admin human session (via=session, is_admin=False) gets 403."""
+        request = self._make_request(via="session", is_admin=False)
+        
+        install_dict = {"method": "docker", "runtime": "docker", "image": "test:latest"}
+        manifest = self._make_manifest(install_dict, "test-app")
+        
+        with patch("tinyagentos.routes.store_install._registry_get", return_value=manifest):
+            with patch("tinyagentos.routes.store_install._docker_available", return_value=False):
+                body = {"metadata": {}, "docker_consent": True}
+                response = await _legacy_install(request, body, "test-app", None)
+                
+                assert response.status_code == 403
+                data = response.body.decode()
+                assert "requires admin privileges" in data.lower()
+
+    @pytest.mark.asyncio
+    async def test_anonymous_cannot_consent(self):
+        """Anonymous request (no via, no is_admin) gets 403."""
+        request = self._make_request(via=None, is_admin=False)
+        
+        install_dict = {"method": "docker", "runtime": "docker", "image": "test:latest"}
+        manifest = self._make_manifest(install_dict, "test-app")
+        
+        with patch("tinyagentos.routes.store_install._registry_get", return_value=manifest):
+            with patch("tinyagentos.routes.store_install._docker_available", return_value=False):
+                body = {"metadata": {}, "docker_consent": True}
+                response = await _legacy_install(request, body, "test-app", None)
+                
+                assert response.status_code == 403
+                data = response.body.decode()
+                assert "signed-in human admin session" in data.lower()
+
+
+    @pytest.mark.asyncio
+    async def test_docker_already_installed_proceeds_without_consent(self):
+        """When Docker is already installed, install proceeds without requiring consent."""
+        request = self._make_request(via="session", is_admin=True)
+        
+        install_dict = {"method": "docker", "runtime": "docker", "image": "test:latest", "ports": [8080]}
+        manifest = self._make_manifest(install_dict, "test-app")
+        
+        with patch("tinyagentos.routes.store_install._registry_get", return_value=manifest):
+            with patch("tinyagentos.routes.store_install._docker_available", return_value=True):
+                with patch("tinyagentos.installers.docker_installer.DockerInstaller") as mock_installer_class:
+                    mock_installer = AsyncMock()
+                    mock_installer.install.return_value = {"success": True, "host_port": 30000}
+                    mock_installer.start.return_value = {"success": True}
+                    mock_installer_class.return_value = mock_installer
+                    
+                    body = {"metadata": {}}  # No docker_consent needed
+                    response = await _legacy_install(request, body, "test-app", None)
+                    
+                    assert response.status_code == 200
+                    mock_installer.install.assert_called_once()
+                    mock_installer.start.assert_called_once()
+
 
 class TestEnsureDockerOnDemand:
     """Test the ensure_docker_on_demand function."""
-
-    @pytest.mark.asyncio
-    @patch("shutil.which")
-    @patch("subprocess.run")
-    @patch("os.makedirs")
-    @patch("builtins.open", new_callable=MagicMock)
-    async def test_ensure_docker_on_demand_success(self, mock_open, mock_makedirs, mock_run, mock_which):
-        """Test successful Docker installation."""
-        mock_which.side_effect = lambda cmd: "/usr/bin/" + cmd if cmd in ["docker", "apt-get", "systemctl", "groupadd", "usermod", "iptables"] else None
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        
-        result = await ensure_docker_on_demand()
-        
-        assert result["success"] is True
 
     @pytest.mark.asyncio
     @patch("shutil.which")
@@ -310,21 +391,34 @@ class TestEnsureDockerOnDemand:
             
             assert result["success"] is True
 
-
-class TestNonAdminAgentTokensRefused:
-    """Test that non-admin and agent tokens cannot approve Docker install."""
+    @pytest.mark.asyncio
+    @patch("shutil.which")
+    @patch.dict("os.environ", {"TAOS_SKIP_DOCKER": "0"})
+    async def test_ensure_docker_on_demand_not_installed(self, mock_which):
+        """Test when Docker is not installed - returns docker_required with command."""
+        mock_which.return_value = None
+        
+        with patch("tinyagentos.docker_setup._docker_running", return_value=False):
+            result = await ensure_docker_on_demand()
+            
+            assert result.get("docker_required") is True
+            assert "command" in result
+            assert "message" in result
+            assert "sudo" in result["command"]
 
     @pytest.mark.asyncio
-    async def test_agent_token_cannot_consent(self):
-        """Agent tokens are rejected by require_admin dependency."""
-        # The require_admin dependency already handles this
-        # This test documents the expected behavior
-        from tinyagentos.auth_context import require_admin
+    @patch("shutil.which")
+    @patch.dict("os.environ", {"TAOS_SKIP_DOCKER": "1"})
+    async def test_ensure_docker_on_demand_skip_docker(self, mock_which):
+        """Test TAOS_SKIP_DOCKER=1 returns docker_required with empty command."""
+        mock_which.return_value = None
         
-        # require_admin raises 403 for non-admin tokens
-        # We can't easily test the dependency without a full app setup
-        # but the existing auth tests cover this
-        pass
+        with patch("tinyagentos.docker_setup._docker_running", return_value=False):
+            result = await ensure_docker_on_demand()
+            
+            assert result.get("docker_required") is True
+            assert result["command"] == ""
+            assert "TAOS_SKIP_DOCKER=1" in result["message"]
 
 
 if __name__ == "__main__":

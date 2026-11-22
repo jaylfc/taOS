@@ -1,9 +1,10 @@
 """On-demand Docker installation helper for Store Docker apps.
 
-This module provides the audited Docker installation logic that is called
-when a user consents to installing Docker for a Store app that requires it.
-It mirrors the logic from scripts/install-server.sh ensure_docker_for_apps()
-but is callable from the Python API.
+This module provides the Docker availability check and returns a
+docker_required result with the exact command for the owner to run.
+The actual Docker installation must be performed by the owner via the
+install script (scripts/install-server.sh ensure_docker_for_apps) with
+root privileges, as the taos service account cannot install system packages.
 """
 from __future__ import annotations
 
@@ -11,7 +12,6 @@ import logging
 import os
 import shutil
 import subprocess
-import sys
 
 logger = logging.getLogger(__name__)
 
@@ -30,143 +30,66 @@ def _docker_running() -> bool:
         return False
 
 
-def _configure_docker_incus_coexistence() -> None:
-    """Configure Docker to coexist with Incus networking.
-
-    Sets ip-forward-no-drop=true in daemon.json and enables IPv4 forwarding.
-    """
-    import json
-
-    daemon_json = "/etc/docker/daemon.json"
-    data = {}
-    if os.path.exists(daemon_json):
-        try:
-            with open(daemon_json) as f:
-                data = json.load(f) or {}
-        except Exception:
-            data = {}
-
-    if data.get("ip-forward-no-drop") is not True:
-        data["ip-forward-no-drop"] = True
-        os.makedirs(os.path.dirname(daemon_json), exist_ok=True)
-        with open(daemon_json, "w") as f:
-            json.dump(data, f, indent=2)
-        logger.info("set Docker ip-forward-no-drop=true for incus coexistence")
-
-    # Ensure IPv4 forwarding is enabled
-    sysctl_conf = "/etc/sysctl.d/99-taos-forwarding.conf"
-    with open(sysctl_conf, "w") as f:
-        f.write("net.ipv4.conf.all.forwarding=1\n")
-    _run(["sysctl", "-p", sysctl_conf])
-    logger.info("enabled IPv4 forwarding for Docker/incus coexistence")
+def _get_install_script_path() -> str | None:
+    """Find the install-server.sh script path."""
+    # Check common locations
+    candidates = [
+        "/opt/tinyagentos/scripts/install-server.sh",
+        os.path.expanduser("~/tinyagentos/scripts/install-server.sh"),
+        "/usr/local/share/taos/scripts/install-server.sh",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    # Try to find it relative to this file
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    candidate = os.path.join(base, "scripts", "install-server.sh")
+    if os.path.exists(candidate):
+        return candidate
+    return None
 
 
 async def ensure_docker_on_demand() -> dict:
-    """Install Docker Engine and Compose v2 plugin on-demand.
+    """Check Docker availability and return docker_required if not installed.
 
-    This is the audited helper called when a user consents to Docker installation
-    for a Store app. It mirrors the logic from the install script but runs in
-    the Python context with proper error handling.
+    This function does NOT install Docker - the taos service account lacks
+    the necessary privileges. Instead, it returns a docker_required result
+    with the exact command the owner must run.
 
     Returns:
-        dict with 'success' (bool) and optionally 'error' (str)
+        dict with 'success' (bool), or 'docker_required' (bool) with 'command' (str)
     """
     if shutil.which("docker") and _docker_running():
         logger.info("Docker already installed and running")
         return {"success": True}
 
-    # Configure Docker/incus coexistence before first daemon start
-    if shutil.which("incus"):
-        _configure_docker_incus_coexistence()
+    # Honour TAOS_SKIP_DOCKER
+    if os.environ.get("TAOS_SKIP_DOCKER", "0") == "1":
+        logger.info("TAOS_SKIP_DOCKER=1 - Docker installation skipped")
+        return {
+            "docker_required": True,
+            "command": "",
+            "message": "Docker installation is disabled (TAOS_SKIP_DOCKER=1). Store Docker apps are unavailable.",
+        }
 
-    # Install Docker Engine
-    logger.info("installing Docker Engine (on-demand for Store app)")
-    had_docker = shutil.which("docker") is not None
+    # Find the install script to provide the exact command
+    script_path = _get_install_script_path()
+    if script_path:
+        command = f"sudo bash {script_path} --ensure-docker"
+    else:
+        # Fallback: provide the generic curl command
+        command = "curl -fsSL https://raw.githubusercontent.com/jaylfc/taOS/master/scripts/install-server.sh | sudo bash -s -- --ensure-docker"
 
-    try:
-        if shutil.which("apt-get"):
-            _run(["apt-get", "update", "-qq"], check=True)
-            if not had_docker:
-                _run(["apt-get", "install", "-y", "-qq", "docker.io"], check=True)
-        elif shutil.which("dnf"):
-            if not had_docker:
-                _run(["dnf", "install", "-y", "-q", "moby-engine"], check=True)
-        elif shutil.which("pacman"):
-            if not had_docker:
-                _run(["pacman", "-Sy", "--noconfirm", "--needed", "docker"], check=True)
-        elif shutil.which("apk"):
-            if not had_docker:
-                _run(["apk", "add", "--no-cache", "docker"], check=True)
-        else:
-            return {"success": False, "error": "unsupported package manager"}
-
-        # Install Compose v2 plugin
-        logger.info("installing Docker Compose v2 plugin")
-        compose_installed = False
-        if shutil.which("apt-get"):
-            # Try distro packages first
-            if _run(["apt-cache", "madison", "docker-compose-plugin"]).returncode == 0:
-                _run(["apt-get", "install", "-y", "-qq", "docker-compose-plugin"], check=True)
-                compose_installed = True
-            elif _run(["apt-cache", "madison", "docker-compose-v2"]).returncode == 0:
-                _run(["apt-get", "install", "-y", "-qq", "docker-compose-v2"], check=True)
-                compose_installed = True
-            else:
-                # Fall back to Docker's official repo (like install-server.sh does)
-                # This is a simplified version; the full fallback is complex
-                logger.warning("compose plugin not in distro repo; manual install may be needed")
-        elif shutil.which("dnf"):
-            _run(["dnf", "install", "-y", "-q", "docker-compose"], check=True)
-            compose_installed = True
-        elif shutil.which("pacman"):
-            _run(["pacman", "-Sy", "--noconfirm", "--needed", "docker-compose"], check=True)
-            compose_installed = True
-        elif shutil.which("apk"):
-            _run(["apk", "add", "--no-cache", "docker-cli-compose"], check=True)
-            compose_installed = True
-
-        if not compose_installed and shutil.which("apt-get"):
-            logger.warning("Docker Compose v2 plugin may not be installed")
-
-        # Start and enable Docker daemon
-        if shutil.which("systemctl"):
-            _run(["systemctl", "enable", "--now", "docker"], check=False)
-        elif shutil.which("service"):
-            _run(["service", "docker", "start"], check=False)
-        elif shutil.which("rc-update"):
-            _run(["rc-update", "add", "docker", "default"], check=False)
-            _run(["service", "docker", "start"], check=False)
-
-        # Wait for daemon to be ready
-        import asyncio
-        for _ in range(30):
-            if _docker_running():
-                break
-            await asyncio.sleep(1)
-        else:
-            return {"success": False, "error": "Docker daemon did not start in time"}
-
-        # Add current user to docker group
-        user = os.environ.get("SUDO_USER") or os.environ.get("USER")
-        if user and user != "root":
-            _run(["groupadd", "-f", "docker"], check=False)
-            _run(["usermod", "-aG", "docker", user], check=False)
-            logger.info(f"added '{user}' to docker group (re-login required)")
-
-        # Restart Docker if it was already running to pick up ip-forward-no-drop
-        if had_docker and shutil.which("systemctl"):
-            _run(["systemctl", "restart", "docker"], check=False)
-
-        # Ensure FORWARD policy is ACCEPT for incus coexistence
-        if shutil.which("incus") and shutil.which("iptables"):
-            _run(["iptables", "-P", "FORWARD", "ACCEPT"], check=False)
-
-        logger.info("Docker installed and running successfully")
-        return {"success": True}
-
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Docker installation failed: {e.stderr}")
-        return {"success": False, "error": e.stderr.strip() or str(e)}
-    except Exception as e:
-        logger.exception("Docker installation failed")
-        return {"success": False, "error": str(e)}
+    logger.info("Docker not available - returning docker_required with command")
+    return {
+        "docker_required": True,
+        "command": command,
+        "message": (
+            "This app requires Docker to run. Docker must be installed by the system owner "
+            "with root privileges. Run the following command to install Docker:\n\n"
+            f"  {command}\n\n"
+            "This will install Docker Engine, Docker Compose v2 plugin, and configure "
+            "Docker to coexist with Incus networking. Set TAOS_SKIP_DOCKER=1 to disable "
+            "Docker installation (Store Docker apps will then be unavailable)."
+        ),
+    }

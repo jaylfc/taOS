@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   Search, Download, Trash2, Check, Package, Loader2, Server,
   Compass, Grid2x2, Bot, Brain, Plug, Wrench, Star, Globe,
-  ArrowDownToLine, RefreshCw, Users, Cpu, Sparkles,
+  ArrowDownToLine, RefreshCw, Users, Cpu, Sparkles, Box,
 } from "lucide-react";
 import { Input } from "@/components/ui";
 import { fetchLatestFrameworks, LatestVersion } from "@/lib/framework-api";
@@ -18,6 +18,7 @@ import { emitAppEvent, APP_INSTALLED } from "@/lib/app-event-bus";
 import { TaosAppsSection } from "./TaosAppsSection";
 import { ImportAppButton } from "./ImportAppButton";
 import { LicenseAcceptDialog } from "./LicenseAcceptDialog";
+import { DockerConsentDialog } from "./DockerConsentDialog";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import { MobileStore } from "./MobileStore";
 import { AppIcon, StoreCover } from "./AppIcon";
@@ -340,7 +341,7 @@ function formatStars(n: number): string {
    AppCard -- used in grid views (non-discover sections)
    ------------------------------------------------------------------ */
 
-function AppCard(props: {
+export function AppCard(props: {
   app: CatalogApp;
   affected: number;
   onInstall: (id: string) => void;
@@ -424,13 +425,19 @@ function AppCard(props: {
   const [licenseGate, setLicenseGate] = useState<LicenseGate | null>(null);
   const [licenseSubmitting, setLicenseSubmitting] = useState(false);
 
-  /** POST install-v2. Returns "ok" | "gated" | "error" — "gated" means the
+  // Docker consent gate state
+  interface DockerGate { appId: string; command: string; message: string }
+  const [dockerGate, setDockerGate] = useState<DockerGate | null>(null);
+  const [dockerSubmitting, setDockerSubmitting] = useState(false);
+
+  /** POST install-v2. Returns "ok" | "gated" | "docker" | "error" — "gated" means the
    * backend returned 412 needs_license_acceptance (non-commercial weights,
-   * #169) and licenseGate state is now set so the accept dialog renders. */
-  const postInstall = async (accepted: boolean): Promise<"ok" | "gated" | "error"> => {
+   * #169), "docker" means 412 docker_required. */
+  const postInstall = async (accepted: boolean): Promise<"ok" | "gated" | "docker" | "error"> => {
     const body: Record<string, unknown> = { app_id: app.id, target_remote: selectedTarget };
     if (selectedVariant !== "auto") body.variant_id = selectedVariant;
     if (accepted) body.accepted = true;
+    if (dockerGate) body.docker_consent = true;
     const res = await fetch("/api/store/install-v2", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(body) });
     if (res.status === 412) {
       try {
@@ -438,6 +445,10 @@ function AppCard(props: {
         if (gate?.needs_license_acceptance) {
           setLicenseGate({ weightsLicense: String(gate.weights_license ?? ""), name: String(gate.name ?? app.name), text: String(gate.text ?? "") });
           return "gated";
+        }
+        if (gate?.docker_required) {
+          setDockerGate({ appId: String(gate.app_id ?? app.id), command: String(gate.command ?? ""), message: String(gate.message ?? "") });
+          return "docker";
         }
       } catch { /* fall through to generic error below */ }
     }
@@ -461,7 +472,7 @@ function AppCard(props: {
         onUninstall(app.id);
       } else {
         const outcome = await postInstall(false);
-        if (outcome === "gated") { setBusy(false); return; }
+        if (outcome === "gated" || outcome === "docker") { setBusy(false); return; }
       }
     } catch (e) { setError(e instanceof Error ? e.message : "Network error"); }
     setBusy(false);
@@ -484,6 +495,20 @@ function AppCard(props: {
   };
 
   const handleLicenseDecline = () => { setLicenseGate(null); setBusy(false); };
+
+  const handleDockerAccept = async () => {
+    setDockerSubmitting(true);
+    setBusy(true);
+    try {
+      const outcome = await postInstall(true);
+      if (outcome !== "docker") setDockerGate(null);
+    } catch (e) { setError(e instanceof Error ? e.message : "Network error"); setDockerGate(null); }
+    setDockerSubmitting(false);
+    setBusy(false);
+    setTimeout(() => setProgress(null), 1500);
+  };
+
+  const handleDockerDecline = () => { setDockerGate(null); setBusy(false); };
 
   const handleOpen = () => {
     window.dispatchEvent(new CustomEvent("taos:open-app", { detail: { app: "agents" } }));
@@ -540,6 +565,16 @@ function AppCard(props: {
             aria-label={`${app.name} uses non-commercial model weights${app.weights_license ? `: ${app.weights_license}` : ""}`}
           >
             Non-commercial weights
+          </span>
+        )}
+        {!app.installed && app.runtime === "docker" && (
+          <span
+            className="inline-flex items-center gap-1 self-start text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-blue-700/30 text-blue-200"
+            title="This app requires Docker to run"
+            aria-label={`${app.name} requires Docker`}
+          >
+            <Box className="w-3 h-3 shrink-0" />
+            Needs Docker
           </span>
         )}
         <p className="text-[11.5px] text-shell-text-secondary leading-relaxed flex-1">{app.description}</p>
@@ -642,6 +677,17 @@ function AppCard(props: {
           error={error}
           onAccept={handleLicenseAccept}
           onDecline={handleLicenseDecline}
+        />
+      )}
+      {dockerGate && (
+        <DockerConsentDialog
+          appId={dockerGate.appId}
+          command={dockerGate.command}
+          message={dockerGate.message}
+          submitting={dockerSubmitting}
+          error={error}
+          onAccept={handleDockerAccept}
+          onDecline={handleDockerDecline}
         />
       )}
     </div>
