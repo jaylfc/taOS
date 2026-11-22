@@ -35,6 +35,12 @@ services or file paths unless the user asks how it works.
 - The dock at the bottom holds Messages, Agents, Files and Store, plus an All
   Apps button (the Launchpad) and an app switcher button.
 
+## On-screen keyboard
+
+- When a text field is focused, a system on-screen keyboard opens so you can type.
+- It follows the phone's light or dark theme.
+- It can be turned on or off, and is off by default.
+
 ## Launchpad and the app switcher
 
 - Open the Launchpad with the All Apps button in the dock, or "Open Launchpad"
