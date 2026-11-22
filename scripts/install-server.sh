@@ -2271,6 +2271,7 @@ if [[ -z "${TAOS_SKIP_QMD:-}" ]]; then
                     -e "s|__TAOS_USER__|${taos_user}|g" \
                     -e "s|__TAOS_GROUP__|${taos_group}|g" \
                     -e "s|__TAOS_QMD_BIN__|${taos_qmd_bin}|g" \
+                    -e "s|__TAOS_DATA_DIR__|${INSTALL_DIR}/data|g" \
                     scripts/systemd/qmd.service > /tmp/qmd.service.rendered
                 $local_sudo install -m 0644 /tmp/qmd.service.rendered /etc/systemd/system/qmd.service
                 $local_sudo rm -f /tmp/qmd.service.rendered

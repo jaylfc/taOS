@@ -39,9 +39,11 @@ from tinyagentos.auth_context import (
     agent_bound_name,
     current_user,
     is_host_caller,
+    is_legacy_owner,
     require_agent_owner_or_admin,
 )
 from tinyagentos.otel.trace_context import build_trace_context_headers
+from tinyagentos.qmd_service import qmd_honours_dbpath
 from tinyagentos.routes.delegation import _resolve_agent_name
 
 logger = logging.getLogger(__name__)
@@ -92,7 +94,7 @@ async def _require_session_agent_access(request: Request, agent: str | None) -> 
     """
     if not agent:
         return
-    if getattr(request.state, "via", None) == "local_token":
+    if getattr(request.state, "via", None) == "local_token" or is_legacy_owner(request):
         return
     # Authorise the exact component _agent_db_path will use.
     await require_agent_owner_or_admin(request, current_user(request), agent.strip())
@@ -107,6 +109,20 @@ class SearchRequest(BaseModel):
     # Optional W3C trace context — callers (adapters, librarian) pass the
     # active conversation_id so the memory backend can nest its spans.
     conversation_id: str | None = None
+
+
+async def _require_qmd_dbpath(request: Request) -> None:
+    """503 when qmd cannot honour ``dbPath``: it would answer from ONE shared index.
+
+    Called after authorisation and BEFORE ``_agent_db_path`` so a refusal
+    creates nothing on disk. An unreachable qmd (probe result unknown) falls
+    through to the route's normal 502 handling.
+    """
+    if await qmd_honours_dbpath(request.app.state) is False:
+        raise HTTPException(
+            status_code=503,
+            detail="memory service needs updating: qmd cannot keep agent and personal memory apart",
+        )
 
 
 def _qmd_base(request: Request) -> str:
@@ -137,7 +153,11 @@ def _user_index_path(request: Request) -> Path:
     if agent_bound_name(request):
         # A bound agent token defaults to its own agent before reaching here.
         raise HTTPException(status_code=403, detail="forbidden")
-    if is_host_caller(request) or getattr(request.state, "is_admin", False):
+    if (
+        is_host_caller(request)
+        or getattr(request.state, "is_admin", False)
+        or is_legacy_owner(request)
+    ):
         return root / "index.sqlite"
     uid = getattr(request.state, "user_id", None)
     if not uid:
@@ -231,6 +251,7 @@ async def memory_browse(
     params: dict = {"limit": limit, "offset": offset}
     if collection:
         params["collection"] = collection
+    await _require_qmd_dbpath(request)
     params["dbPath"] = _agent_db_path(request, agent)
     headers = build_trace_context_headers(conversation_id=conversation_id)
     try:
@@ -325,6 +346,7 @@ async def memory_search(request: Request, body: SearchRequest):
             # Signed-in session: owner or admin only
             await _require_session_agent_access(request, body.agent)
 
+    await _require_qmd_dbpath(request)
     db_path = _agent_db_path(request, body.agent)
     search_fn = _qmd_vsearch if body.mode == "semantic" else _qmd_search
 
@@ -376,6 +398,7 @@ async def memory_collections(
             await _require_session_agent_access(request, agent_name)
 
     http_client = request.app.state.http_client
+    await _require_qmd_dbpath(request)
     params: dict = {"dbPath": _agent_db_path(request, agent_name)}
     headers = build_trace_context_headers(conversation_id=conversation_id)
     try:
@@ -415,6 +438,7 @@ async def memory_delete_chunk(
         await _require_session_agent_access(request, agent)
 
     http_client = request.app.state.http_client
+    await _require_qmd_dbpath(request)
     payload: dict = {"hash": content_hash, "dbPath": _agent_db_path(request, agent)}
     headers = build_trace_context_headers(conversation_id=conversation_id)
     try:

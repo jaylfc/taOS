@@ -156,6 +156,25 @@ def is_host_caller(request: Request) -> bool:
     )
 
 
+def is_legacy_owner(request: Request) -> bool:
+    """True for a session on a legacy single-password install.
+
+    Such an install has no user records, so its session carries an empty
+    ``user_id`` and ``is_admin`` False; the one person who knows the password is
+    the install owner. Only honoured while the store really has no users, so a
+    stale empty-id session can never act as an owner once accounts exist.
+    """
+    if getattr(request.state, "via", None) != "session":
+        return False
+    if getattr(request.state, "user_id", None) != "":
+        return False
+    auth = getattr(request.app.state, "auth", None)
+    try:
+        return auth is not None and auth.get_primary_user() is None
+    except Exception:
+        return False
+
+
 def is_human_admin(request: Request) -> bool:
     """True for an admin session or the unbound host token, never an agent token.
 
@@ -164,7 +183,11 @@ def is_human_admin(request: Request) -> bool:
     """
     if agent_bound_name(request):
         return False
-    return bool(getattr(request.state, "is_admin", False)) or is_host_caller(request)
+    return (
+        bool(getattr(request.state, "is_admin", False))
+        or is_host_caller(request)
+        or is_legacy_owner(request)
+    )
 
 
 async def require_agent_access(
@@ -187,7 +210,7 @@ async def require_agent_access(
         if not allow_bound or name != bound:
             raise HTTPException(status_code=403, detail="forbidden")
         return
-    if is_host_caller(request):
+    if is_host_caller(request) or is_legacy_owner(request):
         return
     await require_agent_owner_or_admin(request, current_user(request), name, exact=exact)
 

@@ -56,7 +56,7 @@ export QMD_SERVER=http://localhost:7833  # for CLI operations
 A single `qmd serve` runs on the host:
 
 ```bash
-qmd serve --port 7832 --bind 0.0.0.0 --backend rkllama --rkllama-url http://localhost:7833
+qmd serve --port 7832 --bind 127.0.0.1 --backend rkllama --rkllama-url http://localhost:7833
 ```
 
 ## Systemd Service (Host)
@@ -70,7 +70,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/qmd serve --port 7832 --bind 0.0.0.0 --backend rkllama --rkllama-url http://localhost:7833
+ExecStart=/usr/local/bin/qmd serve --port 7832 --bind 127.0.0.1 --backend rkllama --rkllama-url http://localhost:7833
 Restart=on-failure
 RestartSec=5
 Environment=NODE_ENV=production
@@ -167,3 +167,21 @@ curl -X POST http://localhost:7832/ingest \
   -H "Content-Type: application/json" \
   -d '{"body": "content to embed", "title": "note", "collection": "knowledge", "dbPath": "data/agent-memory/agent-alpha/index.sqlite"}'
 ```
+
+## Upgrading an existing install
+
+New installs get `@jaylfc/qmd@2.8.3-taos.2`, listening on `127.0.0.1` only, with
+`QMD_SERVE_DB_ROOT` set to the taOS data directory. Older qmd releases ignore
+`dbPath` and answer every request from one shared index, so taOS refuses
+per-agent and per-person memory calls (HTTP 503, "memory service needs updating")
+until qmd is upgraded. The taOS updater cannot do this itself (qmd is installed
+globally as root). On an existing install, the machine owner runs once:
+
+```bash
+sudo bash scripts/upgrade-qmd.sh --local-only
+```
+
+`--local-only` also limits qmd to this machine; leave it off if another machine
+must reach qmd (then firewall port 7832 to the hosts you trust). To change the
+bind later, set `QMD_BIND` in `/etc/default/qmd` (it overrides the unit) and run
+`sudo systemctl restart qmd`. Existing index files are kept as they are.

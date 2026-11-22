@@ -43,6 +43,8 @@ def _make_index(path, rows):
 def _fake_qmd(request: httpx.Request) -> httpx.Response:
     """Stands in for ``qmd serve``; honours ``dbPath`` like the real service."""
     parsed = urlparse(str(request.url))
+    if request.method == "POST" and json.loads(request.content or b"{}") == {}:
+        return httpx.Response(400, json={"error": "hash must be a hex content hash"})  # capability probe
     if request.method == "GET":
         query = parse_qs(parsed.query)
         db = query["dbPath"][0]

@@ -230,12 +230,12 @@ async def test_framework_update(w, monkeypatch):
     monkeypatch.setitem(FRAMEWORKS["openclaw"], "release_source", {"type": "github"})
     m = AsyncMock()
     monkeypatch.setattr(fwmod._runner, "start_update", m)
-    for who in ("alice", "bob", "alice_tok", "bob_tok"):
+    for who in ("alice", "alice_tok", "bob_tok"):
         r = await c[who].post("/api/agents/bob-agent/framework/update", json={})
         assert r.status_code == 403, who
     assert (await c["anon"].post("/api/agents/bob-agent/framework/update", json={})).status_code == 401
     assert not m.called
-    for who in ("admin", "host"):
+    for who in ("bob", "admin", "host"):
         for a in app.state.config.agents:
             a["framework_update_status"] = "idle"
         r = await c[who].post("/api/agents/bob-agent/framework/update", json={})
