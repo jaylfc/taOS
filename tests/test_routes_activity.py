@@ -315,8 +315,9 @@ async def test_activity_gpus_sorted_by_pci_bus_id(client, monkeypatch):
         npu: _NpuInfo = field(default_factory=_NpuInfo)
         gpu: _GpuInfo = field(default_factory=_GpuInfo)
         gpus: list = field(default_factory=lambda: [
-            _GpuInfo(type="nvidia", model="NVIDIA GeForce RTX 3090", vram_mb=24576),
+            # Profile order is PCI bus order: iGPU 00:02.0 before dGPU 01:00.0.
             _GpuInfo(type="intel", model="Intel UHD Graphics 630", vram_mb=0),
+            _GpuInfo(type="nvidia", model="NVIDIA GeForce RTX 3090", vram_mb=24576),
         ])
         disk: _DiskInfo = field(default_factory=_DiskInfo)
         os: _OsInfo = field(default_factory=_OsInfo)
@@ -325,8 +326,8 @@ async def test_activity_gpus_sorted_by_pci_bus_id(client, monkeypatch):
     monkeypatch.setattr(client._transport.app.state, "hardware_profile", profile, raising=False)
     data = (await client.get("/api/activity")).json()
     assert isinstance(data["gpus"], list)
-    assert len(data["gpus"]) >= 2
-    # The gpus array should have entries for both GPUs
-    gpu_types = [g["type"] for g in data["gpus"]]
-    assert "nvidia" in gpu_types
-    assert "intel" in gpu_types
+    # The route must keep the profile's PCI order, not regroup by vendor.
+    assert [(g["type"], g["model"]) for g in data["gpus"]] == [
+        ("intel", "Intel UHD Graphics 630"),
+        ("nvidia", "NVIDIA GeForce RTX 3090"),
+    ]
