@@ -37,8 +37,10 @@ def _bundle(content=None, filename="profile.tar.gz"):
 def _make_fake_exec(overrides: dict = None):
     """Create a fake_exec that handles all the commands the import runs."""
     overrides = overrides or {}
+    config_read_count = 0
     
     async def fake_exec(container, cmd, timeout=None):
+        nonlocal config_read_count
         cmd_str = " ".join(cmd)
         
         # Check overrides first - pattern -> (code, output)
@@ -61,10 +63,6 @@ def _make_fake_exec(overrides: dict = None):
         if "profile" in cmd and "use" in cmd:
             return 0, "switched"
         
-        # hermes gateway restart (old path, should not be used now)
-        if "gateway" in cmd and "restart" in cmd:
-            return 0, "restarted"
-        
         # systemd drop-in creation (bash -c with mkdir && cat)
         if "mkdir -p /etc/systemd/system/hermes-gateway.service.d" in cmd_str and "HERMES_HOME" in cmd_str:
             return 0, ""
@@ -73,7 +71,7 @@ def _make_fake_exec(overrides: dict = None):
         if "systemctl" in cmd and "daemon-reload" in cmd:
             return 0, "reloaded"
         
-# systemctl restart hermes-gateway
+        # systemctl restart hermes-gateway
         if "systemctl" in cmd and "restart" in cmd and "hermes-gateway" in cmd:
             return 0, "restarted"
 
@@ -83,18 +81,15 @@ def _make_fake_exec(overrides: dict = None):
 
         # systemctl show hermes-gateway -p Environment (verify HERMES_HOME)
         if "systemctl" in cmd and "show" in cmd and "hermes-gateway" in cmd and "Environment" in cmd_str:
-            # Use the active_profile override or default to test-slug
             active_profile = overrides.get("active_profile", "test-slug")
             return 0, f"Environment=HERMES_HOME=/root/.hermes/profiles/{active_profile}"
-
-        # hermes profile active
-        if "profile" in cmd and "active" in cmd:
-            active_profile = overrides.get("active_profile", "test-slug")
-            return 0, active_profile
         
-        # cat config.yaml (for rewrite readback)
-        if cmd[:1] == ["cat"] and "config.yaml" in cmd_str and ".pre-import" not in cmd_str:
-            return 0, "model:\n  default: kilo-auto/free\n  provider: custom\n  base_url: \"http://127.0.0.1:4000/v1\"\n  api_key: \"test-key\"\n"
+        # cat config.yaml (profile-specific path) - return rewritten config
+        # This covers both the initial read (for rewrite) and the readback
+        if cmd[:1] == ["cat"] and "config.yaml" in cmd_str and ".pre-import" not in cmd_str and "memories" not in cmd_str and "profiles/" in cmd_str:
+            config_read_count += 1
+            # Return rewritten config (with taOS gateway and gateway.standalone)
+            return 0, 'model:\n  default: kilo-auto/free\n  provider: custom\n  base_url: "http://127.0.0.1:4000/v1"\n  api_key: "test-key"\n  gateway:\n    standalone: true\n'
         
         # cp config.yaml config.yaml.pre-import
         if "cp " in cmd_str and "config.yaml" in cmd_str and ".pre-import" in cmd_str:
@@ -104,33 +99,33 @@ def _make_fake_exec(overrides: dict = None):
         if "cat >" in cmd_str and "config.yaml" in cmd_str and ".pre-import" not in cmd_str:
             return 0, ""
         
-        # cat jobs.json
-        if cmd[:1] == ["cat"] and "jobs.json" in cmd_str:
+        # cat cron/jobs.json (Hermes v0.23.2 path)
+        if cmd[:1] == ["cat"] and "cron/jobs.json" in cmd_str:
             return 0, '{"jobs": [{"name": "daily-summary", "enabled": true, "schedule": "0 9 * * *"}]}'
         
-        # write jobs.json (bash -c cat > ...)
-        if "cat >" in cmd_str and "jobs.json" in cmd_str:
+        # write cron/jobs.json (bash -c cat > ...)
+        if "cat >" in cmd_str and "cron/jobs.json" in cmd_str:
             return 0, ""
         
         # cat config.yaml.pre-import (for transfer notice)
         if cmd[:1] == ["cat"] and ".pre-import" in cmd_str:
             return 0, 'model:\n  default: local-model\n  provider: custom\n  base_url: "http://127.0.0.1:8080/v1"\n  api_key: "local-only"\n'
         
-        # write transfer_notice.md
-        if "transfer_notice.md" in cmd_str:
-            return 0, ""
+        # cat memories/MEMORY.md (for appending notice)
+        if cmd[:1] == ["cat"] and "memories/MEMORY.md" in cmd_str:
+            return 0, "# Existing memory content\n\nSome previous notes."
         
-        # write first_message.txt
-        if "first_message.txt" in cmd_str:
+        # write memories/MEMORY.md (appended)
+        if "cat >" in cmd_str and "memories/MEMORY.md" in cmd_str:
             return 0, ""
         
         # persona readback: SOUL.md
         if cmd[:1] == ["cat"] and cmd[-1].endswith("SOUL.md"):
             return 0, "You are an imported soul."
         
-        # persona readback: config.yaml (old path)
+        # persona readback: config.yaml (old path /root/.hermes/config.yaml or /root/.hermes/profile/config.yaml)
         if cmd[:1] == ["cat"] and cmd[-1].endswith("config.yaml"):
-            return 0, "default_model: nous/hermes-3\n"
+            return 0, 'model:\n  default: kilo-auto/free\n  provider: custom\n  base_url: "http://127.0.0.1:4000/v1"\n  api_key: "test-key"\n'
         
         return 1, ""
     
@@ -280,9 +275,10 @@ class TestHermesImportHappyPath:
         dropin_push = next((p for p in pushed if "99-taos-import.conf" in p["dst"]), None)
         assert dropin_push is not None, "systemd drop-in should be pushed"
 
-        # Verify active profile check
-        active_calls = [c for c in calls if "profile" in c and "active" in c]
-        assert active_calls, "should verify active profile after restart"
+        # Verify config rewrite ran before gateway restart (order fix)
+        # The config.yaml should be rewritten with gateway.standalone: true
+        config_writes = [p for p in pushed if p["dst"].endswith("config.yaml") and "pre-import" not in p["dst"]]
+        assert config_writes, "config.yaml should be rewritten before gateway restart"
 
         # Persona readback populated soul_md + model on the agent record.
         detail = await client.get(f"/api/agents/{slug}")

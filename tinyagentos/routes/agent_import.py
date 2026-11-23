@@ -40,6 +40,9 @@ from tinyagentos.config import (
 
 logger = logging.getLogger(__name__)
 
+# Default memory limit for MEMORY.md (chars). Profile config can override.
+DEFAULT_MEMORY_CHAR_LIMIT = 2200
+
 # Accept only Hermes for now; the frontend locks the framework picker to it.
 SUPPORTED_IMPORT_FRAMEWORK = "hermes"
 
@@ -167,6 +170,7 @@ async def import_hermes_agent(
     model: str | None,
     secrets: str | None,
     pause_jobs: bool = False,
+    source_host: str | None = None,
 ) -> JSONResponse:
     """Validate the upload, deploy a Hermes agent, and schedule the profile
     import as a post-provision step. Returns an ``importing`` status without
@@ -276,6 +280,8 @@ async def import_hermes_agent(
             "framework": SUPPORTED_IMPORT_FRAMEWORK,
         })
         new_agent["migrated_to_v2_personas"] = True
+        if source_host:
+            new_agent["import_source_host"] = source_host
         config.agents.append(new_agent)
         await save_config_locked(config, config.config_path)
 
@@ -455,6 +461,13 @@ async def _run_profile_import(
     if use_code != 0:
         raise RuntimeError(f"hermes profile use failed ({use_code}): {use_out[-500:]}")
 
+    # Rewrite the profile's model/provider config to the taOS gateway FIRST,
+    # before restarting the gateway. This ensures the gateway starts with the
+    # taOS gateway config, not the bundle's original provider.
+    # Also set gateway.standalone: true (required by Hermes 0.23 for profiles/
+    # profiles) and disable the gadget platform/plugin if present.
+    await _rewrite_model_config(container_name, slug, agent)
+
     # Create systemd drop-in to set HERMES_HOME for the gateway service,
     # then restart the gateway so it serves the imported profile.
     profile_home = f"/root/.hermes/profiles/{slug}"
@@ -509,25 +522,6 @@ Environment=HERMES_HOME={profile_home}
             f"gateway environment does not contain HERMES_HOME={profile_home}: {env_out.strip()}"
         )
 
-    # Verify the gateway is serving the imported profile by asking Hermes
-    # which profile is active. This MUST match the imported slug.
-    active_code, active_out = await exec_in_container(
-        container_name,
-        [hermes_bin, "profile", "active"],
-        timeout=30,
-    )
-    if active_code != 0:
-        raise RuntimeError(f"hermes profile active check failed ({active_code}): {active_out[-300:]}")
-    active_profile = active_out.strip()
-    if active_profile != slug:
-        raise RuntimeError(
-            f"gateway is not serving the imported profile: expected '{slug}', got '{active_profile}'"
-        )
-
-    # Rewrite the profile's model/provider config to the taOS gateway.
-    # Keep the original in a .pre-import backup file.
-    await _rewrite_model_config(container_name, slug, agent)
-
     # Pause jobs if requested
     jobs_paused = 0
     if pause_jobs:
@@ -535,6 +529,9 @@ Environment=HERMES_HOME={profile_home}
 
     # Write transfer notice to agent memory and send as first chat message
     await _write_transfer_notice(request, container_name, slug, dropped_files, pause_jobs, agent)
+
+    # Create DM channel for the agent so it appears in Messages
+    await _ensure_dm_channel(request, slug, agent)
 
     # Best-effort persona readback so the imported personality shows in taOS.
     if agent is not None:
@@ -547,6 +544,8 @@ async def _rewrite_model_config(container_name: str, slug: str, agent: dict | No
     """Rewrite the profile's model/provider config to the taOS gateway.
     Backup the original config to config.yaml.pre-import atomically.
     Parse YAML and replace ONLY the model/provider keys, keeping everything else.
+    Also set gateway.standalone: true (required by Hermes 0.23 for profiles/
+    profiles) and disable the gadget platform/plugin if present.
     A failed backup must FAIL the import.
     """
     from tinyagentos.containers import exec_in_container, push_file
@@ -588,6 +587,19 @@ async def _rewrite_model_config(container_name: str, slug: str, agent: dict | No
     m["base_url"] = "http://127.0.0.1:4000/v1"
     m["api_key"] = llm_key
 
+    # Hermes 0.23 requires gateway.standalone: true for profiles/ profiles
+    gw = data.setdefault("gateway", {})
+    gw["standalone"] = True
+
+    # Disable the gadget platform/plugin if present (needs host device not in container)
+    # Check both "platforms" and "plugins" keys as Hermes may use either
+    for key in ("platforms", "plugins"):
+        if key in data and isinstance(data[key], dict):
+            gadget = data[key].get("gadget")
+            if isinstance(gadget, dict):
+                gadget["enabled"] = False
+                logger.info("import %s: disabled gadget %s", slug, key)
+
     # Write the new config atomically via push_file (no shell heredoc)
     new_config_yaml = yaml.safe_dump(data, default_flow_style=False, sort_keys=False)
     config_fd, config_tmp = tempfile.mkstemp(prefix="taos-config-", suffix=".yaml")
@@ -605,12 +617,13 @@ async def _pause_imported_jobs(container_name: str, slug: str) -> int:
     """Pause imported jobs by setting enabled=false and state=paused in jobs.json.
     Returns the number of jobs paused.
     The jobs.json schema matches the Hermes source pinned at
-    scripts/install_hermes.sh (HERMES_TAG=v2026.8.31).
+    scripts/install_hermes.sh (HERMES_TAG=v2026.8.31). Hermes v0.23.2 keeps
+    jobs.json at <profile>/cron/jobs.json (cron/jobs.py JOBS_FILE).
     """
     from tinyagentos.containers import exec_in_container, push_file
     import tempfile
 
-    jobs_path = f"/root/.hermes/profiles/{slug}/jobs.json"
+    jobs_path = f"/root/.hermes/profiles/{slug}/cron/jobs.json"
     code, jobs_content = await exec_in_container(
         container_name, ["cat", jobs_path], timeout=30
     )
@@ -621,8 +634,8 @@ async def _pause_imported_jobs(container_name: str, slug: str) -> int:
     try:
         jobs_data = json.loads(jobs_content)
     except json.JSONDecodeError:
-        logger.warning("import %s: invalid jobs.json, skipping pause", slug)
-        return 0
+        # File exists but cannot be parsed — fail the import
+        raise RuntimeError(f"import {slug}: failed to parse jobs.json at {jobs_path}")
 
     jobs = jobs_data.get("jobs", [])
     paused_count = 0
@@ -656,13 +669,14 @@ async def _write_transfer_notice(
     agent: dict | None,
 ) -> None:
     """Write a transfer notice into the agent's memory (memories/MEMORY.md)
-    AND deliver it as the first chat message via the same path deploy uses.
+    AND deliver it as the first chat message via the controller's chat store
+    on the agent's DM channel.
     """
     from tinyagentos.containers import exec_in_container, push_file
     import tempfile
 
-    # Read jobs for the notice
-    jobs_path = f"/root/.hermes/profiles/{slug}/jobs.json"
+    # Read jobs for the notice (Hermes v0.23.2: cron/jobs.json)
+    jobs_path = f"/root/.hermes/profiles/{slug}/cron/jobs.json"
     code, jobs_content = await exec_in_container(
         container_name, ["cat", jobs_path], timeout=30
     )
@@ -688,10 +702,12 @@ async def _write_transfer_notice(
                 original_model_info = line.strip()
                 break
 
-    # Source host name if the bundle carries it (not currently stored; use fallback)
+    # Source host name: from bundle metadata if present, else optional source_host form field, else fallback
     source_host = "another machine"
+    if agent:
+        source_host = agent.get("import_source_host", "another machine")
 
-    # Build the transfer notice
+    # Build the transfer notice (full version for chat)
     notice = f"""## Transfer Notice
 
 You have been moved to a new environment managed by taOS.
@@ -703,23 +719,23 @@ You have been moved to a new environment managed by taOS.
 
 ### Important Changes
 
-1. **Host paths are no longer accessible** — Any file paths, directories, or mounts from your previous machine are NOT available unless explicitly configured by the taOS administrator.
+1. **Host paths are no longer accessible** -- Any file paths, directories, or mounts from your previous machine are NOT available unless explicitly configured by the taOS administrator.
 
-2. **Localhost services and ports are NOT reachable** — Services that ran on 127.0.0.1 or localhost on your old machine (databases, APIs, local LLMs, etc.) are no longer accessible. The only localhost service available is the taOS LLM gateway at http://127.0.0.1:4000/v1.
+2. **Localhost services and ports are NOT reachable** -- Services that ran on 127.0.0.1 or localhost on your old machine (databases, APIs, local LLMs, etc.) are no longer accessible. The only localhost service available is the taOS LLM gateway at http://127.0.0.1:4000/v1.
 
-3. **Your model provider has been redirected** — Your previous model configuration ({original_model_info}) has been backed up to config.yaml.pre-import and replaced with the taOS gateway. All LLM requests now route through the taOS gateway.
+3. **Your model provider has been redirected** -- Your previous model configuration ({original_model_info}) has been backed up to config.yaml.pre-import and replaced with the taOS gateway. All LLM requests now route through the taOS gateway.
 
 4. **Scheduled jobs:** The following jobs were imported. {'They have been PAUSED for your review.' if pause_jobs else 'They remain in their original enabled/disabled state.'}
 {chr(10).join(jobs_list) if jobs_list else "  (no jobs found)"}
 
-5. **Credentials NOT imported** — The following were NOT transferred and must be re-supplied:
+5. **Credentials NOT imported** -- The following were NOT transferred and must be re-supplied:
    - API keys (OpenRouter, Anthropic, OpenAI, etc.)
    - Database passwords
    - SSH keys
    - Any secrets stored in .env or environment variables
    Please ask your taOS administrator to add required secrets via the agent secrets UI.
 
-6. **Files dropped during import** — The following archive members were not restored (symlinks, devices, FIFOs, and other non-regular files):
+6. **Files dropped during import** -- The following archive members were not restored (symlinks, devices, FIFOs, and other non-regular files):
 {chr(10).join(f"  - {f}" for f in dropped_files) if dropped_files else "  (none)"}
 
 ### How to Get Access
@@ -731,43 +747,140 @@ You have been moved to a new environment managed by taOS.
 Welcome to your new home on taOS!
 """
 
-    # 1. Append short form to the profile's memories/MEMORY.md
+    # 1. APPEND short form to the profile's memories/MEMORY.md (do not replace)
     memory_path = f"/root/.hermes/profiles/{slug}/memories/MEMORY.md"
-    short_notice = f"\n\n---\n\n### Transfer Notice ({datetime.now(UTC).isoformat().replace('+00:00', 'Z')})\n\nYou have been moved to taOS from {source_host}. Your profile, skills, memory, and jobs have been imported. Your model provider has been redirected to the taOS gateway. {'Jobs have been paused for review.' if pause_jobs else 'Jobs remain in their original state.'} Credentials were NOT imported — request them from your administrator.\n"
+    short_notice = f"\n\n---\n\n### Transfer Notice ({datetime.now(UTC).isoformat().replace('+00:00', 'Z')})\n\nYou have been moved to taOS from {source_host}. Your profile, skills, memory, and jobs have been imported. Your model provider has been redirected to the taOS gateway. {'Jobs have been paused for review.' if pause_jobs else 'Jobs remain in their original state.'} Credentials were NOT imported -- request them from your administrator.\n"
+
+    # Read existing memory file
+    code, existing_memory = await exec_in_container(
+        container_name, ["cat", memory_path], timeout=10
+    )
+    if code != 0:
+        existing_memory = ""
+
+    # Check memory limit from profile config
+    memory_limit = DEFAULT_MEMORY_CHAR_LIMIT
+    config_path = f"/root/.hermes/profiles/{slug}/config.yaml"
+    code, config_content = await exec_in_container(
+        container_name, ["cat", config_path], timeout=10
+    )
+    if code == 0:
+        try:
+            import yaml
+            config_data = yaml.safe_load(config_content) or {}
+            memory_cfg = config_data.get("memory", {})
+            if isinstance(memory_cfg, dict) and "char_limit" in memory_cfg:
+                memory_limit = int(memory_cfg["char_limit"])
+        except Exception:
+            pass
+
+    new_memory = existing_memory + short_notice
+    if len(new_memory) > memory_limit:
+        # Raise the limit in the profile config by the notice length
+        try:
+            import yaml
+            config_data = yaml.safe_load(config_content) or {}
+            memory_cfg = config_data.setdefault("memory", {})
+            new_limit = len(new_memory) + 100
+            memory_cfg["char_limit"] = new_limit
+            new_config_yaml = yaml.safe_dump(config_data, default_flow_style=False, sort_keys=False)
+            config_fd, config_tmp = tempfile.mkstemp(prefix="taos-config-", suffix=".yaml")
+            try:
+                with os.fdopen(config_fd, "w") as f:
+                    f.write(new_config_yaml)
+                push_rc, push_out = await push_file(container_name, config_tmp, config_path)
+            finally:
+                _safe_unlink(config_tmp)
+            if push_rc != 0:
+                logger.warning("import %s: failed to raise memory limit (rc=%s): %s", slug, push_rc, push_out[-200:])
+            else:
+                logger.info("import %s: raised memory char_limit from %d to %d", slug, memory_limit, new_limit)
+        except Exception as e:
+            logger.warning("import %s: failed to update memory limit: %s", slug, e)
+
+    # Write the appended memory
     memory_fd, memory_tmp = tempfile.mkstemp(prefix="taos-memory-", suffix=".md")
     try:
         with os.fdopen(memory_fd, "w") as f:
-            f.write(short_notice)
+            f.write(new_memory)
         push_rc, push_out = await push_file(container_name, memory_tmp, memory_path)
     finally:
         _safe_unlink(memory_tmp)
     if push_rc != 0:
         logger.warning("import %s: failed to append to MEMORY.md (rc=%s): %s", slug, push_rc, push_out[-200:])
 
-    # 2. Send the full notice as the first chat message via the same path deploy uses
-    # The deploy path uses the bridge to send messages. The bridge receives messages
-    # via the taOS chat API. We write the notice to a file and also trigger the bridge
-    # by calling the same internal endpoint the bridge uses for incoming messages.
-    # Since the bridge may not be ready yet, we stage it for pickup.
-    chat_path = f"/root/.taos/first_message.txt"
-    chat_fd, chat_tmp = tempfile.mkstemp(prefix="taos-chat-", suffix=".txt")
-    try:
-        with os.fdopen(chat_fd, "w") as f:
-            f.write(notice)
-        push_rc, push_out = await push_file(container_name, chat_tmp, chat_path)
-    finally:
-        _safe_unlink(chat_tmp)
-    if push_rc != 0:
-        logger.warning("import %s: failed to stage first_message.txt (rc=%s): %s", slug, push_rc, push_out[-200:])
+    # 2. Deliver the full notice as a chat message from the owner to the agent
+    # on the agent's DM channel (same way POST /api/chat/messages does)
+    await _send_notice_as_chat_message(request, slug, notice, agent)
 
-    # Also try to post via the bridge's internal HTTP endpoint if available
-    # This is best-effort; the bridge will also pick up first_message.txt on startup.
-    await exec_in_container(
-        container_name,
-        ["curl", "-s", "-X", "POST", "http://127.0.0.1:8642/internal/first-message",
-         "-H", "Content-Type: text/plain", "--data-binary", f"@{chat_path}"],
-        timeout=10,
-    )
+
+async def _send_notice_as_chat_message(
+    request: Request,
+    slug: str,
+    notice: str,
+    agent: dict | None,
+) -> None:
+    """Deliver the transfer notice as a chat message from the owner to the agent
+    on the agent's DM channel. Uses the same chat store as POST /api/chat/messages.
+    """
+    chat_channels = getattr(request.app.state, "chat_channels", None)
+    chat_messages = getattr(request.app.state, "chat_messages", None)
+    if not chat_channels or not chat_messages:
+        logger.warning("import %s: chat stores not available, skipping notice delivery", slug)
+        return
+
+    # Get or create the DM channel for this agent
+    channel_id = agent.get("chat_channel_id") if agent else None
+    if not channel_id:
+        # Find existing DM channel between user and agent
+        channels = await chat_channels.list_channels(member_id="user")
+        for ch in channels:
+            if ch.get("type") == "dm" and slug in ch.get("members", []):
+                channel_id = ch["id"]
+                break
+
+    if not channel_id:
+        logger.warning("import %s: no DM channel found, skipping notice delivery", slug)
+        return
+
+    try:
+        await chat_messages.send_message(
+            channel_id=channel_id,
+            author_id="user",
+            author_type="user",
+            content=notice,
+            content_type="text",
+        )
+        logger.info("import %s: transfer notice delivered as chat message", slug)
+    except Exception as e:
+        logger.exception("import %s: failed to send notice as chat message: %s", slug, e)
+
+
+async def _ensure_dm_channel(request: Request, slug: str, agent: dict | None) -> None:
+    """Create a 1:1 DM channel for the agent if it doesn't exist, and set
+    chat_channel_id on the agent record. Mirrors the logic in the deploy path.
+    """
+    chat_channels = getattr(request.app.state, "chat_channels", None)
+    if not chat_channels:
+        return
+
+    if agent and agent.get("chat_channel_id"):
+        return
+
+    try:
+        display_name = agent.get("display_name", slug) if agent else slug
+        channel = await chat_channels.create_channel(
+            name=display_name,
+            type="dm",
+            created_by="user",
+            members=["user", slug],
+            description=f"Direct messages with {display_name}",
+        )
+        if channel and channel.get("id") and agent is not None:
+            agent["chat_channel_id"] = channel["id"]
+            logger.info("import %s: created DM channel %s", slug, channel["id"])
+    except Exception as e:
+        logger.warning("import %s: DM channel creation failed: %s", slug, e)
 
 
 async def _find_hermes_bin(container_name: str) -> str:

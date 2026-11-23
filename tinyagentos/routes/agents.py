@@ -1644,6 +1644,7 @@ async def import_agent(request: Request):
             model=(str(form["model"]) if form.get("model") else None),
             secrets=(str(form["secrets"]) if form.get("secrets") else None),
             pause_jobs=pause_jobs,
+            source_host=(str(form["source_host"]) if form.get("source_host") else None),
         )
 
     # JSON config import.
