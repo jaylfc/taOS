@@ -1710,14 +1710,44 @@ class TestGitInitAndCommitter:
 
 
 class TestIdmapSubidPreflight:
-    """_idmap_subid_range_ok parses /etc/subuid and /etc/subgid for the
-    ``root:<uid>:1`` range incus needs for raw.idmap "both <uid> 0"."""
+    """_idmap_subid_range_ok parses /etc/subuid and /etc/subgid for a
+    ``root:<start>:<count>`` range covering the uid incus needs for
+    raw.idmap "both <uid> 0"."""
 
     def test_idmap_subid_range_ok_allowed(self, tmp_path):
         subuid = tmp_path / "subuid"
         subuid.write_text("root:999:1\njay:100000:65536\n")
         subgid = tmp_path / "subgid"
         subgid.write_text("root:999:1\n")
+        assert _idmap_subid_range_ok(999, subuid_path=str(subuid), subgid_path=str(subgid)) is True
+
+    def test_idmap_subid_range_ok_covering_range(self, tmp_path):
+        subuid = tmp_path / "subuid"
+        subuid.write_text("root:1:65536\n")
+        subgid = tmp_path / "subgid"
+        subgid.write_text("root:1:65536\n")
+        assert _idmap_subid_range_ok(999, subuid_path=str(subuid), subgid_path=str(subgid)) is True
+
+    def test_idmap_subid_range_ok_just_misses(self, tmp_path):
+        # uid == start+count is the first value NOT covered
+        subuid = tmp_path / "subuid"
+        subuid.write_text("root:100:899\n")
+        subgid = tmp_path / "subgid"
+        subgid.write_text("root:100:899\n")
+        assert _idmap_subid_range_ok(999, subuid_path=str(subuid), subgid_path=str(subgid)) is False
+
+    def test_idmap_subid_range_ok_multiple_lines(self, tmp_path):
+        subuid = tmp_path / "subuid"
+        subuid.write_text("jay:100000:65536\nroot:1:65536\nother:200000:65536\n")
+        subgid = tmp_path / "subgid"
+        subgid.write_text("other:200000:65536\nroot:1:65536\n")
+        assert _idmap_subid_range_ok(999, subuid_path=str(subuid), subgid_path=str(subgid)) is True
+
+    def test_idmap_subid_range_ok_malformed_line_ignored(self, tmp_path):
+        subuid = tmp_path / "subuid"
+        subuid.write_text("root:not-a-number:1\nroot:999:1\n")
+        subgid = tmp_path / "subgid"
+        subgid.write_text("root:999:bad\nroot:999:1\n")
         assert _idmap_subid_range_ok(999, subuid_path=str(subuid), subgid_path=str(subgid)) is True
 
     def test_idmap_subid_range_ok_missing_uid_line(self, tmp_path):
@@ -1738,6 +1768,41 @@ class TestIdmapSubidPreflight:
         subuid = tmp_path / "subuid"
         subuid.write_text("root:999:1\n")
         assert _idmap_subid_range_ok(999, subuid_path=str(subuid), subgid_path=str(tmp_path / "nope")) is False
+
+    @pytest.mark.asyncio
+    async def test_deploy_agent_fails_fast_when_idmap_range_missing(self, tmp_path, monkeypatch):
+        """Without the autouse stub: real preflight rejects missing range,
+        deploy returns the clear one-line root fix, fast, and creates no
+        container."""
+        from tinyagentos.deployer import _subid_file_covers
+
+        subuid = tmp_path / "subuid"
+        subuid.write_text("jay:100000:65536\n")
+        subgid = tmp_path / "subgid"
+        subgid.write_text("jay:100000:65536\n")
+
+        def real_check(uid, **_kw):
+            for path in (str(subuid), str(subgid)):
+                try:
+                    with open(path, encoding="ascii") as fh:
+                        if not _subid_file_covers(fh, uid):
+                            return False
+                except FileNotFoundError:
+                    return False
+            return True
+
+        monkeypatch.setattr("tinyagentos.deployer.os.getuid", lambda: 999)
+        monkeypatch.setattr("tinyagentos.deployer._idmap_subid_range_ok", real_check)
+        req = _req(data_dir=tmp_path)
+
+        with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create:
+            result = await deploy_agent(req)
+
+        assert result["success"] is False
+        assert "root:999:1" in result["error"]
+        assert "/etc/subuid" in result["error"]
+        assert "/etc/subgid" in result["error"]
+        mock_create.assert_not_awaited()
 
 
 class TestDeployHermesVersionPassthrough:

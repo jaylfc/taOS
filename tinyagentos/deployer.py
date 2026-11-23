@@ -94,22 +94,44 @@ def _idmap_subid_range_ok(
     subuid_path: str = "/etc/subuid",
     subgid_path: str = "/etc/subgid",
 ) -> bool:
-    """True when /etc/subuid and /etc/subgid both grant root the single-id
-    range ``root:<uid>:1`` that incus needs for ``raw.idmap "both <uid> 0"``.
+    """True when /etc/subuid and /etc/subgid both grant root a range covering
+    ``uid`` for ``raw.idmap "both <uid> 0"``.
 
     newuidmap refuses a mapping the subid files do not permit, which leaves
     the container stuck starting and the deploy reporting the opaque "Instance
     is not running". Parsing the files here lets us fail fast with a clear
-    one-line fix instead of waiting ~34s for the timeout."""
-    want = f"root:{uid}:1"
+    one-line fix instead of waiting ~34s for the timeout. Accepts the exact
+    single-id line ``root:<uid>:1`` and any covering ``root:<start>:<count>``
+    range. Malformed lines are ignored; missing file is not ok."""
     for path in (subuid_path, subgid_path):
         try:
             with open(path, encoding="ascii") as fh:
-                if not any(line.strip() == want for line in fh):
+                if not _subid_file_covers(fh, uid):
                     return False
         except FileNotFoundError:
             return False
     return True
+
+
+def _subid_file_covers(lines, uid: int) -> bool:
+    """Return True when any ``root:<start>:<count>`` line covers ``uid``."""
+    for line in lines:
+        line = line.strip()
+        if not line or not line.startswith("root:"):
+            continue
+        parts = line.split(":")
+        if len(parts) != 3:
+            continue
+        try:
+            start = int(parts[1])
+            count = int(parts[2])
+        except ValueError:
+            continue
+        if count < 1:
+            continue
+        if start <= uid < start + count:
+            return True
+    return False
 
 def _secret_env_name(name: str) -> str:
     """Sanitize a secret name into a valid POSIX env identifier.
