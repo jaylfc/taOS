@@ -1,6 +1,6 @@
 """taos-kiosk-idle reads SCREEN_OFF_SECONDS from /etc/taos/display.conf and starts swayidle.
 
-Valid values: 5..3600. Missing file -> default 30. Malformed/out-of-range ->
+Valid values: 0 (never), 5..3600. Missing file -> default 30. Malformed/out-of-range ->
 fall back to 30 with one stderr message. File wins when present and valid; TAOS_KIOSK_IDLE_SECS
 env override only applies when file is absent or invalid. The script never sources the file.
 
@@ -87,16 +87,16 @@ def _run_idle(env, display_conf_content=None, display_conf_path=None):
         return proc.stdout, proc.stderr, swayidle_args, proc.returncode
 
 
-# Every value in 5..3600 with no leading zero must be accepted verbatim. The
-# old pattern only matched 5-299 and 3000-3600, so 300/600/999/1000/1800/2999
+# Every value in 0, 5..3600 with no leading zero must be accepted verbatim.
+# The old pattern only matched 5-299 and 3000-3600, so 300/600/999/1000/1800/2999
 # (a 5- or 30-minute timeout) silently fell back to 30.
-ACCEPTED = [5, 6, 59, 60, 299, 300, 600, 999, 1000, 1800, 2999, 3000, 3599, 3600]
+ACCEPTED = [0, 5, 6, 59, 60, 299, 300, 600, 999, 1000, 1800, 2999, 3000, 3599, 3600]
 
 # Everything else falls back to the default 30 with one message on stderr.
 # Values that fail the anchored grep (99999, -5, 1.5, empty, text, a trailing
-# space) are rejected before arithmetic; 0, 4, 3601 and 0300 reach the range
-# check (0 and 0300 also trip the leading-zero guard) and are rejected there.
-REJECTED = ["0", "4", "3601", "99999", "-5", "1.5", "", "text", "0300", "60 "]
+# space) are rejected before arithmetic; 4, 3601 and 0300 reach the range
+# check (0300 also trips the leading-zero guard) and are rejected there.
+REJECTED = ["4", "3601", "99999", "-5", "1.5", "", "text", "0300", "60 "]
 
 
 class TestTaosKioskIdle:
@@ -108,7 +108,12 @@ class TestTaosKioskIdle:
         stdout, stderr, args, rc = _run_idle(
             {}, display_conf_content="SCREEN_OFF_SECONDS=%d\n" % value)
         assert rc == 0
-        assert "timeout %d" % value in args
+        if value == 0:
+            # 0 means never: no timeout, only before-sleep handler
+            assert "timeout" not in args
+            assert "before-sleep" in args
+        else:
+            assert "timeout %d" % value in args
         assert stderr == ""
 
     @pytest.mark.parametrize("value", REJECTED)
@@ -147,6 +152,18 @@ class TestTaosKioskIdle:
             stdout, stderr, args, rc = _run_idle(env, display_conf_content=None, display_conf_path=display_conf_path)
             assert rc == 0
             assert "timeout 120" in args
+            assert stderr == ""
+
+    def test_env_override_when_file_missing_zero(self):
+        """TAOS_KIOSK_IDLE_SECS=0 env override works when file is missing (never blank)."""
+        with tempfile.TemporaryDirectory() as td:
+            td_path = pathlib.Path(td)
+            display_conf_path = td_path / "nonexistent.conf"
+            env = {"TAOS_KIOSK_IDLE_SECS": "0"}
+            stdout, stderr, args, rc = _run_idle(env, display_conf_content=None, display_conf_path=display_conf_path)
+            assert rc == 0
+            assert "timeout" not in args
+            assert "before-sleep" in args
             assert stderr == ""
 
     def test_file_wins_over_env_override(self):

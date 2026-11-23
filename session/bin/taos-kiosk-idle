@@ -12,13 +12,14 @@ set -eu
 # Read screen timeout from /etc/taos/display.conf (same setting as the phone layer).
 # Path overridable with TAOS_DISPLAY_CONF for tests. Parse with ONE anchored
 # pattern; never source the file. The grep fixes the SHAPE: 1-4 ASCII digits,
-# line-anchored, so a value with spaces or a stray suffix is rejected here. Then
-# reject a leading zero (0, 0300) so the numeric test cannot be read as octal, and
-# check the RANGE arithmetically so every POSIX shell (dash, busybox ash) agrees
-# -- a case pattern cannot span 5..3600 without matching 300..2999 wrong.
-# Accept 5..3600. Missing file -> default 30. Malformed/out-of-range -> fall back
-# to 30 with one stderr message. File wins when present and valid;
-# TAOS_KIOSK_IDLE_SECS env override only applies when the file is absent or invalid.
+# line-anchored, so a value with spaces or a stray suffix is rejected here.
+# Accept 0 (never), 5..3600. Leading zeros (0300) are rejected so the numeric
+# test cannot be read as octal. Check the RANGE arithmetically so every POSIX
+# shell (dash, busybox ash) agrees -- a case pattern cannot span 5..3600
+# without matching 300..2999 wrong. Missing file -> default 30. Malformed/
+# out-of-range -> fall back to 30 with one stderr message. File wins when
+# present and valid; TAOS_KIOSK_IDLE_SECS env override only applies when the
+# file is absent or invalid.
 DISPLAY_CONF="${TAOS_DISPLAY_CONF:-/etc/taos/display.conf}"
 IDLE_SECS=30
 
@@ -27,8 +28,12 @@ if [ -f "$DISPLAY_CONF" ]; then
     if [ -n "$line" ]; then
         val="${line#*=}"
         ok=1
-        case "$val" in 0*) ok=0 ;; esac
-        if [ "$ok" = 1 ] && { [ "$val" -ge 5 ] && [ "$val" -le 3600 ]; }; then
+        case "$val" in
+            0) ;;                  # exactly 0 = never
+            0*) ok=0 ;;            # leading zeros (0300, 00) rejected
+            *) ;;
+        esac
+        if [ "$ok" = 1 ] && { [ "$val" -eq 0 ] || { [ "$val" -ge 5 ] && [ "$val" -le 3600 ]; }; }; then
             IDLE_SECS="$val"
         else
             echo "taos-kiosk-idle: invalid SCREEN_OFF_SECONDS=$val, using 30" >&2
