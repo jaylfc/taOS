@@ -132,6 +132,69 @@ def _make_fake_exec(overrides: dict = None):
     return fake_exec
 
 
+def _bundle_with_config(config_yaml: str, filename="profile.tar.gz"):
+    """Create a tar.gz bundle carrying the given config.yaml plus a SOUL.md."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        ti = tarfile.TarInfo(name="config.yaml")
+        ti.size = len(config_yaml.encode())
+        tar.addfile(ti, io.BytesIO(config_yaml.encode()))
+        ti = tarfile.TarInfo(name="SOUL.md")
+        ti.size = len(b"Test soul")
+        tar.addfile(ti, io.BytesIO(b"Test soul"))
+    return {"bundle": (filename, io.BytesIO(buf.getvalue()), "application/gzip")}
+
+
+def _make_order_tracking_fake(config_yaml, existing_memory, jobs_json, active_profile="test-slug"):
+    """fake_exec/fake_push_file pair that records every call in a single
+    ordered event stream and captures the contents of pushed files."""
+    events = []  # ("push", dst) | ("exec", [cmd...])
+    pushed = []  # (dst, content)
+
+    async def fake_push_file(container, src, dst):
+        try:
+            with open(src, "rb") as f:
+                content = f.read().decode("utf-8", "replace")
+        except Exception:
+            content = f"<unreadable {src}>"
+        pushed.append((dst, content))
+        events.append(("push", dst))
+        return 0, ""
+
+    async def fake_exec(container, cmd, timeout=None):
+        events.append(("exec", list(cmd)))
+        cmd_str = " ".join(cmd)
+        if cmd[:1] == ["test"]:
+            return (0, "") if cmd[-1] == "/usr/local/bin/hermes" else (1, "")
+        if "profile" in cmd and "import" in cmd:
+            return 0, "imported profile ok"
+        if "profile" in cmd and "use" in cmd:
+            return 0, "switched"
+        if "systemctl" in cmd and "daemon-reload" in cmd:
+            return 0, "reloaded"
+        if "systemctl" in cmd and "restart" in cmd and "hermes-gateway" in cmd:
+            return 0, "restarted"
+        if "systemctl" in cmd and "is-active" in cmd and "hermes-gateway" in cmd:
+            return 0, "active"
+        if "systemctl" in cmd and "show" in cmd and "Environment" in cmd_str:
+            return 0, f"Environment=HERMES_HOME=/root/.hermes/profiles/{active_profile}"
+        if cmd[:1] == ["cat"] and "config.yaml" in cmd_str and ".pre-import" not in cmd_str and "memories" not in cmd_str:
+            return 0, config_yaml
+        if "cp " in cmd_str and "config.yaml" in cmd_str and ".pre-import" in cmd_str:
+            return 0, ""
+        if cmd[:1] == ["cat"] and "cron/jobs.json" in cmd_str:
+            return 0, jobs_json
+        if cmd[:1] == ["cat"] and ".pre-import" in cmd_str:
+            return 0, 'model:\n  default: local-model\n  base_url: "http://127.0.0.1:8080/v1"\n'
+        if cmd[:1] == ["cat"] and "memories/MEMORY.md" in cmd_str:
+            return 0, existing_memory
+        if cmd[:1] == ["cat"] and cmd[-1].endswith("SOUL.md"):
+            return 0, "You are an imported soul."
+        return 1, ""
+
+    return fake_exec, fake_push_file, events, pushed
+
+
 @pytest.mark.asyncio
 class TestHermesImportValidation:
     async def test_non_hermes_framework_rejected(self, client):
@@ -998,3 +1061,179 @@ class TestJsonImportStillWorks:
         resp = await client.post("/api/agents/import", json=payload)
         assert resp.status_code == 200
         assert resp.json()["status"] == "imported"
+
+
+@pytest.mark.asyncio
+class TestTransferNoticeChannelAndConfig:
+    """Regression tests for the import transfer notice, DM channel ordering,
+    memory limit key, and model config rewrite."""
+
+    async def _import_with_order_tracking(
+        self, client, app, monkeypatch, name, bundle, config_yaml, existing_memory, jobs_json
+    ):
+        """Run an import capturing every container/push call in one ordered
+        stream. Returns (slug, task, pushed, events)."""
+        fake_exec, fake_push_file, events, pushed = _make_order_tracking_fake(
+            config_yaml, existing_memory, jobs_json, active_profile=name
+        )
+
+        async def fake_deploy(req):
+            return {
+                "success": True, "name": req.name, "ip": "10.0.0.110",
+                "llm_key": "taos-key-110", "steps": ["deployment_complete"],
+                "container": f"taos-agent-{req.name}",
+            }
+        monkeypatch.setattr("tinyagentos.deployer.deploy_agent", fake_deploy)
+        monkeypatch.setattr("tinyagentos.containers.push_file", fake_push_file)
+        monkeypatch.setattr("tinyagentos.containers.exec_in_container", fake_exec)
+
+        resp = await client.post(
+            "/api/agents/import",
+            data={"framework": "hermes", "name": name, "pause_jobs": "true"},
+            files=bundle,
+        )
+        assert resp.status_code == 202, resp.json()
+        slug = resp.json()["name"]
+        for _ in range(30):
+            await asyncio.sleep(0.05)
+            task = app.state.deploy_tasks.get(slug)
+            if task and task["status"] in ("success", "failed"):
+                break
+        task = app.state.deploy_tasks.get(slug)
+        assert task is not None, "background import task should have recorded a result"
+        return slug, task, pushed, events
+
+    async def test_memory_char_limit_raised_and_memory_kept(self, client, app, monkeypatch):
+        """The limit key Hermes reads (memory_char_limit, top level) is raised,
+        and the existing MEMORY.md bytes are preserved with the notice appended."""
+        config_yaml = """model:
+  default: local-model
+  provider: custom
+  base_url: "http://127.0.0.1:8080/v1"
+  api_key: "local-only"
+memory_char_limit: 100
+platforms:
+  gadget:
+    enabled: true
+"""
+        existing_memory = "# Existing memory content\n\nSome previous notes."
+        jobs_json = '{"jobs": [{"name": "daily-summary", "enabled": true}]}'
+        bundle = _bundle_with_config(config_yaml)
+        slug, task, pushed, _ = await self._import_with_order_tracking(
+            client, app, monkeypatch, "memory-key-test", bundle, config_yaml, existing_memory, jobs_json
+        )
+        assert task["status"] == "success", task
+
+        config_writes = [c for c in pushed if c[0].endswith("config.yaml") and "pre-import" not in c[0]]
+        assert config_writes, "config.yaml should be written"
+
+        # memory_char_limit raised above the bundle's 100
+        raised = None
+        for _dst, content in config_writes:
+            for line in content.splitlines():
+                if line.strip().startswith("memory_char_limit:"):
+                    raised = int(line.split(":", 1)[1].strip())
+        assert raised is not None and raised > 100, (
+            f"memory_char_limit should be raised above 100, got {raised}"
+        )
+
+        # MEMORY.md keeps every existing byte and gains the notice
+        memory_pushes = [c for c in pushed if c[0].endswith("memories/MEMORY.md")]
+        assert memory_pushes, "MEMORY.md should be written"
+        memory_content = memory_pushes[-1][1]
+        assert memory_content.startswith(existing_memory), "existing MEMORY.md bytes must be preserved"
+        assert "Transfer Notice" in memory_content, "notice should be appended to MEMORY.md"
+
+    async def test_gadget_disabled_standalone_config_before_restart(self, client, app, monkeypatch):
+        """gadget disabled, gateway.standalone true, and config write precedes
+        the gateway restart."""
+        config_yaml = """model:
+  default: local-model
+  provider: custom
+  base_url: "http://127.0.0.1:8080/v1"
+  api_key: "local-only"
+memory_char_limit: 100
+platforms:
+  gadget:
+    enabled: true
+"""
+        existing_memory = "# Existing memory content\n"
+        jobs_json = '{"jobs": [{"name": "daily-summary", "enabled": true}]}'
+        bundle = _bundle_with_config(config_yaml)
+        slug, task, pushed, events = await self._import_with_order_tracking(
+            client, app, monkeypatch, "config-order-test", bundle, config_yaml, existing_memory, jobs_json
+        )
+        assert task["status"] == "success", task
+
+        config_writes = [c for c in pushed if c[0].endswith("config.yaml") and "pre-import" not in c[0]]
+        assert config_writes, "config.yaml should be written"
+
+        gadget_disabled = any("gadget:" in c[1] and "enabled: false" in c[1] for c in config_writes)
+        assert gadget_disabled, "gadget should be disabled in written config"
+
+        standalone = any("standalone: true" in c[1] for c in config_writes)
+        assert standalone, "gateway.standalone should be true in written config"
+
+        write_index = next(
+            i for i, (kind, detail) in enumerate(events)
+            if kind == "push" and detail.endswith("config.yaml") and "pre-import" not in detail
+        )
+        restart_index = next(
+            i for i, (kind, detail) in enumerate(events)
+            if kind == "exec" and "systemctl" in detail and "restart" in detail and "hermes-gateway" in detail
+        )
+        assert write_index < restart_index, "config.yaml write must happen before gateway restart"
+
+    async def test_dm_channel_created_before_notice_delivered(self, client, app, monkeypatch):
+        """Fresh import creates the DM channel, sets chat_channel_id, and
+        delivers the transfer notice as a chat message on that channel."""
+        bundle = _bundle()
+
+        async def fake_deploy(req):
+            return {
+                "success": True, "name": req.name, "ip": "10.0.0.111",
+                "llm_key": "taos-key-111", "steps": ["deployment_complete"],
+                "container": f"taos-agent-{req.name}",
+            }
+        monkeypatch.setattr("tinyagentos.deployer.deploy_agent", fake_deploy)
+
+        async def fake_push_file(container, src, dst):
+            return 0, ""
+        monkeypatch.setattr("tinyagentos.containers.push_file", fake_push_file)
+        monkeypatch.setattr(
+            "tinyagentos.containers.exec_in_container",
+            lambda c, cmd, timeout=None: _make_fake_exec({"active_profile": "channel-test"})(c, cmd, timeout),
+        )
+
+        sent = []
+        async def fake_send_message(channel_id, author_id, author_type, content, content_type):
+            sent.append({"channel_id": channel_id, "content": content})
+        monkeypatch.setattr(app.state.chat_messages, "send_message", fake_send_message)
+
+        resp = await client.post(
+            "/api/agents/import",
+            data={"framework": "hermes", "name": "channel-test", "pause_jobs": "true"},
+            files=bundle,
+        )
+        assert resp.status_code == 202, resp.json()
+        slug = resp.json()["name"]
+        for _ in range(30):
+            await asyncio.sleep(0.05)
+            task = app.state.deploy_tasks.get(slug)
+            if task and task["status"] in ("success", "failed"):
+                break
+        task = app.state.deploy_tasks.get(slug)
+        assert task["status"] == "success", task
+
+        detail = await client.get(f"/api/agents/{slug}")
+        agent = detail.json()
+        assert agent.get("chat_channel_id"), "chat_channel_id should be set after import"
+
+        channels = await app.state.chat_channels.list_channels(member_id="user")
+        dm = [c for c in channels if c.get("type") == "dm" and slug in c.get("members", [])]
+        assert dm, "DM channel should exist for the imported agent"
+        assert dm[0]["id"] == agent["chat_channel_id"]
+
+        assert sent, "transfer notice should be sent as a chat message"
+        assert sent[0]["channel_id"] == agent["chat_channel_id"], "notice should go on the agent's DM channel"
+        assert "Transfer Notice" in sent[0]["content"], "sent message should be the transfer notice"

@@ -162,6 +162,29 @@ def _rewrite_bundle_stripping_dropped(host_bundle: str, dropped_names: set[str])
     return new_path
 
 
+def _read_bundle_source_host(host_bundle: str) -> str | None:
+    """Read the source host from the bundle's Hermes export manifest, if
+    present. Returns None when the bundle has no manifest or it carries no
+    source host.
+    """
+    import json
+    import tarfile
+
+    try:
+        with tarfile.open(host_bundle, "r:gz") as tar:
+            for member in tar.getmembers():
+                if member.isfile() and member.name == "manifest.json":
+                    extracted = tar.extractfile(member)
+                    if extracted is None:
+                        return None
+                    data = json.loads(extracted.read().decode("utf-8"))
+                    if isinstance(data, dict):
+                        return data.get("source_host") or data.get("host") or None
+    except Exception:
+        return None
+    return None
+
+
 async def import_hermes_agent(
     request: Request,
     framework: str,
@@ -527,11 +550,23 @@ Environment=HERMES_HOME={profile_home}
     if pause_jobs:
         jobs_paused = await _pause_imported_jobs(container_name, slug)
 
-    # Write transfer notice to agent memory and send as first chat message
-    await _write_transfer_notice(request, container_name, slug, dropped_files, pause_jobs, agent)
+    # Source host: Hermes export manifest first, then the optional source_host
+    # form field, then the fallback.
+    source_host = _read_bundle_source_host(host_bundle)
+    if not source_host and agent:
+        source_host = agent.get("import_source_host")
+    if not source_host:
+        source_host = "another machine"
 
-    # Create DM channel for the agent so it appears in Messages
+    # Create the DM channel BEFORE sending the transfer notice: the notice is
+    # delivered as a chat message on that channel, so it must exist first.
     await _ensure_dm_channel(request, slug, agent)
+
+    # Write transfer notice to agent memory and send as first chat message.
+    # If delivery fails, fail the import loudly (not a silent skip).
+    await _write_transfer_notice(
+        request, container_name, slug, dropped_files, pause_jobs, agent, source_host
+    )
 
     # Best-effort persona readback so the imported personality shows in taOS.
     if agent is not None:
@@ -667,6 +702,7 @@ async def _write_transfer_notice(
     dropped_files: list[str],
     pause_jobs: bool,
     agent: dict | None,
+    source_host: str = "another machine",
 ) -> None:
     """Write a transfer notice into the agent's memory (memories/MEMORY.md)
     AND deliver it as the first chat message via the controller's chat store
@@ -701,11 +737,6 @@ async def _write_transfer_notice(
             if "base_url:" in line:
                 original_model_info = line.strip()
                 break
-
-    # Source host name: from bundle metadata if present, else optional source_host form field, else fallback
-    source_host = "another machine"
-    if agent:
-        source_host = agent.get("import_source_host", "another machine")
 
     # Build the transfer notice (full version for chat)
     notice = f"""## Transfer Notice
@@ -768,9 +799,11 @@ Welcome to your new home on taOS!
         try:
             import yaml
             config_data = yaml.safe_load(config_content) or {}
-            memory_cfg = config_data.get("memory", {})
-            if isinstance(memory_cfg, dict) and "char_limit" in memory_cfg:
-                memory_limit = int(memory_cfg["char_limit"])
+            # Hermes reads the flat top-level key `memory_char_limit`
+            # (hermes-agent tools/memory_tool.py:56), not `memory.char_limit`.
+            raw_limit = config_data.get("memory_char_limit")
+            if isinstance(raw_limit, (int, float, str)):
+                memory_limit = int(raw_limit)
         except Exception:
             pass
 
@@ -780,9 +813,8 @@ Welcome to your new home on taOS!
         try:
             import yaml
             config_data = yaml.safe_load(config_content) or {}
-            memory_cfg = config_data.setdefault("memory", {})
             new_limit = len(new_memory) + 100
-            memory_cfg["char_limit"] = new_limit
+            config_data["memory_char_limit"] = new_limit
             new_config_yaml = yaml.safe_dump(config_data, default_flow_style=False, sort_keys=False)
             config_fd, config_tmp = tempfile.mkstemp(prefix="taos-config-", suffix=".yaml")
             try:
@@ -794,7 +826,7 @@ Welcome to your new home on taOS!
             if push_rc != 0:
                 logger.warning("import %s: failed to raise memory limit (rc=%s): %s", slug, push_rc, push_out[-200:])
             else:
-                logger.info("import %s: raised memory char_limit from %d to %d", slug, memory_limit, new_limit)
+                logger.info("import %s: raised memory_char_limit from %d to %d", slug, memory_limit, new_limit)
         except Exception as e:
             logger.warning("import %s: failed to update memory limit: %s", slug, e)
 
@@ -826,8 +858,7 @@ async def _send_notice_as_chat_message(
     chat_channels = getattr(request.app.state, "chat_channels", None)
     chat_messages = getattr(request.app.state, "chat_messages", None)
     if not chat_channels or not chat_messages:
-        logger.warning("import %s: chat stores not available, skipping notice delivery", slug)
-        return
+        raise RuntimeError(f"import {slug}: chat stores not available, cannot deliver transfer notice")
 
     # Get or create the DM channel for this agent
     channel_id = agent.get("chat_channel_id") if agent else None
@@ -840,8 +871,7 @@ async def _send_notice_as_chat_message(
                 break
 
     if not channel_id:
-        logger.warning("import %s: no DM channel found, skipping notice delivery", slug)
-        return
+        raise RuntimeError(f"import {slug}: no DM channel found, cannot deliver transfer notice")
 
     try:
         await chat_messages.send_message(
@@ -854,6 +884,7 @@ async def _send_notice_as_chat_message(
         logger.info("import %s: transfer notice delivered as chat message", slug)
     except Exception as e:
         logger.exception("import %s: failed to send notice as chat message: %s", slug, e)
+        raise
 
 
 async def _ensure_dm_channel(request: Request, slug: str, agent: dict | None) -> None:
