@@ -1,0 +1,3 @@
+### Added
+- Updates can now apply fixed maintenance steps that need administrator rights, without the owner typing a command. A small root-owned runner (`taos-maint`, set up by the installer) applies only the steps the project signed, after each update and at start-up, and refuses anything else. The first step upgrades the memory service (qmd) and limits it to this machine unless you set `QMD_BIND` yourself in `/etc/default/qmd`.
+- Installs that predate the runner show one notification and a Settings entry with a single command to run once; after that the memory service upgrade, and later steps like it, happen on their own. If a step fails the update still completes, taOS tells you why, and memory calls keep being refused until it is fixed.

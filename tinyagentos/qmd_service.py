@@ -19,6 +19,8 @@ from pathlib import Path
 
 import httpx
 
+from tinyagentos import maint
+
 logger = logging.getLogger(__name__)
 
 PINNED_QMD_VERSION = "2.8.3-taos.2"
@@ -133,10 +135,30 @@ async def run_qmd_service_check(state) -> None:
         owner = primary["id"] if primary else None
     except Exception:
         owner = None
-    if await qmd_honours_dbpath(state) is False:
+    # Apply any pending signed maintenance steps (the qmd upgrade is one) through the
+    # root runner, then look again. The 503 safety net stays until qmd answers as the
+    # new release, whatever happens here.
+    report = await maint.run_pending() if maint.availability()["mode"] == "ready" else None
+    if report is not None and report["result"] == "applied":
+        await qmd_honours_dbpath(state, force=True)
+    if await qmd_honours_dbpath(state, force=report is not None) is False:
+        mode = maint.availability()["mode"]
+        if report is not None:
+            message = maint.failure_text(report) or (
+                "The memory service (qmd) is still the old release after the maintenance run. "
+                "Check Settings > Updates for the maintenance log."
+            )
+        elif mode == "setup-needed":
+            message = (
+                "The memory service (qmd) needs updating before agent and personal memory can be kept apart. "
+                "This is the one manual step: after it, updates take care of this themselves. As the machine "
+                f"owner run: {maint.setup_command()}"
+            )
+        else:
+            message = UPGRADE_MESSAGE.format(script=upgrade_command().split(" ", 2)[2])
         await notifications.add(
             title="Memory service needs updating",
-            message=UPGRADE_MESSAGE.format(script=upgrade_command().split(" ", 2)[2]),
+            message=message,
             level="warning", source="memory", user_id=owner,
         )
     if qmd_bind_exposed():
