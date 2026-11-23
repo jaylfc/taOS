@@ -327,7 +327,7 @@ def execute_step(paths: Paths, conf: dict, step: dict, body: bytes, rec: dict | 
     fd = os.open(script, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o500)
     with os.fdopen(fd, "wb") as fh:
         fh.write(body)
-    out_rec = {"version": step["version"], "attempts": attempts, "last_attempt": _now()}
+    out_rec = {"version": step["version"], "sha256": step["sha256"], "attempts": attempts, "last_attempt": _now()}
     try:
         rc, out = run_script(paths, conf, script, "check", CHECK_TIMEOUT)
         if rc == 0:
@@ -422,7 +422,7 @@ def run_pending(paths: Paths, conf: dict, only: str | None = None) -> int:
                 results.append({"id": sid, "result": "already-applied"})
                 continue
             if (rec and rec.get("status") == "failed" and rec.get("version") == step["version"]
-                    and only is None and _now() - rec.get("last_attempt", 0) < RETRY_SECONDS):
+                    and rec.get("sha256") == step["sha256"] and only is None and _now() - rec.get("last_attempt", 0) < RETRY_SECONDS):
                 results.append({"id": sid, "result": "failed", "detail": rec.get("error", ""), "cooldown": True})
                 code = max(code, 1)
                 continue
@@ -496,19 +496,22 @@ def main(argv: list[str], prefix: str = "/") -> int:
         print("bad step id", file=sys.stderr)
         return 3
     try:
+        paths.state_dir.mkdir(parents=True, exist_ok=True)
+        lock_fd = os.open(paths.lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    except OSError as exc:
+        print(f"taos-maint: setup error: {exc}", file=sys.stderr)
+        return 3
+    fcntl.flock(lock_fd, fcntl.LOCK_EX)  # wait for a run in progress; never overlap it
+    # Only the lock holder may touch staging: a second invocation clearing it
+    # would delete the script the first one is about to run.
+    try:
         _prepare(paths)
         conf = read_conf(paths)
     except (Refused, OSError) as exc:
         print(f"taos-maint: setup error: {exc}", file=sys.stderr)
         _report_setup_error(paths, str(exc))
-        return 3
-    lock_fd = os.open(paths.lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-    try:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
         os.close(lock_fd)
-        print("taos-maint: another run is in progress")
-        return 0
+        return 3
     try:
         return _dispatch(paths, conf, verb, only)
     finally:

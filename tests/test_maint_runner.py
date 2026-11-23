@@ -315,6 +315,36 @@ def test_failed_step_waits_out_the_cooldown_then_retries(env, monkeypatch):
     assert (env.marks / "alpha.log").read_text().count("apply") == n + 1
 
 
+def test_a_fixed_step_is_retried_at_once_not_after_the_cooldown(env):
+    env.build({"alpha": env.step_body("alpha", apply_rc=3)})
+    assert env.run("run-pending") == 1
+    env.build({"alpha": env.step_body("alpha", apply_rc=0)}, seq=2)  # same version, different bytes
+    assert env.run("run-pending") == 0 and env.mark("alpha", "applied")
+
+
+def test_lock_is_taken_before_staging_is_touched(env):
+    """A second invocation must not delete the first one's staged script."""
+    import fcntl
+    env.build({"alpha": env.step_body("alpha")})
+    env.p.stage_root.mkdir(mode=0o700, exist_ok=True)
+    keep = env.p.stage_root / "inflight"
+    keep.mkdir()
+    (keep / "step.sh").write_text("x")
+    fd = os.open(env.p.lock, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    import multiprocessing
+    ctx = multiprocessing.get_context("fork")
+    proc = ctx.Process(target=maint.main, args=(["run-pending"], str(env.prefix)))
+    proc.start()
+    proc.join(1.5)
+    assert proc.is_alive(), "the second run waits for the lock"
+    assert (keep / "step.sh").exists(), "and has not cleaned staging"
+    proc.terminate()
+    proc.join()
+    fcntl.flock(fd, fcntl.LOCK_UN)
+    os.close(fd)
+
+
 def test_triggers_are_deleted_unread_and_status_never_stays_running(env):
     env.build({"alpha": env.step_body("alpha")})
     (env.p.trigger_dir / "a.req").write_text("x" * 5000)
