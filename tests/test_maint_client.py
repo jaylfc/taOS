@@ -105,6 +105,11 @@ class _Notes:
     async def add(self, **kw):
         self.items.append(kw)
 
+    async def archive_by_source_ref(self, source, ref):
+        self.archived = getattr(self, "archived", []) + [(source, ref)]
+        self.items = [i for i in self.items if (i.get("source"), (i.get("data") or {}).get("request_id")) != (source, ref)]
+        return 0
+
 
 def _state(handler):
     return SimpleNamespace(
@@ -246,3 +251,18 @@ async def test_settings_maintenance_endpoint_reports_setup_needed(client, monkey
     assert resp.status_code == 200
     body = resp.json()
     assert body["mode"] == "setup-needed" and "install-maint.sh" in body["setup_command"]
+
+
+@pytest.mark.asyncio
+async def test_a_healthy_qmd_retires_the_earlier_notices(fast, monkeypatch):
+    state = _state(_flip_handler({"new": True}))
+    await state.notifications.add(title="old", message="m", source="memory", data={"request_id": qmd_service.QMD_NOTICE_REF})
+
+    async def fake_run(**kw):
+        return {"mode": "ready", "result": "nothing", "steps": []}
+    monkeypatch.setattr(maint, "availability", lambda: {"mode": "ready", "reason": ""})
+    monkeypatch.setattr(maint, "run_pending", fake_run)
+    monkeypatch.setattr(qmd_service, "qmd_bind_exposed", lambda *a, **k: False)
+    await qmd_service.run_qmd_service_check(state)
+    assert state.notifications.items == []
+    assert ("memory", qmd_service.QMD_NOTICE_REF) in state.notifications.archived

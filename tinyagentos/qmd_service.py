@@ -24,6 +24,7 @@ from tinyagentos import maint
 logger = logging.getLogger(__name__)
 
 PINNED_QMD_VERSION = "2.8.3-taos.2"
+QMD_NOTICE_REF = "qmd-service"
 PROBE_TTL_SECONDS = 60.0
 UNKNOWN_TTL_SECONDS = 5.0
 
@@ -166,7 +167,11 @@ async def run_qmd_service_check(state) -> None:
     report = await maint.run_pending() if maint.availability()["mode"] == "ready" else None
     if report is not None and report["result"] == "applied":
         await qmd_honours_dbpath(state, force=True)
-    if await qmd_honours_dbpath(state, force=report is not None) is False:
+    healthy = await qmd_honours_dbpath(state, force=report is not None)
+    # Retire this service's earlier notices (the same one re-added on every restart,
+    # or one that has since been fixed): the bell shows the current state only.
+    await notifications.archive_by_source_ref("memory", QMD_NOTICE_REF)
+    if healthy is False:
         mode = maint.availability()["mode"]
         if report is not None:
             message = maint.failure_text(report) or (
@@ -184,7 +189,7 @@ async def run_qmd_service_check(state) -> None:
         await notifications.add(
             title="Memory service needs updating",
             message=message,
-            level="warning", source="memory", user_id=owner,
+            level="warning", source="memory", user_id=owner, data={"request_id": QMD_NOTICE_REF},
         )
     # A listen-everywhere qmd is closed by the maintenance step unless the owner chose
     # it (QMD_BIND set, or the keep-open marker), so only tell the owner by hand where
@@ -193,5 +198,5 @@ async def run_qmd_service_check(state) -> None:
         await notifications.add(
             title="Memory service is reachable from the network",
             message=f"qmd listens on every network interface. To limit it to this machine run: {BIND_FIX_COMMAND}",
-            level="warning", source="memory", user_id=owner,
+            level="warning", source="memory", user_id=owner, data={"request_id": QMD_NOTICE_REF},
         )
