@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from tinyagentos.agent_token_auth import check_agent_scope
 from tinyagentos.chat.orphan_reconcile import _CANONICAL_AGENT_ID_RE
+from tinyagentos.chat.outbox_replay import outbox_event_stream, resume_id as _resume_id_shared, frame_id as _frame_id_shared
 
 logger = logging.getLogger(__name__)
 
@@ -99,53 +100,9 @@ async def self_chat_events(request: Request):
 
     outbox = getattr(request.app.state, "guest_outbox", None)
     last_id = _resume_id(request)
-    # Replay is read before the live subscribe. A message enqueued after this
-    # read sits in the session queue, which subscribe() carries over, so it is
-    # neither lost nor (via `seen`) delivered twice.
-    replay: list = []
-    if outbox is not None:
-        try:
-            replay = await (
-                outbox.since(slug, last_id) if last_id is not None
-                else outbox.undelivered(slug)
-            )
-        except Exception:
-            logger.exception("guest outbox replay failed for %s", slug)
-    seen = {rid for rid, _ in replay}
-
-    async def _delivered(row_id: int) -> None:
-        if outbox is None:
-            return
-        try:
-            await outbox.mark_delivered(row_id)
-        except Exception:
-            logger.exception("guest outbox mark_delivered failed for %s", slug)
-
-    async def event_generator():
-        try:
-            for row_id, payload in replay:
-                yield (
-                    f"id: {row_id}\nevent: user_message\n"
-                    f"data: {json.dumps(payload)}\n\n"
-                )
-                await bridge.mark_user_message_delivered(slug, payload)
-                await _delivered(row_id)
-            async for frame in bridge.subscribe(slug):
-                row_id = _frame_id(frame)
-                if row_id is not None:
-                    if row_id in seen or (last_id is not None and row_id <= last_id):
-                        continue
-                    seen.add(row_id)
-                yield frame
-                if row_id is not None:
-                    await _delivered(row_id)
-                if await request.is_disconnected():
-                    break
-        except Exception:
-            logger.exception("agent chat SSE generator error for %s", slug)
 
     return StreamingResponse(
-        event_generator(),
+        outbox_event_stream(bridge, outbox, slug, last_id, request),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

@@ -98,12 +98,13 @@ class TestEnqueue:
         assert item["outbox_id"] == rows[0][0]
         assert rows[0][1]["text"] == "hi"
 
-    async def test_config_agent_not_persisted(self, outbox):
+    async def test_config_agent_persisted(self, outbox):
         reg = _registry(outbox, local=("alice",))
         await reg.enqueue_user_message("alice", {"id": "m1", "text": "hi"})
         item = reg._sessions["alice"].queue.get_nowait()
-        assert "outbox_id" not in item
-        assert await outbox.since("alice", 0) == []
+        rows = await outbox.undelivered("alice")
+        assert item["outbox_id"] == rows[0][0]
+        assert rows[0][1]["text"] == "hi"
 
     async def test_no_outbox_attached_is_unchanged(self):
         reg = BridgeSessionRegistry()
