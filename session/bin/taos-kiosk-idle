@@ -9,7 +9,43 @@
 # Keeping the whole thing in a file means sway only ever sees one bare word.
 set -eu
 
-IDLE_SECS="${TAOS_KIOSK_IDLE_SECS:-30}"
+# Read screen timeout from /etc/taos/display.conf (same setting as the phone layer).
+# Path overridable with TAOS_DISPLAY_CONF for tests. Parse with ONE anchored
+# pattern; never source the file. The grep fixes the SHAPE: 1-4 ASCII digits,
+# line-anchored, so a value with spaces or a stray suffix is rejected here.
+# Accept 0 (never), 5..3600. Leading zeros (0300) are rejected so the numeric
+# test cannot be read as octal. Check the RANGE arithmetically so every POSIX
+# shell (dash, busybox ash) agrees -- a case pattern cannot span 5..3600
+# without matching 300..2999 wrong. Missing file -> default 30. Malformed/
+# out-of-range -> fall back to 30 with one stderr message. File wins when
+# present and valid; TAOS_KIOSK_IDLE_SECS env override only applies when the
+# file is absent or invalid.
+DISPLAY_CONF="${TAOS_DISPLAY_CONF:-/etc/taos/display.conf}"
+IDLE_SECS=30
+
+if [ -f "$DISPLAY_CONF" ]; then
+    line="$(grep -E '^SCREEN_OFF_SECONDS=([0-9]{1,4})$' "$DISPLAY_CONF" || true)"
+    if [ -n "$line" ]; then
+        val="${line#*=}"
+        ok=1
+        case "$val" in
+            0) ;;                  # exactly 0 = never
+            0*) ok=0 ;;            # leading zeros (0300, 00) rejected
+            *) ;;
+        esac
+        if [ "$ok" = 1 ] && { [ "$val" -eq 0 ] || { [ "$val" -ge 5 ] && [ "$val" -le 3600 ]; }; }; then
+            IDLE_SECS="$val"
+        else
+            echo "taos-kiosk-idle: invalid SCREEN_OFF_SECONDS=$val, using 30" >&2
+            IDLE_SECS="${TAOS_KIOSK_IDLE_SECS:-30}"
+        fi
+    else
+        echo "taos-kiosk-idle: SCREEN_OFF_SECONDS missing or malformed in $DISPLAY_CONF, using 30" >&2
+        IDLE_SECS="${TAOS_KIOSK_IDLE_SECS:-30}"
+    fi
+else
+    IDLE_SECS="${TAOS_KIOSK_IDLE_SECS:-30}"
+fi
 
 # exec_always re-runs this on `swaymsg reload`, so drop a previous instance
 # first or each reload leaves another swayidle racing the last one. -x matches
@@ -44,12 +80,20 @@ pkill -x swayidle 2>/dev/null || true
 # desk, a missing binary would mean the screen never blanks, so fall back to
 # plain output power off. Nothing else wakes a desk (no double tap), so that
 # branch also powers the output on when input resumes.
+# Build swayidle arguments: timeout only when IDLE_SECS > 0; before-sleep always.
+# For non-screen fallback, also add resume when IDLE_SECS > 0.
+set -- -w
 if [ -x /usr/local/bin/taos-kiosk-screen ]; then
-    exec swayidle -w \
-        timeout "$IDLE_SECS" '/usr/local/bin/taos-kiosk-screen off' \
-        before-sleep         '/usr/local/bin/taos-kiosk-screen off'
+    if [ "$IDLE_SECS" -gt 0 ]; then
+        set -- "$@" timeout "$IDLE_SECS" '/usr/local/bin/taos-kiosk-screen off'
+    fi
+    set -- "$@" before-sleep '/usr/local/bin/taos-kiosk-screen off'
+else
+    if [ "$IDLE_SECS" -gt 0 ]; then
+        set -- "$@" timeout "$IDLE_SECS" 'swaymsg "output * power off"'
+        set -- "$@" resume 'swaymsg "output * power on"'
+    fi
+    set -- "$@" before-sleep 'swaymsg "output * power off"'
 fi
-exec swayidle -w \
-    timeout "$IDLE_SECS" 'swaymsg "output * power off"' \
-        resume 'swaymsg "output * power on"' \
-    before-sleep         'swaymsg "output * power off"'
+
+exec swayidle "$@"

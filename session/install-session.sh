@@ -140,6 +140,20 @@ if [ -z "$DESTDIR" ] && command -v systemctl >/dev/null 2>&1; then
 fi
 # 3b-end.
 
+# Display timeout config (shared by the phone layer). Install only when missing
+# so a chosen value survives updates.
+install_display_conf() {
+    install -d -m 755 "$DESTDIR/etc/taos"
+    if [ ! -f "$DESTDIR/etc/taos/display.conf" ]; then
+        install -m 644 "$HERE/etc/display.conf" "$DESTDIR/etc/taos/display.conf"
+        echo "installed $DESTDIR/etc/taos/display.conf"
+    else
+        echo "$DESTDIR/etc/taos/display.conf already exists, keeping current value"
+    fi
+}
+
+install_display_conf
+
 # 3b2. Session settings: the theme/keyboard command, theme packages and the
 #      theme packages. Inert until a device opts in to the keyboard.
 TAOS_UID="$(id -u taos)"
