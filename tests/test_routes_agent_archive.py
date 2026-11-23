@@ -703,3 +703,67 @@ class TestRestoreRollbackOnSaveFailure:
         # In-memory state must be rolled back
         assert config.archived_agents == original_archived
         assert config.agents == original_agents
+
+    @pytest.mark.asyncio
+    async def test_slug_released_after_save_failure_allows_second_restore(
+        self, client, monkeypatch, app
+    ):
+        """After a failing config save, the slug reservation is released so a
+        second restore (or import/deploy) under the same name succeeds, and no
+        half-restored agent record or container remains.
+        """
+        config = app.state.config
+        entry = {
+            "id": "ghost-1",
+            "archived_at": "20260101T000000",
+            "archived_slug": "ghost",
+            "snapshot_name": "taos-archive-1",
+            "export_path": None,
+            "archive_dir": "archive/ghost-1",
+            "container_name": "taos-agent-ghost",
+            "original": {"name": "ghost", "registry_canonical_id": "cid-ghost"},
+        }
+        config.archived_agents = [entry]
+
+        async def ok(*args, **kwargs):
+            return {"success": True, "output": ""}
+
+        monkeypatch.setattr("tinyagentos.containers.snapshot_restore", ok)
+        monkeypatch.setattr("tinyagentos.containers.rename_container", ok)
+        monkeypatch.setattr("tinyagentos.containers.start_container", ok)
+        monkeypatch.setattr("tinyagentos.containers.set_env", ok)
+        monkeypatch.setattr("tinyagentos.containers.exec_in_container", ok)
+
+        # First restore fails on save
+        async def failing_save(*args, **kwargs):
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr("tinyagentos.routes.agent_archive.save_config_locked", failing_save)
+
+        resp = await client.post("/api/agents/archived/ghost-1/restore")
+        assert resp.status_code == 500
+        assert "disk full" in resp.json().get("error", "")
+
+        # Archive entry must still exist (rollback worked)
+        assert any(e["id"] == "ghost-1" for e in config.archived_agents)
+        assert not any(a["name"] == "ghost" for a in config.agents)
+
+        # Second restore should succeed (slug was released)
+        async def success_save(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr("tinyagentos.routes.agent_archive.save_config_locked", success_save)
+
+        resp2 = await client.post("/api/agents/archived/ghost-1/restore")
+        assert resp2.status_code == 200, resp2.text
+        assert resp2.json()["status"] == "restored"
+        assert resp2.json()["name"] == "ghost"
+
+        # Agent is now live, archive entry is gone
+        assert any(a["name"] == "ghost" for a in config.agents)
+        assert not any(e["id"] == "ghost-1" for e in config.archived_agents)
+
+        # No half-restored record: the restored agent has the correct canonical_id
+        restored_agent = next(a for a in config.agents if a["name"] == "ghost")
+        assert restored_agent.get("registry_canonical_id") == "cid-ghost"
+        assert restored_agent.get("status") == "stopped"

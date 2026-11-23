@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import HTMLResponse, RedirectResponse
 
+from tinyagentos.agent_db import find_agent
 from tinyagentos.agent_token_auth import (
     _enforce_rotation_cutoff, _get_grants_store, _get_keypair, _get_store,
     _grant_unexpired, check_agent_identity,
@@ -130,10 +131,6 @@ def _resolve_bound_local_token_agent(request: Request, auth_mgr, presented: str)
                     return bound_agent
                 config = getattr(request.app.state, "config", None)
                 if config is None:
-                    return False
-                try:
-                    from tinyagentos.agent_db import find_agent
-                except Exception:
                     return False
                 agent = find_agent(config, bound_agent)
                 if not isinstance(agent, dict):
