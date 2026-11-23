@@ -984,9 +984,17 @@ async def chat_completion_stream(
     except GatewayError as exc:
         return exc.response()
 
+    in_use = getattr(state, "in_use", None)
+    if in_use is not None:
+        await in_use.increment_gateway_stream()
+
     async def _full():
-        yield first
-        async for chunk in gen:
-            yield chunk
+        try:
+            yield first
+            async for chunk in gen:
+                yield chunk
+        finally:
+            if in_use is not None:
+                await in_use.decrement_gateway_stream()
 
     return StreamingResponse(_full(), media_type="text/event-stream", headers={"cache-control": "no-cache"})
