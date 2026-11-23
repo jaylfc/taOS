@@ -72,22 +72,24 @@ def _has_accepted_extension(filename: str) -> bool:
     return any(lower.endswith(ext) for ext in _ACCEPTED_EXTENSIONS)
 
 
-def _validate_bundle_members(host_bundle: str, original_filename: str = "") -> tuple[list[str], list[str]]:
+def _validate_bundle_members(host_bundle: str, original_filename: str = "") -> tuple[list[str], list[str], set[str]]:
     """Validate tar bundle members before handing to Hermes.
 
-    Returns (dropped_files, errors). Errors cause import rejection.
+    Returns (dropped_files, errors, dropped_names). Errors cause import rejection.
     Dropped files are non-regular members (symlinks, devices, FIFOs, etc.)
     that are stripped from the bundle with a per-file note.
     Directories are NOT reported as drops (they are structural).
+    dropped_names is a set of member names that were dropped, for reliable rewriting.
     """
     dropped = []
+    dropped_names = set()
     errors = []
 
     is_tar_gz = (host_bundle.endswith(".tar.gz") or host_bundle.endswith(".tgz") or
                  original_filename.endswith(".tar.gz") or original_filename.endswith(".tgz"))
     if not is_tar_gz:
         errors.append("only .tar.gz / .tgz bundles are supported (zip is not accepted)")
-        return dropped, errors
+        return dropped, errors, dropped_names
 
     try:
         with tarfile.open(host_bundle, "r:gz") as tar:
@@ -117,26 +119,20 @@ def _validate_bundle_members(host_bundle: str, original_filename: str = "") -> t
                         tarfile.FIFOTYPE: "FIFO",
                     }.get(member.type, f"type {member.type}")
                     dropped.append(f"{name} ({member_type})")
+                    dropped_names.add(name)
                     continue
     except tarfile.ReadError as e:
         errors.append(f"invalid tar archive: {e}")
     except Exception as e:
         errors.append(f"bundle validation failed: {e}")
 
-    return dropped, errors
+    return dropped, errors, dropped_names
 
 
-def _rewrite_bundle_stripping_dropped(host_bundle: str, dropped_files: list[str]) -> str:
+def _rewrite_bundle_stripping_dropped(host_bundle: str, dropped_names: set[str]) -> str:
     """Create a new tar.gz containing only regular files and directories from
     the original bundle. Returns the path to the rewritten bundle.
     """
-    # Extract just the filenames from dropped_files (they contain "name (type)")
-    dropped_names = set()
-    for entry in dropped_files:
-        # Format: "name (type)" - extract name before " ("
-        name = entry.split(" (")[0]
-        dropped_names.add(name)
-
     new_path = host_bundle + ".stripped"
     try:
         with tarfile.open(host_bundle, "r:gz") as src:
@@ -220,16 +216,7 @@ async def import_hermes_agent(
         _safe_unlink(tmp_path)
         return JSONResponse({"error": "bundle file is empty"}, status_code=400)
 
-    # --- Validate bundle members (tar.gz only) ---
-    dropped_files, validation_errors = _validate_bundle_members(tmp_path, bundle.filename or "")
-    if validation_errors:
-        _safe_unlink(tmp_path)
-        return JSONResponse(
-            {"error": "bundle validation failed", "details": validation_errors},
-            status_code=400,
-        )
-
-    # --- Name validation + slug ------------------------------------------
+    # --- Name validation + slug reservation (before bundle validation) ---
     display_name = (name or "").strip()
     name_error = validate_agent_name(display_name)
     if name_error:
@@ -242,6 +229,16 @@ async def import_hermes_agent(
     except ValueError as e:
         _safe_unlink(tmp_path)
         return JSONResponse({"error": str(e)}, status_code=400)
+
+    # --- Validate bundle members (tar.gz only) ---
+    dropped_files, validation_errors, dropped_names = _validate_bundle_members(tmp_path, bundle.filename or "")
+    if validation_errors:
+        _safe_unlink(tmp_path)
+        release_agent_slug(unique_slug)
+        return JSONResponse(
+            {"error": "bundle validation failed", "details": validation_errors},
+            status_code=400,
+        )
 
     try:
         # --- Parse secrets ----------------------------------------------------
@@ -355,7 +352,7 @@ async def import_hermes_agent(
                     await save_config_locked(config, config.config_path)
 
                 # Post-provision: push the bundle and run `hermes profile import`.
-                jobs_paused = await _run_profile_import(request, unique_slug, agent, pause_jobs, dropped_files)
+                jobs_paused = await _run_profile_import(request, unique_slug, agent, pause_jobs, dropped_files, dropped_names)
 
                 if agent is not None:
                     agent["status"] = "running"
@@ -407,6 +404,7 @@ async def _run_profile_import(
     agent: dict | None,
     pause_jobs: bool,
     dropped_files: list[str],
+    dropped_names: set[str],
 ) -> int:
     """Push the bundle into the container and run `hermes profile import`,
     then configure gateway to serve the imported profile, rewrite model config,
@@ -423,7 +421,7 @@ async def _run_profile_import(
         raise RuntimeError("internal error: bundle path missing for import")
 
     # Rewrite the bundle to strip dropped members (symlinks, devices, etc.)
-    rewritten_bundle = _rewrite_bundle_stripping_dropped(host_bundle, dropped_files)
+    rewritten_bundle = _rewrite_bundle_stripping_dropped(host_bundle, dropped_names)
     try:
         push_rc, push_out = await push_file(container_name, rewritten_bundle, _CONTAINER_BUNDLE_PATH)
     finally:
@@ -766,7 +764,8 @@ Welcome to your new home on taOS!
     # This is best-effort; the bridge will also pick up first_message.txt on startup.
     await exec_in_container(
         container_name,
-        ["bash", "-c", f"curl -s -X POST http://127.0.0.1:8642/internal/first-message -H 'Content-Type: text/plain' --data-binary @{chat_path} >/dev/null 2>&1 || true"],
+        ["curl", "-s", "-X", "POST", "http://127.0.0.1:8642/internal/first-message",
+         "-H", "Content-Type: text/plain", "--data-binary", f"@{chat_path}"],
         timeout=10,
     )
 
