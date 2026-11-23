@@ -1577,10 +1577,11 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         logger.info("startup complete — accepting requests")
 
         yield
-        # NOTE: controller restart/shutdown does NOT touch agent containers —
-        # agents and LiteLLM keep running independently, so there's nothing to
-        # gracefully drain here. Only true system halt (system-shutdown) and
-        # explicit agent pause/stop go through the orchestrator.
+        # NOTE: controller restart/shutdown does NOT touch agent containers --
+        # agents keep running independently across a controller restart, so
+        # there's nothing to gracefully drain here. Only true system halt
+        # (system-shutdown) and explicit agent pause/stop go through the
+        # orchestrator.
 
         # Cancel supervised background tasks (fire-and-forget loops etc.) plus
         # the local-heartbeat loop under ONE bounded budget. An unbounded gather

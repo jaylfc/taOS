@@ -31,7 +31,6 @@ ExecStartPre=+/bin/sh -c '\
 # browser-proxy origin starts. __main__.main() reads TAOS_HOST/TAOS_PORT and
 # TAOS_BROWSER_PROXY_PORT from the Environment block injected by install-server.sh.
 ExecStart=TAOS_PYTHON -m tinyagentos
-ExecStop=TAOS_STOP_SCRIPT
 # Reload sends SIGHUP to the main process, causing uvicorn to re-exec in-place.
 # Used by the in-app "Restart Server" button when systemctl restart requires auth.
 ExecReload=/bin/kill -HUP $MAINPID

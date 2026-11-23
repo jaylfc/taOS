@@ -53,10 +53,10 @@ async def prepare_shutdown(request: Request):
 async def prepare_restart(request: Request):
     """Restart just the controller process. Admin or host local token only.
 
-    Agents and LiteLLM run independently and stay up across a controller
-    restart, so there's nothing to drain — the restart is a ~5s uvicorn
-    bounce. Framework-side retry/backoff (tracked separately) covers the
-    brief window where controller-bound calls fail.
+    Agents run independently and stay up across a controller restart, so
+    there's nothing to drain -- the restart is a ~5s uvicorn bounce.
+    Framework-side retry/backoff (tracked separately) covers the brief window
+    where controller-bound calls fail.
     """
     # Record target SHA so the boot-time check can confirm the update took.
     auto_updater = getattr(request.app.state, "auto_updater", None)

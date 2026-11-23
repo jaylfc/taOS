@@ -81,6 +81,25 @@ do
     fi
 done
 
+# Only drain on a real system shutdown/reboot/halt. systemd queues a
+# shutdown.target/reboot.target/halt.target job while one is in progress, so a
+# controller restart (`systemctl restart`, the in-app Restart button, an update
+# restart) which has no such job must NOT drain: agents keep their work across
+# an update. taos-pre-shutdown.service remains the single drain entry point for
+# real reboots (see systemd/taos-pre-shutdown.service). When systemd is
+# unavailable or the query fails we drain anyway, preserving the pre-fix
+# behaviour for no-systemd installs and never silently suppressing the drain.
+shutdown_queued() {
+    local jobs
+    command -v systemctl >/dev/null 2>&1 || return 0
+    jobs=$(systemctl list-jobs --no-pager --no-legend 2>/dev/null) || return 0
+    printf '%s\n' "$jobs" | grep -qE '\b(shutdown|reboot|halt)\.target\b'
+}
+
+if ! shutdown_queued; then
+    exit 0
+fi
+
 if [ -n "$STAMP_FILE" ] && [ -r "$STAMP_FILE" ]; then
     # The stamp carries its own epoch. `stat -c %Y` is GNU-only: on macOS/BSD it
     # errors out, the `|| echo 0` then made every stamp look ancient, and the
