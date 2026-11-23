@@ -39,7 +39,7 @@ from tinyagentos.auth_context import (
     require_agent_owner_or_admin,
 )
 from tinyagentos.otel.trace_context import build_trace_context_headers
-from tinyagentos.qmd_service import qmd_honours_dbpath
+from tinyagentos.qmd_service import make_index_dir, qmd_honours_dbpath
 
 logger = logging.getLogger(__name__)
 
@@ -186,7 +186,7 @@ def _agent_db_path(request: Request, agent: str | None) -> str:
         # entry under agent_memory_dir): the resolved path must stay inside it.
         if not target.resolve().is_relative_to(base.resolve()):
             raise HTTPException(status_code=400, detail="invalid agent name")
-    target.parent.mkdir(parents=True, exist_ok=True)
+    make_index_dir(target.parent, base if agent else base.parent / "user-qmd-index")
     return str(target)
 
 
