@@ -14,6 +14,13 @@
 #                     the owner's own tailnet that the design says must stay untouched.
 set -eu
 
+# The bed's Headscale serves its embedded DERP over plain http (no TLS in the
+# bed), and the DERP map carries no InsecureForTests flag, so without this every
+# client dials DERP with TLS, fails, and reports "could not connect to the
+# bed-embedded relay server". Direct paths still work between warmed peers, but a
+# first contact waits on DERP and can outlast a test's timeout.
+export TS_DEBUG_USE_DERP_HTTP=1
+
 LOG=/var/log/bed
 mkdir -p "$LOG" /run/taos/mesh /var/lib/taos/mesh
 # Sticky and world-writable: each person's daemon creates its own socket here.
