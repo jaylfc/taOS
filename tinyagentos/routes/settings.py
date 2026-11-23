@@ -1182,10 +1182,17 @@ async def _run_maintenance_after_update(request: Request) -> dict:
     report = await maint.run_pending()
     text = maint.failure_text(report)
     notif = getattr(request.app.state, "notifications", None)
+    if notif is not None and report.get("result") in ("applied", "nothing"):
+        try:  # a clean run retires an earlier failure notice
+            await notif.archive_by_source_ref("system.maintenance", "maintenance")
+        except Exception:
+            logger.exception("could not retire the maintenance notification")
     if text and notif is not None:
         try:
+            await notif.archive_by_source_ref("system.maintenance", "maintenance")
             await notif.add(title="Maintenance step needs attention", message=text,
-                            level="warning", source="system.maintenance")
+                            level="warning", source="system.maintenance",
+                            data={"request_id": "maintenance"})
         except Exception:
             logger.exception("could not record the maintenance notification")
     return report
