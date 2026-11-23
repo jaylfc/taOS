@@ -538,9 +538,13 @@ class BridgeSessionRegistry:
                             "type": "message_edit",
                             "seq": self._chat_hub.next_seq(),
                             "message_id": existing_id,
-                            "content": final_content,
                             "edited_at": time.time(),
                         }
+                        # Only include content when an edit actually ran, so an
+                        # empty-content retry never blanks committed text on
+                        # clients already showing it.
+                        if final_content:
+                            broadcast_payload["content"] = final_content
                         if merged_blocks is not None:
                             broadcast_payload["content_blocks"] = merged_blocks
                         await self._chat_hub.broadcast(channel_id, broadcast_payload)
@@ -573,6 +577,11 @@ class BridgeSessionRegistry:
                                     reloaded = await self._chat_messages.get_message(existing_id)
                                 if reloaded is not None:
                                     await router.dispatch(reloaded, channel)
+                                else:
+                                    logger.warning(
+                                        "bridge_session: reloaded row is None on recovery dispatch for reply id %s",
+                                        reply_id,
+                                    )
                         except Exception:
                             logger.warning("re-dispatch on agent reply recovery failed", exc_info=True)
                     return
