@@ -171,16 +171,26 @@ def _validate_fetch_body(body: dict) -> tuple[dict | None, JSONResponse | None]:
 async def _get_keenable_user_id(request: Request) -> str:
     """Get the user_id for Keenable public fallback preference lookup.
 
-    For agent calls (local token bound to an agent), returns the agent owner's user_id.
-    Falls back to the legacy global scope if owner cannot be resolved.
+    Resolves, in order:
+      - the signed-in person (request.state.user_id on a session, via == "session")
+        -- a human session reads their own broker preference;
+      - for an agent-bound local token, the agent's owner per the registry;
+      - otherwise the shipped SYSTEM default -- the primary user (owner).
+    Never falls back to the legacy "user" scope: after the migration it holds
+    nothing, so reading it would silently disable public fallback for everyone.
     """
+    via = getattr(request.state, "via", None)
+    if via == "session":
+        user_id = getattr(request.state, "user_id", None)
+        if user_id:
+            return user_id
     agent_name = getattr(request.state, "agent_name", None)
     if agent_name:
         owner = await resolve_agent_owner(request, agent_name)
         if owner:
             return owner
-    # Fallback: legacy global scope (primary admin / owner)
-    return "user"
+    primary = request.app.state.auth.get_primary_user()
+    return primary["id"] if primary else ""
 
 
 @router.post("/api/broker/keenable/search")
