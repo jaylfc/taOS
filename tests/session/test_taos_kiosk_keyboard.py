@@ -160,20 +160,14 @@ def test_installer_has_no_hardcoded_uid_and_installs_squeekboard_only_with_the_f
     text = (ROOT / "session" / "install-session.sh").read_text()
     assert "/run/user/999" not in text
     lines = text.splitlines()
-    idx = [i for i, l in enumerate(lines) if re.search(r"\s*pkg_install squeekboard\b", l)]
+    idx = [i for i, l in enumerate(lines) if re.match(r"\s*pkg_install squeekboard\b", l)]
     assert idx, "installer never installs squeekboard"
     for i in idx:
         assert lines[i].startswith(" "), "squeekboard install is not inside a block"
-        # Find the KEYBOARD guard (first if-statement going backwards)
-        j = i - 1
-        while j >= 0 and not lines[j].lstrip().startswith("if ["):
+        j = i
+        while lines[j].startswith(" ") or not lines[j].strip():
             j -= 1
-        assert j >= 0 and lines[j].strip() == 'if [ "$KEYBOARD" = 1 ]; then', "squeekboard install must be inside KEYBOARD guard"
-        # Also verify it's inside the DESTDIR guard for real-installs-only.
-        k = j - 1
-        while k >= 0 and not lines[k].lstrip().startswith("if ["):
-            k -= 1
-        assert k >= 0 and lines[k].strip() == 'if [ -z "$DESTDIR" ]; then', "squeekboard install must be inside DESTDIR guard"
+        assert lines[j] == 'if [ "$KEYBOARD" = 1 ]; then'
     # Control: the unguarded install of swaybg is still at top level.
     assert "pkg_install swaybg" in lines
     # The mentions of squeekboard outside the guarded block are only comments
@@ -242,18 +236,10 @@ def test_both_scripts_probe_the_same_default_squeekboard_dirs():
 def test_installer_installs_the_wrapper_unconditionally():
     lines = (ROOT / "session" / "install-session.sh").read_text().splitlines()
     wrapper = [i for i, l in enumerate(lines)
-               if re.search(r"install -m 755 .*bin/taos-kiosk-keyboard\b", l)]
-    assert len(wrapper) == 1, "wrapper install is missing"
-    # The wrapper is installed inside the DESTDIR guard (real installs only),
-    # so it is indented. Verify it is inside that block.
-    i = wrapper[0]
-    assert lines[i].startswith(" "), "wrapper install should be inside DESTDIR guard"
-    j = i
-    while lines[j].startswith(" ") or not lines[j].strip():
-        j -= 1
-    assert lines[j] == 'if [ -z "$DESTDIR" ]; then', "wrapper install must be inside DESTDIR guard"
+               if re.match(r"install -m 755 .*bin/taos-kiosk-keyboard\b", l)]
+    assert len(wrapper) == 1, "wrapper install is missing or indented inside a block"
     # Control: the squeekboard package install is still inside the guard.
-    pkg = [i for i, l in enumerate(lines) if re.search(r"\s+pkg_install squeekboard\b", l)]
+    pkg = [i for i, l in enumerate(lines) if re.match(r"\s+pkg_install squeekboard\b", l)]
     assert len(pkg) == 1
 
 
