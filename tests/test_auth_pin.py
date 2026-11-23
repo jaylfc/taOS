@@ -823,6 +823,98 @@ class TestPinKeyLockWaiterRefcount:
         assert key not in auth_routes._pin_key_locks, "Lock entry was not popped after all waiters released"
         assert key not in auth_routes._pin_key_waiters, "Waiter count was not cleaned up"
 
+    @pytest.mark.asyncio
+    async def test_cancelled_waiter_does_not_leak_count(self):
+        """A waiter cancelled while waiting must decrement the count and pop the entry if idle.
+
+        Without the fix, cancelling a task in _acquire_pin_key_lock leaves the
+        waiter count incremented and the key entry never popped. An attacker can
+        drive this by sending requests with distinct unknown: usernames and
+        cancelling them, eventually hitting the 1024 cap.
+        """
+        import asyncio
+        from tinyagentos.routes import auth as auth_routes
+
+        # Reset the lock state
+        auth_routes._pin_key_locks.clear()
+        auth_routes._pin_key_waiters.clear()
+
+        key = "test-cancel-key"
+        lock1 = await auth_routes._acquire_pin_key_lock(key)
+
+        # Start a waiter that we will cancel
+        waiter_started = asyncio.Event()
+        waiter_task = None
+
+        async def waiter():
+            waiter_started.set()
+            return await auth_routes._acquire_pin_key_lock(key)
+
+        waiter_task = asyncio.create_task(waiter())
+
+        # Wait for the waiter to start waiting (increment count)
+        await waiter_started.wait()
+        await asyncio.sleep(0.01)  # Ensure it's in the acquire wait
+
+        # Verify waiter count is 2 (holder + 1 waiter)
+        assert auth_routes._pin_key_waiters[key] == 2
+
+        # Cancel the waiter
+        waiter_task.cancel()
+        try:
+            await waiter_task
+        except asyncio.CancelledError:
+            pass
+
+        # Release the holder
+        await auth_routes._release_pin_key_lock(key, lock1)
+
+        # After cancellation and release, the count should be 0 and entry popped
+        assert key not in auth_routes._pin_key_waiters, "Waiter count leaked after cancellation"
+        assert key not in auth_routes._pin_key_locks, "Lock entry not popped after cancellation and release"
+
+    @pytest.mark.asyncio
+    async def test_burst_cancelled_waiters_over_many_keys_leaves_dict_empty(self):
+        """A burst of cancelled waiters over many distinct keys must not leave entries.
+
+        Simulates an attacker sending requests with distinct unknown:<username>
+        keys and cancelling them all. Without the fix, each leaves a stuck entry.
+        """
+        import asyncio
+        from tinyagentos.routes import auth as auth_routes
+
+        # Reset the lock state
+        auth_routes._pin_key_locks.clear()
+        auth_routes._pin_key_waiters.clear()
+
+        num_keys = 50
+        keys = [f"unknown:attacker{i}" for i in range(num_keys)]
+
+        async def acquire_and_cancel(key):
+            # Hold the lock briefly so waiters queue
+            lock = await auth_routes._acquire_pin_key_lock(key)
+            waiter_started = asyncio.Event()
+
+            async def waiter():
+                waiter_started.set()
+                return await auth_routes._acquire_pin_key_lock(key)
+
+            task = asyncio.create_task(waiter())
+            await waiter_started.wait()
+            await asyncio.sleep(0.01)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            await auth_routes._release_pin_key_lock(key, lock)
+
+        await asyncio.gather(*(acquire_and_cancel(k) for k in keys))
+
+        # All keys should be cleaned up
+        assert len(auth_routes._pin_key_locks) == 0, f"Lock dict not empty: {list(auth_routes._pin_key_locks.keys())}"
+        assert len(auth_routes._pin_key_waiters) == 0, f"Waiter dict not empty: {dict(auth_routes._pin_key_waiters)}"
+
 
 # --------------------------------------------------------------------------- #
 #  Lock page script (node) — PIN auto-unlock behaviour                       #

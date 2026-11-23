@@ -9106,7 +9106,18 @@ async def _acquire_pin_key_lock(limiter_key: str) -> asyncio.Lock:
                 break
             if not evicted:
                 break
-    await lock.acquire()
+    try:
+        await lock.acquire()
+    except BaseException:
+        async with _pin_key_locks_guard:
+            count = _pin_key_waiters.get(limiter_key, 0) - 1
+            if count <= 0:
+                _pin_key_waiters.pop(limiter_key, None)
+                if _pin_key_locks.get(limiter_key) is lock:
+                    _pin_key_locks.pop(limiter_key, None)
+            else:
+                _pin_key_waiters[limiter_key] = count
+        raise
     return lock
 
 
