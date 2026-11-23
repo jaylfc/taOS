@@ -2,6 +2,8 @@
 deploy, import, and restore create paths.
 """
 import asyncio
+import io
+import tarfile
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -14,6 +16,23 @@ from tinyagentos.config import (
     unique_agent_slug,
     _reserved_agent_slugs,
 )
+
+
+def _make_minimal_tar_gz() -> bytes:
+    """Create a minimal valid tar.gz bundle for testing."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        # Add a minimal config.yaml
+        config_content = b"model:\n  default: test-model\n"
+        ti = tarfile.TarInfo(name="config.yaml")
+        ti.size = len(config_content)
+        tar.addfile(ti, io.BytesIO(config_content))
+        # Add a minimal SOUL.md
+        soul_content = b"Test persona"
+        ti = tarfile.TarInfo(name="SOUL.md")
+        ti.size = len(soul_content)
+        tar.addfile(ti, io.BytesIO(soul_content))
+    return buf.getvalue()
 
 
 @pytest.fixture(autouse=True)
@@ -218,7 +237,7 @@ class TestRouteLevelNameReservation:
                 "model": "test-model",
                 "secrets": "{}",
             },
-            files={"bundle": ("test.tar.gz", b"fake bundle content", "application/octet-stream")},
+            files={"bundle": ("test.tar.gz", _make_minimal_tar_gz(), "application/gzip")},
         )
 
         # Wait for both to complete

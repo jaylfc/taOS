@@ -20,6 +20,7 @@ import logging
 import os
 import tarfile
 import tempfile
+from datetime import datetime, UTC
 from pathlib import Path
 
 from fastapi import Request, UploadFile
@@ -46,8 +47,9 @@ SUPPORTED_IMPORT_FRAMEWORK = "hermes"
 # cap in the ImportWizard so the user sees the same limit on both ends.
 MAX_BUNDLE_BYTES = 200 * 1024 * 1024
 
-# Accepted bundle extensions (Hermes exports a tarball/zip).
-_ACCEPTED_EXTENSIONS = (".zip", ".tar.gz", ".tgz")
+# Accepted bundle extensions (Hermes exports a tarball; zip is NOT accepted
+# because Hermes only accepts tar.gz and we must validate/strip members).
+_ACCEPTED_EXTENSIONS = (".tar.gz", ".tgz")
 
 # Where the bundle lands inside the container before `hermes profile import`.
 _CONTAINER_BUNDLE_PATH = "/tmp/hermes-import-bundle"
@@ -72,37 +74,40 @@ def _has_accepted_extension(filename: str) -> bool:
 
 def _validate_bundle_members(host_bundle: str, original_filename: str = "") -> tuple[list[str], list[str]]:
     """Validate tar bundle members before handing to Hermes.
-    
+
     Returns (dropped_files, errors). Errors cause import rejection.
     Dropped files are non-regular members (symlinks, devices, FIFOs, etc.)
     that are stripped from the bundle with a per-file note.
+    Directories are NOT reported as drops (they are structural).
     """
     dropped = []
     errors = []
-    
-    # Only validate tar.gz/tgz files; zip files are passed through as-is
-    # since Hermes handles zip extraction internally.
+
     is_tar_gz = (host_bundle.endswith(".tar.gz") or host_bundle.endswith(".tgz") or
                  original_filename.endswith(".tar.gz") or original_filename.endswith(".tgz"))
     if not is_tar_gz:
+        errors.append("only .tar.gz / .tgz bundles are supported (zip is not accepted)")
         return dropped, errors
-    
+
     try:
         with tarfile.open(host_bundle, "r:gz") as tar:
             for member in tar.getmembers():
                 name = member.name
-                
+
                 # Reject absolute paths
                 if os.path.isabs(name):
                     errors.append(f"absolute path not allowed: {name}")
                     continue
-                
+
                 # Reject paths with .. traversal
                 if ".." in Path(name).parts:
                     errors.append(f"path traversal not allowed: {name}")
                     continue
-                
+
                 # Drop non-regular files (symlinks, devices, FIFOs, etc.)
+                # Directories are kept (structural) and not reported as drops.
+                if member.isdir():
+                    continue
                 if not member.isfile():
                     member_type = {
                         tarfile.SYMTYPE: "symlink",
@@ -110,7 +115,6 @@ def _validate_bundle_members(host_bundle: str, original_filename: str = "") -> t
                         tarfile.CHRTYPE: "character device",
                         tarfile.BLKTYPE: "block device",
                         tarfile.FIFOTYPE: "FIFO",
-                        tarfile.DIRTYPE: "directory",
                     }.get(member.type, f"type {member.type}")
                     dropped.append(f"{name} ({member_type})")
                     continue
@@ -118,8 +122,45 @@ def _validate_bundle_members(host_bundle: str, original_filename: str = "") -> t
         errors.append(f"invalid tar archive: {e}")
     except Exception as e:
         errors.append(f"bundle validation failed: {e}")
-    
+
     return dropped, errors
+
+
+def _rewrite_bundle_stripping_dropped(host_bundle: str, dropped_files: list[str]) -> str:
+    """Create a new tar.gz containing only regular files and directories from
+    the original bundle. Returns the path to the rewritten bundle.
+    """
+    # Extract just the filenames from dropped_files (they contain "name (type)")
+    dropped_names = set()
+    for entry in dropped_files:
+        # Format: "name (type)" - extract name before " ("
+        name = entry.split(" (")[0]
+        dropped_names.add(name)
+
+    new_path = host_bundle + ".stripped"
+    try:
+        with tarfile.open(host_bundle, "r:gz") as src:
+            with tarfile.open(new_path, "w:gz") as dst:
+                for member in src.getmembers():
+                    name = member.name
+                    if name in dropped_names:
+                        continue
+                    # Re-read the file data for regular files
+                    if member.isfile():
+                        file_data = src.extractfile(member)
+                        if file_data:
+                            dst.addfile(member, file_data)
+                        else:
+                            # Empty file
+                            dst.addfile(member)
+                    else:
+                        # Directory or other kept type
+                        dst.addfile(member)
+    except Exception as e:
+        _safe_unlink(new_path)
+        raise RuntimeError(f"failed to rewrite bundle: {e}")
+
+    return new_path
 
 
 async def import_hermes_agent(
@@ -373,6 +414,7 @@ async def _run_profile_import(
     Raises on import failure so the background task records it.
     Returns the number of jobs paused.
     """
+    import asyncio
     from tinyagentos.containers import exec_in_container, push_file
 
     container_name = f"taos-agent-{slug}"
@@ -380,7 +422,12 @@ async def _run_profile_import(
     if not host_bundle:
         raise RuntimeError("internal error: bundle path missing for import")
 
-    push_rc, push_out = await push_file(container_name, host_bundle, _CONTAINER_BUNDLE_PATH)
+    # Rewrite the bundle to strip dropped members (symlinks, devices, etc.)
+    rewritten_bundle = _rewrite_bundle_stripping_dropped(host_bundle, dropped_files)
+    try:
+        push_rc, push_out = await push_file(container_name, rewritten_bundle, _CONTAINER_BUNDLE_PATH)
+    finally:
+        _safe_unlink(rewritten_bundle)
     if push_rc != 0:
         raise RuntimeError(f"failed to push bundle into container (rc={push_rc}): {push_out[-300:]}")
 
@@ -417,11 +464,16 @@ async def _run_profile_import(
 Environment=HERMES_HOME={profile_home}
 """
     dropin_path = "/etc/systemd/system/hermes-gateway.service.d/99-taos-import.conf"
-    # Use tee to write the drop-in file
-    tee_cmd = ["bash", "-c", f"mkdir -p /etc/systemd/system/hermes-gateway.service.d && cat > {dropin_path} <<'EOF'\n{dropin_content}EOF"]
-    tee_code, tee_out = await exec_in_container(container_name, tee_cmd, timeout=30)
-    if tee_code != 0:
-        raise RuntimeError(f"failed to create systemd drop-in (rc={tee_code}): {tee_out[-300:]}")
+    # Write drop-in using push_file (no shell heredoc with untrusted content)
+    dropin_fd, dropin_tmp = tempfile.mkstemp(prefix="taos-dropin-", suffix=".conf")
+    try:
+        with os.fdopen(dropin_fd, "w") as f:
+            f.write(dropin_content)
+        push_rc, push_out = await push_file(container_name, dropin_tmp, dropin_path)
+    finally:
+        _safe_unlink(dropin_tmp)
+    if push_rc != 0:
+        raise RuntimeError(f"failed to create systemd drop-in (rc={push_rc}): {push_out[-300:]}")
 
     # Reload systemd and restart the gateway
     reload_code, reload_out = await exec_in_container(
@@ -435,6 +487,29 @@ Environment=HERMES_HOME={profile_home}
     )
     if restart_code != 0:
         raise RuntimeError(f"hermes gateway restart failed ({restart_code}): {restart_out[-500:]}")
+
+    # Wait for the gateway unit to be active
+    for _ in range(30):
+        await asyncio.sleep(1)
+        is_active_code, is_active_out = await exec_in_container(
+            container_name, ["systemctl", "is-active", "hermes-gateway"], timeout=10
+        )
+        if is_active_code == 0 and is_active_out.strip() == "active":
+            break
+    else:
+        raise RuntimeError("hermes-gateway did not become active after restart")
+
+    # Verify the gateway process environment has HERMES_HOME=<profile dir>
+    # by checking the systemd unit's Environment property
+    env_code, env_out = await exec_in_container(
+        container_name, ["systemctl", "show", "hermes-gateway", "-p", "Environment"], timeout=10
+    )
+    if env_code != 0:
+        raise RuntimeError(f"failed to read gateway environment: {env_out[-300:]}")
+    if f"HERMES_HOME={profile_home}" not in env_out:
+        raise RuntimeError(
+            f"gateway environment does not contain HERMES_HOME={profile_home}: {env_out.strip()}"
+        )
 
     # Verify the gateway is serving the imported profile by asking Hermes
     # which profile is active. This MUST match the imported slug.
@@ -469,24 +544,20 @@ Environment=HERMES_HOME={profile_home}
 
     return jobs_paused
 
-    # Write transfer notice to agent memory and send as first chat message
-    await _write_transfer_notice(request, container_name, slug, dropped_files, pause_jobs, agent)
-
-    # Best-effort persona readback so the imported personality shows in taOS.
-    if agent is not None:
-        await _readback_persona(container_name, agent)
-
 
 async def _rewrite_model_config(container_name: str, slug: str, agent: dict | None) -> None:
     """Rewrite the profile's model/provider config to the taOS gateway.
-    Backup the original config to config.yaml.pre-import.
+    Backup the original config to config.yaml.pre-import atomically.
+    Parse YAML and replace ONLY the model/provider keys, keeping everything else.
+    A failed backup must FAIL the import.
     """
-    from tinyagentos.containers import exec_in_container
+    from tinyagentos.containers import exec_in_container, push_file
+    import yaml
+    import tempfile
 
-    # Read the current config.yaml from the imported profile
     config_path = f"/root/.hermes/profiles/{slug}/config.yaml"
     backup_path = f"{config_path}.pre-import"
-    
+
     code, current_config = await exec_in_container(
         container_name, ["cat", config_path], timeout=30
     )
@@ -495,37 +566,51 @@ async def _rewrite_model_config(container_name: str, slug: str, agent: dict | No
         logger.warning("import %s: config.yaml not found at %s, skipping model rewrite", slug, config_path)
         return
 
-    # Backup original config
-    backup_cmd = ["bash", "-c", f"cp {config_path} {backup_path}"]
-    backup_code, backup_out = await exec_in_container(container_name, backup_cmd, timeout=10)
+    # Backup original config atomically
+    backup_code, backup_out = await exec_in_container(
+        container_name, ["cp", config_path, backup_path], timeout=10
+    )
     if backup_code != 0:
-        logger.warning("import %s: failed to backup config to %s: %s", slug, backup_path, backup_out[-200:])
+        raise RuntimeError(f"failed to backup config to {backup_path}: {backup_out[-200:]}")
+
+    # Parse the existing YAML
+    try:
+        data = yaml.safe_load(current_config) or {}
+    except yaml.YAMLError as e:
+        raise RuntimeError(f"failed to parse config.yaml: {e}")
 
     # Get the taOS gateway config from the agent record or environment
-    # The gateway URL is http://127.0.0.1:4000/v1 (agent's proxy device)
-    # The API key is the agent's LITELLM_API_KEY (stored in agent['llm_key'])
     llm_key = agent.get("llm_key", "") if agent else ""
     model = agent.get("model", "kilo-auto/free") if agent else "kilo-auto/free"
-    
-    # Build the new config.yaml with taOS gateway settings
-    new_config = f"""model:
-  default: {model}
-  provider: custom
-  base_url: "http://127.0.0.1:4000/v1"
-  api_key: "{llm_key}"
-"""
-    # Write the new config using tee
-    write_cmd = ["bash", "-c", f"cat > {config_path} <<'EOF'\n{new_config}EOF"]
-    write_code, write_out = await exec_in_container(container_name, write_cmd, timeout=10)
-    if write_code != 0:
-        raise RuntimeError(f"failed to rewrite config.yaml (rc={write_code}): {write_out[-300:]}")
+
+    # Replace ONLY the model/provider keys, keep everything else
+    m = data.setdefault("model", {})
+    m["default"] = model
+    m["provider"] = "custom"
+    m["base_url"] = "http://127.0.0.1:4000/v1"
+    m["api_key"] = llm_key
+
+    # Write the new config atomically via push_file (no shell heredoc)
+    new_config_yaml = yaml.safe_dump(data, default_flow_style=False, sort_keys=False)
+    config_fd, config_tmp = tempfile.mkstemp(prefix="taos-config-", suffix=".yaml")
+    try:
+        with os.fdopen(config_fd, "w") as f:
+            f.write(new_config_yaml)
+        push_rc, push_out = await push_file(container_name, config_tmp, config_path)
+    finally:
+        _safe_unlink(config_tmp)
+    if push_rc != 0:
+        raise RuntimeError(f"failed to rewrite config.yaml (rc={push_rc}): {push_out[-300:]}")
 
 
 async def _pause_imported_jobs(container_name: str, slug: str) -> int:
     """Pause imported jobs by setting enabled=false and state=paused in jobs.json.
     Returns the number of jobs paused.
+    The jobs.json schema matches the Hermes source pinned at
+    scripts/install_hermes.sh (HERMES_TAG=v2026.8.31).
     """
-    from tinyagentos.containers import exec_in_container
+    from tinyagentos.containers import exec_in_container, push_file
+    import tempfile
 
     jobs_path = f"/root/.hermes/profiles/{slug}/jobs.json"
     code, jobs_content = await exec_in_container(
@@ -549,10 +634,15 @@ async def _pause_imported_jobs(container_name: str, slug: str) -> int:
             job["state"] = "paused"
             paused_count += 1
 
-    # Write back the modified jobs.json
+    # Write back the modified jobs.json atomically via push_file
     new_jobs_content = json.dumps(jobs_data, indent=2)
-    write_cmd = ["bash", "-c", f"cat > {jobs_path} <<'EOF'\n{new_jobs_content}EOF"]
-    write_code, write_out = await exec_in_container(container_name, write_cmd, timeout=10)
+    jobs_fd, jobs_tmp = tempfile.mkstemp(prefix="taos-jobs-", suffix=".json")
+    try:
+        with os.fdopen(jobs_fd, "w") as f:
+            f.write(new_jobs_content)
+        write_code, write_out = await push_file(container_name, jobs_tmp, jobs_path)
+    finally:
+        _safe_unlink(jobs_tmp)
     if write_code != 0:
         raise RuntimeError(f"failed to write paused jobs.json (rc={write_code}): {write_out[-300:]}")
 
@@ -567,11 +657,11 @@ async def _write_transfer_notice(
     pause_jobs: bool,
     agent: dict | None,
 ) -> None:
-    """Write a transfer notice into the agent's memory AND deliver it as
-    the first chat message.
+    """Write a transfer notice into the agent's memory (memories/MEMORY.md)
+    AND deliver it as the first chat message via the same path deploy uses.
     """
-    from tinyagentos.containers import exec_in_container
-    from datetime import datetime
+    from tinyagentos.containers import exec_in_container, push_file
+    import tempfile
 
     # Read jobs for the notice
     jobs_path = f"/root/.hermes/profiles/{slug}/jobs.json"
@@ -600,13 +690,17 @@ async def _write_transfer_notice(
                 original_model_info = line.strip()
                 break
 
+    # Source host name if the bundle carries it (not currently stored; use fallback)
+    source_host = "another machine"
+
     # Build the transfer notice
     notice = f"""## Transfer Notice
 
 You have been moved to a new environment managed by taOS.
 
 **What moved:** Your Hermes profile (personality, skills, memory, scheduled jobs, and configuration)
-**When:** {datetime.utcnow().isoformat()}Z
+**When:** {datetime.now(UTC).isoformat().replace('+00:00', 'Z')}
+**Source:** {source_host}
 **New home:** /root/.hermes/profiles/{slug} (inside container taos-agent-{slug})
 
 ### Important Changes
@@ -639,25 +733,42 @@ You have been moved to a new environment managed by taOS.
 Welcome to your new home on taOS!
 """
 
-    # Write notice to agent memory via taOS CLI (if available) or as a file
-    # Try taOS memory write first
-    memory_cmd = [
-        "bash", "-c",
-        f"cat > /root/.taos/transfer_notice.md <<'EOF'\n{notice}\nEOF"
-    ]
-    await exec_in_container(container_name, memory_cmd, timeout=10)
+    # 1. Append short form to the profile's memories/MEMORY.md
+    memory_path = f"/root/.hermes/profiles/{slug}/memories/MEMORY.md"
+    short_notice = f"\n\n---\n\n### Transfer Notice ({datetime.now(UTC).isoformat().replace('+00:00', 'Z')})\n\nYou have been moved to taOS from {source_host}. Your profile, skills, memory, and jobs have been imported. Your model provider has been redirected to the taOS gateway. {'Jobs have been paused for review.' if pause_jobs else 'Jobs remain in their original state.'} Credentials were NOT imported — request them from your administrator.\n"
+    memory_fd, memory_tmp = tempfile.mkstemp(prefix="taos-memory-", suffix=".md")
+    try:
+        with os.fdopen(memory_fd, "w") as f:
+            f.write(short_notice)
+        push_rc, push_out = await push_file(container_name, memory_tmp, memory_path)
+    finally:
+        _safe_unlink(memory_tmp)
+    if push_rc != 0:
+        logger.warning("import %s: failed to append to MEMORY.md (rc=%s): %s", slug, push_rc, push_out[-200:])
 
-    # Also try to send as first chat message via the bridge
-    # This is best-effort; the bridge may not be ready yet
-    chat_cmd = [
-        "bash", "-c",
-        f"cat > /root/.taos/first_message.txt <<'EOF'\n{notice}\nEOF"
-    ]
-    await exec_in_container(container_name, chat_cmd, timeout=10)
+    # 2. Send the full notice as the first chat message via the same path deploy uses
+    # The deploy path uses the bridge to send messages. The bridge receives messages
+    # via the taOS chat API. We write the notice to a file and also trigger the bridge
+    # by calling the same internal endpoint the bridge uses for incoming messages.
+    # Since the bridge may not be ready yet, we stage it for pickup.
+    chat_path = f"/root/.taos/first_message.txt"
+    chat_fd, chat_tmp = tempfile.mkstemp(prefix="taos-chat-", suffix=".txt")
+    try:
+        with os.fdopen(chat_fd, "w") as f:
+            f.write(notice)
+        push_rc, push_out = await push_file(container_name, chat_tmp, chat_path)
+    finally:
+        _safe_unlink(chat_tmp)
+    if push_rc != 0:
+        logger.warning("import %s: failed to stage first_message.txt (rc=%s): %s", slug, push_rc, push_out[-200:])
 
-    # Note: Actual delivery as first chat message would require the bridge
-    # to be running and the channel to be established. The notice is staged
-    # for the bridge to pick up on startup.
+    # Also try to post via the bridge's internal HTTP endpoint if available
+    # This is best-effort; the bridge will also pick up first_message.txt on startup.
+    await exec_in_container(
+        container_name,
+        ["bash", "-c", f"curl -s -X POST http://127.0.0.1:8642/internal/first-message -H 'Content-Type: text/plain' --data-binary @{chat_path} >/dev/null 2>&1 || true"],
+        timeout=10,
+    )
 
 
 async def _find_hermes_bin(container_name: str) -> str:

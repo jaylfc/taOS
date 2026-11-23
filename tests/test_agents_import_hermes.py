@@ -8,9 +8,30 @@ from pathlib import Path
 
 import pytest
 
+from tinyagentos.routes.agent_import import _CONTAINER_BUNDLE_PATH
 
-def _bundle(content=b"PK\x03\x04 fake-bundle", filename="profile.zip"):
-    return {"bundle": (filename, io.BytesIO(content), "application/zip")}
+
+def _make_minimal_bundle() -> bytes:
+    """Create a minimal valid tar.gz bundle for testing."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        # Add a minimal config.yaml
+        config_content = b"model:\n  default: test-model\n"
+        ti = tarfile.TarInfo(name="config.yaml")
+        ti.size = len(config_content)
+        tar.addfile(ti, io.BytesIO(config_content))
+        # Add a minimal SOUL.md
+        soul_content = b"Test persona"
+        ti = tarfile.TarInfo(name="SOUL.md")
+        ti.size = len(soul_content)
+        tar.addfile(ti, io.BytesIO(soul_content))
+    return buf.getvalue()
+
+
+def _bundle(content=None, filename="profile.tar.gz"):
+    if content is None:
+        content = _make_minimal_bundle()
+    return {"bundle": (filename, io.BytesIO(content), "application/gzip")}
 
 
 def _make_fake_exec(overrides: dict = None):
@@ -52,10 +73,20 @@ def _make_fake_exec(overrides: dict = None):
         if "systemctl" in cmd and "daemon-reload" in cmd:
             return 0, "reloaded"
         
-        # systemctl restart hermes-gateway
+# systemctl restart hermes-gateway
         if "systemctl" in cmd and "restart" in cmd and "hermes-gateway" in cmd:
             return 0, "restarted"
-        
+
+        # systemctl is-active hermes-gateway (wait for gateway to be active)
+        if "systemctl" in cmd and "is-active" in cmd and "hermes-gateway" in cmd:
+            return 0, "active"
+
+        # systemctl show hermes-gateway -p Environment (verify HERMES_HOME)
+        if "systemctl" in cmd and "show" in cmd and "hermes-gateway" in cmd and "Environment" in cmd_str:
+            # Use the active_profile override or default to test-slug
+            active_profile = overrides.get("active_profile", "test-slug")
+            return 0, f"Environment=HERMES_HOME=/root/.hermes/profiles/{active_profile}"
+
         # hermes profile active
         if "profile" in cmd and "active" in cmd:
             active_profile = overrides.get("active_profile", "test-slug")
@@ -187,11 +218,10 @@ class TestHermesImportHappyPath:
             }
         monkeypatch.setattr("tinyagentos.deployer.deploy_agent", fake_deploy)
 
-        pushed = {}
+        pushed = []
 
         async def fake_push_file(container, src, dst):
-            pushed["container"] = container
-            pushed["dst"] = dst
+            pushed.append({"container": container, "src": src, "dst": dst})
             return 0, ""
         monkeypatch.setattr("tinyagentos.containers.push_file", fake_push_file)
 
@@ -235,7 +265,9 @@ class TestHermesImportHappyPath:
         # `default`, name which hermes refuses to import).
         import_calls = [c for c in calls if "profile" in c and "import" in c]
         assert import_calls, "hermes profile import should have run"
-        assert pushed["dst"] in import_calls[0], "import should target the pushed bundle path"
+        bundle_push = next((p for p in pushed if p["dst"] == _CONTAINER_BUNDLE_PATH), None)
+        assert bundle_push is not None, "bundle should be pushed"
+        assert bundle_push["dst"] in import_calls[0], "import should target the pushed bundle path"
         assert "--name" in import_calls[0], "import must pass --name to avoid the forbidden 'default' name"
         assert slug in import_calls[0], "import should name the profile after the agent slug"
         # The imported profile is made the sticky default so the agent runs it.
@@ -244,8 +276,9 @@ class TestHermesImportHappyPath:
         )
 
         # Systemd drop-in created and gateway restarted with HERMES_HOME
-        env_calls = [c for c in calls if "HERMES_HOME" in " ".join(c)]
-        assert env_calls, "systemd drop-in with HERMES_HOME should be created"
+        # Now created via push_file, verify the drop-in path was pushed
+        dropin_push = next((p for p in pushed if "99-taos-import.conf" in p["dst"]), None)
+        assert dropin_push is not None, "systemd drop-in should be pushed"
 
         # Verify active profile check
         active_calls = [c for c in calls if "profile" in c and "active" in c]
