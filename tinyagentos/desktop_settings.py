@@ -165,37 +165,43 @@ class DesktopSettingsStore(BaseStore):
             return False  # Nothing to migrate
 
         # Move desktop key rows (settings, dock, windows, widgets) to owner.
-        await self._db.execute(
-            f"""
-            INSERT INTO desktop_settings (user_id, key, value)
-            SELECT ?, key, value FROM desktop_settings
-            WHERE user_id = ? AND key IN ({desktop_placeholders})
-            ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value
-            """,
-            (owner_user_id, _LEGACY_GLOBAL_SCOPE, *_DESKTOP_KEYS),
-        )
-        # Move non-system namespaced preferences to owner.
-        await self._db.execute(
-            f"""
-            INSERT INTO desktop_settings (user_id, key, value)
-            SELECT ?, key, value FROM desktop_settings
-            WHERE user_id = ? AND key LIKE 'pref:%'
-              AND substr(key, 6) NOT IN ({system_placeholders})
-            ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value
-            """,
-            (owner_user_id, _LEGACY_GLOBAL_SCOPE, *_SYSTEM_NAMESPACES),
-        )
-        # Delete the migrated desktop rows from the legacy global scope.
-        # System-global pref:* rows stay at the "user" scope, untouched.
-        await self._db.execute(
-            f"""
-            DELETE FROM desktop_settings
-            WHERE user_id = ? AND (
-                key IN ({desktop_placeholders})
-                OR (key LIKE 'pref:%' AND substr(key, 6) NOT IN ({system_placeholders}))
+        # Move non-system namespaced preferences to owner, then delete the
+        # migrated desktop rows from the legacy global scope. All three writes
+        # run in one transaction: if the preference copy raises, roll back so
+        # no later write commits a half migration and the legacy rows stay
+        # untouched. System-global pref:* rows stay at the "user" scope.
+        try:
+            await self._db.execute(
+                f"""
+                INSERT INTO desktop_settings (user_id, key, value)
+                SELECT ?, key, value FROM desktop_settings
+                WHERE user_id = ? AND key IN ({desktop_placeholders})
+                ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value
+                """,
+                (owner_user_id, _LEGACY_GLOBAL_SCOPE, *_DESKTOP_KEYS),
             )
-            """,
-            (_LEGACY_GLOBAL_SCOPE, *_DESKTOP_KEYS, *_SYSTEM_NAMESPACES),
-        )
+            await self._db.execute(
+                f"""
+                INSERT INTO desktop_settings (user_id, key, value)
+                SELECT ?, key, value FROM desktop_settings
+                WHERE user_id = ? AND key LIKE 'pref:%'
+                  AND substr(key, 6) NOT IN ({system_placeholders})
+                ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value
+                """,
+                (owner_user_id, _LEGACY_GLOBAL_SCOPE, *_SYSTEM_NAMESPACES),
+            )
+            await self._db.execute(
+                f"""
+                DELETE FROM desktop_settings
+                WHERE user_id = ? AND (
+                    key IN ({desktop_placeholders})
+                    OR (key LIKE 'pref:%' AND substr(key, 6) NOT IN ({system_placeholders}))
+                )
+                """,
+                (_LEGACY_GLOBAL_SCOPE, *_DESKTOP_KEYS, *_SYSTEM_NAMESPACES),
+            )
+        except Exception:
+            await self._db.rollback()
+            raise
         await self._db.commit()
         return True

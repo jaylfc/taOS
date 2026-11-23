@@ -67,24 +67,22 @@ def _targets(data_dir: Path) -> list[Path]:
     return [data_dir / n for n in names if (data_dir / n).exists()]
 
 
-def _setup_pref_row(data_dir: Path):
+def _setup_pref_rows(data_dir: Path) -> list[tuple[str, str]]:
+    """Return every ``pref:setup`` row (user_id, value) across all scopes.
+
+    The delete removes ``pref:setup`` in every user scope, so the backup must
+    cover every row that will be deleted, not just the legacy global scope.
+    """
     db = data_dir / "desktop.db"
     if not db.exists():
-        return None
+        return []
     con = sqlite3.connect(db)
     try:
-        # Check both the legacy global scope and any user-specific scopes
-        row = con.execute(
-            "SELECT value FROM desktop_settings WHERE user_id = 'user' AND key = 'pref:setup'"
-        ).fetchone()
-        if row:
-            return row
-        # Also check for any user-scoped setup prefs (post-migration)
         return con.execute(
-            "SELECT value FROM desktop_settings WHERE key = 'pref:setup' AND user_id != 'user' LIMIT 1"
-        ).fetchone()
+            "SELECT user_id, value FROM desktop_settings WHERE key = 'pref:setup'"
+        ).fetchall()
     except sqlite3.OperationalError:
-        return None
+        return []
     finally:
         con.close()
 
@@ -130,13 +128,13 @@ def reset_cli(argv) -> int:
         return 1
 
     targets = _targets(data_dir)
-    pref = _setup_pref_row(data_dir)
+    pref_rows = _setup_pref_rows(data_dir)
     print("This will remove:")
     for t in targets:
         print(f"  {t}")
-    if pref is not None:
-        print(f"  setup checklist state in {data_dir / 'desktop.db'}")
-    if not targets and pref is None:
+    if pref_rows:
+        print(f"  setup checklist state in {data_dir / 'desktop.db'} ({len(pref_rows)} row(s))")
+    if not targets and not pref_rows:
         print("Nothing to reset.")
         return 0
     if not ns.yes and input("Type 'yes' to continue: ").strip().lower() != "yes":
@@ -157,8 +155,10 @@ def reset_cli(argv) -> int:
             raise FileExistsError(f"no free backup directory next to {base}")
         for t in targets:
             shutil.copy2(t, backup_dir / t.name)
-        if pref is not None:
-            (backup_dir / "setup_pref.json").write_text(json.dumps({"value": pref[0]}))
+        if pref_rows:
+            (backup_dir / "setup_pref.json").write_text(
+                json.dumps([{"user_id": uid, "value": value} for uid, value in pref_rows])
+            )
     # The first probe is stale by now (prompt wait, backup copies): a controller
     # that started meanwhile must not lose live state without --force.
     if not ns.force and controller_is_up(port, host):
@@ -168,7 +168,7 @@ def reset_cli(argv) -> int:
         return 1
     for t in targets:
         t.unlink()
-    if pref is not None:
+    if pref_rows:
         _delete_setup_prefs(data_dir)
     if backup_dir is not None:
         print(f"Backup written to {backup_dir}")

@@ -111,10 +111,8 @@ async def save_preference(request: Request, namespace: str, user: CurrentUser = 
     scope = _pref_scope(user.user_id, namespace)
     # Admin-only for system-global namespaces
     if namespace in _SYSTEM_NAMESPACES:
-        from tinyagentos.routes.auth import _require_admin
-        ok, err = _require_admin(request)
-        if not ok:
-            return err
+        if not user.is_admin:
+            return JSONResponse({"error": "forbidden"}, status_code=403)
     await store.save_preference(scope, namespace, body)
     return JSONResponse({"ok": True})
 

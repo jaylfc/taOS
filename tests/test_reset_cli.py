@@ -1,6 +1,7 @@
 """``taos reset --onboarding``: assert through the real AuthManager predicate."""
 from __future__ import annotations
 
+import json
 import sqlite3
 
 import pytest
@@ -58,6 +59,34 @@ def test_backup_holds_removed_files_and_path_is_printed(tmp_path, capsys):
     assert (backups[0] / ".auth_user.json").exists()
     assert (backups[0] / "setup_pref.json").exists()
     assert str(backups[0]) in out
+
+
+def test_backup_holds_every_setup_pref_scope(tmp_path, capsys):
+    """The backup must contain every pref:setup row that is deleted, across
+    all scopes (legacy global plus any user-specific scopes), not just one."""
+    am = AuthManager(tmp_path)
+    am.setup_user("admin", "Admin", "", "pass1234!")
+    con = sqlite3.connect(tmp_path / "desktop.db")
+    con.execute("CREATE TABLE desktop_settings (user_id TEXT NOT NULL, key TEXT NOT NULL, "
+                "value TEXT NOT NULL DEFAULT '{}', PRIMARY KEY (user_id, key))")
+    con.execute("INSERT INTO desktop_settings VALUES ('user', 'pref:setup', '{\"dismissed\": true}')")
+    con.execute("INSERT INTO desktop_settings VALUES ('alice-uid', 'pref:setup', '{\"dismissed\": false}')")
+    con.commit()
+    con.close()
+
+    assert reset_cli.reset_cli(["--onboarding", "--yes", "--data-dir", str(tmp_path)]) == 0
+    backups = list((tmp_path / "backups").glob("reset-*"))
+    assert len(backups) == 1
+    rows = json.loads((backups[0] / "setup_pref.json").read_text())
+    assert {r["user_id"] for r in rows} == {"user", "alice-uid"}
+    assert {r["value"] for r in rows} == {'{"dismissed": true}', '{"dismissed": false}'}
+
+    # Every pref:setup row was deleted, in every scope.
+    con = sqlite3.connect(tmp_path / "desktop.db")
+    remaining = {r[0] for r in con.execute(
+        "SELECT user_id FROM desktop_settings WHERE key = 'pref:setup'")}
+    con.close()
+    assert remaining == set()
 
 
 def test_no_backup_flag_writes_no_backup(tmp_path):

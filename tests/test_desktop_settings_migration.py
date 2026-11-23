@@ -7,6 +7,8 @@ scope and must survive the migration unchanged.
 """
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 import pytest_asyncio
 
@@ -119,3 +121,40 @@ async def test_migration_noop_when_no_legacy_desktop_rows(store):
     migrated = await store.migrate_legacy_global_to_owner(owner_uid)
     assert migrated is False
     assert await store.get_preference(_LEGACY_GLOBAL_SCOPE, "setup") == {"dismissed": True}
+
+
+@pytest.mark.asyncio
+async def test_migration_rolls_back_on_pref_copy_failure(store):
+    """If the preference copy raises, the whole migration rolls back: nothing
+    moves to the owner and the legacy rows are left untouched."""
+    owner_uid = "owner-42"
+    await _insert_raw(store, _LEGACY_GLOBAL_SCOPE, "settings", '{"wallpaper": "aurora"}')
+    await _insert_raw(store, _LEGACY_GLOBAL_SCOPE, "dock", '{"pinned": []}')
+
+    calls = {"n": 0}
+    original_execute = store._db.execute
+
+    async def failing_execute(sql, params=()):
+        calls["n"] += 1
+        if calls["n"] == 3:  # the preference copy (second INSERT)
+            raise sqlite3.Error("pref copy failed")
+        return await original_execute(sql, params)
+
+    store._db.execute = failing_execute
+
+    with pytest.raises(sqlite3.Error):
+        await store.migrate_legacy_global_to_owner(owner_uid)
+
+    # Nothing moved to the owner.
+    cur = await store._db.execute(
+        "SELECT count(*) FROM desktop_settings WHERE user_id = ?", (owner_uid,)
+    )
+    assert (await cur.fetchone())[0] == 0
+
+    # Legacy rows are untouched at the "user" scope.
+    cur = await store._db.execute(
+        "SELECT key FROM desktop_settings WHERE user_id = ? ORDER BY key",
+        (_LEGACY_GLOBAL_SCOPE,),
+    )
+    keys = {r[0] for r in await cur.fetchall()}
+    assert keys == {"settings", "dock"}
