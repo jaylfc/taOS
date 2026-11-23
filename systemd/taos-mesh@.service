@@ -1,0 +1,43 @@
+# Per-person userspace mesh daemon (design 5.0). Template source: the CLI
+# `install-template` renders it to /etc/systemd/system, replacing the python
+# placeholder. It is never installed, enabled or started by install.sh or by
+# packaging; the owner enables one instance per person by hand.
+[Unit]
+Description=taOS per-person mesh daemon (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=taos
+Group=taos
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStartPre=@PYTHON@ -m tinyagentos.taosnet.mesh_instances check-ports %i
+ExecStart=@PYTHON@ -m tinyagentos.taosnet.mesh_instances exec %i
+Restart=on-failure
+RestartSec=3
+
+# One shared socket directory for every person, kept when one instance stops.
+# 0750 owned by the service account: other local users cannot even reach a
+# socket, so the moment between tailscaled creating it 0666 and exec tightening
+# it to 0600 exposes nothing (measured: any uid could read `status` otherwise).
+RuntimeDirectory=taos/mesh
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+# The state directory may already exist, so StateDirectory is not used.
+ReadWritePaths=/var/lib/taos/mesh
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+LockPersonality=yes
+RestrictRealtime=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -136,6 +136,21 @@ in the team notes). Each xfail names its id; this is what lands it:
 | T9 | taOS | the per-person userspace mesh daemon template, slots and `serve` mappings |
 | P2 | taOSmobile | the phone's presence source (battery, screen state) |
 
+## How the daemons are launched
+
+`images/node-init.sh` starts each person's tailscaled THROUGH the product code
+(`tinyagentos/taosnet/mesh_instances.py`, T9): it runs `allocate <person>` for the
+slot, fails loudly if the allocator's slot differs from the one `PERSONS` declares
+(`"a:0 f:1"`, in that order, on a fresh node), then runs
+`setpriv --reuid=p_<id> ... python3 -m tinyagentos.taosnet.mesh_instances exec <id>`.
+The bed models the per-person Linux accounts the design migrates to, so the daemon
+runs as `p_<id>`; in the product today it runs as the `taos` service account. The
+state and socket roots are the module's defaults. The relay stand-in is the `net`
+image with no taOS code, so its daemon (slot 49) stays hand-rolled. The image is
+built from `git archive` of HEAD, so commit the module before `bed.sh up` (or set
+`TAOS_SRC_DIR`). `TS_DEBUG_USE_DERP_HTTP=1` stays exported in node-init (bed only; the
+product unit never sets it).
+
 ## Not in this PR
 
 First run 2026-11-23 on a throwaway Debian 13 LXC (Docker 26.1, nesting, /dev/net/tun
