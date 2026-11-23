@@ -18,7 +18,7 @@ This module is INERT. Nothing imports it, install.sh and the packaging do not
 mention it, and no instance exists until someone runs this CLI::
 
     python -m tinyagentos.taosnet.mesh_instances \
-        {allocate,release,status,repair,argv,exec,check-ports,serve,
+        {allocate,release,purge,status,repair,argv,exec,check-ports,serve,
          install-template}
 
 Only ``install-template`` needs root (an owner step: it refuses unless the
@@ -286,6 +286,28 @@ def _write_slots(root: Path, slots: dict[str, int]) -> None:
     _atomic_write(_slots_path(root), body, 0o644)
 
 
+def _mkdirs(path: Path, mode: int, parent_mode: int = 0o755) -> None:
+    """Create ``path`` and any missing parents with EXPLICIT modes: each created
+    component is chmod-ed, because mkdir's mode is subject to the umask. The
+    final component gets ``mode``, created parents get ``parent_mode``. Existing
+    directories are left as they are."""
+    path = Path(path)
+    missing = []
+    p = path
+    while not p.exists():
+        missing.append(p)
+        if p.parent == p:
+            break
+        p = p.parent
+    for d in reversed(missing):
+        want = mode if d == path else parent_mode
+        try:
+            d.mkdir(mode=want)
+        except FileExistsError:
+            continue
+        os.chmod(d, want)
+
+
 class _Locked:
     """Exclusive flock on a separate lock file, for read-modify-write."""
 
@@ -293,7 +315,7 @@ class _Locked:
         self.root = root
 
     def __enter__(self) -> Path:
-        self.root.mkdir(parents=True, exist_ok=True)
+        _mkdirs(self.root, 0o700)
         self.fh = open(self.root / _LOCK_FILE, "a")
         fcntl.flock(self.fh, fcntl.LOCK_EX)
         return self.root
@@ -307,7 +329,7 @@ class _Locked:
 
 def _write_marker(root: Path, person: str, slot: int) -> None:
     d = root / person
-    d.mkdir(mode=0o700, exist_ok=True)
+    _mkdirs(d, 0o700)
     _atomic_write(d / _MARKER, f"{slot}\n", 0o600)
 
 
@@ -388,7 +410,28 @@ def release(person: str, root: Optional[str] = None, run: Optional[str] = None) 
             os.unlink(r / person / _MARKER)
         except FileNotFoundError:
             pass
-        return {"person": person, "released": slot}
+        return {"person": person, "released": slot,
+                "note": f"the state directory {r / person} and the node key in it remain; "
+                        f"run 'purge {person}' to remove them"}
+
+
+def purge(person: str, root: Optional[str] = None, run: Optional[str] = None) -> dict:
+    """Remove a released person's state directory, node key included. Refuses
+    while the daemon is alive or the person still holds a slot."""
+    validate_person(person)
+    with _Locked(state_root(root)) as r:
+        if daemon_alive(person, run):
+            raise DaemonAlive(f"{person!r} daemon is still running on {socket_for(person, run)}; stop it first")
+        if person in _read_slots(r):
+            raise RuntimeError(f"{person!r} still holds a slot; run 'release {person}' first")
+        d = r / person
+        if not d.exists() and not d.is_symlink():
+            raise LookupError(f"nothing to purge: {d} does not exist")
+        if d.is_symlink() or not d.is_dir():
+            raise RuntimeError(f"{d} is not a plain directory; refusing")
+        removed = sorted(str(x.relative_to(r)) for x in d.rglob("*")) + [person]
+        shutil.rmtree(d)
+        return {"person": person, "removed_dir": str(d), "removed": removed}
 
 
 def repair(root: Optional[str] = None) -> dict:
@@ -483,12 +526,12 @@ def check_ports(person: str, root: Optional[str] = None) -> list[int]:
 def _ensure_dirs(person: str, root: Optional[str], run: Optional[str]) -> None:
     sd = state_dir(person, root)
     if not sd.exists():
-        sd.mkdir(mode=0o700, parents=True)
+        _mkdirs(sd, 0o700)
     elif sd.stat().st_uid == os.geteuid():
         os.chmod(sd, 0o700)
     rr = run_root(run)
     if not rr.exists():
-        rr.mkdir(mode=0o755, parents=True)
+        _mkdirs(rr, 0o755)
 
 
 def _secure_socket(sock: Path, timeout: float = 60.0, settle: float = 5.0) -> None:
@@ -588,7 +631,7 @@ def install_template(*, unit_dir: Path = Path("/etc/systemd/system"),
         done.append(f"system user {SERVICE_USER} already exists")
     sroot = state_root(state)
     if not sroot.exists():
-        sroot.mkdir(mode=0o700, parents=True)
+        _mkdirs(sroot, 0o700)
         chown(sroot, SERVICE_USER, SERVICE_GROUP)
         done.append(f"created {sroot} owned by {SERVICE_USER}, mode 0700")
     target = unit_dir / UNIT_NAME
@@ -612,7 +655,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--state-root", default=None, help=f"default {DEFAULT_STATE_ROOT} or ${ENV_STATE_ROOT}")
     ap.add_argument("--run-root", default=None, help=f"default {DEFAULT_RUN_ROOT} or ${ENV_RUN_ROOT}")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("allocate", "release", "argv", "exec", "check-ports", "serve"):
+    for name in ("allocate", "release", "purge", "argv", "exec", "check-ports", "serve"):
         sub.add_parser(name).add_argument("person")
     st = sub.add_parser("status")
     st.add_argument("person", nargs="?")
@@ -632,6 +675,10 @@ def main(args: Optional[list[str]] = None) -> int:
             print(json.dumps(out))
         elif ns.cmd == "release":
             print(json.dumps(release(ns.person, root, run)))
+        elif ns.cmd == "purge":
+            out = purge(ns.person, root, run)
+            print(f"removed {out['removed_dir']} ({len(out['removed'])} entries, node key included)")
+            print(json.dumps(out))
         elif ns.cmd == "status":
             slots = _read_slots(state_root(root))
             names = [validate_person(ns.person)] if ns.person else sorted(slots)
@@ -655,7 +702,7 @@ def main(args: Optional[list[str]] = None) -> int:
         elif ns.cmd == "install-template":
             for line in install_template(state=root, run=run):
                 print(line)
-    except (ValueError, LookupError, SlotsFileError, SlotsExhausted, DaemonAlive,
+    except (ValueError, LookupError, RuntimeError, SlotsFileError, SlotsExhausted, DaemonAlive,
             PermissionError, OSError, subprocess.SubprocessError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1

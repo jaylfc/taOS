@@ -133,7 +133,9 @@ def test_two_people_on_one_computer_get_zero_and_one(roots):
 def test_release_frees_the_slot_and_it_is_reused(roots):
     mi.allocate("a")
     mi.allocate("f")
-    assert mi.release("a") == {"person": "a", "released": 0}
+    out = mi.release("a")
+    assert out["person"] == "a" and out["released"] == 0
+    assert "purge" in out["note"] and "node key" in out["note"] and "remain" in out["note"]
     assert mi.lookup("a") is None
     assert mi.allocate("g")["slot"] == 0
     with pytest.raises(LookupError):
@@ -551,6 +553,103 @@ def test_install_template_leaves_an_existing_user_alone(tmp_path, monkeypatch):
     assert calls == [["systemctl", "daemon-reload"]]
 
 
+# ------------------------------------------------ directory modes, purge
+
+
+def _mode(p: Path) -> int:
+    return stat.S_IMODE(p.stat().st_mode)
+
+
+@pytest.mark.parametrize("umask", [0o022, 0o000])
+@pytest.mark.parametrize("order", ["allocate-first", "install-first"])
+def test_every_created_state_directory_is_0700_whatever_the_umask_and_order(tmp_path, monkeypatch, umask, order):
+    state = tmp_path / "var" / "lib" / "taos" / "mesh"
+    monkeypatch.setenv(mi.ENV_STATE_ROOT, str(state))
+    monkeypatch.setenv(mi.ENV_RUN_ROOT, str(tmp_path / "run"))
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    old = os.umask(umask)
+    try:
+        def install():
+            mi.install_template(unit_dir=tmp_path, runner=lambda *a, **k: None, python="/p/python",
+                                state=str(state), user_exists=lambda n: True, chown=lambda *a: None)
+        if order == "allocate-first":
+            mi.allocate("a")
+            install()
+        else:
+            install()
+            mi.allocate("a")
+        mi.allocate("f")
+    finally:
+        os.umask(old)
+    assert _mode(state) == 0o700
+    assert _mode(state / "a") == 0o700 and _mode(state / "f") == 0o700
+
+
+@pytest.mark.parametrize("umask", [0o022, 0o000])
+def test_exec_created_dirs_are_explicit_too(roots, monkeypatch, umask):
+    state, run = roots
+    mi.allocate("a")
+    import shutil
+    shutil.rmtree(state / "a")
+    run.rmdir() if not list(run.iterdir()) else None
+    old = os.umask(umask)
+    try:
+        mi._ensure_dirs("a", None, None)
+    finally:
+        os.umask(old)
+    assert _mode(state / "a") == 0o700
+    assert _mode(run) == 0o755
+
+
+def test_purge_refused_while_the_daemon_is_alive(roots):
+    state, run = roots
+    mi.allocate("a")
+    mi.release("a")
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(str(run / "a.sock"))
+    srv.listen(1)
+    try:
+        with pytest.raises(mi.DaemonAlive):
+            mi.purge("a")
+    finally:
+        srv.close()
+    assert (state / "a").is_dir()
+
+
+def test_purge_refused_while_the_person_holds_a_slot(roots):
+    state, _ = roots
+    mi.allocate("a")
+    (state / "a" / "node.key").write_text("k")
+    with pytest.raises(RuntimeError):
+        mi.purge("a")
+    assert (state / "a" / "node.key").exists()
+    assert mi.main(["purge", "a"]) == 1
+
+
+def test_purge_after_release_removes_the_state_dir_and_says_so(roots, capsys):
+    state, _ = roots
+    mi.allocate("a")
+    mi.allocate("f")
+    (state / "a" / "node.key").write_text("k")
+    mi.release("a")
+    assert (state / "a" / "node.key").exists(), "release alone keeps the node key"
+    assert mi.main(["purge", "a"]) == 0
+    out = capsys.readouterr().out
+    assert "removed" in out and "node key" in out
+    assert not (state / "a").exists()
+    assert (state / "f").is_dir() and mi.lookup("f") == 1
+    with pytest.raises(LookupError):
+        mi.purge("a")
+
+
+@pytest.mark.parametrize("bad", ["../x", "root", "A", ""])
+def test_purge_validates_the_id_first(tmp_path, monkeypatch, bad):
+    monkeypatch.setenv(mi.ENV_STATE_ROOT, str(tmp_path / "never"))
+    with pytest.raises(ValueError):
+        mi.purge(bad)
+    assert not (tmp_path / "never").exists()
+
+
 # ------------------------------------------------ inert by default
 
 
@@ -588,6 +687,48 @@ def test_packaging_does_not_mention_the_mesh_instances():
     files = _files(REPO / "packaging")
     assert files, "packaging/ should not be empty"
     assert {str(p.relative_to(REPO)): _mentions(p) for p in files if _mentions(p)} == {}
+
+
+def _scan_targets(repo: Path) -> dict[str, list[Path]]:
+    """Each key is its own scan, so each can fail alone."""
+    dockerfiles = [p for p in repo.rglob("Dockerfile*")
+                   if p.is_file() and ".git" not in p.parts and "node_modules" not in p.parts
+                   and "tests/e2e/device_link" not in p.relative_to(repo).as_posix()]
+    return {
+        "Dockerfiles": sorted(dockerfiles),
+        "scripts": _files(repo / "scripts"),
+        "desktop": [p for p in _files(repo / "desktop") if "node_modules" not in p.parts],
+        ".github": _files(repo / ".github"),
+    }
+
+
+@pytest.mark.parametrize("name", ["Dockerfiles", "scripts", "desktop", ".github"])
+def test_wider_scans_find_nothing(name):
+    files = _scan_targets(REPO)[name]
+    assert files, f"{name} scan matched no files"
+    assert {str(p.relative_to(REPO)): _mentions(p) for p in files if _mentions(p)} == {}
+
+
+@pytest.mark.parametrize("name", ["Dockerfiles", "scripts", "desktop", ".github"])
+def test_each_wider_scan_can_fail_alone(tmp_path, name):
+    fake = tmp_path
+    (fake / "Dockerfile.x").write_text("RUN true\n")
+    for d in ("scripts", "desktop", ".github"):
+        (fake / d).mkdir()
+        (fake / d / "f.txt").write_text("nothing\n")
+    clean = _scan_targets(fake)
+    assert all(not _mentions(p) for ps in clean.values() for p in ps)
+    victim = clean[name][0]
+    victim.write_text(victim.read_text() + "systemctl start taos-mesh@a\n")
+    for other, ps in _scan_targets(fake).items():
+        assert bool([p for p in ps if _mentions(p)]) == (other == name)
+
+
+def test_the_bed_dockerfile_is_exempt_from_the_dockerfile_scan(tmp_path):
+    bed = tmp_path / "tests" / "e2e" / "device_link" / "images"
+    bed.mkdir(parents=True)
+    (bed / "Dockerfile").write_text("COPY mesh_instances\n")
+    assert _scan_targets(tmp_path)["Dockerfiles"] == []
 
 
 def test_the_app_does_not_mention_the_mesh_instances():
