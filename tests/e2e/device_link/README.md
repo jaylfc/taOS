@@ -111,11 +111,30 @@ controllers as `TAOS_DEVICE_LINK_TIME_SCALE`; the tests' `bed.sleep()` divides b
   bed does not have yet (a mail sink for the emailed code, a known account password
   because the operator CLI seeds a random one, a taos.my session or controller
   token, a device-key signer, a plaintext tap, a non-linked local member) fail with
-  the PR that has to supply it, so no test can pass by skipping a step. Because they
-  are strict xfails, a bed that is not up also reads as xfail for these tests; the
-  20 real tests error loudly instead.
+  the PR that has to supply it, so no test can pass by skipping a step. A bed that
+  is not up is a SKIP ("bed not up"), decided before the xfail marks are evaluated,
+  so an xfail only ever means "waiting for that PR".
 - Mutation checks for MT5, MT6, MT9 (remove the guard in a scratch branch, the red
   must go green-for-the-attacker) are run by hand, as the design says.
+
+## What each xfail waits for
+
+The ids are the PR plan of the device design (`native/specs/devices-presence-and-mirroring-20261122.md`
+in the team notes). Each xfail names its id; this is what lands it:
+
+| id | repo | lands |
+|---|---|---|
+| M1 | taos.my | roster columns, first device (password + emailed code, empty roster only), later-device join with `key_mac` and no mesh key before the vouch |
+| M2 | taos.my | recovery (24 h wait, cancel, wipe), the session-lock exemption for the same account's enrolled devices, roster routes |
+| T1 | taOS | account links, device keys, pairing secret, enrolment with the resumable ticket and Skip, approve; remote-connection console lock |
+| T2 | taOS | roster cache, two-device removal notices, `/roster-event`, `/tombstones`, device keys and persons in the revocation feed |
+| T3 | taOS | per-person loopback device-link listeners reached by `serve` from 6977, the remote-marked relay listener, outbound through the mesh |
+| T4 | taOS | presence beats, `GET /api/my-devices`, rename and remove with the lock gate (423), the My devices tab |
+| T5 | taOS | notification mirroring core, settings, rate limits, the locked-phone summary |
+| T6 | taOS native | `taos-notifyd` and the OS notification route |
+| T7 | taOS (+ native) | clipboard routes and helper, lock gate both ways |
+| T9 | taOS | the per-person userspace mesh daemon template, slots and `serve` mappings |
+| P2 | taOSmobile | the phone's presence source (battery, screen state) |
 
 ## Not in this PR
 

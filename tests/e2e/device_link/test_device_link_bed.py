@@ -50,7 +50,7 @@ def test_headscale_config_never_expires_and_has_embedded_derp():
     assert cfg["policy"]["mode"] == "file"
 
 
-def test_the_repo_policy_is_what_is_loaded():
+def test_the_repo_policy_is_what_is_loaded(bed):
     live = (STATE / "policy.hujson").read_text()
     repo = (STATE / "policy.repo.hujson").read_text()
     assert live == repo, "the bed must start on the taos.my repo's policy (a policy swap was not undone)"

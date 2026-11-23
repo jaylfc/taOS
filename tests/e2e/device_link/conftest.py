@@ -48,6 +48,18 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(pytest.mark.skip(reason=SKIP_REASON))
 
 
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_setup(item):
+    """A bed that is not up is a SKIP, decided before any xfail is evaluated, so
+    an xfail only ever means "waiting for that PR" and never "the bed was down"."""
+    if not enabled() or "bed" not in getattr(item, "fixturenames", ()):
+        return
+    from _device_link_bed import STATE
+
+    if not (STATE / "ready").exists():
+        pytest.skip(f"bed not up (no {STATE}/ready): run tests/e2e/device_link/bed.sh up first")
+
+
 @pytest.fixture(scope="session")
 def bed():
     """The running bed. Only reached when the opt-in variable is set."""
