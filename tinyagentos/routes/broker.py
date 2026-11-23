@@ -13,6 +13,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from tinyagentos.auth_context import resolve_agent_owner
 from tinyagentos.broker.clients.keenable import (
     keenable_fetch,
     keenable_search,
@@ -41,6 +42,21 @@ def _local_token_caller(request: Request) -> tuple[bool, str | None]:
     if getattr(request.state, "via", None) == "local_token":
         return True, getattr(request.state, "agent_name", None)
     return False, None
+
+
+async def _get_keenable_user_id(request: Request) -> str:
+    """Get the user_id for Keenable public fallback preference lookup.
+
+    For agent calls (local token bound to an agent), returns the agent owner's user_id.
+    Falls back to empty string (system default) if owner cannot be resolved.
+    """
+    agent_name = getattr(request.state, "agent_name", None)
+    if agent_name:
+        owner = await resolve_agent_owner(request, agent_name)
+        if owner:
+            return owner
+    # Fallback: system default (empty string -> shipped default False)
+    return ""
 
 
 class ApproveRequest(BaseModel):
@@ -199,7 +215,8 @@ async def keenable_search_route(request: Request):
 
     secret = await request.app.state.secrets.get("KEENABLE_API_KEY")
     api_key = secret["value"] if secret else ""
-    allow_public = await public_fallback_enabled(request.app.state.desktop_settings)
+    user_id = await _get_keenable_user_id(request)
+    allow_public = await public_fallback_enabled(request.app.state.desktop_settings, user_id)
 
     if not api_key and not allow_public:
         return JSONResponse({"error": "keenable not configured"}, status_code=409)
@@ -245,7 +262,8 @@ async def keenable_fetch_route(request: Request):
 
     secret = await request.app.state.secrets.get("KEENABLE_API_KEY")
     api_key = secret["value"] if secret else ""
-    allow_public = await public_fallback_enabled(request.app.state.desktop_settings)
+    user_id = await _get_keenable_user_id(request)
+    allow_public = await public_fallback_enabled(request.app.state.desktop_settings, user_id)
 
     if not api_key and not allow_public:
         return JSONResponse({"error": "keenable not configured"}, status_code=409)
