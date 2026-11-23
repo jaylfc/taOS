@@ -331,3 +331,59 @@ async def test_activity_gpus_sorted_by_pci_bus_id(client, monkeypatch):
         ("intel", "Intel UHD Graphics 630"),
         ("nvidia", "NVIDIA GeForce RTX 3090"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_activity_gpus_intel_shows_load_and_shared_memory(client, monkeypatch):
+    """Intel iGPU entry reports RC6 load, frequency and shared_memory."""
+    with patch(
+        "tinyagentos.system_stats.get_all_gpu_loads",
+        return_value=[
+            {
+                "type": "intel",
+                "load_percent": 5,
+                "freq_hz": 1100 * 1_000_000,
+                "freq_max_hz": 1200 * 1_000_000,
+                "vram_percent": None,
+                "vram_used_mb": None,
+                "vram_total_mb": None,
+                "shared_memory": True,
+            }
+        ],
+    ):
+        @dataclass
+        class _IntelGpuInfo:
+            type: str = "intel"
+            model: str = "Intel UHD Graphics 750"
+            vram_mb: int = 0
+            vulkan: bool = False
+            cuda: bool = False
+            rocm: bool = False
+
+        @dataclass
+        class _ProfileWithIntelGpu:
+            cpu: _CpuInfo = field(default_factory=_CpuInfo)
+            ram_mb: int = 8192
+            npu: _NpuInfo = field(default_factory=_NpuInfo)
+            gpu: _IntelGpuInfo = field(default_factory=_IntelGpuInfo)
+            gpus: list = field(default_factory=lambda: [_IntelGpuInfo()])
+            disk: _DiskInfo = field(default_factory=_DiskInfo)
+            os: _OsInfo = field(default_factory=_OsInfo)
+
+        profile = _ProfileWithIntelGpu()
+        monkeypatch.setattr(client._transport.app.state, "hardware_profile", profile, raising=False)
+        data = (await client.get("/api/activity")).json()
+
+    intel_gpus = [g for g in data["gpus"] if g["type"] == "intel"]
+    assert len(intel_gpus) == 1
+    gpu = intel_gpus[0]
+    assert gpu["model"] == "Intel UHD Graphics 750"
+    assert gpu["load"] == {
+        "load_percent": 5,
+        "freq_hz": 1100 * 1_000_000,
+        "freq_max_hz": 1200 * 1_000_000,
+    }
+    assert gpu["vram_percent"] is None
+    assert gpu["vram_used_mb"] is None
+    assert gpu["vram_total_mb"] is None
+    assert gpu["shared_memory"] is True

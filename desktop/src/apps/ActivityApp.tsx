@@ -42,7 +42,7 @@ interface ActivityData {
     tops?: number;
   };
   gpu: {
-    load: { load_percent: number; freq_hz: number | null } | null;
+    load: { load_percent: number | null; freq_hz: number | null } | null;
     vram_percent: number | null;
     vram_used_mb: number | null;
     vram_total_mb: number | null;
@@ -51,10 +51,11 @@ interface ActivityData {
   gpus: Array<{
     type?: string;
     model?: string;
-    load: { load_percent: number; freq_hz: number | null } | null;
+    load: { load_percent: number | null; freq_hz: number | null; freq_max_hz?: number | null } | null;
     vram_percent: number | null;
     vram_used_mb: number | null;
     vram_total_mb: number | null;
+    shared_memory?: boolean;
   }>;
   thermal: Array<{ name: string; temp_c: number }>;
   zram: Array<{ device: string; orig_mb: number; compr_mb: number; ratio: number }>;
@@ -191,7 +192,10 @@ function colourForLoad(pct: number): string {
   return "var(--color-traffic-close)";
 }
 
-function LoadBar({ value, label, unit = "%" }: { value: number; label?: string; unit?: string }) {
+function LoadBar({ value, label, unit = "%" }: { value: number | null; label?: string; unit?: string }) {
+  if (value === null) {
+    return null;
+  }
   return (
     <div className="flex items-center gap-2">
       {label && <span className="text-[10px] text-shell-text-tertiary w-12 shrink-0">{label}</span>}
@@ -347,10 +351,11 @@ const { hardware, cpu, memory, npu, gpu, gpus, thermal, zram, disk, network, pro
   type GpuDisplay = {
     type?: string;
     model?: string;
-    load: { load_percent: number; freq_hz: number | null } | null;
+    load: { load_percent: number | null; freq_hz: number | null; freq_max_hz?: number | null } | null;
     vram_percent: number | null;
     vram_used_mb: number | null;
     vram_total_mb: number | null;
+    shared_memory?: boolean;
   };
   const gpuList: GpuDisplay[] = (gpus && gpus.length > 0)
     ? gpus
@@ -494,7 +499,15 @@ const { hardware, cpu, memory, npu, gpu, gpus, thermal, zram, disk, network, pro
                 </span>
               </div>
               {gpuItem.load && (
-                <LoadBar label="Load" value={gpuItem.load.load_percent} />
+                <>
+                  <LoadBar label="Load" value={gpuItem.load.load_percent} />
+                  {gpuItem.load.freq_hz && (
+                    <p className="text-[10px] text-shell-text-tertiary mt-1">
+                      {`${(gpuItem.load.freq_hz / 1e6).toFixed(0)} MHz`}
+                      {gpuItem.load.freq_max_hz != null && ` · max ${(gpuItem.load.freq_max_hz / 1e6).toFixed(0)} MHz`}
+                    </p>
+                  )}
+                </>
               )}
               {gpuItem.vram_percent !== null && (
                 <div className="mt-2">
@@ -504,7 +517,10 @@ const { hardware, cpu, memory, npu, gpu, gpus, thermal, zram, disk, network, pro
                   </p>
                 </div>
               )}
-              {!gpuItem.load && gpuItem.vram_percent === null && (
+              {gpuItem.shared_memory && (
+                <p className="text-xs text-shell-text-tertiary">Shares system memory</p>
+              )}
+              {!gpuItem.load && gpuItem.vram_percent === null && !gpuItem.shared_memory && (
                 <p className="text-xs text-shell-text-tertiary">Stats unavailable</p>
               )}
             </CardContent>
