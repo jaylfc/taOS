@@ -2434,7 +2434,14 @@ set_data_dir_ownership() {
     # Tighten the data directory and sensitive credential files on top of the
     # broad chown above — done AFTER so the restrictive perms win.
     log "tightening $INSTALL_DIR/data/ → mode 0700 and secret files → 0600"
-    $sudo_cmd chmod 0700 "$INSTALL_DIR/data"
+    # 0710 (group may traverse, nothing more) when the qmd maintenance step has let a
+    # qmd running as another user join taos's group; otherwise a re-run would cut
+    # qmd off from its index files.
+    if [[ -f /etc/systemd/system/qmd.service.d/50-taos-data.conf ]]; then
+        $sudo_cmd chmod 0710 "$INSTALL_DIR/data"
+    else
+        $sudo_cmd chmod 0700 "$INSTALL_DIR/data"
+    fi
     for f in \
         "$INSTALL_DIR/data/.auth_password" \
         "$INSTALL_DIR/data/.auth_user.json" \

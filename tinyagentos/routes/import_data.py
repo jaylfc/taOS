@@ -8,6 +8,7 @@ import stat
 from pathlib import Path
 
 from tinyagentos.auth_context import require_agent_access
+from tinyagentos.qmd_service import make_index_dir
 from fastapi import APIRouter, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 
@@ -148,7 +149,7 @@ async def embed_files(request: Request):
     agent_db = (
         Path(request.app.state.agent_memory_dir) / agent_name / "index.sqlite"
     )
-    agent_db.parent.mkdir(parents=True, exist_ok=True)
+    make_index_dir(agent_db.parent, Path(request.app.state.agent_memory_dir))
 
     embedded_files = []
     all_embedded = True

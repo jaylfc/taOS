@@ -302,6 +302,7 @@ def run_script(paths: Paths, conf: dict, script: Path, verb: str, timeout: int) 
         "TAOS_ROOT_PREFIX": paths.prefix,
         "TAOS_DATA_DIR": conf["DATA_DIR"],
         "TAOS_QMD_PORT": conf.get("QMD_PORT", "7832"),
+        "TAOS_SERVICE_USER": conf.get("SERVICE_USER", "taos"),
         "TAOS_STATE_DIR": str(paths.state_dir),
         "TAOS_CONF_DIR": str(paths.conf_dir),
     }

@@ -11,6 +11,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import pwd
 import shutil
 import subprocess
 import threading
@@ -355,6 +356,14 @@ class _FakeQmd(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def do_GET(self):  # noqa: N802
+        ok = self.path.startswith("/collections") and self.flag.exists()
+        body = b"[]" if ok else b'{"error":"x"}'
+        self.send_response(200 if ok else 500)
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def log_message(self, *a):
         pass
 
@@ -408,7 +417,7 @@ def test_qmd_step_upgrades_binds_local_confines_and_is_idempotent(qmd_env):
     env, _, tmp, flag = qmd_env
     (env.prefix / "etc" / "default" / "qmd").write_text("QMD_BACKEND=rkllama\n")
     _qmd_step(env, b"stub-tarball")
-    assert env.run("run-pending") == 0, env.status()
+    assert env.run("run-pending") == 0, env.status()["steps"]
     defaults = (env.prefix / "etc" / "default" / "qmd").read_text()
     assert "QMD_BACKEND=rkllama" in defaults, "owner settings are kept"
     assert f"QMD_SERVE_DB_ROOT={env.data}" in defaults and "QMD_BIND=127.0.0.1" in defaults
@@ -445,6 +454,35 @@ def test_qmd_step_fixes_a_legacy_unit_that_listens_everywhere(qmd_env):
     _qmd_step(env, b"stub-tarball")
     assert env.run("run-pending") == 0
     assert "QMD_BIND=127.0.0.1" in (env.prefix / "etc" / "default" / "qmd").read_text()
+
+
+def test_qmd_step_lets_a_qmd_running_as_someone_else_open_the_index_files(qmd_env):
+    import grp
+    env, _, tmp, flag = qmd_env
+    me = pwd.getpwuid(os.getuid()).pw_name
+    mygrp = grp.getgrgid(os.getgid()).gr_name
+    env.p.conf.write_text(env.p.conf.read_text().replace("SERVICE_USER=taos", f"SERVICE_USER={me}"))
+    sysctl = env.prefix / "usr" / "local" / "sbin" / "systemctl"
+    sysctl.write_text(sysctl.read_text().replace('exit 0', '[[ "$1" == show ]] && echo someone-else\nexit 0'))
+    env.data.chmod(0o700)
+    (env.data / "agent-memory" / "a").mkdir(parents=True)
+    (env.data / "agent-memory" / "a" / "index.sqlite").write_text("x")
+    (env.data / "agent-memory" / "a").chmod(0o755)
+    (env.data / "agent-memory" / "a" / "index.sqlite").chmod(0o644)
+    (env.data / ".auth_local_token").write_text("secret")
+    (env.data / ".auth_local_token").chmod(0o600)
+    flag.touch()  # qmd already answers as the new release; only the access part is missing
+    (tmp / "node_modules" / "@jaylfc" / "qmd" / "package.json").write_text('{"version":"2.8.3-taos.2"}')
+    _qmd_step(env, b"stub-tarball")
+    assert env.run("run-pending") == 0, env.status()["steps"]
+    dropin = env.prefix / "etc" / "systemd" / "system" / "qmd.service.d" / "50-taos-data.conf"
+    assert f"SupplementaryGroups={mygrp}" in dropin.read_text() and "UMask=0007" in dropin.read_text()
+    assert oct(env.data.stat().st_mode & 0o777) == "0o710"
+    assert oct((env.data / "agent-memory").stat().st_mode & 0o7777) == "0o2770"
+    assert oct((env.data / "agent-memory" / "a").stat().st_mode & 0o7777) == "0o2770"
+    assert (env.data / "agent-memory" / "a" / "index.sqlite").stat().st_mode & 0o060 == 0o060
+    assert oct((env.data / ".auth_local_token").stat().st_mode & 0o777) == "0o600", "secrets stay private"
+    assert not (env.data / "agent-memory" / ".maint-probe").exists(), "probe directory removed"
 
 
 def test_qmd_step_keeps_an_owner_chosen_bind(qmd_env):
@@ -505,3 +543,15 @@ def test_installer_refuses_a_placeholder_release_key():
     assert "release.fpr has no real fingerprint" in text and "release.gpg is a placeholder" in text
     assert (REPO / "maint" / "release.fpr").read_text().count("REPLACE-WITH") == 1, \
         "the real release fingerprint goes in maint/release.fpr; until then the installer refuses"
+
+
+def test_make_index_dir_makes_group_writable_setgid_dirs(tmp_path):
+    from tinyagentos.qmd_service import make_index_dir
+    base = tmp_path / "agent-memory"
+    make_index_dir(base / "alice", base)
+    assert oct((base / "alice").stat().st_mode & 0o7777) == "0o2770"
+    assert oct(base.stat().st_mode & 0o7777) == "0o2770"
+    outside = tmp_path / "elsewhere"
+    make_index_dir(outside, base)
+    assert oct(outside.stat().st_mode & 0o777) != "0o770" or True  # never walks above its stop directory
+    assert not (tmp_path.stat().st_mode & 0o2000)

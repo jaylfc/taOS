@@ -18,6 +18,8 @@
 #                     setup on an existing install: the install directory is
 #                     writable by the service account, so the runner and the
 #                     release key must not come from it.
+#   --fetch-base URL  where --fetch reads from (default: the project's GitHub raw
+#                     URL). https:// only, except file:// for offline rehearsals.
 #   --no-run          install only; do not run pending steps now
 #
 # What it installs, all root-owned and not writable by the service account:
@@ -36,7 +38,7 @@ log() { echo "install-maint: $*"; }
 command -v systemctl >/dev/null 2>&1 || die "systemd is required"
 [[ -d /run/systemd/system ]] || die "systemd is not running"
 
-TREE="" DATA="" SVC_USER="" FROM="" FETCH="" RUN_NOW=1
+TREE="" DATA="" SVC_USER="" FROM="" FETCH="" FETCH_BASE="https://raw.githubusercontent.com/jaylfc/taOS" RUN_NOW=1
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --tree) TREE="${2:?}"; shift 2 ;;
@@ -44,6 +46,7 @@ while [[ $# -gt 0 ]]; do
         --user) SVC_USER="${2:?}"; shift 2 ;;
         --from-dir) FROM="${2:?}"; shift 2 ;;
         --fetch) FETCH="${2:?}"; shift 2 ;;
+        --fetch-base) FETCH_BASE="${2:?}"; shift 2 ;;
         --no-run) RUN_NOW=0; shift ;;
         *) die "unknown argument $1" ;;
     esac
@@ -64,10 +67,11 @@ if [[ -n "$FETCH" ]]; then
     command -v curl >/dev/null 2>&1 || die "curl is required for --fetch"
     FROM="$(mktemp -d)"
     trap 'rm -rf "$FROM"' EXIT
-    base="https://raw.githubusercontent.com/jaylfc/taOS/$FETCH"
+    [[ "$FETCH_BASE" == https://* || "$FETCH_BASE" == file:///* ]] || die "--fetch-base must be https:// (or file:///)"
+    base="$FETCH_BASE/$FETCH"
     mkdir -p "$FROM/scripts/systemd" "$FROM/maint"
     for f in scripts/taos-maint scripts/systemd/taos-maint.service scripts/systemd/taos-maint.path maint/release.gpg maint/release.fpr; do
-        curl -fsSL --proto '=https' --tlsv1.2 "$base/$f" -o "$FROM/$f" || die "could not fetch $f from $base"
+        curl -fsSL --proto '=https,file' --tlsv1.2 "$base/$f" -o "$FROM/$f" || die "could not fetch $f from $base"
     done
 fi
 FROM="$(cd "${FROM:-$TREE}" && pwd -P)"

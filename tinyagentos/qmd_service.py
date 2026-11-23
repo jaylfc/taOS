@@ -39,6 +39,31 @@ BIND_FIX_COMMAND = (
 )
 
 
+def make_index_dir(directory: Path, stop_at: Path) -> None:
+    """Create *directory* (and parents below *stop_at*) so qmd can write in it.
+
+    qmd may run as another user that joins the service account's group (see the
+    qmd maintenance step), so the directories the controller creates for an index
+    must be group-writable and inherit the group. Best effort: where the mode
+    cannot be changed (not the owner, a filesystem without modes) qmd either runs
+    as the same account or reports its own error.
+    """
+    import os
+
+    directory.mkdir(parents=True, exist_ok=True)
+    stop = stop_at.resolve()
+    d = directory.resolve()
+    while d == stop or stop in d.parents:
+        try:
+            if d.stat().st_uid == os.geteuid():
+                os.chmod(d, 0o2770)
+        except OSError:
+            pass
+        if d == stop:
+            break
+        d = d.parent
+
+
 def upgrade_command(project_dir: Path | None = None) -> str:
     base = project_dir or Path(__file__).resolve().parent.parent
     return f"sudo bash {base / 'scripts' / 'upgrade-qmd.sh'}"
@@ -161,7 +186,10 @@ async def run_qmd_service_check(state) -> None:
             message=message,
             level="warning", source="memory", user_id=owner,
         )
-    if qmd_bind_exposed():
+    # A listen-everywhere qmd is closed by the maintenance step unless the owner chose
+    # it (QMD_BIND set, or the keep-open marker), so only tell the owner by hand where
+    # there is no runner at all.
+    if maint.availability()["mode"] == "unsupported" and qmd_bind_exposed():
         await notifications.add(
             title="Memory service is reachable from the network",
             message=f"qmd listens on every network interface. To limit it to this machine run: {BIND_FIX_COMMAND}",
