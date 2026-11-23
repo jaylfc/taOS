@@ -454,3 +454,75 @@ class TestPostReplyNonTransportError:
 
         fail_logs = [r for r in caplog.records if "reply POST failed" in r.getMessage()]
         assert len(fail_logs) >= 1, f"Expected 'reply POST failed' log, got: {[r.getMessage() for r in caplog.records]}"
+
+
+# -- SSE Last-Event-ID on reconnect, real execution for every bridge -----
+
+
+class TestSseLastEventIdReal:
+    """The real sse loop of every bridge records the last id: frame seen on
+    the stream and resends it as the Last-Event-ID header when it reconnects,
+    so an event position is not lost across a reconnect."""
+
+    def _make_channel(self):
+        return {
+            "events_url": "http://test/events",
+            "reply_url": "http://test/reply",
+            "auth_bearer": "test-token",
+        }
+
+    @pytest.mark.parametrize("script", BRIDGES, ids=lambda s: s.replace(".sh", ""))
+    def test_reconnect_sends_last_event_id(self, script):
+        ns = _load(script)
+        sse_loop = ns.get("sse_loop") or ns.get("sse")
+        assert sse_loop is not None, f"{script}: no sse loop found"
+        channel = self._make_channel()
+        streamed_headers = []
+        stop = asyncio.Event()
+        calls = {"n": 0}
+
+        class _FakeResp:
+            status_code = 200
+
+            async def aiter_lines(self):
+                if calls["n"] == 1:
+                    # First connection: an id: 7 frame plus a user_message,
+                    # then the link drops (the generator returns).
+                    yield "id: 7"
+                    yield "event: user_message"
+                    yield 'data: {"id": "m-1", "text": "hello"}'
+                    yield ""
+                    return
+                # Later connections carry no frames; stop is set on entry.
+                return
+
+        class _FakeStream:
+            def __init__(self, headers=None):
+                self._headers = dict(headers or {})
+
+            async def __aenter__(self):
+                calls["n"] += 1
+                streamed_headers.append(self._headers)
+                if calls["n"] == 2:
+                    stop.set()
+                return _FakeResp()
+
+            async def __aexit__(self, *args):
+                return False
+
+        class _FakeClient:
+            def stream(self, method, url, headers=None, timeout=None):
+                return _FakeStream(headers)
+
+        async def fake_limited(*args, **kwargs):
+            return True
+
+        handler_name = "_run_handle_user_message_limited" \
+            if "_run_handle_user_message_limited" in ns else "handle"
+        with patch.dict(ns, {handler_name: fake_limited}):
+            with patch("asyncio.sleep", new_callable=AsyncMock):
+                asyncio.run(sse_loop(_FakeClient(), channel, stop))
+
+        assert len(streamed_headers) == 2, streamed_headers
+        assert "Last-Event-ID" not in streamed_headers[0], streamed_headers[0]
+        assert streamed_headers[1].get("Last-Event-ID") == "7", streamed_headers[1]

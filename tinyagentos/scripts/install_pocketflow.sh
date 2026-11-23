@@ -19,6 +19,12 @@ log = logging.getLogger("pf-bridge")
 BRIDGE_URL=os.environ["TAOS_BRIDGE_URL"]; AGENT_NAME=os.environ["TAOS_AGENT_NAME"]
 LOCAL_TOKEN=os.environ["TAOS_LOCAL_TOKEN"]; MODEL=os.environ.get("TAOS_MODEL","kilo-auto/free")
 MAX_RETRIES = 3
+RECONNECT_DELAY = 2.0
+# Final reply retries: capped backoff (1, 2, 4, 8, 15 s then 15 s repeating)
+# inside a total window of at least 180 s so a reply survives a controller
+# restart (TimeoutStartSec=180 in scripts/systemd/tinyagentos.service).
+REPLY_BACKOFF_STEPS = (1.0, 2.0, 4.0, 8.0, 15.0)
+REPLY_WINDOW_S = 180.0
 _pool=ThreadPoolExecutor(max_workers=2)
 _SYSTEM_PROMPT = (
     f"You are {AGENT_NAME}, an agent running inside the PocketFlow framework "
@@ -84,24 +90,43 @@ def _run(text, force):
         return resp.choices[0].message.content or "(empty)"
     except Exception as e: return f"[pocketflow error: {e}]"
 async def fetch_boot(c): r=await c.get(f"{BRIDGE_URL}/api/openclaw/bootstrap?agent={AGENT_NAME}", headers={"Authorization":f"Bearer {LOCAL_TOKEN}"}, timeout=30); r.raise_for_status(); return r.json()
-async def post_reply(c, u, t, mid, tid, txt, cid=None):
-    body = {"kind":"final","id":mid,"trace_id":tid,"content":txt}
+async def post_reply(client: httpx.AsyncClient, reply_url: str, token: str,
+                     msg_id: str, trace_id: str, content: str, cid=None) -> bool:
+    body = {"kind": "final", "id": msg_id, "trace_id": trace_id, "content": content}
     if cid: body["channel_id"] = cid
-    headers = {"Authorization": f"Bearer {t}"}
-    for attempt in range(1, MAX_RETRIES + 1):
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
+    step = 0
+    elapsed = 0.0  # time spent sleeping between retries (simulated time when sleep is patched)
+    while True:
         try:
-            resp = await c.post(u, json=body, headers=headers, timeout=30)
+            resp = await client.post(reply_url, json=body, headers=headers, timeout=30)
             if 200 <= resp.status_code < 300:
                 return True
-            if resp.status_code in (429,) or 500 <= resp.status_code < 600:
-                if attempt < MAX_RETRIES:
-                    await asyncio.sleep(1.0 * attempt)
+            # 429 and 5xx are transient: retry inside the window so a reply
+            # survives a controller restart. Other 4xx are rejected and not
+            # reposted; the reply keeps its id and the controller's duplicate
+            # guard (_seen_final_ids) makes a safe retry unnecessary.
+            if resp.status_code == 429 or 500 <= resp.status_code < 600:
+                if elapsed < REPLY_WINDOW_S:
+                    delay = REPLY_BACKOFF_STEPS[min(step, len(REPLY_BACKOFF_STEPS) - 1)]
+                    step += 1
+                    log.warning("reply POST %s, retry in %.1fs",
+                                resp.status_code, delay)
+                    await asyncio.sleep(delay)
+                    elapsed += delay
                     continue
+                log.warning("reply POST %s: giving up after %.0fs window",
+                            resp.status_code, REPLY_WINDOW_S)
+                return False
             log.warning("reply POST %s: %s", resp.status_code, resp.text[:300])
             return False
         except httpx.TransportError as e:
-            if attempt < MAX_RETRIES:
-                await asyncio.sleep(1.0 * attempt)
+            if elapsed < REPLY_WINDOW_S:
+                delay = REPLY_BACKOFF_STEPS[min(step, len(REPLY_BACKOFF_STEPS) - 1)]
+                step += 1
+                log.warning("reply POST error %s, retry in %.1fs", e, delay)
+                await asyncio.sleep(delay)
+                elapsed += delay
                 continue
             log.warning("reply POST failed: %s", e)
             return False
@@ -126,10 +151,15 @@ async def handle(c, evt, ch):
     if final is None: return
     await post_reply(c, ch["reply_url"], ch["auth_bearer"], mid, tid, final, cid)
 async def sse(c, ch, stop):
+    last_event_id = ""
     while not stop.is_set():
         try:
-            async with c.stream("GET", ch["events_url"], headers={"Authorization":f"Bearer {ch['auth_bearer']}","Accept":"text/event-stream"}, timeout=None) as r:
-                if r.status_code != 200: await asyncio.sleep(2); continue
+            headers = {"Authorization": f"Bearer {ch['auth_bearer']}",
+                       "Accept": "text/event-stream"}
+            if last_event_id:
+                headers["Last-Event-ID"] = last_event_id
+            async with c.stream("GET", ch["events_url"], headers=headers, timeout=None) as r:
+                if r.status_code != 200: await asyncio.sleep(RECONNECT_DELAY); continue
                 t,d="",""
                 async for raw in r.aiter_lines():
                     if stop.is_set(): break
@@ -141,8 +171,9 @@ async def sse(c, ch, stop):
                     if raw.startswith(":"): continue
                     if raw.startswith("event:"): t=raw[6:].strip()
                     elif raw.startswith("data:"): d=raw[5:].lstrip()
+                    elif raw.startswith("id:"): last_event_id = raw[3:].strip()
         except Exception as e: log.warning("sse: %s", e)
-        if not stop.is_set(): await asyncio.sleep(2)
+        if not stop.is_set(): await asyncio.sleep(RECONNECT_DELAY)
 async def main():
     stop=asyncio.Event(); loop=asyncio.get_running_loop()
     for s in (signal.SIGTERM, signal.SIGINT): loop.add_signal_handler(s, stop.set)

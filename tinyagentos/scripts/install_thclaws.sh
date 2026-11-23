@@ -354,15 +354,19 @@ async def handle_user_message(client: httpx.AsyncClient, evt: dict, channel: dic
 
 async def sse_loop(client: httpx.AsyncClient, channel: dict, stop: asyncio.Event) -> None:
     seen_ids: set[str] = set()
+    last_event_id = ""
     error_until: list[float] = [0.0]  # mutable so tasks can update it
     pending_tasks: set[asyncio.Task] = set()
     while not stop.is_set():
         try:
             log.info("SSE connecting to %s", channel["events_url"])
+            headers = {"Authorization": f"Bearer {channel['auth_bearer']}",
+                       "Accept": "text/event-stream",
+                       "Cache-Control": "no-cache"}
+            if last_event_id:
+                headers["Last-Event-ID"] = last_event_id
             async with client.stream("GET", channel["events_url"],
-                                      headers={"Authorization": f"Bearer {channel['auth_bearer']}",
-                                               "Accept": "text/event-stream",
-                                               "Cache-Control": "no-cache"},
+                                      headers=headers,
                                       timeout=None) as resp:
                 if resp.status_code != 200:
                     log.warning("SSE %s -- retry", resp.status_code)
@@ -392,6 +396,8 @@ async def sse_loop(client: httpx.AsyncClient, channel: dict, stop: asyncio.Event
                         evt_type = raw[6:].strip()
                     elif raw.startswith("data:"):
                         evt_data = raw[5:].lstrip()
+                    elif raw.startswith("id:"):
+                        last_event_id = raw[3:].strip()
         except Exception as e:
             log.warning("SSE error: %s; retry in %ds", e, RECONNECT_DELAY)
         if not stop.is_set():
