@@ -63,8 +63,8 @@ def _make_fake_exec(overrides: dict = None):
         if "profile" in cmd and "use" in cmd:
             return 0, "switched"
         
-        # systemd drop-in creation (bash -c with mkdir && cat)
-        if "mkdir -p /etc/systemd/system/hermes-gateway.service.d" in cmd_str and "HERMES_HOME" in cmd_str:
+        # systemd drop-in directory creation (mkdir -p before the drop-in push)
+        if cmd[:1] == ["mkdir"] and "-p" in cmd and "hermes-gateway.service.d" in cmd_str:
             return 0, ""
         
         # systemctl daemon-reload
@@ -132,14 +132,20 @@ def _make_fake_exec(overrides: dict = None):
     return fake_exec
 
 
-def _bundle_with_config(config_yaml: str, filename="profile.tar.gz"):
-    """Create a tar.gz bundle carrying the given config.yaml plus a SOUL.md."""
+def _bundle_with_config(config_yaml: str, filename="profile.tar.gz", profile_dir=None):
+    """Create a tar.gz bundle carrying the given config.yaml plus a SOUL.md.
+
+    When ``profile_dir`` is given, members are nested under one top-level
+    profile directory (the real Hermes export layout); otherwise they sit at
+    the archive root.
+    """
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        ti = tarfile.TarInfo(name="config.yaml")
+        root = f"{profile_dir}/" if profile_dir else ""
+        ti = tarfile.TarInfo(name=root + "config.yaml")
         ti.size = len(config_yaml.encode())
         tar.addfile(ti, io.BytesIO(config_yaml.encode()))
-        ti = tarfile.TarInfo(name="SOUL.md")
+        ti = tarfile.TarInfo(name=root + "SOUL.md")
         ti.size = len(b"Test soul")
         tar.addfile(ti, io.BytesIO(b"Test soul"))
     return {"bundle": (filename, io.BytesIO(buf.getvalue()), "application/gzip")}
@@ -147,9 +153,14 @@ def _bundle_with_config(config_yaml: str, filename="profile.tar.gz"):
 
 def _make_order_tracking_fake(config_yaml, existing_memory, jobs_json, active_profile="test-slug"):
     """fake_exec/fake_push_file pair that records every call in a single
-    ordered event stream and captures the contents of pushed files."""
+    ordered event stream and captures the contents of pushed files.
+
+    pushed_by_dst records pushed content keyed by destination so that a later
+    ``cat`` of the same path sees the earlier write (real container behaviour).
+    """
     events = []  # ("push", dst) | ("exec", [cmd...])
     pushed = []  # (dst, content)
+    pushed_by_dst = {}  # dst -> content
 
     async def fake_push_file(container, src, dst):
         try:
@@ -158,6 +169,7 @@ def _make_order_tracking_fake(config_yaml, existing_memory, jobs_json, active_pr
         except Exception:
             content = f"<unreadable {src}>"
         pushed.append((dst, content))
+        pushed_by_dst[dst] = content
         events.append(("push", dst))
         return 0, ""
 
@@ -170,6 +182,12 @@ def _make_order_tracking_fake(config_yaml, existing_memory, jobs_json, active_pr
             return 0, "imported profile ok"
         if "profile" in cmd and "use" in cmd:
             return 0, "switched"
+        # systemd drop-in directory creation (mkdir -p before the drop-in push)
+        if cmd[:1] == ["mkdir"] and "-p" in cmd and "hermes-gateway.service.d" in cmd_str:
+            return 0, ""
+        # config backup (cp config.yaml config.yaml.pre-import)
+        if "cp " in cmd_str and "config.yaml" in cmd_str and ".pre-import" in cmd_str:
+            return 0, ""
         if "systemctl" in cmd and "daemon-reload" in cmd:
             return 0, "reloaded"
         if "systemctl" in cmd and "restart" in cmd and "hermes-gateway" in cmd:
@@ -178,21 +196,27 @@ def _make_order_tracking_fake(config_yaml, existing_memory, jobs_json, active_pr
             return 0, "active"
         if "systemctl" in cmd and "show" in cmd and "Environment" in cmd_str:
             return 0, f"Environment=HERMES_HOME=/root/.hermes/profiles/{active_profile}"
-        if cmd[:1] == ["cat"] and "config.yaml" in cmd_str and ".pre-import" not in cmd_str and "memories" not in cmd_str:
-            return 0, config_yaml
-        if "cp " in cmd_str and "config.yaml" in cmd_str and ".pre-import" in cmd_str:
-            return 0, ""
-        if cmd[:1] == ["cat"] and "cron/jobs.json" in cmd_str:
-            return 0, jobs_json
-        if cmd[:1] == ["cat"] and ".pre-import" in cmd_str:
-            return 0, 'model:\n  default: local-model\n  base_url: "http://127.0.0.1:8080/v1"\n'
-        if cmd[:1] == ["cat"] and "memories/MEMORY.md" in cmd_str:
-            return 0, existing_memory
-        if cmd[:1] == ["cat"] and cmd[-1].endswith("SOUL.md"):
-            return 0, "You are an imported soul."
+        # cat <path>: a read sees the last content pushed to that destination.
+        if cmd[:1] == ["cat"]:
+            target = cmd[-1]
+            if target in pushed_by_dst:
+                return 0, pushed_by_dst[target]
+            if "config.yaml" in target and ".pre-import" not in target and "memories" not in target:
+                return 0, config_yaml
+            if "cron/jobs.json" in target:
+                return 0, jobs_json
+            if ".pre-import" in target:
+                return 0, 'model:\n  default: local-model\n  base_url: "http://127.0.0.1:8080/v1"\n'
+            if "memories/MEMORY.md" in target:
+                return 0, existing_memory
+            if target.endswith("SOUL.md"):
+                return 0, "You are an imported soul."
+            if target.endswith("config.yaml"):
+                return 0, 'model:\n  default: kilo-auto/free\n  provider: custom\n  base_url: "http://127.0.0.1:4000/v1"\n  api_key: "test-key"\n'
+            return 1, ""
         return 1, ""
 
-    return fake_exec, fake_push_file, events, pushed
+    return fake_exec, fake_push_file, events, pushed, pushed_by_dst
 
 
 @pytest.mark.asyncio
@@ -1072,8 +1096,8 @@ class TestTransferNoticeChannelAndConfig:
         self, client, app, monkeypatch, name, bundle, config_yaml, existing_memory, jobs_json
     ):
         """Run an import capturing every container/push call in one ordered
-        stream. Returns (slug, task, pushed, events)."""
-        fake_exec, fake_push_file, events, pushed = _make_order_tracking_fake(
+        stream. Returns (slug, task, pushed, events, pushed_by_dst)."""
+        fake_exec, fake_push_file, events, pushed, pushed_by_dst = _make_order_tracking_fake(
             config_yaml, existing_memory, jobs_json, active_profile=name
         )
 
@@ -1101,25 +1125,28 @@ class TestTransferNoticeChannelAndConfig:
                 break
         task = app.state.deploy_tasks.get(slug)
         assert task is not None, "background import task should have recorded a result"
-        return slug, task, pushed, events
+        return slug, task, pushed, events, pushed_by_dst
 
     async def test_memory_char_limit_raised_and_memory_kept(self, client, app, monkeypatch):
-        """The limit key Hermes reads (memory_char_limit, top level) is raised,
-        and the existing MEMORY.md bytes are preserved with the notice appended."""
+        """The limit key Hermes reads (memory.memory_char_limit, nested memory
+        section) is raised, and the existing MEMORY.md bytes are preserved with
+        the notice appended."""
+        import yaml
         config_yaml = """model:
   default: local-model
   provider: custom
   base_url: "http://127.0.0.1:8080/v1"
   api_key: "local-only"
-memory_char_limit: 100
+memory:
+  memory_char_limit: 100
 platforms:
   gadget:
     enabled: true
 """
         existing_memory = "# Existing memory content\n\nSome previous notes."
         jobs_json = '{"jobs": [{"name": "daily-summary", "enabled": true}]}'
-        bundle = _bundle_with_config(config_yaml)
-        slug, task, pushed, _ = await self._import_with_order_tracking(
+        bundle = _bundle_with_config(config_yaml, profile_dir="memory-key-test")
+        slug, task, pushed, _, _ = await self._import_with_order_tracking(
             client, app, monkeypatch, "memory-key-test", bundle, config_yaml, existing_memory, jobs_json
         )
         assert task["status"] == "success", task
@@ -1127,14 +1154,16 @@ platforms:
         config_writes = [c for c in pushed if c[0].endswith("config.yaml") and "pre-import" not in c[0]]
         assert config_writes, "config.yaml should be written"
 
-        # memory_char_limit raised above the bundle's 100
+        # memory.memory_char_limit raised above the bundle's 100 (parse YAML,
+        # no line-prefix matching)
         raised = None
         for _dst, content in config_writes:
-            for line in content.splitlines():
-                if line.strip().startswith("memory_char_limit:"):
-                    raised = int(line.split(":", 1)[1].strip())
+            data = yaml.safe_load(content) or {}
+            mem_cfg = data.get("memory")
+            if isinstance(mem_cfg, dict) and "memory_char_limit" in mem_cfg:
+                raised = int(mem_cfg["memory_char_limit"])
         assert raised is not None and raised > 100, (
-            f"memory_char_limit should be raised above 100, got {raised}"
+            f"memory.memory_char_limit should be raised above 100, got {raised}"
         )
 
         # MEMORY.md keeps every existing byte and gains the notice
@@ -1152,15 +1181,16 @@ platforms:
   provider: custom
   base_url: "http://127.0.0.1:8080/v1"
   api_key: "local-only"
-memory_char_limit: 100
+memory:
+  memory_char_limit: 100
 platforms:
   gadget:
     enabled: true
 """
         existing_memory = "# Existing memory content\n"
         jobs_json = '{"jobs": [{"name": "daily-summary", "enabled": true}]}'
-        bundle = _bundle_with_config(config_yaml)
-        slug, task, pushed, events = await self._import_with_order_tracking(
+        bundle = _bundle_with_config(config_yaml, profile_dir="config-order-test")
+        slug, task, pushed, events, _ = await self._import_with_order_tracking(
             client, app, monkeypatch, "config-order-test", bundle, config_yaml, existing_memory, jobs_json
         )
         assert task["status"] == "success", task
@@ -1237,3 +1267,592 @@ platforms:
         assert sent, "transfer notice should be sent as a chat message"
         assert sent[0]["channel_id"] == agent["chat_channel_id"], "notice should go on the agent's DM channel"
         assert "Transfer Notice" in sent[0]["content"], "sent message should be the transfer notice"
+
+
+# ---------------------------------------------------------------------------
+# Shared default fakes for import tests that just need a happy-path container.
+# ---------------------------------------------------------------------------
+
+def _make_success_exec(slug: str):
+    async def fake_exec(container, cmd, timeout=None):
+        cmd_str = " ".join(cmd)
+        if cmd[:1] == ["test"]:
+            return (0, "") if cmd[-1] == "/usr/local/bin/hermes" else (1, "")
+        if "profile" in cmd and "import" in cmd:
+            return 0, "imported profile ok"
+        if "profile" in cmd and "use" in cmd:
+            return 0, "switched"
+        # systemd drop-in directory creation (mkdir -p before the drop-in push)
+        if cmd[:1] == ["mkdir"] and "-p" in cmd and "hermes-gateway.service.d" in cmd_str:
+            return 0, ""
+        # config backup (cp config.yaml config.yaml.pre-import)
+        if "cp " in cmd_str and "config.yaml" in cmd_str and ".pre-import" in cmd_str:
+            return 0, ""
+        if "systemctl" in cmd and "daemon-reload" in cmd:
+            return 0, "reloaded"
+        if "systemctl" in cmd and "restart" in cmd and "hermes-gateway" in cmd:
+            return 0, "restarted"
+        if "systemctl" in cmd and "is-active" in cmd and "hermes-gateway" in cmd:
+            return 0, "active"
+        if "systemctl" in cmd and "show" in cmd and "Environment" in cmd_str:
+            return 0, f"Environment=HERMES_HOME=/root/.hermes/profiles/{slug}"
+        if cmd[:1] == ["cat"] and "config.yaml" in cmd_str and ".pre-import" not in cmd_str and "memories" not in cmd_str:
+            return 0, "model:\n  default: test\n"
+        if cmd[:1] == ["cat"] and ".pre-import" in cmd_str:
+            return 0, "model:\n  default: local\n"
+        if cmd[:1] == ["cat"] and "cron/jobs.json" in cmd_str:
+            return 0, '{"jobs": []}'
+        if cmd[:1] == ["cat"] and "memories/MEMORY.md" in cmd_str:
+            return 0, "# existing\n"
+        return 1, ""
+    return fake_exec
+
+
+def _make_success_push():
+    async def fake_push_file(container, src, dst):
+        return 0, ""
+    return fake_push_file
+
+
+@pytest.mark.asyncio
+class TestSourceHostAndBotFindings:
+    """Requirement 2 (source host from the bundle/form field) and the open
+    bot findings 3a-3e, plus requirement 4 (notice delivery failure)."""
+
+    async def _run_import(
+        self, client, app, monkeypatch, name, fake_exec=None, fake_push_file=None,
+        pause_jobs=False, source_host=None, bundle=None,
+    ):
+        if fake_exec is None:
+            fake_exec = _make_success_exec(name)
+        if fake_push_file is None:
+            fake_push_file = _make_success_push()
+
+        async def fake_deploy(req):
+            return {
+                "success": True, "name": req.name, "ip": "10.0.0.200",
+                "llm_key": "taos-key-200", "steps": ["deployment_complete"],
+                "container": f"taos-agent-{req.name}",
+            }
+        monkeypatch.setattr("tinyagentos.deployer.deploy_agent", fake_deploy)
+        monkeypatch.setattr("tinyagentos.containers.push_file", fake_push_file)
+        monkeypatch.setattr("tinyagentos.containers.exec_in_container", fake_exec)
+
+        data = {"framework": "hermes", "name": name}
+        if pause_jobs:
+            data["pause_jobs"] = "true"
+        if source_host is not None:
+            data["source_host"] = source_host
+        files = bundle if bundle is not None else _bundle()
+
+        resp = await client.post("/api/agents/import", data=data, files=files)
+        assert resp.status_code == 202, resp.json()
+        slug = resp.json()["name"]
+        for _ in range(40):
+            await asyncio.sleep(0.05)
+            task = app.state.deploy_tasks.get(slug)
+            if task and task["status"] in ("success", "failed"):
+                break
+        task = app.state.deploy_tasks.get(slug)
+        assert task is not None, f"background import task should have recorded a result for {name}"
+        return slug, task
+
+    # ---- requirement 2: source host from the bundle/form field ----
+
+    async def test_source_host_from_form_field_real_layout(self, client, app, monkeypatch):
+        """2: source_host comes from the form field (exports carry no manifest);
+        the bundle uses the real export layout (one top-level profile dir)."""
+        config_yaml = "model:\n  default: test-model\n"
+        bundle = _bundle_with_config(config_yaml, profile_dir="my-profile")
+        sent = []
+
+        async def fake_send_message(channel_id, author_id, author_type, content, content_type):
+            sent.append(content)
+        monkeypatch.setattr(app.state.chat_messages, "send_message", fake_send_message)
+
+        slug, task = await self._run_import(
+            client, app, monkeypatch, "sourcehost",
+            source_host="old-machine.example", bundle=bundle,
+        )
+        assert task["status"] == "success", task
+        assert sent, "transfer notice should be sent"
+        assert "**Source:** old-machine.example" in sent[0], sent[0]
+
+    async def test_source_host_fallback_another_machine(self, client, app, monkeypatch):
+        """2: without a source_host form field the fallback is "another machine"
+        (no manifest is read from the real-layout bundle)."""
+        config_yaml = "model:\n  default: test-model\n"
+        bundle = _bundle_with_config(config_yaml, profile_dir="my-profile")
+        sent = []
+
+        async def fake_send_message(channel_id, author_id, author_type, content, content_type):
+            sent.append(content)
+        monkeypatch.setattr(app.state.chat_messages, "send_message", fake_send_message)
+
+        slug, task = await self._run_import(
+            client, app, monkeypatch, "sourcehost-fb", bundle=bundle,
+        )
+        assert task["status"] == "success", task
+        assert sent, "transfer notice should be sent"
+        assert "**Source:** another machine" in sent[0], sent[0]
+
+    # ---- bot finding 3a: systemd drop-in directory created before push ----
+
+    async def test_systemd_dropin_dir_created_before_push(self, client, app, monkeypatch):
+        """3a: the systemd drop-in directory is created (mkdir -p) before the
+        drop-in file is pushed."""
+        events = []
+        pushed = []
+
+        async def fake_push_file(container, src, dst):
+            pushed.append(dst)
+            events.append(("push", dst))
+            return 0, ""
+
+        async def fake_exec(container, cmd, timeout=None):
+            events.append(("exec", list(cmd)))
+            cmd_str = " ".join(cmd)
+            if cmd[:1] == ["test"]:
+                return (0, "") if cmd[-1] == "/usr/local/bin/hermes" else (1, "")
+            if "profile" in cmd and "import" in cmd:
+                return 0, "imported profile ok"
+            if "profile" in cmd and "use" in cmd:
+                return 0, "switched"
+            if cmd[:1] == ["mkdir"] and "-p" in cmd and "hermes-gateway.service.d" in cmd_str:
+                return 0, ""
+            # config backup (cp config.yaml config.yaml.pre-import)
+            if "cp " in cmd_str and "config.yaml" in cmd_str and ".pre-import" in cmd_str:
+                return 0, ""
+            if "systemctl" in cmd and "daemon-reload" in cmd:
+                return 0, "reloaded"
+            if "systemctl" in cmd and "restart" in cmd and "hermes-gateway" in cmd:
+                return 0, "restarted"
+            if "systemctl" in cmd and "is-active" in cmd and "hermes-gateway" in cmd:
+                return 0, "active"
+            if "systemctl" in cmd and "show" in cmd and "Environment" in cmd_str:
+                return 0, "Environment=HERMES_HOME=/root/.hermes/profiles/test-dropin"
+            if cmd[:1] == ["cat"] and "config.yaml" in cmd_str and ".pre-import" not in cmd_str and "memories" not in cmd_str:
+                return 0, "model:\n  default: test\n"
+            if cmd[:1] == ["cat"] and ".pre-import" in cmd_str:
+                return 0, "model:\n  default: local\n"
+            if cmd[:1] == ["cat"] and "cron/jobs.json" in cmd_str:
+                return 0, '{"jobs": []}'
+            if cmd[:1] == ["cat"] and "memories/MEMORY.md" in cmd_str:
+                return 0, "# existing\n"
+            return 1, ""
+
+        slug, task = await self._run_import(
+            client, app, monkeypatch, "test-dropin", fake_exec, fake_push_file, pause_jobs=True,
+        )
+        assert task["status"] == "success", task
+
+        mkdir_index = next(
+            i for i, (kind, detail) in enumerate(events)
+            if kind == "exec" and detail[:1] == ["mkdir"]
+            and "-p" in detail and any("hermes-gateway.service.d" in p for p in detail)
+        )
+        dropin_index = next(
+            i for i, (kind, detail) in enumerate(events)
+            if kind == "push" and detail.endswith("99-taos-import.conf")
+        )
+        assert mkdir_index < dropin_index, "drop-in dir must be created before the drop-in is pushed"
+
+    async def test_import_fails_when_dropin_dir_creation_fails(self, client, app, monkeypatch):
+        """3a: failing to create the drop-in directory fails the import."""
+        async def fake_push_file(container, src, dst):
+            return 0, ""
+        async def fake_exec(container, cmd, timeout=None):
+            cmd_str = " ".join(cmd)
+            if cmd[:1] == ["test"]:
+                return (0, "") if cmd[-1] == "/usr/local/bin/hermes" else (1, "")
+            if "profile" in cmd and "import" in cmd:
+                return 0, "imported profile ok"
+            if "profile" in cmd and "use" in cmd:
+                return 0, "switched"
+            if cmd[:1] == ["cat"] and "config.yaml" in cmd_str and ".pre-import" not in cmd_str and "memories" not in cmd_str:
+                return 0, "model:\n  default: test\n"
+            # config backup (cp config.yaml config.yaml.pre-import)
+            if "cp " in cmd_str and "config.yaml" in cmd_str and ".pre-import" in cmd_str:
+                return 0, ""
+            if cmd[:1] == ["mkdir"] and "-p" in cmd and "hermes-gateway.service.d" in cmd_str:
+                return 1, "mkdir: cannot create directory: Read-only file system"
+            return 1, ""
+
+        slug, task = await self._run_import(
+            client, app, monkeypatch, "test-dropin-fail", fake_exec, fake_push_file,
+        )
+        assert task["status"] == "failed", task
+        assert "drop-in dir" in task.get("error", ""), task.get("error")
+
+    # ---- bot finding 3b: HERMES_HOME compared as full value ----
+
+    async def test_hermes_home_compared_as_full_value_not_substring(self, client, app, monkeypatch):
+        """3b: HERMES_HOME is parsed and compared as the FULL value. Serving
+        /root/.hermes/profiles/helper-old must NOT satisfy slug "helper" (a
+        substring match would wrongly pass)."""
+        async def fake_push_file(container, src, dst):
+            return 0, ""
+        async def fake_exec(container, cmd, timeout=None):
+            cmd_str = " ".join(cmd)
+            if cmd[:1] == ["test"]:
+                return (0, "") if cmd[-1] == "/usr/local/bin/hermes" else (1, "")
+            if "profile" in cmd and "import" in cmd:
+                return 0, "imported profile ok"
+            if "profile" in cmd and "use" in cmd:
+                return 0, "switched"
+            if cmd[:1] == ["mkdir"] and "-p" in cmd and "hermes-gateway.service.d" in cmd_str:
+                return 0, ""
+            # config backup (cp config.yaml config.yaml.pre-import)
+            if "cp " in cmd_str and "config.yaml" in cmd_str and ".pre-import" in cmd_str:
+                return 0, ""
+            if "systemctl" in cmd and "daemon-reload" in cmd:
+                return 0, "reloaded"
+            if "systemctl" in cmd and "restart" in cmd and "hermes-gateway" in cmd:
+                return 0, "restarted"
+            if "systemctl" in cmd and "is-active" in cmd and "hermes-gateway" in cmd:
+                return 0, "active"
+            if "systemctl" in cmd and "show" in cmd and "Environment" in cmd_str:
+                return 0, "Environment=HERMES_HOME=/root/.hermes/profiles/helper-old"
+            if cmd[:1] == ["cat"] and "config.yaml" in cmd_str and ".pre-import" not in cmd_str and "memories" not in cmd_str:
+                return 0, "model:\n  default: test\n"
+            if cmd[:1] == ["cat"] and ".pre-import" in cmd_str:
+                return 0, "model:\n  default: local\n"
+            if cmd[:1] == ["cat"] and "cron/jobs.json" in cmd_str:
+                return 0, '{"jobs": []}'
+            if cmd[:1] == ["cat"] and "memories/MEMORY.md" in cmd_str:
+                return 0, "# existing\n"
+            return 1, ""
+
+        slug, task = await self._run_import(
+            client, app, monkeypatch, "helper", fake_exec, fake_push_file,
+        )
+        assert task["status"] == "failed", task
+        assert "HERMES_HOME" in task.get("error", ""), task.get("error")
+
+    # ---- bot finding 3c: failed read vs confirmed absence ----
+
+    async def test_failed_config_read_fails_import(self, client, app, monkeypatch):
+        """3c: a failed read of config.yaml (not a confirmed absence) fails the
+        import instead of being treated as "file absent"."""
+        async def fake_push_file(container, src, dst):
+            return 0, ""
+        async def fake_exec(container, cmd, timeout=None):
+            cmd_str = " ".join(cmd)
+            if cmd[:1] == ["test"]:
+                return (0, "") if cmd[-1] == "/usr/local/bin/hermes" else (1, "")
+            if "profile" in cmd and "import" in cmd:
+                return 0, "imported profile ok"
+            if "profile" in cmd and "use" in cmd:
+                return 0, "switched"
+            if cmd[:1] == ["mkdir"] and "-p" in cmd and "hermes-gateway.service.d" in cmd_str:
+                return 0, ""
+            # config backup (cp config.yaml config.yaml.pre-import)
+            if "cp " in cmd_str and "config.yaml" in cmd_str and ".pre-import" in cmd_str:
+                return 0, ""
+            if "systemctl" in cmd and "daemon-reload" in cmd:
+                return 0, "reloaded"
+            if "systemctl" in cmd and "restart" in cmd and "hermes-gateway" in cmd:
+                return 0, "restarted"
+            if "systemctl" in cmd and "is-active" in cmd and "hermes-gateway" in cmd:
+                return 0, "active"
+            if "systemctl" in cmd and "show" in cmd and "Environment" in cmd_str:
+                return 0, "Environment=HERMES_HOME=/root/.hermes/profiles/test-config"
+            if cmd[:1] == ["cat"] and "config.yaml" in cmd_str and ".pre-import" not in cmd_str:
+                # config.yaml exists but is unreadable -> read failure, not absence
+                return 1, "cat: /root/.hermes/profiles/test-config/config.yaml: Permission denied"
+            if cmd[:1] == ["cat"] and ".pre-import" in cmd_str:
+                return 0, "model:\n  default: local\n"
+            if cmd[:1] == ["cat"] and "cron/jobs.json" in cmd_str:
+                return 0, '{"jobs": []}'
+            if cmd[:1] == ["cat"] and "memories/MEMORY.md" in cmd_str:
+                return 0, "# existing\n"
+            return 1, ""
+
+        slug, task = await self._run_import(
+            client, app, monkeypatch, "test-config", fake_exec, fake_push_file,
+        )
+        assert task["status"] == "failed", task
+        assert "config.yaml" in task.get("error", ""), task.get("error")
+
+    async def test_failed_jobs_read_fails_import(self, client, app, monkeypatch):
+        """3c: a failed read of jobs.json fails the import."""
+        async def fake_push_file(container, src, dst):
+            return 0, ""
+        async def fake_exec(container, cmd, timeout=None):
+            cmd_str = " ".join(cmd)
+            if cmd[:1] == ["test"]:
+                return (0, "") if cmd[-1] == "/usr/local/bin/hermes" else (1, "")
+            if "profile" in cmd and "import" in cmd:
+                return 0, "imported profile ok"
+            if "profile" in cmd and "use" in cmd:
+                return 0, "switched"
+            if cmd[:1] == ["mkdir"] and "-p" in cmd and "hermes-gateway.service.d" in cmd_str:
+                return 0, ""
+            # config backup (cp config.yaml config.yaml.pre-import)
+            if "cp " in cmd_str and "config.yaml" in cmd_str and ".pre-import" in cmd_str:
+                return 0, ""
+            if "systemctl" in cmd and "daemon-reload" in cmd:
+                return 0, "reloaded"
+            if "systemctl" in cmd and "restart" in cmd and "hermes-gateway" in cmd:
+                return 0, "restarted"
+            if "systemctl" in cmd and "is-active" in cmd and "hermes-gateway" in cmd:
+                return 0, "active"
+            if "systemctl" in cmd and "show" in cmd and "Environment" in cmd_str:
+                return 0, "Environment=HERMES_HOME=/root/.hermes/profiles/test-jobs"
+            if cmd[:1] == ["cat"] and "config.yaml" in cmd_str and ".pre-import" not in cmd_str and "memories" not in cmd_str:
+                return 0, "model:\n  default: test\n"
+            if cmd[:1] == ["cat"] and ".pre-import" in cmd_str:
+                return 0, "model:\n  default: local\n"
+            if cmd[:1] == ["cat"] and "cron/jobs.json" in cmd_str:
+                return 1, "cat: .../cron/jobs.json: Permission denied"
+            if cmd[:1] == ["cat"] and "memories/MEMORY.md" in cmd_str:
+                return 0, "# existing\n"
+            return 1, ""
+
+        slug, task = await self._run_import(
+            client, app, monkeypatch, "test-jobs", fake_exec, fake_push_file, pause_jobs=True,
+        )
+        assert task["status"] == "failed", task
+        assert "jobs.json" in task.get("error", ""), task.get("error")
+
+    async def test_failed_memory_read_fails_import_never_overwrites(self, client, app, monkeypatch):
+        """3c: a failed read of MEMORY.md fails the import and never overwrites
+        imported memory with just the notice."""
+        pushed = []
+
+        async def fake_push_file(container, src, dst):
+            try:
+                with open(src, "rb") as f:
+                    content = f.read().decode("utf-8", "replace")
+            except Exception:
+                content = f"<unreadable {src}>"
+            pushed.append((dst, content))
+            return 0, ""
+
+        async def fake_exec(container, cmd, timeout=None):
+            cmd_str = " ".join(cmd)
+            if cmd[:1] == ["test"]:
+                return (0, "") if cmd[-1] == "/usr/local/bin/hermes" else (1, "")
+            if "profile" in cmd and "import" in cmd:
+                return 0, "imported profile ok"
+            if "profile" in cmd and "use" in cmd:
+                return 0, "switched"
+            if cmd[:1] == ["mkdir"] and "-p" in cmd and "hermes-gateway.service.d" in cmd_str:
+                return 0, ""
+            # config backup (cp config.yaml config.yaml.pre-import)
+            if "cp " in cmd_str and "config.yaml" in cmd_str and ".pre-import" in cmd_str:
+                return 0, ""
+            if "systemctl" in cmd and "daemon-reload" in cmd:
+                return 0, "reloaded"
+            if "systemctl" in cmd and "restart" in cmd and "hermes-gateway" in cmd:
+                return 0, "restarted"
+            if "systemctl" in cmd and "is-active" in cmd and "hermes-gateway" in cmd:
+                return 0, "active"
+            if "systemctl" in cmd and "show" in cmd and "Environment" in cmd_str:
+                return 0, "Environment=HERMES_HOME=/root/.hermes/profiles/test-mem"
+            if cmd[:1] == ["cat"] and "config.yaml" in cmd_str and ".pre-import" not in cmd_str and "memories" not in cmd_str:
+                return 0, "model:\n  default: test\n"
+            if cmd[:1] == ["cat"] and ".pre-import" in cmd_str:
+                return 0, "model:\n  default: local\n"
+            if cmd[:1] == ["cat"] and "cron/jobs.json" in cmd_str:
+                return 0, '{"jobs": []}'
+            if cmd[:1] == ["cat"] and "memories/MEMORY.md" in cmd_str:
+                # exists but unreadable -> read failure, never treated as empty
+                return 1, "cat: .../memories/MEMORY.md: Permission denied"
+            return 1, ""
+
+        slug, task = await self._run_import(
+            client, app, monkeypatch, "test-mem", fake_exec, fake_push_file, pause_jobs=True,
+        )
+        assert task["status"] == "failed", task
+        # No MEMORY.md write was attempted: the import failed before reaching it.
+        assert not any(dst.endswith("memories/MEMORY.md") for dst, _ in pushed)
+
+    # ---- bot finding 3d: pause jobs before gateway restart ----
+
+    async def test_jobs_paused_before_gateway_restart(self, client, app, monkeypatch):
+        """3d: imported jobs are paused before the gateway is restarted, not
+        after."""
+        events = []
+        pushed = []
+
+        async def fake_push_file(container, src, dst):
+            pushed.append(dst)
+            events.append(("push", dst))
+            return 0, ""
+
+        async def fake_exec(container, cmd, timeout=None):
+            events.append(("exec", list(cmd)))
+            cmd_str = " ".join(cmd)
+            if cmd[:1] == ["test"]:
+                return (0, "") if cmd[-1] == "/usr/local/bin/hermes" else (1, "")
+            if "profile" in cmd and "import" in cmd:
+                return 0, "imported profile ok"
+            if "profile" in cmd and "use" in cmd:
+                return 0, "switched"
+            if cmd[:1] == ["mkdir"] and "-p" in cmd and "hermes-gateway.service.d" in cmd_str:
+                return 0, ""
+            # config backup (cp config.yaml config.yaml.pre-import)
+            if "cp " in cmd_str and "config.yaml" in cmd_str and ".pre-import" in cmd_str:
+                return 0, ""
+            if "systemctl" in cmd and "daemon-reload" in cmd:
+                return 0, "reloaded"
+            if "systemctl" in cmd and "restart" in cmd and "hermes-gateway" in cmd:
+                return 0, "restarted"
+            if "systemctl" in cmd and "is-active" in cmd and "hermes-gateway" in cmd:
+                return 0, "active"
+            if "systemctl" in cmd and "show" in cmd and "Environment" in cmd_str:
+                return 0, "Environment=HERMES_HOME=/root/.hermes/profiles/test-pause"
+            if cmd[:1] == ["cat"] and "config.yaml" in cmd_str and ".pre-import" not in cmd_str and "memories" not in cmd_str:
+                return 0, "model:\n  default: test\n"
+            if cmd[:1] == ["cat"] and ".pre-import" in cmd_str:
+                return 0, "model:\n  default: local\n"
+            if cmd[:1] == ["cat"] and "cron/jobs.json" in cmd_str:
+                return 0, '{"jobs": [{"name": "daily-summary", "enabled": true}]}'
+            if cmd[:1] == ["cat"] and "memories/MEMORY.md" in cmd_str:
+                return 0, "# existing\n"
+            return 1, ""
+
+        slug, task = await self._run_import(
+            client, app, monkeypatch, "test-pause", fake_exec, fake_push_file, pause_jobs=True,
+        )
+        assert task["status"] == "success", task
+        assert task.get("jobs_paused") == 1
+
+        jobs_write_index = next(
+            i for i, (kind, detail) in enumerate(events)
+            if kind == "push" and detail.endswith("cron/jobs.json")
+        )
+        restart_index = next(
+            i for i, (kind, detail) in enumerate(events)
+            if kind == "exec" and detail[:1] == ["systemctl"]
+            and "restart" in detail and "hermes-gateway" in detail
+        )
+        assert jobs_write_index < restart_index, "jobs must be paused before the gateway restart"
+
+    # ---- bot finding 3e: never write a null model default ----
+
+    async def test_no_null_model_default_when_model_omitted(self, client, app, monkeypatch):
+        """3e: when the import omits the model, model.default is never null;
+        the shipped default kilo-auto/free is written instead."""
+        import yaml
+        pushed = []
+
+        async def fake_push_file(container, src, dst):
+            try:
+                with open(src, "rb") as f:
+                    content = f.read().decode("utf-8", "replace")
+            except Exception:
+                content = f"<unreadable {src}>"
+            pushed.append((dst, content))
+            return 0, ""
+
+        async def fake_exec(container, cmd, timeout=None):
+            cmd_str = " ".join(cmd)
+            if cmd[:1] == ["test"]:
+                return (0, "") if cmd[-1] == "/usr/local/bin/hermes" else (1, "")
+            if "profile" in cmd and "import" in cmd:
+                return 0, "imported profile ok"
+            if "profile" in cmd and "use" in cmd:
+                return 0, "switched"
+            if cmd[:1] == ["mkdir"] and "-p" in cmd and "hermes-gateway.service.d" in cmd_str:
+                return 0, ""
+            # config backup (cp config.yaml config.yaml.pre-import)
+            if "cp " in cmd_str and "config.yaml" in cmd_str and ".pre-import" in cmd_str:
+                return 0, ""
+            if "systemctl" in cmd and "daemon-reload" in cmd:
+                return 0, "reloaded"
+            if "systemctl" in cmd and "restart" in cmd and "hermes-gateway" in cmd:
+                return 0, "restarted"
+            if "systemctl" in cmd and "is-active" in cmd and "hermes-gateway" in cmd:
+                return 0, "active"
+            if "systemctl" in cmd and "show" in cmd and "Environment" in cmd_str:
+                return 0, "Environment=HERMES_HOME=/root/.hermes/profiles/test-model"
+            if cmd[:1] == ["cat"] and "config.yaml" in cmd_str and ".pre-import" not in cmd_str and "memories" not in cmd_str:
+                return 0, "model:\n  default: bundle-model\n"
+            if cmd[:1] == ["cat"] and ".pre-import" in cmd_str:
+                return 0, "model:\n  default: local\n"
+            if cmd[:1] == ["cat"] and "cron/jobs.json" in cmd_str:
+                return 0, '{"jobs": []}'
+            if cmd[:1] == ["cat"] and "memories/MEMORY.md" in cmd_str:
+                return 0, "# existing\n"
+            return 1, ""
+
+        # Omit the model field entirely -> the import records model=None.
+        slug, task = await self._run_import(
+            client, app, monkeypatch, "test-model", fake_exec, fake_push_file,
+        )
+        assert task["status"] == "success", task
+        config_writes = [c for c in pushed if c[0].endswith("config.yaml") and "pre-import" not in c[0]]
+        assert config_writes, "config.yaml should be rewritten"
+        for _dst, content in config_writes:
+            data = yaml.safe_load(content) or {}
+            default = data.get("model", {}).get("default")
+            assert default is not None, f"model.default must not be null: {content!r}"
+            assert default == "kilo-auto/free", f"expected shipped default, got {default!r}"
+
+    # ---- requirement 4: notice delivery failure fails the import ----
+
+    async def test_notice_delivery_failure_fails_import(self, client, app, monkeypatch):
+        """4: when the transfer notice cannot be delivered, the import fails
+        loudly instead of silently succeeding."""
+        async def fake_deploy(req):
+            return {
+                "success": True, "name": req.name, "ip": "10.0.0.210",
+                "llm_key": "taos-key-210", "steps": ["deployment_complete"],
+                "container": f"taos-agent-{req.name}",
+            }
+        monkeypatch.setattr("tinyagentos.deployer.deploy_agent", fake_deploy)
+        async def fake_push_file(container, src, dst):
+            return 0, ""
+        async def fake_exec(container, cmd, timeout=None):
+            cmd_str = " ".join(cmd)
+            if cmd[:1] == ["test"]:
+                return (0, "") if cmd[-1] == "/usr/local/bin/hermes" else (1, "")
+            if "profile" in cmd and "import" in cmd:
+                return 0, "imported profile ok"
+            if "profile" in cmd and "use" in cmd:
+                return 0, "switched"
+            if cmd[:1] == ["mkdir"] and "-p" in cmd and "hermes-gateway.service.d" in cmd_str:
+                return 0, ""
+            # config backup (cp config.yaml config.yaml.pre-import)
+            if "cp " in cmd_str and "config.yaml" in cmd_str and ".pre-import" in cmd_str:
+                return 0, ""
+            if "systemctl" in cmd and "daemon-reload" in cmd:
+                return 0, "reloaded"
+            if "systemctl" in cmd and "restart" in cmd and "hermes-gateway" in cmd:
+                return 0, "restarted"
+            if "systemctl" in cmd and "is-active" in cmd and "hermes-gateway" in cmd:
+                return 0, "active"
+            if "systemctl" in cmd and "show" in cmd and "Environment" in cmd_str:
+                return 0, "Environment=HERMES_HOME=/root/.hermes/profiles/test-notice"
+            if cmd[:1] == ["cat"] and "config.yaml" in cmd_str and ".pre-import" not in cmd_str and "memories" not in cmd_str:
+                return 0, "model:\n  default: test\n"
+            if cmd[:1] == ["cat"] and ".pre-import" in cmd_str:
+                return 0, "model:\n  default: local\n"
+            if cmd[:1] == ["cat"] and "cron/jobs.json" in cmd_str:
+                return 0, '{"jobs": []}'
+            if cmd[:1] == ["cat"] and "memories/MEMORY.md" in cmd_str:
+                return 0, "# existing\n"
+            return 1, ""
+        monkeypatch.setattr("tinyagentos.containers.exec_in_container", fake_exec)
+        monkeypatch.setattr("tinyagentos.containers.push_file", fake_push_file)
+
+        async def failing_send_message(channel_id, author_id, author_type, content, content_type):
+            raise RuntimeError("notice delivery failed")
+        monkeypatch.setattr(app.state.chat_messages, "send_message", failing_send_message)
+
+        resp = await client.post("/api/agents/import",
+            data={"framework": "hermes", "name": "test-notice"},
+            files=_bundle())
+        assert resp.status_code == 202, resp.json()
+        slug = resp.json()["name"]
+        for _ in range(40):
+            await asyncio.sleep(0.05)
+            task = app.state.deploy_tasks.get(slug)
+            if task and task["status"] in ("success", "failed"):
+                break
+        task = app.state.deploy_tasks.get(slug)
+        assert task is not None
+        assert task["status"] == "failed", task
+        assert "notice" in task.get("error", "").lower() or "delivery" in task.get("error", "").lower()

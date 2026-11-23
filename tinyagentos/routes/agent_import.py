@@ -162,27 +162,26 @@ def _rewrite_bundle_stripping_dropped(host_bundle: str, dropped_names: set[str])
     return new_path
 
 
-def _read_bundle_source_host(host_bundle: str) -> str | None:
-    """Read the source host from the bundle's Hermes export manifest, if
-    present. Returns None when the bundle has no manifest or it carries no
-    source host.
-    """
-    import json
-    import tarfile
+async def _read_container_file(container_name: str, path: str, timeout: int = 30) -> tuple[str, str | None]:
+    """Cat a file inside the container, distinguishing absence from read failure.
 
-    try:
-        with tarfile.open(host_bundle, "r:gz") as tar:
-            for member in tar.getmembers():
-                if member.isfile() and member.name == "manifest.json":
-                    extracted = tar.extractfile(member)
-                    if extracted is None:
-                        return None
-                    data = json.loads(extracted.read().decode("utf-8"))
-                    if isinstance(data, dict):
-                        return data.get("source_host") or data.get("host") or None
-    except Exception:
-        return None
-    return None
+    Returns (status, content):
+      - "present": file read OK, content is its text.
+      - "absent": confirmed absence (cat reports No such file or directory),
+        content is "".
+      - "failed": file exists but could not be read (permission, I/O error,
+        invalid encoding...), content is None. Callers must FAIL rather than
+        treat this as an empty store, or a transient read failure would let
+        them overwrite the on-disk file from an empty view.
+    """
+    from tinyagentos.containers import exec_in_container
+
+    code, content = await exec_in_container(container_name, ["cat", path], timeout=timeout)
+    if code == 0:
+        return "present", content
+    if "No such file or directory" in content:
+        return "absent", ""
+    return "failed", None
 
 
 async def import_hermes_agent(
@@ -493,11 +492,19 @@ async def _run_profile_import(
 
     # Create systemd drop-in to set HERMES_HOME for the gateway service,
     # then restart the gateway so it serves the imported profile.
+    # The drop-in directory must exist before the drop-in file is pushed;
+    # failure to create it fails the import.
     profile_home = f"/root/.hermes/profiles/{slug}"
     dropin_content = f"""[Service]
 Environment=HERMES_HOME={profile_home}
 """
-    dropin_path = "/etc/systemd/system/hermes-gateway.service.d/99-taos-import.conf"
+    dropin_dir = "/etc/systemd/system/hermes-gateway.service.d"
+    dropin_path = f"{dropin_dir}/99-taos-import.conf"
+    mkdir_code, mkdir_out = await exec_in_container(
+        container_name, ["mkdir", "-p", dropin_dir], timeout=30
+    )
+    if mkdir_code != 0:
+        raise RuntimeError(f"failed to create systemd drop-in dir {dropin_dir} (rc={mkdir_code}): {mkdir_out[-300:]}")
     # Write drop-in using push_file (no shell heredoc with untrusted content)
     dropin_fd, dropin_tmp = tempfile.mkstemp(prefix="taos-dropin-", suffix=".conf")
     try:
@@ -509,13 +516,20 @@ Environment=HERMES_HOME={profile_home}
     if push_rc != 0:
         raise RuntimeError(f"failed to create systemd drop-in (rc={push_rc}): {push_out[-300:]}")
 
-    # Reload systemd and restart the gateway
+    # Reload systemd
     reload_code, reload_out = await exec_in_container(
         container_name, ["systemctl", "daemon-reload"], timeout=30
     )
     if reload_code != 0:
         raise RuntimeError(f"systemctl daemon-reload failed ({reload_code}): {reload_out[-300:]}")
 
+    # Pause imported jobs BEFORE the gateway is restarted so it starts serving
+    # the profile with jobs already paused, not after.
+    jobs_paused = 0
+    if pause_jobs:
+        jobs_paused = await _pause_imported_jobs(container_name, slug)
+
+    # Restart the gateway
     restart_code, restart_out = await exec_in_container(
         container_name, ["systemctl", "restart", "hermes-gateway"], timeout=120
     )
@@ -534,27 +548,31 @@ Environment=HERMES_HOME={profile_home}
         raise RuntimeError("hermes-gateway did not become active after restart")
 
     # Verify the gateway process environment has HERMES_HOME=<profile dir>
-    # by checking the systemd unit's Environment property
+    # by checking the systemd unit's Environment property. Parse the
+    # HERMES_HOME assignment and compare the FULL value (a substring match
+    # would wrongly accept /root/.hermes/profiles/helper when serving helper-old).
     env_code, env_out = await exec_in_container(
         container_name, ["systemctl", "show", "hermes-gateway", "-p", "Environment"], timeout=10
     )
     if env_code != 0:
         raise RuntimeError(f"failed to read gateway environment: {env_out[-300:]}")
-    if f"HERMES_HOME={profile_home}" not in env_out:
+    env_home = None
+    for line in env_out.splitlines():
+        if line.startswith("Environment="):
+            for part in line[len("Environment="):].split():
+                if part.startswith("HERMES_HOME="):
+                    env_home = part.split("=", 1)[1].strip().strip('"').strip("'")
+                    break
+    if env_home != profile_home:
         raise RuntimeError(
-            f"gateway environment does not contain HERMES_HOME={profile_home}: {env_out.strip()}"
+            f"gateway environment does not set HERMES_HOME={profile_home}: {env_out.strip()}"
         )
 
-    # Pause jobs if requested
-    jobs_paused = 0
-    if pause_jobs:
-        jobs_paused = await _pause_imported_jobs(container_name, slug)
-
-    # Source host: Hermes export manifest first, then the optional source_host
-    # form field, then the fallback.
-    source_host = _read_bundle_source_host(host_bundle)
-    if not source_host and agent:
-        source_host = agent.get("import_source_host")
+    # Source host: the optional source_host form field, then the fallback.
+    # Hermes exports carry no manifest naming the source machine
+    # (export_profile writes one top-level profile directory, no manifest.json),
+    # so we no longer read manifest.json from the bundle.
+    source_host = agent.get("import_source_host") if agent else None
     if not source_host:
         source_host = "another machine"
 
@@ -590,10 +608,12 @@ async def _rewrite_model_config(container_name: str, slug: str, agent: dict | No
     config_path = f"/root/.hermes/profiles/{slug}/config.yaml"
     backup_path = f"{config_path}.pre-import"
 
-    code, current_config = await exec_in_container(
-        container_name, ["cat", config_path], timeout=30
+    status, current_config = await _read_container_file(
+        container_name, config_path, timeout=30
     )
-    if code != 0:
+    if status == "failed":
+        raise RuntimeError(f"import {slug}: failed to read config.yaml at {config_path}")
+    if status == "absent":
         # Config might not exist yet (fresh profile), skip rewrite
         logger.warning("import %s: config.yaml not found at %s, skipping model rewrite", slug, config_path)
         return
@@ -614,6 +634,10 @@ async def _rewrite_model_config(container_name: str, slug: str, agent: dict | No
     # Get the taOS gateway config from the agent record or environment
     llm_key = agent.get("llm_key", "") if agent else ""
     model = agent.get("model", "kilo-auto/free") if agent else "kilo-auto/free"
+    if not model:
+        # Import omitted the model: use the shipped default, never write
+        # model.default: null.
+        model = "kilo-auto/free"
 
     # Replace ONLY the model/provider keys, keep everything else
     m = data.setdefault("model", {})
@@ -655,14 +679,16 @@ async def _pause_imported_jobs(container_name: str, slug: str) -> int:
     scripts/install_hermes.sh (HERMES_TAG=v2026.8.31). Hermes v0.23.2 keeps
     jobs.json at <profile>/cron/jobs.json (cron/jobs.py JOBS_FILE).
     """
-    from tinyagentos.containers import exec_in_container, push_file
+    from tinyagentos.containers import push_file
     import tempfile
 
     jobs_path = f"/root/.hermes/profiles/{slug}/cron/jobs.json"
-    code, jobs_content = await exec_in_container(
-        container_name, ["cat", jobs_path], timeout=30
+    status, jobs_content = await _read_container_file(
+        container_name, jobs_path, timeout=30
     )
-    if code != 0:
+    if status == "failed":
+        raise RuntimeError(f"import {slug}: failed to read jobs.json at {jobs_path}")
+    if status == "absent":
         # No jobs.json, nothing to pause
         return 0
 
@@ -711,13 +737,15 @@ async def _write_transfer_notice(
     from tinyagentos.containers import exec_in_container, push_file
     import tempfile
 
-    # Read jobs for the notice (Hermes v0.23.2: cron/jobs.json)
+    # Read jobs for the notice (Hermes v0.23.2: cron/jobs.json). Best-effort:
+    # a confirmed absence means no jobs; a read failure is noted but does not
+    # fail the import because this only affects the notice's job list.
     jobs_path = f"/root/.hermes/profiles/{slug}/cron/jobs.json"
-    code, jobs_content = await exec_in_container(
-        container_name, ["cat", jobs_path], timeout=30
+    jobs_status, jobs_content = await _read_container_file(
+        container_name, jobs_path, timeout=30
     )
     jobs_list = []
-    if code == 0:
+    if jobs_status == "present":
         try:
             jobs_data = json.loads(jobs_content)
             for job in jobs_data.get("jobs", []):
@@ -725,6 +753,8 @@ async def _write_transfer_notice(
                 jobs_list.append(f"- {job.get('name', 'unnamed')} ({status})")
         except json.JSONDecodeError:
             jobs_list.append("- (could not parse jobs.json)")
+    elif jobs_status == "failed":
+        jobs_list.append("- (could not read jobs.json)")
 
     # Read original model config from backup for the notice
     backup_path = f"/root/.hermes/profiles/{slug}/config.yaml.pre-import"
@@ -783,38 +813,50 @@ Welcome to your new home on taOS!
     short_notice = f"\n\n---\n\n### Transfer Notice ({datetime.now(UTC).isoformat().replace('+00:00', 'Z')})\n\nYou have been moved to taOS from {source_host}. Your profile, skills, memory, and jobs have been imported. Your model provider has been redirected to the taOS gateway. {'Jobs have been paused for review.' if pause_jobs else 'Jobs remain in their original state.'} Credentials were NOT imported -- request them from your administrator.\n"
 
     # Read existing memory file
-    code, existing_memory = await exec_in_container(
-        container_name, ["cat", memory_path], timeout=10
+    status, existing_memory = await _read_container_file(
+        container_name, memory_path, timeout=10
     )
-    if code != 0:
+    if status == "failed":
+        raise RuntimeError(f"import {slug}: failed to read MEMORY.md at {memory_path}")
+    if status == "absent":
         existing_memory = ""
 
-    # Check memory limit from profile config
+    # Check memory limit from profile config. Hermes reads the limit from the
+    # nested `memory` section of config.yaml (hermes-agent
+    # tools/memory_tool.py:get_builtin_memory_config reads config["memory"],
+    # agent/agent_init.py reads memory_char_limit/user_char_limit from it);
+    # a top-level memory_char_limit is ignored. Create the mapping when absent.
     memory_limit = DEFAULT_MEMORY_CHAR_LIMIT
     config_path = f"/root/.hermes/profiles/{slug}/config.yaml"
-    code, config_content = await exec_in_container(
-        container_name, ["cat", config_path], timeout=10
+    status, config_content = await _read_container_file(
+        container_name, config_path, timeout=10
     )
-    if code == 0:
+    if status == "failed":
+        raise RuntimeError(f"import {slug}: failed to read config.yaml at {config_path}")
+    if status == "present":
         try:
             import yaml
             config_data = yaml.safe_load(config_content) or {}
-            # Hermes reads the flat top-level key `memory_char_limit`
-            # (hermes-agent tools/memory_tool.py:56), not `memory.char_limit`.
-            raw_limit = config_data.get("memory_char_limit")
-            if isinstance(raw_limit, (int, float, str)):
-                memory_limit = int(raw_limit)
+            mem_cfg = config_data.get("memory")
+            if isinstance(mem_cfg, dict):
+                raw_limit = mem_cfg.get("memory_char_limit")
+                if isinstance(raw_limit, (int, float, str)):
+                    memory_limit = int(raw_limit)
         except Exception:
             pass
 
     new_memory = existing_memory + short_notice
     if len(new_memory) > memory_limit:
         # Raise the limit in the profile config by the notice length
+        if status != "present":
+            # Cannot raise a limit we never read; never overwrite imported config.
+            raise RuntimeError(f"import {slug}: cannot raise memory limit without config.yaml")
         try:
             import yaml
             config_data = yaml.safe_load(config_content) or {}
+            mem_cfg = config_data.setdefault("memory", {})
             new_limit = len(new_memory) + 100
-            config_data["memory_char_limit"] = new_limit
+            mem_cfg["memory_char_limit"] = new_limit
             new_config_yaml = yaml.safe_dump(config_data, default_flow_style=False, sort_keys=False)
             config_fd, config_tmp = tempfile.mkstemp(prefix="taos-config-", suffix=".yaml")
             try:
@@ -826,7 +868,7 @@ Welcome to your new home on taOS!
             if push_rc != 0:
                 logger.warning("import %s: failed to raise memory limit (rc=%s): %s", slug, push_rc, push_out[-200:])
             else:
-                logger.info("import %s: raised memory_char_limit from %d to %d", slug, memory_limit, new_limit)
+                logger.info("import %s: raised memory.memory_char_limit from %d to %d", slug, memory_limit, new_limit)
         except Exception as e:
             logger.warning("import %s: failed to update memory limit: %s", slug, e)
 
