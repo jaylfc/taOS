@@ -17,6 +17,11 @@ updates:
       # proposing the cap-raise until the regression is fixed upstream.
       - dependency-name: "fastapi"
         versions: [">=0.137"]
+      # taosmd 0.5 converts the memory store in place and 0.4 cannot read it
+      # afterwards; the bump must go through a planned, backed-up upgrade, never a
+      # weekly dependency PR.
+      - dependency-name: "taosmd"
+        versions: [">=0.5"]
 
   # Desktop SPA (Vite/React)
   - package-ecosystem: "npm"
