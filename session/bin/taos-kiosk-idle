@@ -80,7 +80,6 @@ pkill -x swayidle 2>/dev/null || true
 # desk, a missing binary would mean the screen never blanks, so fall back to
 # plain output power off. Nothing else wakes a desk (no double tap), so that
 # branch also powers the output on when input resumes.
-
 # Build swayidle arguments: timeout only when IDLE_SECS > 0; before-sleep always.
 # For non-screen fallback, also add resume when IDLE_SECS > 0.
 set -- -w

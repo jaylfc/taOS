@@ -8,6 +8,7 @@ Run: python3 -m pytest -q tests/session/test_taos_kiosk_idle.py
 """
 import os
 import pathlib
+import pwd
 import subprocess
 import tempfile
 
@@ -236,6 +237,10 @@ def _skip_if_not_root():
     """Skip the test if not running as root (installer needs root for staging hook)."""
     if os.geteuid() != 0:
         pytest.skip("install-session.sh staging hook requires root")
+    try:
+        pwd.getpwnam("taos")
+    except KeyError:
+        pytest.skip("install-session.sh staging past session setup requires the taos user")
 
 
 class TestInstallSessionDisplayConf:
