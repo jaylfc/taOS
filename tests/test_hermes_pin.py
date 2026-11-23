@@ -29,14 +29,14 @@ def test_install_hermes_has_default_tag_and_commit():
     assert tag_match, "HERMES_TAG default not found in install_hermes.sh"
     tag_value = tag_match.group(1)
     assert tag_value, "HERMES_TAG default is empty"
-    assert tag_value == "v2026.8.31", f"HERMES_TAG default is {tag_value!r}, expected v2026.8.31"
+    assert tag_value == "v0.23.2", f"HERMES_TAG default is {tag_value!r}, expected v0.23.2"
 
     # Check HERMES_COMMIT default
     commit_match = re.search(r'HERMES_COMMIT\s*=\s*"[\$]\{HERMES_COMMIT:-([^}]+)\}"', text)
     assert commit_match, "HERMES_COMMIT default not found in install_hermes.sh"
     commit_value = commit_match.group(1)
     assert commit_value, "HERMES_COMMIT default is empty"
-    assert commit_value == "29112bef099274229cadff79cdff7bf7b99c4b77", f"HERMES_COMMIT default is {commit_value!r}, expected 29112bef099274229cadff79cdff7bf7b99c4b77"
+    assert commit_value == "ae2a81ccc00e9b7c06301523e5bb09608397149c", f"HERMES_COMMIT default is {commit_value!r}, expected ae2a81ccc00e9b7c06301523e5bb09608397149c"
 
     # Verify commit is 40 hex chars
     assert re.fullmatch(r"[0-9a-f]{40}", commit_value), f"HERMES_COMMIT {commit_value!r} is not 40 hex chars"
@@ -65,7 +65,7 @@ def test_install_hermes_uses_tag_in_url():
     """install_hermes.sh must fetch installer from the TAG, not main."""
     text = INSTALL_HERMES.read_text()
     # Should use HERMES_TAG in the URL
-    assert 'hermes-agent/${HERMES_TAG}/scripts/install.sh' in text or "hermes-agent/${HERMES_TAG}/scripts/install.sh" in text.replace('${HERMES_TAG}', 'v2026.8.31'), "install_hermes.sh does not use HERMES_TAG in installer URL"
+    assert 'hermes-agent/${HERMES_TAG}/scripts/install.sh' in text or "hermes-agent/${HERMES_TAG}/scripts/install.sh" in text.replace('${HERMES_TAG}', 'v0.23.2'), "install_hermes.sh does not use HERMES_TAG in installer URL"
     # Should pass --commit with HERMES_COMMIT
     assert '--commit "$HERMES_COMMIT"' in text or '--commit ${HERMES_COMMIT}' in text, "install_hermes.sh does not pass --commit with HERMES_COMMIT"
 
@@ -73,10 +73,10 @@ def test_install_hermes_uses_tag_in_url():
 def test_build_workflow_uses_tag_and_commit():
     """build-agent-images.yml bake step must use the tag URL and --commit."""
     text = BUILD_WORKFLOW.read_text()
-    # Should use the tag in URL (hardcoded v2026.8.31)
-    assert "hermes-agent/v2026.8.31/scripts/install.sh" in text, "build-agent-images.yml does not use v2026.8.31 tag in installer URL"
+    # Should use the tag in URL (hardcoded v0.23.2)
+    assert "hermes-agent/v0.23.2/scripts/install.sh" in text, "build-agent-images.yml does not use v0.23.2 tag in installer URL"
     # Should pass --commit with the SHA
-    assert "--commit" in text and "29112bef099274229cadff79cdff7bf7b99c4b77" in text, "build-agent-images.yml does not pass --commit with the correct SHA"
+    assert "--commit" in text and "ae2a81ccc00e9b7c06301523e5bb09608397149c" in text, "build-agent-images.yml does not pass --commit with the correct SHA"
 
 
 def test_detect_job_does_not_read_hermes_main():

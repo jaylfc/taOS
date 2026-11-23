@@ -33,9 +33,9 @@ agent_frameworks:
     watch: true
   - id: hermes
     name: Hermes
-    repo: "VERIFY: PyPI hermes-agent -> project homepage"
-    ecosystem: pypi           # package: hermes-agent
-    current: "0.15.1"
+    repo: NousResearch/hermes-agent
+    ecosystem: github-release   # pin is a git tag (install_hermes.sh HERMES_TAG/HERMES_COMMIT)
+    current: "0.23.2"
     integration: agent framework; HTTP api_server + hermes bridge
     watch: true
   - id: smolagents
