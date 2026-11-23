@@ -555,3 +555,10 @@ def test_make_index_dir_makes_group_writable_setgid_dirs(tmp_path):
     make_index_dir(outside, base)
     assert oct(outside.stat().st_mode & 0o777) != "0o770" or True  # never walks above its stop directory
     assert not (tmp_path.stat().st_mode & 0o2000)
+
+
+def test_service_unit_does_not_make_the_install_tree_read_only():
+    """A real systemd run showed ProtectHome=read-only breaks installs under /root or /home."""
+    unit = (REPO / "scripts" / "systemd" / "taos-maint.service").read_text()
+    for line in unit.splitlines():
+        assert not line.startswith(("ProtectHome=", "ProtectSystem=", "ReadOnlyPaths=")), line
