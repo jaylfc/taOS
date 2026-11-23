@@ -987,8 +987,8 @@ class TestReadAllIntelGpus:
         (card / "device" / "tile0" / "gt0" / "gtidle").mkdir(parents=True)
         (card / "device" / "tile0" / "gt0" / "gtidle" / "idle_residency_ms").write_text("100\n")
         (card / "device" / "tile0" / "gt0" / "freq0").mkdir(parents=True)
-        (card / "device" / "tile0" / "gt0" / "freq0" / "gt_act_freq_mhz").write_text("1300\n")
-        (card / "device" / "tile0" / "gt0" / "freq0" / "gt_max_freq_mhz").write_text("1400\n")
+        (card / "device" / "tile0" / "gt0" / "freq0" / "act_freq").write_text("1300\n")
+        (card / "device" / "tile0" / "gt0" / "freq0" / "max_freq").write_text("1400\n")
         monkeypatch.setattr(system_stats, "_DRM_ROOT", drm)
         fake_time = self._fake_time(monkeypatch, system_stats)
 
@@ -1232,8 +1232,8 @@ class TestGetAllGpuLoadsAmdRocmMerge:
 
         assert len(result) == 1
         entry = result[0]
-        # load from sysfs
-        assert entry["load_percent"] == 42
+        # load from ROCm (preferred over sysfs when ROCm has a value)
+        assert entry["load_percent"] == 0
         # VRAM from ROCm
         assert entry["vram_used_mb"] == 8192
         assert entry["vram_total_mb"] == 24576
@@ -1431,7 +1431,8 @@ class TestGetAllGpuLoadsNoPCI:
         result = get_all_gpu_loads(gpus)
 
         assert len(result) == 1
-        assert result[0]["load_percent"] == 30
+        # load from ROCm (preferred over sysfs when ROCm has a value, fallback to vendor index)
+        assert result[0]["load_percent"] == 0
         assert result[0]["vram_used_mb"] == 4096
         assert result[0]["vram_total_mb"] == 16384
 
@@ -1494,7 +1495,8 @@ class TestGetAllGpuLoadsPciBridge:
         gpus = [{"type": "amd", "pci_address": "0000:02:00.0"}]
         result = get_all_gpu_loads(gpus)
 
-        assert result[0]["load_percent"] == 25
+        # load from ROCm (preferred over sysfs when ROCm has a value)
+        assert result[0]["load_percent"] == 0
         assert result[0]["vram_total_mb"] == 8192
 
 

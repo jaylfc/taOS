@@ -311,7 +311,7 @@ def _intel_freq_mhz(card: Path) -> int | None:
     i915 exposes frequency files directly under cardN/ (gt_act_freq_mhz, gt_cur_freq_mhz).
           (Documentation/gpu/i915/frequency.rst, drivers/gpu/drm/i915/i915_frequency.c)
     xe keeps its frequency files under .../tile0/gt0/freq0/.
-          (Documentation/gpu/xe/xe_sysfs.rst, drivers/gpu/drm/xe/xe_gt_sysfs.c)
+          (docs.kernel.org gpu/xe/xe_gt_freq)
     """
     # i915 paths (directly under cardN/)
     for path in (
@@ -323,8 +323,8 @@ def _intel_freq_mhz(card: Path) -> int | None:
             return value
     # xe paths
     for path in (
-        card / "device" / "tile0" / "gt0" / "freq0" / "gt_act_freq_mhz",
-        card / "device" / "tile0" / "gt0" / "freq0" / "gt_cur_freq_mhz",
+        card / "device" / "tile0" / "gt0" / "freq0" / "act_freq",
+        card / "device" / "tile0" / "gt0" / "freq0" / "cur_freq",
     ):
         value = _read_int_file(path)
         if value is not None and value > 0:
@@ -333,7 +333,7 @@ def _intel_freq_mhz(card: Path) -> int | None:
     # Try gt_cur_freq_mhz even if 0 (idle)
     for path in (
         card / "gt_cur_freq_mhz",
-        card / "device" / "tile0" / "gt0" / "freq0" / "gt_cur_freq_mhz",
+        card / "device" / "tile0" / "gt0" / "freq0" / "cur_freq",
     ):
         value = _read_int_file(path)
         if value is not None:
@@ -347,11 +347,11 @@ def _intel_max_freq_mhz(card: Path) -> int | None:
     i915 exposes gt_max_freq_mhz directly under cardN/.
           (Documentation/gpu/i915/frequency.rst, drivers/gpu/drm/i915/i915_frequency.c)
     xe keeps it under .../tile0/gt0/freq0/.
-          (Documentation/gpu/xe/xe_sysfs.rst, drivers/gpu/drm/xe/xe_gt_sysfs.c)
+          (docs.kernel.org gpu/xe/xe_gt_freq)
     """
     for path in (
         card / "gt_max_freq_mhz",
-        card / "device" / "tile0" / "gt0" / "freq0" / "gt_max_freq_mhz",
+        card / "device" / "tile0" / "gt0" / "freq0" / "max_freq",
     ):
         value = _read_int_file(path)
         if value is not None:
@@ -517,6 +517,11 @@ def get_all_gpu_loads(gpus: list[dict]) -> list[dict]:
     amd_rocm_list = list(amd_stats or [])
     intel_full_list = list(intel_stats or [])
 
+    # ROCm PCI address map for matching (vendor-index fallback)
+    amd_rocm_by_pci = {s.get("pci_address", "").lower(): s for s in (amd_rocm_list or []) if s.get("pci_address")}
+
+    # Vendor-specific indices for matching by vendor order
+
     # Vendor-specific indices for matching by vendor order
     nvidia_vendor_idx = 0
     amd_vendor_idx = 0
@@ -539,7 +544,7 @@ def get_all_gpu_loads(gpus: list[dict]) -> list[dict]:
                 entry["freq_hz"] = stat.get("freq_hz")
                 used = stat.get("mem_used_mb")
                 total = stat.get("mem_total_mb")
-                if total is not None and total > 0:
+                if total is not None and total > 0 and used is not None:
                     entry["vram_percent"] = round(used / total * 100.0, 1)
                 else:
                     entry["vram_percent"] = None
@@ -553,40 +558,41 @@ def get_all_gpu_loads(gpus: list[dict]) -> list[dict]:
                 entry["vram_total_mb"] = None
             nvidia_vendor_idx += 1
         elif gtype == "amd":
-            # Try sysfs first (has PCI address), then rocm-smi (fallback by vendor index)
-            sysfs_stat = None
+            # Try to match ROCm stat by PCI address first, then vendor index
             rocm_stat = None
+            if pci_addr and pci_addr in amd_rocm_by_pci:
+                rocm_stat = amd_rocm_by_pci[pci_addr]
+            if rocm_stat is None and amd_vendor_idx < len(amd_rocm_list):
+                rocm_stat = amd_rocm_list[amd_vendor_idx]
+            # Try to get sysfs stat by PCI address first, then vendor index
+            sysfs_stat = None
             if pci_addr and pci_addr in amd_by_pci:
                 sysfs_stat = amd_by_pci[pci_addr]
-            # Also try to get sysfs stat by vendor index (fallback when no PCI match)
             if sysfs_stat is None and amd_vendor_idx < len(amd_sysfs or []):
                 sysfs_stat = (amd_sysfs or [])[amd_vendor_idx]
-            # Also try to get ROCm stat by vendor index (for VRAM data)
-            if amd_vendor_idx < len(amd_rocm_list):
-                rocm_stat = amd_rocm_list[amd_vendor_idx]
-            # Merge: prefer sysfs for load, ROCm for VRAM
+            # Merge: prefer ROCm per field when ROCm has a value, sysfs otherwise
             load_percent = None
-            if sysfs_stat is not None:
-                lp = sysfs_stat.get("load_percent")
-                if lp is not None:
-                    load_percent = lp
-            if load_percent is None and rocm_stat is not None:
+            if rocm_stat is not None:
                 up = rocm_stat.get("util_percent")
                 if up is not None:
                     load_percent = up
+            if load_percent is None and sysfs_stat is not None:
+                lp = sysfs_stat.get("load_percent")
+                if lp is not None:
+                    load_percent = lp
             entry["load_percent"] = load_percent
-            # Frequency: prefer sysfs (though both typically None)
+            # Frequency: prefer ROCm when available
             freq_hz = None
-            if sysfs_stat is not None:
-                fh = sysfs_stat.get("freq_hz")
-                if fh is not None:
-                    freq_hz = fh
-            if freq_hz is None and rocm_stat is not None:
+            if rocm_stat is not None:
                 fh = rocm_stat.get("freq_hz")
                 if fh is not None:
                     freq_hz = fh
+            if freq_hz is None and sysfs_stat is not None:
+                fh = sysfs_stat.get("freq_hz")
+                if fh is not None:
+                    freq_hz = fh
             entry["freq_hz"] = freq_hz
-            # VRAM: prefer ROCm (has actual VRAM data), sysfs has None
+            # VRAM: prefer ROCm when available, sysfs otherwise
             used = None
             total = None
             if rocm_stat is not None:
@@ -595,7 +601,7 @@ def get_all_gpu_loads(gpus: list[dict]) -> list[dict]:
             if used is None and sysfs_stat is not None:
                 used = sysfs_stat.get("mem_used_mb")
                 total = sysfs_stat.get("mem_total_mb")
-            if total is not None and total > 0:
+            if total is not None and total > 0 and used is not None:
                 entry["vram_percent"] = round(used / total * 100.0, 1)
             else:
                 entry["vram_percent"] = None
