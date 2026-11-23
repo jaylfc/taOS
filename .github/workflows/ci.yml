@@ -312,6 +312,59 @@ jobs:
       - name: Check for syntax errors
         run: uv run --no-sync python -m compileall tinyagentos/ -q
 
+  taosmd-head:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
+        with:
+          enable-cache: true
+
+      - name: Provision Python 3.12 via uv
+        run: uv python install 3.12
+
+      - name: Install locked dependencies
+        run: uv sync --frozen --python 3.12
+
+      - name: Resolve taosmd HEAD
+        id: resolve
+        run: |
+          sha=$(git ls-remote https://github.com/jaylfc/taosmd refs/heads/master | cut -f1)
+          if [ -z "$sha" ]; then
+            echo "::error::Failed to resolve taosmd HEAD from jaylfc/taosmd"
+            exit 1
+          fi
+          echo "taosmd HEAD: $sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "taosmd commit: $sha" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install taosmd from HEAD
+        run: uv pip install "taosmd[onnx,mcp] @ git+https://github.com/jaylfc/taosmd@${{ steps.resolve.outputs.sha }}"
+
+      - name: Run taosmd-related tests
+        run: |
+          uv run --no-sync python -m pytest \
+            tests/test_routes_taosmd.py \
+            tests/test_settings_taosmd_update.py \
+            tests/test_user_memory.py \
+            tests/test_routes_user_memory.py \
+            tests/test_routes_memory_management.py \
+            tests/test_routes_knowledge_graph.py \
+            tests/test_routes_browsing_history.py \
+            tests/test_librarian_api.py \
+            tests/test_memory_model.py \
+            tests/test_memory_mode.py \
+            tests/test_agents_memory_api.py \
+            tests/test_app_startup_migration.py \
+            tests/test_app_agent_registry.py \
+            tests/test_routes_agents.py \
+            tests/test_deployer.py \
+            --tb=short -q
+
   spa-build:
     runs-on: ubuntu-latest
     # Needs write access to manage the rolling 'bundle-latest' release below.
