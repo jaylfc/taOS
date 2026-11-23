@@ -548,6 +548,120 @@ class TestMemoryUrlSettings:
         assert resp.status_code == 422
 
 
+class TestApplyUpdateRollback:
+    """In-app Install update must record a rollback target before mutating the tree."""
+
+    @staticmethod
+    def _git(repo, *args):
+        import subprocess
+
+        return subprocess.check_output(
+            ["git", "-C", str(repo), *args], text=True
+        ).strip()
+
+    @classmethod
+    def _make_repo_with_origin(cls, tmp_path):
+        import subprocess
+
+        origin = tmp_path / "origin.git"
+        subprocess.check_call(
+            ["git", "init", "--bare", "-q", "-b", "main", str(origin)]
+        )
+
+        work = tmp_path / "work"
+        subprocess.check_call(
+            ["git", "init", "-q", "-b", "main", str(work)]
+        )
+        cls._git(work, "config", "user.name", "taos test")
+        cls._git(work, "config", "user.email", "test@example.invalid")
+        (work / "VERSION").write_text("old\n")
+        cls._git(work, "add", "VERSION")
+        cls._git(work, "commit", "-qm", "old version")
+        cls._git(work, "remote", "add", "origin", str(origin))
+        cls._git(work, "push", "-q", "-u", "origin", "main")
+
+        # Advance origin by one commit so apply_update has something to fast-forward.
+        (work / "VERSION").write_text("new\n")
+        cls._git(work, "commit", "-qam", "new version")
+        cls._git(work, "push", "-q", "origin", "main")
+        new_sha = cls._git(work, "rev-parse", "HEAD")
+
+        # Reset local checkout back to the old commit, tracking origin/main.
+        cls._git(work, "reset", "--hard", "HEAD~1")
+        cls._git(work, "branch", "--set-upstream-to=origin/main", "main")
+        old_sha = cls._git(work, "rev-parse", "HEAD")
+        return work, old_sha, new_sha
+
+    @pytest.mark.asyncio
+    async def test_apply_update_records_rollback_target(self, client, tmp_path, monkeypatch):
+        import tinyagentos.routes.settings as settings_mod
+        from tinyagentos.rollback import read_rollback_target
+
+        repo, old_sha, new_sha = self._make_repo_with_origin(tmp_path)
+        fake_settings = repo / "tinyagentos" / "routes" / "settings.py"
+        fake_settings.parent.mkdir(parents=True, exist_ok=True)
+        fake_settings.write_text("# test shim\n")
+        monkeypatch.setattr(settings_mod, "__file__", str(fake_settings))
+
+        async def fake_restart(_app_state):
+            return None
+
+        with (
+            patch("tinyagentos.update_preflight.check_preflight", return_value=[]),
+            patch(
+                "tinyagentos.routes.settings._run_capture",
+                new=AsyncMock(return_value=(0, "ok")),
+            ),
+            patch(
+                "tinyagentos.routes.settings._stash_local_source_changes",
+                new=AsyncMock(return_value=False),
+            ),
+            patch(
+                "tinyagentos.routes.settings._update_local_taosmd",
+                new=AsyncMock(return_value={"skipped": "test"}),
+            ),
+            patch(
+                "tinyagentos.routes.settings._pip_rebuild_restart",
+                new=AsyncMock(return_value=(0, "ok", None)),
+            ),
+            patch("tinyagentos.routes.system._do_restart", new=fake_restart),
+            patch("tinyagentos.routes.settings.write_pending_restart"),
+        ):
+            resp = await client.post("/api/settings/update")
+
+        assert resp.status_code == 200, resp.text
+        record = repo / ".taos-rollback"
+        assert record.exists(), "apply_update must record .taos-rollback before mutating the tree"
+        target = read_rollback_target(repo)
+        assert target is not None
+        assert target["sha"] == old_sha
+        assert target["branch"] == "main"
+
+    @pytest.mark.asyncio
+    async def test_preflight_refused_update_leaves_existing_record(self, client, tmp_path, monkeypatch):
+        import tinyagentos.routes.settings as settings_mod
+        from tinyagentos.rollback import read_rollback_target, record_pre_update
+
+        repo, old_sha, _new_sha = self._make_repo_with_origin(tmp_path)
+        fake_settings = repo / "tinyagentos" / "routes" / "settings.py"
+        fake_settings.parent.mkdir(parents=True, exist_ok=True)
+        fake_settings.write_text("# test shim\n")
+        monkeypatch.setattr(settings_mod, "__file__", str(fake_settings))
+
+        sentinel_sha = "0" * 40
+        record_pre_update(repo, branch="keep-me", sha=sentinel_sha, ts=123)
+
+        with patch(
+            "tinyagentos.update_preflight.check_preflight",
+            return_value=["dirty tree"],
+        ):
+            resp = await client.post("/api/settings/update")
+
+        assert resp.status_code == 409, resp.text
+        target = read_rollback_target(repo)
+        assert target == {"branch": "keep-me", "sha": sentinel_sha, "ts": "123"}
+
+
 class TestLaunchdMigrationWarning:
     """Migration warnings must reach the user exactly once, no substring sniffing."""
 

@@ -1201,6 +1201,35 @@ async def apply_update(request: Request):
             status_code=409,
         )
 
+    # Record the pre-update branch + commit before mutating the working tree so
+    # `taos rollback` can restore both after the most common update path.
+    # Best effort: a failed write must not block the update.
+    try:
+        import time
+
+        from tinyagentos.rollback import record_pre_update
+
+        cur_branch_proc = await asyncio.create_subprocess_exec(
+            "git", "rev-parse", "--abbrev-ref", "HEAD",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+            cwd=str(project_dir),
+        )
+        cur_branch_out, _ = await cur_branch_proc.communicate()
+        cur_sha_proc = await asyncio.create_subprocess_exec(
+            "git", "rev-parse", "HEAD",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+            cwd=str(project_dir),
+        )
+        cur_sha_out, _ = await cur_sha_proc.communicate()
+        cur_branch = cur_branch_out.decode().strip() if cur_branch_out else ""
+        cur_sha = cur_sha_out.decode().strip() if cur_sha_out else ""
+        if cur_branch and cur_sha and cur_branch_proc.returncode == 0 and cur_sha_proc.returncode == 0:
+            record_pre_update(
+                project_dir, branch=cur_branch, sha=cur_sha, ts=int(time.time())
+            )
+    except Exception:  # noqa: BLE001
+        logger.warning("apply_update: failed to record rollback target", exc_info=True)
+
     # The desktop rebuild leaves the tree dirty in three ways, and a dirty
     # tracked file makes the next git pull --ff-only refuse to overwrite the
     # local and the Install Update button 500s:
