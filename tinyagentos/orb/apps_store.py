@@ -29,9 +29,9 @@ _REL_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 # cannot leave an older manifest cached behind a newer recorded serial.
 _fetch_manifest_lock = asyncio.Lock()
 
-# Per-read idle timeout for the download stream.  The total transfer is still
-# capped by *timeout*; this bounds how long a stalled stream can keep the
-# temp file (and the caller) waiting.
+# Per-read idle timeout for the download stream.  Each read operation must
+# return a chunk within this interval; otherwise the download is aborted and
+# the temp file is cleaned up.
 _DOWNLOAD_IDLE_TIMEOUT: float = 30.0
 
 

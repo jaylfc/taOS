@@ -621,3 +621,61 @@ async def test_download_versions_sharing_basename_keep_distinct_files(tmp_path):
     assert result2.read_bytes() == b"v2-content"
     assert result1.name != "app.zip"
     assert result2.name != "app.zip"
+
+
+@pytest.mark.asyncio
+async def test_download_cancelled_mid_stream_cleans_temp_file_and_propagates(tmp_path):
+    """Cancelling the download task mid-stream removes the temp file and propagates CancelledError."""
+    manifest = make_valid_manifest()
+    data = b"hello world"  # 11 bytes, will be sent in chunks
+    h = hashlib.sha256(data).hexdigest()
+    manifest["apps"][0]["versions"][0]["files"]["linux-x64"]["sha256"] = h
+    manifest["apps"][0]["versions"][0]["files"]["linux-x64"]["size"] = len(data)
+
+    dest_dir = tmp_path / "downloads"
+
+    class SlowStream(httpx.AsyncByteStream):
+        def __init__(self, content: bytes, chunk_size: int = 3, delay: float = 0.1):
+            self.content = content
+            self.chunk_size = chunk_size
+            self.delay = delay
+            self.offset = 0
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await asyncio.sleep(self.delay)
+            if self.offset >= len(self.content):
+                raise StopAsyncIteration
+            chunk = self.content[self.offset : self.offset + self.chunk_size]
+            self.offset += len(chunk)
+            return chunk
+
+    class SlowTransport(httpx.AsyncBaseTransport):
+        def __init__(self, stream: httpx.AsyncByteStream):
+            self._stream = stream
+
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, stream=self._stream, request=request)
+
+    stream = SlowStream(data, chunk_size=3, delay=0.05)
+    transport = SlowTransport(stream)
+
+    async def download_task():
+        return await apps_store.download_app(
+            manifest, "openharness-taos", "https://example.com/", dest_dir,
+            transport=transport,
+        )
+
+    task = asyncio.create_task(download_task())
+    # Let it start downloading and write a couple of chunks
+    await asyncio.sleep(0.15)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # Temp file should be cleaned up
+    assert list(dest_dir.glob(".dl-*")) == []
+    # Final file should not exist
+    assert list(dest_dir.glob(f"{h[:16]}-oh-linux-x64.zip")) == []
