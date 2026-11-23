@@ -352,3 +352,68 @@ class TestBoundedConcurrency:
 
         assert all(r is True for r in results), results
         assert peak["n"] <= 4, f"peak concurrent calls {peak['n']} > 4"
+
+
+# -- SSE Last-Event-ID on reconnect -------------------------------------------
+
+class TestLastEventID:
+    """The bridge records the last id: line seen on the SSE stream and
+    sends it as the Last-Event-ID header when it reconnects, so a stream
+    that drops mid-message can resume without losing the event position."""
+
+    def _make_channel(self):
+        return {
+            "events_url": "http://test/events",
+            "reply_url": "http://test/reply",
+            "auth_bearer": "test-token",
+        }
+
+    def test_reconnect_sends_last_event_id(self, bridge_ns):
+        sse_loop = bridge_ns["sse_loop"]
+        channel = self._make_channel()
+        streamed_headers = []
+        stop = asyncio.Event()
+        calls = {"n": 0}
+
+        class _FakeResp:
+            status_code = 200
+
+            async def aiter_lines(self):
+                if calls["n"] == 1:
+                    # First connection: an id: 7 frame, then the link drops.
+                    yield "id: 7"
+                    yield "event: user_message"
+                    yield 'data: {"id": "m-1", "text": "hello"}'
+                    yield ""
+                    return
+                # Later connections carry no frames; the loop stops itself.
+                return
+
+        class _FakeStream:
+            def __init__(self, headers=None):
+                self._headers = dict(headers or {})
+
+            async def __aenter__(self):
+                calls["n"] += 1
+                streamed_headers.append(self._headers)
+                if calls["n"] == 2:
+                    stop.set()
+                return _FakeResp()
+
+            async def __aexit__(self, *args):
+                return False
+
+        class _FakeClient:
+            def stream(self, method, url, headers=None, timeout=None):
+                return _FakeStream(headers)
+
+        async def fake_limited(*args, **kwargs):
+            return True
+
+        with patch.dict(bridge_ns, {"_run_handle_user_message_limited": fake_limited}):
+            with patch("asyncio.sleep", new_callable=AsyncMock):
+                asyncio.run(sse_loop(_FakeClient(), channel, stop))
+
+        assert len(streamed_headers) == 2, streamed_headers
+        assert "Last-Event-ID" not in streamed_headers[0], streamed_headers[0]
+        assert streamed_headers[1].get("Last-Event-ID") == "7", streamed_headers[1]
