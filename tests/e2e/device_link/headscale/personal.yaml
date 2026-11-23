@@ -1,0 +1,43 @@
+# A second Headscale standing in for a person's PERSONAL tailnet (MT11). Same
+# pinned image, no repo policy (allow-all, like a hobby tailnet), and the same
+# address range as the taOS Headscale on purpose: the overlap is the real-world
+# case the two-tailscaled test measured.
+server_url: http://headscale-personal:8080
+listen_addr: 0.0.0.0:8080
+metrics_listen_addr: 127.0.0.1:9090
+grpc_listen_addr: 127.0.0.1:50443
+grpc_allow_insecure: true
+noise:
+  private_key_path: /var/lib/headscale/noise_private.key
+# prefixes: appended by bed.sh up at run time; the same range as the taOS Headscale on
+# purpose (see the note above).
+derp:
+  server:
+    enabled: true
+    region_id: 998
+    region_code: personal
+    region_name: personal-embedded
+    stun_listen_addr: 0.0.0.0:3479
+    private_key_path: /var/lib/headscale/derp_server_private.key
+    automatically_add_embedded_derp_region: true
+    verify_clients: false
+  urls: []
+  paths: []
+  auto_update_enabled: false
+disable_check_updates: true
+node:
+  expiry: 0
+database:
+  type: sqlite
+  sqlite:
+    path: /var/lib/headscale/db.sqlite
+log:
+  level: info
+dns:
+  magic_dns: false
+  base_domain: personal.internal
+  override_local_dns: false
+  nameservers:
+    global: []
+unix_socket: /var/run/headscale/headscale.sock
+unix_socket_permission: "0770"
