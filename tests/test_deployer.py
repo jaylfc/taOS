@@ -25,16 +25,6 @@ def _req(**overrides) -> DeployRequest:
     return DeployRequest(**defaults)
 
 
-@pytest.fixture(autouse=True)
-def _idmap_preflight_ok(monkeypatch):
-    # deploy_agent's idmap preflight reads /etc/subuid + /etc/subgid, which the
-    # test host does not provision for the test user. Stub it to allowed so
-    # deploy tests exercise the deploy path (install-time subid provisioning is
-    # covered by tests/test_install_server_subid.py; the preflight itself is
-    # unit-tested directly below).
-    monkeypatch.setattr("tinyagentos.deployer._idmap_subid_range_ok", lambda *a, **k: True)
-
-
 class TestDeployAgent:
     @pytest.mark.asyncio
     async def test_full_deployment_flow(self, tmp_path):
@@ -1770,26 +1760,22 @@ class TestIdmapSubidPreflight:
         assert _idmap_subid_range_ok(999, subuid_path=str(subuid), subgid_path=str(tmp_path / "nope")) is False
 
     @pytest.mark.asyncio
+    @pytest.mark.no_idmap_preflight_stub
     async def test_deploy_agent_fails_fast_when_idmap_range_missing(self, tmp_path, monkeypatch):
         """Without the autouse stub: real preflight rejects missing range,
         deploy returns the clear one-line root fix, fast, and creates no
-        container."""
-        from tinyagentos.deployer import _subid_file_covers
+        container. Uses the real _idmap_subid_range_ok with injected file paths."""
+        import functools
 
         subuid = tmp_path / "subuid"
         subuid.write_text("jay:100000:65536\n")
         subgid = tmp_path / "subgid"
         subgid.write_text("jay:100000:65536\n")
 
-        def real_check(uid, **_kw):
-            for path in (str(subuid), str(subgid)):
-                try:
-                    with open(path, encoding="ascii") as fh:
-                        if not _subid_file_covers(fh, uid):
-                            return False
-                except FileNotFoundError:
-                    return False
-            return True
+        # Use the real function with injected file paths instead of a re-implementation
+        real_check = functools.partial(
+            _idmap_subid_range_ok, subuid_path=str(subuid), subgid_path=str(subgid)
+        )
 
         monkeypatch.setattr("tinyagentos.deployer.os.getuid", lambda: 999)
         monkeypatch.setattr("tinyagentos.deployer._idmap_subid_range_ok", real_check)
@@ -1803,6 +1789,44 @@ class TestIdmapSubidPreflight:
         assert "/etc/subuid" in result["error"]
         assert "/etc/subgid" in result["error"]
         mock_create.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.no_idmap_preflight_stub
+    async def test_deploy_agent_proceeds_when_idmap_range_covers(self, tmp_path, monkeypatch):
+        """Without the autouse stub: real preflight allows covering range,
+        deploy proceeds to container creation. Uses the real _idmap_subid_range_ok
+        with injected file paths."""
+        import functools
+
+        subuid = tmp_path / "subuid"
+        subuid.write_text("root:1:65536\n")
+        subgid = tmp_path / "subgid"
+        subgid.write_text("root:1:65536\n")
+
+        # Use the real function with injected file paths
+        real_check = functools.partial(
+            _idmap_subid_range_ok, subuid_path=str(subuid), subgid_path=str(subgid)
+        )
+
+        monkeypatch.setattr("tinyagentos.deployer.os.getuid", lambda: 999)
+        monkeypatch.setattr("tinyagentos.deployer._idmap_subid_range_ok", real_check)
+        req = _req(data_dir=tmp_path)
+
+        async def mock_exec(name, cmd, **kwargs):
+            if "hostname -I" in " ".join(cmd):
+                return (0, "10.0.0.5")
+            return (0, "ok")
+
+        with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
+             patch("tinyagentos.deployer.exec_in_container", side_effect=mock_exec), \
+             patch("tinyagentos.deployer.push_file", new_callable=AsyncMock, return_value=(0, "")), \
+             patch("tinyagentos.deployer.add_proxy_device", new_callable=AsyncMock, return_value={"success": True, "output": ""}):
+            mock_create.return_value = {"success": True, "name": "taos-agent-test"}
+            result = await deploy_agent(req)
+
+        assert result["success"] is True
+        assert result["name"] == "test"
+        mock_create.assert_awaited_once()
 
 
 class TestDeployHermesVersionPassthrough:

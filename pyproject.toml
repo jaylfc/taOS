@@ -172,6 +172,7 @@ markers = [
     "guards(target, replace=None, must_kill=None): guard test's protected function; see scripts/check_non_discriminating.py",
     "skip_if_no_embed_backend: skip when no embed backend can serve the test (qmd unreachable and onnxruntime absent)",
     "no_opencode_spawn_guard: opt out of the autouse fixture that blocks real opencode spawns (for tests that test resolve_opencode_binary directly)",
+    "no_idmap_preflight_stub: opt out of the autouse fixture that stubs the idmap subid preflight (for tests that exercise the real preflight)",
 ]
 filterwarnings = [
     # Asyncio teardown emits unraisable RuntimeError("Event loop is closed")

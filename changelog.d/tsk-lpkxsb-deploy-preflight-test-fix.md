@@ -1,0 +1,3 @@
+### Fixed
+- Deploy preflight autouse stub now applies to all test suites via tests/conftest.py with opt-out marker, fixing CI failures in deploy-related test suites (test_deploy_ssh_keys, test_deploy_secrets, test_deploy_agent_registry_jwt, test_litellm_master_key_callers, test_llm_gateway_cutover, test_agent_controller_listener, test_litellm_process_removed, test_memory_mode)
+- Test `test_deploy_agent_fails_fast_when_idmap_range_missing` now exercises the real `_idmap_subid_range_ok` function with injected file paths instead of a re-implementation; added `test_deploy_agent_proceeds_when_idmap_range_covers` for the covering-range success case
