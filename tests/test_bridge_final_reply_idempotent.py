@@ -643,3 +643,77 @@ async def test_empty_final_content_does_not_overwrite_committed_on_retry():
     stored = msg_store.messages["seed-1"]
     assert stored["content"] == "committed text", f"Content was overwritten on retry: {stored['content']!r}"
     assert stored.get("state") == "complete"
+
+class _ClientMessageView:
+    """Client-side fake applying events like desktop/src/apps/MessagesApp/index.tsx.
+
+    content is only overwritten when the field is present (!== undefined).
+    A full `message` event for an already-known id is ignored (no overwrite).
+    """
+
+    def __init__(self, initial):
+        self.messages = {m["id"]: dict(m) for m in initial}
+
+    def apply(self, event):
+        t = event.get("type")
+        if t == "message":
+            mid = event.get("id")
+            if mid is not None and mid not in self.messages:
+                self.messages[mid] = dict(event)
+        elif t == "message_edit":
+            mid = event.get("message_id")
+            m = self.messages.get(mid) if mid is not None else None
+            if m is not None:
+                if "content" in event:
+                    m["content"] = event["content"]
+                if "edited_at" in event:
+                    m["edited_at"] = event["edited_at"]
+                if "metadata" in event:
+                    m["metadata"] = event["metadata"]
+                if "content_blocks" in event:
+                    m["content_blocks"] = event["content_blocks"]
+        elif t == "message_state":
+            mid = event.get("message_id")
+            m = self.messages.get(mid) if mid is not None else None
+            if m is not None:
+                m["state"] = event.get("state", m.get("state"))
+
+
+@pytest.mark.asyncio
+async def test_empty_content_retry_client_visible_text_unchanged():
+    """Client applying bridge events must keep committed text visible when an
+    empty-content retry omits the content field (mirrors MessagesApp)."""
+    ch_store = _FakeChannelStore(fail_update_after=0)
+    reg, msg_store, ch_store, hub, tr = _make_registry(ch_store=ch_store)
+
+    msg_store.messages["seed-1"] = {
+        "id": "seed-1",
+        "channel_id": "ch1",
+        "author_id": "bot1",
+        "author_type": "agent",
+        "content": "committed text",
+        "state": "complete",
+        "content_blocks": [],
+        "metadata": {"openclaw_msg_id": "reply-1", "trace_id": "t1"},
+    }
+
+    client = _ClientMessageView([msg_store.messages["seed-1"]])
+
+    body = {
+        "kind": "final",
+        "id": "reply-1",
+        "trace_id": "t1",
+        "content": "",
+        "channel_id": "ch1",
+    }
+
+    await reg.record_reply("bot1", body)
+    ch_store._fail_update_after = 999
+    await reg.record_reply("bot1", body)
+
+    for _ch, payload in hub.broadcasts:
+        client.apply(payload)
+
+    assert client.messages["seed-1"]["content"] == "committed text", (
+        f"visible text changed: {client.messages['seed-1']['content']!r}"
+    )
