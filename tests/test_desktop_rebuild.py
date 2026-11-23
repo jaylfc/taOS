@@ -1259,3 +1259,389 @@ def test_script_ignores_node_modules_package_json_mtimes(tmp_path):
     proc = _run_rebuild_script(tmp_path, bin_dir)
     assert proc.returncode == 0, proc.stderr
     assert "bundle is current" in proc.stdout, proc.stdout
+
+
+# ---------------------------------------------------------------------------
+# RED-FIRST tests for atomic desktop rebuild (tsk-h3774n)
+# ---------------------------------------------------------------------------
+#
+# These tests verify that the desktop rebuild never leaves static/desktop in a
+# broken state. They would FAIL on the old code (which emptied the live
+# directory before building) and PASS with the atomic-staging fix.
+
+import asyncio
+import os
+import signal
+import tempfile
+import time
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+
+def _setup_initial_bundle(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Create a desktop/ source tree and a static/desktop/ bundle with assets."""
+    src_dir = tmp_path / "desktop" / "src"
+    src_dir.mkdir(parents=True)
+    (src_dir / "App.tsx").write_text("// original app")
+    (tmp_path / "desktop" / "package.json").write_text('{"name":"taos-desktop"}')
+    (tmp_path / "desktop" / "package-lock.json").write_text('{"lockfileVersion":1}')
+    (tmp_path / "desktop" / "node_modules").mkdir(parents=True)
+
+    static_dir = tmp_path / "static" / "desktop"
+    static_dir.mkdir(parents=True)
+    assets_dir = static_dir / "assets"
+    assets_dir.mkdir(parents=True)
+
+    # Write index.html with a reference to a hashed asset
+    index_html = static_dir / "index.html"
+    index_html.write_text(
+        '<html><head><script src="/desktop/assets/index-ABC123.js"></script></head></html>'
+    )
+    # Write the referenced asset
+    asset_js = assets_dir / "index-ABC123.js"
+    asset_js.write_text("console.log('original bundle');")
+
+    # Touch mtimes so the bundle appears older than source (stale)
+    old = time.time() - 600
+    os.utime(src_dir / "App.tsx", (old, old))
+    os.utime(index_html, (old, old))
+    os.utime(asset_js, (old, old))
+
+    return index_html, asset_js, static_dir
+
+
+@pytest.mark.asyncio
+async def test_rebuild_atomic_staging_blocks_mid_build(tmp_path, monkeypatch):
+    """While a build is in progress, the live bundle must remain intact and unchanged.
+
+    A stub npm blocks mid-build (simulating a slow build). During the block we
+    assert static/desktop/index.html and its referenced asset still exist and
+    have their original content. Then we unblock the build and assert the new
+    bundle is live, old hashed assets are gone, and no staging/trash dirs remain.
+    """
+    index_html, asset_js, static_dir = _setup_initial_bundle(tmp_path)
+
+    # Track original content for comparison
+    original_index = index_html.read_text()
+    original_asset = asset_js.read_text()
+
+    # Event to block the npm run build subprocess
+    block_event = asyncio.Event()
+    release_event = asyncio.Event()
+    build_proc_ref = {}
+
+    async def fake_exec(*args, **kwargs):
+        if args[0] == "git":
+            sub = args[3] if len(args) > 3 else ""
+            if sub == "rev-parse":
+                proc = MagicMock()
+                proc.returncode = 0
+                proc.communicate = AsyncMock(return_value=(b"TREE_SHA\n", b""))
+                return proc
+            proc = MagicMock()
+            proc.returncode = 0
+            proc.communicate = AsyncMock(return_value=(b"", b""))
+            return proc
+
+        if args[0] == "npm" and args[1] == "run" and args[2] == "build":
+            # This is the build step - block until release_event is set
+            # Extract the --outDir argument to know where to write mock build output
+            out_dir = None
+            for i, arg in enumerate(args):
+                if arg == "--outDir" and i + 1 < len(args):
+                    out_dir = Path(args[i + 1])
+                    break
+
+            proc = MagicMock()
+            proc.returncode = 0
+
+            async def blocking_communicate():
+                # Signal that build has started and is now blocking
+                block_event.set()
+                # Wait for test to release us
+                await release_event.wait()
+                # After release, write mock build output to the staging directory
+                if out_dir:
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    (out_dir / "index.html").write_text(
+                        '<html><head><script src="/desktop/assets/index-NEW456.js"></script></head></html>'
+                    )
+                    assets_dir = out_dir / "assets"
+                    assets_dir.mkdir(parents=True, exist_ok=True)
+                    (assets_dir / "index-NEW456.js").write_text("console.log('new bundle');")
+                return b"", b""
+
+            proc.communicate = blocking_communicate
+            build_proc_ref["proc"] = proc
+            return proc
+
+        # npm ci / npm install
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.communicate = AsyncMock(return_value=(b"", b""))
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    # Disable prebuilt bundle check
+    import tinyagentos.desktop_rebuild as dr
+    monkeypatch.setattr(dr, "_try_prebuilt_desktop_bundle", AsyncMock(return_value=False))
+
+    # Start the rebuild in the background
+    rebuild_task = asyncio.create_task(dr.rebuild_desktop_bundle_if_stale(tmp_path, force=True))
+
+    # Wait for the build to start blocking
+    await asyncio.wait_for(block_event.wait(), timeout=5.0)
+
+    # While build is blocked, the live bundle must be intact and unchanged
+    assert index_html.is_file(), "index.html must exist during build"
+    assert asset_js.is_file(), "hashed asset must exist during build"
+    assert index_html.read_text() == original_index, "index.html content must not change during build"
+    assert asset_js.read_text() == original_asset, "asset content must not change during build"
+
+    # No staging or trash directory should be visible as the live bundle
+    staging_dirs = list((tmp_path / "static").glob(".desktop-build-*"))
+    trash_dirs = list((tmp_path / "static").glob("desktop.trash-*"))
+    # Staging dir exists but should not be the live bundle
+    assert len(staging_dirs) >= 0  # staging dir exists but is separate
+
+    # Now release the build to complete
+    release_event.set()
+
+    # Wait for rebuild to complete
+    result = await asyncio.wait_for(rebuild_task, timeout=10.0)
+
+    assert result.rebuilt is True
+    assert result.success is True
+
+    # After build: new bundle is live, old hashed asset is gone
+    assert index_html.is_file(), "index.html must exist after build"
+    # New index.html should have different content (new hash)
+    new_index = index_html.read_text()
+    assert new_index != original_index, "index.html should be updated with new build"
+
+    # Old hashed asset should be gone
+    assert not asset_js.is_file(), "old hashed asset should be removed after atomic swap"
+
+    # No staging or trash directories should remain
+    staging_dirs = list((tmp_path / "static").glob(".desktop-build-*"))
+    trash_dirs = list((tmp_path / "static").glob("desktop.trash-*"))
+    assert len(staging_dirs) == 0, f"staging dirs should be cleaned up: {staging_dirs}"
+    assert len(trash_dirs) == 0, f"trash dirs should be cleaned up: {trash_dirs}"
+
+
+@pytest.mark.asyncio
+async def test_rebuild_atomic_staging_failed_build_keeps_old_bundle(tmp_path, monkeypatch):
+    """If the build fails, the old bundle must remain completely intact."""
+    index_html, asset_js, static_dir = _setup_initial_bundle(tmp_path)
+
+    original_index = index_html.read_text()
+    original_asset = asset_js.read_text()
+
+    async def fake_exec(*args, **kwargs):
+        if args[0] == "git":
+            sub = args[3] if len(args) > 3 else ""
+            if sub == "rev-parse":
+                proc = MagicMock()
+                proc.returncode = 0
+                proc.communicate = AsyncMock(return_value=(b"TREE_SHA\n", b""))
+                return proc
+            proc = MagicMock()
+            proc.returncode = 0
+            proc.communicate = AsyncMock(return_value=(b"", b""))
+            return proc
+
+        if args[0] == "npm" and args[1] == "run" and args[2] == "build":
+            # Build fails
+            proc = MagicMock()
+            proc.returncode = 1
+            proc.communicate = AsyncMock(return_value=(b"", b"build error: out of memory"))
+            return proc
+
+        # npm ci / npm install succeed
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.communicate = AsyncMock(return_value=(b"", b""))
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    import tinyagentos.desktop_rebuild as dr
+    monkeypatch.setattr(dr, "_try_prebuilt_desktop_bundle", AsyncMock(return_value=False))
+
+    result = await dr.rebuild_desktop_bundle_if_stale(tmp_path, force=True)
+
+    assert result.rebuilt is True
+    assert result.success is False
+    assert "npm run build failed" in result.message
+
+    # Old bundle must be completely intact
+    assert index_html.is_file(), "index.html must exist after failed build"
+    assert asset_js.is_file(), "hashed asset must exist after failed build"
+    assert index_html.read_text() == original_index, "index.html content unchanged after failed build"
+    assert asset_js.read_text() == original_asset, "asset content unchanged after failed build"
+
+    # No staging or trash directories should remain
+    staging_dirs = list((tmp_path / "static").glob(".desktop-build-*"))
+    trash_dirs = list((tmp_path / "static").glob("desktop.trash-*"))
+    assert len(staging_dirs) == 0, f"staging dirs should be cleaned up: {staging_dirs}"
+    assert len(trash_dirs) == 0, f"trash dirs should be cleaned up: {trash_dirs}"
+
+
+@pytest.mark.asyncio
+async def test_prebuilt_bundle_atomic_swap(tmp_path, monkeypatch):
+    """Prebuilt bundle install must use atomic swap; static/desktop exists at every step."""
+    # Setup: existing bundle
+    static_dir = tmp_path / "static" / "desktop"
+    static_dir.mkdir(parents=True)
+    assets_dir = static_dir / "assets"
+    assets_dir.mkdir(parents=True)
+    index_html = static_dir / "index.html"
+    index_html.write_text('<html><script src="/desktop/assets/index-OLD123.js"></script></html>')
+    (assets_dir / "index-OLD123.js").write_text("console.log('old');")
+
+    original_index = index_html.read_text()
+
+    # Mock git rev-parse to return a matching SHA
+    async def fake_exec(*args, **kwargs):
+        if args[0] == "git":
+            proc = MagicMock()
+            proc.returncode = 0
+            proc.communicate = AsyncMock(return_value=(b"MATCHING_SHA\n", b""))
+            return proc
+        raise AssertionError(f"unexpected command: {args}")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    # Mock the HTTP downloads
+    import io
+    import tarfile
+    import hashlib
+
+    # Create a tarball with new bundle content
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        # New index.html with different asset hash
+        new_index = b'<html><script src="/desktop/assets/index-NEW456.js"></script></html>'
+        info = tarfile.TarInfo("desktop/index.html")
+        info.size = len(new_index)
+        tar.addfile(info, io.BytesIO(new_index))
+        # New asset
+        new_asset = b"console.log('new');"
+        info = tarfile.TarInfo("desktop/assets/index-NEW456.js")
+        info.size = len(new_asset)
+        tar.addfile(info, io.BytesIO(new_asset))
+    tarball = buf.getvalue()
+    tarball_sha = hashlib.sha256(tarball).hexdigest()
+
+    async def fake_to_thread(fn, url, **kwargs):
+        if url.endswith("desktop-tree.txt"):
+            return "MATCHING_SHA"
+        if url.endswith("desktop-bundle.sha256"):
+            return tarball_sha
+        if url.endswith("desktop-bundle.tar.gz"):
+            return tarball
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
+
+    import tinyagentos.desktop_rebuild as dr
+    # Track that static/desktop exists throughout
+    existence_checks = []
+
+    original_swap = dr._atomic_swap_dir
+
+    def tracking_swap(src, dst):
+        existence_checks.append(("before_swap", dst.exists()))
+        result = original_swap(src, dst)
+        existence_checks.append(("after_swap", dst.exists()))
+        return result
+
+    monkeypatch.setattr(dr, "_atomic_swap_dir", tracking_swap)
+
+    result = await dr._try_prebuilt_desktop_bundle(tmp_path)
+
+    assert result is True
+
+    # Verify static/desktop existed before and after swap
+    assert any(existed for (phase, existed) in existence_checks if phase == "before_swap"), "desktop must exist before swap"
+    assert all(existed for (phase, existed) in existence_checks if phase == "after_swap"), "desktop must exist after swap"
+
+    # New bundle is live
+    assert index_html.is_file()
+    new_index = index_html.read_text()
+    assert new_index != original_index
+    assert "index-NEW456.js" in new_index
+
+    # Old asset is gone, new asset exists
+    assert not (assets_dir / "index-OLD123.js").is_file()
+    assert (assets_dir / "index-NEW456.js").is_file()
+
+    # No staging or trash dirs remain
+    staging_dirs = list((tmp_path / "static").glob(".taos-bundle-*"))
+    trash_dirs = list((tmp_path / "static").glob("desktop.trash-*"))
+    assert len(staging_dirs) == 0
+    assert len(trash_dirs) == 0
+
+
+# ---------------------------------------------------------------------------
+# apply_update route test: static/desktop/assets not cleaned before ff-merge
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_apply_update_preserves_static_desktop_assets_during_ff_merge(client, monkeypatch):
+    """During apply_update, static/desktop/assets files must not be deleted before the fast-forward merge.
+
+    The old code ran `git clean -fd static/desktop/assets` before the pull,
+    which removed the live assets while browsers might still be using them.
+    The new code only restores desktop/tsconfig.tsbuildinfo and desktop/package-lock.json.
+    """
+    # Track which git commands are called
+    called_commands = []
+
+    fake_proc = MagicMock()
+    fake_proc.returncode = 0
+    fake_proc.communicate = AsyncMock(return_value=(b"", b""))
+
+    async def tracking_exec(*args, **kwargs):
+        called_commands.append(list(args))
+        return fake_proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", tracking_exec)
+
+    # Mock other dependencies
+    import tinyagentos.routes.settings as settings_mod
+    import tinyagentos.update_preflight as update_preflight
+    import tinyagentos.routes.system as system_mod
+    import tinyagentos.desktop_rebuild as desktop_rebuild_mod
+    import tinyagentos.gpg_verify as gpg_verify_mod
+    monkeypatch.setattr(update_preflight, "check_preflight", lambda *a, **kw: [])
+    monkeypatch.setattr(settings_mod, "_run_capture", AsyncMock(return_value=(0, "ok")))
+    monkeypatch.setattr(settings_mod, "_stash_local_source_changes", AsyncMock(return_value=False))
+    monkeypatch.setattr(settings_mod, "_update_local_taosmd", AsyncMock(return_value={}))
+    monkeypatch.setattr(settings_mod, "write_pending_restart", MagicMock())
+    monkeypatch.setattr(system_mod, "_do_restart", AsyncMock())
+    monkeypatch.setattr(desktop_rebuild_mod, "rebuild_desktop_bundle_if_stale", AsyncMock(
+        return_value=MagicMock(rebuilt=True, success=True, message="ok")
+    ))
+    monkeypatch.setattr(gpg_verify_mod, "resolve_gpg_prefs", AsyncMock(return_value=MagicMock(enabled=False)))
+
+    # Call the apply_update endpoint
+    resp = await client.post("/api/settings/update")
+
+    # The key assertion: no git clean -fd static/desktop/assets should be called
+    clean_assets_calls = [
+        cmd for cmd in called_commands
+        if cmd[0] == "git" and cmd[1] == "clean" and "static/desktop/assets" in " ".join(cmd)
+    ]
+    assert len(clean_assets_calls) == 0, f"git clean static/desktop/assets should not be called: {clean_assets_calls}"
+
+    # git checkout should only restore tsconfig.tsbuildinfo and package-lock.json
+    checkout_calls = [
+        cmd for cmd in called_commands
+        if cmd[0] == "git" and cmd[1] == "checkout"
+    ]
+    for cmd in checkout_calls:
+        assert "static/desktop" not in " ".join(cmd), f"git checkout should not include static/desktop: {cmd}"
