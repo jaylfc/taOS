@@ -30,6 +30,113 @@ PRE_PR_COMMIT = "88fe9372f7667b4ba97a295784fc1bfd998d6313"
 # NodeSource key fingerprint the script expects
 NODESOURCE_FP = "6F71F525282841EEDAF851B42F59B5F99B1BE0B4"
 
+# Pre-PR ensure_node22 function from commit 88fe9372f (exec/tsk-cqdg43 base).
+# Embedded as a fixture so the test does not depend on git history (shallow CI
+# checkouts lack the object).
+PRE_PR_ENSURE_NODE22 = r"""
+ensure_node22() {
+    local node_major=0
+    if command -v node >/dev/null 2>&1; then
+        node_major="$(node --version 2>/dev/null | sed 's/v//' | cut -d. -f1)"
+    fi
+
+    if [[ "$node_major" -ge 22 ]]; then
+        log "node $(node --version) — ok (>=22 required)"
+        return 0
+    fi
+
+    log "node ${node_major:-not found} is too old (need >=22) — upgrading to Node 22 LTS via NodeSource"
+
+    if command -v apt-get >/dev/null 2>&1; then
+        # Install Node 22 via NodeSource's GPG-signed apt repository.
+        # This mirrors how Zabbly/Caddy keys are handled in this file: download
+        # the key, verify its fingerprint against a known-good value, import to a
+        # named keyring, then add the signed-by sources entry.
+        #
+        # NodeSource repo GPG key fingerprint — verified 2026-06-08 against
+        # https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key
+        # and confirmed against NodeSource's official documentation at
+        # https://github.com/nodesource/distributions
+        # Update if NodeSource rotates their signing key.
+        local _ns_expected_fp="6F71F525282841EEDAF851B42F59B5F99B1BE0B4"
+        local _ns_key_tmp
+        _ns_key_tmp="$(mktemp /tmp/nodesource-key.XXXXXX)"
+        mv -- "$_ns_key_tmp" "${_ns_key_tmp}.asc"
+        _ns_key_tmp="${_ns_key_tmp}.asc"
+        # shellcheck disable=SC2064
+        trap "rm -f '$_ns_key_tmp'" RETURN
+        curl -fsSL "${CURL_RETRY[@]}" https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+            -o "$_ns_key_tmp" \
+            || die "failed to download NodeSource repo GPG key after retries -- check the network connection and re-run; re-running this installer is safe"
+        local _ns_actual_fp
+        _ns_actual_fp="$(gpg --with-colons --import-options show-only \
+            --import "$_ns_key_tmp" 2>/dev/null \
+            | awk -F: '/^fpr:/{print $10}' | head -1)"
+        _ns_actual_fp="${_ns_actual_fp//[[:space:]]/}"
+        if [[ "$_ns_actual_fp" != "$_ns_expected_fp" ]]; then
+            die "NodeSource repo key fingerprint mismatch: expected $_ns_expected_fp, got '$_ns_actual_fp' — refusing to import"
+        fi
+        log "NodeSource key fingerprint ok (${_ns_actual_fp:0:16}…)"
+        sudo mkdir -p /usr/share/keyrings
+        sudo gpg --dearmor -o /usr/share/keyrings/nodesource.gpg < "$_ns_key_tmp" \
+            || die "gpg --dearmor for NodeSource key failed"
+        sudo chmod 644 /usr/share/keyrings/nodesource.gpg
+        printf 'Types: deb\nURIs: https://deb.nodesource.com/node_22.x\nSuites: nodistro\nComponents: main\nSigned-By: /usr/share/keyrings/nodesource.gpg\n' \
+            | sudo tee /etc/apt/sources.list.d/nodesource.sources > /dev/null
+        sudo DEBIAN_FRONTEND=noninteractive apt-get "${APT_RETRY[@]}" update -qq \
+            || die "apt-get update after NodeSource repo add failed"
+        sudo DEBIAN_FRONTEND=noninteractive apt-get "${APT_RETRY[@]}" install -y nodejs \
+            || die "apt-get install nodejs (22) failed"
+    elif command -v dnf >/dev/null 2>&1; then
+        # Install Node 22 via NodeSource's GPG-signed dnf repository.
+        # Key fingerprint verified 2026-06-08 against
+        # https://rpm.nodesource.com/gpgkey/ns-operations-public.key
+        # Update if NodeSource rotates their RPM signing key.
+        local _ns_rpm_expected_fp="242B813831AF09562B6C46F76B88DA4E3AF28A14"
+        local _ns_rpm_key_tmp
+        _ns_rpm_key_tmp="$(mktemp /tmp/nodesource-rpm-key.XXXXXX)"
+        mv -- "$_ns_rpm_key_tmp" "${_ns_rpm_key_tmp}.asc"
+        _ns_rpm_key_tmp="${_ns_rpm_key_tmp}.asc"
+        # shellcheck disable=SC2064
+        trap "rm -f '$_ns_rpm_key_tmp'" RETURN
+        curl -fsSL "${CURL_RETRY[@]}" https://rpm.nodesource.com/gpgkey/ns-operations-public.key \
+            -o "_ns_rpm_key_tmp" \
+            || die "failed to download NodeSource RPM repo GPG key after retries -- check the network connection and re-run; re-running this installer is safe"
+        local _ns_rpm_actual_fp
+        _ns_rpm_actual_fp="$(gpg --with-colons --import-options show-only \
+            --import "$_ns_rpm_key_tmp" 2>/dev/null \
+            | awk -F: '/^fpr:/{print $10}' | head -1)"
+        _ns_rpm_actual_fp="${_ns_rpm_actual_fp//[[:space:]]/}"
+        if [[ "$_ns_rpm_actual_fp" != "$_ns_rpm_expected_fp" ]]; then
+            die "NodeSource RPM key fingerprint mismatch: expected $_ns_rpm_expected_fp, got '$_ns_rpm_actual_fp' — refusing to import"
+        fi
+        log "NodeSource RPM key fingerprint ok (${_ns_rpm_actual_fp:0:16}…)"
+        local _ns_rpm_arch
+        _ns_rpm_arch="$(uname -m)"
+        sudo rpm --import "$_ns_rpm_key_tmp" \
+            || die "rpm --import for NodeSource key failed"
+        printf '[nodesource-nodejs]\nname=Node.js Packages for Linux RPM based distros - %s\nbaseurl=https://rpm.nodesource.com/pub_22.x/nodistro/nodejs/%s\npriority=9\nenabled=1\ngpgcheck=1\ngpgkey=https://rpm.nodesource.com/gpgkey/ns-operations-public.key\nmodule_hotfixes=1\n' \
+            "$_ns_rpm_arch" "$_ns_rpm_arch" \
+            | sudo tee /etc/yum.repos.d/nodesource-nodejs.repo > /dev/null
+        sudo dnf install -y nodejs \
+            || die "dnf install nodejs (22) failed"
+    elif command -v pacman >/dev/null 2>&1; then
+        # Arch ships a current node in extra — just upgrade whatever is installed
+        sudo pacman -Sy --noconfirm nodejs npm \
+            || warn "pacman upgrade of nodejs failed — qmd install may fail on old Node"
+    else
+        warn "cannot auto-upgrade Node $node_major — unsupported package manager"
+        warn "  install Node 22 manually then re-run this script"
+        warn "  see: https://nodejs.org/en/download"
+    fi
+
+    # Re-check after upgrade
+    if command -v node >/dev/null 2>&1; then
+        log "node now at $(node --version)"
+    fi
+}
+"""
+
 
 def _extract_func(text: str, name: str) -> str:
     """Return the shell source text for a single function from script source text."""
@@ -52,13 +159,7 @@ def _extract_func(text: str, name: str) -> str:
 def _install_script_source(use_pre_pr: bool) -> str:
     """Source of install-server.sh: current working tree, or the pre-PR base."""
     if use_pre_pr:
-        proc = subprocess.run(
-            ["git", "show", f"{PRE_PR_COMMIT}:scripts/install-server.sh"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        return proc.stdout
+        return PRE_PR_ENSURE_NODE22
     return INSTALL_SCRIPT.read_text()
 
 
