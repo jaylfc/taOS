@@ -75,6 +75,41 @@ def _forbid_real_opencode_spawn(request):
 
 
 # ---------------------------------------------------------------------------
+# idmap subid preflight — ALLOWED by default, opted OUT explicitly.
+#
+# The deployer's idmap preflight reads /etc/subuid and /etc/subgid to verify
+# that the host UID has a granted range (required for raw.idmap). CI runs as
+# non-root with no matching subuid/subgid line, so the real check would block
+# every deploy_agent call. This autouse fixture stubs the check to allowed so
+# deploy tests exercise the deploy path. Install-time subid provisioning is
+# covered by tests/test_install_server_subid.py; the preflight itself is
+# unit-tested directly in tests/test_deployer.py::TestIdmapSubidPreflight.
+#
+# Tests that exercise the REAL preflight (missing range -> clear error, no
+# container created; covering range -> deploy proceeds) opt out with the
+# `no_idmap_preflight_stub` marker.
+# ---------------------------------------------------------------------------
+
+IDMAP_PREF_STUB_MARKER = "no_idmap_preflight_stub"
+
+
+@pytest.fixture(autouse=True)
+def _idmap_preflight_ok(request, monkeypatch):
+    """Stub the idmap subid preflight to allowed in all tests.
+
+    Opt out with ``@pytest.mark.no_idmap_preflight_stub`` on the test, its
+    class, or the module (``pytestmark``). ``get_closest_marker`` sees all
+    three.
+    """
+    if request.node.get_closest_marker(IDMAP_PREF_STUB_MARKER) is not None:
+        yield
+        return
+
+    monkeypatch.setattr("tinyagentos.deployer._idmap_subid_range_ok", lambda *a, **k: True)
+    yield
+
+
+# ---------------------------------------------------------------------------
 # CSRF in tests — ON by default, opted OUT explicitly.
 #
 # This used to be inverted: an autouse fixture no-op'd `verify_csrf` for every

@@ -2376,6 +2376,46 @@ ensure_taos_user() {
                 || warn "could not add 'taos' to '$_dev_grp' — GPU/NPU backends may fail"
         fi
     done
+
+    # Grant root the one-UID subid range incus needs for the agent idmap.
+    # create_container sets `raw.idmap "both <taos uid> 0"` on every local
+    # agent container so container root can write the trace bind-mount, and
+    # newuidmap rejects it unless /etc/subuid + /etc/subgid allow root that
+    # range (uid range [0-1) -> [999-1000) not allowed). Add one line to each
+    # file, idempotently, then restart incus only when something changed.
+    _ensure_subid_mapping
+}
+
+# Give root the subuid/subgid range the incus idmap needs so the 'taos'
+# service account can launch agent containers. Idempotent: never duplicates a
+# line already present. Restarts incus only when a line was added, since the
+# daemon re-reads /etc/subuid and /etc/subgid on start.
+_ensure_subid_mapping() {
+    [[ "$os_name" == "Linux" ]] || return 0
+    local taos_uid sudo_cmd line added=0
+    local subuid_path="${TAOS_SUBUID:-/etc/subuid}"
+    local subgid_path="${TAOS_SUBGID:-/etc/subgid}"
+    taos_uid="$(id -u taos 2>/dev/null || echo "")"
+    [[ -n "$taos_uid" ]] || return 0
+    sudo_cmd=""
+    [[ "$(id -u)" != "0" ]] && sudo_cmd="sudo"
+    line="root:${taos_uid}:1"
+    for f in "$subuid_path" "$subgid_path"; do
+        if [[ -f "$f" ]] && grep -qx -- "$line" "$f"; then
+            :  # already present
+        else
+            if ! echo "$line" | $sudo_cmd tee -a "$f" >/dev/null 2>&1; then
+                warn "could not append $line to $f -- agent deploys may fail until it is added by hand"
+                continue
+            fi
+            added=1
+        fi
+    done
+    if (( added )); then
+        log "added root:${taos_uid}:1 to $subuid_path and $subgid_path for the incus idmap"
+        $sudo_cmd systemctl restart incus.service 2>/dev/null \
+            || warn "could not restart incus -- restart it manually (sudo systemctl restart incus) before the first agent deploy"
+    fi
 }
 
 # --- data dir ownership + permissions ------------------------------------

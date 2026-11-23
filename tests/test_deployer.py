@@ -3,7 +3,14 @@ from pathlib import Path
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from tinyagentos.deployer import deploy_agent, undeploy_agent, DeployRequest, _splice_taosmd_block, AGENTS_MD_PATHS
+from tinyagentos.deployer import (
+    deploy_agent,
+    undeploy_agent,
+    DeployRequest,
+    _splice_taosmd_block,
+    _idmap_subid_range_ok,
+    AGENTS_MD_PATHS,
+)
 
 
 def _req(**overrides) -> DeployRequest:
@@ -1690,3 +1697,205 @@ class TestGitInitAndCommitter:
             assert "committer_failed" in result["steps"]
             assert result["versioning"] is False
             assert result["versioning_error"] is not None
+
+
+class TestIdmapSubidPreflight:
+    """_idmap_subid_range_ok parses /etc/subuid and /etc/subgid for a
+    ``root:<start>:<count>`` range covering the uid incus needs for
+    raw.idmap "both <uid> 0"."""
+
+    def test_idmap_subid_range_ok_allowed(self, tmp_path):
+        subuid = tmp_path / "subuid"
+        subuid.write_text("root:999:1\njay:100000:65536\n")
+        subgid = tmp_path / "subgid"
+        subgid.write_text("root:999:1\n")
+        assert _idmap_subid_range_ok(999, subuid_path=str(subuid), subgid_path=str(subgid)) is True
+
+    def test_idmap_subid_range_ok_covering_range(self, tmp_path):
+        subuid = tmp_path / "subuid"
+        subuid.write_text("root:1:65536\n")
+        subgid = tmp_path / "subgid"
+        subgid.write_text("root:1:65536\n")
+        assert _idmap_subid_range_ok(999, subuid_path=str(subuid), subgid_path=str(subgid)) is True
+
+    def test_idmap_subid_range_ok_just_misses(self, tmp_path):
+        # uid == start+count is the first value NOT covered
+        subuid = tmp_path / "subuid"
+        subuid.write_text("root:100:899\n")
+        subgid = tmp_path / "subgid"
+        subgid.write_text("root:100:899\n")
+        assert _idmap_subid_range_ok(999, subuid_path=str(subuid), subgid_path=str(subgid)) is False
+
+    def test_idmap_subid_range_ok_multiple_lines(self, tmp_path):
+        subuid = tmp_path / "subuid"
+        subuid.write_text("jay:100000:65536\nroot:1:65536\nother:200000:65536\n")
+        subgid = tmp_path / "subgid"
+        subgid.write_text("other:200000:65536\nroot:1:65536\n")
+        assert _idmap_subid_range_ok(999, subuid_path=str(subuid), subgid_path=str(subgid)) is True
+
+    def test_idmap_subid_range_ok_malformed_line_ignored(self, tmp_path):
+        subuid = tmp_path / "subuid"
+        subuid.write_text("root:not-a-number:1\nroot:999:1\n")
+        subgid = tmp_path / "subgid"
+        subgid.write_text("root:999:bad\nroot:999:1\n")
+        assert _idmap_subid_range_ok(999, subuid_path=str(subuid), subgid_path=str(subgid)) is True
+
+    def test_idmap_subid_range_ok_missing_uid_line(self, tmp_path):
+        subuid = tmp_path / "subuid"
+        subuid.write_text("jay:100000:65536\n")
+        subgid = tmp_path / "subgid"
+        subgid.write_text("root:999:1\n")
+        assert _idmap_subid_range_ok(999, subuid_path=str(subuid), subgid_path=str(subgid)) is False
+
+    def test_idmap_subid_range_ok_missing_gid_line(self, tmp_path):
+        subuid = tmp_path / "subuid"
+        subuid.write_text("root:999:1\n")
+        subgid = tmp_path / "subgid"
+        subgid.write_text("jay:100000:65536\n")
+        assert _idmap_subid_range_ok(999, subuid_path=str(subuid), subgid_path=str(subgid)) is False
+
+    def test_idmap_subid_range_ok_missing_file(self, tmp_path):
+        subuid = tmp_path / "subuid"
+        subuid.write_text("root:999:1\n")
+        assert _idmap_subid_range_ok(999, subuid_path=str(subuid), subgid_path=str(tmp_path / "nope")) is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.no_idmap_preflight_stub
+    async def test_deploy_agent_fails_fast_when_idmap_range_missing(self, tmp_path, monkeypatch):
+        """Without the autouse stub: real preflight rejects missing range,
+        deploy returns the clear one-line root fix, fast, and creates no
+        container. Uses the real _idmap_subid_range_ok with injected file paths."""
+        import functools
+
+        subuid = tmp_path / "subuid"
+        subuid.write_text("jay:100000:65536\n")
+        subgid = tmp_path / "subgid"
+        subgid.write_text("jay:100000:65536\n")
+
+        # Use the real function with injected file paths instead of a re-implementation
+        real_check = functools.partial(
+            _idmap_subid_range_ok, subuid_path=str(subuid), subgid_path=str(subgid)
+        )
+
+        monkeypatch.setattr("tinyagentos.deployer.os.getuid", lambda: 999)
+        monkeypatch.setattr("tinyagentos.deployer._idmap_subid_range_ok", real_check)
+        req = _req(data_dir=tmp_path)
+
+        with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create:
+            result = await deploy_agent(req)
+
+        assert result["success"] is False
+        assert "root:999:1" in result["error"]
+        assert "/etc/subuid" in result["error"]
+        assert "/etc/subgid" in result["error"]
+        mock_create.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.no_idmap_preflight_stub
+    async def test_deploy_agent_proceeds_when_idmap_range_covers(self, tmp_path, monkeypatch):
+        """Without the autouse stub: real preflight allows covering range,
+        deploy proceeds to container creation. Uses the real _idmap_subid_range_ok
+        with injected file paths."""
+        import functools
+
+        subuid = tmp_path / "subuid"
+        subuid.write_text("root:1:65536\n")
+        subgid = tmp_path / "subgid"
+        subgid.write_text("root:1:65536\n")
+
+        # Use the real function with injected file paths
+        real_check = functools.partial(
+            _idmap_subid_range_ok, subuid_path=str(subuid), subgid_path=str(subgid)
+        )
+
+        monkeypatch.setattr("tinyagentos.deployer.os.getuid", lambda: 999)
+        monkeypatch.setattr("tinyagentos.deployer._idmap_subid_range_ok", real_check)
+        req = _req(data_dir=tmp_path)
+
+        async def mock_exec(name, cmd, **kwargs):
+            if "hostname -I" in " ".join(cmd):
+                return (0, "10.0.0.5")
+            return (0, "ok")
+
+        with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
+             patch("tinyagentos.deployer.exec_in_container", side_effect=mock_exec), \
+             patch("tinyagentos.deployer.push_file", new_callable=AsyncMock, return_value=(0, "")), \
+             patch("tinyagentos.deployer.add_proxy_device", new_callable=AsyncMock, return_value={"success": True, "output": ""}):
+            mock_create.return_value = {"success": True, "name": "taos-agent-test"}
+            result = await deploy_agent(req)
+
+        assert result["success"] is True
+        assert result["name"] == "test"
+        mock_create.assert_awaited_once()
+
+
+class TestDeployHermesVersionPassthrough:
+    @pytest.mark.asyncio
+    async def test_hermes_deploy_passes_tag_and_commit_through(self, tmp_path):
+        req = _req(
+            data_dir=tmp_path,
+            framework="hermes",
+            hermes_tag="v0.23.2",
+            hermes_commit="ae2a81ccc00e9b7c06301523e5bb09608397149c",
+        )
+
+        async def mock_exec(name, cmd, **kwargs):
+            if "hostname -I" in " ".join(cmd):
+                return (0, "10.0.0.5")
+            return (0, "ok")
+
+        with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
+             patch("tinyagentos.deployer.exec_in_container", side_effect=mock_exec), \
+             patch("tinyagentos.deployer.push_file", new_callable=AsyncMock, return_value=(0, "")), \
+             patch("tinyagentos.deployer.add_proxy_device", new_callable=AsyncMock, return_value={"success": True, "output": ""}):
+            mock_create.return_value = {"success": True, "name": "taos-agent-hermes"}
+            result = await deploy_agent(req)
+            assert result["success"] is True, result
+            env = mock_create.call_args.kwargs["env"]
+            assert env["HERMES_TAG"] == "v0.23.2"
+            assert env["HERMES_COMMIT"] == "ae2a81ccc00e9b7c06301523e5bb09608397149c"
+
+    @pytest.mark.asyncio
+    async def test_hermes_deploy_without_pin_uses_defaults(self, tmp_path):
+        req = _req(data_dir=tmp_path, framework="hermes")
+
+        async def mock_exec(name, cmd, **kwargs):
+            if "hostname -I" in " ".join(cmd):
+                return (0, "10.0.0.5")
+            return (0, "ok")
+
+        with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
+             patch("tinyagentos.deployer.exec_in_container", side_effect=mock_exec), \
+             patch("tinyagentos.deployer.push_file", new_callable=AsyncMock, return_value=(0, "")), \
+             patch("tinyagentos.deployer.add_proxy_device", new_callable=AsyncMock, return_value={"success": True, "output": ""}):
+            mock_create.return_value = {"success": True, "name": "taos-agent-hermes"}
+            result = await deploy_agent(req)
+            assert result["success"] is True, result
+            env = mock_create.call_args.kwargs["env"]
+            assert "HERMES_TAG" not in env
+            assert "HERMES_COMMIT" not in env
+
+    @pytest.mark.asyncio
+    async def test_non_hermes_deploy_does_not_set_hermes_env(self, tmp_path):
+        req = _req(
+            data_dir=tmp_path,
+            framework="smolagents",
+            hermes_tag="v0.23.2",
+            hermes_commit="ae2a81ccc00e9b7c06301523e5bb09608397149c",
+        )
+
+        async def mock_exec(name, cmd, **kwargs):
+            if "hostname -I" in " ".join(cmd):
+                return (0, "10.0.0.5")
+            return (0, "ok")
+
+        with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
+             patch("tinyagentos.deployer.exec_in_container", side_effect=mock_exec), \
+             patch("tinyagentos.deployer.push_file", new_callable=AsyncMock, return_value=(0, "")), \
+             patch("tinyagentos.deployer.add_proxy_device", new_callable=AsyncMock, return_value={"success": True, "output": ""}):
+            mock_create.return_value = {"success": True, "name": "taos-agent-smol"}
+            result = await deploy_agent(req)
+            assert result["success"] is True, result
+            env = mock_create.call_args.kwargs["env"]
+            assert "HERMES_TAG" not in env
+            assert "HERMES_COMMIT" not in env

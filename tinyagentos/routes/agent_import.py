@@ -219,6 +219,8 @@ async def import_hermes_agent(
                         "llm_gateway_models_problem": llm_gateway_models_check(request.app.state),
                     },
                     secrets_store=secrets_store,
+                    hermes_tag=new_agent.get("framework_version_tag"),
+                    hermes_commit=new_agent.get("framework_version_sha"),
                 ))
                 agent = find_agent(config, unique_slug)
                 if not result.get("success"):
