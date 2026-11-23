@@ -1093,6 +1093,27 @@ async def _update_local_taosmd(request: Request) -> dict:
     }
 
 
+async def _run_maintenance_after_update(request: Request) -> dict:
+    from tinyagentos import maint
+    report = await maint.run_pending()
+    text = maint.failure_text(report)
+    notif = getattr(request.app.state, "notifications", None)
+    if text and notif is not None:
+        try:
+            await notif.add(title="Maintenance step needs attention", message=text,
+                            level="warning", source="system.maintenance")
+        except Exception:
+            logger.exception("could not record the maintenance notification")
+    return report
+
+
+@router.get("/api/settings/maintenance")
+async def maintenance_status():
+    """Is the root maintenance runner set up, and what did its last run do?"""
+    from tinyagentos import maint
+    return maint.summary()
+
+
 @router.post("/api/settings/update")
 async def apply_update(request: Request):
     """Pull latest TinyAgentOS code from GitHub."""
@@ -1252,6 +1273,11 @@ async def apply_update(request: Request):
                 status_code=500,
             )
 
+    # Apply any signed maintenance steps this update ships (qmd upgrade, ...) through
+    # the root runner. A failure never fails the update: it is reported and
+    # notified, and the memory safety net keeps refusing until it is fixed.
+    maintenance = await _run_maintenance_after_update(request)
+
     # Always restart after a successful update.
     import asyncio as _asyncio
     from tinyagentos.routes.system import _do_restart
@@ -1261,6 +1287,7 @@ async def apply_update(request: Request):
         "output": output.strip(),
         "stashed_local_changes": stashed_local,
         "taosmd": taosmd_report,
+        "maintenance": maintenance,
         "message": (
             (
                 "Update applied. Local source changes were stashed (recover with `git stash pop`). "

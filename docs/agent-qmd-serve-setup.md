@@ -174,8 +174,26 @@ New installs get `@jaylfc/qmd@2.8.3-taos.2`, listening on `127.0.0.1` only, with
 `QMD_SERVE_DB_ROOT` set to the taOS data directory. Older qmd releases ignore
 `dbPath` and answer every request from one shared index, so taOS refuses
 per-agent and per-person memory calls (HTTP 503, "memory service needs updating")
-until qmd is upgraded. The taOS updater cannot do this itself (qmd is installed
-globally as root). On an existing install, the machine owner runs once:
+until qmd is upgraded.
+
+**Automatic.** The taOS updater runs as an unprivileged account, so it cannot
+upgrade the root-installed qmd itself. Installs set up by the current installer
+carry a small root-owned runner (`/usr/local/sbin/taos-maint`) that applies the
+maintenance steps the project signed, this qmd upgrade among them, after each
+update and at controller start. Nothing needs to be typed. The runner refuses
+anything not signed by the release key; see `maint/` and `scripts/install-maint.sh`.
+An existing install that predates the runner needs ONE owner action, shown in
+Settings and in a notification, after which updates take care of this by
+themselves:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jaylfc/taOS/master/scripts/install-maint.sh | sudo bash -s -- --fetch master
+```
+
+The step leaves any `QMD_BIND` you set in `/etc/default/qmd` alone; to keep qmd
+reachable from other machines create the empty file `/etc/taos/maint/qmd-keep-open`
+(as root) before the update. Without the runner (macOS, containers, a
+user-level service) the machine owner runs once:
 
 ```bash
 sudo bash scripts/upgrade-qmd.sh --local-only

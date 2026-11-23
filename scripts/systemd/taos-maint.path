@@ -1,0 +1,13 @@
+[Unit]
+Description=Run taOS maintenance steps when the controller asks
+
+[Path]
+# The controller (unprivileged) can only drop a *.req file here. The file's name
+# and content are ignored and it is deleted unread; what runs is decided by the
+# signed manifest and the root-owned state, not by the request.
+PathExistsGlob=/var/lib/taos-maint/trigger/*.req
+Unit=taos-maint.service
+MakeDirectory=no
+
+[Install]
+WantedBy=multi-user.target

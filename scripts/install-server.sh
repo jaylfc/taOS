@@ -2216,6 +2216,16 @@ install_linux_systemd_system() {
     # Create the dedicated service user and assign group memberships.
     ensure_taos_user
 
+    # Root maintenance runner: lets later updates apply signed, fixed maintenance
+    # steps (e.g. the qmd upgrade) without the owner typing a command. Installed
+    # BEFORE the tree is handed to 'taos', from the tree as the installer left it.
+    # A build without a release key refuses here; that must not fail the install.
+    if [[ -f "$INSTALL_DIR/scripts/install-maint.sh" ]]; then
+        $sudo_cmd bash "$INSTALL_DIR/scripts/install-maint.sh" \
+            --tree "$INSTALL_DIR" --data "$INSTALL_DIR/data" --user taos --no-run \
+            || warn "automatic maintenance steps are not set up (see the message above); updates will ask the owner to run them"
+    fi
+
     # Install graceful-stop script
     $sudo_cmd install -m 0755 "$INSTALL_DIR/scripts/taos-graceful-stop.sh" /usr/local/bin/taos-graceful-stop
     log "installed /usr/local/bin/taos-graceful-stop"
