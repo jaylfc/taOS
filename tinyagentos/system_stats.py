@@ -291,7 +291,7 @@ def _intel_rc6_ms(card: Path) -> int | None:
           fallback /sys/class/drm/cardN/power/rc6_residency_ms
           (Documentation/gpu/i915/rc6.rst, drivers/gpu/drm/i915/i915_pmu.c)
     xe:   /sys/class/drm/cardN/device/tile0/gt0/gtidle/idle_residency_ms
-          (Documentation/gpu/xe/xe_sysfs.rst, drivers/gpu/drm/xe/xe_gt_sysfs.c)
+          (docs.kernel.org gpu/xe/xe_gt_freq, drivers/gpu/drm/xe/xe_gt_sysfs.c)
     """
     for path in (
         card / "gt" / "gt0" / "rc6_residency_ms",
@@ -359,11 +359,29 @@ def _intel_max_freq_mhz(card: Path) -> int | None:
     return None
 
 
+def _intel_min_freq_mhz(card: Path) -> int | None:
+    """Minimum gt frequency in MHz, when exposed.
+
+    i915 exposes gt_min_freq_mhz directly under cardN/.
+          (Documentation/gpu/i915/frequency.rst, drivers/gpu/drm/i915/i915_frequency.c)
+    xe keeps it under .../tile0/gt0/freq0/.
+          (docs.kernel.org gpu/xe/xe_gt_freq)
+    """
+    for path in (
+        card / "gt_min_freq_mhz",
+        card / "device" / "tile0" / "gt0" / "freq0" / "min_freq",
+    ):
+        value = _read_int_file(path)
+        if value is not None:
+            return value
+    return None
+
+
 def read_all_intel_gpus() -> list[dict] | None:
     """Return per-card stats for Intel integrated GPUs (i915/xe).
 
     Each dict: index, pci_address, name, load_percent, freq_hz, freq_max_hz,
-    vram_percent/used/total (always None, shared system memory),
+    freq_min_hz, vram_percent/used/total (always None, shared system memory),
     shared_memory (always True).
 
     load_percent uses RC6 residency deltas between two samples:
@@ -414,6 +432,7 @@ def read_all_intel_gpus() -> list[dict] | None:
             _INTEL_LAST[str(card)] = {"ts": now, "rc6_ms": rc6_ms}
         freq_mhz = _intel_freq_mhz(card)
         max_mhz = _intel_max_freq_mhz(card)
+        min_mhz = _intel_min_freq_mhz(card)
         entries.append(
             {
                 "index": len(entries),
@@ -422,6 +441,7 @@ def read_all_intel_gpus() -> list[dict] | None:
                 "load_percent": load_percent,
                 "freq_hz": freq_mhz * 1_000_000 if freq_mhz is not None else None,
                 "freq_max_hz": max_mhz * 1_000_000 if max_mhz is not None else None,
+                "freq_min_hz": min_mhz * 1_000_000 if min_mhz is not None else None,
                 "vram_percent": None,
                 "vram_used_mb": None,
                 "vram_total_mb": None,

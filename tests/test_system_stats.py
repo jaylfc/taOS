@@ -1002,6 +1002,27 @@ class TestReadAllIntelGpus:
         second = system_stats.read_all_intel_gpus()
         assert second[0]["load_percent"] == 5
 
+    def test_xe_reads_min_freq(self, monkeypatch, tmp_path):
+        from tinyagentos import system_stats
+
+        drm = tmp_path / "sys" / "class" / "drm"
+        drm.mkdir(parents=True)
+        card = drm / "card0"
+        (card / "device").mkdir(parents=True)
+        (card / "device" / "vendor").write_text("0x8086\n")
+        (card / "device" / "device").write_text("0x4c8a\n")
+        (card / "device" / "tile0" / "gt0" / "freq0").mkdir(parents=True)
+        (card / "device" / "tile0" / "gt0" / "freq0" / "cur_freq").write_text("1300\n")
+        (card / "device" / "tile0" / "gt0" / "freq0" / "max_freq").write_text("1400\n")
+        (card / "device" / "tile0" / "gt0" / "freq0" / "min_freq").write_text("900\n")
+        monkeypatch.setattr(system_stats, "_DRM_ROOT", drm)
+        self._fake_time(monkeypatch, system_stats)
+
+        first = system_stats.read_all_intel_gpus()
+        assert first[0]["freq_hz"] == 1300 * 1_000_000
+        assert first[0]["freq_max_hz"] == 1400 * 1_000_000
+        assert first[0].get("freq_min_hz") == 900 * 1_000_000
+
     def test_non_intel_card_skipped(self, monkeypatch, tmp_path):
         from tinyagentos import system_stats
 
