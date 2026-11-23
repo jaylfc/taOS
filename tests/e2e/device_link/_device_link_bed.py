@@ -145,7 +145,11 @@ class Bed:
         """Open a TCP connection from src's userspace node to dst_ip:port with
         `tailscale nc`, send a minimal HTTP request, and return what came back.
         '' means no connection was made (dropped by the ACL, or refused)."""
-        cmd = (f"printf 'GET / HTTP/1.0\\r\\n\\r\\n' | timeout {wait} "
+        # stdin stays open for a few seconds after the request: `tailscale nc` tears
+        # the whole connection down at stdin EOF, before the reply can arrive, so a
+        # bare `printf | tailscale nc` reads '' even from a listener that answers.
+        hold = min(3, wait)
+        cmd = (f"(printf 'GET / HTTP/1.0\\r\\n\\r\\n'; sleep {hold}) | timeout {wait} "
                f"tailscale --socket={shlex.quote(src.sock)} nc {shlex.quote(dst_ip)} {port}")
         r = self.exec(src.node, "sh", "-c", cmd, timeout=wait + 15)
         return r.stdout
@@ -169,8 +173,11 @@ class Bed:
 
     @staticmethod
     def _parse(raw: str) -> Resp:
-        head, _, body = raw.partition("\r\n\r\n")
-        lines = head.split("\r\n")
+        # exec() reads in text mode, which turns curl's CRLF into LF: accept both,
+        # or every header is lost and the whole reply reads as a bare status line.
+        raw = raw.replace("\r\n", "\n")
+        head, _, body = raw.partition("\n\n")
+        lines = head.split("\n")
         try:
             status = int(lines[0].split()[1])
         except (IndexError, ValueError):

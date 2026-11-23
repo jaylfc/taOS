@@ -138,8 +138,9 @@ in the team notes). Each xfail names its id; this is what lands it:
 
 ## Not in this PR
 
-Nothing here has been run: building the images and bringing the bed up needs docker
-and the LXC that is to come. Known gaps: the controller image installs taOS with
+First run 2026-11-23 on a throwaway Debian 13 LXC (Docker 26.1, nesting, /dev/net/tun
+passed through): `bed.sh up` succeeds and the 20 real tests pass (three runs in a row);
+the 74 strict xfails all still fail, waiting for their PRs. Known gaps: the controller image installs taOS with
 `pip install -e` and is untested; the tailscale `serve --bg` flags, the Headscale
 JSON field names (`nodes list -o json`) and the controller's `/auth/lock-state`
 answer are taken from the two-tailscaled test and the design, to be confirmed on
