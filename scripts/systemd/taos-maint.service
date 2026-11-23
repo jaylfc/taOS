@@ -11,7 +11,8 @@ Type=oneshot
 ExecStart=/usr/local/sbin/taos-maint run-pending
 TimeoutStartSec=1800
 PrivateTmp=yes
-ProtectHome=read-only
+# No ProtectHome/ProtectSystem: the install tree and data directory may live under
+# /home or /root, and steps write to /etc, /usr and /var.
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictSUIDSGID=yes
