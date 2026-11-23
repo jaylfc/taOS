@@ -634,9 +634,9 @@ def _detect_intel_gpus() -> list[tuple[GpuInfo, str]]:
             try:
                 real_device = device_path.resolve()
                 # Path looks like /sys/devices/pci0000:00/0000:00:02.0/drm/card0/device
-                # Extract PCI address (0000:00:02.0)
+                # Extract the LAST PCI address component (0000:00:02.0) for devices behind bridges
                 parts = real_device.parts
-                for part in parts:
+                for part in reversed(parts):
                     if part.startswith("0000:") and part.count(":") >= 2:
                         pci_addr = part
                         break
@@ -755,7 +755,7 @@ def _detect_amd_gpus() -> list[tuple[GpuInfo, str]]:
             try:
                 real_device = device_path.resolve()
                 parts = real_device.parts
-                for part in parts:
+                for part in reversed(parts):
                     if part.startswith("0000:") and part.count(":") >= 2:
                         pci_addr = part
                         break
@@ -825,7 +825,7 @@ def _detect_mali_gpus() -> list[tuple[GpuInfo, str]]:
                 device_path = driver_link.parent
                 real_device = device_path.resolve()
                 parts = real_device.parts
-                for part in parts:
+                for part in reversed(parts):
                     if part.startswith("0000:") and part.count(":") >= 2:
                         pci_addr = part
                         break
@@ -881,7 +881,7 @@ def _detect_gpus() -> list[GpuInfo]:
     # Linux: detect all GPU types
     # Collect all GPUs with their PCI addresses, then sort once at the end
 
-# 1. NVIDIA via /proc/driver/nvidia (kernel module + driver present, works in
+    # 1. NVIDIA via /proc/driver/nvidia (kernel module + driver present, works in
     #    containers without nvidia-smi userspace utilities) - checked first
     #    because tests mock this path
     proc_model, proc_driver_present = _detect_nvidia_via_proc()
