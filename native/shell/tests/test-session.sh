@@ -46,7 +46,7 @@ case \$mode in
         [ "\$n" -le 2 ] && exit 1 ;;
 esac
 trap 'kill \$p 2>/dev/null; exit 0' TERM
-sleep 1000 &
+sleep 1000 >/dev/null 2>&1 &
 p=\$!
 wait \$p
 EOS
