@@ -148,7 +148,7 @@ describe("ActivityApp backend recovery", () => {
     await act(async () => { await Promise.resolve(); });
     
     const callsAfterMount = fetchTracker.getCalls();
-    expect(callsAfterMount.length).toBe(10); // 4 data + 1 cluster + 1 model activity + 4 system health (#621)
+    expect(callsAfterMount.length).toBe(14); // 4 data + 1 cluster + 1 model activity + 4 system health (#621, loading branch) + 4 again when the loaded grid mounts the card
     expect(callsAfterMount.filter(c => c === "/api/activity")).toHaveLength(1);
     expect(callsAfterMount.filter(c => c === "/api/health")).toHaveLength(0);
 
@@ -164,7 +164,7 @@ describe("ActivityApp backend recovery", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
 
     const callsAfterRecovery = fetchTracker.getCalls();
-    // Should have: initial 6 + 1 health (failed) + 1 health (success) + 4 data (recovery fetchData) = 12
+    // Should have: initial 14 + 1 health (failed) + 1 health (success) + recovery refetches (per-URL counts asserted below)
     expect(callsAfterRecovery.filter(c => c === "/api/activity")).toHaveLength(2); // Initial + recovery
     expect(callsAfterRecovery.filter(c => c === "/api/models/loaded")).toHaveLength(2);
     expect(callsAfterRecovery.filter(c => c === "/api/scheduler/stats")).toHaveLength(2);

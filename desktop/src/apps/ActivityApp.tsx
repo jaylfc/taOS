@@ -329,18 +329,31 @@ export function ActivityApp({ windowId: _windowId }: { windowId: string }) {
 
   if (loading && !data) {
     return (
-      <div className="flex items-center justify-center h-full">
-        <Loader2 size={24} className="animate-spin text-shell-text-tertiary" />
+      <div className="flex flex-col h-full bg-shell-bg-deep overflow-hidden">
+        {/* The health glance (#621) mounts in every state — it is the
+            diagnostic surface for exactly the case where the activity
+            telemetry below is not answering. */}
+        <div className="p-4 pb-0">
+          <SystemHealthCard />
+        </div>
+        <div className="flex flex-1 items-center justify-center">
+          <Loader2 size={24} className="animate-spin text-shell-text-tertiary" />
+        </div>
       </div>
     );
   }
 
   if (!data) {
     return (
-      <div className="flex flex-col items-center justify-center h-full gap-2 text-shell-text-tertiary">
-        <Activity size={32} />
-        <p className="text-sm">Activity data unavailable</p>
-        {error && <p className="text-xs">{error}</p>}
+      <div className="flex flex-col h-full bg-shell-bg-deep overflow-hidden">
+        <div className="p-4 pb-0">
+          <SystemHealthCard />
+        </div>
+        <div className="flex flex-1 flex-col items-center justify-center gap-2 text-shell-text-tertiary">
+          <Activity size={32} />
+          <p className="text-sm">Activity data unavailable</p>
+          {error && <p className="text-xs">{error}</p>}
+        </div>
       </div>
     );
   }

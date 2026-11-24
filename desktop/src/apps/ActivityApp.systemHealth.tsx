@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   HeartPulse, RefreshCw, ChevronRight, CheckCircle2, AlertTriangle, XCircle, HelpCircle,
 } from "lucide-react";
@@ -127,8 +127,10 @@ export function SystemHealthCard() {
   const [rows, setRows] = useState<HealthRow[] | null>(null);
   const [busy, setBusy] = useState(true);
   const openWindow = useProcessStore((s) => s.openWindow);
+  const loadSeq = useRef(0);
 
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     setBusy(true);
     const [health, healthCheck, agents, memoryStats] = await Promise.all([
       fetchJsonOrNull("/api/health?detailed=true"),
@@ -136,6 +138,10 @@ export function SystemHealthCard() {
       fetchJsonOrNull("/api/agents"),
       fetchJsonOrNull("/api/memory/stats"),
     ]);
+    // A newer refresh (poll, focus, backend recovery, manual) may have
+    // started while this one was in flight — the health-check probes can
+    // be slow, so an older result must not overwrite newer rows.
+    if (seq !== loadSeq.current) return;
     const checks = (healthCheck as { checks?: unknown } | null)?.checks;
     setRows(
       buildHealthRows({

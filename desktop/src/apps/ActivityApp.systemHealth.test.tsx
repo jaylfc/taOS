@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { SystemHealthCard } from "./ActivityApp.systemHealth";
 import { useProcessStore } from "@/stores/process-store";
 
@@ -158,6 +158,54 @@ describe("SystemHealthCard", () => {
     const button = screen.getByRole("button", { name: /llm gateway: error/i });
     fireEvent.click(button);
     expect(openWindow).toHaveBeenCalledWith("providers", expect.anything());
+  });
+
+  it("ignores a superseded refresh that resolves after a newer one", async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveStale: (r: Response) => void = () => {};
+      let healthCheckCalls = 0;
+      mockEndpoints({
+        "/api/health-check": () => {
+          healthCheckCalls += 1;
+          if (healthCheckCalls === 1) {
+            return new Promise<Response>((resolve) => {
+              resolveStale = resolve;
+            });
+          }
+          return Promise.resolve(jsonResponse({ checks: CHECKS }));
+        },
+      });
+      render(<SystemHealthCard />);
+      // The first load is parked on its health-check. A focus refresh
+      // starts a second load (useRefreshOnFocus coalesces at 1000 ms),
+      // which resolves healthy and commits.
+      fireEvent.focus(window);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(screen.getByText("All systems healthy")).toBeInTheDocument();
+      // The stale first load now resolves with a dead container runtime;
+      // it must not overwrite the newer rows.
+      resolveStale(
+        jsonResponse({
+          checks: [
+            { name: "incusd", status: "error", detail: "Not running", response_ms: 1 },
+            { name: "Docker", status: "error", detail: "Not running", response_ms: 1 },
+          ],
+        }),
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(screen.getByText("All systems healthy")).toBeInTheDocument();
+      expect(screen.queryByText("Some systems are down")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps the rest of the card alive when one endpoint fails", async () => {
