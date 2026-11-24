@@ -626,3 +626,10 @@ def test_service_unit_does_not_make_the_install_tree_read_only():
     unit = (REPO / "scripts" / "systemd" / "taos-maint.service").read_text()
     for line in unit.splitlines():
         assert not line.startswith(("ProtectHome=", "ProtectSystem=", "ReadOnlyPaths=")), line
+
+
+def test_units_never_stop_triggering_after_a_burst_of_requests():
+    """A rapid series of request files hit systemd's start limit on a real host and left the path unit failed."""
+    for name in ("taos-maint.path", "taos-maint.service"):
+        text = (REPO / "scripts" / "systemd" / name).read_text()
+        assert "StartLimitIntervalSec=0" in text.split("[Install]")[0].split("[Path]")[0].split("[Service]")[0], name
