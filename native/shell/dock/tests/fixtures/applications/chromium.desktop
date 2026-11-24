@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Browser
+Exec=chromium
+Icon=chromium
+StartupWMClass=chromium
+Actions=new-window;
+
+[Desktop Action new-window]
+Name=New Window
+Exec=chromium --new-window

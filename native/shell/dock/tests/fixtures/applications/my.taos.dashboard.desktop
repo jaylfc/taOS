@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=Activity
+Comment=Live system activity: CPU, memory, GPU, models, cluster and scheduler
+Exec=taos-dashboard %U
+Icon=my.taos.dashboard
+Terminal=false
+Categories=System;Monitor;
+StartupWMClass=my.taos.dashboard
+StartupNotify=true
+SingleMainWindow=true
+X-taOS-AppId=my.taos.dashboard

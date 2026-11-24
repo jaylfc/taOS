@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Settings
+Exec=taos-settings
+Icon=my.taos.settings
+StartupWMClass=my.taos.settings

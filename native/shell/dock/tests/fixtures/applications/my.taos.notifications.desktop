@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=Notifications
+Comment=Server notifications, consent requests and sign-in codes
+Exec=taos-notifications %U
+Icon=my.taos.notifications
+Terminal=false
+Categories=Utility;
+StartupWMClass=my.taos.notifications
+StartupNotify=true
+SingleMainWindow=true
+X-taOS-AppId=my.taos.notifications

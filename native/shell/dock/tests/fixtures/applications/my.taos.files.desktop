@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Files
+Exec=taos-files
+Icon=my.taos.files
+StartupWMClass=my.taos.files

@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=Decisions
+Comment=Questions agents ask you, and access requests to approve
+Exec=taos-decisions %U
+Icon=my.taos.decisions
+Terminal=false
+Categories=Utility;
+StartupWMClass=my.taos.decisions
+StartupNotify=true
+SingleMainWindow=true
+X-taOS-AppId=my.taos.decisions
