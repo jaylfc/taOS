@@ -1159,23 +1159,7 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
                         # agent record because the route creates the agent
                         # with status='deploying'.
                         if not agent.get("chat_channel_id"):
-                            try:
-                                ch_store = request.app.state.chat_channels
-                                channel = await ch_store.create_channel(
-                                    name=display_name,
-                                    type="dm",
-                                    created_by="user",
-                                    members=["user", body.name],
-                                    description=f"Direct messages with {display_name}",
-                                )
-                                if channel and channel.get("id"):
-                                    agent["chat_channel_id"] = channel["id"]
-                            except Exception as exc:  # noqa: BLE001
-                                # DM channel creation failing shouldn't fail
-                                # the whole deploy — the user can still see
-                                # the agent in the Agents app and retry from
-                                # there. Log and move on.
-                                logger.warning("DM channel create failed for %s: %s", body.name, exc)
+                            await agent_import._ensure_dm_channel(request, body.name, agent)
                     deploy_tasks[body.name] = {"status": "success", "name": body.name, "result": result}
                 else:
                     if agent is not None:
@@ -1636,6 +1620,7 @@ async def import_agent(request: Request):
     ):
         form = await request.form()
         bundle = form.get("bundle")
+        pause_jobs = form.get("pause_jobs", "false").lower() == "true"
         return await agent_import.import_hermes_agent(
             request,
             framework=str(form.get("framework", "")),
@@ -1643,6 +1628,8 @@ async def import_agent(request: Request):
             name=str(form.get("name", "")),
             model=(str(form["model"]) if form.get("model") else None),
             secrets=(str(form["secrets"]) if form.get("secrets") else None),
+            pause_jobs=pause_jobs,
+            source_host=(str(form["source_host"]) if form.get("source_host") else None),
         )
 
     # JSON config import.
