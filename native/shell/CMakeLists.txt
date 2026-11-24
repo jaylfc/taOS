@@ -32,3 +32,7 @@ add_test(NAME session-script
 set_tests_properties(session-script PROPERTIES TIMEOUT 120)
 
 install(PROGRAMS taos-shell-session DESTINATION bin)
+
+# Themes that ship as plain folders (not inside the binaries): found through the theme directories like any other
+# person's theme, so they prove a theme needs no rebuild.
+install(DIRECTORY themes/ DESTINATION share/taos/themes)
