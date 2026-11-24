@@ -15,7 +15,9 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -26,7 +28,7 @@ from tinyagentos.atomic_io import atomic_write_text
 
 DEFAULT_CHANNEL = "stable"
 DEFAULT_FEED = "https://taos.my/updates/{channel}/"
-DEFAULT_MIRROR = "https://github.com/jaylfc/tinyagentos/releases/download/updates-{channel}/"
+DEFAULT_MIRROR = "https://github.com/jaylfc/taOS/releases/download/updates-{channel}/"
 DEFAULT_KEYRING = "/etc/taos/maint/release.gpg"
 DEFAULT_STATUS_FILE = "/var/lib/taos-maint/status.json"
 
@@ -85,25 +87,53 @@ class _FetchError(Exception):
     pass
 
 
+class _SafeRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse redirects to another scheme or another host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        old = urllib.parse.urlsplit(req.full_url)
+        new = urllib.parse.urlsplit(urllib.parse.urljoin(req.full_url, newurl))
+        if new.scheme != old.scheme or new.scheme not in ("http", "https"):
+            raise _FetchError("redirect to another scheme refused")
+        if (new.hostname or "").lower() != (old.hostname or "").lower() or new.port != old.port:
+            raise _FetchError("redirect to another host refused")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_OPENER = urllib.request.build_opener(_SafeRedirect)
+
+
 def _fetch(url: str, limit: int, timeout: float) -> bytes:
-    """GET `url`; raise _FetchError on network error, non-200, timeout or oversize.
+    """GET `url`; raise _FetchError on network error, non-200, timeout or
+    a refused redirect. `timeout` is also a TOTAL wall-clock deadline for the
+    whole fetch, so a server that drips bytes cannot hold it open.
 
     Oversize raises _TooLarge (a refusal, not a reason to try the mirror).
     """
     if not url.startswith(("http://", "https://")):
         raise _FetchError("unsupported scheme")
+    deadline = time.monotonic() + timeout
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310
+        with _OPENER.open(url, timeout=timeout) as resp:
             if resp.status != 200:
                 raise _FetchError(f"http {resp.status}")
-            data = resp.read(limit + 1)
-    except _FetchError:
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                if time.monotonic() > deadline:
+                    raise _FetchError("deadline exceeded")
+                chunk = resp.read1(min(8192, limit + 1 - total))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+                if total > limit:
+                    raise _TooLarge()
+    except (_FetchError, _TooLarge):
         raise
     except Exception as exc:  # URLError, HTTPError, timeout, ssl, ...
         raise _FetchError(str(exc)) from exc
-    if len(data) > limit:
-        raise _TooLarge()
-    return data
+    return b"".join(chunks)
 
 
 class _TooLarge(Exception):
@@ -130,6 +160,10 @@ def _status_accepts(status_text: str) -> bool:
     return good == 1 and valid == 1
 
 
+class _GpgvMissing(Exception):
+    pass
+
+
 def _verify(manifest: bytes, sig: bytes, keyring: str) -> bool:
     """PRE-check for the UI only.
 
@@ -153,6 +187,8 @@ def _verify(manifest: bytes, sig: bytes, keyring: str) -> bool:
                  str(tmp_p / "manifest.json.sig"), str(tmp_p / "manifest.json")],
                 capture_output=True, text=True, env=env, timeout=20, check=False,
             )
+    except FileNotFoundError as exc:
+        raise _GpgvMissing() from exc
     except (OSError, subprocess.SubprocessError):
         return False
     return proc.returncode == 0 and _status_accepts(proc.stdout)
@@ -160,21 +196,18 @@ def _verify(manifest: bytes, sig: bytes, keyring: str) -> bool:
 
 # ----------------------------------------------------------------- parsing
 
-def _parse_time(value: Any) -> datetime | None:
-    if isinstance(value, bool):
+def _is_int(v: Any) -> bool:
+    return type(v) is int
+
+
+def _epoch(v: Any) -> datetime | None:
+    """Epoch seconds as a positive plain int (not bool, float or string)."""
+    if not _is_int(v) or v <= 0:
         return None
-    if isinstance(value, (int, float)):
-        try:
-            return datetime.fromtimestamp(value, tz=timezone.utc)
-        except (OverflowError, OSError, ValueError):
-            return None
-    if isinstance(value, str):
-        try:
-            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-    return None
+    try:
+        return datetime.fromtimestamp(v, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _step_ids(steps: Any) -> list[str]:
@@ -196,33 +229,36 @@ def _release_number(step_ids: list[str]) -> int | None:
 def _evaluate(manifest: bytes, source: str) -> dict:
     try:
         doc = json.loads(manifest)
-    except (ValueError, UnicodeDecodeError):
+    except (ValueError, UnicodeDecodeError, RecursionError):
         return _result(False, "malformed", source)
     if not isinstance(doc, dict):
         return _result(False, "malformed", source)
     fmt = doc.get("format")
     seq = doc.get("seq")
-    if fmt not in (1, 2) or isinstance(fmt, bool):
+    if not _is_int(fmt) or fmt not in (1, 2):
+        return _result(False, "bad-format", source)
+    if not _is_int(seq):
         return _result(False, "malformed", source)
-    if not isinstance(seq, int) or isinstance(seq, bool):
-        return _result(False, "malformed", source)
-    published = _parse_time(doc.get("published"))
-    if published is None:
-        return _result(False, "malformed", source)
-    expires = None
+    published = expires = None
     if fmt == 2:
-        expires = _parse_time(doc.get("expires"))
+        published = _epoch(doc.get("published"))
+        if published is None:
+            return _result(False, "bad-published", source)
+        expires = _epoch(doc.get("expires"))
         if expires is None:
-            return _result(False, "malformed", source)
+            return _result(False, "bad-expires", source)
         if expires <= datetime.now(timezone.utc):
             return _result(False, "expired", source)
         if expires - published > MAX_WINDOW:
             return _result(False, "window", source)
+    else:
+        if "published" in doc:
+            published = _epoch(doc.get("published"))
     return _result(
         True, None, source, seq=seq,
         release=_release_number(_step_ids(doc.get("steps"))),
-        published=published.isoformat(),
-        expires=expires.isoformat() if expires else None,
+        published=doc["published"] if published else None,
+        expires=doc["expires"] if expires else None,
     )
 
 
@@ -238,7 +274,11 @@ def _try_source(base: str, source: str, cfg: UpdateConfig) -> dict | None:
         return None
     except _TooLarge:
         return _result(False, "too-large", source)
-    if not _verify(manifest, sig, cfg.keyring):
+    try:
+        verified = _verify(manifest, sig, cfg.keyring)
+    except _GpgvMissing:
+        return _result(False, "gpgv-missing", source)
+    if not verified:
         return _result(False, "signature", source)
     return _evaluate(manifest, source)
 
@@ -280,7 +320,7 @@ def last_check(cache_dir: Path | str | None) -> dict | None:
         return None
     try:
         doc = json.loads((Path(cache_dir) / CACHE_NAME).read_text())
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return None
     return doc if isinstance(doc, dict) else None
 
@@ -291,7 +331,7 @@ def status(cfg: UpdateConfig | None = None) -> dict:
     try:
         with open(cfg.status_file, "rb") as fh:
             doc = json.loads(fh.read(MAX_MANIFEST_BYTES))
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return {"helper": "absent"}
     if not isinstance(doc, dict):
         return {"helper": "absent"}
@@ -300,13 +340,13 @@ def status(cfg: UpdateConfig | None = None) -> dict:
 
 
 def installed_release(st: dict) -> int | None:
-    """Newest release step the helper reports as applied (or already current)."""
+    """Newest release step the helper reports as applied (or already-applied)."""
     steps = st.get("steps")
     if not isinstance(steps, list):
         return None
     nums = []
     for s in steps:
-        if not isinstance(s, dict) or s.get("result") not in ("applied", "nothing"):
+        if not isinstance(s, dict) or s.get("result") not in ("applied", "already-applied"):
             continue
         sid = s.get("id")
         m = _RELEASE_RE.match(sid) if isinstance(sid, str) else None
@@ -333,6 +373,15 @@ def summary(cfg: UpdateConfig, cache_dir: Path | str | None) -> dict:
     }
 
 
+def default_cache_dir() -> Path:
+    """Same data dir the app uses (TAOS_DATA_DIR, else <project>/data), so a CLI
+    check updates what the UI shows. Mirrors tinyagentos.app.resolve_data_dir
+    without importing the whole app."""
+    env = os.environ.get("TAOS_DATA_DIR")
+    base = Path(env) if env else Path(__file__).resolve().parent.parent / "data"
+    return base / "updates"
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     cmd = args[0] if args else ""
@@ -340,9 +389,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(status(), indent=2))
         return 0
     if cmd == "check":
-        data_dir = os.environ.get("TAOS_DATA_DIR")
-        cache = Path(data_dir) / "updates" if data_dir else None
-        print(json.dumps(check(cache_dir=cache), indent=2))
+        print(json.dumps(check(cache_dir=default_cache_dir()), indent=2))
         return 0
     if cmd in ("install", "rollback"):
         print(f"{cmd}: not available yet", file=sys.stderr)
