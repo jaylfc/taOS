@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=Agents
+Comment=The agents deployed for you, where they run and what they are doing
+Exec=taos-agents %U
+Icon=my.taos.agents
+Terminal=false
+Categories=Utility;
+StartupWMClass=my.taos.agents
+StartupNotify=true
+SingleMainWindow=true
+X-taOS-AppId=my.taos.agents

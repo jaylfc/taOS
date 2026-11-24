@@ -1,0 +1,12 @@
+#!/bin/sh
+# taOS native app wrapper for @NAME@ (installed as <prefix>/bin/@NAME@ by install-apps.sh).
+# Sources the session environment (Qt prefix, LD_LIBRARY_PATH, plugin paths) like the shell does,
+# then runs the real binary from @APP_DIR@/bin.
+ENV_FILE=${TAOS_SHELL_ENV_FILE:-/etc/taos/shell.env}
+if [ -r "$ENV_FILE" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$ENV_FILE"
+    set +a
+fi
+exec @APP_DIR@/bin/@NAME@ "$@"

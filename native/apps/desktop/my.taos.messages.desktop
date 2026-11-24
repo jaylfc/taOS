@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=Messages
+Comment=Chat with your agents and channels
+Exec=taos-messages %U
+Icon=my.taos.messages
+Terminal=false
+Categories=Network;InstantMessaging;
+StartupWMClass=my.taos.messages
+StartupNotify=true
+SingleMainWindow=true
+X-taOS-AppId=my.taos.messages

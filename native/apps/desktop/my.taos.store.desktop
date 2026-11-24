@@ -1,0 +1,22 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=Store
+Comment=Apps, web apps, models and themes for this device
+Exec=taos-store %U
+Icon=my.taos.store
+Terminal=false
+Categories=System;Utility;
+StartupWMClass=my.taos.store
+StartupNotify=true
+SingleMainWindow=true
+X-taOS-AppId=my.taos.store
+Actions=web-apps;add-website;
+
+[Desktop Action web-apps]
+Name=Web apps
+Exec=taos-store --section webapps
+
+[Desktop Action add-website]
+Name=Add a website as a web app
+Exec=taos-store --add-website

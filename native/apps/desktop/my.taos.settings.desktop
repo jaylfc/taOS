@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=Settings
+Comment=System settings: appearance, displays, dock, sound, network and more
+Exec=taos-settings %U
+Icon=my.taos.settings
+Terminal=false
+Categories=Settings;System;
+StartupWMClass=my.taos.settings
+StartupNotify=true
+SingleMainWindow=true
+X-taOS-AppId=my.taos.settings
