@@ -1,0 +1,69 @@
+diff -ruN a/sway/desktop/xdg_shell.c b/sway/desktop/xdg_shell.c
+--- a/sway/desktop/xdg_shell.c	2026-11-13 23:30:43.000000000 +0000
++++ b/sway/desktop/xdg_shell.c	2026-11-22 20:18:32.083746687 +0000
+@@ -395,6 +395,9 @@
+ static void handle_request_minimize(struct wl_listener *listener, void *data) {
+ 	struct sway_xdg_shell_view *xdg_shell_view =
+ 		wl_container_of(listener, xdg_shell_view, request_minimize);
++	if (!config->scratchpad_minimize) {
++		return;
++	}
+ 	struct sway_container *container = xdg_shell_view->view.container;
+ 	if (!container->pending.workspace) {
+ 		while (container->pending.parent) {
+@@ -529,11 +532,9 @@
+ 	wl_signal_add(&toplevel->events.request_maximize,
+ 			&xdg_shell_view->request_maximize);
+ 
+-	if (config->scratchpad_minimize) {
+-		xdg_shell_view->request_minimize.notify = handle_request_minimize;
+-		wl_signal_add(&toplevel->events.request_minimize,
+-				&xdg_shell_view->request_minimize);
+-	}
++	xdg_shell_view->request_minimize.notify = handle_request_minimize;
++	wl_signal_add(&toplevel->events.request_minimize,
++			&xdg_shell_view->request_minimize);
+ 
+ 	xdg_shell_view->request_fullscreen.notify = handle_request_fullscreen;
+ 	wl_signal_add(&toplevel->events.request_fullscreen,
+diff -ruN a/sway/tree/view.c b/sway/tree/view.c
+--- a/sway/tree/view.c	2026-11-13 23:30:43.000000000 +0000
++++ b/sway/tree/view.c	2026-11-22 20:18:32.083746687 +0000
+@@ -803,6 +803,9 @@
+ 	struct sway_view *view = wl_container_of(
+ 			listener, view, foreign_minimize);
+ 	struct wlr_foreign_toplevel_handle_v1_minimized_event *event = data;
++	if (!config->scratchpad_minimize) {
++		return;
++	}
+ 	struct sway_container *container = view->container;
+ 	if (!container->pending.workspace) {
+ 		while (container->pending.parent) {
+@@ -829,7 +832,9 @@
+ 	wl_list_remove(&view->foreign_activate_request.link);
+ 	wl_list_remove(&view->foreign_fullscreen_request.link);
+ 	wl_list_remove(&view->foreign_close_request.link);
+-	if (config->scratchpad_minimize) {
++	// Registered by view_map() whatever the option says; guarded anyway so a link that was never added
++	// is never removed (swayfx 0.6.1 crashed here when scratchpad_minimize was enabled by a reload).
++	if (view->foreign_minimize.notify) {
+ 		wl_list_remove(&view->foreign_minimize.link);
+ 	}
+ 	wl_list_remove(&view->foreign_destroy.link);
+@@ -916,11 +921,11 @@
+ 	view->foreign_close_request.notify = handle_foreign_close_request;
+ 	wl_signal_add(&view->foreign_toplevel->events.request_close,
+ 			&view->foreign_close_request);
+-	if (config->scratchpad_minimize) {
+-		view->foreign_minimize.notify = handle_foreign_minimize;
+-		wl_signal_add(&view->foreign_toplevel->events.request_minimize,
+-				&view->foreign_minimize);
+-	}
++	// Always registered; the handler looks at scratchpad_minimize when the request arrives, so a reload that
++	// changes the option cannot leave registration and removal disagreeing.
++	view->foreign_minimize.notify = handle_foreign_minimize;
++	wl_signal_add(&view->foreign_toplevel->events.request_minimize,
++			&view->foreign_minimize);
+ 	view->foreign_destroy.notify = handle_foreign_destroy;
+ 	wl_signal_add(&view->foreign_toplevel->events.destroy,
+ 			&view->foreign_destroy);
