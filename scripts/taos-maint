@@ -411,10 +411,12 @@ def run_pending(paths: Paths, conf: dict, only: str | None = None) -> int:
             rec = state["steps"].get(sid)
             body = scripts[sid]
             if not body:
+                log(paths, f"step {sid}: REFUSED (step file missing or not the signed bytes)")
                 results.append({"id": sid, "result": "refused", "detail": "step file missing or not the signed bytes"})
                 code = max(code, 2)
                 continue
             if rec and rec.get("version", 0) > step["version"]:
+                log(paths, f"step {sid}: REFUSED (older than the recorded version, downgrade)")
                 results.append({"id": sid, "result": "refused", "detail": "older than the recorded version (downgrade)"})
                 code = max(code, 2)
                 continue
