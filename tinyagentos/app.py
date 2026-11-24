@@ -5,6 +5,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Optional
 
 import httpx
 
@@ -700,6 +701,39 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         except Exception as exc:
             logger.error(
                 "controller service token renewal loop not started (%s)",
+                type(exc).__name__,
+            )
+        # Initialize records client with write-ahead buffer
+        try:
+            from tinyagentos.records_client import (
+                RecordsClient,
+                RecordsClientConfig,
+                init_records_client,
+            )
+            from tinyagentos.controller_service_identity import controller_token_path
+
+            def _controller_token_getter() -> Optional[str]:
+                token_path = controller_token_path(data_dir)
+                try:
+                    return token_path.read_text(encoding="utf-8").strip()
+                except OSError:
+                    return None
+
+            records_config = RecordsClientConfig(
+                data_dir=data_dir,
+                memory_service_url=config.memory_url,
+                max_batch_size=100,
+                buffer_threshold_bytes=100 * 1024 * 1024,  # 100 MB
+                send_interval_seconds=1.0,
+                max_retries=5,
+                token_getter=_controller_token_getter,
+            )
+            records_client = await init_records_client(records_config, http_client)
+            app.state.records_client = records_client
+            logger.info("Records client initialized with write-ahead buffer at %s", data_dir / "records-wal.db")
+        except Exception as exc:
+            logger.error(
+                "records client could not be initialized (%s)",
                 type(exc).__name__,
             )
         await user_shares_store.init()
@@ -1733,6 +1767,13 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             pass
         await close_system_bus()
         await installed_apps.close()
+        # Shutdown records client
+        _rc = getattr(app.state, "records_client", None)
+        if _rc is not None:
+            try:
+                await _rc.stop()
+            except Exception:
+                logger.exception("records client stop failed")
         await feedback_store.close()
         await client_log_store.close()
         await userspace_apps.close()

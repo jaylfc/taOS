@@ -13,6 +13,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from tinyagentos.agent_db import get_agent_summaries
 from tinyagentos.backend_adapters import check_backend_health
 from tinyagentos.first_boot import mark_setup_complete
+from tinyagentos.records_client import get_records_client
 
 router = APIRouter()
 
@@ -112,6 +113,22 @@ async def api_health(request: Request, detailed: bool = False):
         {"status": ci.get("status", "unknown"), "reason": ci.get("reason", "")}
         if ci else {"status": "unavailable", "reason": ""}
     )
+
+    # Records client health
+    records_client = getattr(request.app.state, "records_client", None)
+    if records_client is not None:
+        try:
+            rc_health = await records_client.get_health_status_async()
+            subsystems["records_client"] = {
+                "status": "ok",
+                "buffer_depth": rc_health.get("buffer_depth", 0),
+                "oldest_row_age_seconds": rc_health.get("oldest_row_age_seconds", 0),
+                "dead_letter_count": rc_health.get("dead_letter_count", 0),
+            }
+        except Exception as e:
+            subsystems["records_client"] = {"status": "error", "reason": str(e)}
+    else:
+        subsystems["records_client"] = {"status": "unavailable"}
 
     return {**basic, "subsystems": subsystems}
 

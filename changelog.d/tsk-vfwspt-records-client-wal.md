@@ -1,0 +1,14 @@
+### Added
+- New `tinyagentos.records_client` module implementing a write-ahead buffer (WAL) for memory service records. Records are persisted locally in SQLite (`<data>/records-wal.db` with `synchronous=FULL`) before being sent to the memory service, ensuring no history is lost on network failures or process crashes.
+- `emit(type, body, ...)` API that generates monotonic ULIDs, serializes envelopes once, computes `body_sha256`, writes to local buffer, and returns immediately without blocking on network.
+- Background sender that batches up to 100 records per request to `/records/batch`, with full response class handling per the memory service wire contract:
+  - 201/200 (duplicate): delete row if record_id and hash match
+  - 400: keep row, alarm
+  - 401/403: keep row, refresh credential, retry, alarm
+  - 409/413/422: move to dead-letter, alarm (422 never deleted)
+  - 429/503/507: keep row, honour Retry-After
+  - Timeout/network error: keep row, retry with same id
+- Buffer full detection raises visible error when disk threshold exceeded.
+- Health endpoint visibility (`/api/health?detailed=true`) showing buffer depth, oldest row age, and dead-letter count.
+- Crash recovery: unacked records survive kill -9 and restart; verified against independent append-only oracle log.
+- Integration with controller service identity for `records:write` scope token.

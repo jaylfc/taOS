@@ -133,6 +133,7 @@ dev = [
     "httpx",
     "respx>=0.21.0",
     "websockets>=12.0",
+    "ulid-py>=1.1.0",
 ]
 
 [tool.setuptools.packages.find]
