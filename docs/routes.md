@@ -413,6 +413,18 @@ Publishes a `decision.note` event on the owner's `user:<id>` channel so open sur
 
 ---
 
+# OS notifications (loopback, as the signed-in person)
+
+`POST /api/notifications/os` is where the desktop session's notification daemon (`taos-notifyd`) posts each freedesktop `Notify` it accepted.
+
+- Caller: the signed-in person's session (or the local token, which maps to the primary person), on a loopback connection with no forwarding header (else 403 `loopback_only`). The recipient is always the caller; a `user_id` field is refused.
+- Body (JSON, at most 16 KiB, else 413; malformed JSON 400; bad fields 422): `id` (client-chosen, 1 to 64 of `A-Za-z0-9._:-`), `app_name` (128), `desktop_entry` (128), `summary` (256), `body` (2048), `urgency` (`low`/`normal`/`critical`), `category`, `icon` (256, name or path), `actions` (at most 8 of `{key, label}`), `replaces` (an earlier `id` to update in place), `expire_timeout_ms`, `transient` (accepted, not stored), `posted_at` (epoch seconds, clamped to the last 30 days).
+- Answer: `{"id": <row id>, "duplicate": bool}`. The same `id` from the same person is stored once and answers `duplicate: true`, even after the row was read or dismissed.
+- Row: source `os:<desktop entry or app name>`, level `info` (`warning` for critical), details under `data.os`. No webhook fires.
+- Limit: 120 posts a minute per person, then 429 with `Retry-After`.
+
+---
+
 # Notification history (session-only)
 
 - `GET /api/notifications/history`

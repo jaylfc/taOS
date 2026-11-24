@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from tinyagentos.notifications import VALID_LEVELS
 
@@ -198,6 +198,127 @@ async def create_notification(request: Request, body: CreateNotificationRequest)
         data=body.data,
     )
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# OS (freedesktop) notifications: POST /api/notifications/os
+#
+# The per-person desktop session's notification daemon (taos-notifyd) posts
+# every Notify call it accepted here. Loopback only, as the signed-in person
+# (session cookie, or the local token which maps to the primary person); the
+# recipient is ALWAYS the caller, never a body field.
+# ---------------------------------------------------------------------------
+
+_OS_MAX_BODY_BYTES = 16 * 1024
+_OS_RATE_MAX = 120          # per person
+_OS_RATE_WINDOW_SECS = 60
+_OS_MAX_AGE_SECS = 30 * 86400   # a buffered row may be at most this old
+_OS_ID_PATTERN = r"^[A-Za-z0-9._:-]{1,64}$"
+_OS_LEVELS = {"low": "info", "normal": "info", "critical": "warning"}
+
+
+class _OsAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    key: str = Field(min_length=1, max_length=64)
+    label: str = Field(max_length=128)
+
+
+class OsNotificationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(pattern=_OS_ID_PATTERN)          # client-chosen, for idempotent retries
+    app_name: str = Field(max_length=128)
+    desktop_entry: str = Field(default="", max_length=128)
+    summary: str = Field(max_length=256)
+    body: str = Field(default="", max_length=2048)   # markup already stripped by the daemon
+    urgency: str = Field(default="normal", pattern=r"^(low|normal|critical)$")
+    category: str = Field(default="", max_length=64)
+    icon: str = Field(default="", max_length=256)    # icon name or path, stored as given
+    actions: list[_OsAction] = Field(default_factory=list, max_length=8)
+    replaces: str | None = Field(default=None, pattern=_OS_ID_PATTERN)  # client id of the row to update
+    expire_timeout_ms: int = Field(default=-1, ge=-1, le=86_400_000)
+    transient: bool = False
+    posted_at: int | None = None                     # when the app raised it (buffered rows arrive late)
+
+
+def _os_source(req: OsNotificationRequest) -> str:
+    slug = "".join(ch if ch.isalnum() or ch in "._-" else "-" for ch in (req.desktop_entry or req.app_name).lower())
+    return "os:" + (slug.strip("-")[:48] or "app")
+
+
+@router.post("/api/notifications/os")
+async def post_os_notification(request: Request):
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id or getattr(request.state, "agent_name", None):
+        raise HTTPException(status_code=401, detail="Authentication required")
+    client = request.client
+    peer_ok = False
+    if client is not None:
+        try:
+            import ipaddress
+            peer_ok = ipaddress.ip_address(client.host).is_loopback
+        except ValueError:
+            peer_ok = False
+    if not peer_ok or "x-forwarded-for" in request.headers or "forwarded" in request.headers:
+        return JSONResponse({"error": "loopback_only"}, status_code=403)
+
+    raw = b""
+    async for chunk in request.stream():
+        raw += chunk
+        if len(raw) > _OS_MAX_BODY_BYTES:
+            return JSONResponse({"error": "body_too_large", "limit": _OS_MAX_BODY_BYTES}, status_code=413)
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return JSONResponse({"error": "malformed_json"}, status_code=400)
+    try:
+        req = OsNotificationRequest.model_validate(payload)
+    except ValidationError as exc:
+        return JSONResponse(
+            {"error": "invalid", "detail": [{"loc": list(e["loc"]), "msg": e["msg"]} for e in exc.errors()]},
+            status_code=422,
+        )
+
+    limiter = getattr(request.app.state, "os_notif_limiter", None)
+    if limiter is None:
+        limiter = request.app.state.os_notif_limiter = MovingWindowLimiter(_OS_RATE_MAX, _OS_RATE_WINDOW_SECS)
+    if not limiter.check(str(user_id)):
+        retry = limiter.retry_after(str(user_id))
+        return JSONResponse(
+            {"error": "rate_limited", "retry_after": retry},
+            status_code=429,
+            headers={"Retry-After": str(max(1, int(retry)))},
+        )
+
+    if req.transient:
+        return {"id": None, "duplicate": False, "stored": False}
+
+    now = int(time.time())
+    posted = now if req.posted_at is None else min(max(req.posted_at, now - _OS_MAX_AGE_SECS), now)
+    data = {"os": {
+        "client_id": req.id,
+        "app_name": req.app_name,
+        "desktop_entry": req.desktop_entry,
+        "urgency": req.urgency,
+        "category": req.category,
+        "icon": req.icon,
+        "actions": [a.model_dump() for a in req.actions],
+        "expire_timeout_ms": req.expire_timeout_ms,
+    }}
+    store = request.app.state.notifications
+    row_id, created = await store.add_os(
+        user_id=str(user_id),
+        client_id=req.id,
+        title=req.summary or req.app_name,
+        message=req.body,
+        level=_OS_LEVELS[req.urgency],
+        source=_os_source(req),
+        data=data,
+        timestamp=posted,
+        replaces=req.replaces,
+    )
+    if row_id is None:
+        return {"id": None, "duplicate": False, "stored": False, "reason": "muted"}
+    return {"id": row_id, "duplicate": not created}
 
 
 @router.get("/api/notifications/count", response_class=HTMLResponse)
