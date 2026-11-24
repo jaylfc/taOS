@@ -4,6 +4,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pathlib import Path
 
 
 def _make_worker():
@@ -11,6 +12,7 @@ def _make_worker():
 
     worker = JobWorker.__new__(JobWorker)
     worker._llm_url = "http://localhost:11434"
+    worker._data_dir = Path("data")
     return worker
 
 

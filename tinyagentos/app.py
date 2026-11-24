@@ -606,8 +606,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     from taosmd import KnowledgeGraph as TemporalKnowledgeGraph
     knowledge_graph = TemporalKnowledgeGraph(db_path=data_dir / "knowledge-graph.db")
 
-    from taosmd import Archive as ArchiveStore
-    archive = ArchiveStore(archive_dir=data_dir / "archive", index_path=data_dir / "archive-index.db")
+    from tinyagentos.archive_writer import open_archive_writer
+    archive = open_archive_writer("controller.app", data_dir / "archive")
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

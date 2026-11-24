@@ -11,6 +11,8 @@ from fastapi.responses import JSONResponse
 
 from taosmd import SessionCatalog, CatalogPipeline
 
+from tinyagentos.archive_writer import open_archive_shared
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["catalog"])
@@ -40,9 +42,14 @@ async def _get_catalog(request: Request) -> SessionCatalog:
     if catalog is None:
         from pathlib import Path
         data_dir = getattr(request.app.state, "data_dir", Path("data"))
+        archive = getattr(request.app.state, "archive", None)
+        if archive is not None:
+            archive_dir = archive._archive_dir
+        else:
+            archive_dir = data_dir / "archive"
         catalog = SessionCatalog(
             db_path=data_dir / "session-catalog.db",
-            archive_dir=data_dir / "archive",
+            archive_dir=archive_dir,
             sessions_dir=data_dir / "sessions",
         )
         await catalog.init()
@@ -117,9 +124,11 @@ async def catalog_index(request: Request):
 
     from pathlib import Path
     data_dir = getattr(request.app.state, "data_dir", Path("data"))
+    archive = getattr(request.app.state, "archive", None)
+    archive_dir = archive._archive_dir if archive else data_dir / "archive"
 
     pipeline = CatalogPipeline(
-        archive_dir=data_dir / "archive",
+        archive_dir=archive_dir,
         sessions_dir=data_dir / "sessions",
         catalog_db=data_dir / "session-catalog.db",
         crystals_db=data_dir / "crystals.db",
@@ -144,9 +153,11 @@ async def catalog_rebuild(request: Request):
     """Rebuild entire catalog from archives."""
     from pathlib import Path
     data_dir = getattr(request.app.state, "data_dir", Path("data"))
+    archive = getattr(request.app.state, "archive", None)
+    archive_dir = archive._archive_dir if archive else data_dir / "archive"
 
     pipeline = CatalogPipeline(
-        archive_dir=data_dir / "archive",
+        archive_dir=archive_dir,
         sessions_dir=data_dir / "sessions",
         catalog_db=data_dir / "session-catalog.db",
         crystals_db=data_dir / "crystals.db",
