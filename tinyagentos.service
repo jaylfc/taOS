@@ -19,6 +19,10 @@ ExecStartPre=+/bin/sh -c '\
   chmod o+r /sys/kernel/debug/mali0/dvfs_utilization 2>/dev/null || true'
 ExecStart=/home/jay/tinyagentos/.venv/bin/python -m tinyagentos
 ExecReload=/bin/kill -HUP $MAINPID
+# Holds the per-boot console secret (/run/taos/console-secret). Preserved across
+# controller restarts, cleared with the tmpfs at reboot.
+RuntimeDirectory=taos
+RuntimeDirectoryPreserve=yes
 Restart=always
 RestartSec=3
 Environment=PYTHONUNBUFFERED=1

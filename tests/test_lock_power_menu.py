@@ -45,6 +45,9 @@ class _SignedIn:
     def validate_session_for_request(self, _request):
         return "owner"
 
+    def lock_screen_user(self):
+        return None
+
 
 class _Req:
     """Enough of a Request for the handlers under test."""
@@ -1269,6 +1272,8 @@ function fetch(url, opts) {
 // The real one opens the passcode sheet. Here it is the signal being measured.
 var PASSCODE = 0;
 function openPasscode() { PASSCODE += 1; }
+var UNLOCK = "pin";
+function openPasswordSheet() { PASSCODE += 1; }
 
 __SOURCE__
 
@@ -1382,7 +1387,7 @@ class TestStoppingEveryAgentDemandsThePasscode:
         having simply re-locked itself. Same note the agent menu writes."""
         out = _tap("Stop all agents")
         assert out["note"]["hidden"] is False
-        assert out["note"]["text"] == "Unlock to stop all agents"
+        assert out["note"]["text"].startswith("Signing in does not stop the agents")
 
     def test_the_menu_is_whole_again_behind_the_keypad(self):
         """The confirm REPLACED the row. Left removed, the next hold of the

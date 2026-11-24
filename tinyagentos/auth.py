@@ -343,8 +343,12 @@ class _PinAttemptLimiter:
     password limiter.
     """
 
-    #: ``(failures_at_or_above, delay_seconds)``, highest tier last.
-    _TIERS = ((15, 900), (10, 300), (5, 30))
+    #: Back-off: nothing below ``_FREE_FAILURES``; from there the delay starts
+    #: at ``_BASE_DELAY`` seconds and doubles with every further failure, up to
+    #: ``_MAX_DELAY``. The cap keeps the lockout self-healing (see above).
+    _FREE_FAILURES = 5
+    _BASE_DELAY = 30
+    _MAX_DELAY = 3600
 
     #: Upper bound on tracked keys. ``routes.auth`` falls back to the key
     #: ``f"unknown:{username}"`` when no user resolves, so a caller cycling
@@ -352,17 +356,64 @@ class _PinAttemptLimiter:
     #: A kiosk runs for weeks, so "small and bounded" beats "usually small".
     _MAX_KEYS = 1024
 
-    def __init__(self) -> None:
+    def __init__(self, path: Path | None = None) -> None:
         # Ordered so the bound can evict the least-recently-failed key.
         self._state: OrderedDict[str, tuple[int, float]] = OrderedDict()
         self._lock = threading.Lock()
+        self._path: Path | None = None
+        if path is not None:
+            self.bind(path)
 
     @classmethod
     def _delay_for(cls, failures: int) -> int:
-        for threshold, delay in cls._TIERS:
-            if failures >= threshold:
-                return delay
-        return 0
+        if failures < cls._FREE_FAILURES:
+            return 0
+        exponent = min(failures - cls._FREE_FAILURES, 16)
+        return min(cls._BASE_DELAY * (2 ** exponent), cls._MAX_DELAY)
+
+    def bind(self, path: Path) -> None:
+        """Persist to ``path`` and load what an earlier process recorded.
+
+        Without this a restart set every count back to zero, so anyone able to
+        restart the controller got a fresh set of free guesses each time.
+        Idempotent per path; failures already in memory are kept (the larger
+        count wins per key).
+        """
+        path = Path(path)
+        with self._lock:
+            if self._path == path:
+                return
+            self._path = path
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                return
+            except (OSError, ValueError):
+                logger.error("PIN throttle state at %s is unreadable; starting empty", path)
+                return
+            if not isinstance(raw, dict):
+                logger.error("PIN throttle state at %s is malformed; starting empty", path)
+                return
+            for key, entry in raw.items():
+                try:
+                    failures, last = int(entry[0]), float(entry[1])
+                except (TypeError, ValueError, IndexError, KeyError):
+                    continue
+                if failures > self._state.get(key, (0, 0.0))[0]:
+                    self._state[key] = (failures, last)
+
+    def _persist(self) -> None:
+        """Write the state to disk. Caller holds ``self._lock``."""
+        if self._path is None:
+            return
+        try:
+            atomic_write_text(
+                self._path,
+                json.dumps({k: [f, t] for k, (f, t) in self._state.items()}),
+                mode=0o600,
+            )
+        except OSError:
+            logger.error("could not persist PIN throttle state to %s", self._path, exc_info=True)
 
     def retry_after(self, key: str, now: float | None = None) -> int:
         """Seconds the caller must wait before another attempt is accepted."""
@@ -398,10 +449,12 @@ class _PinAttemptLimiter:
                     key=lambda k: (self._state[k][0], self._state[k][1]),
                 )
                 del self._state[victim]
+            self._persist()
 
     def reset(self, key: str) -> None:
         with self._lock:
-            self._state.pop(key, None)
+            if self._state.pop(key, None) is not None:
+                self._persist()
 
 
 class AuthManager:
@@ -1097,7 +1150,12 @@ class AuthManager:
     #  Sessions                                                            #
     # ------------------------------------------------------------------ #
 
-    def create_session(self, user_id: str = "", long_lived: bool = False, user_agent: str | None = None) -> str:
+    def create_session(
+        self, user_id: str = "", long_lived: bool = False,
+        user_agent: str | None = None, console: bool = False,
+    ) -> str:
+        """Mint a session. ``console`` marks one signed in at the device's own
+        screen, so locking that screen can end exactly those sessions."""
         token = secrets.token_urlsafe(32)
         ttl = self.long_session_ttl if long_lived else self.session_ttl
         entry: dict = {
@@ -1105,6 +1163,8 @@ class AuthManager:
             "expires_at": time.time() + ttl,
             "long_lived": long_lived,
         }
+        if console:
+            entry["console"] = True
         if user_agent:
             entry["user_agent_hash"] = hashlib.sha256(user_agent.encode()).hexdigest()
         self._sessions[token] = entry
@@ -1156,6 +1216,20 @@ class AuthManager:
 
     def revoke_session(self, token: str) -> None:
         self._sessions.pop(token, None)
+
+    def revoke_console_sessions(self) -> int:
+        """End every session that was signed in at the device's own screen.
+
+        Locking the console must not depend on the console's browser still
+        holding (or being the only holder of) the cookie. Returns the count.
+        """
+        doomed = [
+            token for token, entry in self._sessions.items()
+            if isinstance(entry, dict) and entry.get("console")
+        ]
+        for token in doomed:
+            self._sessions.pop(token, None)
+        return len(doomed)
 
     def revoke_user_sessions(self, user_id: str) -> int:
         """Wipe all sessions for a user. Returns count revoked."""

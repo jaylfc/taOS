@@ -3,12 +3,14 @@ from __future__ import annotations
 import ipaddress
 import logging
 import re
+from urllib.parse import urlencode
 
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import HTMLResponse, RedirectResponse
 
+from tinyagentos import console_secret
 from tinyagentos.agent_token_auth import check_agent_identity, _get_keypair, _get_store
 from tinyagentos.auth import AuthStoreCorruptError
 from tinyagentos.device_store import DEVICE_TOKEN_PREFIX
@@ -25,7 +27,7 @@ logger = logging.getLogger(__name__)
 # password. See routes.auth.swipe_unlock.
 # Note /auth/pin (set/clear a PIN) is deliberately absent from this set: those
 # require a live session and must stay gated here.
-EXEMPT_PATHS = {"/auth/login", "/auth/pin-login", "/auth/swipe-unlock", "/auth/osk.js", "/auth/pin-panel.js", "/auth/lock-screen.js", "/auth/lock-widgets", "/auth/lock-weather", "/auth/lock-notifications", "/auth/lock-stats", "/auth/lock-panels", "/auth/lock-events", "/auth/lock-power-menu", "/auth/lock-screen-off", "/auth/lock-screen-on", "/auth/lock-brightness", "/auth/lock-torch", "/auth/lock-volume", "/auth/lock-volume-key", "/auth/lock-charge", "/auth/lock-radios", "/auth/lock-usb", "/auth/lock-power-action", "/auth/lock-app", "/auth/device-agent/heartbeat", "/auth/device-agent/message", "/auth/lock-call", "/auth/lock-call/ring", "/auth/lock-call/reset", "/auth/lock-call/action", "/auth/lock-call/dismiss", "/auth/setup", "/auth/status", "/auth/me", "/auth/complete", "/auth/lock", "/api/health", "/api/version", "/setup", "/setup/complete", "/redeem", "/api/desktop/browser/push/vapid-public-key", "/api/desktop/browser/proxy-config", "/sw.js", "/desktop", "/desktop/index.html", "/chat-pwa", "/app.html", "/manifest", "/api/agents/registry/pubkey", "/api/share/destinations"}
+EXEMPT_PATHS = {"/auth/login", "/auth/console-ticket", "/auth/pin-login", "/auth/swipe-unlock", "/auth/osk.js", "/auth/pin-panel.js", "/auth/lock-screen.js", "/auth/lock-widgets", "/auth/lock-weather", "/auth/lock-notifications", "/auth/lock-stats", "/auth/lock-panels", "/auth/lock-events", "/auth/lock-power-menu", "/auth/lock-screen-off", "/auth/lock-screen-on", "/auth/lock-brightness", "/auth/lock-torch", "/auth/lock-volume", "/auth/lock-volume-key", "/auth/lock-charge", "/auth/lock-radios", "/auth/lock-usb", "/auth/lock-power-action", "/auth/lock-app", "/auth/device-agent/heartbeat", "/auth/device-agent/message", "/auth/lock-call", "/auth/lock-call/ring", "/auth/lock-call/reset", "/auth/lock-call/action", "/auth/lock-call/dismiss", "/auth/setup", "/auth/status", "/auth/me", "/auth/complete", "/auth/lock", "/api/health", "/api/version", "/setup", "/setup/complete", "/redeem", "/api/desktop/browser/push/vapid-public-key", "/api/desktop/browser/proxy-config", "/sw.js", "/desktop", "/desktop/index.html", "/chat-pwa", "/app.html", "/manifest", "/api/agents/registry/pubkey", "/api/share/destinations"}
 
 # Registry feed endpoints accept EITHER an admin session OR a registry JWT.
 # When a Bearer token is present for these paths the request bypasses the
@@ -592,6 +594,32 @@ def rate_limit_retry_after(key: str) -> int:
     return _invite_limiter.retry_after(key)
 
 
+def _redeem_console_ticket(request: Request):
+    """303 to the same URL without the ticket, with the console cookie set."""
+    from tinyagentos.routes import auth as auth_routes
+
+    ticket = request.query_params.get(console_secret.TICKET_PARAM, "")
+    if not auth_routes._request_has_console_shape(request):
+        return None
+    if not console_secret.redeem_ticket(ticket):
+        return None
+    auth_mgr = getattr(request.app.state, "auth", None)
+    secret = console_secret.get_secret(getattr(auth_mgr, "data_dir", None))
+    if not secret:
+        return None
+    rest = [
+        (k, v) for k, v in request.query_params.multi_items()
+        if k != console_secret.TICKET_PARAM
+    ]
+    target = request.url.path + (("?" + urlencode(rest)) if rest else "")
+    response = RedirectResponse(target, status_code=303)
+    response.set_cookie(
+        console_secret.COOKIE_NAME, console_secret.cookie_value(secret),
+        httponly=True, samesite="lax", path="/",
+    )
+    return response
+
+
 def _is_exempt(method: str, path: str) -> bool:
     """Return True if this request should bypass the auth gate.
 
@@ -708,6 +736,15 @@ class AuthMiddleware(BaseHTTPMiddleware):
     async def _dispatch(self, request: Request, call_next):
         auth_mgr = request.app.state.auth
         path = request.url.path
+
+        # The shell's start URL carries a one-time console ticket (see
+        # console_secret): trade it for the console cookie and drop it from the URL.
+        if (
+            request.method == "GET"
+            and console_secret.TICKET_PARAM in request.url.query
+            and (ticket_response := _redeem_console_ticket(request)) is not None
+        ):
+            return ticket_response
 
         # Always allow exempt paths through (SPA shell, static assets, auth
         # endpoints, cluster heartbeat). Without this, a cached old client

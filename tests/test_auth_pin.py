@@ -130,14 +130,14 @@ class TestEscalatingThrottleRecovers:
             lim.record_failure("u1", now=1000.0)
         assert lim.retry_after("u1", now=1000.0) == 0
 
-    @pytest.mark.parametrize("failures,expected", [(5, 30), (10, 300), (15, 900), (40, 900)])
+    @pytest.mark.parametrize("failures,expected", [(5, 30), (6, 60), (7, 120), (10, 960), (12, 3600), (40, 3600)])
     def test_delay_escalates_by_tier_and_caps(self, failures, expected):
         lim = _PinAttemptLimiter()
         for _ in range(failures):
             lim.record_failure("u1", now=1000.0)
         assert lim.retry_after("u1", now=1000.0) == pytest.approx(expected, abs=1)
 
-    @pytest.mark.parametrize("failures,delay", [(5, 30), (10, 300), (15, 900), (40, 900)])
+    @pytest.mark.parametrize("failures,delay", [(5, 30), (6, 60), (7, 120), (10, 960), (12, 3600), (40, 3600)])
     def test_every_tier_expires_on_its_own(self, failures, delay):
         """The device must always become usable again without a second machine."""
         lim = _PinAttemptLimiter()
