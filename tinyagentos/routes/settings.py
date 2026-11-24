@@ -1843,6 +1843,86 @@ async def put_demo_mode(request: Request):
     return {"ok": True, "enabled": body["enabled"], "available": demo_flags_configured()}
 
 
+# ---------------------------------------------------------------------------
+# RK3588 performance mode (#361): the Settings toggle over the
+# taos-rk3588-perf.service unit. install-server.sh installs and enables
+# the unit on Rockchip boards; its ExecStart applies the devfreq governor
+# tuning and its ExecStop restores simple_ondemand, so enabling/disabling
+# the unit with --now changes the governors immediately AND persists the
+# choice across boots via the unit enablement state.
+# ---------------------------------------------------------------------------
+
+_RK3588_PERF_UNIT = "taos-rk3588-perf.service"
+_RK3588_PERF_UNIT_PATH = Path("/etc/systemd/system/taos-rk3588-perf.service")
+_RK3588_COMPATIBLE_PATH = Path("/proc/device-tree/compatible")
+# The same board set the perf unit's own ExecStart gate accepts.
+_RK3588_COMPATIBLE_RE = re.compile(r"rockchip,rk(3588|3576|3568)")
+
+
+def _rk3588_perf_supported() -> bool:
+    """True on the Rockchip boards taos-rk3588-perf.service applies to.
+
+    Mirrors the unit's own check of /proc/device-tree/compatible so the
+    settings route and the unit agree on where performance mode exists.
+    """
+    try:
+        raw = _RK3588_COMPATIBLE_PATH.read_bytes()
+    except OSError:
+        return False
+    return bool(_RK3588_COMPATIBLE_RE.search(raw.replace(b"\x00", b" ").decode(errors="replace")))
+
+
+async def _rk3588_perf_state() -> dict:
+    installed = _RK3588_PERF_UNIT_PATH.exists()
+    enabled = active = False
+    if installed:
+        code, _err = await _systemctl("is-enabled", _RK3588_PERF_UNIT)
+        enabled = code == 0
+        code, _err = await _systemctl("is-active", _RK3588_PERF_UNIT)
+        active = code == 0
+    return {
+        "supported": _rk3588_perf_supported(),
+        "installed": installed,
+        "enabled": enabled,
+        "active": active,
+    }
+
+
+@router.get("/api/settings/rk3588-performance")
+async def get_rk3588_performance(request: Request):
+    """Performance-mode state for the Settings toggle (#361).
+
+    ``supported`` is the Rockchip board check, ``installed`` whether the
+    perf unit exists on this device, ``enabled``/``active`` the unit's
+    systemctl state (both false when the unit is not installed).
+    """
+    return await _rk3588_perf_state()
+
+
+@router.put("/api/settings/rk3588-performance")
+async def put_rk3588_performance(request: Request):
+    """Flip performance mode. Admin-only via this router's dependency."""
+    try:
+        body = await request.json()
+    except ValueError:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(body, dict) or not isinstance(body.get("enabled"), bool):
+        return JSONResponse({"error": "'enabled' must be true or false"}, status_code=400)
+    if not _RK3588_PERF_UNIT_PATH.exists():
+        return JSONResponse(
+            {"error": f"{_RK3588_PERF_UNIT} is not installed on this device"},
+            status_code=409,
+        )
+    action = "enable" if body["enabled"] else "disable"
+    code, err = await _systemctl(action, "--now", _RK3588_PERF_UNIT)
+    if code != 0:
+        return JSONResponse(
+            {"error": f"systemctl {action} {_RK3588_PERF_UNIT} failed: {err or f'exit {code}'}"},
+            status_code=502,
+        )
+    return {"ok": True, **(await _rk3588_perf_state())}
+
+
 @router.get("/api/settings/collaboration")
 async def get_collaboration(request: Request):
     """The collaboration kill switch: instance-wide flag plus paused contacts."""
