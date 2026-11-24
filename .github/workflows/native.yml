@@ -21,13 +21,13 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  QT_ROOT: ${{ github.workspace }}/../qt
-  QT_PREFIX: ${{ github.workspace }}/../qt/6.12.1/gcc_64
-  LSQT_PREFIX: ${{ github.workspace }}/../layershell
+  QT_ROOT: /home/runner/qt
+  QT_PREFIX: /home/runner/qt/6.12.1/gcc_64
+  LSQT_PREFIX: /home/runner/layershell
   QT_QPA_PLATFORM: offscreen
   QT_QUICK_BACKEND: software
   CARGO_TERM_COLOR: always
-  CCACHE_DIR: ${{ github.workspace }}/../ccache
+  CCACHE_DIR: /home/runner/ccache
   CCACHE_MAXSIZE: 1G
 
 jobs:
