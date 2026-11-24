@@ -44,7 +44,7 @@ into the tree.
 * Fonts: the UI asks for `Inter`, `Noto Sans` or `DejaVu Sans` from the system and bundles none, except the Parallax
   theme (`shell/themes/parallax/fonts/`), which carries six TrueType files used under the SIL Open Font License 1.1,
   each family with its licence text beside it (`OFL-<family>.txt`) and listed in `shell/themes/parallax/NOTICE`:
-  Chakra Petch (Copyright 2018 The Chakra Petch Project Authors), IBM Plex Mono (Copyright 2018 IBM Corp.) and
+  Chakra Petch (Copyright 2018 The Chakra Petch Project Authors), IBM Plex Mono (Copyright © 2017 IBM Corp. with Reserved Font Name "Plex") and
   Barlow (Copyright 2017 The Barlow Project Authors). The fonts are unmodified.
 * Sounds: none.
 * Wallpapers: `shell/themes/parallax/wallpaper-ember.png`, `wallpaper-paper.png`, `wallpaper-signal.png` and
