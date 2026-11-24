@@ -52,6 +52,23 @@ def _real(monkeypatch):
 # ------------------------------------------------ slots.json integrity
 
 
+def _me():
+    return os.getuid(), os.getgid()
+
+
+def _taker(audit_root, record=None, after_open=None):
+    """The REAL _take_state_root, unprivileged: the service account is this
+    user, the trusted owner is this user, and the audit starts at tmp_path."""
+    import functools
+
+    def fch(fd, u, g):
+        if record is not None:
+            record.append(os.fstat(fd).st_ino)
+        os.fchown(fd, u, g)
+    return functools.partial(mi._take_state_root, fchown=fch, trusted_uid=os.getuid(),
+                             audit_root=audit_root, after_open=after_open)
+
+
 @pytest.mark.parametrize("content", [
     "",
     "   \n",
@@ -514,7 +531,7 @@ def test_install_template_refuses_when_not_root(tmp_path, monkeypatch, capsys):
     calls = []
     with pytest.raises(PermissionError):
         mi.install_template(unit_dir=tmp_path, runner=lambda *a, **k: calls.append(a),
-                            state=str(tmp_path / "s"), chown=lambda *a: calls.append(a))
+                            state=str(tmp_path / "s"), ids=_me, take=lambda *a, **k: calls.append(a))
     assert calls == []
     assert list(tmp_path.iterdir()) == []
     assert not (tmp_path / "s").exists()
@@ -532,13 +549,13 @@ def test_install_template_as_root_writes_the_unit_and_enables_nothing(tmp_path, 
     lines = mi.install_template(
         unit_dir=units, runner=lambda c, **kw: calls.append(c), python="/opt/taos/venv/bin/python",
         state=str(tmp_path / "state"), user_exists=lambda n: False,
-        chown=lambda p, u, g: chowns.append((str(p), u, g)))
+        ids=_me, take=_taker(tmp_path, record=chowns))
     assert calls == [["useradd", "-r", "-M", "-s", "/usr/sbin/nologin", "taos"],
                      ["systemctl", "daemon-reload"]]
     assert not any(w in c for c in calls for w in ("enable", "start", "restart", "--now"))
     unit = (units / "taos-mesh@.service").read_text()
     assert "ExecStart=/opt/taos/venv/bin/python -m tinyagentos.taosnet.mesh_instances exec %i" in unit
-    assert chowns == [(str(tmp_path / "state"), "taos", "taos")]
+    assert chowns == [os.stat(tmp_path / "state").st_ino]
     text = "\n".join(lines)
     assert "nothing was enabled or started" in text
     assert "systemctl enable --now taos-mesh@<p>" in text
@@ -549,7 +566,7 @@ def test_install_template_leaves_an_existing_user_alone(tmp_path, monkeypatch):
     monkeypatch.setattr(os, "geteuid", lambda: 0)
     calls = []
     mi.install_template(unit_dir=tmp_path, runner=lambda c, **kw: calls.append(c), python="/p/python",
-                        state=str(tmp_path), user_exists=lambda n: True, chown=lambda *a: None)
+                        state=str(tmp_path / "s"), user_exists=lambda n: True, ids=_me, take=_taker(tmp_path))
     assert calls == [["systemctl", "daemon-reload"]]
 
 
@@ -571,7 +588,7 @@ def test_every_created_state_directory_is_0700_whatever_the_umask_and_order(tmp_
     try:
         def install():
             mi.install_template(unit_dir=tmp_path, runner=lambda *a, **k: None, python="/p/python",
-                                state=str(state), user_exists=lambda n: True, chown=lambda *a: None)
+                                state=str(state), user_exists=lambda n: True, ids=_me, take=_taker(tmp_path))
         if order == "allocate-first":
             mi.allocate("a")
             install()
@@ -750,3 +767,167 @@ def test_nothing_installs_systemd_units_by_glob():
             if p.suffix != ".png" and glob.search(p.read_text())} == {}
     # and the control: the pattern does catch a glob install
     assert glob.search("cp $INSTALL_DIR/systemd/*.service /etc/systemd/system/")
+
+
+
+# ------------------------------------------- owner step: taking the state root
+
+
+def _root_with_files(tmp_path, mode=0o755):
+    state = tmp_path / "state"
+    state.mkdir()
+    os.chmod(state, mode)
+    (state / "slots.json").write_text('{"version": 1, "slots": {}}\n')
+    (state / ".slots.lock").write_text("")
+    return state
+
+
+def _take(tmp_path, state, **kw):
+    uid, gid = _me()
+    return _taker(tmp_path, **kw)(state, uid, gid)
+
+
+def test_existing_root_made_state_root_is_taken_0700_with_its_files(tmp_path):
+    state = _root_with_files(tmp_path)
+    person = state / "alice"
+    person.mkdir()
+    seen = []
+    lines = _take(tmp_path, state, record=seen)
+    assert _mode(state) == 0o700
+    inos = {os.stat(state).st_ino, os.stat(state / "slots.json").st_ino, os.stat(state / ".slots.lock").st_ino}
+    assert set(seen) == inos
+    assert os.stat(person).st_ino not in seen          # a person's directory keeps its owner
+    assert any("slots.json owned by" in l for l in lines)
+
+
+def test_messages_claim_only_what_existed(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    lines = _take(tmp_path, state)
+    assert not any("slots.json" in l or ".slots.lock" in l for l in lines)
+
+
+@pytest.mark.parametrize("name", ["slots.json", ".slots.lock"])
+def test_a_symlinked_slot_file_is_refused_and_its_target_untouched(tmp_path, name):
+    state = _root_with_files(tmp_path)
+    victim = tmp_path / "victim"
+    victim.write_text("x")
+    os.chmod(victim, 0o640)
+    (state / name).unlink()
+    (state / name).symlink_to(victim)
+    seen = []
+    with pytest.raises(mi.StateRootRefused):
+        _take(tmp_path, state, record=seen)
+    assert os.stat(victim).st_ino not in seen
+    assert _mode(victim) == 0o640
+
+
+def test_a_hard_linked_slot_file_is_refused(tmp_path):
+    state = _root_with_files(tmp_path)
+    os.link(state / "slots.json", tmp_path / "other-name")
+    seen = []
+    with pytest.raises(mi.StateRootRefused):
+        _take(tmp_path, state, record=seen)
+    assert os.stat(state / "slots.json").st_ino not in seen
+
+
+def test_a_fifo_slot_file_is_refused_without_hanging(tmp_path):
+    state = _root_with_files(tmp_path)
+    (state / ".slots.lock").unlink()
+    os.mkfifo(state / ".slots.lock")
+    with pytest.raises(mi.StateRootRefused):
+        _take(tmp_path, state)
+
+
+def test_a_symlinked_state_root_is_refused(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "state"
+    link.symlink_to(real)
+    seen = []
+    with pytest.raises(mi.StateRootRefused):
+        _take(tmp_path, link, record=seen)
+    assert seen == []
+
+
+def test_a_slot_file_swapped_for_a_link_after_the_root_is_opened_is_not_followed(tmp_path):
+    state = _root_with_files(tmp_path)
+    victim = tmp_path / "victim"
+    victim.write_text("x")
+
+    def swap():
+        (state / "slots.json").unlink()
+        (state / "slots.json").symlink_to(victim)
+    seen = []
+    with pytest.raises(mi.StateRootRefused):
+        _take(tmp_path, state, record=seen, after_open=swap)
+    assert os.stat(victim).st_ino not in seen
+
+
+def test_a_state_root_swapped_for_a_link_after_open_changes_only_the_opened_directory(tmp_path):
+    state = _root_with_files(tmp_path)
+    original = os.stat(state).st_ino
+    victim = tmp_path / "victim-dir"
+    victim.mkdir()
+    os.chmod(victim, 0o755)
+
+    def swap():
+        os.rename(state, tmp_path / "moved")
+        os.symlink(victim, state)
+    seen = []
+    _take(tmp_path, state, record=seen, after_open=swap)
+    assert seen[0] == original
+    assert os.stat(victim).st_ino not in seen and _mode(victim) == 0o755
+
+
+def test_a_group_or_world_writable_parent_is_refused(tmp_path):
+    parent = tmp_path / "lib"
+    parent.mkdir()
+    os.chmod(parent, 0o777)
+    state = parent / "mesh"
+    with pytest.raises(mi.StateRootRefused, match="writable"):
+        _take(tmp_path, state)
+    assert not state.exists()
+
+
+def test_a_parent_not_owned_by_root_is_refused(tmp_path):
+    state = _root_with_files(tmp_path)
+    uid, gid = _me()
+    with pytest.raises(mi.StateRootRefused, match="owned by"):
+        mi._take_state_root(state, uid, gid, trusted_uid=uid + 1, audit_root=tmp_path)
+
+
+def test_a_state_root_owned_by_a_third_user_is_refused(tmp_path, monkeypatch):
+    state = _root_with_files(tmp_path)
+    monkeypatch.setattr(mi, "_audit_parents", lambda *a, **k: None)
+    uid, gid = _me()
+    seen = []
+    with pytest.raises(mi.StateRootRefused, match="neither root nor"):
+        mi._take_state_root(state, uid + 1, gid, fchown=lambda fd, u, g: seen.append(fd),
+                            trusted_uid=uid + 2, audit_root=tmp_path)
+    assert seen == []
+
+
+def test_an_ownership_change_that_does_not_take_effect_is_refused(tmp_path, monkeypatch):
+    state = _root_with_files(tmp_path, mode=0o755)
+    monkeypatch.setattr(os, "fchmod", lambda fd, mode: None)   # a filesystem that ignores it
+    with pytest.raises(mi.StateRootRefused, match="did not take effect"):
+        _take(tmp_path, state)
+
+
+def test_taking_the_state_root_twice_is_idempotent(tmp_path):
+    state = _root_with_files(tmp_path)
+    _take(tmp_path, state)
+    lines = _take(tmp_path, state)
+    assert _mode(state) == 0o700 and any("owned by" in l for l in lines)
+
+
+@pytest.mark.parametrize("umask", [0o022, 0o000])
+def test_an_existing_state_root_ends_0700_whatever_the_umask(tmp_path, umask):
+    old = os.umask(umask)
+    try:
+        state = _root_with_files(tmp_path, mode=0o777 & ~umask)
+        _take(tmp_path, state)
+    finally:
+        os.umask(old)
+    assert _mode(state) == 0o700

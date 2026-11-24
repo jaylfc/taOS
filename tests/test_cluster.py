@@ -1290,6 +1290,60 @@ class TestHeartbeatDrainComplete:
         assert resp.status_code == 200, resp.text
         assert resp.json()["drain_complete"] is expected
 
+    async def test_heartbeat_returns_both_drain_complete_and_benchmark_request(self, client, app, tmp_path):
+        """The heartbeat response carries both drain_complete and benchmark_request.
+
+        The worker is a poller with no inbound HTTP surface, so a manual
+        benchmark run is queued on the controller and delivered in the
+        heartbeat response. The self-update feature adds drain_complete.
+        Both keys must coexist.
+        """
+        # Initialise benchmark store for this test
+        from tinyagentos.benchmark.store import BenchmarkStore
+        store = BenchmarkStore(tmp_path / "benchmarks.db")
+        await store.init()
+        app.state.benchmark_store = store
+        try:
+            mgr = app.state.cluster_manager
+            await mgr.register_worker(_make_worker("gpu-box"))
+
+            # No benchmark queued: benchmark_request is None, drain_complete is False
+            with patch(
+                "tinyagentos.routes.cluster.require_worker_hmac",
+                side_effect=lambda r: setattr(r.state, "hmac_worker_name", "gpu-box"),
+            ):
+                resp = await client.post("/api/cluster/heartbeat", json={"name": "gpu-box"})
+
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert "drain_complete" in body
+            assert "benchmark_request" in body
+            assert body["drain_complete"] is False
+            assert body["benchmark_request"] is None
+
+            # Queue a benchmark run and verify it appears in the heartbeat
+            # Use a recent timestamp so it doesn't expire
+            import time
+            recent_ts = time.time()
+            await store.request_run(worker_id="gpu-box", requested_at=recent_ts)
+
+            with patch(
+                "tinyagentos.routes.cluster.require_worker_hmac",
+                side_effect=lambda r: setattr(r.state, "hmac_worker_name", "gpu-box"),
+            ):
+                resp = await client.post("/api/cluster/heartbeat", json={"name": "gpu-box"})
+
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert "drain_complete" in body
+            assert "benchmark_request" in body
+            assert body["drain_complete"] is False
+            assert body["benchmark_request"] is not None
+            assert body["benchmark_request"]["worker_id"] == "gpu-box"
+            assert abs(body["benchmark_request"]["requested_at"] - recent_ts) < 1.0
+        finally:
+            await store.close()
+
 
 @pytest.mark.asyncio
 class TestDeployEndpointOperatorAccess:

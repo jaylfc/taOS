@@ -1,0 +1,6 @@
+### Fixed
+- The controller now holds exactly one writer per archive directory. `tinyagentos/archive_writer.py` keeps one registry keyed by the resolved real path of the directory (symlinks and relative spellings resolved), so a second open for writing of the same directory raises `ArchiveWriterHeldError` (a `RuntimeError`) naming the holder (`controller.app`), whatever label the second caller uses. The check and the publish of the new handle happen in one locked step.
+- The application lifespan takes the writer (with the index at `<data>/archive-index.db`, as before) and releases it on shutdown and on a failed start-up, so building and starting the app several times in one process works. `create_app` itself no longer builds an archive object; nothing read it before the lifespan.
+- `routes/memory_management.py` reaches the writer through `get_archive_writer()` and never opens an archive of its own. `SessionCatalog` and `CatalogPipeline` only read archive files by path and open no `Archive`, so they are unchanged.
+- `scheduling/job_worker.py` (not constructed anywhere in the controller today) takes a required `data_dir` and resolves its default paths against it instead of the working directory.
+- The lock is in-process and works with the memory library pinned today; it does not use any new library API.
