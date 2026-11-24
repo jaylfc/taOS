@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "about": "Built-in web app entries of the native Store. They merge with the server catalogue; a server entry of kind webapp with the same id wins. Proposed server schema: native/apps/PARITY-store.md.",
+  "apps": [
+    {"id": "youtube", "name": "YouTube", "url": "https://www.youtube.com", "icon": "auto", "categories": ["media", "video"],
+     "tagline": "Watch and upload videos", "description": "YouTube in its own window with its own sign-in. Add it more than once to keep several accounts apart."},
+    {"id": "youtube-music", "name": "YouTube Music", "url": "https://music.youtube.com", "icon": "auto", "categories": ["media", "music"],
+     "tagline": "Music and playlists", "description": "YouTube Music in its own window, with its own sign-in and its own storage."},
+    {"id": "whatsapp-web", "name": "WhatsApp Web", "url": "https://web.whatsapp.com", "icon": "auto", "categories": ["communication"],
+     "tagline": "Your WhatsApp chats on this desktop", "description": "WhatsApp Web in its own window. Link it from the WhatsApp app on your phone."},
+    {"id": "telegram-web", "name": "Telegram Web", "url": "https://web.telegram.org/a/", "icon": "auto", "categories": ["communication"],
+     "tagline": "Telegram chats on this desktop", "description": "Telegram's web client in its own window, with its own sign-in."},
+    {"id": "discord", "name": "Discord", "url": "https://discord.com/app", "icon": "auto", "categories": ["communication"],
+     "tagline": "Voice, video and text communities", "description": "Discord in its own window, with its own sign-in."},
+    {"id": "x", "name": "X", "url": "https://x.com", "icon": "auto", "categories": ["social"],
+     "tagline": "News and conversation", "description": "X in its own window, with its own sign-in."},
+    {"id": "github", "name": "GitHub", "url": "https://github.com", "icon": "auto", "categories": ["development"],
+     "tagline": "Code hosting and collaboration", "description": "GitHub in its own window. Add it once per account."},
+    {"id": "google-maps", "name": "Google Maps", "url": "https://www.google.com/maps", "icon": "auto", "categories": ["maps", "utilities"],
+     "tagline": "Maps, routes and places", "description": "Google Maps in its own window."}
+  ]
+}
