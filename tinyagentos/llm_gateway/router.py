@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 from fastapi import APIRouter, Depends, Request
@@ -24,6 +25,7 @@ from tinyagentos.llm_gateway.forward import (
 from tinyagentos.llm_gateway.anthropic import chat_completion_anthropic
 from tinyagentos.llm_gateway import stt, tts
 from tinyagentos.llm_gateway.resolve import TAOS_DEFAULT, find_routes, model_names, routing_table
+from tinyagentos.llm_gateway.images import shrink_images, has_image_parts
 import tinyagentos.llm_gateway.resolve as resolve_mod
 
 PREFIX = "/api/llm/v1"
@@ -47,8 +49,9 @@ def _model_entry(name: str) -> dict:
 
 @router.get("/models")
 async def list_models(request: Request, caller: GatewayCaller = Depends(gateway_caller)):
+    table = await routing_table(request.app.state)
     names = [TAOS_DEFAULT] + [
-        n for n in model_names(routing_table(request.app.state)) if n != TAOS_DEFAULT
+        n for n in model_names(table) if n != TAOS_DEFAULT
     ]
     return {"object": "list", "data": [_model_entry(n) for n in names if caller.may_use(n)]}
 
@@ -92,7 +95,7 @@ async def chat_completions(request: Request, caller: GatewayCaller = Depends(gat
                 "taos-default has nothing behind it: no default chat model is set. "
                 "Pick one in the taOS agent settings."
             )
-    routes = find_routes(routing_table(state), name)
+    routes = find_routes(await routing_table(state), name)
     if not routes:
         suffix = f" (taos-default points at it)" if name != requested else ""
         raise model_not_found(f"model {name!r} not found{suffix}")
@@ -100,6 +103,9 @@ async def chat_completions(request: Request, caller: GatewayCaller = Depends(gat
     alias_grant = requested == TAOS_DEFAULT and caller.may_use(TAOS_DEFAULT)
     if route.model_name != requested and not alias_grant and not caller.may_use(route.model_name):
         raise model_not_permitted(route.model_name)
+
+    if has_image_parts(body):
+        body = await asyncio.to_thread(shrink_images, body)
 
     # Route through appropriate handler based on provider
     if route.provider == "anthropic":

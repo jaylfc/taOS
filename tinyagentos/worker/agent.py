@@ -27,6 +27,12 @@ _REPAIR_INTERVAL = 60
 # How often to re-log the re-pair instruction while in the needs-re-pair state.
 _REPAIR_LOG_INTERVAL = 300  # 5 minutes
 
+# Name of the state-dir file the worker rewrites after every successful
+# heartbeat ("last heartbeat OK": epoch seconds).  The deploy helper's
+# health check reads it as proof of work -- a worker process that is
+# alive but cannot reach the controller never refreshes it (PR #1910).
+HEARTBEAT_OK_FILENAME = "last-heartbeat-ok"
+
 
 # Marker dropped by install-worker.sh when it backs up an existing
 # taos-worker-pool. The worker forwards it to the controller once on
@@ -88,6 +94,12 @@ def _is_repair_rejection(resp) -> bool:
         return code in {"worker_not_paired", "bad_signature"}
     except Exception:  # noqa: BLE001
         return False
+
+
+# How many times one update request may be started before giving up. A restart
+# between claiming the trigger and writing the update marker resumes the update,
+# so one that kills the worker every time must not loop forever.
+UPDATE_TRIGGER_MAX_ATTEMPTS = 3
 
 
 def _gpu_type(hardware: dict) -> str | None:
@@ -190,18 +202,29 @@ _DEFAULT_PROBE_CANDIDATES: tuple[tuple[str, str], ...] = (
     ("vllm", "http://localhost:18000"),           # TAOS-bundled vLLM (future)
     ("sd-cpp", "http://localhost:7864"),
     ("exo", "http://localhost:52415"),           # exo distributed inference (default port)
+    ("lmstudio", "http://localhost:1234"),       # LM Studio local server (default port)
+    ("kokoro", "http://localhost:8880"),         # kokoro-fastapi TTS server
 )
+# moss (:30000) and whisper (:9000) deliberately have no default candidate.
+# :30000 is SGLang's stock port, so any ordinary SGLang LLM there would be
+# advertised as a 'tts' backend, and :9000 is shared with MinIO and php-fpm.
+# Neither type has a server-specific health check either: both fall through to
+# the generic /v1/models probe, which cannot tell them apart from whatever else
+# answers on that port. A configured backend of either type is still probed --
+# they stay in _PROBEABLE_TYPES below and in the worker-manifest mapping.
 
 # Types an extra/manifest candidate may declare: the local servers whose API
 # detect_backends can probe (/api/tags, /sdapi/v1/sd-models, /v1/models,
-# llama-swap's /running). llama-swap has no default candidate: its default
-# port 8080 is also llama.cpp's and rkllama's legacy one, so it is configured.
+# llama-swap's /running). llama-swap, whisper and moss have no default
+# candidate -- their ports collide with other servers (8080 with llama.cpp and
+# rkllama, 9000 with MinIO/php-fpm, 30000 with SGLang) -- so they are only
+# probed when the manifest or TAOS_EXTRA_BACKENDS configures them.
 _PROBEABLE_TYPES = frozenset({
     "rkllama", "ollama", "hailo-ollama", "llama-cpp", "llama-swap", "vllm", "exo", "mlx",
-    "sd-cpp",
+    "sd-cpp", "lmstudio", "whisper", "kokoro", "moss",
 })
 # Types detected by /v1/models alone, which a llama-swap server also answers.
-_OPENAI_MODELS_TYPES = frozenset({"llama-cpp", "vllm", "exo", "mlx"})
+_OPENAI_MODELS_TYPES = frozenset({"llama-cpp", "vllm", "exo", "mlx", "lmstudio", "whisper", "kokoro", "moss"})
 _MAX_EXTRA_BACKENDS = 16
 # Total time one candidate may take. httpx timeouts are per read, so a server
 # trickling bytes could otherwise hold the probe (and the heartbeat, which the
@@ -400,6 +423,37 @@ def _dedupe_candidates(candidates: list[tuple[str, str]]) -> list[tuple[str, str
     return out
 
 
+async def _run_post_update_hook(
+    controller_url: str,
+    agent,  # WorkerAgent
+    state_dir: Path,
+) -> None:
+    """Background wrapper around post_update_startup.
+
+    Runs the post-restart health-check and outcome-signalling hook as
+    a fire-and-forget task so the worker heartbeat loop is never blocked
+    by the grace period + health-check delay (CodeRabbit, Jul 31).
+    """
+    try:
+        from tinyagentos.worker.self_update import post_update_startup
+
+        outcome = await post_update_startup(
+            controller_url=controller_url,
+            agent=agent,
+            state_dir=state_dir,
+        )
+        if outcome is not None:
+            logger.info(
+                "self-update: post-restart outcome=%s",
+                outcome.get("outcome", "unknown"),
+            )
+    except Exception:
+        logger.warning(
+            "post_update_startup hook failed — continuing",
+            exc_info=True,
+        )
+
+
 class WorkerAgent:
     def __init__(
         self,
@@ -422,6 +476,7 @@ class WorkerAgent:
         # silently revert a draining/updating worker back to "online".
         self._lifecycle_status: str | None = None
         self._lifecycle_reason: str | None = None
+        self._post_update_task: asyncio.Task | None = None
         self._generation: int | None = None
 
         from tinyagentos.worker.pairing import default_state_dir, load_signing_key
@@ -431,6 +486,16 @@ class WorkerAgent:
         # Worker update-check service (background version polling).
         # Created eagerly so callers can inspect state; started in run().
         self._update_service: "WorkerUpdateService | None" = None
+
+        # Queued manual benchmark runs. The controller queues the request and
+        # hands it over in the heartbeat response (the agent is a poller with
+        # no inbound HTTP surface); see worker/benchmark_pull.py.
+        from tinyagentos.worker.benchmark_pull import BenchmarkRequestRunner
+        self._benchmark_pull = BenchmarkRequestRunner(
+            controller_url=self.controller_url,
+            worker_name=self.name,
+        )
+        self._last_heartbeat_request: dict | None = None
 
     async def detect_backends(self) -> list[dict]:
         """Discover locally running inference backends via live probing.
@@ -470,6 +535,23 @@ class WorkerAgent:
             + _parse_extra_backends(os.environ.get("TAOS_EXTRA_BACKENDS", ""))
             + [(bt, url) for bt, url, _ in declared if url and bt in _PROBEABLE_TYPES]
         )
+        # Kokoro-specific signal is required only for the DEFAULT kokoro
+        # candidate (kokoro-fastapi on :8880). A kokoro configured via the
+        # manifest or TAOS_EXTRA_BACKENDS keeps the generic /v1/models probe.
+        default_kokoro_keys = {
+            _candidate_key(bt, url) for bt, url in _DEFAULT_PROBE_CANDIDATES if bt == "kokoro"
+        }
+        # Exclude any kokoro keys that come from configured backends
+        # (manifest or TAOS_EXTRA_BACKENDS) so they get the generic probe.
+        configured_kokoro_keys = {
+            _candidate_key(bt, url)
+            for bt, url in (
+                _parse_extra_backends(os.environ.get("TAOS_EXTRA_BACKENDS", ""))
+                + [(bt, url) for bt, url, _ in declared if url and bt in _PROBEABLE_TYPES]
+            )
+            if bt == "kokoro"
+        }
+        default_kokoro_keys -= configured_kokoro_keys
 
         async def probe(client: httpx.AsyncClient, backend_type: str, base_url: str):
             if backend_type == "llama-swap":
@@ -478,7 +560,12 @@ class WorkerAgent:
                     return None
                 models, loaded_models = probed
             else:
-                models = await self._probe_models(client, backend_type, base_url)
+                if backend_type == "kokoro" and _candidate_key(
+                    backend_type, base_url
+                ) in default_kokoro_keys:
+                    models = await self._probe_kokoro(client, base_url)
+                else:
+                    models = await self._probe_models(client, backend_type, base_url)
                 if models is None:
                     return None  # backend not running here
                 loaded_models = await self._probe_loaded_models(client, backend_type, base_url)
@@ -693,14 +780,50 @@ class WorkerAgent:
                     for m in (resp.json() if isinstance(resp.json(), list) else [])
                 ]
             # llama-cpp / vllm, OpenAI compat /v1/models
-            resp = await client.get(f"{base_url}/v1/models")
+            return await self._probe_openai_models(client, base_url)
+        except Exception:
+            return None
+
+    async def _probe_openai_models(
+        self, client: httpx.AsyncClient, base_url: str
+    ) -> list[dict] | None:
+        """Query an OpenAI-compatible ``/v1/models`` endpoint.
+
+        Returns the model list, or None when the endpoint is unreachable or
+        does not return a ``{"data": [...]}`` body.
+        """
+        resp = await client.get(f"{base_url}/v1/models")
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        return [
+            {"name": m.get("id", ""), "size_mb": 0}
+            for m in data.get("data", [])
+        ]
+
+    async def _probe_kokoro(
+        self, client: httpx.AsyncClient, base_url: str
+    ) -> list[dict] | None:
+        """Kokoro-specific probe for the DEFAULT kokoro candidate.
+
+        kokoro-fastapi serves GET /v1/audio/voices (JSON with a 'voices'
+        list). The candidate is only advertised as a kokoro/tts backend
+        when that endpoint returns HTTP 200 and a 'voices' key that is a
+        list; otherwise it is skipped silently (like a closed port). A
+        kokoro backend configured via the manifest or TAOS_EXTRA_BACKENDS
+        keeps the generic /v1/models probe and is not subject to this
+        check.
+        """
+        try:
+            resp = await client.get(f"{base_url}/v1/audio/voices")
             if resp.status_code != 200:
                 return None
             data = resp.json()
-            return [
-                {"name": m.get("id", ""), "size_mb": 0}
-                for m in data.get("data", [])
-            ]
+            if not isinstance(data, dict) or not isinstance(data.get("voices"), list):
+                return None
+            # kokoro-fastapi confirmed: read the model catalog like the other
+            # OpenAI-compatible backends.
+            return await self._probe_openai_models(client, base_url)
         except Exception:
             return None
 
@@ -936,6 +1059,45 @@ class WorkerAgent:
             logger.error(f"Failed to register: {e}")
             return False
 
+    @property
+    def _heartbeat_ok_path(self) -> Path:
+        return self._state_dir / HEARTBEAT_OK_FILENAME
+
+    def _record_heartbeat_ok(self) -> None:
+        """Rewrite the heartbeat-ok timestamp after a successful heartbeat.
+
+        The deploy helper's health check treats a fresh timestamp as the
+        proof that the worker is actually reaching the controller; the
+        process being alive is not enough, and the post-update check runs
+        inside the worker itself, so it cannot take the process's word
+        for it (PR #1910).  Written through ``atomic_write_text`` so a
+        concurrent reader never sees a partial value and the write is
+        durable (fsync of the file and of the parent directory).
+        Best-effort: a failed write is logged, never raised -- it must
+        not break the heartbeat itself.
+        """
+        from tinyagentos.atomic_io import atomic_write_text
+
+        try:
+            self._state_dir.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(self._heartbeat_ok_path, f"{time.time():.0f}\n")
+        except OSError as exc:
+            logger.warning("could not record heartbeat-ok timestamp: %s", exc)
+
+    def _clear_heartbeat_ok(self) -> None:
+        """Drop any heartbeat-ok timestamp left by a previous process.
+
+        Called when the run loop starts: until THIS process completes a
+        successful heartbeat the file must say nothing, so a restarted
+        worker cannot pass the health check on its predecessor's last
+        heartbeat while it is itself wedged or unable to reach the
+        controller.
+        """
+        try:
+            self._heartbeat_ok_path.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("could not clear heartbeat-ok timestamp: %s", exc)
+
     async def heartbeat(self, status: str | None = None, drain_reason: str | None = None) -> int:
         """Send heartbeat to controller with live backend catalog.
 
@@ -1053,6 +1215,9 @@ class WorkerAgent:
             body = _json.dumps(payload).encode()
             auth_headers = sign_request_headers(self._signing_key, self.name, "POST", path, body)
             auth_headers["content-type"] = "application/json"
+            # Only a response we actually parsed counts as the current queue
+            # state: drop the previous delivery before asking again.
+            self._last_heartbeat_request = None
             async with httpx.AsyncClient(timeout=5) as client:
                 resp = await client.post(
                     f"{self.controller_url}{path}",
@@ -1072,8 +1237,12 @@ class WorkerAgent:
                                 "heartbeat response stopped echoing generation - "
                                 "split-brain layer-2 protection may be degraded"
                             )
+                        request = resp_json.get("benchmark_request")
+                        self._last_heartbeat_request = request if isinstance(request, dict) else None
                     except Exception as exc:  # noqa: BLE001
                         logger.warning(f"could not read generation from heartbeat response: {exc}")
+                if resp.status_code == 200:
+                    self._record_heartbeat_ok()
                 return resp.status_code
         except Exception as exc:  # noqa: BLE001
             # Log before swallowing: a payload-build bug (not just a network
@@ -1083,6 +1252,16 @@ class WorkerAgent:
             return 0
 
     # ── Worker-initiated drain (taOS #890 C2) ──────────────────────────
+
+    async def _maybe_start_requested_benchmark(self) -> bool:
+        """Start a controller-queued manual benchmark run, if one is waiting.
+
+        The controller re-delivers the queued run on every heartbeat until
+        results arrive; BenchmarkRequestRunner owns the "one run at a time,
+        bounded attempts" decision, and the run itself is the same
+        ``python -m tinyagentos.benchmark.runner`` the first-attach hook uses.
+        """
+        return await self._benchmark_pull.handle(self._last_heartbeat_request)
 
     async def report_update_available(self, reason: str = "update") -> int:
         """Report that an update is available but the worker is still serving.
@@ -1116,16 +1295,155 @@ class WorkerAgent:
         """Notify the controller that the worker's drain is complete.
 
         After in-flight work finishes, the worker sends one final
-        heartbeat with status="updating" to signal readiness for
-        the update. The controller can then proceed with the update
-        deploy.
+        heartbeat to confirm readiness for the update. The controller
+        can then proceed with the update deploy.
+
+        This is also the abort path. Every failure in
+        ``self_update.run_full_update`` (checkpoint, pull, dependency
+        update or restart) calls this to return the worker to routing, and
+        the run loop re-sends ``self._lifecycle_status`` on every
+        subsequent heartbeat. Clearing the lifecycle state here is what
+        makes the worker routable again: without it the run loop keeps
+        advertising ``"draining"`` forever, and the controller -- which
+        deliberately refuses to un-drain a worker on a status-less
+        heartbeat -- keeps it out of routing until it is restarted by
+        hand.
 
         Returns the HTTP status code from the controller.
         """
         logger.info("worker '%s': drain complete, ready for update", self.name)
-        self._lifecycle_status = "updating"
-        self._lifecycle_reason = "drain-complete"
-        return await self.heartbeat(status="updating")
+        self._lifecycle_status = None
+        self._lifecycle_reason = None
+        return await self.heartbeat()
+
+    # ── Self-update trigger (taOS #890 C3) ─────────────────────────────
+
+    async def _check_update_trigger(self) -> bool:
+        """Check for a pending self-update trigger file and execute it.
+
+        The trigger file is written atomically by the deploy helper's
+        ``trigger-update`` subcommand, run by an operator or cron job on
+        the worker host.
+        Its presence signals that the worker should run the full self-update
+        lifecycle (checkpoint → drain → pull → deps → restart).
+
+        Returns True if a trigger was found and processed; False otherwise.
+        """
+        trigger_path = self._state_dir / "update-trigger.json"
+        claimed_path = self._state_dir / "update-trigger.claimed.json"
+        # This method awaits the whole update, so a claim seen here was left by
+        # an earlier process.
+        if claimed_path.exists():
+            await self._recover_claimed_trigger(trigger_path, claimed_path)
+        if not trigger_path.exists():
+            return False
+
+        try:
+            trigger = json.loads(trigger_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            logger.warning("update trigger file unreadable — removing")
+            trigger_path.unlink(missing_ok=True)
+            return False
+
+        target_ref = trigger.get("target_ref", "")
+        if not target_ref:
+            logger.warning("update trigger missing target_ref — removing")
+            trigger_path.unlink(missing_ok=True)
+            return False
+
+        graceful = trigger.get("graceful", True)
+
+        logger.info(
+            "self-update: trigger received — target=%s graceful=%s",
+            target_ref, graceful,
+        )
+
+        # Claim the trigger BEFORE running the update so a duplicate run is
+        # never launched, while keeping it recoverable: the update marker that
+        # post_update_startup relies on is only written late in the update, and
+        # a restart before that point would otherwise leave the worker drained
+        # with nothing left to finish the update.
+        os.replace(trigger_path, claimed_path)
+
+        try:
+            from tinyagentos.worker.self_update import run_full_update
+            result = await run_full_update(
+                target_ref=target_ref,
+                controller_url=self.controller_url,
+                agent=self,
+                state_dir=self._state_dir,
+                graceful=graceful,
+            )
+            if not result.get("ok"):
+                logger.error(
+                    "self-update: update failed: %s", result.get("error", "unknown")
+                )
+        except Exception:
+            logger.error("self-update: update threw exception", exc_info=True)
+
+        # The update reached a terminal state. A cancellation skips this on
+        # purpose, so shutting down mid-update resumes it on the next start.
+        claimed_path.unlink(missing_ok=True)
+        return True
+
+    async def _recover_claimed_trigger(self, trigger_path: Path, claimed_path: Path) -> None:
+        """Handle a trigger claimed by a process that did not finish its update.
+
+        Past the update marker post_update_startup owns the outcome, and a newer
+        request replaces the interrupted one; otherwise the claim goes back to
+        being a trigger, up to UPDATE_TRIGGER_MAX_ATTEMPTS starts in all.
+        """
+        from tinyagentos.atomic_io import atomic_write_text
+        from tinyagentos.worker.self_update import read_update_marker
+
+        if trigger_path.exists() or read_update_marker(self._state_dir) is not None:
+            claimed_path.unlink(missing_ok=True)
+            return
+        try:
+            trigger = json.loads(claimed_path.read_text())
+            attempts = int(trigger.get("attempts", 0)) + 1
+        except (json.JSONDecodeError, OSError, AttributeError, TypeError, ValueError):
+            logger.warning("claimed update trigger unreadable — removing")
+            claimed_path.unlink(missing_ok=True)
+            return
+        if attempts >= UPDATE_TRIGGER_MAX_ATTEMPTS:
+            logger.error(
+                "self-update: giving up on %s after %d interrupted attempts",
+                trigger.get("target_ref", "?"), attempts,
+            )
+            claimed_path.unlink(missing_ok=True)
+            await self.notify_drain_complete()
+            return
+        logger.warning(
+            "self-update: resuming interrupted update to %s (attempt %d)",
+            trigger.get("target_ref", "?"), attempts + 1,
+        )
+        trigger["attempts"] = attempts
+        atomic_write_text(claimed_path, json.dumps(trigger))
+        os.replace(claimed_path, trigger_path)
+
+    def _schedule_post_update_hook(self) -> None:
+        """Start the post-update hook unless one is already running.
+
+        Every successful registration lands here, and a controller 404 during
+        the hook's grace period causes another one. Two hooks would read the
+        same marker, signal twice and could start concurrent rollbacks.
+        """
+        if self._post_update_task is not None and not self._post_update_task.done():
+            return
+        self._post_update_task = asyncio.ensure_future(_run_post_update_hook(
+            self.controller_url, self, self._state_dir,
+        ))
+
+    async def _cancel_post_update_hook(self) -> None:
+        task = self._post_update_task
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
     def _log_repair_instruction(self) -> None:
         logger.error(
@@ -1156,6 +1474,7 @@ class WorkerAgent:
         needed.
         """
         self._running = True
+        self._clear_heartbeat_ok()
         _in_repair = False
         _last_repair_log: float = 0.0
 
@@ -1175,6 +1494,19 @@ class WorkerAgent:
                     if result is True:
                         logger.info(f"worker '{self.name}' registered with {self.controller_url}")
                         _in_repair = False
+
+                        # ── Post-update startup hook (taOS #890 C3) ─────────
+                        # If an update-in-progress marker exists from a
+                        # pre-restart checkpoint, run the health-check and
+                        # signal the outcome (success or rollback) to the
+                        # controller.
+                        #
+                        # Scheduled as a background task so the worker loop
+                        # can register and send heartbeats immediately; the
+                        # hook's grace period + health check would otherwise
+                        # block the loop long enough for the controller to
+                        # mark the worker offline (CodeRabbit, Jul 31).
+                        self._schedule_post_update_hook()
                         continue
                     if result == _NEEDS_REPAIR:
                         # Controller rejected our key -- enter needs-re-pair state.
@@ -1220,8 +1552,21 @@ class WorkerAgent:
                     # registered flag yet; the controller may still know
                     # us when it comes back. Just retry on next tick.
                     pass
+
+                # Check for pending self-update trigger on each heartbeat
+                # cycle. The check is cheap (a file stat) and the trigger
+                # file is claimed atomically before the update runs.
+                await self._check_update_trigger()
+
+                # A queued manual benchmark run is delivered in the heartbeat
+                # response (see worker/benchmark_pull.py); only a live
+                # heartbeat can carry one.
+                if status == 200:
+                    await self._maybe_start_requested_benchmark()
+
                 await asyncio.sleep(5)
         finally:
+            await self._cancel_post_update_hook()
             if self._update_service is not None:
                 await self._update_service.stop()
 

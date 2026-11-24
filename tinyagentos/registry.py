@@ -7,13 +7,58 @@ import threading
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from pydantic_core import PydanticCustomError
 
 logger = logging.getLogger(__name__)
+
+
+class ContainerServeWeb(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    wasm: bool = False
+    downloads: bool = False
+    inline_scripts: bool = False
+
+
+class ContainerServe(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    port: int = Field(ge=1, le=65535)
+    path_prefix: str = "/"
+    web: ContainerServeWeb = Field(default_factory=ContainerServeWeb)
+
+    @field_validator("path_prefix")
+    @classmethod
+    def _validate_path_prefix(cls, value: str) -> str:
+        if not value.startswith("/"):
+            raise ValueError("path_prefix must start with /")
+        if not value.endswith("/"):
+            raise ValueError("path_prefix must end with /")
+        if ".." in value:
+            raise ValueError("path_prefix must not contain ..")
+        import re
+
+        if not re.match(r"^/[A-Za-z0-9._~/-]*$", value):
+            raise ValueError("path_prefix has invalid characters")
+        return value
+
+
+class ContainerSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    runtimes: list[Literal["lxc", "docker"]] = Field(
+        default_factory=lambda: ["lxc", "docker"], min_length=1
+    )
+    sharing: Literal["shareable", "own", "suite-only"] = "shareable"
+    base_image: str = "images:debian/bookworm"
+    gpu: Literal["none", "optional", "required"] = "none"
+    limits: dict[str, Any] = Field(default_factory=dict)
+    state_paths: list[str] = Field(default_factory=list)
+    serve: ContainerServe | None = None
 
 
 class AppState(str, Enum):
@@ -84,6 +129,17 @@ class AppManifest(BaseModel):
     capabilities: list[Any] = Field(default_factory=list)
     lifecycle: dict[str, Any] = Field(default_factory=dict)
     manifest_dir: Path | None = None
+
+    def container_spec(self) -> "ContainerSpec | None":
+        """Parse install.container, or None when the manifest has no such block.
+
+        Raises pydantic.ValidationError when the block is malformed. Loading the
+        catalog never calls this, so a malformed block cannot drop a manifest.
+        """
+        block = self.install.get("container") if isinstance(self.install, dict) else None
+        if block is None:
+            return None
+        return ContainerSpec.model_validate(block)
 
     @field_validator("version", mode="before")
     @classmethod

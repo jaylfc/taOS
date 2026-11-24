@@ -2591,8 +2591,8 @@ class TestDeferBindingApproval:
 
     @pytest.mark.asyncio
     async def test_two_deferred_grants_inherit_earliest_expiry(self, tmp_path):
-        """Two live deferred grants: the new project grant inherits the EARLIEST
-        expiry, not the oldest grant's (which here is the later one)."""
+        """Two live deferred PROJECT grants: the new project grant inherits the
+        EARLIEST expiry, not the oldest grant's (which here is the later one)."""
         from datetime import datetime, timedelta, timezone
         from tinyagentos.agent_grants_store import AgentGrantsStore
         from tinyagentos.routes.agent_auth_requests import add_agent_to_project
@@ -2607,8 +2607,9 @@ class TestDeferBindingApproval:
         try:
             # OLDER grant (added first) expires LATER; NEWER grant expires sooner.
             # Distinct scopes: UNIQUE(canonical_id, scope, project_id).
+            # Both are PROJECT scopes so the deferred-grant logic applies.
             await grants.add_grant("agent-e", "project_tasks", project_id=None, expires_at=in_2_days)
-            await grants.add_grant("agent-e", "memory_read", project_id=None, expires_at=in_1_hour)
+            await grants.add_grant("agent-e", "project_tasks_create", project_id=None, expires_at=in_1_hour)
             request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
                 agent_grants=grants,
                 relationships=SimpleNamespace(set_permission=AsyncMock()),
@@ -2630,8 +2631,8 @@ class TestDeferBindingApproval:
 
     @pytest.mark.asyncio
     async def test_expired_old_deferred_grant_does_not_block_live_one(self, tmp_path):
-        """An expired OLD deferred grant must not refuse the binding while a
-        NEWER deferred grant is still live."""
+        """An expired OLD deferred PROJECT grant must not refuse the binding
+        while a NEWER deferred PROJECT grant is still live."""
         from datetime import datetime, timedelta, timezone
         from tinyagentos.agent_grants_store import AgentGrantsStore
         from tinyagentos.routes.agent_auth_requests import add_agent_to_project
@@ -2645,7 +2646,7 @@ class TestDeferBindingApproval:
         await grants.init()
         try:
             await grants.add_grant("agent-x", "project_tasks", project_id=None, expires_at=expired)
-            await grants.add_grant("agent-x", "memory_read", project_id=None, expires_at=in_1_hour)
+            await grants.add_grant("agent-x", "project_tasks_create", project_id=None, expires_at=in_1_hour)
             request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
                 agent_grants=grants,
                 relationships=SimpleNamespace(set_permission=AsyncMock()),
@@ -3607,6 +3608,91 @@ class TestProjectCreateRequest:
         await registry.close()
         await auth_store.close()
         await pstore.close()
+
+    @pytest.mark.asyncio
+    async def test_project_create_notification_reaches_only_admins(
+        self, client, monkeypatch, tmp_path
+    ):
+        """The bell row names the requested project (name, slug, purpose), and
+        only an admin can decide it, so it must be addressed to each admin and
+        never broadcast to every user on the instance."""
+        from tinyagentos.agent_registry_store import (
+            AgentRegistryStore,
+            load_or_create_signing_keypair,
+            mint_registry_token,
+        )
+        from tinyagentos.auth_requests_store import AuthRequestsStore
+        from tinyagentos.projects.project_store import ProjectStore
+
+        app = client._transport.app
+        code = app.state.auth.add_user_invite("carol", "admin")
+        app.state.auth.complete_invite("carol", code, "Carol", "", "carolpass123")
+        carol = app.state.auth.find_user("carol")
+        admin = app.state.auth.find_user("admin")
+
+        registry = AgentRegistryStore(tmp_path / "reg-pcnotif.db")
+        await registry.init()
+        auth_store = AuthRequestsStore(tmp_path / "auth-pcnotif.db")
+        await auth_store.init()
+        pstore = ProjectStore(tmp_path / "projects-pcnotif.db")
+        await pstore.init()
+        priv, pub = load_or_create_signing_keypair(tmp_path / "keys-pcnotif")
+
+        reg = await registry.register(
+            framework="openclaw",
+            display_name="agent-alice",
+            user_id="u",
+            origin="external-selfjoin",
+            handle="agent-alice",
+        )
+        await registry.set_status(reg["canonical_id"], "active")
+        token = mint_registry_token(
+            reg["canonical_id"], priv, user_id="u", framework="openclaw"
+        )
+
+        monkeypatch.setattr(app.state, "agent_registry", registry)
+        monkeypatch.setattr(app.state, "auth_requests", auth_store)
+        monkeypatch.setattr(app.state, "project_store", pstore)
+        monkeypatch.setattr(app.state, "agent_registry_keypair", (priv, pub))
+        # A second admin shows the row reaches every admin, not just the first.
+        real_list_users = app.state.auth.list_users
+        monkeypatch.setattr(
+            app.state.auth,
+            "list_users",
+            lambda: real_list_users() + [{"id": "second-admin", "is_admin": True}],
+        )
+
+        try:
+            resp = await client.post(
+                "/api/agents/auth-requests",
+                json={
+                    "identity_claim": "agent-alice",
+                    "framework": "openclaw",
+                    "kind": "project_create",
+                    "requested_name": "Secret Board",
+                    "requested_slug": "secret-board",
+                    "purpose": "need a board",
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert resp.status_code == 200, resp.text
+            request_id = resp.json()["request_id"]
+
+            async def rows_for(user_id):
+                rows = await app.state.notifications.list(limit=100, user_id=user_id)
+                return [n for n in rows if n["title"] == "Project creation request"]
+
+            assert await rows_for(carol["id"]) == []
+            admin_rows = await rows_for(admin["id"])
+            assert [n["data"]["request_id"] for n in admin_rows] == [request_id]
+            assert admin_rows[0]["user_id"] == admin["id"]
+            second_rows = await rows_for("second-admin")
+            assert [n["data"]["request_id"] for n in second_rows] == [request_id]
+            assert second_rows[0]["user_id"] == "second-admin"
+        finally:
+            await registry.close()
+            await auth_store.close()
+            await pstore.close()
 
     @pytest.mark.asyncio
     async def test_approve_creates_project_and_lead(

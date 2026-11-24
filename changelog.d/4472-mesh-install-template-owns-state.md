@@ -1,0 +1,3 @@
+### Fixed
+
+- The mesh instance owner step `install-template` takes the state root and the allocator's files only through descriptors opened without following links (fchown and fchmod on the descriptor, the files opened relative to the directory), so a link swapped in by the service account at any moment is never followed. It refuses a parent directory that is not root-owned or is writable by group or others, a state root owned by a third user, a slot file that is not a regular file with exactly one link, and an ownership change that does not take effect. An existing root-created state root is now taken over, so `allocate` as the service account works after an image build or package created the directory.

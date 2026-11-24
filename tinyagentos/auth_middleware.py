@@ -5,6 +5,7 @@ import json
 import logging
 import logging.handlers
 import re
+import secrets
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -13,13 +14,15 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import HTMLResponse, RedirectResponse
 
+from tinyagentos.agent_db import find_agent
 from tinyagentos.agent_token_auth import (
-    _enforce_rotation_cutoff, _get_keypair, _get_store, check_agent_identity,
+    _enforce_rotation_cutoff, _get_grants_store, _get_keypair, _get_store,
+    _grant_unexpired, check_agent_identity,
 )
 from tinyagentos.auth import AuthStoreCorruptError
 from tinyagentos.device_scopes import (
     AGENTS_READ, CHAT_SEND, DECISIONS_ANSWER, FILES_UPLOAD, LIBRARY_INGEST,
-    PUSH_REGISTER, VOICE_STT, VOICE_TTS,
+    PUSH_REGISTER, VOICE_STT, VOICE_TTS, effective_scopes,
 )
 from tinyagentos.device_store import DEVICE_TOKEN_PREFIX
 from tinyagentos.rate_limit import MovingWindowLimiter
@@ -67,6 +70,94 @@ def _get_agent_token_routes_logger(data_dir: Path) -> logging.Logger:
     return log_logger
 
 
+async def _call_and_record_bound_agent(
+    request: Request, call_next, auth_mgr, bound_agent: str
+):
+    """Call the next handler and record the bound-agent local-token route.
+
+    Sets request.state.agent_name, calls call_next, writes the same JSON log
+    line as the non-exempt local-token path (inside the same try/except), and
+    returns the response.
+    """
+    request.state.agent_name = bound_agent
+    response = await call_next(request)
+    # Record the bound-agent local-token request (LOG ONLY)
+    try:
+        route_obj = request.scope.get("route")
+        route_template = getattr(route_obj, "path", None) or "<unmatched>"
+        log_entry = {
+            "ts": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "method": request.method,
+            "route": route_template,
+            "agent": bound_agent,
+            "status": response.status_code,
+        }
+        log_logger = _get_agent_token_routes_logger(auth_mgr.data_dir)
+        log_logger.info(json.dumps(log_entry, separators=(",", ":")))
+    except Exception:
+        # Warning must never raise into the request either
+        try:
+            logger.warning("Failed to record agent token route", exc_info=True)
+        except Exception:
+            pass
+    return response
+
+
+def _resolve_bound_local_token_agent(request: Request, auth_mgr, presented: str):
+    """Resolve a bound local token to the agent name it is allowed to fence.
+
+    A binding carrying a canonical id is authoritative: the current config
+    entry for the name must exist and have the same registry_canonical_id,
+    otherwise the token is rejected. A legacy name-only binding keeps the old
+    behaviour. Returns the agent name, ``False`` to reject, or ``None`` if
+    unbound.
+    """
+    get_binding = getattr(auth_mgr, "get_local_token_binding", None)
+    if callable(get_binding):
+        try:
+            binding = get_binding(presented)
+        except Exception:
+            binding = None
+        if binding is not None:
+            if (
+                isinstance(binding, tuple)
+                and len(binding) == 2
+                and isinstance(binding[0], str)
+            ):
+                bound_agent, canonical_id = binding
+                if not canonical_id:
+                    if not bound_agent or not bound_agent.strip():
+                        return False
+                    return bound_agent
+                config = getattr(request.app.state, "config", None)
+                if config is None:
+                    return False
+                agent = find_agent(config, bound_agent)
+                if not isinstance(agent, dict):
+                    return False
+                if agent.get("registry_canonical_id") != canonical_id:
+                    return False
+                return bound_agent
+            # A binding whose shape is not the canonical tuple is not usable:
+            # it names no agent the middleware can fence, so refuse it.
+            return False
+        # No binding entry for this token: it is unbound. The host's own
+        # unbound local token is the one binding-less credential that still
+        # passes (today's behaviour); any other unbound token fails closed.
+        own_token_path = getattr(auth_mgr, "local_token_path", None)
+        if callable(own_token_path):
+            try:
+                own_path = own_token_path()
+                if own_path.exists():
+                    own = own_path.read_text().strip()
+                    if secrets.compare_digest(presented, own):
+                        return None
+            except Exception:  # noqa: BLE001
+                return False
+        return False
+    return None
+
+
 # /auth/pin-login is session-exempt for the same reason as /auth/login: it is
 # how a session is obtained, so requiring one would be circular. It is NOT
 # unguarded -- the route refuses any request that is not from the device's own
@@ -76,7 +167,7 @@ def _get_agent_token_routes_logger(data_dir: Path) -> logging.Logger:
 # password. See routes.auth.swipe_unlock.
 # Note /auth/pin (set/clear a PIN) is deliberately absent from this set: those
 # require a live session and must stay gated here.
-EXEMPT_PATHS = {"/auth/login", "/auth/pin-login", "/auth/swipe-unlock", "/auth/osk.js", "/auth/pin-panel.js", "/auth/lock-screen.js", "/auth/lock-widgets", "/auth/lock-weather", "/auth/lock-notifications", "/auth/lock-stats", "/auth/lock-panels", "/auth/lock-events", "/auth/lock-power-menu", "/auth/lock-screen-off", "/auth/lock-screen-on", "/auth/lock-brightness", "/auth/lock-torch", "/auth/lock-volume", "/auth/lock-volume-key", "/auth/lock-charge", "/auth/lock-radios", "/auth/lock-usb", "/auth/lock-power-action", "/auth/lock-app", "/auth/device-agent/heartbeat", "/auth/device-agent/message", "/auth/lock-call", "/auth/lock-call/ring", "/auth/lock-call/reset", "/auth/lock-call/action", "/auth/lock-call/dismiss", "/auth/setup", "/auth/status", "/auth/me", "/auth/complete", "/auth/lock", "/api/health", "/api/version", "/setup", "/setup/complete", "/redeem", "/api/desktop/browser/push/vapid-public-key", "/api/desktop/browser/proxy-config", "/sw.js", "/desktop", "/desktop/index.html", "/chat-pwa", "/app.html", "/manifest", "/api/agents/registry/pubkey", "/api/share/destinations"}
+EXEMPT_PATHS = {"/auth/login", "/auth/pin-login", "/auth/swipe-unlock", "/auth/osk.js", "/auth/pin-panel.js", "/auth/lock-screen.js", "/auth/lock-widgets", "/auth/lock-weather", "/auth/lock-notifications", "/auth/lock-stats", "/auth/lock-panels", "/auth/lock-events", "/auth/lock-state", "/auth/lock-power-menu", "/auth/lock-screen-off", "/auth/lock-screen-on", "/auth/lock-brightness", "/auth/lock-torch", "/auth/lock-volume", "/auth/lock-volume-key", "/auth/lock-charge", "/auth/lock-radios", "/auth/lock-usb", "/auth/lock-power-action", "/auth/lock-app", "/auth/device-agent/heartbeat", "/auth/device-agent/message", "/auth/lock-call", "/auth/lock-call/ring", "/auth/lock-call/reset", "/auth/lock-call/action", "/auth/lock-call/dismiss", "/auth/setup", "/auth/status", "/auth/me", "/auth/complete", "/auth/lock", "/api/health", "/api/version", "/setup", "/setup/complete", "/redeem", "/api/desktop/browser/push/vapid-public-key", "/api/desktop/browser/proxy-config", "/sw.js", "/desktop", "/desktop/index.html", "/chat-pwa", "/app.html", "/manifest", "/api/agents/registry/pubkey", "/api/share/destinations"}
 
 # Registry feed endpoints accept EITHER an admin session OR a registry JWT.
 # When a Bearer token is present for these paths the request bypasses the
@@ -550,6 +641,21 @@ def _is_agent_rotate_path(method: str, path: str) -> bool:
     return any(m == method and rx.match(path) for m, rx in _AGENT_ROTATE_ROUTES)
 
 
+# Self-only secrets read routes: an agent may reach GET /api/agents/self/secrets/{name}
+# with its registry JWT holding the ``secrets_read_own`` scope. The agent name
+# is derived from the token's canonical_id; the path name is never trusted for
+# identity.  No wildcard — exactly this one method+path pair.
+_AGENT_SECRETS_SELF_PATHS = frozenset({
+    ("GET", re.compile(r"^/api/agents/self/secrets/[^/]+$")),
+})
+
+
+def _is_agent_secrets_self_path(method: str, path: str) -> bool:
+    """True only for the exact subset of self-secrets routes an agent may reach
+    with its own registry JWT holding secrets_read_own scope."""
+    return any(m == method and rx.match(path) for m, rx in _AGENT_SECRETS_SELF_PATHS)
+
+
 def _is_container_request_action_path(method: str, path: str) -> bool:
     """True only for POST /api/containers/requests/{id}/provision|destroy."""
     return any(m == method and rx.match(path) for m, rx in _CONTAINER_REQUEST_ACTION_ROUTES)
@@ -637,7 +743,19 @@ _CLUSTER_PAIRING_CLAIM = "/api/cluster/pairing/claim"
 # (/api/cluster/pairing/manual) stays admin-gated and is NOT exempt.
 _CLUSTER_PAIRING_MANUAL_CLAIM = "/api/cluster/pairing/manual-claim"
 _CLUSTER_WORKERS = "/api/cluster/workers"
+# taOS #3227: the registry grant scope (a member of VALID_SCOPES in
+# routes/agent_auth_requests.py) that entitles a registry-JWT caller to the
+# full-but-not-admin worker view. The exempt-GET branch below only surfaces
+# it as request.state.cluster_read_view; routes/cluster.py does the tiering
+# and no other route reads the flag, so the scope buys nothing elsewhere.
+_CLUSTER_READ_SCOPE = "cluster_read"
 _CLUSTER_HEARTBEAT = "/api/cluster/heartbeat"
+# Worker task report and lease endpoints: session-exempt, HMAC gate at route level
+_CLUSTER_TASK_REPORT = "/api/cluster/tasks/report"
+_CLUSTER_LEASE_CLAIM = "/api/cluster/leases/claim"
+_CLUSTER_LEASE_RELEASE = "/api/cluster/leases/release"
+_CLUSTER_LEASE_RENEW = "/api/cluster/leases/renew"
+_CLUSTER_LEASE_LIST = "/api/cluster/leases"
 
 # Project-invite redeem: unauthenticated (the PIN is the proof of possession,
 # exactly like cluster pairing). The redeem POST and the content-negotiated
@@ -677,6 +795,16 @@ _LLM_GATEWAY_PREFIX = "/api/llm/"
 # view or device), proven by tests/test_cast_tokens.py. Exactly one prefix,
 # GET/HEAD only; every other method and every /api/cast path stays gated.
 _CAST_MEDIA_PREFIX = "/cast/media/"
+# Exempt paths whose ROUTE owns its credential check (taOS #3790 follow-up to
+# #3227). The exempt-GET bearer promotion in _dispatch must NOT pre-authenticate
+# these: their handlers resolve the presented credential themselves and
+# deliberately refuse anything that is not their own key type -- the LLM gateway
+# 401s a local token (even the host's own) as a non-key credential, and
+# tests/test_llm_gateway*.py pin that refusal. Promoting would set
+# request.state.is_admin and short-circuit the route's check. The agent-model
+# surface (/v1/models) is credential-owned too, but its dependency reads only the
+# consent key and ignores is_admin, so it needs no exclusion here.
+_CREDENTIAL_OWNED_EXEMPT_PATHS = frozenset({_LLM_GATEWAY_MODELS})
 
 
 def _unauthenticated(path: str, body: dict) -> JSONResponse:
@@ -779,7 +907,13 @@ def _is_exempt(method: str, path: str) -> bool:
       GET  /api/cluster/workers               — public worker list
       POST /api/cluster/workers               — session-exempt, HMAC gate at route level
       POST /api/cluster/workers/{n}/incus-enroll — session-exempt, HMAC gate at route level
+      POST /api/cluster/workers/{n}/update-outcome — session-exempt, HMAC gate at route level
       POST /api/cluster/heartbeat             — session-exempt, HMAC gate at route level
+      POST /api/cluster/tasks/report          — session-exempt, HMAC gate at route level
+      POST /api/cluster/leases/claim          — session-exempt, HMAC gate at route level
+      POST /api/cluster/leases/release        — session-exempt, HMAC gate at route level
+      POST /api/cluster/leases/renew          — session-exempt, HMAC gate at route level
+      GET  /api/cluster/leases                — session-exempt, HMAC gate at route level
     """
     if path in EXEMPT_PATHS or any(path.startswith(p) for p in EXEMPT_PREFIXES):
         return True
@@ -806,13 +940,29 @@ def _is_exempt(method: str, path: str) -> bool:
         return True
     if method == "POST" and path == _CLUSTER_HEARTBEAT:
         return True
-    # POST /api/cluster/workers/<name>/incus-enroll — session-exempt; the route
-    # verifies the worker's HMAC signature (see tinyagentos.worker.enroll).
+    # POST /api/cluster/workers/<name>/incus-enroll and
+    # POST /api/cluster/workers/<name>/update-outcome — session-exempt; the
+    # route verifies the worker's HMAC signature itself (see
+    # tinyagentos.worker.enroll and the worker self-update outcome signal).
+    # A worker holds no session cookie, so the session gate would otherwise
+    # refuse these before the route's HMAC gate could run — the same pattern
+    # as /api/cluster/heartbeat.
     if (
         method == "POST"
         and path.startswith(_CLUSTER_WORKERS + "/")
-        and path.endswith("/incus-enroll")
+        and path.endswith(("/incus-enroll", "/update-outcome"))
     ):
+        return True
+    # Cluster task report and lease endpoints — session-exempt, HMAC gate at route level.
+    if method == "POST" and path == _CLUSTER_TASK_REPORT:
+        return True
+    if method == "POST" and path == _CLUSTER_LEASE_CLAIM:
+        return True
+    if method == "POST" and path == _CLUSTER_LEASE_RELEASE:
+        return True
+    if method == "POST" and path == _CLUSTER_LEASE_RENEW:
+        return True
+    if method == "GET" and path == _CLUSTER_LEASE_LIST:
         return True
     # Project-invite redeem: POST /api/projects/invites/redeem is
     # unauthenticated (the PIN is the proof of possession, exactly like cluster
@@ -909,6 +1059,134 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     )
                     request.state.via = "session"
                     return await call_next(request)
+            # taOS #3227: on exempt GET paths, a valid bearer token also
+            # authenticates the caller. Headless integrations (local token,
+            # device token, registry JWT) can then get the full view from
+            # routes like GET /api/cluster/workers that serve reduced data
+            # to anonymous callers. An absent or invalid bearer token falls
+            # through to anonymous handling below -- the path stays exempt,
+            # so we never 401 here.
+            #
+            # Skipped on the routes whose handler owns its credential check
+            # (see _CREDENTIAL_OWNED_EXEMPT_PATHS): there the handler must see
+            # the raw request, not a pre-authenticated admin, or its own 401
+            # for a non-key credential never fires.
+            if request.method == "GET" and path not in _CREDENTIAL_OWNED_EXEMPT_PATHS:
+                auth_header = request.headers.get("authorization", "")
+                if auth_header.lower().startswith("bearer "):
+                    presented = auth_header[7:].strip()
+                    if presented and auth_mgr.validate_local_token(presented):
+                        # Local token: same-host trust. Mirrors the non-exempt
+                        # flow -- maps to the primary/admin user, and is NOT
+                        # admin before onboarding, when there is no primary
+                        # user to be admin of.
+                        primary = auth_mgr.get_primary_user()
+                        request.state.user_id = primary["id"] if primary else None
+                        request.state.is_admin = primary is not None
+                        request.state.via = "local_token"
+                        bound_agent = _resolve_bound_local_token_agent(request, auth_mgr, presented)
+                        if bound_agent is False:
+                            return _unauthenticated(path, {"error": "Authentication required"})
+                        if bound_agent:
+                            return await _call_and_record_bound_agent(
+                                request, call_next, auth_mgr, bound_agent
+                            )
+                        return await call_next(request)
+                    if presented.startswith(DEVICE_TOKEN_PREFIX):
+                        try:
+                            device = await request.app.state.device_store.get_by_token(
+                                presented
+                            )
+                        except Exception:
+                            device = None
+                        # This branch bypasses require_device, so the scope
+                        # check it would have applied has to happen here: a
+                        # device token holding no agents:read (e.g. one minted
+                        # for push:register alone) stays anonymous rather than
+                        # reading the full worker list.
+                        if device is not None and AGENTS_READ in effective_scopes(device):
+                            request.state.user_id = None
+                            request.state.is_admin = False
+                            request.state.headless_full_view = True
+                            request.state.via = "device_bearer"
+                            return await call_next(request)
+                    elif presented:
+                        # Registry JWT: valid signature + active agent.
+                        # (Scope checks stay route-level; here we only
+                        # establish that the caller is a known agent.)
+                        try:
+                            from tinyagentos.agent_token_auth import verify_registry_token
+
+                            _private_pem, public_pem = _get_keypair(request)
+                            payload = verify_registry_token(presented, public_pem)
+                            canonical_id = payload.get("sub", "")
+                            if (
+                                canonical_id
+                                and payload.get("principal_type") != "human"
+                            ):
+                                registry = _get_store(request)
+                                record = await registry.get(canonical_id)
+                                if record is not None and record.get("status") == "active":
+                                    _enforce_rotation_cutoff(record, payload)
+                                    # The promotion requires a qualifying
+                                    # grant: agents:read (the same scope the
+                                    # device-token branch enforces here) for
+                                    # the full headless view, or cluster_read
+                                    # (#3227) for the restricted workers tier.
+                                    # A deployed agent minted by deploy
+                                    # carries owner user_id + memory_read only,
+                                    # so its JWT must not read the full worker
+                                    # list. Without a qualifying grant it falls
+                                    # through to the anonymous view, never a 401.
+                                    grants = _get_grants_store(request)
+                                    all_grants = await grants.list_grants(canonical_id)
+                                    # Read the authorization time AFTER the
+                                    # awaited lookup: a grant that expires
+                                    # while list_grants is in flight must not
+                                    # qualify against a timestamp captured
+                                    # before it (CodeRabbit, PR #4370).
+                                    now = datetime.now(UTC)
+                                    has_agents_read = any(
+                                        g.get("scope") == AGENTS_READ
+                                        and _grant_unexpired(g.get("expires_at"), now)
+                                        for g in all_grants
+                                    )
+                                    # cluster_read does NOT set
+                                    # headless_full_view: it only flags the
+                                    # request so GET /api/cluster/workers can
+                                    # serve its full-but-not-admin tier.
+                                    has_cluster_read = any(
+                                        g.get("scope") == _CLUSTER_READ_SCOPE
+                                        and _grant_unexpired(g.get("expires_at"), now)
+                                        for g in all_grants
+                                    )
+                                    if not has_agents_read and not has_cluster_read:
+                                        # No qualifying grant: fall through to
+                                        # the anonymous view, never a 403.
+                                        promoted = False
+                                    else:
+                                        promoted = True
+                                    if promoted:
+                                        request.state.user_id = None
+                                        request.state.is_admin = False
+                                        if has_agents_read:
+                                            request.state.headless_full_view = True
+                                        if has_cluster_read:
+                                            request.state.cluster_read_view = True
+                                        request.state.agent_canonical_id = canonical_id
+                                        request.state.via = "registry_jwt"
+                                        return await call_next(request)
+                        except Exception as exc:
+                            # Keep the anonymous fall-through: an invalid
+                            # signature, expired token, rotation failure or
+                            # registry lookup error must not 401 an exempt
+                            # path. Log it (never the token itself) so the
+                            # failures are diagnosable. One line, no traceback.
+                            logger.warning(
+                                "exempt-GET bearer: registry JWT validation failed on %s (%s)",
+                                path,
+                                type(exc).__name__,
+                            )
             request.state.user_id = None
             request.state.is_admin = False
             request.state.via = "exempt"
@@ -961,30 +1239,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     request.state.user_id = None
                     request.state.is_admin = False
                     request.state.via = "local_token"
-                bound_agent = auth_mgr.get_local_token_agent(presented)
+                bound_agent = _resolve_bound_local_token_agent(request, auth_mgr, presented)
+                if bound_agent is False:
+                    return _unauthenticated(path, {"error": "Authentication required"})
                 if bound_agent:
-                    request.state.agent_name = bound_agent
-                    response = await call_next(request)
-                    # Record the bound-agent local-token request (LOG ONLY)
-                    try:
-                        route_obj = request.scope.get("route")
-                        route_template = getattr(route_obj, "path", None) or "<unmatched>"
-                        log_entry = {
-                            "ts": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-                            "method": request.method,
-                            "route": route_template,
-                            "agent": bound_agent,
-                            "status": response.status_code,
-                        }
-                        log_logger = _get_agent_token_routes_logger(auth_mgr.data_dir)
-                        log_logger.info(json.dumps(log_entry, separators=(",", ":")))
-                    except Exception:
-                        # Warning must never raise into the request either
-                        try:
-                            logger.warning("Failed to record agent token route", exc_info=True)
-                        except Exception:
-                            pass
-                    return response
+                    return await _call_and_record_bound_agent(
+                        request, call_next, auth_mgr, bound_agent
+                    )
                 return await call_next(request)
 # Not a valid local token; fall through to registry JWT check below
 
@@ -1005,10 +1266,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 # Never set registry_jwt_candidate for these paths.
                 if _is_agent_deployed_runtime_path(request.method, path):
                     try:
-                        from tinyagentos.agent_token_auth import (
-                            verify_registry_token,
-                            _enforce_rotation_cutoff,
-                        )
+                        from tinyagentos.agent_token_auth import verify_registry_token
                         _private_pem, public_pem = _get_keypair(request)
                         payload = verify_registry_token(presented, public_pem)
                         canonical_id = payload.get("sub", "")
@@ -1048,6 +1306,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                         or _is_agent_files_path(request.method, path)
                         or _is_agent_scope_request_path(request.method, path)
                         or _is_agent_rotate_path(request.method, path)
+                        or _is_agent_secrets_self_path(request.method, path)
                         or _is_agent_auth_broker_path(request.method, path)
                         or _is_container_request_action_path(request.method, path)
                         or _is_agent_container_quota_path(request.method, path)
@@ -1062,10 +1321,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                         # Verify the token and check if it's the native agent (all allowlisted paths)
                         # or a deployed agent on skill-exec paths.
                         try:
-                            from tinyagentos.agent_token_auth import (
-                                verify_registry_token,
-                                _enforce_rotation_cutoff,
-                            )
+                            from tinyagentos.agent_token_auth import verify_registry_token
                             from tinyagentos.native_agent_identity import (
                                 NATIVE_AGENT_ORIGIN,
                             )
@@ -1186,12 +1442,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 request.state.via = "session"
                 return await call_next(request)
 
-        # First boot: no user yet. Browsers go to the setup page; APIs
+        # First boot: no user yet. Browsers go to the desktop, whose OOBE
+        # runs the setup (/auth/setup stays as the no-JS fallback); APIs
         # hard-fail so a stale cached client knows to refresh.
         if not auth_mgr.is_configured():
             accept = request.headers.get("accept", "")
             if "text/html" in accept:
-                return RedirectResponse("/auth/setup", status_code=303)
+                return RedirectResponse("/desktop", status_code=303)
             return _unauthenticated(
                 path, {"error": "onboarding_required", "needs_onboarding": True},
             )

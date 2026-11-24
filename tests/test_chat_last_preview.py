@@ -4,6 +4,25 @@ from __future__ import annotations
 import pytest
 
 
+def _host_token_client(app):
+    """Return a client presenting the host local token (no agent binding).
+
+    Mirrors the same helper in tests/test_chat_agent_author_binding.py. It is
+    copied here rather than imported across test files: the session `client`
+    fixture used to post messages with arbitrary author_ids, and with the
+    author check scoped to browser sessions those are now test conveniences,
+    not product flows, so each file keeps its own copy.
+    """
+    from httpx import ASGITransport, AsyncClient
+
+    token = app.state.auth.get_local_token()
+    return AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+
 async def _create_channel(client, name="general"):
     """Helper: create a chat channel via the channel store directly."""
     app = client._transport.app
@@ -14,14 +33,16 @@ async def _create_channel(client, name="general"):
 
 
 async def _send_message(client, channel_id, author_id, content, author_type="user", thread_id=None):
-    """Helper: send a message via HTTP."""
-    resp = await client.post("/api/chat/messages", json={
-        "channel_id": channel_id,
-        "author_id": author_id,
-        "author_type": author_type,
-        "content": content,
-        "thread_id": thread_id,
-    })
+    """Helper: send a message via HTTP through the host local token."""
+    app = client._transport.app
+    async with _host_token_client(app) as c:
+        resp = await c.post("/api/chat/messages", json={
+            "channel_id": channel_id,
+            "author_id": author_id,
+            "author_type": author_type,
+            "content": content,
+            "thread_id": thread_id,
+        })
     assert resp.status_code == 200
     return resp.json()
 

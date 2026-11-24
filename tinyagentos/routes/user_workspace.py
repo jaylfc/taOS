@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from tinyagentos.workspace_trash import (
     TrashItemNotFound,
     TrashRestoreConflict,
+    TrashRestoreOutsideRoot,
     empty_trash,
     get_trash_dir,
     list_trash_items,
@@ -79,6 +80,24 @@ def _resolve_safe(workspace: Path, subpath: str) -> Path | None:
         return None
     except Exception:
         return None
+
+
+def _resolve_safe_child(workspace: Path, subpath: str) -> Path | None:
+    """Like ``_resolve_safe`` but also refuse the workspace root itself.
+
+    Every destructive or mutating operation (delete, rename/move source and
+    destination, overwrite upload target) must resolve to a *child* of the
+    workspace — ``_resolve_safe`` alone accepts the base, which let a
+    ``DELETE /api/workspace/files/`` (empty path, ``.``, ``%2e``, ``sub/..``)
+    move the whole workspace root into the trash. Listing the base stays
+    allowed, so callers that only read use ``_resolve_safe``.
+    """
+    target = _resolve_safe(workspace, subpath)
+    if target is None:
+        return None
+    if target == workspace.resolve():
+        return None
+    return target
 
 
 def _is_within(dst: Path, src: Path) -> bool:
@@ -264,8 +283,8 @@ async def api_rename(request: Request, body: RenameRequest):
     if not body.src.strip() or not body.dst.strip():
         return JSONResponse({"error": "src and dst are required"}, status_code=400)
 
-    src = _resolve_safe(workspace, body.src.strip())
-    dst = _resolve_safe(workspace, body.dst.strip())
+    src = _resolve_safe_child(workspace, body.src.strip())
+    dst = _resolve_safe_child(workspace, body.dst.strip())
     if src is None or dst is None:
         return JSONResponse({"error": "Invalid path"}, status_code=400)
     if not src.exists():
@@ -295,8 +314,8 @@ async def api_copy(request: Request, body: CopyRequest):
     if not body.src.strip() or not body.dst.strip():
         return JSONResponse({"error": "src and dst are required"}, status_code=400)
 
-    src = _resolve_safe(workspace, body.src.strip())
-    dst = _resolve_safe(workspace, body.dst.strip())
+    src = _resolve_safe_child(workspace, body.src.strip())
+    dst = _resolve_safe_child(workspace, body.dst.strip())
     if src is None or dst is None:
         return JSONResponse({"error": "Invalid path"}, status_code=400)
     if not src.exists():
@@ -341,7 +360,7 @@ async def api_delete_file(request: Request, file_path: str):
     """
     workspace = _get_workspace_root(request)
 
-    target = _resolve_safe(workspace, file_path)
+    target = _resolve_safe_child(workspace, file_path)
     if target is None:
         return JSONResponse({"error": "Invalid path"}, status_code=400)
 
@@ -373,6 +392,10 @@ async def api_restore_trash_item(request: Request, item_id: str):
     except TrashRestoreConflict:
         return JSONResponse(
             {"error": "a file already exists at the original path"}, status_code=409
+        )
+    except TrashRestoreOutsideRoot:
+        return JSONResponse(
+            {"error": "this item cannot be restored to its original place"}, status_code=400
         )
     return {"status": "restored", "path": metadata["original_path"]}
 

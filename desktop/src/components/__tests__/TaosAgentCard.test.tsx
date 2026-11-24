@@ -37,7 +37,7 @@ describe("<TaosAgentCard />", () => {
 
   it("renders title, framework pill, and system badge", async () => {
     render(<TaosAgentCard />);
-    await waitFor(() => expect(screen.getByText("taOS agent")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("taOS Agent")).toBeInTheDocument());
     expect(screen.getByText("opencode")).toBeInTheDocument();
     expect(screen.getByText("System")).toBeInTheDocument();
   });
@@ -79,22 +79,22 @@ describe("<TaosAgentCard />", () => {
   it("remove button is enabled for non-current models", async () => {
     render(<TaosAgentCard />);
     await waitFor(() =>
-      expect(screen.getByLabelText("Remove ollama/qwen3 from taOS agent permitted models")).toBeInTheDocument()
+      expect(screen.getByLabelText("Remove ollama/qwen3 from taOS Agent permitted models")).toBeInTheDocument()
     );
-    const removeBtn = screen.getByLabelText("Remove ollama/qwen3 from taOS agent permitted models");
+    const removeBtn = screen.getByLabelText("Remove ollama/qwen3 from taOS Agent permitted models");
     expect(removeBtn).not.toBeDisabled();
   });
 
   it("removing a chip marks draft dirty and shows Save button", async () => {
     render(<TaosAgentCard />);
     await waitFor(() =>
-      expect(screen.getByLabelText("Remove ollama/qwen3 from taOS agent permitted models")).toBeInTheDocument()
+      expect(screen.getByLabelText("Remove ollama/qwen3 from taOS Agent permitted models")).toBeInTheDocument()
     );
 
-    fireEvent.click(screen.getByLabelText("Remove ollama/qwen3 from taOS agent permitted models"));
+    fireEvent.click(screen.getByLabelText("Remove ollama/qwen3 from taOS Agent permitted models"));
 
     await waitFor(() =>
-      expect(screen.getByLabelText("Save taOS agent permitted models")).toBeInTheDocument()
+      expect(screen.getByLabelText("Save taOS Agent permitted models")).toBeInTheDocument()
     );
   });
 
@@ -106,14 +106,14 @@ describe("<TaosAgentCard />", () => {
 
     render(<TaosAgentCard />);
     await waitFor(() =>
-      expect(screen.getByLabelText("Remove ollama/qwen3 from taOS agent permitted models")).toBeInTheDocument()
+      expect(screen.getByLabelText("Remove ollama/qwen3 from taOS Agent permitted models")).toBeInTheDocument()
     );
 
-    fireEvent.click(screen.getByLabelText("Remove ollama/qwen3 from taOS agent permitted models"));
+    fireEvent.click(screen.getByLabelText("Remove ollama/qwen3 from taOS Agent permitted models"));
     await waitFor(() =>
-      expect(screen.getByLabelText("Save taOS agent permitted models")).toBeInTheDocument()
+      expect(screen.getByLabelText("Save taOS Agent permitted models")).toBeInTheDocument()
     );
-    fireEvent.click(screen.getByLabelText("Save taOS agent permitted models"));
+    fireEvent.click(screen.getByLabelText("Save taOS Agent permitted models"));
 
     await waitFor(() =>
       expect(setTaosAgentPermitted).toHaveBeenCalledWith(["ollama/llama3"])

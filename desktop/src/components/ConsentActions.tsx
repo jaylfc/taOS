@@ -443,8 +443,9 @@ export function ConsentActions({
   const pickedProjectName = creating
     ? newName.trim()
     : projects.find((p) => p.id === selectedProjectId)?.name ?? "";
-  const requestedProjectName =
-    resolvedRequestedProject?.name ?? pickedProjectName;
+  // Deny refuses the request as made, so it names only the project the
+  // request itself resolved to, never the picker's choice.
+  const requestedProjectName = resolvedRequestedProject?.name ?? "";
   const allowLabel = `Allow ${granted.join(", ")}${
     needsProject && pickedProjectName ? ` on ${pickedProjectName}` : ""
   }`;

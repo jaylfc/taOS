@@ -361,3 +361,30 @@ class TestFromPathOwnership:
         })
         assert r.status_code == 403
         assert not any((app.state.data_dir / "chat-files").glob("*note.md"))
+
+    @pytest.mark.asyncio
+    async def test_bound_agent_can_attach_own_agent_workspace_file(self, client, app):
+        """A bound agent (via local token) can attach a file from its own agent workspace."""
+        from httpx import AsyncClient, ASGITransport
+
+        # Create a bound agent token for agent "alpha"
+        token = app.state.auth.mint_agent_local_token("alpha")
+        ws = app.state.data_dir / "agent-workspaces" / "alpha"
+        ws.mkdir(parents=True, exist_ok=True)
+        (ws / "agent-note.md").write_text("agent secret")
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test",
+            headers={"Authorization": f"Bearer {token}"},
+        ) as c:
+            r = await c.post("/api/chat/attachments/from-path", json={
+                "path": "/workspaces/alpha/agent-note.md",
+                "source": "agent-workspace",
+                "slug": "alpha",
+            })
+        assert r.status_code == 200
+        data = r.json()
+        assert data["filename"] == "agent-note.md"
+        assert data["source"] == "agent-workspace"
+        assert data["project_slug"] == "alpha"
+        assert data["in_files_state"] == "registered"

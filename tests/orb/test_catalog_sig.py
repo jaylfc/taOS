@@ -57,6 +57,8 @@ def test_all_exceptions_are_orb_error_subclasses():
         "CatalogSignatureInvalid",
         "CatalogSerialRegression",
         "CatalogStateCorrupt",
+        "CatalogKindInvalid",
+        "CatalogInvalid",
     ]:
         exc_cls = getattr(catalog_sig, exc_name)
         assert issubclass(exc_cls, OrbError), f"{exc_name} must be OrbError subclass"
@@ -213,11 +215,13 @@ def test_verify_catalog_serial_negative_raises_regression(keys_dict, test_key):
 
 
 def test_verify_catalog_not_json_object_raises_orberror(keys_dict, test_key):
-    """Catalog not a JSON object -> OrbError."""
+    """Catalog not a JSON object -> CatalogInvalid (still an OrbError subclass)."""
+    from tinyagentos.orb.catalog_sig import CatalogInvalid
+
     private_key, _, _ = test_key
     catalog_bytes = b'[1, 2, 3]'
     sig_bytes = sign_catalog(private_key, catalog_bytes)
-    with pytest.raises(OrbError, match="catalog is not a JSON object"):
+    with pytest.raises(CatalogInvalid, match="catalog is not a JSON object"):
         catalog_sig.verify_catalog(catalog_bytes, sig_bytes, keys_dict)
 
 
@@ -241,11 +245,24 @@ def test_verify_catalog_expires_past_still_accepted(keys_dict, test_key):
 
 
 def test_verify_catalog_expires_invalid_type_raises_orberror(keys_dict, test_key):
-    """expires as number -> OrbError."""
+    """expires as number -> CatalogInvalid (still an OrbError subclass)."""
+    from tinyagentos.orb.catalog_sig import CatalogInvalid
+
     private_key, _, _ = test_key
     catalog_bytes = b'{"serial": 1, "expires": 123}'
     sig_bytes = sign_catalog(private_key, catalog_bytes)
-    with pytest.raises(OrbError, match="catalog expires is not ISO 8601"):
+    with pytest.raises(CatalogInvalid, match="catalog expires is not ISO 8601"):
+        catalog_sig.verify_catalog(catalog_bytes, sig_bytes, keys_dict)
+
+
+def test_verify_catalog_expires_not_iso_raises_catalog_invalid(keys_dict, test_key):
+    """expires string that is not ISO 8601 -> CatalogInvalid (still an OrbError subclass)."""
+    from tinyagentos.orb.catalog_sig import CatalogInvalid
+
+    private_key, _, _ = test_key
+    catalog_bytes = b'{"serial": 1, "expires": "not-a-date"}'
+    sig_bytes = sign_catalog(private_key, catalog_bytes)
+    with pytest.raises(CatalogInvalid, match="catalog expires is not ISO 8601"):
         catalog_sig.verify_catalog(catalog_bytes, sig_bytes, keys_dict)
 
 
@@ -441,9 +458,15 @@ def test_reset_state_then_serial_1_accepted(keys_dict, test_key, tmp_path):
 
 
 # CATALOG_KEYS tests
-def test_CATALOG_KEYS_is_empty_dict():
-    """CATALOG_KEYS is an empty dict by default."""
-    assert catalog_sig.CATALOG_KEYS == {}
+def test_CATALOG_KEYS_pins_first_release_key():
+    """CATALOG_KEYS pins the first real Ed25519 catalog signing key."""
+    assert len(catalog_sig.CATALOG_KEYS) == 1
+    assert "5d6c3911431ce43a" in catalog_sig.CATALOG_KEYS
+    assert list(catalog_sig.CATALOG_KEYS.keys()) == ["5d6c3911431ce43a"]
+    value = catalog_sig.CATALOG_KEYS["5d6c3911431ce43a"]
+    decoded = base64.b64decode(value, validate=True)
+    assert len(decoded) == 32
+    assert catalog_sig.key_id_for(decoded) == "5d6c3911431ce43a"
 
 
 # verify_catalog uses CATALOG_KEYS when keys=None
@@ -452,7 +475,7 @@ def test_verify_catalog_keys_none_uses_CATALOG_KEYS(test_key):
     private_key, _, _ = test_key
     catalog_bytes = b'{"serial": 1}'
     sig_bytes = sign_catalog(private_key, catalog_bytes)
-    # CATALOG_KEYS is empty, so should raise CatalogKeyUnknown
+    # the test key is not pinned in CATALOG_KEYS, so CatalogKeyUnknown
     with pytest.raises(catalog_sig.CatalogKeyUnknown):
         catalog_sig.verify_catalog(catalog_bytes, sig_bytes, None)
 

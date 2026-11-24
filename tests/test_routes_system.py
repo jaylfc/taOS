@@ -521,6 +521,52 @@ class TestDoRestartDarwinLaunchd:
         assert exit_calls == [0], f"Expected os._exit(0), got {exit_calls}"
 
 
+class TestDoRestartDocker:
+    """In Docker, _do_restart must exit non-zero so the restart policy fires (#203)."""
+
+    @pytest.mark.asyncio
+    async def test_do_restart_docker_exits_nonzero(self, monkeypatch):
+        import os
+        import sys
+        from unittest.mock import patch, MagicMock, AsyncMock
+
+        exit_calls = []
+
+        def fake_exit(code):
+            exit_calls.append(code)
+            raise SystemExit(code)
+
+        monkeypatch.setattr(os, "_exit", fake_exit)
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.delenv("INVOCATION_ID", raising=False)
+
+        _orig_exists = os.path.exists
+
+        def fake_exists(path):
+            if str(path) == "/run/systemd/system":
+                return False
+            if str(path) == "/.dockerenv":
+                return True
+            return _orig_exists(path)
+
+        monkeypatch.setattr(os.path, "exists", fake_exists)
+
+        app_state = MagicMock()
+        app_state.notifications = None
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            from tinyagentos.routes.system import _do_restart
+            try:
+                await _do_restart(app_state)
+            except SystemExit:
+                pass
+
+        assert exit_calls == [1], (
+            "Docker restart must exit non-zero so an on-failure restart "
+            f"policy relaunches the container, got {exit_calls}"
+        )
+
+
 class TestDoRestartLaunchdBootstrapTimeout:
     """A hung launchctl bootstrap must not block the execv fallback."""
 

@@ -17,6 +17,10 @@ offers an extra that would pull in something copyleft.
 | `pypdf` (core) | BSD-3-Clause | Accepted as-is. Pure Python, permissive, no copyleft concerns. |
 | `@excalidraw/excalidraw` | MIT | Accepted as-is. Core drawing engine. |
 | `@excalidraw/mermaid-to-excalidraw` | MIT | Accepted as-is. Mermaid diagram conversion. |
+| `python-docx` (library extra) | MIT | Accepted as-is. Optional DOCX processor dependency (taOS #128). |
+| `python-pptx` (library extra) | MIT | Accepted as-is. Optional PPTX processor dependency (taOS #128). |
+| `openpyxl` (library extra) | MIT | Accepted as-is. Optional XLSX processor dependency (taOS #128). |
+| `defusedxml` (library extra) | PSF | Accepted as-is. Optional hardened XML parser for EPUB ingest (taOS #128). |
 
 ## Blocked
 

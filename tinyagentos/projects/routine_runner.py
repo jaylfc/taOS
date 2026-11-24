@@ -78,7 +78,8 @@ async def _wake_and_announce(app_state, routine: dict, task: dict) -> None:
         try:
             from tinyagentos.projects.a2a import ensure_a2a_channel
             channel = await ensure_a2a_channel(
-                chat_channels, project_store, project_id, config=config
+                chat_channels, project_store, project_id, config=config,
+                agent_registry=getattr(app_state, "agent_registry", None),
             )
             await chat_messages.send_message(
                 channel_id=channel["id"],

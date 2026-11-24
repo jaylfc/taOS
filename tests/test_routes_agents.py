@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from tinyagentos.config import load_config
 from tinyagentos.cluster.worker_protocol import WorkerInfo
@@ -527,7 +529,10 @@ class TestDeployPersistence:
         agent = detail.json()
         assert agent["model"] == "test-model"
         assert agent["framework"] == "none"
-        assert agent["llm_key"] == "sk-test"
+        # The key is persisted but never returned by a read (GHSA-v258-j222-x68c).
+        assert "llm_key" not in agent
+        stored = next(a for a in app.state.config.agents if a["name"] == "persistent")
+        assert stored["llm_key"] == "sk-test"
         assert agent["status"] == "running"
         assert agent["id"]
 
@@ -1618,6 +1623,135 @@ class TestOrphanAgentDeletion:
         assert app.state.auth.validate_local_token(token) is False
         assert app.state.auth.get_local_token_agent(token) is None
 
+    async def test_orphan_hard_delete_unbind_failure_falls_back(
+        self, client, app, tmp_data_dir, monkeypatch
+    ):
+        """Hard-delete orphan continues when unbinding the local token fails."""
+        async def _no_container(name):
+            return False
+        monkeypatch.setattr("tinyagentos.containers.container_exists", _no_container)
+
+        async def fake_stop(name, force=False):
+            raise AssertionError("stop_container should not be called for orphans")
+
+        async def fake_snapshot_create(name, snapshot_name):
+            raise AssertionError("snapshot_create should not be called for orphans")
+
+        monkeypatch.setattr("tinyagentos.containers.stop_container", fake_stop)
+        monkeypatch.setattr("tinyagentos.containers.snapshot_create", fake_snapshot_create)
+
+        calls = {"count": 0}
+
+        def raise_unbind(_name):
+            calls["count"] += 1
+            raise RuntimeError("unbind failed")
+
+        monkeypatch.setattr(app.state.auth, "unbind_local_token_agent", raise_unbind)
+
+        resp = await client.delete("/api/agents/test-agent")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "deleted"
+        assert calls["count"] == 1
+
+        config = load_config(tmp_data_dir / "config.yaml")
+        assert not any(a["name"] == "test-agent" for a in config.agents)
+
+    async def test_orphan_tombstone_unbind_failure_falls_back(
+        self, client, app, tmp_data_dir, monkeypatch
+    ):
+        """Tombstone orphan continues when unbinding the local token fails."""
+        async def _no_container(name):
+            return False
+        monkeypatch.setattr("tinyagentos.containers.container_exists", _no_container)
+
+        trace_dir = tmp_data_dir / "trace" / "test-agent"
+        trace_dir.mkdir(parents=True, exist_ok=True)
+        (trace_dir / "2026-04-17T13.db").write_text("")
+
+        calls = {"count": 0}
+
+        def raise_unbind(_name):
+            calls["count"] += 1
+            raise RuntimeError("unbind failed")
+
+        monkeypatch.setattr(app.state.auth, "unbind_local_token_agent", raise_unbind)
+
+        resp = await client.delete("/api/agents/test-agent")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "archived"
+        assert data["snapshot_name"] is None
+        assert calls["count"] == 1
+
+        config = load_config(tmp_data_dir / "config.yaml")
+        assert not any(a["name"] == "test-agent" for a in config.agents)
+        tombstones = [a for a in config.archived_agents if a.get("archived_slug") == "test-agent"]
+        assert len(tombstones) == 1
+
+    async def test_orphan_with_chat_history_is_archived(
+        self, client, app, tmp_data_dir, monkeypatch
+    ):
+        """Orphan (no container) WITH chat history is archived: tombstone written,
+        status 'archived', snapshot_name None."""
+        async def _no_container(name):
+            return False
+        monkeypatch.setattr("tinyagentos.containers.container_exists", _no_container)
+
+        ch_store = app.state.chat_channels
+        msg_store = app.state.chat_messages
+        ch = await ch_store.create_channel(
+            name="dm-test-agent", type="dm", created_by="user",
+            members=["test-agent", "user"],
+        )
+        await msg_store.send_message(ch["id"], "test-agent", "agent", "hello")
+
+        config = app.state.config
+        for a in config.agents:
+            if a["name"] == "test-agent":
+                a["chat_channel_id"] = ch["id"]
+                break
+        from tinyagentos.config import save_config_locked
+        await save_config_locked(config, config.config_path)
+
+        resp = await client.delete("/api/agents/test-agent")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "archived"
+        assert data["snapshot_name"] is None
+
+        config = load_config(tmp_data_dir / "config.yaml")
+        assert not any(a["name"] == "test-agent" for a in config.agents)
+        tombstones = [a for a in config.archived_agents if a.get("archived_slug") == "test-agent"]
+        assert len(tombstones) == 1
+        assert tombstones[0]["snapshot_name"] is None
+
+    async def test_orphan_without_history_is_deleted(
+        self, client, app, tmp_data_dir, monkeypatch
+    ):
+        """Orphan (no container) WITHOUT chat or trace history is hard-deleted:
+        status 'deleted', no tombstone."""
+        async def _no_container(name):
+            return False
+        monkeypatch.setattr("tinyagentos.containers.container_exists", _no_container)
+
+        # Ensure no trace dir for test-agent.
+        import shutil
+        trace_dir = tmp_data_dir / "trace" / "test-agent"
+        if trace_dir.exists():
+            shutil.rmtree(trace_dir, ignore_errors=True)
+
+        resp = await client.delete("/api/agents/test-agent")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "deleted"
+
+        config = load_config(tmp_data_dir / "config.yaml")
+        assert not any(a["name"] == "test-agent" for a in config.agents)
+        assert not any(
+            a.get("archived_slug") == "test-agent" for a in config.archived_agents
+        )
+
 
 @pytest.mark.asyncio
 class TestDeleteResolvesOrphanedContainer:
@@ -2535,3 +2669,185 @@ class TestDeployDeferredModelsSelfHeal:
 
         assert captured_task_id is not None
         assert app.state.taosmd_selfheal_task_id == captured_task_id
+
+
+@pytest.mark.asyncio
+class TestNameReservationReleaseFixes:
+    """Reserved agent slugs are released after a successful create so a later
+    archive/restore or redeploy reuses the original name (fixes #4302).
+    """
+
+    async def _deploy_mocks(self, app, monkeypatch):
+        from unittest.mock import AsyncMock, MagicMock
+
+        app.state.archive = MagicMock(
+            record=AsyncMock(), query=AsyncMock(return_value=[{}])
+        )
+
+        async def fake_register_agent(*, framework, display_name, **kw):
+            return {
+                "canonical_id": f"cid-{display_name}",
+                "framework": framework,
+                "display_name": display_name,
+            }
+
+        mock_registry = MagicMock()
+        mock_registry.register = AsyncMock(side_effect=fake_register_agent)
+        app.state.agent_registry = mock_registry
+
+        # The task card requires the register_agent mock to be awaited.
+        monkeypatch.setattr(app.state.taosmd_agent_registry, "register_agent", AsyncMock())
+
+        async def fake_deploy(req):
+            return {
+                "success": True,
+                "name": req.name,
+                "ip": "10.0.0.42",
+                "llm_key": "sk-test",
+                "steps": ["deployment_complete"],
+                "container": f"taos-agent-{req.name}",
+            }
+        monkeypatch.setattr("tinyagentos.deployer.deploy_agent", fake_deploy)
+
+        class _FakeCatalog:
+            def all_models(self, capability=None):
+                return [{"name": "test-model", "id": "test-model"}]
+
+        app.state.backend_catalog = _FakeCatalog()
+        app.state.cluster_manager._workers.clear()
+
+    async def _deploy(self, client, app, monkeypatch, name):
+        await self._deploy_mocks(app, monkeypatch)
+        resp = await client.post(
+            "/api/agents/deploy",
+            json={"name": name, "framework": "none", "model": "test-model"},
+        )
+        await asyncio.sleep(0.2)
+        return resp
+
+    async def _archive_container_mocks(self, monkeypatch):
+        async def fake_stop(name, force=False):
+            return {"success": True, "output": ""}
+
+        async def fake_snapshot_create(name, snapshot_name):
+            return {"success": True, "output": ""}
+
+        async def fake_snapshot_restore(name, snapshot_name):
+            return {"success": True, "output": ""}
+
+        async def fake_rename(old, new):
+            return {"success": True, "output": ""}
+
+        async def fake_start(name):
+            return {"success": True, "output": ""}
+
+        async def fake_set_env(name, key, value):
+            return {"success": True, "output": ""}
+
+        async def fake_exec(name, cmd, timeout=300):
+            return (0, "")
+
+        monkeypatch.setattr("tinyagentos.containers.stop_container", fake_stop)
+        monkeypatch.setattr(
+            "tinyagentos.containers.snapshot_create", fake_snapshot_create
+        )
+        monkeypatch.setattr(
+            "tinyagentos.containers.snapshot_restore", fake_snapshot_restore
+        )
+        monkeypatch.setattr(
+            "tinyagentos.containers.rename_container", fake_rename
+        )
+        monkeypatch.setattr("tinyagentos.containers.start_container", fake_start)
+        monkeypatch.setattr("tinyagentos.containers.set_env", fake_set_env)
+        monkeypatch.setattr(
+            "tinyagentos.containers.exec_in_container", fake_exec
+        )
+
+    # (a) two concurrent deploys with the same display name get distinct names
+    async def test_concurrent_deploy_same_name_gets_distinct_names(
+        self, client, app, monkeypatch
+    ):
+        await self._deploy_mocks(app, monkeypatch)
+        resp1, resp2 = await asyncio.gather(
+            client.post(
+                "/api/agents/deploy",
+                json={"name": "concurrent-helper", "framework": "none", "model": "test-model"},
+            ),
+            client.post(
+                "/api/agents/deploy",
+                json={"name": "concurrent-helper", "framework": "none", "model": "test-model"},
+            ),
+        )
+        assert resp1.status_code == 200, resp1.text
+        assert resp2.status_code == 200, resp2.text
+        names = {resp1.json()["name"], resp2.json()["name"]}
+        assert len(names) == 2, f"expected distinct names, got {names}"
+        await asyncio.sleep(0.2)
+        stored = [a["name"] for a in app.state.config.agents if a.get("display_name") == "concurrent-helper"]
+        assert set(stored) == names
+
+    # (b) create, archive, restore: restored agent gets its ORIGINAL name
+    async def test_restore_gets_original_name_after_archive(
+        self, client, app, monkeypatch
+    ):
+        await self._archive_container_mocks(monkeypatch)
+        resp = await self._deploy(client, app, monkeypatch, name="restore-helper")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["name"] == "restore-helper"
+
+        del_resp = await client.delete("/api/agents/restore-helper")
+        assert del_resp.status_code == 200, del_resp.text
+
+        archived = (await client.get("/api/agents/archived")).json()
+        assert archived, "expected an archive entry"
+        archive_id = archived[0]["id"]
+
+        rest_resp = await client.post(
+            f"/api/agents/archived/{archive_id}/restore"
+        )
+        assert rest_resp.status_code == 200, rest_resp.text
+        assert rest_resp.json()["name"] == "restore-helper"
+
+    # (c) create, delete, second create of the same name gets the original name
+    async def test_create_delete_create_reuses_original_name(
+        self, client, app, monkeypatch
+    ):
+        await self._archive_container_mocks(monkeypatch)
+        resp1 = await self._deploy(client, app, monkeypatch, name="delete-helper")
+        assert resp1.status_code == 200, resp1.text
+        assert resp1.json()["name"] == "delete-helper"
+
+        del_resp = await client.delete("/api/agents/delete-helper")
+        assert del_resp.status_code == 200, del_resp.text
+
+        resp2 = await self._deploy(client, app, monkeypatch, name="delete-helper")
+        assert resp2.status_code == 200, resp2.text
+        assert resp2.json()["name"] == "delete-helper"
+
+    # (d) the import path honours a reservation held by an in-flight deploy
+    async def test_json_import_honours_active_reservation(
+        self, client, app, monkeypatch
+    ):
+        from tinyagentos.config import release_agent_slug, reserve_agent_slug
+
+        config = app.state.config
+        held = await reserve_agent_slug(config, "import-helper")
+        assert held == "import-helper"
+        try:
+            resp = await client.post(
+                "/api/agents/import",
+                json={
+                    "version": 1,
+                    "agent": {
+                        "name": "import-helper",
+                        "host": "10.0.0.9",
+                        "qmd_index": "q",
+                        "color": "#000000",
+                    },
+                    "channels": [],
+                    "groups": [],
+                },
+            )
+            assert resp.status_code == 409, resp.text
+        finally:
+            release_agent_slug("import-helper")

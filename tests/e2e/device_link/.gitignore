@@ -1,0 +1,2 @@
+# Runtime state of the bed (minted keys, exported sources, node table).
+.state/

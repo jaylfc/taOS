@@ -35,8 +35,10 @@
 ### POST /api/hardware/wifi/forget
 
 - Body: `{ssid}`; deletes matching 802-11-wireless system profiles by exact SSID byte match
+- Only system profiles are removed; profiles with non-empty `connection.permissions` are skipped (not deleted)
 - 422 `invalid_ssid` if SSID not 1..32 bytes UTF-8; zero busctl calls
 - Success: `{"ok": true, "removed": <n>}`; 404 `unknown_ssid` if no match
+- 503 `networkmanager_unavailable` if WirelessEnabled check fails
 - 502 `write_failed` (polkit) if Delete fails; never calls GetSecrets
 
 ### GET /api/hardware/bluetooth

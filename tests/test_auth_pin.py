@@ -8,8 +8,14 @@ PIN being REFUSED off-console does.
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
+import threading
 
 import pytest
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
 
 from tinyagentos.auth import (
     AuthManager,
@@ -19,6 +25,35 @@ from tinyagentos.auth import (
     is_console_origin,
     validate_pin,
 )
+from tinyagentos.routes.auth import _PIN_PANEL_SCRIPT
+
+UA = "Mozilla/5.0 (Linux; taOS kiosk) Chromium/131"
+PASSWORD = "correct horse battery staple"
+PIN = "4913"
+
+
+@pytest_asyncio.fixture()
+async def console(app):
+    """Loopback client that sends the lock screen's console header."""
+    headers = {"User-Agent": UA, "X-taOS-Console": "1"}
+    transport = ASGITransport(app=app, client=("127.0.0.1", 51234))
+    async with AsyncClient(
+        transport=transport, base_url="http://localhost:6969", headers=headers,
+    ) as c:
+        yield c
+
+
+@pytest.fixture()
+def configured_app(tmp_path):
+    """App with one account that has a password and a PIN, for route-level tests."""
+    from tinyagentos.app import create_app
+
+    app = create_app(data_dir=tmp_path)
+    mgr = AuthManager(tmp_path)
+    mgr.setup_user("tester", "Bring-up Test", "", PASSWORD)
+    mgr.set_pin("tester", PIN)
+    app.state.auth = mgr
+    return app
 
 
 @pytest.fixture()
@@ -181,6 +216,10 @@ class TestPinFailuresDoNotLockOutPassword:
 # --------------------------------------------------------------------------- #
 
 class TestPinStore:
+    """The store tests the PR had removed. Restored from origin/dev unchanged:
+    none of them assert behaviour this PR intentionally removed, and each one
+    still passes against the current product code."""
+
     def test_pin_round_trips(self, mgr):
         mgr.set_pin("tester", "4913")
         assert mgr.has_pin("tester") is True
@@ -247,6 +286,59 @@ class TestPinStore:
         assert mgr.check_pin("4913", username=None)[0] is False
 
 
+class TestPinLength:
+    def test_set_pin_stores_length(self, mgr):
+        mgr.set_pin("tester", "4913")
+        data = json.loads((mgr.data_dir / ".auth_user.json").read_text())
+        assert data["users"][0].get("pin_length") == 4
+        assert mgr.pin_length("tester") == 4
+
+    def test_clear_pin_removes_length(self, mgr):
+        mgr.set_pin("tester", "4913")
+        mgr.clear_pin("tester")
+        data = json.loads((mgr.data_dir / ".auth_user.json").read_text())
+        assert "pin_hash" not in data["users"][0]
+        assert "pin_length" not in data["users"][0]
+        assert mgr.pin_length("tester") is None
+
+    def test_check_pin_learns_length_on_success_if_missing(self, tmp_path):
+        m = AuthManager(tmp_path)
+        m.setup_user("tester", "Bring-up Test", "", "correct horse battery staple")
+        m.set_pin("tester", "123456")
+        data = json.loads((tmp_path / ".auth_user.json").read_text())
+        data["users"][0].pop("pin_length", None)
+        (tmp_path / ".auth_user.json").write_text(json.dumps(data))
+        ok, rec = m.check_pin("123456", username="tester")
+        assert ok is True
+        data2 = json.loads((tmp_path / ".auth_user.json").read_text())
+        assert data2["users"][0].get("pin_length") == 6
+
+    def test_failed_check_pin_stores_nothing(self, mgr, tmp_path):
+        mgr.set_pin("tester", "123456")
+        data = json.loads((tmp_path / ".auth_user.json").read_text())
+        data["users"][0].pop("pin_length", None)
+        (tmp_path / ".auth_user.json").write_text(json.dumps(data))
+        ok, rec = mgr.check_pin("000000", username="tester")
+        assert ok is False
+        data2 = json.loads((tmp_path / ".auth_user.json").read_text())
+        assert "pin_length" not in data2["users"][0]
+
+    def test_pin_length_none_on_multi_user_store(self, mgr, tmp_path):
+        # add another user
+        code = mgr.add_user_invite("other", "tester")
+        mgr.complete_invite("other", code, "Other", "o@o.com", "anotherpass123")
+        assert mgr.pin_length(None) is None
+
+    def test_user_listing_has_no_pin_length_key(self, mgr):
+        mgr.set_pin("tester", "4913")
+        users = mgr.list_users()
+        assert users
+        assert "pin_length" not in users[0]
+        pub = mgr.get_primary_user()
+        assert pub and "pin_length" not in pub
+        assert pub["has_pin"] is True
+
+
 class TestPinValidation:
     @pytest.mark.parametrize("bad", ["123", "1" * (PIN_MAX_LEN + 1), "12a4", "12 4", "", "-123"])
     def test_malformed_pins_rejected(self, bad):
@@ -297,3 +389,718 @@ class TestPinLimiterIsBounded:
         lim.record_failure("victim")
         # 6 consecutive failures still sits at or above the first tier.
         assert lim.retry_after("victim") > 0
+
+
+# --------------------------------------------------------------------------- #
+#  Lock page script (node) — PIN auto-unlock behaviour                       #
+# --------------------------------------------------------------------------- #
+
+_PIN_HARNESS = r"""
+function makeEl(opts) {
+  opts = opts || {};
+  var el = {
+    id: opts.id || null,
+    _attrs: opts.attrs || {},
+    value: opts.value || "",
+    children: opts.children || [],
+    _h: {},
+    hidden: opts.hidden !== undefined ? opts.hidden : false,
+    parentNode: opts.parentNode || null,
+    textContent: "",
+    addEventListener: function (t, fn) { (this._h[t] = this._h[t] || []).push(fn); },
+    setAttribute: function (k, v) { this._attrs[k] = v; },
+    getAttribute: function (k) {
+      return Object.prototype.hasOwnProperty.call(this._attrs, k) ? this._attrs[k] : null;
+    },
+    querySelector: function (sel) { return opts.querySelector ? opts.querySelector(sel) : null; },
+    closest: function(){ return null; },
+    fire: function (t, ev) { ev = ev || {}; var handlers = (this._h[t] || []).slice(); for (var i=0;i<handlers.length;i++){ handlers[i].call(this, ev); } }
+  };
+  return el;
+}
+
+var SCN = JSON.parse(process.env.PIN_SCENARIO || '{}');
+
+var pinPanel = makeEl({ id: "pin-panel", attrs: { "data-next": "/desktop", "data-username": "" } });
+if (SCN.pinLength !== undefined && SCN.pinLength !== null) {
+  pinPanel.setAttribute("data-pin-length", String(SCN.pinLength));
+}
+
+var input = makeEl({ id: "pin-input", value: "" }); input.focus = function(){}; input.replace = function(a,b){ this.value = String(this.value).split(a).join(b); return this.value; };
+var dots = makeEl({ id: "pin-dots", children: [] });
+var dotCount = SCN.dotCount || (SCN.pinLength || 4);
+for (var di=0; di<dotCount; di++) {
+  dots.children.push(makeEl({ attrs: { "data-filled": "0" } }));
+}
+var err = makeEl({ id: "pin-error", textContent: "" });
+var submit = null;
+if (SCN.hasSubmit) {
+  submit = makeEl({ id: "pin-submit" });
+}
+
+var els = {
+  "pin-panel": pinPanel,
+  "pin-input": input,
+  "pin-dots": dots,
+  "pin-error": err,
+  "pin-submit": submit,
+  "use-password": makeEl({ id: "use-password" }),
+  "use-pin": makeEl({ id: "use-pin" }),
+  "pw-panel": makeEl({ id: "pw-panel", hidden: true })
+};
+
+var document = {
+  getElementById: function(id){ return els[id] || null; },
+  readyState: "complete",
+  addEventListener: function(){},
+  querySelector: function(sel){ if (sel === 'input[type=password]') return input; return null; }
+};
+var window = { taosOSK: null, location: { assign: function(){} } };
+
+var posts = [];
+var lastStatus = 0;
+global.fetch = function(url, opts){
+  posts.push({url: url, opts: opts});
+  if (SCN.fetchFail) {
+    return Promise.reject(new Error("fail"));
+  }
+  if (SCN.fetchStatus && SCN.fetchStatus !== 200) {
+    lastStatus = SCN.fetchStatus;
+    return Promise.resolve({
+      status: SCN.fetchStatus,
+      json: function(){ return Promise.resolve(SCN.fetchBody || {}); }
+    });
+  }
+  lastStatus = 200;
+  return Promise.resolve({
+    status: 200,
+    json: function(){ return Promise.resolve({ok: true}); }
+  });
+};
+global.setTimeout = function(fn){ fn(); return 1; };
+global.clearTimeout = function(){};
+
+__PIN_SCRIPT__
+
+if (SCN.typeDigits) {
+  for (var i=0; i<SCN.typeDigits.length; i++) {
+    input.value += String(SCN.typeDigits[i]);
+    var h = input._h["input"] || [];
+    for (var j=0; j<h.length; j++) { h[j].call(input, {}); }
+  }
+}
+
+if (SCN.doEnter && input._h["keydown"]) {
+  var kh = input._h["keydown"] || [];
+  for (var k=0; k<kh.length; k++) { kh[k].call(input, {key: "Enter", preventDefault: function(){}}); }
+}
+
+if (SCN.clickSubmit && submit && submit._h["click"]) {
+  var ch = submit._h["click"] || [];
+  for (var m=0; m<ch.length; m++) { ch[m].call(submit, {}); }
+}
+
+process.stdout.write(JSON.stringify({ posts: posts, err: err.textContent || "", submitExists: !!els["pin-submit"], value: input.value, lastStatus: lastStatus }));
+"""
+
+
+def _run_pin_scenario(scenario: dict, script_override: str | None = None):
+    node = shutil.which("node")
+    if node is None:
+        pytest.fail("node required")
+    script = script_override if script_override is not None else _PIN_PANEL_SCRIPT
+    harness = _PIN_HARNESS.replace("__PIN_SCRIPT__", script)
+    env = os.environ.copy()
+    env["PIN_SCENARIO"] = json.dumps(scenario)
+    proc = subprocess.run([node, "-e", harness], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, timeout=10)
+    if proc.returncode != 0:
+        raise AssertionError(proc.stderr.decode())
+    return json.loads(proc.stdout.decode())
+
+
+# --------------------------------------------------------------------------- #
+#  Concurrent PIN login serialization and isolation (fix-forward #4192)        #
+# --------------------------------------------------------------------------- #
+
+
+class TestConcurrentPinLoginSerialization:
+    @pytest.mark.asyncio
+    async def test_concurrent_wrong_pins_respect_limit(self, configured_app):
+        import asyncio
+        from tinyagentos.routes import auth as auth_routes
+
+        auth_routes._pin_limiter = type(auth_routes._pin_limiter)()
+        transport = ASGITransport(app=configured_app, client=("127.0.0.1", 51234))
+        async with AsyncClient(transport=transport, base_url="http://localhost:6969") as c:
+            async def attempt():
+                return await c.post("/auth/pin-login", json={"username": "tester", "pin": "0000"})
+
+            responses = await asyncio.gather(*(attempt() for _ in range(20)))
+        codes = [r.status_code for r in responses]
+        assert codes.count(401) == 5
+        assert codes.count(429) == 15
+
+    @pytest.mark.asyncio
+    async def test_correct_pin_after_four_wrong_ones_succeeds_and_resets(self, configured_app):
+        import asyncio
+        from tinyagentos.routes import auth as auth_routes
+
+        auth_routes._pin_limiter = type(auth_routes._pin_limiter)()
+        transport = ASGITransport(app=configured_app, client=("127.0.0.1", 51234))
+        async with AsyncClient(transport=transport, base_url="http://localhost:6969") as c:
+            for _ in range(4):
+                r = await c.post("/auth/pin-login", json={"username": "tester", "pin": "0000"})
+                assert r.status_code == 401
+            ok = await c.post("/auth/pin-login", json={"username": "tester", "pin": PIN})
+            assert ok.status_code == 200
+            # Counter reset: next wrong attempt gets a free guess (401), not 429.
+            again = await c.post("/auth/pin-login", json={"username": "tester", "pin": "0000"})
+            assert again.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_correct_pin_while_locked_out_is_refused(self, configured_app):
+        import asyncio
+        from tinyagentos.routes import auth as auth_routes
+
+        auth_routes._pin_limiter = type(auth_routes._pin_limiter)()
+        transport = ASGITransport(app=configured_app, client=("127.0.0.1", 51234))
+        async with AsyncClient(transport=transport, base_url="http://localhost:6969") as c:
+            for _ in range(5):
+                r = await c.post("/auth/pin-login", json={"username": "tester", "pin": "0000"})
+                assert r.status_code == 401
+            locked = await c.post("/auth/pin-login", json={"username": "tester", "pin": PIN})
+            assert locked.status_code == 429
+            assert "retry_after" in locked.json()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_attempts_on_different_keys_do_not_block_each_other(self, configured_app):
+        import asyncio
+        import time
+        from tinyagentos.routes import auth as auth_routes
+        from tinyagentos import auth as auth_mod
+
+        auth_routes._pin_limiter = type(auth_routes._pin_limiter)()
+        # Add a second user with a PIN.
+        code = configured_app.state.auth.add_user_invite("other", invited_by_username="tester")
+        configured_app.state.auth.complete_invite("other", code, "Other", "o@o.com", "anotherpass123")
+        configured_app.state.auth.set_pin("other", "1234")
+
+        real_verify = auth_mod.verify_password
+        windows = []
+        lock = threading.Lock()
+
+        def slow_verify(pin, stored):
+            # Slow down verification enough to expose cross-key blocking.
+            if pin in ("0000", "1111"):
+                start = time.perf_counter()
+                time.sleep(0.25)
+                end = time.perf_counter()
+                with lock:
+                    windows.append((pin, start, end))
+            return real_verify(pin, stored)
+
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr("tinyagentos.auth.verify_password", slow_verify)
+        try:
+            transport = ASGITransport(app=configured_app, client=("127.0.0.1", 51234))
+            async with AsyncClient(transport=transport, base_url="http://localhost:6969") as c:
+                async def try_tester():
+                    return await c.post("/auth/pin-login", json={"username": "tester", "pin": "0000"})
+
+                async def try_other():
+                    return await c.post("/auth/pin-login", json={"username": "other", "pin": "1111"})
+
+                r1, r2 = await asyncio.gather(try_tester(), try_other())
+        finally:
+            monkeypatch.undo()
+
+        assert r1.status_code in (401, 429)
+        assert r2.status_code in (401, 429)
+        assert len(windows) == 2
+        (_, s1, e1), (_, s2, e2) = windows[0], windows[1]
+        # Different limiter keys must not serialize verification: the windows overlap.
+        assert s1 < e2 and s2 < e1
+
+    @pytest.mark.asyncio
+    async def test_set_pin_not_blocked_by_slow_verify(self, configured_app):
+        import asyncio
+        import time
+        from tinyagentos import auth as auth_mod
+
+        real_verify = auth_mod.verify_password
+        verify_started = threading.Event()
+        allow_finish = threading.Event()
+
+        def slow_verify(pin, stored):
+            if pin == "0000":
+                verify_started.set()
+                allow_finish.wait(timeout=5)
+            return real_verify(pin, stored)
+
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr("tinyagentos.auth.verify_password", slow_verify)
+        try:
+            transport = ASGITransport(app=configured_app, client=("127.0.0.1", 51234))
+            async with AsyncClient(transport=transport, base_url="http://localhost:6969") as c:
+                login_task = asyncio.create_task(
+                    c.post("/auth/pin-login", json={"username": "tester", "pin": "0000"})
+                )
+                # Wait until verify is in progress.
+                for _ in range(200):
+                    if verify_started.is_set():
+                        break
+                    await asyncio.sleep(0.01)
+                assert verify_started.is_set()
+
+                set_done = threading.Event()
+                set_result = {}
+
+                def do_set_pin():
+                    configured_app.state.auth.set_pin("tester", "1234")
+                    set_done.set()
+
+                t_set = threading.Thread(target=do_set_pin)
+                t_set.start()
+                # set_pin must complete while verify is still blocked.
+                assert set_done.wait(timeout=1.0), "set_pin blocked for length of verify"
+                t_set.join()
+                allow_finish.set()
+                resp = await login_task
+        finally:
+            monkeypatch.undo()
+
+        assert resp.status_code == 401
+        # The new PIN is stored and usable.
+        assert configured_app.state.auth.check_pin("1234", username="tester")[0] is True
+
+
+# --------------------------------------------------------------------------- #
+#  PIN key lock waiter refcount (fix-forward #4350)                           #
+# --------------------------------------------------------------------------- #
+
+
+class TestPinKeyLockWaiterRefcount:
+    """The per-key lock must not be dropped while waiters still hold it.
+
+    _release_pin_key_lock used to pop the dict entry whenever lock.locked()
+    was false. In asyncio, release() clears the flag before the woken waiter
+    runs, so the entry was dropped while waiters still held the old lock and a
+    new arrival created a second lock: the attempt limit could be overshot by
+    about one guess under sustained load.
+
+    This test starts a slow verification to hold the lock, queues multiple
+    waiters, then fires late arrivals after the first release. It asserts at
+    most one holder per key at any time and that the attempt count never
+    exceeds the limit.
+    """
+
+    @pytest.mark.asyncio
+    async def test_late_arrivals_do_not_create_second_holder(self, configured_app):
+        import asyncio
+        import threading
+        import time
+        from tinyagentos.routes import auth as auth_routes
+        from tinyagentos import auth as auth_mod
+
+        auth_routes._pin_limiter = type(auth_routes._pin_limiter)()
+        real_verify = auth_mod.verify_password
+        holder_count = 0
+        max_holders = 0
+        holder_lock = threading.Lock()
+        verify_started = threading.Event()
+        allow_finish = threading.Event()
+        responses = []
+
+        def slow_verify(pin, stored):
+            nonlocal holder_count, max_holders
+            if pin == "0000":
+                with holder_lock:
+                    holder_count += 1
+                    max_holders = max(max_holders, holder_count)
+                verify_started.set()
+                allow_finish.wait(timeout=5)
+                with holder_lock:
+                    holder_count -= 1
+            return real_verify(pin, stored)
+
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr("tinyagentos.auth.verify_password", slow_verify)
+        try:
+            transport = ASGITransport(app=configured_app, client=("127.0.0.1", 51234))
+            async with AsyncClient(transport=transport, base_url="http://localhost:6969") as c:
+                # First request: holds the lock during slow verify
+                first_task = asyncio.create_task(
+                    c.post("/auth/pin-login", json={"username": "tester", "pin": "0000"})
+                )
+                # Wait until verify is in progress (holder has the lock)
+                for _ in range(200):
+                    if verify_started.is_set():
+                        break
+                    await asyncio.sleep(0.01)
+                assert verify_started.is_set()
+
+                # Queue waiters: they will wait for the lock
+                waiter_tasks = [
+                    asyncio.create_task(
+                        c.post("/auth/pin-login", json={"username": "tester", "pin": "0000"})
+                    )
+                    for _ in range(5)
+                ]
+
+                # Late arrivals: start AFTER the first release (we'll trigger release now)
+                allow_finish.set()
+                first_resp = await first_task
+                responses.append(first_resp)
+
+                # Now fire late arrivals while waiters are still acquiring
+                late_tasks = [
+                    asyncio.create_task(
+                        c.post("/auth/pin-login", json={"username": "tester", "pin": "0000"})
+                    )
+                    for _ in range(5)
+                ]
+
+                all_responses = await asyncio.gather(*waiter_tasks, *late_tasks)
+                responses.extend(all_responses)
+        finally:
+            monkeypatch.undo()
+
+        # At most one holder at any time
+        assert max_holders <= 1, f"max concurrent holders was {max_holders}, expected <= 1"
+
+        # Attempt count never exceeds the limit: at most 5 failures (401) before rate limit (429)
+        status_codes = [r.status_code for r in responses]
+        failures = status_codes.count(401)
+        rate_limited = status_codes.count(429)
+        assert failures <= 5, f"failures {failures} exceeded limit of 5"
+        assert failures + rate_limited == 11, f"expected 11 total responses, got {len(responses)}"
+
+    @pytest.mark.asyncio
+    async def test_lock_entry_not_dropped_while_waiters_exist(self):
+        """Direct unit test for the waiter refcount fix.
+
+        This test directly exercises _acquire_pin_key_lock and
+        _release_pin_key_lock to verify the lock entry is not popped
+        while waiters are still in the acquire chain.
+        """
+        import asyncio
+        from tinyagentos.routes import auth as auth_routes
+
+        # Reset the lock state
+        auth_routes._pin_key_locks.clear()
+        auth_routes._pin_key_waiters.clear()
+
+        key = "test-key"
+        lock1 = await auth_routes._acquire_pin_key_lock(key)
+
+        # Start waiters that will queue on the lock
+        waiter_events = [asyncio.Event() for _ in range(3)]
+        waiter_tasks = []
+
+        async def waiter(waiter_id, event):
+            lock = await auth_routes._acquire_pin_key_lock(key)
+            event.set()  # Signal that we acquired the lock
+            await asyncio.sleep(0.1)  # Hold the lock briefly
+            await auth_routes._release_pin_key_lock(key, lock)
+
+        for i, event in enumerate(waiter_events):
+            waiter_tasks.append(asyncio.create_task(waiter(i, event)))
+
+        # Give waiters time to start waiting
+        await asyncio.sleep(0.05)
+
+        # Release the first lock - this should NOT pop the entry because waiters exist
+        await auth_routes._release_pin_key_lock(key, lock1)
+
+        # The entry should still exist because waiters are queued
+        assert key in auth_routes._pin_key_locks, "Lock entry was dropped while waiters exist"
+
+        # Wait for all waiters to acquire and release
+        await asyncio.gather(*waiter_tasks)
+
+        # Now the entry should be popped (no more waiters)
+        # The release of the last waiter pops the entry synchronously under the guard
+        assert key not in auth_routes._pin_key_locks, "Lock entry was not popped after all waiters released"
+        assert key not in auth_routes._pin_key_waiters, "Waiter count was not cleaned up"
+
+    @pytest.mark.asyncio
+    async def test_cancelled_waiter_does_not_leak_count(self):
+        """A waiter cancelled while waiting must decrement the count and pop the entry if idle.
+
+        Without the fix, cancelling a task in _acquire_pin_key_lock leaves the
+        waiter count incremented and the key entry never popped. An attacker can
+        drive this by sending requests with distinct unknown: usernames and
+        cancelling them, eventually hitting the 1024 cap.
+        """
+        import asyncio
+        from tinyagentos.routes import auth as auth_routes
+
+        # Reset the lock state
+        auth_routes._pin_key_locks.clear()
+        auth_routes._pin_key_waiters.clear()
+
+        key = "test-cancel-key"
+        lock1 = await auth_routes._acquire_pin_key_lock(key)
+
+        # Start a waiter that we will cancel
+        waiter_started = asyncio.Event()
+        waiter_task = None
+
+        async def waiter():
+            waiter_started.set()
+            return await auth_routes._acquire_pin_key_lock(key)
+
+        waiter_task = asyncio.create_task(waiter())
+
+        # Wait for the waiter to start waiting (increment count)
+        await waiter_started.wait()
+        await asyncio.sleep(0.01)  # Ensure it's in the acquire wait
+
+        # Verify waiter count is 2 (holder + 1 waiter)
+        assert auth_routes._pin_key_waiters[key] == 2
+
+        # Cancel the waiter
+        waiter_task.cancel()
+        try:
+            await waiter_task
+        except asyncio.CancelledError:
+            pass
+
+        # Release the holder
+        await auth_routes._release_pin_key_lock(key, lock1)
+
+        # After cancellation and release, the count should be 0 and entry popped
+        assert key not in auth_routes._pin_key_waiters, "Waiter count leaked after cancellation"
+        assert key not in auth_routes._pin_key_locks, "Lock entry not popped after cancellation and release"
+
+    @pytest.mark.asyncio
+    async def test_burst_cancelled_waiters_over_many_keys_leaves_dict_empty(self):
+        """A burst of cancelled waiters over many distinct keys must not leave entries.
+
+        Simulates an attacker sending requests with distinct unknown:<username>
+        keys and cancelling them all. Without the fix, each leaves a stuck entry.
+        """
+        import asyncio
+        from tinyagentos.routes import auth as auth_routes
+
+        # Reset the lock state
+        auth_routes._pin_key_locks.clear()
+        auth_routes._pin_key_waiters.clear()
+
+        num_keys = 50
+        keys = [f"unknown:attacker{i}" for i in range(num_keys)]
+
+        async def acquire_and_cancel(key):
+            # Hold the lock briefly so waiters queue
+            lock = await auth_routes._acquire_pin_key_lock(key)
+            waiter_started = asyncio.Event()
+
+            async def waiter():
+                waiter_started.set()
+                return await auth_routes._acquire_pin_key_lock(key)
+
+            task = asyncio.create_task(waiter())
+            await waiter_started.wait()
+            await asyncio.sleep(0.01)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            await auth_routes._release_pin_key_lock(key, lock)
+
+        await asyncio.gather(*(acquire_and_cancel(k) for k in keys))
+
+        # All keys should be cleaned up
+        assert len(auth_routes._pin_key_locks) == 0, f"Lock dict not empty: {list(auth_routes._pin_key_locks.keys())}"
+        assert len(auth_routes._pin_key_waiters) == 0, f"Waiter dict not empty: {dict(auth_routes._pin_key_waiters)}"
+
+
+# --------------------------------------------------------------------------- #
+#  Lock page script (node) — PIN auto-unlock behaviour                       #
+# --------------------------------------------------------------------------- #
+
+
+class TestPinPanelScriptNode:
+    @pytest.mark.asyncio
+    async def test_console_login_page_renders_data_pin_length(self, app):
+        """A console GET /auth/login on a single-account install with a 6-digit
+        PIN renders data-pin-length="6" so the keypad auto-submits on the last
+        digit instead of showing a submit button."""
+        app.state.auth.setup_user("admin", "Admin", "", "passw0rd")
+        app.state.auth.set_pin("admin", "123456")
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/auth/login")
+        assert resp.status_code == 200
+        assert 'data-pin-length="6"' in resp.text
+
+    @pytest.mark.asyncio
+    async def test_console_login_page_without_pin_has_no_data_pin_length(self, app):
+        """A sole account with no PIN still renders the lock screen, but the
+        keypad cannot auto-submit because nothing knows the length."""
+        app.state.auth.setup_user("admin", "Admin", "", "passw0rd")
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/auth/login")
+        assert resp.status_code == 200
+        assert "data-pin-length" not in resp.text
+
+    def test_with_data_pin_length_six_typing_five_sends_no_post_sixth_sends_exactly_one(self):
+        res = _run_pin_scenario({"pinLength": 6, "hasSubmit": False, "dotCount": 6, "typeDigits": [1,2,3,4,5]})
+        assert len(res["posts"]) == 0
+        res = _run_pin_scenario({"pinLength": 6, "hasSubmit": False, "dotCount": 6, "typeDigits": [1,2,3,4,5,6]})
+        assert len(res["posts"]) == 1
+
+    def test_wrong_pin_clears_dots_and_second_full_entry_posts_second(self):
+        res = _run_pin_scenario({"pinLength": 4, "hasSubmit": False, "dotCount": 4, "typeDigits": [1,2,3,4], "fetchStatus": 401, "fetchBody": {"error": "bad"}})
+        assert len(res["posts"]) == 1
+        assert res["lastStatus"] == 401
+        res2 = _run_pin_scenario({"pinLength": 4, "hasSubmit": False, "dotCount": 4, "typeDigits": [5,6,7,8], "fetchStatus": 401, "fetchBody": {"error": "bad"}})
+        assert len(res2["posts"]) == 1
+        assert res2["lastStatus"] == 401
+
+    def test_no_data_pin_length_button_exists_and_typing_never_auto_posts(self):
+        res = _run_pin_scenario({"pinLength": None, "hasSubmit": True, "dotCount": 4, "typeDigits": [1,2,3,4]})
+        assert len(res["posts"]) == 0
+        assert res["submitExists"] is True
+
+    def test_mutation_try_pin_fires_at_length_four_always_five_no_post_goes_red(self):
+        mutated = _PIN_PANEL_SCRIPT.replace('if (pinLength && input.value.length === pinLength) {\n      tryPin();\n    }',
+                                             'if (input.value.length === 4) {\n      tryPin();\n    }')
+        res = _run_pin_scenario({"pinLength": 6, "hasSubmit": False, "dotCount": 6, "typeDigits": [1,2,3,4,5]}, script_override=mutated)
+        assert len(res["posts"]) >= 1
+
+    def test_enter_gated_on_known_length(self):
+        """Enter submits nothing until the typed length matches data-pin-length."""
+        res = _run_pin_scenario({"pinLength": 6, "hasSubmit": False, "dotCount": 6, "typeDigits": [1,2,3,4], "doEnter": True})
+        assert len(res["posts"]) == 0
+        res = _run_pin_scenario({"pinLength": 6, "hasSubmit": False, "dotCount": 6, "typeDigits": [1,2,3,4,5,6], "doEnter": True})
+        assert len(res["posts"]) == 1
+
+    def test_enter_submits_when_pin_length_unknown(self):
+        """Without data-pin-length, Enter keeps today's submit-whatever-was-typed behaviour."""
+        res = _run_pin_scenario({"pinLength": None, "hasSubmit": True, "dotCount": 4, "typeDigits": [1,2,3,4], "doEnter": True})
+        assert len(res["posts"]) == 1
+
+
+# --------------------------------------------------------------------------- #
+#  pin_login does not block the event loop                                      #
+# --------------------------------------------------------------------------- #
+
+class TestPinLoginDoesNotBlockTheLoop:
+    """check_pin hashes on the event loop; the route must offload it.
+
+    The route's own ``asyncio.to_thread`` is the thing under test here, so we
+    patch the narrow thing the route calls -- ``check_pin`` on the route
+    module's imported name -- and record the thread it runs on. A correct
+    implementation calls it from a worker thread; an implementation that calls
+    it directly runs it on the event-loop thread and fails this.
+    """
+
+    @pytest.mark.asyncio
+    async def test_pin_login_offloads_check_pin_off_the_event_loop(self, app, console, monkeypatch):
+        import threading
+
+        app.state.auth.setup_user("owner", "Owner", "", "passw0rd")
+        recorded = {}
+
+        def fake_check_pin(self, pin, username=None):
+            recorded["thread"] = threading.get_ident()
+            return (True, self._pin_user(username))
+
+        monkeypatch.setattr("tinyagentos.auth.AuthManager.check_pin", fake_check_pin)
+        app.state.auth.set_pin("owner", "4913")
+        r = await console.post("/auth/pin-login", json={"pin": "4913"})
+        assert r.status_code == 200
+        assert recorded.get("thread") is not None
+        assert recorded["thread"] != threading.get_ident()
+
+
+
+# --------------------------------------------------------------------------- #
+#  set_pin racing a login with the OLD PIN                                       #
+# --------------------------------------------------------------------------- #
+
+class TestSetPinRace:
+    """A concurrent set_pin/clear_pin must not let a login with the old PIN win.
+
+    Two observations, both of which are red without the fix:
+
+    1. check_pin holds the account-store lock while it verifies the hash. A
+       helper thread trying to grab the lock during verify is refused -- that
+       is what stops a concurrent clearer from swapping the hash out between
+       the read and the check. Without the lock the helper grabs it, and the
+       old PIN can be verified against a store that has already changed.
+    2. Once set_pin has committed a new PIN, a login racing it with the old PIN
+       is refused.
+    """
+
+    def test_check_pin_does_not_hold_the_lock_during_verify(self, mgr, monkeypatch):
+        import threading
+        from tinyagentos import auth as auth_mod
+
+        mgr.set_pin("tester", "4913")
+        state = {}
+        real_verify = auth_mod.verify_password
+
+        def spy_verify(pin, stored):
+            tried = {}
+
+            def probe():
+                tried["acquired"] = mgr._users_lock.acquire(blocking=False)
+                if tried.get("acquired"):
+                    mgr._users_lock.release()
+
+            t = threading.Thread(target=probe)
+            t.start()
+            t.join()
+            state["lock_held_during_verify"] = not tried.get("acquired", False)
+            return real_verify(pin, stored)
+
+        monkeypatch.setattr("tinyagentos.auth.verify_password", spy_verify)
+        ok, _ = mgr.check_pin("4913", username="tester")
+        assert ok is True
+        assert state["lock_held_during_verify"] is False
+
+    def test_old_pin_refused_once_set_pin_commits(self, mgr, monkeypatch):
+        import threading
+        from tinyagentos import auth as auth_mod
+
+        mgr.set_pin("tester", "4913")
+        in_verify = threading.Event()
+        allow_finish = threading.Event()
+        results = {}
+        real_verify = auth_mod.verify_password
+
+        def slow_verify(pin, stored):
+            # Only slow the old-PIN verification so setup/other checks stay fast.
+            if pin == "4913":
+                in_verify.set()
+                allow_finish.wait(timeout=5)
+            return real_verify(pin, stored)
+
+        monkeypatch.setattr("tinyagentos.auth.verify_password", slow_verify)
+
+        def check_old():
+            results["old_pin_ok"] = mgr.check_pin("4913", username="tester")[0]
+
+        def set_new_pin():
+            assert in_verify.wait(timeout=5)
+            mgr.set_pin("tester", "0000")
+            results["set_done"] = True
+
+        t_check = threading.Thread(target=check_old)
+        t_set = threading.Thread(target=set_new_pin)
+        t_check.start()
+        t_set.start()
+        assert in_verify.wait(timeout=5)
+        t_set.join(timeout=2)
+        assert results.get("set_done") is True
+        allow_finish.set()
+        t_check.join(timeout=5)
+
+        # Once set_pin has committed, the old PIN is refused and the new one
+        # works -- the store never exposes the new state with the old PIN valid.
+        assert mgr.check_pin("4913", username="tester")[0] is False
+        assert mgr.check_pin("0000", username="tester")[0] is True

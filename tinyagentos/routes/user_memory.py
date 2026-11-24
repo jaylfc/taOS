@@ -3,8 +3,10 @@ from __future__ import annotations
 import logging
 
 import httpx
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
+
+from tinyagentos.auth_context import require_admin
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +72,7 @@ async def get_settings(request: Request):
     return JSONResponse(settings)
 
 
-@router.put("/api/user-memory/settings")
+@router.put("/api/user-memory/settings", dependencies=[Depends(require_admin)])
 async def update_settings(request: Request):
     body = await request.json()
     await _store(request).update_settings(USER_ID, body)

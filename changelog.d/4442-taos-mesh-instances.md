@@ -1,0 +1,3 @@
+### Added
+
+- Per-person userspace mesh daemon template (T9, inert): `tinyagentos/taosnet/mesh_instances.py` adds a slot allocator, the tailscaled and `tailscale serve` argv for each person, and a CLI, plus the `systemd/taos-mesh@.service` template. Each instance runs as the unprivileged `taos` account with userspace networking, loopback-only listeners and a 0600 socket. Nothing is installed, enabled or started by `install.sh`, packaging or app start-up; only the explicit owner step `install-template` (superuser only) writes the unit, and it enables nothing. The device-link test bed now launches its daemons through this module.

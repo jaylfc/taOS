@@ -606,8 +606,12 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     from taosmd import KnowledgeGraph as TemporalKnowledgeGraph
     knowledge_graph = TemporalKnowledgeGraph(db_path=data_dir / "knowledge-graph.db")
 
-    from taosmd import Archive as ArchiveStore
-    archive = ArchiveStore(archive_dir=data_dir / "archive", index_path=data_dir / "archive-index.db")
+    # The archive writer is NOT built here.  Nothing outside the lifespan
+    # reads it (app.state.archive is only set once the lifespan has started),
+    # so create_app stays free of any lock and tests can build the app many
+    # times without starting it.  The lifespan takes the one writer for
+    # <data>/archive (tinyagentos/archive_writer.py) and releases it on exit.
+    from tinyagentos.archive_writer import open_archive_writer, release_archive_writer
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -668,13 +672,22 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await secrets_store.init()
         # The harness decision ran at create_app time, before the Secrets
         # store was readable; claude_code needs its token secret, so re-decide
-        # now when that is the preferred harness.
+        # now when that is the preferred harness. Hermes needs its key secret
+        # and a reachable API server, so re-decide when that is the preference.
         _fw_decision = getattr(app.state, "taos_agent_framework_decision", None)
         if _fw_decision is not None and _fw_decision.preference == "claude_code":
             from tinyagentos.claude_code_runtime import claude_code_token_present
             from tinyagentos.taos_agent_runtime import refresh_framework_decision
             refresh_framework_decision(
                 app.state, claude_code_token_present=await claude_code_token_present(app.state))
+        if _fw_decision is not None and _fw_decision.preference == "hermes":
+            from tinyagentos.hermes_runtime import hermes_api_up, hermes_key_present
+            from tinyagentos.taos_agent_runtime import refresh_framework_decision
+            refresh_framework_decision(
+                app.state,
+                hermes_api_up=await hermes_api_up(app.state),
+                hermes_key_present=await hermes_key_present(app.state),
+            )
         # -------------------------------------------------------------------
         # Migrate legacy github_app_private_key from config.yaml → SecretsStore.
         # The key was previously stored as plaintext in config and re-serialized
@@ -813,6 +826,13 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.browsing_history = browsing_history
         await knowledge_graph.init()
         app.state.knowledge_graph = knowledge_graph
+        # The one controller-side writer for <data>/archive.  A second writer
+        # (another app in this process, or any other opener) is refused.
+        archive = open_archive_writer(
+            "controller.app", data_dir / "archive",
+            index_path=data_dir / "archive-index.db",
+        )
+        app.state._archive_writer = archive
         await archive.init()
         app.state.archive = archive
 
@@ -1366,7 +1386,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
         try:
             from tinyagentos.projects.a2a import backfill_all as _a2a_backfill_all
-            _n = await _a2a_backfill_all(chat_channels, project_store, config=config)
+            _n = await _a2a_backfill_all(
+                chat_channels, project_store, config=config,
+                agent_registry=agent_registry_store,
+            )
             logger.info("a2a backfill: ensured channels for %d active projects", _n)
         except Exception:
             logger.exception("a2a backfill failed")
@@ -1649,7 +1672,13 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await browser_sessions.close()
         await browsing_history.close()
         await knowledge_graph.close()
-        await archive.close()
+        await release_archive_writer(archive)
+        app.state.archive = None
+        try:
+            from tinyagentos.routes import hardware_bluetooth as _bt_routes
+            _bt_routes.cancel_discovery_timers()
+        except Exception:
+            pass
         await close_system_bus()
         await installed_apps.close()
         await feedback_store.close()
@@ -1759,7 +1788,21 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                 except Exception:
                     logger.debug("shutdown: close failed for app.state.%s", _name, exc_info=True)
 
-    app = FastAPI(title="TinyAgentOS", version="0.1.0", lifespan=lifespan)
+    @asynccontextmanager
+    async def _lifespan_releasing_archive(app: FastAPI):
+        # Release the archive writer on every exit path, including a start-up
+        # that fails after the writer was taken.  Only the object this start
+        # registered is released (app.state._archive_writer), so a start that
+        # was refused because another app holds the directory frees nothing.
+        try:
+            async with lifespan(app):
+                yield
+        finally:
+            held = getattr(app.state, "_archive_writer", None)
+            if held is not None:
+                await release_archive_writer(held)
+
+    app = FastAPI(title="TinyAgentOS", version="0.1.0", lifespan=_lifespan_releasing_archive)
 
     # An unreadable account store must never be answered with a plausible
     # empty result — "no such user" and "cannot read the users" are different

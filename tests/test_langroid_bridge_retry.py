@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 
@@ -99,8 +100,8 @@ class TestPostReplyRetry:
         assert result is True
         assert client.post.call_count == 3
         assert mock_sleep.call_count == 2
-        assert mock_sleep.call_args_list[0].args[0] == pytest.approx(2.0)
-        assert mock_sleep.call_args_list[1].args[0] == pytest.approx(4.0)
+        assert mock_sleep.call_args_list[0].args[0] == pytest.approx(1.0)
+        assert mock_sleep.call_args_list[1].args[0] == pytest.approx(2.0)
 
     def test_200_succeeds_first_try(self, bridge_ns):
         post_reply = bridge_ns["post_reply"]
@@ -131,7 +132,7 @@ class TestPostReplyRetry:
     def test_exception_retries_then_drops(self, bridge_ns):
         post_reply = bridge_ns["post_reply"]
         client = MagicMock()
-        client.post = AsyncMock(side_effect=ConnectionError("refused"))
+        client.post = AsyncMock(side_effect=httpx.TransportError("refused"))
 
         with patch("asyncio.sleep", new_callable=AsyncMock):
             result = asyncio.run(post_reply(
@@ -183,3 +184,23 @@ class TestFetchBootRetry:
                 asyncio.run(fetch_boot(client))
 
         assert client.get.call_count == 3
+
+    def test_exception_retries_then_raises(self, bridge_ns):
+        """fetch_boot retries on exceptions (e.g., transport errors) and raises after exhaustion."""
+        import httpx
+        fetch_boot = bridge_ns["fetch_boot"]
+        client = MagicMock()
+        client.get = AsyncMock(side_effect=[
+            httpx.TransportError("connection refused"),
+            httpx.TransportError("connection refused"),
+            httpx.TransportError("connection refused"),
+        ])
+
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            with pytest.raises(RuntimeError):
+                asyncio.run(fetch_boot(client))
+
+        assert client.get.call_count == 3
+        assert mock_sleep.call_count == 2
+        assert mock_sleep.call_args_list[0].args[0] == pytest.approx(2.0)
+        assert mock_sleep.call_args_list[1].args[0] == pytest.approx(4.0)

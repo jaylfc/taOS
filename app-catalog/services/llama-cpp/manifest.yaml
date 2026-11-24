@@ -18,6 +18,7 @@ requires:
 install:
   method: script
   script: scripts/install-llama-cpp.sh
+  uninstall: scripts/uninstall-llama-cpp.sh
 
 lifecycle:
   # Auto-register as a backend so the LiteLLM proxy gets a route to the

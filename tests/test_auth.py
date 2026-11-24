@@ -16,6 +16,7 @@ from tinyagentos.auth import (
     verify_and_maybe_rehash,
     _hash_password_sha256,
 )
+from tinyagentos.agent_registry_store import mint_registry_token
 
 
 # --- Unit tests for password hashing ---
@@ -829,6 +830,102 @@ class TestMultiUser:
         assert resp.status_code == 401
 
 
+class TestCompleteInviteFromSession:
+    """The SPA completes an invite from the session the invite code opened.
+
+    LoginGate never sees the code (/auth/status does not return it), so it
+    posts /auth/complete without one. The invitee's own pending session
+    stands in for the code; no other session does.
+    """
+
+    async def _invite(self, auth_client, *usernames):
+        await auth_client.post(
+            "/auth/setup",
+            json={"username": "admin", "full_name": "Admin", "email": "", "password": "adminpass", "auto_login": False},
+        )
+        admin = await auth_client.post(
+            "/auth/login",
+            json={"username": "admin", "password": "adminpass", "auto_login": False},
+        )
+        codes = {}
+        for name in usernames:
+            add = await auth_client.post("/auth/users", json={"username": name}, cookies=admin.cookies)
+            codes[name] = add.json()["invite_code"]
+        return admin.cookies, codes
+
+    async def _pending_session(self, auth_client, username, code):
+        login = await auth_client.post(
+            "/auth/login",
+            json={"username": username, "password": code, "auto_login": False},
+        )
+        assert login.json()["needs_onboarding"] is True
+        return login.cookies
+
+    def _body(self, username):
+        return {"username": username, "full_name": "Ivy", "email": "", "password": "ivypass1", "auto_login": False}
+
+    @pytest.mark.asyncio
+    async def test_pending_session_completes_without_the_code(self, app, auth_client):
+        _, codes = await self._invite(auth_client, "ivy")
+        cookies = await self._pending_session(auth_client, "ivy", codes["ivy"])
+        resp = await auth_client.post("/auth/complete", json=self._body("ivy"), cookies=cookies)
+        assert resp.status_code == 200, resp.text
+        relogin = await auth_client.post(
+            "/auth/login",
+            json={"username": "ivy", "password": "ivypass1", "auto_login": False},
+        )
+        assert relogin.status_code == 200, relogin.text
+        assert relogin.json()["ok"] is True
+
+    @pytest.mark.asyncio
+    async def test_no_code_and_no_session_is_refused(self, app, auth_client):
+        await self._invite(auth_client, "ivy")
+        # The client jar kept the admin login's cookie; this case sends none.
+        auth_client.cookies.clear()
+        resp = await auth_client.post("/auth/complete", json=self._body("ivy"))
+        assert resp.status_code == 400, resp.text
+
+    @pytest.mark.asyncio
+    async def test_another_invitees_session_is_refused(self, app, auth_client):
+        _, codes = await self._invite(auth_client, "ivy", "jack")
+        jack = await self._pending_session(auth_client, "jack", codes["jack"])
+        resp = await auth_client.post("/auth/complete", json=self._body("ivy"), cookies=jack)
+        assert resp.status_code == 400, resp.text
+        # ivy's invite is untouched: her code still opens a pending session
+        await self._pending_session(auth_client, "ivy", codes["ivy"])
+
+    @pytest.mark.asyncio
+    async def test_admin_session_is_refused(self, app, auth_client):
+        admin, codes = await self._invite(auth_client, "ivy")
+        resp = await auth_client.post("/auth/complete", json=self._body("ivy"), cookies=admin)
+        assert resp.status_code == 400, resp.text
+        await self._pending_session(auth_client, "ivy", codes["ivy"])
+
+    @pytest.mark.asyncio
+    async def test_pending_session_without_the_csrf_token_is_refused(self, app, auth_client):
+        # /auth/complete is CSRF-exempt by path, so the session branch checks
+        # the double-submit token itself: a cross-site form carrying the
+        # pending cookie must not set the invitee's password.
+        _, codes = await self._invite(auth_client, "ivy")
+        cookies = await self._pending_session(auth_client, "ivy", codes["ivy"])
+        resp = await auth_client.post(
+            "/auth/complete",
+            json=self._body("ivy"),
+            cookies=cookies,
+            headers={"X-CSRF-Token": "forged"},
+        )
+        assert resp.status_code == 400, resp.text
+        await self._pending_session(auth_client, "ivy", codes["ivy"])
+
+    @pytest.mark.asyncio
+    async def test_wrong_code_is_still_refused_with_a_pending_session(self, app, auth_client):
+        _, codes = await self._invite(auth_client, "ivy")
+        cookies = await self._pending_session(auth_client, "ivy", codes["ivy"])
+        body = {**self._body("ivy"), "invite_code": "not-the-code"}
+        resp = await auth_client.post("/auth/complete", json=body, cookies=cookies)
+        assert resp.status_code == 400, resp.text
+
+
 class TestLocalToken:
     def test_token_created_on_first_access(self, tmp_path):
         mgr = AuthManager(tmp_path)
@@ -1374,6 +1471,104 @@ class TestAuthStatusUserAgentSymmetry:
             "/auth/me", headers={"user-agent": "TaosPWA/2.0 (updated browser)"}
         )
         assert rotated.status_code == 401
+
+
+class TestAuthMeBearer:
+    """/auth/me accepts the host local token as a bearer for native apps.
+
+    The cookie path is unchanged and wins when both credentials are present.
+    A bearer is only consulted when there is no valid session cookie, and only
+    the host local token counts as a person: agent-bound tokens and registry
+    JWTs are refused with 401.
+    """
+
+    def _bare(self, app):
+        return AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        )
+
+    async def _setup_user(self, auth_client):
+        await auth_client.post(
+            "/auth/setup",
+            json={"username": "admin", "full_name": "Admin", "email": "", "password": "adminpass", "auto_login": False},
+        )
+
+    @pytest.mark.asyncio
+    async def test_cookie_answer_unchanged(self, app, auth_client):
+        await self._setup_user(auth_client)
+        login = await auth_client.post(
+            "/auth/login",
+            data={"password": "adminpass"},
+            follow_redirects=False,
+        )
+        assert "taos_session" in login.headers.get("set-cookie", "")
+        resp = await auth_client.get("/auth/me", cookies=login.cookies)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body == {"user": app.state.auth.get_primary_user()}
+        assert "via" not in body
+
+    @pytest.mark.asyncio
+    async def test_cookie_wins_over_bearer(self, app, auth_client):
+        await self._setup_user(auth_client)
+        login = await auth_client.post(
+            "/auth/login",
+            data={"password": "adminpass"},
+            follow_redirects=False,
+        )
+        token = app.state.auth.get_local_token()
+        resp = await auth_client.get(
+            "/auth/me", headers={"Authorization": f"Bearer {token}"}
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"user": app.state.auth.get_primary_user()}
+        assert "via" not in resp.json()
+
+    @pytest.mark.asyncio
+    async def test_local_token_bearer(self, app, auth_client):
+        await self._setup_user(auth_client)
+        token = app.state.auth.get_local_token()
+        async with self._bare(app) as c:
+            resp = await c.get(
+                "/auth/me", headers={"Authorization": f"Bearer {token}"}
+            )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["via"] == "local_token"
+        assert body["user"] == app.state.auth.get_primary_user()
+
+    @pytest.mark.asyncio
+    async def test_wrong_bearer_refused(self, app, auth_client):
+        await self._setup_user(auth_client)
+        async with self._bare(app) as c:
+            resp = await c.get(
+                "/auth/me", headers={"Authorization": "Bearer wrong-token"}
+            )
+        assert resp.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_agent_registry_token_refused(self, app, auth_client):
+        await self._setup_user(auth_client)
+        registry = app.state.agent_registry
+        if registry._db is None:
+            await registry.init()
+        priv, _pub = app.state.agent_registry_keypair
+        rec = await registry.register(
+            framework="taosmd", display_name="agent", origin="taos-deployed", handle="@agent"
+        )
+        token = mint_registry_token(rec["canonical_id"], priv, user_id="u", framework="taosmd")
+        async with self._bare(app) as c:
+            resp = await c.get(
+                "/auth/me", headers={"Authorization": f"Bearer {token}"}
+            )
+        assert resp.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_no_credentials_refused(self, app):
+        # No setup: no user, no session, no bearer -> 401.
+        async with self._bare(app) as c:
+            resp = await c.get("/auth/me")
+        assert resp.status_code == 401
 
 
 # --- Non-object JSON bodies must be a 400, never a 500 -------------------------

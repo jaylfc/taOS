@@ -772,13 +772,29 @@ async def recommended_models(request: Request):
             "id": model.id,
             "name": model.name,
             "description": getattr(model, "description", ""),
-            "compatibility": tier_status or "unknown",
+            "compatibility": "unknown",
         }
 
+        variant_ids = {v["id"] for v in getattr(model, "variants", []) if isinstance(v, dict) and v.get("id")}
+
         if tier_status == "full":
+            entry["compatibility"] = "full"
             recommended.append(entry)
         elif tier_status == "limited":
+            entry["compatibility"] = "limited"
             compatible.append(entry)
+        elif isinstance(tier_status, dict):
+            variant = tier_status.get("recommended")
+            if isinstance(variant, str) and variant and variant in variant_ids:
+                entry["variant"] = variant
+                entry["compatibility"] = "full"
+                recommended.append(entry)
+            else:
+                variant = tier_status.get("fallback")
+                if isinstance(variant, str) and variant and variant in variant_ids:
+                    entry["variant"] = variant
+                    entry["compatibility"] = "limited"
+                    compatible.append(entry)
 
     return {
         "profile_id": profile_id,

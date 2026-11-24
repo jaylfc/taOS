@@ -1,5 +1,6 @@
 """Orb catalog fetch + cached re-verify (spec s10)."""
 import asyncio
+import threading
 from pathlib import Path
 
 import httpx
@@ -19,14 +20,23 @@ from tinyagentos.orb.catalog_sig import (
 CATALOG_MAX_BYTES = 1 << 20
 SIG_MAX_BYTES = 256
 
+# Serializes _accept_and_cache so two concurrent fetches cannot interleave
+# state recording with the cache writes and leave an older cache behind the
+# recorded serial. accept_catalog takes a separate per-state FileLock inside;
+# the lock ordering is fixed (this lock first, FileLock inside), so no deadlock.
+_ACCEPT_AND_CACHE_LOCK = threading.Lock()
+
 
 async def _get_capped(client, url: str, cap: int) -> bytes | None:
     try:
-        async with client.stream("GET", url) as resp:
+        async with client.stream("GET", url, headers={"Accept-Encoding": "identity"}) as resp:
             if resp.status_code == 404:
                 return None
             if resp.status_code != 200:
                 raise CatalogFetchError(f"failed to fetch {url}: status {resp.status_code}")
+            content_encoding = resp.headers.get("content-encoding", "")
+            if content_encoding and content_encoding.lower() != "identity":
+                raise CatalogFetchError(f"server returned compressed response for {url}: content-encoding {content_encoding}")
             total = bytearray()
             async for chunk in resp.aiter_bytes():
                 total.extend(chunk)
@@ -60,18 +70,30 @@ async def fetch_catalog(base_url: str, cache_dir, state_path, keys=None, timeout
     except TimeoutError as e:
         raise CatalogFetchError(f"catalog fetch exceeded {timeout}s") from e
 
-    # accept_catalog records the serial before the cache is written. If the
-    # write then fails, state is ahead of the cache and load_cached_catalog
-    # refuses the older cache as a regression: fails closed, refetch recovers.
-    # Refuse a replayed non-firmware document before it can move the serial.
-    doc = verify_catalog(catalog_bytes, sig_bytes, keys)
-    catalog.check_firmware_kind(doc)
-    accept_catalog(catalog_bytes, sig_bytes, state_path, keys)
+    return await asyncio.to_thread(
+        _accept_and_cache, catalog_bytes, sig_bytes, state_path, keys, cache_dir
+    )
 
-    cache_dir_path = Path(cache_dir)
-    cache_dir_path.mkdir(parents=True, exist_ok=True)
-    atomic_io.atomic_write_bytes(cache_dir_path / "catalog.json", catalog_bytes)
-    atomic_io.atomic_write_bytes(cache_dir_path / "catalog.json.sig", sig_bytes if sig_bytes is not None else b"")
+
+def _accept_and_cache(catalog_bytes, sig_bytes, state_path, keys, cache_dir):
+    # Hold the lock across verification, serial recording and both cache
+    # writes so concurrent fetches are fail-closed: the later serial always
+    # wins the cache and load_cached_catalog never sees a regression.
+    with _ACCEPT_AND_CACHE_LOCK:
+        # Refuse a replayed non-firmware document before it can move the serial
+        # or touch the cache.
+        doc = verify_catalog(catalog_bytes, sig_bytes, keys)
+        catalog.check_firmware_kind(doc)
+
+        # accept_catalog records the serial before the cache is written. If the
+        # write then fails, state is ahead of the cache and load_cached_catalog
+        # refuses the older cache as a regression: fails closed, refetch recovers.
+        accept_catalog(catalog_bytes, sig_bytes, state_path, keys)
+
+        cache_dir_path = Path(cache_dir)
+        cache_dir_path.mkdir(parents=True, exist_ok=True)
+        atomic_io.atomic_write_bytes(cache_dir_path / "catalog.json", catalog_bytes)
+        atomic_io.atomic_write_bytes(cache_dir_path / "catalog.json.sig", sig_bytes if sig_bytes is not None else b"")
 
     return catalog.load_catalog(str(cache_dir_path / "catalog.json"))
 
@@ -84,14 +106,16 @@ def load_cached_catalog(cache_dir, state_path, keys=None):
     if not catalog_path.exists():
         raise CatalogFetchError("no cached catalog")
 
-    catalog_bytes = catalog_path.read_bytes()
+    with catalog_path.open("rb") as f:
+        catalog_bytes = f.read(CATALOG_MAX_BYTES + 1)
     if len(catalog_bytes) > CATALOG_MAX_BYTES:
         raise CatalogFetchError("cached catalog exceeds cap")
 
     if not sig_path.exists():
         sig_bytes = None
     else:
-        sig_bytes = sig_path.read_bytes()
+        with sig_path.open("rb") as f:
+            sig_bytes = f.read(SIG_MAX_BYTES + 1)
         if len(sig_bytes) > SIG_MAX_BYTES:
             raise CatalogFetchError("cached catalog signature exceeds cap")
         if len(sig_bytes) == 0:

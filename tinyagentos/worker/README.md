@@ -47,6 +47,64 @@ Default name is the machine's hostname.
 2. **Discovers backends** — probes standard ports for Ollama (11434), rkllama (8080), llama.cpp (8080), vLLM (8000)
 3. **Registers** with the controller via `POST /api/cluster/workers`
 4. **Heartbeats** every 5 seconds via `POST /api/cluster/heartbeat` with CPU load
+5. **Self-updates** — installs a new version, restart, health-checks, and rolls back on failure (see below)
+6. **Picks up queued benchmark runs**: a manual "Re-run benchmarks" click is
+   queued on the controller and delivered in the heartbeat response, because
+   the agent polls and has no inbound HTTP surface. The agent then runs
+   `python -m tinyagentos.benchmark.runner` as a subprocess (one run at a time,
+   at most three attempts per request), and posting the results clears the
+   queue entry. See `tinyagentos/worker/benchmark_pull.py`.
+
+## Self-update (taOS #890 C3)
+
+The worker can update itself without manual SSH. The controller drives the
+flow via the deploy route below; a local trigger file is a second entry
+point (see "Local trigger" after the flow). Either way the worker executes
+the same lifecycle:
+
+1. **Install** — the controller calls `POST /api/cluster/workers/{name}/deploy`
+   (admin-only); the worker runs the install via `taos-deploy-helper.sh`.
+2. **Restart** — the worker restarts itself after install.
+3. **Health-check** — post-restart, the worker runs its health-check hook
+   (`tinyagentos.worker.self_update.post_update_startup`) as a fire-and-forget
+   task so the heartbeat loop is never blocked by the grace period.
+   The helper's health-check verifies the worker service is active and
+   that its main process is the worker entrypoint and has stayed up —
+   the worker opens no listening port, so there is no port to probe.
+   It also requires proof the worker is reaching the controller: after
+   every successful heartbeat the worker rewrites a `last-heartbeat-ok`
+   timestamp in its state dir (and clears it when its run loop starts),
+   and the check fails when that timestamp is missing or older than
+   `TAOS_HEALTH_HEARTBEAT_MAX_AGE_S` seconds (default 60; the heartbeat
+   interval is 5s).  On macOS, a launchd entry with no PID (`-`) fails
+   the check — loaded is not running.
+4. **Outcome** — the worker reports `success`/`rollback` to
+   `POST /api/cluster/workers/{name}/update-outcome` (HMAC-authenticated);
+   on failure it rolls back to the previous version automatically.
+5. **Drain** — the heartbeat response carries `drain_complete`; the worker
+   waits for in-flight leases to release before proceeding, instead of
+   waiting out the full timeout.
+
+### Local trigger
+
+An operator or cron job on the worker host can start the same update
+without the controller:
+
+```bash
+sudo taos-deploy-helper.sh trigger-update <target_ref> [--no-graceful]
+```
+
+This atomically writes `update-trigger.json` (`target_ref`, `graceful`)
+into the worker's state dir (`$TAOS_WORKER_STATE_DIR`); the worker's
+heartbeat loop claims it and runs the full lifecycle. It is the only
+writer of that file.
+
+Rollback is deliberately narrow: `taos-deploy-helper.sh rollback <tag>`
+only accepts the helper's own pre-update checkpoint tags
+(`taos-worker-pre-update-*`).
+
+Per-worker deploy locks prevent concurrent install/restart calls on the same
+worker from double-installing.
 
 ## Extra backends (`TAOS_EXTRA_BACKENDS`)
 

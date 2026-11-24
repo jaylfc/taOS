@@ -1,0 +1,1 @@
+- Collaboration kill switch: friend-accept no longer sends its outbound handshake while collaboration is off or the new contact is paused (`exchange_handshake` and `deliver_handshake` refuse like `deliver_to_peer`).

@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from tinyagentos.services import mdns_publisher as mp
-from tinyagentos.services.mdns_publisher import MdnsPublisher, choose_hostname
+from tinyagentos.services.mdns_publisher import MdnsPublisher, choose_hostname, _HOSTNAME_PATTERN
 
 
 class _FakeIPEntry:
@@ -362,7 +362,7 @@ def test_hostname_regex_validation():
         "other.local.",  # wrong prefix
     ]
 
-    pattern = re.compile(r"^taos(-[a-z0-9]{4})?\.local\.$")
+    pattern = _HOSTNAME_PATTERN
 
     for name in valid_names:
         assert pattern.match(name), f"Should match: {name}"

@@ -8,17 +8,19 @@ from tinyagentos.clients.retry import with_retry
 app = FastAPI()
 
 # Retry ONLY on connection-level failures (the service is still starting, or a
-# transient transport blip) — NOT on ReadTimeout. /api/runs/wait drives a
+# transient transport blip) -- NOT on ReadTimeout. /api/runs/wait drives a
 # long-horizon agent that legitimately takes minutes; a read timeout means the
 # run is in progress, so re-firing it would re-execute the whole job (and any
 # side effects). Keep the attempt count low for the same reason.
-# ConnectTimeout and PoolTimeout belong on this list too — both are raised
+# Status retries (429/5xx) are off for the same reason: DeerFlow answered, so
+# the run may already be executing, and re-firing /api/runs/wait starts a new
+# run and re-executes the whole job plus side effects.
+# ConnectTimeout and PoolTimeout belong on this list too -- both are raised
 # before any request reaches DeerFlow, and neither inherits ConnectError.
 _RETRY_ON = (
     httpx.ConnectError,
     httpx.ConnectTimeout,
     httpx.PoolTimeout,
-    httpx.RemoteProtocolError,
 )
 # DeerFlow gets its own budget rather than retry_policy's: its call timeout is
 # 600s, far past the router's. 60s is still a safe deadline because a
@@ -31,6 +33,7 @@ _RETRY_KWARGS = dict(
     multiplier=2.0,
     max_delay=10.0,
     retry_on=_RETRY_ON,
+    retry_on_status=frozenset(),
     max_total_seconds=60.0,
 )
 

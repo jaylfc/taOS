@@ -31,7 +31,10 @@ def _backend(request: Request):
     settings_db_path = data_dir / "memory-settings.db"
 
     kg = getattr(request.app.state, "knowledge_graph", None)
-    archive = getattr(request.app.state, "archive", None)
+    # Never opens an archive of its own: this is the controller's one writer
+    # for <data>/archive (None before the lifespan has started it).
+    from tinyagentos.archive_writer import get_archive_writer
+    archive = get_archive_writer(data_dir / "archive")
 
     return TaOSmdBackend(
         kg=kg,

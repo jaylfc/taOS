@@ -1,10 +1,11 @@
 """Torrent mesh settings API — opt-out, upload cap, seed count."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from tinyagentos.auth_context import require_admin
 from tinyagentos.torrent_downloader import TORRENT_AVAILABLE
 from tinyagentos.torrent_settings import TorrentSettings
 
@@ -32,7 +33,7 @@ async def get_torrent_settings(request: Request):
     }
 
 
-@router.put("/api/torrent/settings")
+@router.put("/api/torrent/settings", dependencies=[Depends(require_admin)])
 async def put_torrent_settings(request: Request, body: TorrentSettingsBody):
     """Update torrent settings — hot-applied to the running libtorrent
     session if one is active, otherwise read on next session start."""

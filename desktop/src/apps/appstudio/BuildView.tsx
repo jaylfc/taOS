@@ -306,7 +306,7 @@ export function BuildView() {
                   {model ?? "No model selected"}
                 </div>
                 <div className="text-[10px] text-shell-text-tertiary">
-                  {noModel ? "choose a model in taOS Assistant settings" : "taOS agent"}
+                  {noModel ? "choose a model in taOS Assistant settings" : "taOS Agent"}
                 </div>
               </div>
             </div>

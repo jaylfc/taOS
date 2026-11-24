@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useRefreshOnFocus } from "@/hooks/use-refresh-on-focus";
+import { useOnBackendRecovered } from "@/hooks/use-on-backend-recovered";
 import { Brain, Search, Download, Trash2, HardDrive, X, Cloud } from "lucide-react";
 import {
   Button,
@@ -244,6 +245,7 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
   const [downloaded, setDownloaded] = useState<DownloadedModel[]>([]);
   const [available, setAvailable] = useState<AvailableModel[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [source, setSource] = useState<SourceFilter>("all");
   const [subFilter, setSubFilter] = useState<string | null>(null);
@@ -275,6 +277,23 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
     // union (controller + workers + cloud) is ready in a single state flip.
     const workersPromise = fetchClusterWorkers();
     const providersPromise = fetchCloudProviders();
+
+    // Commit helper: applies state only when this is still the latest call,
+    // so a stale response can never clobber a fresher one (see fetchSeqRef).
+    let errMsg: string | null = null;
+    const commit = (
+      downloadedList: DownloadedModel[],
+      availableList: AvailableModel[],
+      fallback: boolean,
+      err: string | null,
+    ) => {
+      if (seq !== fetchSeqRef.current) return;
+      setDownloaded(downloadedList);
+      setAvailable(availableList);
+      setIsFallback(fallback);
+      setError(err);
+      setLoading(false);
+    };
 
     try {
       const res = await fetch("/api/models", {
@@ -373,20 +392,20 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
             };
           });
 
-          // A newer fetchModels() call has already started (or finished) —
-          // committing this stale response would clobber fresher state, e.g.
-          // flipping a just-completed download back to "not installed".
-          if (seq !== fetchSeqRef.current) return;
-          setDownloaded(downloadedList);
-          setAvailable(availableList);
-          setIsFallback(false);
-          setLoading(false);
+          commit(downloadedList, availableList, false, null);
           return;
         }
+        // Ok but not JSON — treat as a failure and fall through.
+        errMsg = "Unexpected response from /api/models";
+      } else {
+        // Non-ok response: surface the error state with a Retry instead of
+        // leaving the spinner up or silently showing sample data.
+        errMsg = `Request failed (${res.status})`;
       }
-    } catch {
-      /* fall through */
+    } catch (e) {
+      errMsg = e instanceof Error ? e.message : "Failed to load models";
     }
+
     // /api/models failed — still try to surface cluster workers + cloud so the
     // user can at least see remote-hosted models.
     try {
@@ -400,33 +419,48 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
       const cloudList = cloudProvidersToAggregated(providers).map(
         aggregatedToDownloaded,
       );
-      if (seq !== fetchSeqRef.current) return;
       if (workerList.length > 0 || cloudList.length > 0) {
-        setDownloaded([...workerList, ...cloudList]);
-        setAvailable(MOCK_AVAILABLE);
-        setIsFallback(true);
-        setLoading(false);
+        // Primary fetch failed but we have remote models — surface them WITH
+        // the error so the Retry button is shown and the user knows the
+        // local catalogue is stale.
+        commit([...workerList, ...cloudList], MOCK_AVAILABLE, true, errMsg);
         return;
       }
     } catch {
       /* ignore */
     }
-    if (seq !== fetchSeqRef.current) return;
-    if (downloadedRef.current.length > 0) {
-      setLoading(false);
-      return;
-    }
-    setDownloaded([]);
-    setAvailable([]);
-    setIsFallback(true);
-    setLoading(false);
-  }, []);
 
+    // No data from any source. When nothing is already on screen, surface the
+    // error with a Retry button; when this was a background refresh, keep the
+    // stale data and clear the error instead of wiping the screen.
+    if (seq !== fetchSeqRef.current) return;
+    if (downloadedRef.current.length === 0) {
+      commit([], [], true, errMsg ?? "Failed to load models");
+    } else {
+      setError(errMsg ?? "Failed to load models");
+      setLoading(false);
+    }
+  },
+    [],
+  );
+
+  // Loading state is now managed inside fetchModels via the sequence number.
+  // The mount effect just kicks off the first fetch; refresh-on-focus calls
+  // fetchModels directly. No finally block here — only the LATEST request
+  // may clear loading.
   useEffect(() => {
-    fetchModels();
+    void (async () => {
+      await fetchModels();
+      // If the component unmounted before the fetch started, do nothing.
+      // fetchModels itself guards with seq and clears loading.
+    })();
   }, [fetchModels]);
 
   useRefreshOnFocus(fetchModels);
+
+  // Refetch models when the backend recovers so a window that was stuck on
+  // the initial loading state gets its data.
+  useOnBackendRecovered(fetchModels);
 
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<Record<string, string>>({});
@@ -681,6 +715,17 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
           <div className="flex items-center justify-center h-full text-shell-text-tertiary text-sm">
             Loading models...
           </div>
+        ) : error && downloaded.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full gap-4 text-center px-6 py-16">
+            <Brain size={40} className="text-shell-text-tertiary opacity-30" aria-hidden="true" />
+            <div className="space-y-1">
+              <p className="text-sm font-medium text-shell-text">Could not load models</p>
+              <p className="text-xs text-shell-text-tertiary max-w-xs">{error}</p>
+            </div>
+            <Button variant="outline" size="sm" onClick={() => void fetchModels()}>
+              Retry
+            </Button>
+          </div>
         ) : isFallback && downloaded.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-4 text-center px-6 py-16">
             <Brain size={40} className="text-shell-text-tertiary opacity-30" aria-hidden="true" />
@@ -696,6 +741,15 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
           </div>
         ) : (
           <>
+            {error && downloaded.length > 0 && (
+              <div className="flex items-center justify-between gap-2 p-3 rounded-lg bg-amber-500/15 border border-amber-500/25 text-amber-300" role="alert">
+                <p className="text-sm font-medium">Could not load models from the main catalog</p>
+                <p className="text-xs text-amber-200 max-w-md">{error}</p>
+                <Button variant="outline" size="sm" onClick={() => void fetchModels()}>
+                  Retry
+                </Button>
+              </div>
+            )}
             {/* Downloaded Models — hidden when browsing cloud-only */}
             {source !== "cloud" && <section aria-label="Downloaded models">
               <div className="flex items-center gap-2 mb-3">

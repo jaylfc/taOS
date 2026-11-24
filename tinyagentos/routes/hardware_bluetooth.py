@@ -46,6 +46,13 @@ class BtDiscoveryBody(BaseModel):
 _discovery_timers: dict[str, asyncio.Task] = {}
 
 
+def cancel_discovery_timers() -> None:
+    """Cancel every pending discovery auto-stop timer. Used at shutdown."""
+    for timer in list(_discovery_timers.values()):
+        timer.cancel()
+    _discovery_timers.clear()
+
+
 def _get_data(val: object | None) -> object | None:
     if isinstance(val, dict) and "data" in val:
         return val.get("data")
@@ -336,7 +343,10 @@ async def discovery_bluetooth(body: BtDiscoveryBody):
             )
             discovering = False
             if reply.message_type == MessageType2.METHOD_RETURN and reply.body:
-                discovering = bool(reply.body[0])
+                raw = reply.body[0]
+                if hasattr(raw, "value"):
+                    raw = raw.value
+                discovering = bool(raw)
         except asyncio.TimeoutError:
             logger.exception("Read Discovering property timed out")
             discovering = True
@@ -347,11 +357,10 @@ async def discovery_bluetooth(body: BtDiscoveryBody):
         return {"ok": True, "discovering": discovering}
 
     else:
-        # Stop discovery
-        timer = _discovery_timers.pop(adapter, None)
-        if timer is not None:
-            timer.cancel()
-
+        # Stop discovery. Keep the auto-stop timer in place until StopDiscovery
+        # has actually succeeded (or returned the "not started" error), so a
+        # failed or timed-out stop does not leave discovery running with no
+        # auto-stop.
         try:
             bus = await get_system_bus()
         except BusUnavailable as e:
@@ -377,13 +386,14 @@ async def discovery_bluetooth(body: BtDiscoveryBody):
                 timeout=_DISCOVERY_TIMEOUT,
             )
             if reply.message_type == MessageType.ERROR:
-                if reply.error_name not in (
-                    "org.bluez.Error.NotReady",
-                    "org.bluez.Error.Failed",
-                ) or (
+                not_started = (
                     reply.error_name == "org.bluez.Error.Failed"
-                    and "No discovery started" not in (reply.body[0] if reply.body else "")
-                ):
+                    and "No discovery started" in (reply.body[0] if reply.body else "")
+                )
+                allowed = reply.error_name in (
+                    "org.bluez.Error.NotReady",
+                ) or not_started
+                if not allowed:
                     return JSONResponse(
                         {"error": "bluez_error", "detail": reply.error_name},
                         status_code=502,
@@ -394,5 +404,11 @@ async def discovery_bluetooth(body: BtDiscoveryBody):
         except Exception:
             logger.exception("StopDiscovery call failed")
             return JSONResponse({"error": "write_failed"}, status_code=502)
+
+        # StopDiscovery succeeded (or returned a benign "not started" error):
+        # now cancel and drop the auto-stop timer.
+        timer = _discovery_timers.pop(adapter, None)
+        if timer is not None:
+            timer.cancel()
 
         return {"ok": True, "discovering": False}

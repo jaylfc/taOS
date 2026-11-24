@@ -39,7 +39,7 @@ from tinyagentos.auth import (
 )
 from tinyagentos.atomic_io import atomic_write_text
 from tinyagentos.demo_mode import demo_env
-from tinyagentos.middleware.csrf import verify_csrf
+from tinyagentos.middleware.csrf import session_csrf_ok, verify_csrf
 from tinyagentos.routes.onscreen_keyboard import OSK_SCRIPT, osk_assets
 from tinyagentos.taos_agent_runtime import system_agent_framework
 
@@ -1026,12 +1026,17 @@ body.lockscreen-on.osk-open { display: block; padding-bottom: 0 !important; over
   background: linear-gradient(160deg, #141415 0%, #1a1a1d 45%, #202024 100%);
   will-change: transform, opacity;
 }
-.lockscreen[data-closing="1"] { animation: ls-tv-off 0.5s cubic-bezier(.55, 0, .8, .2) forwards; }
+/* The close is short on purpose: the kiosk waits for black before cutting
+ * panel power, so this is time the glass stays lit after the power key. The
+ * wake (ls-tv-on) keeps its full 0.5s. */
+.lockscreen[data-closing="1"] { animation: ls-tv-off 0.08s linear forwards; }
 .lockscreen[data-opening="1"] { animation: ls-tv-on 0.5s cubic-bezier(.2, .8, .2, 1) both; }
+/* A plain fade, not a squash into the centre: a squash keeps a bright line on
+ * the glass until its last frame, and the kiosk cannot cut panel power until
+ * every pixel is black (a lit line is what flashes on the next wake). */
 @keyframes ls-tv-off {
-  0%   { transform: scale(1, 1);       opacity: 1; }
-  60%  { transform: scale(1, 0.006);   opacity: 1; }
-  100% { transform: scale(0, 0.006);   opacity: 0; }
+  0%   { opacity: 1; }
+  100% { opacity: 0; }
 }
 @keyframes ls-tv-on {
   0%   { transform: scale(0, 0.006);   opacity: 0; }
@@ -1041,7 +1046,7 @@ body.lockscreen-on.osk-open { display: block; padding-bottom: 0 !important; over
 @keyframes ls-tv-fade-out { to { opacity: 0; } }
 @keyframes ls-tv-fade-in { from { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) {
-  .lockscreen[data-closing="1"] { animation: ls-tv-fade-out 0.5s forwards; }
+  .lockscreen[data-closing="1"] { animation: ls-tv-fade-out 0.01s forwards; }
   .lockscreen[data-opening="1"] { animation: ls-tv-fade-in 0.5s both; }
 }
 /* THE BODY GOES BLACK TOO, and this is the bit I kept missing.
@@ -2563,6 +2568,9 @@ _PIN_PANEL_SCRIPT = r"""
   var toPin   = document.getElementById("use-pin");
   var nextUrl = pinPanel.getAttribute("data-next") || "/desktop";
   var user    = pinPanel.getAttribute("data-username") || "";
+  var pinLengthAttr = pinPanel.getAttribute("data-pin-length");
+  var pinLength = pinLengthAttr ? parseInt(pinLengthAttr, 10) : NaN;
+  if (isNaN(pinLength)) pinLength = null;
   var busy    = false;
 
   function paint() {
@@ -2573,22 +2581,7 @@ _PIN_PANEL_SCRIPT = r"""
     }
   }
 
-  input.addEventListener("input", function () {
-    // Digits only: the keypad cannot produce anything else, but a physical
-    // keyboard can, and a stray letter would fail server-side validation with
-    // a confusing "incorrect PIN".
-    input.value = input.value.replace(/\D/g, "");
-    paint();
-    err.textContent = "";
-  });
-
-  function fail(msg) {
-    err.textContent = msg;
-    input.value = "";
-    paint();
-  }
-
-  submit.addEventListener("click", function () {
+  function tryPin() {
     if (busy) return;
     var pin = input.value;
     if (pin.length < 4) { fail("Enter your PIN."); return; }
@@ -2621,7 +2614,45 @@ _PIN_PANEL_SCRIPT = r"""
       busy = false;
       fail("Could not reach taOS. Check the connection and try again.");
     });
+  }
+
+  input.addEventListener("input", function () {
+    // Digits only: the keypad cannot produce anything else, but a physical
+    // keyboard can, and a stray letter would fail server-side validation with
+    // a confusing "incorrect PIN".
+    input.value = input.value.replace(/\D/g, "");
+    paint();
+    err.textContent = "";
+    if (pinLength && input.value.length === pinLength) {
+      tryPin();
+    }
   });
+
+  input.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") {
+      // When the PIN length is known, Enter is not a submit until the typed
+      // digits fill the field -- otherwise a stray tap on the keypad's Enter
+      // key submits a partial PIN. When the length is unknown, Enter submits
+      // whatever was typed, as it always has.
+      if (pinLength && input.value.length !== pinLength) {
+        return;
+      }
+      e.preventDefault();
+      tryPin();
+    }
+  });
+
+  function fail(msg) {
+    err.textContent = msg;
+    input.value = "";
+    paint();
+  }
+
+  if (submit) {
+    submit.addEventListener("click", function () {
+      tryPin();
+    });
+  }
 
   function swap(showPin) {
     pinPanel.hidden = !showPin;
@@ -2697,7 +2728,7 @@ _KEYPAD_HTML = """
 """
 
 
-def _pin_panel_html(next_url: str, keypad: bool = False) -> str:
+def _pin_panel_html(next_url: str, keypad: bool = False, pin_length: int | None = None) -> str:
     """The PIN entry panel, shown only when the request is console-local.
 
     Rendered HIDDEN. /auth/pin-panel.js reveals it (and hides the password
@@ -2712,25 +2743,32 @@ def _pin_panel_html(next_url: str, keypad: bool = False) -> str:
     osk_attr = "" if keypad else 'data-osk-submit="pin-submit"'
     keypad_html = _KEYPAD_HTML if keypad else ""
 
+    pin_len_attr = f' data-pin-length="{int(pin_length)}"' if pin_length is not None else ""
+    if pin_length is not None:
+        dots_html = "\n        " + "".join('<span class="pin-dot"></span>' for _ in range(int(pin_length)))
+    else:
+        dots_html = "\n        <span class=\"pin-dot\"></span><span class=\"pin-dot\"></span>\n        <span class=\"pin-dot\"></span><span class=\"pin-dot\"></span>"
+
+    submit_html = "" if pin_length is not None else '      <button type="button" id="pin-submit">Sign in with PIN</button>\n'
+    if pin_length is not None:
+        osk_attr = ""
+
     # No username is sent with a PIN: this panel is only ever rendered for a
     # single-user store, because AuthManager.has_pin(None) refuses to guess
     # which account a PIN belongs to on a multi-user one.
     return f"""
-    <div class="pin-panel" id="pin-panel" data-next="{safe_next}" data-username="" hidden>
+    <div class="pin-panel" id="pin-panel" data-next="{safe_next}" data-username=""{pin_len_attr} hidden>
       <label class="field">
         <span>PIN</span>
         <input type="password" id="pin-input" inputmode="{osk_mode}" autocomplete="off"
                {osk_attr} aria-describedby="pin-error"
                maxlength="12" required>
       </label>
-      <div class="pin-dots" id="pin-dots" aria-hidden="true">
-        <span class="pin-dot"></span><span class="pin-dot"></span>
-        <span class="pin-dot"></span><span class="pin-dot"></span>
+      <div class="pin-dots" id="pin-dots" aria-hidden="true">{dots_html}
       </div>
       <p class="error" id="pin-error" role="alert"></p>
       {keypad_html}
-      <button type="button" id="pin-submit">Sign in with PIN</button>
-      <button type="button" class="method-switch" id="use-password">
+{submit_html}      <button type="button" class="method-switch" id="use-password">
         Use my password instead
       </button>
     </div>
@@ -4867,6 +4905,8 @@ _LOCK_SCREEN_SCRIPT = r"""
     // separately: two flags for one visual state is how a grey frame gets in.
     // The screen-off / screen-on animation (ls-tv-off / ls-tv-on).
     var TV_MS = 500;
+    // The close to black is much shorter than the wake (see ls-tv-off).
+    var TV_OFF_MS = 80;
     var tvTimer = 0;
     function tvStop() {
       if (tvTimer) { window.clearTimeout(tvTimer); tvTimer = 0; }
@@ -5723,6 +5763,13 @@ _LOCK_SCREEN_SCRIPT = r"""
           // changes what is showing.
           var closeIt = !screenEl.hasAttribute("data-blanked")
             && !screenEl.hasAttribute("data-fromdark");
+          // Reduced motion: no closing animation, straight to black.
+          try {
+            if (window.matchMedia
+              && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+              closeIt = false;
+            }
+          } catch (err) { /* keep the animated close */ }
           screenEl.setAttribute("data-instant", "1");
           hideAll();
           // After hideAll, which decides blackness for itself and would
@@ -5739,7 +5786,7 @@ _LOCK_SCREEN_SCRIPT = r"""
               screenEl.setAttribute("data-blanked", "1");
               setBlack(true);
               screenEl.removeAttribute("data-closing");
-            }, TV_MS);
+            }, TV_OFF_MS);
           }
         });
 
@@ -8595,6 +8642,7 @@ def _login_page(
     next_url: str = "",
     pin_available: bool = False,
     unlock_method: str | None = None,
+    pin_length: int | None = None,
 ) -> str:
     """The sign-in page.
 
@@ -8602,6 +8650,11 @@ def _login_page(
     install (see login_page); it turns the page into the lock screen and picks
     how that screen opens. ``pin_available=True`` alone is the older spelling of
     ``unlock_method="pin"``.
+
+    ``pin_length`` is the known PIN length, passed in by ``login_page`` (which
+    already has the ``AuthManager`` in scope). It drives the auto-submit keypad
+    and the dot count; when it is ``None`` the panel renders a submit button
+    instead, because nothing on the page knows how long the PIN is.
     """
     if unlock_method is None and pin_available:
         unlock_method = "pin"
@@ -8626,7 +8679,8 @@ def _login_page(
     # pin_available is already console-only, so the lock screen never reaches a
     # LAN browser: off-console this page stays exactly the card it has always been.
     lock_screen = unlock_method is not None
-    pin_panel = _pin_panel_html(next_url, keypad=lock_screen) if pin_available else ""
+    pin_len = pin_length
+    pin_panel = _pin_panel_html(next_url, keypad=lock_screen, pin_length=pin_len) if pin_available else ""
     pin_switch = (
         '<button type="button" class="method-switch" id="use-pin">Use my PIN instead</button>'
         if pin_available else ""
@@ -8647,6 +8701,16 @@ def _login_page(
         '    </div>'
     )
     lock_head = _lock_head_html(unlock_method or "pin") if lock_screen else ""
+    if lock_screen and _LOCK_SCREEN_STATE == "screen-off":
+        # The panel is going dark (the shell locks the session and navigates
+        # here when the phone sleeps while unlocked). Render the page already
+        # blanked: otherwise the lock face is painted for a moment before the
+        # stream's screen-off event can black it. The screen-on handler plays
+        # the usual wake animation out of this state.
+        body_class += " ls-black"
+        lock_head = lock_head.replace(
+            'id="lockscreen"', 'id="lockscreen" data-blanked="1"', 1
+        )
     lock_foot = _lock_tail_html() if lock_screen else ""
     lock_script = '<script src="/auth/lock-screen.js" defer></script>' if lock_screen else ""
     lock_style = f"<style>{_LOCK_SCREEN_STYLE}</style>" if lock_screen else ""
@@ -8831,6 +8895,8 @@ async def login_page(request: Request, error: str = "", next: str = ""):
     # LAN browser is never told how this device's own screen unlocks.
     unlock_method = None
     if _request_is_console(request):
+        # The lock/sign-in page being served to the console IS "locked".
+        _set_console_locked(request, True)
         sole = auth_mgr.lock_screen_user()
         if sole is not None:
             unlock_method = effective_unlock_method(sole)
@@ -8839,6 +8905,7 @@ async def login_page(request: Request, error: str = "", next: str = ""):
         multi_user=auth_mgr.is_multi_user(),
         next_url=safe_next,
         unlock_method=unlock_method,
+        pin_length=auth_mgr.pin_length() if unlock_method == "pin" else None,
     ))
 
 
@@ -8931,6 +8998,7 @@ async def login(request: Request):
         if user_record:
             auth_mgr.update_last_login(user_id)
         token = auth_mgr.create_session(user_id=user_id, long_lived=long_lived, user_agent=user_agent)
+        _set_console_locked(request, False)
         pub = auth_mgr._public_user(user_record) if user_record else auth_mgr.get_user()
         resp = JSONResponse({"ok": True, "user": pub})
         if long_lived:
@@ -8972,6 +9040,8 @@ async def login(request: Request):
             auth_mgr.update_last_login(user_id)
         token = auth_mgr.create_session(user_id=user_id, long_lived=long_lived, user_agent=user_agent)
 
+    if not (user_record and user_record.get("pending_invite")):
+        _set_console_locked(request, False)
     destination = next_url or "/desktop"
     response = RedirectResponse(destination, status_code=303)
     if long_lived:
@@ -9039,6 +9109,59 @@ def _lock_post_refusal(request: Request) -> JSONResponse | None:
 #: password path -- and since every console request arrives from the same
 #: loopback address, an IP-keyed counter would be one shared bucket for all.
 _pin_limiter = _PinAttemptLimiter()
+_pin_key_locks: "OrderedDict[str, asyncio.Lock]" = OrderedDict()
+_pin_key_waiters: "dict[str, int]" = {}
+_pin_key_locks_guard = asyncio.Lock()
+_PIN_KEY_LOCKS_MAX = 1024
+
+
+async def _acquire_pin_key_lock(limiter_key: str) -> asyncio.Lock:
+    async with _pin_key_locks_guard:
+        lock = _pin_key_locks.get(limiter_key)
+        if lock is None:
+            lock = asyncio.Lock()
+            _pin_key_locks[limiter_key] = lock
+        _pin_key_locks.move_to_end(limiter_key)
+        _pin_key_waiters[limiter_key] = _pin_key_waiters.get(limiter_key, 0) + 1
+        # Bound growth for attacker-controlled keys (e.g. unknown:<username>).
+        # Only evict unlocked entries that are not currently in use.
+        while len(_pin_key_locks) > _PIN_KEY_LOCKS_MAX:
+            evicted = False
+            for k, v in list(_pin_key_locks.items()):
+                if k == limiter_key or v.locked() or _pin_key_waiters.get(k, 0) > 0:
+                    continue
+                del _pin_key_locks[k]
+                evicted = True
+                break
+            if not evicted:
+                break
+    try:
+        await lock.acquire()
+    except BaseException:
+        async with _pin_key_locks_guard:
+            count = _pin_key_waiters.get(limiter_key, 0) - 1
+            if count <= 0:
+                _pin_key_waiters.pop(limiter_key, None)
+                if _pin_key_locks.get(limiter_key) is lock:
+                    _pin_key_locks.pop(limiter_key, None)
+            else:
+                _pin_key_waiters[limiter_key] = count
+        raise
+    return lock
+
+
+async def _release_pin_key_lock(limiter_key: str, lock: asyncio.Lock) -> None:
+    try:
+        lock.release()
+    finally:
+        async with _pin_key_locks_guard:
+            count = _pin_key_waiters.get(limiter_key, 0) - 1
+            if count <= 0:
+                _pin_key_waiters.pop(limiter_key, None)
+                if _pin_key_locks.get(limiter_key) is lock:
+                    _pin_key_locks.pop(limiter_key, None)
+            else:
+                _pin_key_waiters[limiter_key] = count
 
 
 @router.get("/osk.js")
@@ -11943,6 +12066,58 @@ _LOCK_EVENT_WAITERS: set = set()
 #: nothing rather than guessing.
 _LOCK_SCREEN_STATE: str | None = None
 
+#: Whether the handset's OWN screen is locked. In memory, starts True and only a
+#: successful unlock from the local console (PIN, swipe, password) clears it.
+#: A controller restart therefore reads "locked" until the next console unlock.
+_CONSOLE_LOCKED: bool = True
+
+#: Lock-session number: one value per locked period. Seeded from the clock at
+#: process start so a restart never repeats a number a client has seen, and
+#: bumped by one only on a transition unlocked -> locked (see the setter).
+_CONSOLE_SESSION: int = int(time.time())
+
+
+def _set_console_locked(request: Request, locked: bool) -> None:
+    """Record a lock/unlock, but only when it came from the console itself."""
+    global _CONSOLE_LOCKED, _CONSOLE_SESSION
+    if _request_is_console(request):
+        if locked and not _CONSOLE_LOCKED:
+            _CONSOLE_SESSION += 1
+        _CONSOLE_LOCKED = locked
+
+
+@router.get("/lock-state")
+async def lock_state(request: Request):
+    """Is the handset's own screen showing the lock screen? Loopback only.
+
+    Meaning: ``locked`` is true until a PIN, swipe or password unlock succeeds
+    FROM the local console, and true again after the console locks or logs out.
+    Sessions of remote browsers are irrelevant: they neither unlock nor lock it.
+    Fails closed: starts true at process start, so a restart while the phone is
+    unlocked reports locked until the next console unlock.
+
+    No session needed. Answers only to a loopback peer with no forwarding
+    header (``is_console_origin``) that also sends X-taOS-Console; anything else
+    gets the same 404 as an unknown route. Body is exactly
+    ``{"locked": bool, "session": int}``.
+
+    ``session`` is the lock-session number: one number per locked period. It is
+    seeded from ``int(time.time())`` at process start, so a controller restart
+    can never repeat a number a client has already seen. It increases by one on
+    every transition INTO locked (unlocked -> locked: console lock, logout, or
+    the console being shown a sign-in surface). It does not change on unlock,
+    nor when a lock signal arrives while already locked (repeated /auth/status
+    polls or reloads on the lock screen), so a client can key data to it.
+    """
+    if not _request_is_console(request) or not request.headers.get(
+        LOCK_CONSOLE_HEADER, ""
+    ).strip():
+        return JSONResponse({"detail": "Not Found"}, status_code=404)
+    return JSONResponse(
+        {"locked": bool(_CONSOLE_LOCKED), "session": int(_CONSOLE_SESSION)},
+        headers={"Cache-Control": "no-store"},
+    )
+
 
 def _push_lock_event(kind: str, payload: dict | None = None) -> int:
     """Fan an event out to every open lock-screen stream. Returns the count.
@@ -12367,46 +12542,34 @@ def _read_volume() -> dict | None:
     reported rather than hidden, because a volume slider that silently drives
     nothing is worse than one that says so.
     """
-    import subprocess
+    from tinyagentos.audio_cli import parse_get_volume, run_sync_with_process
 
     env = dict(os.environ, XDG_RUNTIME_DIR="/run/user/%d" % os.getuid())
-    try:
-        got = subprocess.run(
-            ["wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"],
-            capture_output=True, text=True, timeout=4, env=env,
-        )
-    except Exception:
+    rc, stdout = run_sync_with_process(["wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"], env["XDG_RUNTIME_DIR"])
+    if rc != 0 or stdout is None:
         return None
-    if got.returncode != 0:
+
+    parsed = parse_get_volume(stdout)
+    if parsed is None:
         return None
-    # "Volume: 0.75" or "Volume: 0.75 [MUTED]"
-    parts = got.stdout.split()
-    level = None
-    for index, token in enumerate(parts):
-        if token.rstrip(":").lower() == "volume" and index + 1 < len(parts):
-            try:
-                level = float(parts[index + 1])
-            except ValueError:
-                level = None
-            break
-    if level is None:
-        return None
+
+    # Check for sinks using wpctl status
     sinks = False
     try:
-        status = subprocess.run(
-            ["wpctl", "status"], capture_output=True, text=True, timeout=4, env=env
-        ).stdout
-        after = status.split("Sinks:", 1)
-        # A populated list has an id line under the heading; an empty one goes
-        # straight to the next section.
-        sinks = bool(after[1:] and any(
-            ch.isdigit() for ch in after[1].split("Sources:", 1)[0]
-        ))
+        status_rc, status_stdout = run_sync_with_process(["wpctl", "status"], env["XDG_RUNTIME_DIR"])
+        if status_rc == 0 and status_stdout:
+            after = status_stdout.split("Sinks:", 1)
+            # A populated list has an id line under the heading; an empty one goes
+            # straight to the next section.
+            sinks = bool(after[1:] and any(
+                ch.isdigit() for ch in after[1].split("Sources:", 1)[0]
+            ))
     except Exception:
         sinks = False
+
     return {
-        "percent": round(level * 100, 1),
-        "muted": "MUTED" in got.stdout.upper(),
+        "percent": round(parsed["volume"] * 100, 1),
+        "muted": parsed["muted"],
         "no_sink": not sinks,
     }
 
@@ -12437,16 +12600,10 @@ async def set_lock_volume(request: Request):
     except (TypeError, ValueError):
         return JSONResponse({"error": "percent required"}, status_code=400)
 
-    import subprocess
+    from tinyagentos.audio_cli import set_volume_argv, run_sync_with_process
 
     env = dict(os.environ, XDG_RUNTIME_DIR="/run/user/%d" % os.getuid())
-    try:
-        subprocess.run(
-            ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "%.2f" % (percent / 100.0)],
-            capture_output=True, text=True, timeout=4, env=env,
-        )
-    except Exception:
-        pass
+    run_sync_with_process(set_volume_argv("@DEFAULT_AUDIO_SINK@", percent / 100.0), env["XDG_RUNTIME_DIR"])
     after = _read_volume()
     if after is None:
         return JSONResponse({"error": "no audio"}, status_code=404)
@@ -12937,29 +13094,39 @@ async def pin_login(request: Request):
     record = auth_mgr._pin_user(username)
     limiter_key = (record or {}).get("id") or f"unknown:{username or ''}"
 
-    wait = _pin_limiter.retry_after(limiter_key)
-    if wait > 0:
-        return JSONResponse(
-            {
-                "error": f"Too many incorrect PINs. Try again in {wait} seconds.",
-                "retry_after": wait,
-            },
-            status_code=429,
-            headers={"Retry-After": str(wait)},
-        )
+    key_lock = await _acquire_pin_key_lock(limiter_key)
+    try:
+        wait = _pin_limiter.retry_after(limiter_key)
+        if wait > 0:
+            return JSONResponse(
+                {
+                    "error": f"Too many incorrect PINs. Try again in {wait} seconds.",
+                    "retry_after": wait,
+                },
+                status_code=429,
+                headers={"Retry-After": str(wait)},
+            )
 
-    # The owner chose how this screen unlocks. A PIN that still exists after
-    # they switched to "password" must not keep working behind their back --
-    # that is the whole of "disable my pin entry". Same answer as "no PIN here".
-    if record is not None and effective_unlock_method(record) != "pin":
-        return JSONResponse({"error": "PIN sign-in is not available"}, status_code=404)
+        # Re-read: the chosen unlock method or PIN state may have changed while
+        # waiting for our turn on this key.
+        record = auth_mgr._pin_user(username)
+        # The owner chose how this screen unlocks. A PIN that still exists after
+        # they switched to "password" must not keep working behind their back --
+        # that is the whole of "disable my pin entry". Same answer as "no PIN here".
+        if record is not None and effective_unlock_method(record) != "pin":
+            return JSONResponse({"error": "PIN sign-in is not available"}, status_code=404)
 
-    ok, user_record = auth_mgr.check_pin(pin, username=username)
-    if not ok or user_record is None:
-        _pin_limiter.record_failure(limiter_key)
-        return JSONResponse({"error": "incorrect PIN"}, status_code=401)
+        # Verifying the PIN hashes off the event loop, the way the password path
+        # does (check_password -> verify_and_maybe_rehash runs argon2). A PIN
+        # attempt costs the same work and pin-login is on the lock-screen hot path.
+        ok, user_record = await asyncio.to_thread(auth_mgr.check_pin, pin, username=username)
+        if not ok or user_record is None:
+            _pin_limiter.record_failure(limiter_key)
+            return JSONResponse({"error": "incorrect PIN"}, status_code=401)
 
-    _pin_limiter.reset(limiter_key)
+        _pin_limiter.reset(limiter_key)
+    finally:
+        await _release_pin_key_lock(limiter_key, key_lock)
     auth_mgr.update_last_login(user_record["id"])
     # A PIN unlocks THIS device, so the session it mints is the long-lived kind
     # the kiosk needs to survive a reboot without a keyboard being found.
@@ -12968,6 +13135,7 @@ async def pin_login(request: Request):
         long_lived=True,
         user_agent=request.headers.get("user-agent", ""),
     )
+    _set_console_locked(request, False)
     resp = JSONResponse({"ok": True, "user": auth_mgr._public_user(user_record)})
     resp.set_cookie(
         "taos_session", token, httponly=True, samesite="strict",
@@ -13054,6 +13222,7 @@ async def swipe_unlock(request: Request):
         long_lived=True,
         user_agent=request.headers.get("user-agent", ""),
     )
+    _set_console_locked(request, False)
     resp = JSONResponse({"ok": True, "user": auth_mgr._public_user(record)})
     resp.set_cookie(
         "taos_session", token, httponly=True, samesite="strict",
@@ -13131,6 +13300,7 @@ async def logout(request: Request):
     token = request.cookies.get("taos_session")
     if token:
         auth_mgr.revoke_session(token)
+    _set_console_locked(request, True)
     response = RedirectResponse("/auth/login", status_code=303)
     response.delete_cookie("taos_session")
     return response
@@ -13143,6 +13313,7 @@ async def lock(request: Request):
     token = request.cookies.get("taos_session")
     if token:
         auth_mgr.revoke_session(token)
+    _set_console_locked(request, True)
     resp = JSONResponse({"ok": True})
     resp.delete_cookie("taos_session")
     return resp
@@ -13292,7 +13463,9 @@ async def auth_setup(request: Request):
 async def complete_invite(request: Request):
     """Invited user completes their account setup.
 
-    Body: ``{username, invite_code, full_name, email, password, auto_login?}``
+    Body: ``{username, invite_code, full_name, email, password, auto_login?}``.
+    ``invite_code`` may be omitted when the request carries the invitee's
+    own pending session (the one ``/auth/login`` opened with the code).
     """
     auth_mgr = request.app.state.auth
     client_ip = request.client.host if request.client else "unknown"
@@ -13313,6 +13486,22 @@ async def complete_invite(request: Request):
     full_name = (body.get("full_name") or "").strip()
     email = (body.get("email") or "").strip()
     password = body.get("password") or ""
+
+    # The SPA never sees the code: the invitee signed in with it, and
+    # /auth/status does not return it. Their own pending session stands in
+    # for it. Any other session (another invitee, an admin) does not, and a
+    # code that IS supplied must still match. This path is CSRF-exempt as a
+    # credential route, so acting on the session needs the CSRF check here.
+    if username and not invite_code:
+        session_user = auth_mgr.session_user_for_request(request)
+        if (
+            session_user
+            and session_user.get("pending")
+            and session_user.get("username") == username
+            and session_csrf_ok(request, request.cookies.get("taos_session", ""))
+        ):
+            record = auth_mgr.find_user(username)
+            invite_code = (record or {}).get("pending_invite") or ""
 
     if not username or not invite_code:
         return JSONResponse({"error": "username and invite_code are required"}, status_code=400)
@@ -13348,7 +13537,8 @@ async def complete_invite(request: Request):
 async def auth_status(request: Request):
     """Single endpoint the UI calls to decide what to render.
 
-    Returns ``{configured, authenticated, user, multi_user, needs_onboarding}``.
+    Returns ``{configured, authenticated, user, multi_user, needs_onboarding,
+    store_error, pin_available, pin_offered}``.
     """
     auth_mgr = request.app.state.auth
     configured = auth_mgr.is_configured()
@@ -13370,6 +13560,10 @@ async def auth_status(request: Request):
     _ua = request.headers.get("user-agent", "")
     user_id = auth_mgr.validate_session(token, user_agent=_ua) if token else None
     authenticated = user_id is not None
+    if not authenticated:
+        # The SPA's LoginGate renders the sign-in UI from this answer with no
+        # GET /auth/login, so an unauthenticated console probe means locked.
+        _set_console_locked(request, True)
 
     user = None
     needs_onboarding = False
@@ -13400,6 +13594,14 @@ async def auth_status(request: Request):
         except AuthStoreCorruptError:
             pin_available = False
 
+    # Whether first-run setup should offer a PIN field: the same console-only
+    # rule the HTML setup page applies at render time. No PIN exists yet, so
+    # this tells a LAN browser nothing; the setup POST still refuses a PIN
+    # off-console on its own.
+    pin_offered = (
+        not configured and store_error is None and _request_is_console(request)
+    )
+
     return JSONResponse({
         "configured": configured,
         "authenticated": authenticated,
@@ -13408,7 +13610,29 @@ async def auth_status(request: Request):
         "needs_onboarding": needs_onboarding,
         "store_error": store_error,
         "pin_available": pin_available,
+        "pin_offered": pin_offered,
     })
+
+
+# ------------------------------------------------------------------ #
+#  /auth/me bearer resolution (native apps)                          #
+# ------------------------------------------------------------------ #
+
+def _bearer_person(auth_mgr, presented: str) -> dict | None:
+    """Resolve the person a bearer token stands for, or ``None``.
+
+    Extension point: the accounts design will add per-person account session
+    tokens here (do not implement those now). Today only the host local token
+    counts as a person -- it maps to the admin, the first user. Agent-bound
+    local tokens and registry JWTs are not accepted here: they are not a
+    person.
+    """
+    if not presented or not auth_mgr.validate_local_token(presented):
+        return None
+    # Agent-bound local tokens authenticate an agent, never a person.
+    if auth_mgr.get_local_token_agent(presented) is not None:
+        return None
+    return auth_mgr.get_primary_user()
 
 
 @router.get("/me")
@@ -13419,6 +13643,17 @@ async def auth_me(request: Request):
     if not token or auth_mgr.validate_session(
         token, user_agent=request.headers.get("user-agent", "")
     ) is None:
+        # No valid session cookie: a native app may present the host local
+        # token as ``Authorization: Bearer <token>`` instead. The cookie path
+        # is unchanged and wins when both credentials are present, so this
+        # branch is reached only without a valid session cookie.
+        user = None
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            user = _bearer_person(auth_mgr, auth_header[7:].strip())
+        if user is not None:
+            return JSONResponse({"user": user, "via": "local_token"})
+        _set_console_locked(request, True)
         return JSONResponse({"error": "not authenticated"}, status_code=401)
     user = auth_mgr.get_user(token=token, user_agent=request.headers.get("user-agent", ""))
     if user is None:
