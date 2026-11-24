@@ -18,6 +18,10 @@
 #                     setup on an existing install: the install directory is
 #                     writable by the service account, so the runner and the
 #                     release key must not come from it.
+#   --fpr FINGERPRINT the release key fingerprint the fetched key must have (required
+#                     with --fetch). The fetched maint/manifest.json must carry a valid
+#                     signature from exactly that key, checked before anything is
+#                     installed. The notification's command supplies it.
 #   --fetch-base URL  where --fetch reads from (default: the project's GitHub raw
 #                     URL). https:// only, except file:// for offline rehearsals.
 #   --no-run          install only; do not run pending steps now
@@ -38,7 +42,7 @@ log() { echo "install-maint: $*"; }
 command -v systemctl >/dev/null 2>&1 || die "systemd is required"
 [[ -d /run/systemd/system ]] || die "systemd is not running"
 
-TREE="" DATA="" SVC_USER="" FROM="" FETCH="" FETCH_BASE="https://raw.githubusercontent.com/jaylfc/taOS" RUN_NOW=1
+TREE="" DATA="" SVC_USER="" FROM="" FETCH="" EXPECT_FPR="" FETCH_BASE="https://raw.githubusercontent.com/jaylfc/taOS" RUN_NOW=1
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --tree) TREE="${2:?}"; shift 2 ;;
@@ -46,6 +50,7 @@ while [[ $# -gt 0 ]]; do
         --user) SVC_USER="${2:?}"; shift 2 ;;
         --from-dir) FROM="${2:?}"; shift 2 ;;
         --fetch) FETCH="${2:?}"; shift 2 ;;
+        --fpr) EXPECT_FPR="${2:?}"; shift 2 ;;
         --fetch-base) FETCH_BASE="${2:?}"; shift 2 ;;
         --no-run) RUN_NOW=0; shift ;;
         *) die "unknown argument $1" ;;
@@ -70,9 +75,25 @@ if [[ -n "$FETCH" ]]; then
     [[ "$FETCH_BASE" == https://* || "$FETCH_BASE" == file:///* ]] || die "--fetch-base must be https:// (or file:///)"
     base="$FETCH_BASE/$FETCH"
     mkdir -p "$FROM/scripts/systemd" "$FROM/maint"
-    for f in scripts/taos-maint scripts/systemd/taos-maint.service scripts/systemd/taos-maint.path maint/release.gpg maint/release.fpr; do
+    [[ "$EXPECT_FPR" =~ ^[0-9A-Fa-f]{40,64}$ ]] || die "--fetch needs --fpr <release key fingerprint> (the command in the notification has it)"
+    EXPECT_FPR="$(echo "$EXPECT_FPR" | tr a-f A-F)"
+    for f in scripts/taos-maint scripts/systemd/taos-maint.service scripts/systemd/taos-maint.path maint/release.gpg maint/release.fpr maint/manifest.json maint/manifest.json.sig; do
         curl -fsSL --proto '=https,file' --tlsv1.2 "$base/$f" -o "$FROM/$f" || die "could not fetch $f from $base"
     done
+fi
+if [[ -n "$FETCH" ]]; then
+    # Before installing anything: the fetched key must be the expected one, and it must have
+    # signed the fetched manifest. A moved tag, a swapped key or a wrong manifest stops here.
+    [[ -x /usr/bin/gpgv || -x /usr/bin/gpgv2 ]] || die "gpgv is required (apt install gpgv)"
+    GPGV=/usr/bin/gpgv; [[ -x "$GPGV" ]] || GPGV=/usr/bin/gpgv2
+    vh="$(mktemp -d)"
+    st="$("$GPGV" --homedir "$vh" --keyring "$FROM/maint/release.gpg" --status-fd 1 \
+        "$FROM/maint/manifest.json.sig" "$FROM/maint/manifest.json" 2>/dev/null)" || { rm -rf "$vh"; die "the fetched maintenance manifest is not validly signed"; }
+    rm -rf "$vh"
+    got="$(echo "$st" | awk '$1=="[GNUPG:]" && $2=="VALIDSIG" {print toupper($NF)}')"
+    [[ "$(echo "$got" | wc -l)" == "1" && "$got" == "$EXPECT_FPR" ]] || die "the fetched manifest is not signed by the expected release key"
+    grep -qx "$EXPECT_FPR" <(tr a-f A-F < "$FROM/maint/release.fpr") || die "the fetched release.fpr does not list the expected key"
+    log "fetched files verified against release key ...${EXPECT_FPR: -16}"
 fi
 FROM="$(cd "${FROM:-$TREE}" && pwd -P)"
 QMD_PORT="${TAOS_QMD_PORT:-7832}"

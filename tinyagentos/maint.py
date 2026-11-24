@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import platform
+import re
 import secrets
 import time
 from pathlib import Path
@@ -27,7 +28,6 @@ logger = logging.getLogger(__name__)
 HELPER = Path("/usr/local/sbin/taos-maint")
 STATE_DIR = Path("/var/lib/taos-maint")
 CONF = Path("/etc/taos/maint/maint.conf")
-SETUP_URL_REF = "master"  # release tag the one-time setup command is pinned to
 WAIT_SECONDS = 900.0
 POLL_SECONDS = 1.0
 
@@ -49,15 +49,38 @@ def availability() -> dict:
     return {"mode": "setup-needed", "reason": "the maintenance runner is not installed on this machine"}
 
 
+def _release_fingerprint(project_dir: Path | None = None) -> str | None:
+    """The release key fingerprint this build ships (maint/release.fpr), if it is a real one."""
+    base = project_dir or Path(__file__).resolve().parent.parent
+    try:
+        for line in (base / "maint" / "release.fpr").read_text().splitlines():
+            line = line.strip().upper()
+            if re.fullmatch(r"[0-9A-F]{40,64}", line):
+                return line
+    except OSError:
+        pass
+    return None
+
+
 def setup_command(project_dir: Path | None = None) -> str:
     """The one command the machine owner runs once to turn automatic maintenance on.
 
-    Pinned to the release the owner is running, fetched over TLS, so it does not
-    depend on the files in the (service-writable) install directory.
+    Pinned to the release tag of the version the owner is running (never a moving
+    branch) and to that release's signing-key fingerprint: the installer refuses
+    unless the key it fetched has exactly that fingerprint and that key validly
+    signed the release's maintenance manifest, before it installs anything. It is
+    fetched over TLS, so it does not depend on the files in the (service-writable)
+    install directory.
     """
+    from tinyagentos import __version__
+
+    ref = f"v{__version__}"
+    fpr = _release_fingerprint(project_dir)
+    fpr_arg = f" --fpr {fpr}" if fpr else ""
     return (
-        "curl -fsSL https://raw.githubusercontent.com/jaylfc/taOS/"
-        f"{SETUP_URL_REF}/scripts/install-maint.sh | sudo bash -s -- --fetch {SETUP_URL_REF}"
+        "curl -fsSL --proto '=https' --tlsv1.2 "
+        f"https://raw.githubusercontent.com/jaylfc/taOS/{ref}/scripts/install-maint.sh "
+        f"| sudo bash -s -- --fetch {ref}{fpr_arg}"
     )
 
 

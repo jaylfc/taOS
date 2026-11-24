@@ -1,4 +1,2 @@
-# Placeholder. Release key FULL fingerprint(s), one per line, uppercase hex.
-# Replace with the real taOS release signing key before shipping: the installer
-# and taos-maint both refuse an install while this is a placeholder.
-REPLACE-WITH-RELEASE-KEY-FINGERPRINT
+# Release signing key (interim, ed25519). Full fingerprint, one per line, uppercase hex.
+0E398CDF3FA04530E3433A258E0523615D6FFD54

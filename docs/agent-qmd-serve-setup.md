@@ -187,12 +187,17 @@ Settings and in a notification, after which updates take care of this by
 themselves:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jaylfc/taOS/master/scripts/install-maint.sh | sudo bash -s -- --fetch master
+curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/jaylfc/taOS/v<version>/scripts/install-maint.sh | sudo bash -s -- --fetch v<version> --fpr <release key fingerprint>
 ```
 
+Copy the command from the notification: it names the release you are running and the
+release key's fingerprint. The installer refuses unless the key it fetched has exactly
+that fingerprint and has signed that release's maintenance manifest, and it checks this
+before it installs anything.
+
 The step leaves any `QMD_BIND` you set in `/etc/default/qmd` alone; to keep qmd
-reachable from other machines create the empty file `/etc/taos/maint/qmd-keep-open`
-(as root) before the update. Without the runner (macOS, containers, a
+reachable from other machines set `QMD_BIND` in `/etc/default/qmd` (or, once the runner is
+installed, create the empty file `/etc/taos/maint/qmd-keep-open` as root) before the step runs. Without the runner (macOS, containers, a
 user-level service) the machine owner runs once:
 
 ```bash

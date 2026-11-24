@@ -571,8 +571,42 @@ def test_every_shipped_step_has_the_four_verbs_and_bash_syntax():
 def test_installer_refuses_a_placeholder_release_key():
     text = (REPO / "scripts" / "install-maint.sh").read_text()
     assert "release.fpr has no real fingerprint" in text and "release.gpg is a placeholder" in text
-    assert (REPO / "maint" / "release.fpr").read_text().count("REPLACE-WITH") == 1, \
-        "the real release fingerprint goes in maint/release.fpr; until then the installer refuses"
+
+
+def test_shipped_key_and_signature_are_real_and_match():
+    """The tree ships a real fingerprint, the matching public key and a valid signature."""
+    import re
+    import shutil
+    fprs = [ln.strip() for ln in (REPO / "maint" / "release.fpr").read_text().splitlines()
+            if ln.strip() and not ln.startswith("#")]
+    assert fprs and all(re.fullmatch(r"[0-9A-F]{40,64}", f) for f in fprs)
+    assert b"REPLACE-WITH" not in (REPO / "maint" / "release.gpg").read_bytes()
+    gpgv = shutil.which("gpgv")
+    if not gpgv:
+        pytest.skip("gpgv not installed")
+    import tempfile
+    with tempfile.TemporaryDirectory() as home:
+        r = subprocess.run([gpgv, "--homedir", home, "--keyring", str(REPO / "maint" / "release.gpg"), "--status-fd", "1",
+                            str(REPO / "maint" / "manifest.json.sig"), str(REPO / "maint" / "manifest.json")],
+                           capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    valid = [ln.split()[-1] for ln in r.stdout.splitlines() if ln.startswith("[GNUPG:] VALIDSIG")]
+    assert valid == [fprs[0]]
+
+
+def test_setup_command_is_pinned_to_the_release_tag_and_key():
+    from tinyagentos import __version__, maint
+    cmd = maint.setup_command()
+    assert f"/taOS/v{__version__}/scripts/install-maint.sh" in cmd and f"--fetch v{__version__}" in cmd
+    assert "master" not in cmd
+    fpr = (REPO / "maint" / "release.fpr").read_text().split()[-1]
+    assert f"--fpr {fpr}" in cmd
+
+
+def test_fetching_installer_verifies_key_and_manifest_before_installing():
+    text = (REPO / "scripts" / "install-maint.sh").read_text()
+    assert text.index("not signed by the expected release key") < text.index("install -d -m 0755 -o root -g root /etc/taos")
+    assert "--fetch needs --fpr" in text
 
 
 def test_make_index_dir_makes_group_writable_setgid_dirs(tmp_path):
