@@ -74,6 +74,7 @@ import pwd
 import re
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import time
@@ -589,17 +590,109 @@ def _user_exists(name: str) -> bool:
         return False
 
 
+class StateRootRefused(RuntimeError):
+    """The state root, a parent of it, or one of its files is not safe to take."""
+
+
+def _audit_parents(path: Path, trusted_uid: int, audit_root: Path) -> None:
+    """Every existing directory from ``audit_root`` down to ``path``'s parent must
+    be a real directory (not a link), owned by ``trusted_uid`` and not writable
+    by group or others. Otherwise someone other than root could swap a path
+    component while the owner step works below it."""
+    audit_root = Path(audit_root)
+    chain = []
+    p = Path(path).parent
+    while True:
+        chain.append(p)
+        if p == audit_root or p.parent == p:
+            break
+        p = p.parent
+    for d in reversed(chain):
+        try:
+            st = os.lstat(d)
+        except FileNotFoundError:
+            continue  # created below, by the trusted user, 0755
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+            raise StateRootRefused(f"{d} is not a plain directory; refusing")
+        if st.st_uid != trusted_uid:
+            raise StateRootRefused(f"{d} is owned by uid {st.st_uid}, not root; refusing")
+        if st.st_mode & 0o022:
+            raise StateRootRefused(f"{d} is writable by group or others; refusing")
+
+
+def _take_state_root(sroot: Path, uid: int, gid: int, *, fchown: Callable = os.fchown,
+                     trusted_uid: int = 0, audit_root: Path = Path("/"),
+                     after_open: Optional[Callable[[], None]] = None) -> list[str]:
+    """Give the state root and the allocator's own files to the service account,
+    acting only on DESCRIPTORS opened without following links, so nothing is
+    looked up by path twice and a link swapped in at any moment is never
+    followed. Person directories are left with their owner."""
+    done = []
+    _audit_parents(sroot, trusted_uid, audit_root)
+    if not os.path.lexists(sroot):
+        _mkdirs(sroot.parent, 0o755)
+        try:
+            os.mkdir(sroot, 0o700)
+            done.append(f"created {sroot}")
+        except FileExistsError:
+            pass
+    try:
+        dfd = os.open(sroot, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as e:
+        raise StateRootRefused(f"{sroot} is not a plain directory ({e.strerror}); refusing") from None
+    try:
+        st = os.fstat(dfd)
+        if st.st_uid not in (trusted_uid, uid):
+            raise StateRootRefused(f"{sroot} is owned by uid {st.st_uid}, neither root nor {SERVICE_USER}; refusing")
+        if after_open:
+            after_open()
+        fchown(dfd, uid, gid)
+        os.fchmod(dfd, 0o700)
+        st = os.fstat(dfd)
+        if (st.st_uid, st.st_gid) != (uid, gid) or (st.st_mode & 0o777) != 0o700:
+            raise StateRootRefused(f"{sroot}: owner or mode did not take effect (filesystem ignores ownership?)")
+        done.append(f"{sroot} owned by {SERVICE_USER}, mode 0700")
+        for name in (_SLOTS_FILE, _LOCK_FILE):
+            try:
+                ffd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dfd)
+            except FileNotFoundError:
+                continue
+            except OSError as e:
+                raise StateRootRefused(f"{sroot / name} cannot be opened safely ({e.strerror}); refusing") from None
+            try:
+                fst = os.fstat(ffd)
+                if not stat.S_ISREG(fst.st_mode) or fst.st_nlink != 1:
+                    raise StateRootRefused(f"{sroot / name} is not a regular file with one link; refusing")
+                fchown(ffd, uid, gid)
+                fst = os.fstat(ffd)
+                if (fst.st_uid, fst.st_gid) != (uid, gid):
+                    raise StateRootRefused(f"{sroot / name}: owner did not take effect")
+                done.append(f"{sroot / name} owned by {SERVICE_USER}")
+            finally:
+                os.close(ffd)
+    finally:
+        os.close(dfd)
+    return done
+
+
+def _service_ids() -> tuple[int, int]:
+    pw = pwd.getpwnam(SERVICE_USER)
+    return pw.pw_uid, pw.pw_gid
+
+
 def install_template(*, unit_dir: Path = Path("/etc/systemd/system"),
                      runner: Callable = subprocess.run,
                      python: Optional[str] = None,
                      state: Optional[str] = None,
                      run: Optional[str] = None,
                      user_exists: Callable[[str], bool] = _user_exists,
-                     chown: Callable = shutil.chown,
+                     ids: Callable[[], tuple[int, int]] = _service_ids,
+                     take: Callable = _take_state_root,
                      source: Optional[Path] = None) -> list[str]:
     """OWNER STEP. Refuses unless the effective uid is 0. Creates the service
-    user if missing, writes the unit, runs daemon-reload. Enables and starts
-    nothing. Returns the lines describing what it did."""
+    user if missing, gives it the state root (see _take_state_root), writes the
+    unit, runs daemon-reload. Enables and starts nothing. Returns the lines
+    describing what it did."""
     if os.geteuid() != 0:
         raise PermissionError("install-template is an owner step: run it as the superuser")
     python = python or sys.executable
@@ -610,28 +703,8 @@ def install_template(*, unit_dir: Path = Path("/etc/systemd/system"),
         done.append(f"created system user {SERVICE_USER}")
     else:
         done.append(f"system user {SERVICE_USER} already exists")
-    sroot = state_root(state)
-    if sroot.is_symlink():
-        raise RuntimeError(f"{sroot} is a symlink; refusing to take ownership through it")
-    if not sroot.exists():
-        _mkdirs(sroot, 0o700)
-        chown(sroot, SERVICE_USER, SERVICE_GROUP)
-        done.append(f"created {sroot} owned by {SERVICE_USER}, mode 0700")
-    else:
-        # A state root made earlier by root (a package, an image build, a
-        # first allocate run as root) leaves the service account unable to
-        # take the lock or write the slot table, so every later allocate fails.
-        # Take ownership of the root and of the allocator's own files only;
-        # person directories keep their owner (they may belong to the person).
-        os.chmod(sroot, 0o700)
-        chown(sroot, SERVICE_USER, SERVICE_GROUP)
-        for name in (_SLOTS_FILE, _LOCK_FILE):
-            f = sroot / name
-            if f.is_symlink():
-                raise RuntimeError(f"{f} is a symlink; refusing to take ownership through it")
-            if f.exists():
-                chown(f, SERVICE_USER, SERVICE_GROUP)
-        done.append(f"{sroot} and its slot table now owned by {SERVICE_USER}, mode 0700")
+    uid, gid = ids()
+    done.extend(take(state_root(state), uid, gid))
     target = unit_dir / UNIT_NAME
     target.write_text(text)
     os.chmod(target, 0o644)
