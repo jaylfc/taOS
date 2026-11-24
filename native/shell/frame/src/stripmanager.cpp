@@ -15,11 +15,15 @@ StripManager::StripManager(FrameController *c, QQmlEngine *engine, QObject *pare
 {
     connect(c, &FrameController::stripsChanged, this, &StripManager::apply);
     connect(c, &FrameController::menuRequested, this, &StripManager::openMenu);
+    m_tipTimer.setSingleShot(true);
+    m_tipTimer.setInterval(500);
+    connect(&m_tipTimer, &QTimer::timeout, this, [this] { showTip(m_tipId, QStringLiteral("shown"), m_tipText, m_tipX); });
 }
 
 StripManager::~StripManager()
 {
     closeMenu();
+    hideTip();
     for (QQuickView *v : std::as_const(m_views)) {
         v->destroy();
         delete v;
@@ -34,13 +38,15 @@ int StripManager::liveViews() const
     return n;
 }
 
-QVariantList StripManager::buttonModel(bool right, const QString &title)
+QVariantList StripManager::buttonModel(bool right, const QString &title, bool canMinimise, bool canFull)
 {
     QVariantList l;
-    for (const StripLayout::Button &b : StripLayout::buttons(right))
-        l.append(QVariantMap{{QStringLiteral("name"), b.name}, {QStringLiteral("x"), b.rect.x()}, {QStringLiteral("y"), b.rect.y()},
+    for (const StripLayout::Button &b : StripLayout::buttons(right)) {
+        const bool usable = b.name == QLatin1String("close") || (b.name == QLatin1String("minimise") ? canMinimise : canFull);
+        l.append(QVariantMap{{QStringLiteral("enabled"), usable}, {QStringLiteral("tip"), StripLayout::tipFor(b.name, usable)},{QStringLiteral("name"), b.name}, {QStringLiteral("x"), b.rect.x()}, {QStringLiteral("y"), b.rect.y()},
                              {QStringLiteral("w"), b.rect.width()}, {QStringLiteral("h"), b.rect.height()},
                              {QStringLiteral("label"), StripLayout::labelFor(b.name, title)}});
+    }
     return l;
 }
 
@@ -71,6 +77,15 @@ QQuickView *StripManager::make(const Strip &s)
     auto *bridge = new StripBridge(s.id, v);
     connect(bridge, &StripBridge::pressed, this, [this](int id, const QString &b) { m_c->perform(id, b); });
     connect(bridge, &StripBridge::menuAsked, this, &StripManager::openMenu);
+    connect(bridge, &StripBridge::tipAsked, this, [this](int id, const QString &button, const QString &text, qreal cx) {
+        hideTip();
+        if (button.isEmpty() || text.isEmpty())
+            return;
+        m_tipId = id;
+        m_tipText = text;
+        m_tipX = cx;
+        m_tipTimer.start();
+    });
     v->rootObject()->setProperty("bridge", QVariant::fromValue(static_cast<QObject *>(bridge)));
     return v;
 }
@@ -112,7 +127,7 @@ void StripManager::apply()
             m_views.insert(s.id, v);
         }
         if (QQuickItem *root = v->rootObject()) {
-            root->setProperty("buttons", buttonModel(s.right, s.title));
+            root->setProperty("buttons", buttonModel(s.right, s.title, s.canMinimise, s.canFull));
             root->setProperty("active", s.focused);
         }
         const bool moved = v->isVisible() && (v->property("stripMargin").toPoint() != s.margin);
@@ -134,6 +149,60 @@ void StripManager::apply()
         delete it.value();
         it = m_views.erase(it);
     }
+}
+
+void StripManager::hideTip()
+{
+    m_tipTimer.stop();
+    if (m_tip) {
+        m_tip->destroy();
+        m_tip->deleteLater();
+    }
+    m_tip = nullptr;
+}
+
+// The tooltip: a small overlay surface under the hovered button, never taking input or the keyboard.
+void StripManager::showTip(int id, const QString &, const QString &text, qreal centerX)
+{
+    const Strip *strip = nullptr;
+    for (const Strip &s : m_c->strips())
+        if (s.id == id && s.show)
+            strip = &s;
+    QScreen *screen = strip ? screenFor(strip->output) : nullptr;
+    if (!screen)
+        return;
+    hideTip();
+    auto *v = new QQuickView(m_engine, nullptr);
+    v->setScreen(screen);
+    v->setColor(Qt::transparent);
+    v->setFlag(Qt::FramelessWindowHint);
+    v->setFlag(Qt::WindowTransparentForInput);
+    v->setResizeMode(QQuickView::SizeRootObjectToView);
+    v->setTitle(QStringLiteral("taos-frame-tip"));
+    v->setInitialProperties({{QStringLiteral("text"), text}});
+    v->setSource(QUrl(QStringLiteral("qrc:/taos/frame/qml/StripTip.qml")));
+    if (v->status() != QQuickView::Ready) {
+        for (const auto &e : v->errors()) fprintf(stderr, "taos-frame: tip qml: %s\n", qPrintable(e.toString()));
+        delete v;
+        return;
+    }
+    const QSize sz(int(v->rootObject()->property("wantedWidth").toReal() + 0.5), int(v->rootObject()->property("wantedHeight").toReal() + 0.5));
+    v->resize(sz);
+    const int x = qMax(0, strip->margin.x() + int(centerX) - sz.width() / 2);
+    const int y = strip->margin.y() + strip->size.height() + 4;
+    v->create();
+    if (auto *w = LayerShellQt::Window::get(v)) {
+        w->setScreen(screen);
+        w->setLayer(LayerShellQt::Window::LayerOverlay);
+        w->setScope(QStringLiteral("taos-frame-tip"));
+        w->setAnchors(LayerShellQt::Window::Anchors(LayerShellQt::Window::AnchorTop | LayerShellQt::Window::AnchorLeft));
+        w->setMargins(QMargins(x, y, 0, 0));
+        w->setExclusiveZone(-1);
+        w->setDesiredSize(sz);
+        w->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivityNone);
+    }
+    v->show();
+    m_tip = v;
 }
 
 void StripManager::closeMenu()

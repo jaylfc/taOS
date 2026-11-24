@@ -97,12 +97,12 @@ class FrameSway : public QObject {
         }
         return pred();
     }
-    QProcess *foot(const QString &appId, const QString &title)
+    QProcess *foot(const QString &appId, const QString &title, const QString &config = QStringLiteral("/dev/null"))
     {
         auto *p = new QProcess(this);
         p->setProcessEnvironment(m_env);
         p->start(QStandardPaths::findExecutable(QStringLiteral("foot")),
-                 {QStringLiteral("-a"), appId, QStringLiteral("-T"), title, QStringLiteral("sleep"), QStringLiteral("1000")});
+                 {QStringLiteral("-c"), config, QStringLiteral("-a"), appId, QStringLiteral("-T"), title, QStringLiteral("sleep"), QStringLiteral("1000")});
         m_clients.append(p);
         return p;
     }
@@ -190,8 +190,9 @@ private slots:
     void framesAMatchingWindowOnly()
     {
         foot(QStringLiteral("chrome-test.example__-Default"), QStringLiteral("Web app"));
-        foot(QStringLiteral("foot"), QStringLiteral("Plain terminal"));
-        QVERIFY(waitFor([&] { return idOf(QStringLiteral("Web app")) && idOf(QStringLiteral("Plain terminal")); }));
+        foot(QStringLiteral("org.mozilla.Test"), QStringLiteral("Plain terminal"));    // a header bar app: self decorating list
+        foot(QStringLiteral("foot"), QStringLiteral("Terminal"));                     // the terminal: framed like any other window
+        QVERIFY(waitFor([&] { return idOf(QStringLiteral("Web app")) && idOf(QStringLiteral("Plain terminal")) && idOf(QStringLiteral("Terminal")); }));
         const int id = idOf(QStringLiteral("Web app"));
         // sway reserves the bar, and the tuner brings it to 32 px whatever the installed font measures
         QVERIFY2(waitFor([&] { return swayWindow(QStringLiteral("Web app")).value(QLatin1String("deco_rect")).toObject().value(QLatin1String("height")).toInt() == 32; }, 12000),
@@ -200,6 +201,9 @@ private slots:
         QCOMPARE(swayWindow(QStringLiteral("Plain terminal")).value(QLatin1String("border")).toString(), QStringLiteral("pixel"));
         QVERIFY(waitFor([&] { return strip(id).value(QLatin1String("show")).toBool(); }));
         QVERIFY(strip(idOf(QStringLiteral("Plain terminal"))).isEmpty());
+        QVERIFY2(waitFor([&] { return swayWindow(QStringLiteral("Terminal")).value(QLatin1String("border")).toString() == QLatin1String("normal"); }),
+                 "the terminal gets sway's title bar");
+        QVERIFY2(waitFor([&] { return strip(idOf(QStringLiteral("Terminal"))).value(QLatin1String("show")).toBool(); }), "and the three buttons");
         // the strip is over the bar's corner: 8 px in, centred in the bar, 80 x 24
         const QRect bar = barOf(QStringLiteral("Web app"));
         const QJsonObject s = strip(id);
@@ -398,8 +402,8 @@ private slots:
         writeFile(m_cfgDir + QStringLiteral("/taos/frame.json"), "{\"include\":[\"^chrome-\"]}");
         QVERIFY(waitFor([&] { return strip(id).value(QLatin1String("show")).toBool(); }, 6000));
         QCOMPARE(swayWindow(QStringLiteral("Web app")).value(QLatin1String("border")).toString(), QStringLiteral("normal"));
-        // frameAllForeign adds the terminal
-        writeFile(m_cfgDir + QStringLiteral("/taos/frame.json"), "{\"frameAllForeign\":true}");
+        // emptying the self decorating list frames the header bar app too
+        writeFile(m_cfgDir + QStringLiteral("/taos/frame.json"), "{\"selfDecorating\":[]}");
         const int term = idOf(QStringLiteral("Plain terminal"));
         QVERIFY(waitFor([&] { return strip(term).value(QLatin1String("show")).toBool(); }, 6000));
         writeFile(m_cfgDir + QStringLiteral("/taos/frame.json"), "{}");

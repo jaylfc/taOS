@@ -15,7 +15,7 @@ qt_add_executable(taos-frame src/main.cpp src/stripmanager.cpp src/stripmanager.
 qt_add_resources(taos-frame frame_resources
     PREFIX /taos/frame
     BASE ${CMAKE_CURRENT_SOURCE_DIR}
-    FILES qml/Strip.qml qml/StripButton.qml qml/FrameMenu.qml)
+    FILES qml/Strip.qml qml/StripButton.qml qml/StripTip.qml qml/FrameMenu.qml)
 target_link_libraries(taos-frame PRIVATE taosframe_core Qt6::Quick Qt6::Qml LayerShellQt::Interface)
 install(TARGETS taos-frame RUNTIME DESTINATION bin)
 install(FILES sway/49-taos-frame.conf DESTINATION share/taos/sway.d)

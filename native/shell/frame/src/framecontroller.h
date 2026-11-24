@@ -32,6 +32,7 @@ public:
         int idlePollMs = 100;     // how often to look when nothing is moving
         int activePollMs = 16;    // ... while something moved in the last 400 ms
         int settleMs = 150;
+        int graceMs = 1000;       // longest a new window waits to be judged (given a bar or left alone)
     };
     explicit FrameController(Theme *theme, const Options &o, QObject *parent = nullptr);
     ~FrameController() override;
@@ -73,9 +74,13 @@ private:
     QVector<Strip> m_strips;
     QHash<int, qint64> m_changedAt;
     QHash<int, QRect> m_lastRect;
+    QHash<int, qint64> m_firstSeen;   // when each window was first in the tree
+    QHash<int, bool> m_selfDrawn;     // per window: its toolkit draws its own header (read from /proc once)
     QSet<int> m_framed;
     QElapsedTimer m_clock;
     QTimer m_settle;
+    QTimer m_grace;                   // looks at the tree again once the youngest window may be judged
+    QByteArray m_lastJson;
     QTimer m_chromeDebounce;
     QFileSystemWatcher m_watch;
     QLocalServer m_server;

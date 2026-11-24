@@ -49,6 +49,8 @@ FrameController::FrameController(Theme *theme, const Options &o, QObject *parent
     m_pollActive = o.activePollMs;
     m_settle.setSingleShot(true);
     connect(&m_settle, &QTimer::timeout, this, &FrameController::replan);
+    m_grace.setSingleShot(true);
+    connect(&m_grace, &QTimer::timeout, this, [this] { if (!m_lastJson.isEmpty()) onTree(m_lastJson, false); });
     m_chromeDebounce.setSingleShot(true);
     m_chromeDebounce.setInterval(30);
     connect(&m_chromeDebounce, &QTimer::timeout, this, &FrameController::applyChrome);
@@ -192,10 +194,22 @@ void FrameController::onTree(const QByteArray &json, bool reloaded)
 {
     FrameTree t;
     QString err;
+    m_lastJson = json;
     if (!parseFrameTree(json, &t, &err)) {
         fprintf(stderr, "taos-frame: %s\n", qPrintable(err));
         return;
     }
+    // Which toolkit drew each window: read once per window from its process (GTK 4 and libadwaita draw their own header).
+    QHash<int, bool> drawn;
+    for (FrameWindow &w : t.windows) {
+        if (!m_selfDrawn.contains(w.id)) {
+            QFile f(QStringLiteral("/proc/%1/maps").arg(w.pid));
+            m_selfDrawn.insert(w.id, w.pid > 0 && f.open(QIODevice::ReadOnly) && mapsShowSelfDrawingToolkit(f.readAll()));
+        }
+        w.selfDrawn = m_selfDrawn.value(w.id);
+        drawn.insert(w.id, w.selfDrawn);
+    }
+    m_selfDrawn = drawn;
     const qint64 now = m_clock.elapsed();
     bool changed = false;
     QHash<int, QRect> rects;
@@ -228,7 +242,23 @@ void FrameController::onTree(const QByteArray &json, bool reloaded)
             m_lastChrome.clear();
             applyChrome();
         }
-        const QStringList cmds = borderCommands(t, m_cfg, &m_framed);
+        QSet<int> ready;
+        QHash<int, qint64> seen;
+        qint64 youngest = -1;
+        for (const FrameWindow &w : std::as_const(t.windows)) {
+            seen.insert(w.id, m_firstSeen.value(w.id, now));
+            // A new window shows border "none" until the client has said which decoration it wants (GTK 3 header bars
+            // say client side a moment after mapping: none, then csd; foot says server side: none, then pixel). It is
+            // judged once that settled, or after graceMs whatever it shows.
+            if (w.border != QLatin1String("none") || now - seen.value(w.id) >= m_o.graceMs)
+                ready.insert(w.id);
+            else
+                youngest = std::max<qint64>(youngest, m_o.graceMs - (now - seen.value(w.id)));
+        }
+        if (youngest >= 0)
+            m_grace.start(int(youngest) + 10);
+        m_firstSeen = seen;
+        const QStringList cmds = borderCommands(t, m_cfg, &m_framed, &ready);
         if (!cmds.isEmpty())
             runCommands(cmds);
         tuneFrom(t);
@@ -255,7 +285,8 @@ void FrameController::replan()
     for (int i = 0; same && i < next.size(); ++i) {
         const Strip &a = next.at(i), &b = m_strips.at(i);
         same = a.id == b.id && a.title == b.title && a.pos == b.pos && a.margin == b.margin && a.show == b.show
-               && a.output == b.output && a.right == b.right && a.focused == b.focused && a.reason == b.reason;
+               && a.output == b.output && a.right == b.right && a.focused == b.focused && a.reason == b.reason
+               && a.canMinimise == b.canMinimise && a.canFull == b.canFull;
     }
     for (const Strip &n : next)
         for (const Strip &o : std::as_const(m_strips)) {
@@ -337,6 +368,12 @@ bool FrameController::perform(int id, const QString &button, QString *error)
         if (error) *error = QStringLiteral("not connected to sway");
         return false;
     }
+    for (const Strip &s : std::as_const(m_strips)) {
+        if (s.id == id && ((button == QLatin1String("minimise") && !s.canMinimise) || (button == QLatin1String("full") && !s.canFull))) {
+            if (error) *error = QStringLiteral("this window has no %1 button").arg(button);
+            return false;
+        }
+    }
     WindowController c(m_tx);
     QString err;
     const QString ref = QString::number(id);
@@ -380,6 +417,9 @@ QJsonObject FrameController::stateJson() const
         o[QLatin1String("right")] = s.right;
         o[QLatin1String("show")] = s.show;
         o[QLatin1String("reason")] = s.reason;
+        o[QLatin1String("focused")] = s.focused;
+        o[QLatin1String("can_minimise")] = s.canMinimise;
+        o[QLatin1String("can_full")] = s.canFull;
         arr.append(o);
     }
     QJsonObject o;

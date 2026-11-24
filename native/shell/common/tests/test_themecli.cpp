@@ -76,7 +76,8 @@ private slots:
         QCOMPARE(run({"export", "button-layout"}, &o, &e), 0);
         QCOMPARE(o, QStringLiteral(":minimize,maximize,close\n"));
         QCOMPARE(run({"export", "foot"}, &o, &e), 0);
-        QVERIFY(o.contains("[csd]\npreferred=client\n"));
+        QVERIFY2(o.contains("[csd]\npreferred=server\n"), "foot asks for the compositor's title bar (taos-frame draws the buttons)");
+        QVERIFY(!o.contains("preferred=client"));
         QVERIFY(o.contains("\ncolor=ff131314\n"));          // graphite dark: the surface token
         QVERIFY(o.contains("\nbutton-close-color=ffe0786f\n"));   // the danger token
         QCOMPARE(run({"set", "graphite-ice", "--mode", "light"}, &o, &e), 0);

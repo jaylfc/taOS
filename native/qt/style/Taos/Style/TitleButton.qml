@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import QtQuick
+import QtQuick.Controls.Basic as B
 import Taos.Style 1.0
 
-// One round window button: monochrome, 14 px disc in a 24 px hit area. The glyph shows while the pointer is
-// over the group of three or while the button has keyboard focus. `danger` turns the disc to the theme's
-// danger colour on hover (close).
+// One round window button: monochrome, 14 px disc in a 24 px hit area. The glyph is always drawn (strong in the
+// focused window, dim in an unfocused one); hover and pressed lift the disc, a tooltip names the button, and keyboard
+// focus draws a ring. `danger` turns the disc to the theme's danger colour on hover (close). Kept in step with
+// native/shell/frame/qml/StripButton.qml, which draws the same button for windows that cannot.
 Item {
     id: btn
     property string glyph: "close"        // close | minimise | full
@@ -20,8 +22,28 @@ Item {
     Accessible.role: Accessible.Button
     Accessible.name: label
     Accessible.onPressAction: btn.activated()
-    readonly property bool hovered: hover.hovered
-    readonly property bool showGlyph: groupHovered || btn.activeFocus
+    readonly property bool hovered: hover.hovered && enabled
+    property string tip: ""
+    B.ToolTip {
+        visible: hover.hovered && btn.tip !== "" && btn.enabled
+        delay: 500
+        text: btn.tip
+        y: btn.height + 4
+        padding: 5
+        leftPadding: 8
+        rightPadding: 8
+        contentItem: Text {
+            text: btn.tip
+            color: TaosStyle.text
+            font.pixelSize: 12
+        }
+        background: Rectangle {
+            radius: 6
+            color: TaosStyle.raised
+            border.width: 1
+            border.color: TaosStyle.hairline
+        }
+    }
 
     Rectangle {
         id: disc
@@ -29,17 +51,19 @@ Item {
         width: 14
         height: 14
         radius: 7
-        color: btn.hovered && btn.danger ? TaosStyle.danger
-             : (btn.hovered || mouse.pressed ? Qt.rgba(TaosStyle.text.r, TaosStyle.text.g, TaosStyle.text.b, mouse.pressed ? 0.42 : 0.34)
-                                             : Qt.rgba(TaosStyle.text.r, TaosStyle.text.g, TaosStyle.text.b, btn.windowActive ? 0.22 : 0.12))
+        color: !btn.enabled ? Qt.rgba(TaosStyle.text.r, TaosStyle.text.g, TaosStyle.text.b, 0.08)
+             : btn.hovered && btn.danger ? (mouse.pressed ? Qt.darker(TaosStyle.danger, 1.2) : TaosStyle.danger)
+             : (btn.hovered || mouse.pressed ? Qt.rgba(TaosStyle.text.r, TaosStyle.text.g, TaosStyle.text.b, mouse.pressed ? 0.60 : 0.46)
+                                             : Qt.rgba(TaosStyle.text.r, TaosStyle.text.g, TaosStyle.text.b, btn.windowActive ? 0.26 : 0.12))
         Behavior on color { enabled: !TaosStyle.reduceMotion; ColorAnimation { duration: 90 } }
         // The glyphs are drawn from rectangles: nothing to load, and they follow the theme.
         Item {
             anchors.centerIn: parent
             width: 8
             height: 8
-            visible: btn.showGlyph
-            readonly property color ink: btn.hovered && btn.danger ? TaosStyle.ground : TaosStyle.text
+            visible: btn.enabled
+            readonly property color ink: btn.hovered && btn.danger ? TaosStyle.ground
+                : Qt.rgba(TaosStyle.text.r, TaosStyle.text.g, TaosStyle.text.b, btn.windowActive || btn.hovered ? 0.92 : 0.5)
             Rectangle { visible: btn.glyph === "close"; anchors.centerIn: parent; width: 9; height: 1.4; rotation: 45; color: parent.ink; antialiasing: true }
             Rectangle { visible: btn.glyph === "close"; anchors.centerIn: parent; width: 9; height: 1.4; rotation: -45; color: parent.ink; antialiasing: true }
             Rectangle { visible: btn.glyph === "minimise"; anchors.centerIn: parent; width: 8; height: 1.4; color: parent.ink }

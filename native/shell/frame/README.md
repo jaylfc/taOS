@@ -1,10 +1,56 @@
-# taos-frame: window buttons for windows that cannot draw their own
+# taos-frame: the window buttons for every window
 
-Web app windows (Chromium `--app`, app_id `chrome-<host>__<path>-<profile>`) are xdg_shell toplevels that get no caption
-from Chromium and none from the compositor. `taos-frame` gives them the taOS look: sway draws the title bar, `taos-frame`
-puts the three round buttons (close, minimise, full size, as `TaosTitleBar`) over its corner.
+Every normal window on the desktop shows the same three taOS buttons (close, minimise, full size), always drawn (not
+only on hover), in the order and on the side the theme sets (`windowButtons`, the person can override it), with a
+focused and an unfocused style, hover and pressed feedback, a tooltip and an accessible name, whatever toolkit drew it.
 
-Decision (owner): a controls strip now, compositor title bars later.
+## The rule: who draws the title bar
+
+**One rule: the compositor draws the title bar, `taos-frame` draws the three buttons on it, for every window that can
+take server side decoration. A window is left out only when it draws its own header.** Apps are asked for server side
+decoration (xdg-decoration; sway answers server side by default and `taos-theme export foot` sets foot to
+`preferred=server`). The exceptions, in the order they are checked:
+
+| Window | Who draws the buttons | How it is recognised |
+|---|---|---|
+| taOS native apps (`my.taos.*`) | the app: `TaosTitleBar` / `TitleButton` (same look as the strip) | app id, built in |
+| a window that asked for client side decoration (GTK 3 with a header bar, foot with `preferred=client`, Qt with its own bar) | the app | sway reports `border csd`: detected from the protocol, nothing to configure |
+| GTK 4 and libadwaita apps (they never use server side decoration) | the app | the process maps `libadwaita-1` or `libgtk-4` (`/proc/<pid>/maps`, read once per window) |
+| apps that draw a header and say nothing about it (Firefox, Thunderbird, ghostty) | the app | `selfDecorating` list in `frame.json` |
+| normal browser windows (`chromium`, `google-chrome*`) | the browser | built in (`border csd`) |
+| everything else: web app windows (Chromium `--app`), the terminal, Qt apps, GTK 3 windows without a header bar, Electron apps, apps from a container | sway draws the bar, taos-frame draws the buttons | the default |
+
+GTK windows that draw their own header show their own buttons; the theme's button layout
+(`taos-theme export button-layout`, applied by `taos-window-session-hook`) puts them in the same order and on the same
+side as everything else (`close,minimize,maximize:` on the left, `:minimize,maximize,close` on the right). They keep
+GTK's own look: that is the one visible difference, and it is a GTK limit.
+
+A window is judged once the client has settled its decoration mode (sway shows `border none` until then), at most one
+second after it maps: a bar forced on a GTK 3 header bar window before it has said so stays and shows two sets.
+
+### Kinds of window
+
+* **Normal** window: all three buttons.
+* **Dialog, utility, splash, toolbar**: close only; minimise and full size are drawn as empty, inert discs. X11 windows
+  are recognised from their window type or `transient_for` (sway reports them). Wayland does not tell sway which
+  toplevel is a dialog or has a fixed size, so for Wayland apps this is data: `dialogs` (close only) and `fixedSize`
+  (no full size button) in `frame.json`. **Not detected automatically.** A compositor patch that exports the parent
+  and the min/max size in `get_tree` would replace both lists.
+* **Fullscreen** (`F11`, `Super+F`): no title bar, no buttons; they come back when it ends.
+* **Minimised** windows are parked; their buttons are hidden and the dock shows them (click to restore).
+* **Tabbed and stacked** containers: sway draws the tab titles, no buttons.
+* **Popups, menus, tooltips** are not toplevels: never framed.
+
+### Keyboard
+The buttons never take the keyboard (the strip must not steal focus from the window). The equivalents: `Super+Q` close,
+`Super+M` minimise, `Super+Shift+M` restore the last one, `Super+Ctrl+Up` full size or restore, `Super+Ctrl+Shift+Up`
+fullscreen. The tooltip names them. Native apps' own buttons are focusable (ring on keyboard focus).
+
+### Look
+Disc 14 px in a 24 px hit area. Focused window: disc at 26% of the text colour, glyph at 92%. Unfocused: disc 12%,
+glyph 50%. Hover: disc 46%; close turns the theme's danger colour. Pressed: 60% (close: darker danger). Unavailable
+button: 8% disc, no glyph. Tooltip after 500 ms. `native/qt/style/Taos/Style/TitleButton.qml` (native apps) and
+`qml/StripButton.qml` (here) are kept identical.
 
 ## Mechanism
 
@@ -37,6 +83,7 @@ Decision (owner): a controls strip now, compositor title bars later.
   full size or minimise cycle (measured). `window/core/windowmodel.cpp` now keeps `Window::rect` in container terms
   (bar included) when sway draws a bar; the integration test cycles full size and minimise/restore three times.
 * **Tabbed and stacked containers** are not supported: sway draws their tab titles, the strips stay hidden there.
+* **Tooltip.** A second, input-transparent overlay surface under the hovered button (the strip is only 80 x 24).
 * **Not done:** double click on the bar for full size (sway has no double click binding; it needs the compositor
   title bars). The buttons are not focusable: keyboard users have Super+Q, Super+M and Super+Ctrl+Up, and the strip never
   takes the keyboard.
@@ -44,13 +91,16 @@ Decision (owner): a controls strip now, compositor title bars later.
 ## Which windows: `~/.config/taos/frame.json`
 
 ```json
-{ "include": ["^chrome-"], "exclude": [], "frameAllForeign": false }
+{ "include": [".*"], "exclude": [], "selfDecorating": ["^org\\.mozilla\\.", "^(firefox|thunderbird)", "^com\\.mitchellh\\.ghostty$"],
+  "dialogs": [], "fixedSize": [] }
 ```
 
-`include` and `exclude` are regular expressions on the app_id (exclude wins). `frameAllForeign` frames every window that
-is not excluded. Never framed whatever the file says: `my.taos.*` (own header) and normal browser windows
-(`chromium`, `chromium-browser`, `google-chrome*`: sway answers them `border csd`, they draw their own frame). The file is
-watched. Foot, for example: `{"include": ["^chrome-", "^foot$"]}`.
+All keys are optional lists of regular expressions on the app id. `exclude` and `selfDecorating` both leave a window
+alone (exclude wins over include); `selfDecorating` is the list Settings should offer ("this app draws its own title
+bar") and a key in the file **replaces** the shipped list. `include` narrows the set (default: everything).
+`frameAllForeign` is the old name for the default and is ignored in effect. Never framed whatever the file says:
+`my.taos.*` and normal browser windows. The file is watched. **Upgrading:** a `frame.json` written for the old rule
+(`{"include": ["^chrome-"]}`) still narrows framing to web apps; delete the `include` line to get every window.
 
 ## Control
 
@@ -70,3 +120,12 @@ framed window offscreen (the bar there is a stand-in for sway's).
 `taos-shell-session` starts `taos-frame` by default; `install-desktop.sh` installs the binary and
 `/etc/taos/sway.d/49-taos-frame.conf`. Without the daemon a framed window keeps a plain sway title bar (title, no
 buttons): `Super+Q` closes it.
+
+## Seeing it (headless, real config)
+
+`tests/session/` starts a private taOS session (own HOME, runtime dir and D-Bus; `dbus-update-activation-environment`
+is shimmed so nothing reaches a live session; Intel render node only) with `/etc/taos/sway/config-effects` and the
+binaries of this build first on PATH (`prep.sh` makes the shim directory and a `shell.env` that
+`TAOS_SHELL_ENV_FILE` points at, `run-session.sh` starts sway). `matrix.py` launches an app and takes grim shots of
+every state with real pointer events (`taos-frame-vptool`): unfocused, focused, hover (tooltip), maximised, restored,
+minimised, restored. Set `W` (work directory) and `QT_ENV_SH` (the Qt environment file) first.

@@ -36,6 +36,9 @@ QMap<int, QRect> modeSwitchTargets(const Tree &t, const QString &workspace);
 // Empty when nothing is to be done (already floating, minimised, fullscreen, or the workspace is tiling).
 // The rectangle newWindowCommands aims for (invalid: nothing to do).
 QRect newWindowGeometry(const Tree &t, const Window &w, const DesktopModes &modes);
+// The same placement for a window that already floats, at the size its application asked for (`preferred`, kept
+// unless it does not fit the free area). Invalid `preferred`: the default 60 % x 70 %.
+QRect placeNewWindow(const Tree &t, const Window &w, const DesktopModes &modes, const QSize &preferred);
 QStringList newWindowCommands(const Tree &t, const Window &w, const DesktopModes &modes);
 
 }  // namespace TaosWin

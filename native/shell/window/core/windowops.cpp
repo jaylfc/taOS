@@ -146,7 +146,7 @@ Plan full(const Window &w, const Tree &t) {
         } else if (w.fullSavedGeometry.isValid()) {
             const QRect r = w.fullSavedGeometry;
             p.commands << sel(w.id) + QStringLiteral("resize set %1 %2").arg(r.width()).arg(r.height());
-            p.commands << sel(w.id) + QStringLiteral("move position %1 %2").arg(r.x()).arg(r.y());
+            p.commands << sel(w.id) + QStringLiteral("move absolute position %1 %2").arg(r.x()).arg(r.y());
         }
         unmarkAll(&p, w, isFullMark);
         return p;
@@ -159,7 +159,7 @@ Plan full(const Window &w, const Tree &t) {
     addMark(&p, w, QStringLiteral("taos_full"));
     if (!w.floating) p.commands << sel(w.id) + QStringLiteral("floating enable");
     p.commands << sel(w.id) + QStringLiteral("resize set %1 %2").arg(r.width()).arg(r.height());
-    p.commands << sel(w.id) + QStringLiteral("move position %1 %2").arg(r.x()).arg(r.y());
+    p.commands << sel(w.id) + QStringLiteral("move absolute position %1 %2").arg(r.x()).arg(r.y());
     return p;
 }
 
@@ -273,7 +273,7 @@ bool WindowController::full(const QString &ref, QString *error) {
             const bool near = qAbs(dw) <= 6 && qAbs(dh) <= 6;   // borders: ask for the difference too
             const QSize want = near ? QSize(r.width() + dw, r.height() + dh) : r.size();
             m_t->runCommand(Plans::sel(w->id) + QStringLiteral("resize set %1 %2").arg(want.width()).arg(want.height()), nullptr);
-            m_t->runCommand(Plans::sel(w->id) + QStringLiteral("move position %1 %2").arg(r.x()).arg(r.y()), nullptr);
+            m_t->runCommand(Plans::sel(w->id) + QStringLiteral("move absolute position %1 %2").arg(r.x()).arg(r.y()), nullptr);
         }
     }
     return true;
@@ -288,7 +288,7 @@ bool WindowController::settleGeometry(int id, const QRect &want) {
         if (!a || !a->floating || a->minimised) return false;
         if (a->rect == want) return true;
         m_t->runCommand(Plans::sel(id) + QStringLiteral("resize set %1 %2").arg(want.width()).arg(want.height()), nullptr);
-        m_t->runCommand(Plans::sel(id) + QStringLiteral("move position %1 %2").arg(want.x()).arg(want.y()), nullptr);
+        m_t->runCommand(Plans::sel(id) + QStringLiteral("move absolute position %1 %2").arg(want.x()).arg(want.y()), nullptr);
     }
     return false;
 }

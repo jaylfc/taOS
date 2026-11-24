@@ -69,7 +69,7 @@ QStringList modeSwitchCommands(const Tree &t, const QString &workspace, const QS
             c << at(w.id) + QStringLiteral("floating enable");
             if (r.isValid()) {
                 c << at(w.id) + QStringLiteral("resize set %1 %2").arg(r.width()).arg(r.height());
-                c << at(w.id) + QStringLiteral("move position %1 %2").arg(r.x()).arg(r.y());
+                c << at(w.id) + QStringLiteral("move absolute position %1 %2").arg(r.x()).arg(r.y());
             }
         } else if (mode == QLatin1String("tiling") && w.floating) {
             for (const QString &m : w.marks)
@@ -81,8 +81,8 @@ QStringList modeSwitchCommands(const Tree &t, const QString &workspace, const QS
     return c;
 }
 
-QRect newWindowGeometry(const Tree &t, const Window &w, const DesktopModes &modes) {
-    if (w.minimised || w.floating || w.fullscreen) return QRect();
+QRect placeNewWindow(const Tree &t, const Window &w, const DesktopModes &modes, const QSize &preferred) {
+    if (w.minimised || w.fullscreen) return QRect();
     if (modes.modeFor(w.workspace) != QLatin1String("desktop")) return QRect();
     const Workspace *ws = t.workspace(w.workspace);
     if (!ws || !ws->rect.isValid()) return QRect();
@@ -90,14 +90,26 @@ QRect newWindowGeometry(const Tree &t, const Window &w, const DesktopModes &mode
     for (const Window &o : t.windows)
         if (o.id != w.id && !o.minimised && o.floating && o.workspace == w.workspace) ++others;
     const QRect a = ws->rect;
-    const int width = std::clamp(a.width() * 6 / 10, std::min(480, a.width()), std::max(a.width() - 40, 1));
-    const int height = std::clamp(a.height() * 7 / 10, std::min(320, a.height()), std::max(a.height() - 40, 1));
+    int width, height;
+    if (preferred.isValid()) {
+        // The application asked for this size: keep it, but never larger than the free area (bar and dock excluded).
+        width = std::clamp(preferred.width(), std::min(480, a.width()), std::max(a.width() - 32, 1));
+        height = std::clamp(preferred.height(), std::min(320, a.height()), std::max(a.height() - 32, 1));
+    } else {
+        width = std::clamp(a.width() * 6 / 10, std::min(480, a.width()), std::max(a.width() - 40, 1));
+        height = std::clamp(a.height() * 7 / 10, std::min(320, a.height()), std::max(a.height() - 40, 1));
+    }
     const int step = 32 * (others % 6);
     int x = a.x() + (a.width() - width) / 2 + step - 80;
     int y = a.y() + (a.height() - height) / 2 + step - 80;
     x = std::clamp(x, a.x(), std::max(a.x(), a.right() - width));
     y = std::clamp(y, a.y(), std::max(a.y(), a.bottom() - height));
     return QRect(x, y, width, height);
+}
+
+QRect newWindowGeometry(const Tree &t, const Window &w, const DesktopModes &modes) {
+    if (w.floating) return QRect();
+    return placeNewWindow(t, w, modes, QSize());
 }
 
 QMap<int, QRect> modeSwitchTargets(const Tree &t, const QString &workspace) {
@@ -112,7 +124,7 @@ QStringList newWindowCommands(const Tree &t, const Window &w, const DesktopModes
     if (!g.isValid()) return {};
     return {at(w.id) + QStringLiteral("floating enable"),
             at(w.id) + QStringLiteral("resize set %1 %2").arg(g.width()).arg(g.height()),
-            at(w.id) + QStringLiteral("move position %1 %2").arg(g.x()).arg(g.y())};
+            at(w.id) + QStringLiteral("move absolute position %1 %2").arg(g.x()).arg(g.y())};
 }
 
 }  // namespace TaosWin

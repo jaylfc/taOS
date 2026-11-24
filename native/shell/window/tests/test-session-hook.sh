@@ -17,7 +17,7 @@ fail=0
 check() { if eval "$2"; then echo "ok   - $1"; else echo "FAIL - $1"; fail=1; fi; }
 sh "$hook" apply
 check "left layout set" "grep -q \"org.gnome.desktop.wm.preferences button-layout close,minimize,maximize:\" $GS_LOG"
-check "foot file written" "grep -q 'preferred=client' $tmp/cfg/foot/taos-csd.ini"
+check "foot file written" "grep -q 'preferred=server' $tmp/cfg/foot/taos-csd.ini"
 check "foot.ini created with the include" "grep -q 'include=.*taos-csd.ini' $tmp/cfg/foot/foot.ini"
 taos-theme set-buttons right >/dev/null 2>&1
 sh "$hook" apply

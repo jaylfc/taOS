@@ -13,6 +13,13 @@ QStringList FrameConfig::builtinExclude()
     return {QStringLiteral("^my\\.taos\\."), QStringLiteral("^(chromium|chromium-browser|google-chrome.*)$")};
 }
 
+QStringList FrameConfig::defaultSelfDecorating()
+{
+    // Apps that draw a header of their own and that taos-frame cannot see are doing it (GTK 3 header bars, Firefox and
+    // Thunderbird). GTK 4 and libadwaita apps are found from the process; this list is for the rest.
+    return {QStringLiteral("^org\\.mozilla\\."), QStringLiteral("^(firefox|thunderbird)"), QStringLiteral("^com\\.mitchellh\\.ghostty$")};
+}
+
 static bool matchesAny(const QStringList &patterns, const QString &s)
 {
     for (const QString &p : patterns) {
@@ -25,11 +32,18 @@ static bool matchesAny(const QStringList &patterns, const QString &s)
 
 bool FrameConfig::shouldFrame(const QString &appId) const
 {
-    if (appId.isEmpty())
-        return false;
-    if (matchesAny(builtinExclude(), appId) || matchesAny(exclude, appId))
+    if (matchesAny(builtinExclude(), appId) || matchesAny(selfDecorating, appId) || matchesAny(exclude, appId))
         return false;
     return frameAllForeign || matchesAny(include, appId);
+}
+
+FrameConfig::Kind FrameConfig::kindOf(const QString &appId) const
+{
+    if (matchesAny(dialogs, appId))
+        return Kind::Dialog;
+    if (matchesAny(fixedSize, appId))
+        return Kind::FixedSize;
+    return Kind::Normal;
 }
 
 QString FrameConfigFile::userPath()
@@ -79,6 +93,12 @@ bool FrameConfigFile::read(const QString &path, FrameConfig *out, QString *error
         out->include = validPatterns(o.value(QLatin1String("include")), &bad);
     if (o.contains(QLatin1String("exclude")))
         out->exclude = validPatterns(o.value(QLatin1String("exclude")), &bad);
+    if (o.contains(QLatin1String("selfDecorating")))
+        out->selfDecorating = validPatterns(o.value(QLatin1String("selfDecorating")), &bad);
+    if (o.contains(QLatin1String("dialogs")))
+        out->dialogs = validPatterns(o.value(QLatin1String("dialogs")), &bad);
+    if (o.contains(QLatin1String("fixedSize")))
+        out->fixedSize = validPatterns(o.value(QLatin1String("fixedSize")), &bad);
     out->frameAllForeign = o.value(QLatin1String("frameAllForeign")).toBool(false);
     if (!bad.isEmpty() && error)
         *error = QStringLiteral("ignored invalid patterns: %1").arg(bad.join(QLatin1String(", ")));

@@ -37,9 +37,35 @@ private slots:
     {
         FrameConfig c;
         QVERIFY(c.shouldFrame(QStringLiteral("chrome-www.youtube.com__-Default")));
-        QVERIFY(!c.shouldFrame(QStringLiteral("foot")));
+        QVERIFY2(c.shouldFrame(QStringLiteral("foot")), "the terminal is framed: one rule for every window");
+        QVERIFY(c.shouldFrame(QStringLiteral("org.kde.kate")));
+        QVERIFY(c.shouldFrame(QString()));                    // a window without an app id still gets its buttons
         QVERIFY(!c.shouldFrame(QStringLiteral("my.taos.settings")));
-        QVERIFY(!c.shouldFrame(QString()));
+        QVERIFY2(!c.shouldFrame(QStringLiteral("org.mozilla.firefox")), "a header bar app is on the self decorating list");
+        QVERIFY(!c.shouldFrame(QStringLiteral("firefox")));
+        QVERIFY2(c.shouldFrame(QStringLiteral("org.gnome.Calculator")), "a plain GTK 3 window takes server side decoration: framed");
+        QVERIFY(!c.shouldFrame(QStringLiteral("chromium")));
+    }
+    void selfDecoratingIsData()
+    {
+        FrameConfig c;
+        c.selfDecorating = {QStringLiteral("^foot$")};
+        QVERIFY(!c.shouldFrame(QStringLiteral("foot")));
+        QVERIFY2(c.shouldFrame(QStringLiteral("org.mozilla.firefox")), "the file replaces the shipped list");
+        QTemporaryDir d;
+        const QString p = d.path() + QStringLiteral("/frame.json");
+        QFile f(p);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("{\"selfDecorating\":[\"^x$\"],\"dialogs\":[\"^pick\"],\"fixedSize\":[\"^calc\"]}");
+        f.close();
+        FrameConfig r;
+        QString err;
+        QVERIFY(FrameConfigFile::read(p, &r, &err));
+        QCOMPARE(r.selfDecorating, QStringList{QStringLiteral("^x$")});
+        QCOMPARE(r.dialogs, QStringList{QStringLiteral("^pick")});
+        QVERIFY(r.kindOf(QStringLiteral("picker")) == FrameConfig::Kind::Dialog);
+        QVERIFY(r.kindOf(QStringLiteral("calc")) == FrameConfig::Kind::FixedSize);
+        QVERIFY(r.kindOf(QStringLiteral("foot")) == FrameConfig::Kind::Normal);
     }
     void includeExclude()
     {
@@ -55,7 +81,7 @@ private slots:
         FrameConfig c;
         c.frameAllForeign = true;
         QVERIFY(c.shouldFrame(QStringLiteral("foot")));
-        QVERIFY(c.shouldFrame(QStringLiteral("org.gnome.Nautilus")));
+        QVERIFY(c.shouldFrame(QStringLiteral("org.kde.dolphin")));
         QVERIFY2(!c.shouldFrame(QStringLiteral("my.taos.dashboard")), "a taOS app draws its own header");
         QVERIFY2(!c.shouldFrame(QStringLiteral("chromium")), "a normal browser window draws its own frame");
         QVERIFY(!c.shouldFrame(QStringLiteral("google-chrome-stable")));
@@ -97,8 +123,8 @@ private slots:
         PlanInput in;
         in.nowMs = 10000;
         QVector<Strip> s = planStrips(t, FrameConfig(), in);
-        QCOMPARE(s.size(), 1);                                // the terminal is not framed by default
-        const Strip &a = s.first();
+        QCOMPARE(s.size(), 2);                                // the terminal is framed too (no bar yet: hidden)
+        const Strip &a = *byId(s, 10);
         QCOMPARE(a.id, 10);
         QVERIFY(a.show);
         QCOMPARE(a.pos, QPoint(8, 4));                        // 8 px in, centred in the 32 px bar
@@ -106,8 +132,8 @@ private slots:
         QCOMPARE(a.title, QStringLiteral("YouTube"));
         in.buttonsRight = true;
         s = planStrips(t, FrameConfig(), in);
-        QCOMPARE(s.first().pos, QPoint(640 - 8 - 80, 4));     // the right corner of the 640 px bar
-        QVERIFY(s.first().right);
+        QCOMPARE(byId(s, 10)->pos, QPoint(640 - 8 - 80, 4));  // the right corner of the 640 px bar
+        QVERIFY(byId(s, 10)->right);
     }
     void noBarYetMeansNoStrip()
     {
@@ -127,7 +153,6 @@ private slots:
         for (FrameWindow &w : t.windows)
             if (w.id == 11) { w.border = QStringLiteral("normal"); w.deco = QRect(640, 0, 640, 32); w.rect = QRect(640, 32, 640, 688); }
         FrameConfig c;
-        c.include << QStringLiteral("^foot$");
         PlanInput in;
         in.nowMs = 10000;
         const QVector<Strip> s = planStrips(t, c, in);
@@ -153,10 +178,10 @@ private slots:
         in.nowMs = 10000;
         in.settleMs = 150;
         in.changedAt.insert(10, 9900);                         // 100 ms ago
-        QCOMPARE(planStrips(t, FrameConfig(), in).first().reason, QStringLiteral("moving"));
-        QVERIFY(!planStrips(t, FrameConfig(), in).first().show);
+        QCOMPARE(byId(planStrips(t, FrameConfig(), in), 10)->reason, QStringLiteral("moving"));
+        QVERIFY(!byId(planStrips(t, FrameConfig(), in), 10)->show);
         in.nowMs = 10100;                                      // 200 ms ago
-        QVERIFY(planStrips(t, FrameConfig(), in).first().show);
+        QVERIFY(byId(planStrips(t, FrameConfig(), in), 10)->show);
     }
     void floatingOverlapHidesTheCoveredButtons()
     {
@@ -216,8 +241,9 @@ private slots:
         PlanInput in;
         in.nowMs = 10000;
         const QVector<Strip> s = planStrips(t, FrameConfig(), in);
-        QCOMPARE(s.size(), 1);
-        QCOMPARE(s.first().reason, QStringLiteral("tabbed"));
+        QVERIFY(!s.isEmpty());
+        for (const Strip &x : s)
+            QCOMPARE(x.reason, QStringLiteral("tabbed"));
     }
     void csdWindowsAreNeverGivenABar()
     {
@@ -234,12 +260,102 @@ private slots:
         FrameTree t = load("tiled.json");
         PlanInput in;
         in.nowMs = 10000;
-        QCOMPARE(planStrips(t, FrameConfig(), in).size(), 1);
+        QVERIFY(byId(planStrips(t, FrameConfig(), in), 10));
         t.windows.removeIf([](const FrameWindow &w) { return w.id == 10; });
-        QCOMPARE(planStrips(t, FrameConfig(), in).size(), 0);
+        QVERIFY(!byId(planStrips(t, FrameConfig(), in), 10));
+    }
+
+    // ---- every window: the rule, the kinds and the styles
+    void everyNormalWindowIsFramedWhateverTheToolkit()
+    {
+        FrameTree t = load("kinds.json");
+        for (FrameWindow &w : t.windows)
+            if (w.id == 68) w.selfDrawn = true;                    // the controller sets it from /proc/<pid>/maps
+        PlanInput in;
+        in.nowMs = 10000;
+        const QVector<Strip> s = planStrips(t, FrameConfig(), in);
+        QVERIFY2(byId(s, 60) && byId(s, 60)->show, qPrintable(QStringLiteral("the terminal is framed and shows its buttons: %1").arg(byId(s, 60) ? byId(s, 60)->reason : QStringLiteral("no strip"))));
+        QVERIFY(byId(s, 61) && byId(s, 61)->show);
+        QCOMPARE(byId(s, 60)->pos, QPoint(20 + 8, 40 + 4));
+        QVERIFY2(!byId(s, 62), "a header bar app (self decorating list) gets no second set");
+        QVERIFY2(!byId(s, 68), "GTK 4 / libadwaita draws its own header: found from the process, not the name");
+        QVERIFY2(!byId(s, 63), "a window that set its own decoration mode (border csd) gets none");
+        QVERIFY2(!byId(s, 66), "a taOS app draws its own header");
+        QVERIFY2(byId(s, 64) && byId(s, 64)->show, "an X11 dialog without an app id is still framed");
+    }
+    void focusedAndUnfocusedStyle()
+    {
+        FrameTree t = load("kinds.json");
+        PlanInput in;
+        in.nowMs = 10000;
+        const QVector<Strip> s = planStrips(t, FrameConfig(), in);
+        QVERIFY(byId(s, 60)->focused);
+        QVERIFY2(!byId(s, 61)->focused, "an unfocused window's strip is told so (dim style)");
+        FrameTree moved = t;
+        for (FrameWindow &w : moved.windows) w.focused = w.id == 61;
+        const QVector<Strip> s2 = planStrips(moved, FrameConfig(), in);
+        QVERIFY(!byId(s2, 60)->focused && byId(s2, 61)->focused);
+    }
+    void fullscreenHasNoBar()
+    {
+        const FrameTree t = load("kinds.json");
+        PlanInput in;
+        in.nowMs = 10000;
+        const Strip *s = byId(planStrips(t, FrameConfig(), in), 67);
+        QVERIFY(s);
+        QVERIFY(!s->show);
+        QCOMPARE(s->reason, QStringLiteral("fullscreen"));
+    }
+    void dialogsTakeCloseOnlyAndFixedSizeTakesNoFullSize()
+    {
+        const FrameTree t = load("kinds.json");
+        PlanInput in;
+        in.nowMs = 10000;
+        FrameConfig c;
+        c.fixedSize = {QStringLiteral("^calculator$")};
+        const QVector<Strip> s = planStrips(t, c, in);
+        QVERIFY(byId(s, 60)->canMinimise && byId(s, 60)->canFull);                 // an ordinary window: all three
+        QVERIFY2(!byId(s, 64)->canMinimise && !byId(s, 64)->canFull, "an X11 dialog (transient, type dialog): close only");
+        QVERIFY2(byId(s, 65)->canMinimise && !byId(s, 65)->canFull, "a fixed size window: no full size");
+        FrameConfig d;
+        d.dialogs = {QStringLiteral("^calculator$")};
+        QVERIFY(!byId(planStrips(t, d, in), 65)->canMinimise);
+    }
+    void toolkitsThatAlwaysDrawTheirOwnHeader()
+    {
+        QVERIFY(mapsShowSelfDrawingToolkit("7f00 r-xp 0 08:01 1 /usr/lib/x86_64-linux-gnu/libadwaita-1.so.0.5.0\n"));
+        QVERIFY(mapsShowSelfDrawingToolkit("7f00 r-xp 0 08:01 1 /usr/lib/x86_64-linux-gnu/libgtk-4.so.1.1400.0\n"));
+        QVERIFY2(!mapsShowSelfDrawingToolkit("7f00 r-xp 0 08:01 1 /usr/lib/x86_64-linux-gnu/libgtk-3.so.0.2406.0\n"), "GTK 3 may take server side decoration");
+        QVERIFY(!mapsShowSelfDrawingToolkit("7f00 r-xp 0 08:01 1 /opt/taos/qt/lib/libQt6Gui.so.6\n"));
+    }
+    void tooltipsNameTheKeyboardWay()
+    {
+        QVERIFY(StripLayout::tipFor(QStringLiteral("close"), true).contains(QLatin1String("Super+Q")));
+        QVERIFY(StripLayout::tipFor(QStringLiteral("minimise"), true).contains(QLatin1String("Super+M")));
+        QVERIFY(StripLayout::tipFor(QStringLiteral("full"), true).contains(QLatin1String("Super+Ctrl+Up")));
+        QVERIFY(StripLayout::tipFor(QStringLiteral("full"), false).isEmpty());
     }
 
     // ---- sway border commands
+    void terminalGetsABarFromSway()
+    {
+        const FrameTree t = load("tiled.json");
+        QSet<int> framed;
+        const QStringList c = borderCommands(t, FrameConfig(), &framed);
+        QVERIFY2(c.contains(QStringLiteral("[con_id=11] border normal 1")), qPrintable(c.join(QLatin1Char(';'))));
+        QVERIFY(framed.contains(11));
+    }
+    // GTK 3 header bar windows tell sway they draw their own header a moment AFTER they map (they show border none, then
+    // csd). A bar forced on them first stays (measured), so a new window is only judged once it is a little older.
+    void aNewWindowIsNotJudgedUntilItIsReady()
+    {
+        const FrameTree t = load("tiled.json");
+        QSet<int> framed, ready;
+        QVERIFY(borderCommands(t, FrameConfig(), &framed, &ready).isEmpty());
+        QVERIFY(!framed.contains(11));
+        ready.insert(11);
+        QVERIFY(borderCommands(t, FrameConfig(), &framed, &ready).contains(QStringLiteral("[con_id=11] border normal 1")));
+    }
     void borderCommandsFrameAndRelease()
     {
         const FrameTree t = load("special.json");

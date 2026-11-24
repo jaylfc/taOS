@@ -75,16 +75,20 @@ A person with no file gets desktop mode everywhere.
 
 ## Other apps (first pass, no compositor patch)
 
-* **Button side for GTK.** `session/taos-window-session-hook` sets `org.gnome.desktop.wm.preferences button-layout`
+* **Button side for GTK.** GTK 3 windows with a header bar tell the compositor they draw their own header and are left to
+  it (taos-frame draws nothing on them); GTK 4 and libadwaita apps are found from the process. For those the key below
+  puts their buttons in the same order and on the same side as everything else. `session/taos-window-session-hook` sets `org.gnome.desktop.wm.preferences button-layout`
   from the theme and the person's choice (`taos-theme export button-layout`: `close,minimize,maximize:` on the left,
   `:minimize,maximize,close` on the right). `watch` mode re-applies whenever `appearance.json` changes; the snippet
   starts it. GTK apps that draw their own buttons follow it after a restart of the app (GTK reads the key at start;
   some versions follow it live).
-* **foot.** `taos-theme export foot` prints foot's `[csd]` section in the theme's colours with `preferred=client`;
-  the hook writes it to `~/.config/foot/taos-csd.ini` and creates `foot.ini` with an `include=` of it when there is no
-  `foot.ini`. A `foot.ini` that exists is not edited: the hook prints the one line to add. foot always places its
-  buttons at the right; it has no setting for the left. The colour keys follow foot's `[csd]` documentation; foot is
-  not installed on the build host, so this has not been seen in foot itself.
+* **foot.** `taos-theme export foot` prints foot's `[csd]` section with `preferred=server`: foot asks the compositor for
+  its title bar and taos-frame draws the taOS buttons on it (close, minimise, full size, on the theme's side), like
+  every other window; foot no longer draws a header of its own (it only ever offered a close button, because sway does
+  not advertise minimise and maximise to it, and could not put it on the left). The colours in the section are the
+  theme's and only matter if a compositor refuses server side decoration. The hook writes it to
+  `~/.config/foot/taos-csd.ini` and creates `foot.ini` with an `include=` of it when there is no `foot.ini`. A
+  `foot.ini` that exists is not edited: the hook prints the one line to add. See `shell/frame/README.md` for the rule.
 * **Minimise from other apps.** Apps that draw their own minimise button send `xdg_toplevel.set_minimized`, which
   plain sway ignores and swayfx ignores too unless `scratchpad_minimize yes` is set. **Do not turn that option on
   with `swaymsg reload`, and do not ship it in a snippet.** In swayfx 0.6.1 `view_map()` (`sway/tree/view.c`)
