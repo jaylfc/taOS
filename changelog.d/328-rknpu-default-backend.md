@@ -1,0 +1,3 @@
+### Changed
+
+- **Pi-NPU default backend is now rk-llama.cpp; rkllama is lazy (#328, PR-B)** — `scripts/install-server.sh` and the setup wizard's one-tap (`POST /api/setup/install-npu-backend`) install only rk-llama.cpp on Rockchip NPU boards, and the setup checklist's NPU step now completes once rk-llama.cpp answers. rkllama is removed from the default-install set: the Store's manifest resolver (PR #325) chains its install on demand when an `.rkllm` model is picked. The one piece of the old stack the new default still needs — the pinned `librknnrt` 2.3.0 runtime — is applied via the new `install-rknpu.sh --runtime-only` mode (pin only; no rkllama clone, model preloads, or unit). Existing installs are untouched: nothing removes or disables an already-installed rkllama.

@@ -3,7 +3,7 @@ name: rkllama (RK3588 NPU LLM)
 type: service
 category: llm-runtime
 version: 0.1.0
-description: "Ollama-compatible LLM server on Rockchip NPU — run RKNN models natively on RK3588"
+description: "Ollama-compatible LLM server on Rockchip NPU — run RKNN models natively on RK3588. Lazy install since #328 (PR-B): NOT part of the default Pi-NPU install (rk-llama.cpp is); the Store resolver chains this install on demand the first time an .rkllm model that requires the rkllama backend is picked."
 homepage: https://github.com/NotByAI/rkllama
 license: Apache-2.0
 

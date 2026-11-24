@@ -339,4 +339,27 @@ set -e
 rm -f "$tmp_src" "$tmp_dst"
 [ "$actual_mode" = "644" ]
 
+# ── RK3588 NPU default backend (#328 PR-B) ─────────────────────────
+# New Pi-NPU installs default to rk-llama.cpp; rkllama is lazy (Store
+# resolver chains it when an .rkllm model is picked).
+
+echo "test: install-rknpu.sh syntax"
+bash -n scripts/install-rknpu.sh
+
+echo "test: install-rk-llama-cpp.sh syntax"
+bash -n scripts/install-rk-llama-cpp.sh
+
+echo "test: rknpu detection keys on the rk-llama.cpp binary, not rkllama"
+grep -q 'TAOS_RKLLAMACPP_DIR' "$SCRIPT"
+grep -q 'bin/llama-server' "$SCRIPT"
+
+echo "test: deferred NPU install chains install-rk-llama-cpp.sh"
+grep -q 'install-rk-llama-cpp.sh' "$SCRIPT"
+
+echo "test: deferred NPU install pins the runtime via install-rknpu.sh --runtime-only"
+grep -q 'install-rknpu.sh.*--runtime-only' "$SCRIPT"
+
+echo "test: install-rknpu.sh supports --runtime-only (pin librknnrt, skip rkllama)"
+grep -q -- '--runtime-only' scripts/install-rknpu.sh
+
 echo "all tests passed"

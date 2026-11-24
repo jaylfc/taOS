@@ -631,6 +631,8 @@ On RK3588 boards with CPU image generation enabled, the sd-cpp backend ships as 
 
 ## RK3588 NPU Setup
 
+On a fresh Pi-NPU install, `scripts/install-server.sh` (and the setup wizard's one-tap) now set up **rk-llama.cpp** as the default NPU backend — it runs any GGUF model without waiting on RKNN toolkit updates. Only the `librknnrt` 2.3.0 runtime pin from the stack below is applied up front (via `install-rknpu.sh --runtime-only`). **rkllama is lazy**: it is no longer installed by default, and the Store's manifest resolver chains its install on demand when you pick an `.rkllm` model. Existing installs keep their rkllama untouched.
+
 `scripts/install-rknpu.sh` is an opt-in automated installer for the full Rockchip NPU stack. It pins `librknnrt` to 2.3.0, installs the jaylfc fork of rkllama, and preloads three chat models. All binaries are fetched from `huggingface.co/jaysom/tinyagentos-rockchip-mirror`, a TAOS-controlled mirror, and SHA256-verified before installation. If any checksum fails the script hard-aborts.
 
 ```bash

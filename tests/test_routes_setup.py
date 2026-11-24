@@ -237,7 +237,8 @@ class TestSetupStatus:
 
     async def test_npu_present_and_backend_state(self, client, app, monkeypatch):
         """A Rockchip profile surfaces the step; completion mirrors a live
-        rkllama probe (#1535)."""
+        rk-llama.cpp probe (#1535, keying flipped to the default backend
+        by #328 — rkllama alone no longer completes the step)."""
         from types import SimpleNamespace
 
         app.state.hardware_profile = SimpleNamespace(
@@ -254,7 +255,9 @@ class TestSetupStatus:
         resp = await client.get("/api/setup/status")
         data = resp.json()
         assert data["npu_present"] is True
-        assert data["npu_backend_running"] is True
+        # #328: rkllama is the lazy backend now; a live rkllama without
+        # rk-llama.cpp does NOT complete the step.
+        assert data["npu_backend_running"] is False
 
     async def test_npu_present_backend_not_running(self, client, app, monkeypatch):
         from types import SimpleNamespace
@@ -275,8 +278,8 @@ class TestSetupStatus:
         assert data["npu_backend_running"] is False
 
     async def test_npu_backend_running_true_via_rkllamacpp_alone(self, client, app, monkeypatch):
-        """Either NPU backend running satisfies the step — they're
-        alternatives, not a matched pair."""
+        """rk-llama.cpp running satisfies the step on its own — since
+        #328 it is the default NPU backend the step keys on."""
         from types import SimpleNamespace
 
         app.state.hardware_profile = SimpleNamespace(
@@ -545,9 +548,10 @@ class TestSetupDismiss:
 
 @pytest.mark.asyncio
 class TestInstallNpuBackend:
-    """Gated on npu_present; triggers the rkllama + rk-llama.cpp backend
-    SERVER installs (not model pulls) via the same script path the Store
-    uses."""
+    """Gated on npu_present; triggers the rk-llama.cpp backend SERVER
+    install (not model pulls) via the same script path the Store uses.
+    rkllama is NOT installed here since #328 — it is lazy and chains in
+    via the Store resolver when an .rkllm model is picked."""
 
     async def test_404_or_400_when_no_hardware_profile(self, client, app):
         app.state.hardware_profile = None
@@ -562,12 +566,13 @@ class TestInstallNpuBackend:
         resp = await client.post("/api/setup/install-npu-backend")
         assert resp.status_code == 400
 
-    async def test_triggers_both_backend_installs_when_npu_present(
+    async def test_triggers_only_rkllamacpp_install_when_npu_present(
         self, client, app, monkeypatch,
     ):
-        """Both rkllama and rk-llama-cpp get dispatched through
-        _legacy_install — the exact same script path Store installs use —
-        and never touch the model-pull or image-gen paths."""
+        """Only rk-llama-cpp gets dispatched through _legacy_install —
+        the exact same script path Store installs use — and the endpoint
+        never touches rkllama (lazy since #328), model pulls, or the
+        image-gen paths."""
         from types import SimpleNamespace
 
         from fastapi.responses import JSONResponse
@@ -591,17 +596,16 @@ class TestInstallNpuBackend:
         data = resp.json()
         assert data["ok"] is True
         assert data["npu_present"] is True
-        assert set(data["backends"].keys()) == {"rkllama", "rk-llama-cpp"}
-        assert data["backends"]["rkllama"]["started"] is True
+        assert set(data["backends"].keys()) == {"rk-llama-cpp"}
         assert data["backends"]["rk-llama-cpp"]["started"] is True
-        assert "install_id" in data["backends"]["rkllama"]
+        assert "install_id" in data["backends"]["rk-llama-cpp"]
 
-        # The two installs run as background tasks; let the loop drain them.
+        # The install runs as a background task; let the loop drain it.
         for _ in range(50):
-            if len(calls) == 2:
+            if len(calls) == 1:
                 break
             await asyncio.sleep(0.01)
-        assert set(calls) == {"rkllama", "rk-llama-cpp"}
+        assert calls == ["rk-llama-cpp"]
 
     async def test_reruns_safely_when_already_running(self, client, app, monkeypatch):
         """Re-running (e.g. a half-installed box) is a no-op-safe retry —
@@ -656,7 +660,7 @@ class TestInstallBackend:
 
     async def test_rknpu_delegates_to_install_npu_backend(self, client, app, monkeypatch):
         """On a Rockchip board, install-backend does exactly what
-        install-npu-backend does (both rkllama + rk-llama-cpp)."""
+        install-npu-backend does (rk-llama.cpp only since #328)."""
         from types import SimpleNamespace
 
         from fastapi.responses import JSONResponse
@@ -679,13 +683,13 @@ class TestInstallBackend:
         assert resp.status_code == 200
         data = resp.json()
         assert data["npu_present"] is True
-        assert set(data["backends"].keys()) == {"rkllama", "rk-llama-cpp"}
+        assert set(data["backends"].keys()) == {"rk-llama-cpp"}
 
         for _ in range(50):
-            if len(calls) == 2:
+            if len(calls) == 1:
                 break
             await asyncio.sleep(0.01)
-        assert set(calls) == {"rkllama", "rk-llama-cpp"}
+        assert calls == ["rk-llama-cpp"]
 
     async def test_cuda_dispatches_llama_cpp_install(self, client, app, monkeypatch):
         from types import SimpleNamespace
