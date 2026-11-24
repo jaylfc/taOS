@@ -971,22 +971,32 @@ async def chat_completion_stream(
     """
     from fastapi.responses import StreamingResponse
 
+    in_use = getattr(state, "in_use", None)
+
     gen = _stream_with_retry(
         routes,
         lambda route: _event_stream_for_route(route, body, principal, state),
         state,
         principal,
     )
-    try:
-        first = await gen.__anext__()
-    except StopAsyncIteration:
-        return StreamingResponse((), media_type="text/event-stream", headers={"cache-control": "no-cache"})
-    except GatewayError as exc:
-        return exc.response()
+    # Increment counter when we start consuming the stream (upstream opens)
+    if in_use is not None:
+        await in_use.increment_gateway_stream()
 
     async def _full():
-        yield first
-        async for chunk in gen:
-            yield chunk
+        try:
+            try:
+                first = await gen.__anext__()
+            except StopAsyncIteration:
+                return
+            except GatewayError as exc:
+                # GatewayError during first chunk - re-raise to be handled by caller
+                raise
+            yield first
+            async for chunk in gen:
+                yield chunk
+        finally:
+            if in_use is not None:
+                await in_use.decrement_gateway_stream()
 
     return StreamingResponse(_full(), media_type="text/event-stream", headers={"cache-control": "no-cache"})

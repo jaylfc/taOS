@@ -62,10 +62,15 @@ async def api_health(request: Request, detailed: bool = False):
     read each block and decide.
     """
     config = request.app.state.config
+    in_use = getattr(request.app.state, "in_use", None)
+    in_use_counts = {"gateway_streams": 0, "agent_turns": 0}
+    if in_use is not None:
+        in_use_counts = in_use.snapshot()
     basic = {
         "status": "ok",
         "agents": len(config.agents),
         "backends": len(config.backends),
+        "in_use": in_use_counts,
     }
     ci = getattr(request.app.state, "controller_identity", None)
     if ci and ci.get("status") == "error":
