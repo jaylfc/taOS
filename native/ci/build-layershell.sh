@@ -8,7 +8,7 @@ set -euo pipefail
 QT=${1:?usage: build-layershell.sh <qt prefix> <install prefix>}
 PREFIX=${2:?usage: build-layershell.sh <qt prefix> <install prefix>}
 ECM_TAG=${ECM_TAG:-v6.26.0}
-LSQT_TAG=${LSQT_TAG:-v6.5.6}
+LSQT_TAG=${LSQT_TAG:-v6.6.0}
 if [ -f "$PREFIX/lib/cmake/LayerShellQt/LayerShellQtConfig.cmake" ] || ls "$PREFIX"/lib/*/cmake/LayerShellQt/LayerShellQtConfig.cmake >/dev/null 2>&1; then
   echo "LayerShellQt already present in $PREFIX"
   exit 0
