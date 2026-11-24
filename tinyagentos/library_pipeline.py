@@ -898,16 +898,27 @@ class ImageProcessor(Processor):
         return artifacts
 
 
-def _classify_youtube_failure(exc: BaseException) -> tuple[str, str]:
+def _classify_youtube_failure(
+    exc: BaseException, url: str = "",
+) -> tuple[str, str]:
     """Classify a yt-dlp fetch failure into a card-visible state + label.
 
     The states are the failure states issue #2059 names for the item card
     data (unavailable video, geo-block, private video), plus timeout and
     a generic fetch failure for everything else.
+
+    Keyword matching runs on the error text with URLs stripped: the
+    message embeds the source URL (fetch() formats it into its
+    RuntimeError, and yt-dlp echoes it), and a URL that happens to
+    contain "private", "unavailable" or "timeout" must not drive the
+    classification.
     """
     if isinstance(exc, asyncio.TimeoutError):
         return "timeout", "fetch timed out"
     message = str(exc).lower()
+    if url:
+        message = message.replace(url.lower(), " ")
+    message = re.sub(r"https?://\S+", " ", message)
     if (
         "in your country" in message
         or "geo-block" in message
@@ -936,7 +947,11 @@ class YouTubeProcessor(Processor):
     duration, upload date, subtitles/transcript, chapters.
     """
 
-    _YTDLP_TIMEOUT = 120  # seconds
+    # Backstop for the whole fetch() call (seconds). fetch() enforces
+    # its own per-step budgets (120 s for the metadata step and 120 s
+    # for each caption step); this outer limit leaves room for all of
+    # them and only guards against a fetch hanging outside its steps.
+    _YTDLP_TIMEOUT = 390
 
     async def process(self, item: dict) -> list[dict]:
         item_id = item["id"]
@@ -966,7 +981,7 @@ class YouTubeProcessor(Processor):
                 timeout=self._YTDLP_TIMEOUT,
             )
         except Exception as exc:
-            state, label = _classify_youtube_failure(exc)
+            state, label = _classify_youtube_failure(exc, source_url)
             text = str(exc).strip()
             detail = text.splitlines()[-1][:300] if text else type(exc).__name__
             failed_meta = json.loads(item.get("meta_json", "{}"))
@@ -985,6 +1000,9 @@ class YouTubeProcessor(Processor):
 
         # Update item meta_json with structured video metadata
         stored_meta = json.loads(item.get("meta_json", "{}"))
+        # A previous attempt's failure state must not survive this one:
+        # the availability keys below are owned by the latest outcome.
+        stored_meta.pop("youtube_fetch_state", None)
         stored_meta.update({
             "video_id": meta.get("video_id", ""),
             "channel": meta.get("channel", ""),
@@ -1074,8 +1092,10 @@ class YouTubeProcessor(Processor):
         if languages:
             stored_meta["transcript_status"] = "available"
             stored_meta["transcript_languages"] = languages
+            stored_meta.pop("transcript_note", None)
         else:
             stored_meta["transcript_status"] = "unavailable"
+            stored_meta.pop("transcript_languages", None)
             stored_meta["transcript_note"] = (
                 "No subtitles or captions were available for this video."
             )

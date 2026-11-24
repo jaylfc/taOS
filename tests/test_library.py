@@ -2935,3 +2935,127 @@ class TestYouTubeProcessorP2Regressions:
         updated = await lib_store.get_item(item_id)
         meta = json.loads(updated["meta_json"])
         assert meta["preview"] == "Primary English transcript text."
+
+
+    @pytest.mark.asyncio
+    async def test_failure_classification_ignores_keywords_in_url(self, lib_store, storage_dir):
+        """A generic fetch failure for a URL that happens to contain
+        "private", "unavailable" and "timeout" must classify as
+        fetch_failed: classification matches on the error text with the
+        source URL stripped, never on the URL itself."""
+        from unittest.mock import patch
+
+        url = "https://youtube.com/watch?v=private-unavailable-timeout"
+        item_id = await lib_store.create_item(
+            kind="url:youtube",
+            source_url=url,
+        )
+
+        with patch(
+            "tinyagentos.knowledge_fetchers.youtube.fetch",
+            _async_raise(RuntimeError(
+                f"yt-dlp metadata fetch failed for {url!r}: "
+                "ERROR: something unexpected happened"
+            )),
+        ):
+            await run_pipeline(lib_store, item_id, storage_dir)
+
+        item = await lib_store.get_item(item_id)
+        assert item["status"] == "error"
+        meta = json.loads(item["meta_json"])
+        assert meta["youtube_fetch_state"] == "fetch_failed"
+
+
+class TestYouTubeProcessorP2Reprocess:
+    @pytest.mark.asyncio
+    async def test_successful_reprocess_clears_stale_failure_state(self, lib_store, storage_dir):
+        """Reprocessing after a failed, uncaptioned attempt must not keep
+        the old youtube_fetch_state or transcript_note once the retry
+        lands with captions."""
+        from unittest.mock import patch
+
+        item_id = await lib_store.create_item(
+            kind="url:youtube",
+            source_url="https://youtube.com/watch?v=retry123",
+        )
+        await lib_store.update_item(item_id, meta_json={
+            "youtube_fetch_state": "unavailable",
+            "transcript_status": "unavailable",
+            "transcript_note": (
+                "No subtitles or captions were available for this video."
+            ),
+        })
+        item = await lib_store.get_item(item_id)
+
+        mock_result = {
+            "title": "Retry Video",
+            "author": "Chan",
+            "content": "English transcript.",
+            "description": "",
+            "thumbnail": None,
+            "transcripts": [
+                {"language": "en", "content": "English transcript."},
+            ],
+            "metadata": {
+                "video_id": "retry123",
+                "channel": "Chan",
+                "chapters": [],
+            },
+        }
+
+        with patch(
+            "tinyagentos.knowledge_fetchers.youtube.fetch",
+            _async_return(mock_result),
+        ):
+            proc = YouTubeProcessor(lib_store, storage_dir)
+            await proc.process(item)
+
+        updated = await lib_store.get_item(item_id)
+        meta = json.loads(updated["meta_json"])
+        assert "youtube_fetch_state" not in meta
+        assert meta["transcript_status"] == "available"
+        assert meta["transcript_languages"] == ["en"]
+        assert "transcript_note" not in meta
+
+    @pytest.mark.asyncio
+    async def test_uncaptioned_reprocess_clears_stale_languages(self, lib_store, storage_dir):
+        """A reprocess that finds no captions must drop the previous
+        attempt's transcript_languages."""
+        from unittest.mock import patch
+
+        item_id = await lib_store.create_item(
+            kind="url:youtube",
+            source_url="https://youtube.com/watch?v=retry456",
+        )
+        await lib_store.update_item(item_id, meta_json={
+            "transcript_status": "available",
+            "transcript_languages": ["en", "es"],
+        })
+        item = await lib_store.get_item(item_id)
+
+        mock_result = {
+            "title": "Retry Video",
+            "author": "Chan",
+            "content": "",
+            "description": "",
+            "thumbnail": None,
+            "transcripts": [],
+            "metadata": {
+                "video_id": "retry456",
+                "channel": "Chan",
+                "chapters": [],
+            },
+        }
+
+        with patch(
+            "tinyagentos.knowledge_fetchers.youtube.fetch",
+            _async_return(mock_result),
+        ):
+            proc = YouTubeProcessor(lib_store, storage_dir)
+            await proc.process(item)
+
+        updated = await lib_store.get_item(item_id)
+        meta = json.loads(updated["meta_json"])
+        assert meta["transcript_status"] == "unavailable"
+        assert "transcript_languages" not in meta
+        assert meta["transcript_note"]

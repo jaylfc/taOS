@@ -336,10 +336,23 @@ async def test_fetch_returns_description_and_all_language_transcripts(tmp_path):
                 "https://www.youtube.com/watch?v=test123", media_dir=tmp_path
             )
 
-    # All subtitle languages are requested, not just English.
-    media_args = seen_args[1]
-    assert "--sub-lang" in media_args
-    assert media_args[list(media_args).index("--sub-lang") + 1] == "all"
+    # Three invocations: metadata, manual captions, automatic captions.
+    assert len(seen_args) == 3
+
+    # Manual captions are requested for all languages, not just English,
+    # in an invocation of their own (no --write-auto-sub).
+    manual_args = seen_args[1]
+    assert "--write-sub" in manual_args
+    assert "--write-auto-sub" not in manual_args
+    assert manual_args[list(manual_args).index("--sub-lang") + 1] == "all"
+
+    # Automatic captions are restricted to en.*: with --sub-lang all,
+    # --write-auto-sub would request every auto-translated track
+    # (100+ per video), risking rate limits and timeouts.
+    auto_args = seen_args[2]
+    assert "--write-auto-sub" in auto_args
+    assert "--write-sub" not in auto_args
+    assert auto_args[list(auto_args).index("--sub-lang") + 1] == "en.*"
 
     # The description from the metadata JSON is no longer dropped.
     assert result["description"] == "A test description"
