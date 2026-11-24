@@ -768,6 +768,15 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         projects_root.mkdir(parents=True, exist_ok=True)
         await canvas_store.init()
         await desktop_settings.init()
+        # One-time idempotent migration: move legacy global "user" desktop settings
+        # to the primary user (first admin). Runs on every startup; no-op if already
+        # migrated or if no primary user exists yet (pre-setup).
+        try:
+            _owner = auth_manager.get_primary_user()
+            if _owner:
+                await desktop_settings.migrate_legacy_global_to_owner(_owner["id"])
+        except Exception:
+            logger.exception("desktop settings legacy migration failed")
         await taos_agent_actions.init()
         await device_store.init()
         await device_pair_requests_store.init()

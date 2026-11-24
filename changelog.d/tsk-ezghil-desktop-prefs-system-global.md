@@ -1,0 +1,3 @@
+### Fixed
+
+- Per-person desktop preferences: the one-time migration now moves only desktop-preference namespaces (settings, dock, windows, widgets and per-person "pref:*" namespaces) to the owner, leaving system-global settings (setup, auto-update, GPG, taOS agent) under the legacy "user" scope so auto-update, GPG and setup state survive an upgrade; desktop GETs accept the host local token for reading the owner's preferences while writes stay session-only; and desktop auto-save / theme persistence paths treat non-ok responses (e.g. 403) as failures and show a plain error instead of silently succeeding.

@@ -303,9 +303,11 @@ async def _ensure_taos_opencode_server_locked(app_state, model: str) -> OpenCode
         stored_key: str | None = None
         prefs: dict = {}
         desktop_settings = getattr(app_state, "desktop_settings", None)
+        # Use the global scope for the taOS agent's preferences (system agent).
+        taos_agent_user_id = "user"
         if desktop_settings is not None:
             try:
-                prefs = await desktop_settings.get_preference("user", "taos_agent") or {}
+                prefs = await desktop_settings.get_preference(taos_agent_user_id, "taos_agent") or {}
                 permitted_models = permitted_models_for(model, prefs)
                 stored_key = prefs.get("llm_key") or None
             except Exception:
@@ -337,7 +339,7 @@ async def _ensure_taos_opencode_server_locked(app_state, model: str) -> OpenCode
                         if litellm_key and desktop_settings is not None:
                             try:
                                 prefs["llm_key"] = litellm_key
-                                await desktop_settings.save_preference("user", "taos_agent", prefs)
+                                await desktop_settings.save_preference(taos_agent_user_id, "taos_agent", prefs)
                             except Exception:
                                 logger.debug("taos_agent_runtime: persisting key failed", exc_info=True)
                 except Exception:
@@ -350,7 +352,7 @@ async def _ensure_taos_opencode_server_locked(app_state, model: str) -> OpenCode
             if litellm_key and desktop_settings is not None:
                 try:
                     prefs["llm_key"] = litellm_key
-                    await desktop_settings.save_preference("user", "taos_agent", prefs)
+                    await desktop_settings.save_preference(taos_agent_user_id, "taos_agent", prefs)
                 except Exception:
                     logger.debug("taos_agent_runtime: persisting key failed", exc_info=True)
         if not litellm_key:
@@ -361,7 +363,7 @@ async def _ensure_taos_opencode_server_locked(app_state, model: str) -> OpenCode
             if litellm_key and desktop_settings is not None:
                 try:
                     prefs["llm_key"] = litellm_key
-                    await desktop_settings.save_preference("user", "taos_agent", prefs)
+                    await desktop_settings.save_preference(taos_agent_user_id, "taos_agent", prefs)
                 except Exception:
                     logger.debug("taos_agent_runtime: persisting key failed", exc_info=True)
         if not litellm_key:
