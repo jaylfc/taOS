@@ -2630,6 +2630,13 @@ _PIN_PANEL_SCRIPT = r"""
 
   input.addEventListener("keydown", function (e) {
     if (e.key === "Enter") {
+      // When the PIN length is known, Enter is not a submit until the typed
+      // digits fill the field -- otherwise a stray tap on the keypad's Enter
+      // key submits a partial PIN. When the length is unknown, Enter submits
+      // whatever was typed, as it always has.
+      if (pinLength && input.value.length !== pinLength) {
+        return;
+      }
       e.preventDefault();
       tryPin();
     }
@@ -9102,6 +9109,59 @@ def _lock_post_refusal(request: Request) -> JSONResponse | None:
 #: password path -- and since every console request arrives from the same
 #: loopback address, an IP-keyed counter would be one shared bucket for all.
 _pin_limiter = _PinAttemptLimiter()
+_pin_key_locks: "OrderedDict[str, asyncio.Lock]" = OrderedDict()
+_pin_key_waiters: "dict[str, int]" = {}
+_pin_key_locks_guard = asyncio.Lock()
+_PIN_KEY_LOCKS_MAX = 1024
+
+
+async def _acquire_pin_key_lock(limiter_key: str) -> asyncio.Lock:
+    async with _pin_key_locks_guard:
+        lock = _pin_key_locks.get(limiter_key)
+        if lock is None:
+            lock = asyncio.Lock()
+            _pin_key_locks[limiter_key] = lock
+        _pin_key_locks.move_to_end(limiter_key)
+        _pin_key_waiters[limiter_key] = _pin_key_waiters.get(limiter_key, 0) + 1
+        # Bound growth for attacker-controlled keys (e.g. unknown:<username>).
+        # Only evict unlocked entries that are not currently in use.
+        while len(_pin_key_locks) > _PIN_KEY_LOCKS_MAX:
+            evicted = False
+            for k, v in list(_pin_key_locks.items()):
+                if k == limiter_key or v.locked() or _pin_key_waiters.get(k, 0) > 0:
+                    continue
+                del _pin_key_locks[k]
+                evicted = True
+                break
+            if not evicted:
+                break
+    try:
+        await lock.acquire()
+    except BaseException:
+        async with _pin_key_locks_guard:
+            count = _pin_key_waiters.get(limiter_key, 0) - 1
+            if count <= 0:
+                _pin_key_waiters.pop(limiter_key, None)
+                if _pin_key_locks.get(limiter_key) is lock:
+                    _pin_key_locks.pop(limiter_key, None)
+            else:
+                _pin_key_waiters[limiter_key] = count
+        raise
+    return lock
+
+
+async def _release_pin_key_lock(limiter_key: str, lock: asyncio.Lock) -> None:
+    try:
+        lock.release()
+    finally:
+        async with _pin_key_locks_guard:
+            count = _pin_key_waiters.get(limiter_key, 0) - 1
+            if count <= 0:
+                _pin_key_waiters.pop(limiter_key, None)
+                if _pin_key_locks.get(limiter_key) is lock:
+                    _pin_key_locks.pop(limiter_key, None)
+            else:
+                _pin_key_waiters[limiter_key] = count
 
 
 @router.get("/osk.js")
@@ -13034,29 +13094,39 @@ async def pin_login(request: Request):
     record = auth_mgr._pin_user(username)
     limiter_key = (record or {}).get("id") or f"unknown:{username or ''}"
 
-    wait = _pin_limiter.retry_after(limiter_key)
-    if wait > 0:
-        return JSONResponse(
-            {
-                "error": f"Too many incorrect PINs. Try again in {wait} seconds.",
-                "retry_after": wait,
-            },
-            status_code=429,
-            headers={"Retry-After": str(wait)},
-        )
+    key_lock = await _acquire_pin_key_lock(limiter_key)
+    try:
+        wait = _pin_limiter.retry_after(limiter_key)
+        if wait > 0:
+            return JSONResponse(
+                {
+                    "error": f"Too many incorrect PINs. Try again in {wait} seconds.",
+                    "retry_after": wait,
+                },
+                status_code=429,
+                headers={"Retry-After": str(wait)},
+            )
 
-    # The owner chose how this screen unlocks. A PIN that still exists after
-    # they switched to "password" must not keep working behind their back --
-    # that is the whole of "disable my pin entry". Same answer as "no PIN here".
-    if record is not None and effective_unlock_method(record) != "pin":
-        return JSONResponse({"error": "PIN sign-in is not available"}, status_code=404)
+        # Re-read: the chosen unlock method or PIN state may have changed while
+        # waiting for our turn on this key.
+        record = auth_mgr._pin_user(username)
+        # The owner chose how this screen unlocks. A PIN that still exists after
+        # they switched to "password" must not keep working behind their back --
+        # that is the whole of "disable my pin entry". Same answer as "no PIN here".
+        if record is not None and effective_unlock_method(record) != "pin":
+            return JSONResponse({"error": "PIN sign-in is not available"}, status_code=404)
 
-    ok, user_record = auth_mgr.check_pin(pin, username=username)
-    if not ok or user_record is None:
-        _pin_limiter.record_failure(limiter_key)
-        return JSONResponse({"error": "incorrect PIN"}, status_code=401)
+        # Verifying the PIN hashes off the event loop, the way the password path
+        # does (check_password -> verify_and_maybe_rehash runs argon2). A PIN
+        # attempt costs the same work and pin-login is on the lock-screen hot path.
+        ok, user_record = await asyncio.to_thread(auth_mgr.check_pin, pin, username=username)
+        if not ok or user_record is None:
+            _pin_limiter.record_failure(limiter_key)
+            return JSONResponse({"error": "incorrect PIN"}, status_code=401)
 
-    _pin_limiter.reset(limiter_key)
+        _pin_limiter.reset(limiter_key)
+    finally:
+        await _release_pin_key_lock(limiter_key, key_lock)
     auth_mgr.update_last_login(user_record["id"])
     # A PIN unlocks THIS device, so the session it mints is the long-lived kind
     # the kiosk needs to survive a reboot without a keyboard being found.

@@ -14,6 +14,12 @@ def test_hailo_ollama_capability_entry_exists():
     assert BACKEND_CAPABILITIES["hailo-ollama"] == {"llm-chat"}
 
 
+def test_lmstudio_capability_entry_exists():
+    """LM Studio is a local OpenAI-compatible backend: chat + embedding."""
+    assert "lmstudio" in BACKEND_CAPABILITIES
+    assert BACKEND_CAPABILITIES["lmstudio"] == {"llm-chat", "embedding"}
+
+
 def test_speech_capability_entries_exist():
     """taOS #3231: whisper advertises asr; kokoro and moss advertise tts."""
     assert BACKEND_CAPABILITIES["whisper"] == {"asr"}

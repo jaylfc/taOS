@@ -101,7 +101,11 @@ def test_every_taos_instance_is_userspace_and_running(bed):
         mine = [ln for ln in ps.splitlines() if f"--socket={e.sock}" in ln]
         assert len(mine) == 1, f"{e.node}/{e.person}: expected one tailscaled, saw {mine}"
         assert "--tun=userspace-networking" in mine[0]
-        assert f"--socks5-server=localhost:{SOCKS_BASE + e.slot}" in mine[0]
+        # Product instances come from mesh_instances (literal 127.0.0.1); the relay
+        # stand-in has no taOS code and is still hand-rolled.
+        host = "localhost" if e.person == "relay" else "127.0.0.1"
+        assert f"--socks5-server={host}:{SOCKS_BASE + e.slot}" in mine[0]
+        assert f"--outbound-http-proxy-listen={host}:{27850 + e.slot}" in mine[0]
         if e.person != "relay":
             assert mine[0].split()[0] == f"p_{e.person}", "the person's daemon runs as the person's Linux user"
         st = bed.ts_json(e, "status", "--json")

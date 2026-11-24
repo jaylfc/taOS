@@ -1,0 +1,2 @@
+### Fixed
+- Auth middleware now exempts worker HMAC endpoints method-sensitively: POST /api/cluster/tasks/report, POST /api/cluster/leases/claim, POST /api/cluster/leases/release, POST /api/cluster/leases/renew, GET /api/cluster/leases. These routes already enforce HMAC auth at the route level via `_identify_principal` / `require_worker_hmac`, so the middleware session gate no longer blocks valid worker callers.

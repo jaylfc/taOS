@@ -1201,28 +1201,26 @@ async def apply_update(request: Request):
             status_code=409,
         )
 
-    # The desktop rebuild leaves the tree dirty in three ways, and a dirty
+    # The desktop rebuild leaves the tree dirty in two ways, and a dirty
     # tracked file makes the next git pull --ff-only refuse to overwrite the
     # local and the Install Update button 500s:
-    #   - static/desktop/assets/* : new content-hashed bundle files (npm build)
     #   - desktop/tsconfig.tsbuildinfo : touched on every tsc build
     #   - desktop/package-lock.json : npm install rewrites it (esp. when an
     #     incoming update also changes it, e.g. the esbuild bump in #849)
-    # Restore all of them before pulling; the pull restores the committed
-    # versions or the rebuild below regenerates the build outputs.
+    # Restore them before pulling; the pull restores the committed versions
+    # or the rebuild below regenerates the build outputs.
+    # NOTE: We no longer touch static/desktop here. The rebuild now stages
+    # into a temporary directory and atomically swaps it in on success, so
+    # browsers never see a missing or half-written bundle. The ff-only merge
+    # still works because static/desktop is either tracked (restored by pull)
+    # or untracked (left alone; the rebuild overwrites it atomically).
     reset_proc = await asyncio.create_subprocess_exec(
         "git", "checkout", "--",
-        "desktop/tsconfig.tsbuildinfo", "desktop/package-lock.json", "static/desktop",
+        "desktop/tsconfig.tsbuildinfo", "desktop/package-lock.json",
         stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
         cwd=str(project_dir),
     )
     await reset_proc.communicate()
-    clean_proc = await asyncio.create_subprocess_exec(
-        "git", "clean", "-fd", "static/desktop/assets",
-        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
-        cwd=str(project_dir),
-    )
-    await clean_proc.communicate()
 
     # Any tracked source edits left after the build-artifact restore would make
     # the ff-only pull below refuse (HTTP 500, user stuck). Stash them first so

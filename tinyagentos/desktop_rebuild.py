@@ -10,6 +10,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
+import shutil
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,6 +22,62 @@ logger = logging.getLogger(__name__)
 # `npm install`. Lives inside node_modules so it is naturally per-install
 # (wiped whenever node_modules is) and never tracked by git.
 _DEPS_MARKER = "node_modules/.taos-deps-lock"
+
+
+def _atomic_swap_dir(src: Path, dst: Path) -> None:
+    """Atomically replace dst with src using only renames on the same filesystem.
+
+    Both src and dst must be on the same filesystem (enforced by staging inside
+    static/). The swap is done by:
+      1. Renaming dst -> dst.trash-<pid> (or dst.trash if no pid available)
+      2. Renaming src -> dst
+      3. Removing the trash directory
+
+    If any step fails, dst is restored from trash and the error is raised.
+    This ensures static/desktop always contains a complete, working bundle.
+    """
+    import os
+    pid = os.getpid()
+    trash = dst.with_name(f"{dst.name}.trash-{pid}")
+
+    # Step 1: Move live directory to trash name
+    if dst.exists():
+        try:
+            dst.rename(trash)
+        except OSError as exc:
+            raise RuntimeError(f"Failed to move live directory to trash: {exc}") from exc
+
+    # Step 2: Move staged directory to live name
+    try:
+        src.rename(dst)
+    except OSError as exc:
+        # Restore from trash on failure
+        if trash.exists():
+            try:
+                trash.rename(dst)
+            except OSError:
+                pass  # Best effort; original error is more important
+        raise RuntimeError(f"Failed to move staged directory to live: {exc}") from exc
+
+    # Step 3: Remove trash directory
+    try:
+        shutil.rmtree(trash, ignore_errors=True)
+    except OSError:
+        # Ignore trash cleanup failures; they'll be picked up on next run
+        pass
+
+
+def _cleanup_leftover_staging(static_dir: Path) -> None:
+    """Remove leftover staging (.taos-bundle-*, .desktop-build-*) and trash (*.trash-*) directories.
+
+    Called at the start of a rebuild to clean up from any crashed previous run.
+    """
+    for pattern in (".taos-bundle-*", ".desktop-build-*", "desktop.trash-*"):
+        for leftover in static_dir.glob(pattern):
+            try:
+                shutil.rmtree(leftover, ignore_errors=True)
+            except OSError:
+                pass
 
 
 @dataclass(frozen=True)
@@ -424,7 +483,6 @@ async def _try_prebuilt_desktop_bundle(project_root: Path) -> bool:
         return False
 
     import io
-    import shutil
     import tarfile
     import tempfile
 
@@ -433,6 +491,10 @@ async def _try_prebuilt_desktop_bundle(project_root: Path) -> bool:
     # leave static/desktop missing.
     static_dir = project_root / "static"
     static_dir.mkdir(parents=True, exist_ok=True)
+
+    # Clean up any leftover staging or trash directories from a crashed run.
+    _cleanup_leftover_staging(static_dir)
+
     stage = Path(tempfile.mkdtemp(prefix=".taos-bundle-", dir=str(static_dir)))
     try:
         with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
@@ -448,9 +510,7 @@ async def _try_prebuilt_desktop_bundle(project_root: Path) -> bool:
             logger.warning("Prebuilt bundle missing index.html; building locally.")
             return False
         target = static_dir / "desktop"
-        if target.exists():
-            shutil.rmtree(target)
-        staged.rename(target)  # atomic rename (same filesystem)
+        _atomic_swap_dir(staged, target)
         # The tarball preserves the CI build mtime, which can predate the local
         # source and make _is_bundle_stale treat the bundle as perpetually stale
         # (re-downloading on every check). Stamp index.html fresh and record
@@ -538,7 +598,28 @@ async def rebuild_desktop_bundle_if_stale(
             message="Installed prebuilt desktop bundle (no local build needed).",
         )
 
+    # Prepare a staging directory for the local build (same filesystem as target).
+    static_dir = project_root / "static"
+    target = static_dir / "desktop"
+    stage = None
+    use_staging = True  # Default; may be set to False if staging creation fails
+
     try:
+        # Create static/ if it doesn't exist, or verify it's a directory.
+        # If it exists as a file (corrupted state), we fall back to building
+        # directly to the target (non-atomic but functional).
+        try:
+            static_dir.mkdir(parents=True, exist_ok=True)
+            if not static_dir.is_dir():
+                raise NotADirectoryError(f"{static_dir} exists but is not a directory")
+            _cleanup_leftover_staging(static_dir)
+            import tempfile
+            stage = Path(tempfile.mkdtemp(prefix=".desktop-build-", dir=str(static_dir)))
+        except (FileExistsError, NotADirectoryError, OSError) as exc:
+            logger.warning("Could not create staging directory in static/ (%s); building directly to target.", exc)
+            use_staging = False
+            stage = target  # Build directly to target (non-atomic fallback)
+
         if _deps_install_needed(desktop_dir):
             # Use `npm ci`, not `npm install`: ci installs exactly from the
             # committed package-lock.json and NEVER rewrites it. `npm install`
@@ -597,8 +678,11 @@ async def rebuild_desktop_bundle_if_stale(
         else:
             logger.info("Dependencies unchanged — skipping npm install.")
 
+        # Build to the staging directory via vite's --outDir override.
+        # The staging directory is fresh, so emptyOutDir=true in the config is fine.
+        logger.info("Running npm run build to staging directory...")
         proc = await asyncio.create_subprocess_exec(
-            "npm", "run", "build",
+            "npm", "run", "build", "--", "--outDir", str(stage),
             cwd=str(desktop_dir),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -608,6 +692,12 @@ async def rebuild_desktop_bundle_if_stale(
             msg = f"npm run build failed (rc={proc.returncode}): {stderr.decode(errors='replace')[-500:]}"
             logger.error(msg)
             return RebuildResult(rebuilt=True, success=False, message=msg)
+
+        # Atomic swap: staged -> live, with trash fallback on failure.
+        # Only swap if we used staging; if we fell back to building directly
+        # to the target, the build output is already in place.
+        if use_staging:
+            _atomic_swap_dir(stage, target)
 
         logger.info("Desktop bundle rebuilt successfully.")
         # Record provenance so future checks use content hash, not mtime.
@@ -642,3 +732,12 @@ async def rebuild_desktop_bundle_if_stale(
         msg = f"Desktop rebuild error: {exc!r}"
         logger.error(msg)
         return RebuildResult(rebuilt=True, success=False, message=msg)
+
+    finally:
+        # Clean up staging directory if it still exists (failed build path).
+        # Only remove if we used staging and it's not the target directory.
+        if use_staging and stage != target:
+            try:
+                shutil.rmtree(stage, ignore_errors=True)
+            except OSError:
+                pass
