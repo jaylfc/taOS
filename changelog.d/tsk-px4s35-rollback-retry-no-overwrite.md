@@ -1,0 +1,3 @@
+### Fixed
+
+- **Update rollback target: a retry no longer overwrites the pre-update rollback record.** The in-app update now records the pre-update target only when the update will actually advance HEAD (HEAD differs from the fetched tip of the tracked branch) or when no rollback record exists yet, so a retry after a failed update cannot destroy the original rollback point. The branch-switch path now writes the rollback record off the event loop via asyncio.to_thread, and a failed write removes any stale previous record so `taos rollback` reports no target instead of rolling back to an outdated update.

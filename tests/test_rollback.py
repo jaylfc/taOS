@@ -1,5 +1,7 @@
+import asyncio
 import subprocess
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -9,6 +11,7 @@ from tinyagentos.rollback import (
     read_rollback_target,
     record_pre_update,
 )
+from tinyagentos.update_runner import record_rollback_target, switch_to_branch
 
 ROLLBACK_SH = Path(__file__).resolve().parent.parent / "scripts" / "rollback.sh"
 
@@ -274,4 +277,92 @@ def test_read_drops_an_unsafe_branch_but_keeps_the_commit(tmp_path):
         f"prev_branch='feat/..evil'\nprev_sha='{SHA_A}'\nprev_ts='7'\n"
     )
     assert read_rollback_target(tmp_path) == {"branch": "", "sha": SHA_A, "ts": "7"}
+
+
+def test_rollback_record_keeps_previous_on_failed_replace(tmp_path, monkeypatch):
+    """A failed atomic write must leave the previous record byte-identical and
+    leave no temp file behind in the install dir."""
+    import tinyagentos.atomic_io as atomic_io
+
+    record_pre_update(tmp_path, branch="dev", sha=SHA_A, ts=1)
+    before = (tmp_path / ROLLBACK_FILE).read_bytes()
+
+    def boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(atomic_io.os, "replace", boom)
+
+    try:
+        record_pre_update(tmp_path, branch="dev", sha=SHA_B, ts=2)
+    except Exception as exc:  # pragma: no cover - base behaviour raises
+        raise AssertionError(
+            f"record_pre_update raised on failed write: {exc!r}"
+        ) from exc
+
+    assert (tmp_path / ROLLBACK_FILE).read_bytes() == before
+    leftovers = [
+        p for p in tmp_path.iterdir() if p.name.startswith(f".{ROLLBACK_FILE}.tmp")
+    ]
+    assert not leftovers
+
+
+def test_rollback_failed_write_removes_stale_record(tmp_path, monkeypatch):
+    """When the new record cannot be written, the previous record is removed so
+    rollback reports no target rather than a stale one."""
+    import tinyagentos.atomic_io as atomic_io
+
+    record_pre_update(tmp_path, branch="dev", sha=SHA_A, ts=1)
+    assert read_rollback_target(tmp_path) is not None
+
+    def boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(atomic_io.os, "replace", boom)
+
+    wrote = record_rollback_target(tmp_path, "dev", SHA_B, 2)
+    assert wrote is False
+    assert read_rollback_target(tmp_path) is None
+
+
+def _make_switch_repo(tmp_path):
+    origin = tmp_path / "origin.git"
+    subprocess.check_call(
+        ["git", "init", "--bare", "-q", "-b", "main", str(origin)]
+    )
+    work = tmp_path / "work"
+    subprocess.check_call(["git", "init", "-q", "-b", "main", str(work)])
+    subprocess.check_call(["git", "-C", str(work), "config", "user.name", "t"])
+    subprocess.check_call(["git", "-C", str(work), "config", "user.email", "t@t"])
+    (work / "f").write_text("1\n")
+    subprocess.check_call(["git", "-C", str(work), "add", "f"])
+    subprocess.check_call(["git", "-C", str(work), "commit", "-qm", "m1"])
+    subprocess.check_call(["git", "-C", str(work), "remote", "add", "origin", str(origin)])
+    subprocess.check_call(["git", "-C", str(work), "push", "-q", "-u", "origin", "main"])
+    subprocess.check_call(["git", "-C", str(work), "checkout", "-qb", "dev"])
+    (work / "g").write_text("2\n")
+    subprocess.check_call(["git", "-C", str(work), "add", "g"])
+    subprocess.check_call(["git", "-C", str(work), "commit", "-qm", "m2"])
+    subprocess.check_call(["git", "-C", str(work), "push", "-q", "origin", "dev"])
+    subprocess.check_call(["git", "-C", str(work), "checkout", "-q", "main"])
+    return work
+
+
+def test_rollback_switch_path_uses_asyncio_to_thread(tmp_path, monkeypatch):
+    """The branch-switch path must run the durable rollback write off the
+    event loop via asyncio.to_thread."""
+    import tinyagentos.update_runner as ur
+
+    work = _make_switch_repo(tmp_path)
+
+    to_thread_mock = AsyncMock()
+    monkeypatch.setattr(ur.asyncio, "to_thread", to_thread_mock)
+
+    res = asyncio.run(switch_to_branch("dev", work))
+    assert res.ok is True, res.message
+    assert to_thread_mock.awaited, "rollback write must run off the event loop"
+    assert any(
+        args and args[0] is ur._record_rollback_target
+        for args, _kwargs in to_thread_mock.call_args_list
+    ), "rollback record write must be offloaded via asyncio.to_thread"
+
 
