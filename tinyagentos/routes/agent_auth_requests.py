@@ -127,6 +127,10 @@ VALID_SCOPES = frozenset({
     # (revoked/blocked/live_token), host_lan_ip or hardware. A global scope:
     # deliberately not project-bound, so it is not in _PROJECT_SCOPES.
     "cluster_read",
+    # Memory service record authorship: the memory service enforces it from the
+    # registry grants feed. The controller's service principal holds this one
+    # only. records:read and a2a_read are reserved and deliberately absent.
+    "records:write",
 })
 
 

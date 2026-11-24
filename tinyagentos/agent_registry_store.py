@@ -414,6 +414,12 @@ TOKEN_STORAGE_GUIDANCE = (
 )
 
 
+# Registry origin of the controller's own service identity.  A row with this
+# origin is a service row: only a token of kind "service" speaks for it, and
+# no agent-facing path accepts a token naming it (see agent_token_auth).
+CONTROLLER_ORIGIN = "taos-controller"
+
+
 def mint_registry_token(
     canonical_id: str,
     private_key_pem: bytes,
@@ -423,6 +429,7 @@ def mint_registry_token(
     project_id: Optional[str] = None,
     principal_type: str = "agent",
     iat: Optional[int] = None,
+    exp: Optional[int] = None,
 ) -> str:
     """Return a signed compact EdDSA JWT: <header>.<payload>.<signature> (base64url).
 
@@ -436,12 +443,20 @@ def mint_registry_token(
       iss           - "taos-registry"
       iat           - unix timestamp of issuance
       jti           - unique token id
-      principal_type- "agent" (default) or "human" — the two principal types
-                      verified through the same Ed25519 chain
+      principal_type- "agent" (default), "human" or "service" — the principal
+                      kinds verified through the same Ed25519 chain
       user_id       - owning user_id at registration time (agent tokens only)
       framework     - agent framework at registration time (agent tokens only)
       project_id    - project binding, present only when non-empty; absent means
                       the token is global (not bound to any project)
+      kind          - "service", present only on service tokens.  The memory
+                      service reads ``kind``; taOS's own verifiers read
+                      ``principal_type``.  Both are emitted and both say
+                      "service".  Authority is never in the token: scopes are
+                      grants in the registry grants feed.
+      exp           - unix expiry, present only when *exp* is given (service
+                      tokens); ``verify_registry_token`` rejects a token past it.
+                      Agent and human tokens carry no exp.
 
     ``iat`` overrides the issuance timestamp (Unix seconds).  Rotation passes
     the identity's new ``token_min_iat`` cutoff here so the replacement token is
@@ -470,6 +485,10 @@ def mint_registry_token(
         claims["framework"] = framework
     if project_id:
         claims["project_id"] = project_id
+    if principal_type == "service":
+        claims["kind"] = "service"
+    if exp is not None:
+        claims["exp"] = int(exp)
     payload = _b64url_encode(
         json.dumps(claims, separators=(",", ":")).encode()
     )
@@ -478,11 +497,15 @@ def mint_registry_token(
     return f"{header}.{payload}.{signature}"
 
 
-def verify_registry_token(token: str, public_key_pem: bytes) -> dict:
+def verify_registry_token(
+    token: str, public_key_pem: bytes, *, check_exp: bool = True
+) -> dict:
     """Verify *token* against *public_key_pem*.
 
     Returns the decoded payload dict on success.
-    Raises ``ValueError`` on invalid format or bad signature.
+    Raises ``ValueError`` on invalid format, bad signature, or (when the token
+    carries an ``exp`` claim and *check_exp* is true) an expired token.  Tokens
+    without ``exp`` -- every agent and human token -- are unaffected.
     """
     from cryptography.hazmat.primitives.serialization import load_pem_public_key
     from cryptography.exceptions import InvalidSignature
@@ -506,6 +529,10 @@ def verify_registry_token(token: str, public_key_pem: bytes) -> dict:
         raise ValueError(
             f"payload must be a JSON object, got {type(payload).__name__}"
         )
+    exp = payload.get("exp")
+    if check_exp and exp is not None:
+        if isinstance(exp, bool) or not isinstance(exp, (int, float)) or exp <= time.time():
+            raise ValueError("token expired")
     return payload
 
 
@@ -570,6 +597,25 @@ def _slug_globs(slug: str) -> tuple[str, str]:
 
 
 _RESERVED_PREFIXES = ("user-", "human-", "admin-", "taos-")
+
+# Handles the OS keeps for itself.  The controller's service identity registers
+# "service:controller"; anyone else holding it first would stop that identity
+# from ever being minted.  Reserved: the whole "service:" namespace and any
+# spelling that slugs to the controller's handle.
+RESERVED_HANDLE_PREFIX = "service:"
+CONTROLLER_HANDLE = "service:controller"
+
+
+def is_reserved_handle(handle: str) -> bool:
+    raw = (handle or "").strip().lstrip("@").lower()
+    return raw.startswith(RESERVED_HANDLE_PREFIX) or _slugify(raw) == "service-controller"
+
+
+def _check_reserved_handle(handle: str) -> None:
+    if is_reserved_handle(handle):
+        raise ValueError(
+            f"handle {handle!r} is reserved for the OS; choose a different handle"
+        )
 
 
 def _check_reserved_prefix(slug: str, raw_name: str = "") -> None:
@@ -687,8 +733,12 @@ class AgentRegistryStore(BaseStore):
         capabilities: Optional[list[str]] = None,
         allow_reserved: bool = False,
         install_id: str = "",
+        allow_service_handle: bool = False,
     ) -> dict:
         """Mint a canonical_id, persist the record, and return it.
+
+        ``allow_service_handle`` lets the controller's own service identity
+        take its reserved handle; no HTTP layer passes it.
 
         ``reports_to`` is stored as-is with no validation here (the row does
         not exist yet, so it cannot be part of an existing cycle) - use
@@ -711,6 +761,8 @@ class AgentRegistryStore(BaseStore):
         if self._db is None:
             raise RuntimeError("AgentRegistryStore not initialised - call init() first")
 
+        if not allow_service_handle:
+            _check_reserved_handle(handle)
         async with self._write_lock:
             capabilities = capabilities or []
             now_utc = datetime.now(timezone.utc)
@@ -854,6 +906,7 @@ class AgentRegistryStore(BaseStore):
                 "adopt: revoked_at may only be set when status is 'revoked'"
             )
 
+        _check_reserved_handle(handle)
         async with self._write_lock:
             capabilities = capabilities or []
             caps_json = json.dumps(capabilities)
@@ -1429,6 +1482,8 @@ class AgentRegistryStore(BaseStore):
         """
         if self._db is None:
             raise RuntimeError("AgentRegistryStore not initialised")
+        if handle is not None:
+            _check_reserved_handle(handle)
         async with self._write_lock:
             record = await self.get(canonical_id)
             if record is None:

@@ -526,6 +526,17 @@ class TestAuthRequestRoutes:
         # Token not returned by approve endpoint — only by the status poll.
         assert "token" not in data
 
+    async def test_bus_send_is_not_a_scope_name(self, consent_client):
+        """tsk-x44f46: the grant is named a2a_send; bus:send is refused."""
+        app = consent_client._transport.app
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as bare:
+            create = await bare.post(
+                "/api/agents/auth-requests",
+                json={**_CREATE_BODY, "requested_scopes": ["bus:send"]},
+            )
+        assert create.status_code in (400, 422), create.text
+        assert "bus:send" in create.text
+
     async def test_get_status_accepted_returns_token(self, consent_client):
         """After accept, status poll returns canonical_id and token."""
         transport = ASGITransport(app=consent_client._transport.app)

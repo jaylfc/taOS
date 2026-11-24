@@ -28,7 +28,7 @@ from typing import Optional
 
 from fastapi import HTTPException, Request
 
-from tinyagentos.agent_registry_store import verify_registry_token
+from tinyagentos.agent_registry_store import CONTROLLER_ORIGIN, verify_registry_token
 
 
 def _get_store(request: Request):
@@ -160,6 +160,26 @@ def _enforce_rotation_cutoff(record: dict, payload: dict) -> None:
         raise HTTPException(status_code=401, detail="token superseded")
 
 
+# Principal kinds.  "agent" (or a legacy token with no claim, which has always
+# been treated as an agent), "human" and "service" are distinct: no kind is
+# accepted where another is required.
+SERVICE_TOKEN_REFUSED_DETAIL = "service token not accepted here"
+
+
+def _refuse_service_token() -> None:
+    """The controller's service token is for the memory service, not for any
+    taOS route that expects an agent or a person.  Refuse it plainly."""
+    raise HTTPException(status_code=401, detail=SERVICE_TOKEN_REFUSED_DETAIL)
+
+
+def _enforce_row_kind(record: dict) -> None:
+    """A controller-origin row is a service row: a token of any OTHER kind that
+    names it (an agent token minted for it by a rotation, say) must not pass
+    as an agent.  Call only on tokens already known not to be service tokens."""
+    if record.get("origin") == CONTROLLER_ORIGIN:
+        raise HTTPException(status_code=403, detail="agent is not active in the registry")
+
+
 def _get_keypair(request: Request) -> tuple[bytes, bytes]:
     kp = getattr(request.app.state, "agent_registry_keypair", None)
     if kp is None:
@@ -203,12 +223,15 @@ async def _verify_agent_scope(
     principal_type = payload.get("principal_type", "")
     if principal_type == "human":
         return None
+    if principal_type == "service":
+        _refuse_service_token()
 
     # Agent must be active in the registry.
     registry = _get_store(request)
     record = await registry.get(canonical_id)
     if record is None or record.get("status") != "active":
         raise HTTPException(status_code=403, detail="agent is not active in the registry")
+    _enforce_row_kind(record)
 
     # Reject tokens issued before the identity's token_min_iat cutoff (rotation).
     _enforce_rotation_cutoff(record, payload)
@@ -242,11 +265,14 @@ async def check_agent_scope(request: Request, required_scope: str) -> Optional[s
     Returns None when no Authorization header is present (the caller falls
     through to its own admin/session handling), or when a valid human-principal
     token is presented (``principal_type == "human"`` short-circuits here so a
-    human token never reaches the agent-registry check).
+    human token never reaches the agent-registry check). A service-principal
+    token (``principal_type == "service"``) is refused with 401: it is never
+    accepted as an agent, and an agent-kind token naming the controller's
+    service row is refused with 403.
 
     Raises:
       401 -- Authorization header present but the token is malformed, has a bad
-            signature, or is missing the sub claim.
+            signature, is missing the sub claim, or is a service token.
       403 -- Token is valid but the agent is not active in the registry, the
             sub is unknown, or the grant is missing/expired.
     """
@@ -272,7 +298,9 @@ async def registry_agent_caller(request: Request, required_scope: str) -> Option
          *required_scope* grant).  Returns the agent's canonical_id.
 
     A human-principal registry token returns None (as ``check_agent_scope``
-    does) and so falls through to the caller's human path, which 401s it.
+    does) and so falls through to the caller's human path, which 401s it. A
+    service-principal token is not accepted as an agent either: it is refused
+    with 401.
     """
     if getattr(request.state, "user_id", None):
         return None
@@ -378,12 +406,16 @@ async def check_agent_identity_claims(
     if not canonical_id:
         raise HTTPException(status_code=401, detail="token missing sub claim")
 
+    if payload.get("principal_type", "") == "service":
+        _refuse_service_token()
+
     registry = _get_store(request)
     record = await registry.get(canonical_id)
     if record is None or (
         require_active and record.get("status") != "active"
     ):
         raise HTTPException(status_code=403, detail="agent is not active in the registry")
+    _enforce_row_kind(record)
 
     # Reject tokens issued before the identity's token_min_iat cutoff (rotation),
     # exactly as check_agent_scope and check_agent_scope_for_project do.
@@ -509,11 +541,17 @@ async def check_agent_project_grants(
             status_code=403,
             detail="human-principal token cannot enumerate agent project grants",
         )
+    if principal_type == "service":
+        raise HTTPException(
+            status_code=403,
+            detail="service token cannot enumerate agent project grants",
+        )
 
     registry = _get_store(request)
     record = await registry.get(canonical_id)
     if record is None or record.get("status") != "active":
         raise HTTPException(status_code=403, detail="agent is not active in the registry")
+    _enforce_row_kind(record)
 
     _enforce_rotation_cutoff(record, payload)
 

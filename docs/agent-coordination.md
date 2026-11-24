@@ -677,6 +677,38 @@ Minted by `ensure_native_agent_identity()` in `tinyagentos/native_agent_identity
 - **The revocation feed covers agent identities only, and that is a decision rather than a gap.** `GET /api/agents/registry/revoked` reads `agent_registry` and returns `{canonical_id, revoked_at}` per entry. Human credential withdrawal is handled through the session/auth layer, so humans will never appear here. Decided 2026-08-13, after a downstream spec was written assuming the opposite. If you are building something that needs to learn a *human's* credential was withdrawn, this feed is the wrong source and the requirement should be raised rather than implemented against it -- `tests/test_agent_registry.py::test_revoked_feed_shape` fails if the feed is widened, deliberately.
 - **Nothing in the chat runtime reads the token yet.** The identity is minted; wiring it into what the agent sends is a separate change. It is deliberately absent from the agent manual until then -- the manual is injected into the agent's prompt and sits at its size ceiling, so it should not describe a capability the agent does not yet have.
 
+## The controller's service identity
+
+Every install mints a service principal for the OS-native controller at first boot. No admin step, no prompt: if the install has an owner, the controller has an identity of its own for writing history records to the memory service, which must name a real writer.
+
+| | |
+|---|---|
+| origin | `taos-controller` |
+| handle | `service:controller` |
+| owner | the install's primary user (`user_id`) |
+| scopes | `records:write` only |
+| token | `<data_dir>/.secrets/taos_controller_token`, mode 0600 |
+
+Minted by `ensure_controller_service_identity()` in `tinyagentos/controller_service_identity.py`, called from the application lifespan on every start and idempotent by install id. Never fatal on failure: an install without an owner defers until one exists, and an install without the identity is degraded, not broken.
+
+**Anchored to `<data_dir>/.install_id`**, the same id the version ping uses, via `install_id()` in `tinyagentos/auto_update.py`.
+
+**The token is never in an environment variable and never logged.** It is a registry JWT (EdDSA, verified with the registry public key) written atomically (temp file, fsync, rename) to `<data_dir>/.secrets/taos_controller_token`, mode 0600. Claims: `iss` "taos-registry", `sub` the controller's canonical_id, integer `iat` and `exp` (at most 24 hours apart, `iat` never in the future), `jti`, and `kind` "service". `kind` is the claim the memory service reads. taOS's own verifiers (`agent_token_auth.py`, `auth_middleware.py`) read the older `principal_type` claim, so the token carries `principal_type` "service" too. There is no `aud` and no scope claim. A standalone install with no memory service has nothing to present it to and may keep using the server token.
+
+**Scopes are grants, not claims.** Authority is the registry grants feed (`GET /api/agents/registry/grants`), one record per scope, exact-match strings. The controller holds `records:write` only: created with the identity (or before its first token exists) and never re-asserted, so an owner who revokes it finds it still revoked on the next renewal or restart. `a2a_send` is not granted (nothing requires the controller to send on the bus), and `records:read` and `a2a_read` are reserved, not grantable, and no other new scope name is shipped: `records:write` is the only name this change adds to the grant vocabulary. `bus:send` is not a scope name anywhere; bus sending is the existing `a2a_send` grant.
+
+**Renewed by the controller.** The token lives 24 hours (the memory service's maximum, with no leeway on the bus path). Start-up and an hourly loop renew it when it is missing, malformed, not the expected shape, or two thirds through its life, so it is never presented near `exp`. The new file is written before the old token is superseded (a lock serialises this), so a failed renewal keeps the old token working; nothing here blocks start-up. A suspended or revoked controller row is left as it is: no second row, no new token.
+
+**A service-principal token is not accepted where an agent or human token is required.** Every reader of the token kind decides explicitly (`tinyagentos/agent_token_auth.py`, `tinyagentos/auth_middleware.py`): agent scope checks, identity proof and the scope-request proof refuse it with 401, project-grant enumeration refuses it with 403, and the middleware's exempt-GET promotion, native-agent and deployed-agent branches ignore it. An agent-kind token that names the controller's row is refused too. No route mints or rotates the controller's token: `rotate-tokens` and `mint-internal` refuse that row.
+
+**Reserved handle.** `service:controller` (and the whole `service:` namespace) is reserved: every registration path (register, adopt, PATCH, mint-internal) refuses it, so nobody can squat the handle before first start. If an older install already has an identity holding it, start-up does not mint, and `/api/health` reports `controller_identity` with status `error` and reason `handle_taken` (fixed words, no ids or token material).
+
+**Crash safety.** Minting and rotation run under a file lock in the secrets directory, so two controllers on one data directory cannot interleave. If a rotation crashed after writing the new token and before moving the cutoff, the next start moves the cutoff to the current token's `iat`, retiring the old token.
+
+**What taOS does with the token.** It mints the token with the claims above, holds the grant records, and does not consume the token itself yet; refusing it everywhere else is the only taOS-side behaviour. Verifying the signature and `kind`, and enforcing the grants feed per request, is the memory service's job.
+
+**On behalf of a person.** `on_behalf_of` is not in the token. It travels in the record envelope as `{"kind": "person" | "agent", "id": "<registry canonical_id>"}`, the same identifier namespace as `sub`; the receiver records `sub` as the actor. `controller_record()` in `controller_service_identity.py` builds exactly that shape, refuses any other kind or an empty id, and discards any `on_behalf_of` already present in the record it is given, so only its trusted argument can set the field. The controller has no record-write path yet, so nothing calls it today.
+
 ## Response caching (`Cache-Control: no-store` on `/api/` and `/agent/`)
 
 `SecurityHeadersMiddleware` (`tinyagentos/middleware/security_headers.py`) adds

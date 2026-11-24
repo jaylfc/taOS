@@ -31,7 +31,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 
-from tinyagentos.agent_registry_store import TOKEN_STORAGE_GUIDANCE, mint_registry_token
+from tinyagentos.agent_registry_store import (
+    CONTROLLER_ORIGIN,
+    TOKEN_STORAGE_GUIDANCE,
+    mint_registry_token,
+)
 from tinyagentos.agent_token_auth import check_agent_scope
 from tinyagentos.auth_context import CurrentUser, current_user, require_admin
 
@@ -109,6 +113,8 @@ _ALLOWED_SCOPES = frozenset({
     # Memory access: write to an agent's own memory namespace.
     "memory_write",
     "cluster_read",
+    # Memory-service record authorship (tsk-6dhfkd); the only new name.
+    "records:write",
 })
 
 
@@ -359,6 +365,14 @@ async def _mint_internal_identity(
         if existing is None:
             existing = await store.get_by_handle_normalised(handle)
         if existing is not None:
+            # The controller's own service row is never handed out as an agent
+            # identity, adopted or not: its credential is minted and renewed by
+            # the controller itself.
+            if existing.get("origin") == CONTROLLER_ORIGIN:
+                raise HTTPException(
+                    status_code=403,
+                    detail="the controller service identity cannot be minted here",
+                )
             # A non-internal owner is only reused when the admin adopts it: this
             # blocks an impostor that grabbed "@Hermes" from silently receiving
             # driver scopes + a token, while still letting the operator vouch for
@@ -374,17 +388,21 @@ async def _mint_internal_identity(
             created = False
         else:
             adopted = False
-            record = await store.register(
-                framework=_INTERNAL_ORIGIN,
-                display_name=slug,
-                user_id=user.user_id,
-                origin=_INTERNAL_ORIGIN,
-                handle=handle,
-                capabilities=[],
-                # Internal driver identities legitimately live under the
-                # reserved taos- prefix; this path is admin-only.
-                allow_reserved=True,
-            )
+            try:
+                record = await store.register(
+                    framework=_INTERNAL_ORIGIN,
+                    display_name=slug,
+                    user_id=user.user_id,
+                    origin=_INTERNAL_ORIGIN,
+                    handle=handle,
+                    capabilities=[],
+                    # Internal driver identities legitimately live under the
+                    # reserved taos- prefix; this path is admin-only.
+                    allow_reserved=True,
+                )
+            except ValueError as exc:
+                # A reserved handle (the controller's service namespace).
+                raise HTTPException(status_code=422, detail=str(exc))
             created = True
 
     canonical_id = record["canonical_id"]
@@ -878,6 +896,16 @@ async def rotate_tokens(
     if actor_user_id is None:
         logger.info("registry rotate-tokens 404-not-owner for %s", canonical_id)
         return JSONResponse({"error": "not found"}, status_code=404)
+
+    if record.get("origin") == CONTROLLER_ORIGIN:
+        # Rotating this row over HTTP would hand back an agent-kind token for
+        # the controller's service identity. The controller renews its own
+        # token; nobody else mints it.
+        logger.info("registry rotate-tokens refused for the controller service row")
+        return JSONResponse(
+            {"error": "the controller service identity cannot be rotated here"},
+            status_code=403,
+        )
 
     private_pem, _public_pem = _get_keypair(request)
 

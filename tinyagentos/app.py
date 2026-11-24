@@ -650,6 +650,58 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             )
         except Exception:
             logger.exception("native agent identity could not be ensured at startup")
+        # First-boot service identity for the controller.  The memory service is
+        # where history records live and a record has to name a real writer, so
+        # the controller registers a service principal for itself and writes its
+        # token to the secrets area under the data directory.  Runs on EVERY
+        # start (idempotent by install id), is never fatal, and defers until an
+        # owner exists.  The service principal holds records:write only -- a
+        # service-principal token is not accepted anywhere an agent or human
+        # token is required.
+        try:
+            from tinyagentos.controller_service_identity import (
+                ensure_controller_service_identity,
+            )
+
+            _owner = auth_manager.get_primary_user()
+            # Fixed-vocabulary state for /api/health (never token material).
+            app.state.controller_identity = {"status": "deferred", "reason": "not_run"}
+            await ensure_controller_service_identity(
+                registry=agent_registry_store,
+                grants=agent_grants_store,
+                data_dir=data_dir,
+                signing_key_pem=agent_registry_keypair[0],
+                user_id=(_owner or {}).get("id", ""),
+                status=app.state.controller_identity,
+            )
+        except Exception as exc:
+            app.state.controller_identity = {"status": "error", "reason": "startup_failed"}
+            # Type only: nothing about the identity or its token is logged.
+            logger.error(
+                "controller service identity could not be ensured at startup (%s)",
+                type(exc).__name__,
+            )
+        # Renew the token before it expires while the controller stays up.
+        # Supervised, so start-up never waits on it and shutdown cancels it.
+        try:
+            from tinyagentos import controller_service_identity as _csi
+
+            _create_supervised_task(
+                _csi.run_controller_token_renewal(
+                    registry=agent_registry_store,
+                    grants=agent_grants_store,
+                    data_dir=data_dir,
+                    signing_key_pem=agent_registry_keypair[0],
+                    owner_id=lambda: (auth_manager.get_primary_user() or {}).get("id", ""),
+                    status=app.state.controller_identity,
+                ),
+                app.state._background_tasks,
+            )
+        except Exception as exc:
+            logger.error(
+                "controller service token renewal loop not started (%s)",
+                type(exc).__name__,
+            )
         await user_shares_store.init()
         app.state.user_shares = user_shares_store
         await sharing_grants_store.init()

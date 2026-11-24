@@ -69,6 +69,11 @@ async def api_health(request: Request, detailed: bool = False):
         "agents": len(config.agents),
         "backends": len(config.backends),
     }
+    ci = getattr(request.app.state, "controller_identity", None)
+    if ci and ci.get("status") == "error":
+        # Surfaced on the cheap probe too: an identity that could not be
+        # minted must not hide behind a log line. Fixed words only.
+        basic["controller_identity"] = {"status": "error", "reason": ci.get("reason", "")}
     if not detailed:
         return basic
 
@@ -102,6 +107,11 @@ async def api_health(request: Request, detailed: bool = False):
         subsystems["qmd"] = {"status": "ok", "url": getattr(qmd, "url", None)}
     else:
         subsystems["qmd"] = {"status": "unavailable"}
+
+    subsystems["controller_identity"] = (
+        {"status": ci.get("status", "unknown"), "reason": ci.get("reason", "")}
+        if ci else {"status": "unavailable", "reason": ""}
+    )
 
     return {**basic, "subsystems": subsystems}
 
