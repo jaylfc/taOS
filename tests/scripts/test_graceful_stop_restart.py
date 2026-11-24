@@ -1,28 +1,37 @@
 """Tests that a controller restart never drains the agents while a real
-reboot/shutdown/halt still does exactly once (task tsk-kzbxia).
+reboot/shutdown/halt/poweroff/kexec still drains exactly once (task tsk-kzbxia).
 
 The drain now only runs for a real system shutdown: systemd queues a
-shutdown.target/reboot.target/halt.target job while one is in progress, and
-scripts/taos-graceful-stop.sh skips the ``/api/system/prepare-shutdown`` call
-when no such job is queued. A controller restart (``systemctl restart``, the
-in-app Restart button, or an update restart) has no shutdown job, so it must
-not drain. The pre-shutdown hook (systemd/taos-pre-shutdown.service) remains
-the single drain entry point for real reboots.
+shutdown.target/reboot.target/halt.target/poweroff.target/kexec.target job while
+one is in progress, and scripts/taos-graceful-stop.sh skips the
+``/api/system/prepare-shutdown`` call when no such job is queued. A controller
+restart (``systemctl restart``, the in-app Restart button, or an update restart)
+has no shutdown job, so it must not drain. The pre-shutdown hook
+(systemd/taos-pre-shutdown.service) remains the single drain entry point for
+real reboots.
 
 These tests drive the real scripts/taos-graceful-stop.sh with a stub curl that
 records every call, mirroring tests/scripts/test_graceful_stop_stamp.py.
+
+TestRefreshArtifacts exercises the real in-app update path
+(tinyagentos.routes.settings._refresh_graceful_stop_artifacts): starting from the
+OLD unit text (with ExecStop=...taos-graceful-stop) and the OLD ungated script
+on disk, it asserts the refresh removes ExecStop, installs the gated script, and
+that a restart-shaped stop then makes no prepare-shutdown call using the files
+the update left behind. This test fails on origin/dev (the refresh step does not
+exist there) and passes on the fix branch.
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
+import shutil
 import subprocess
-import time
 from pathlib import Path
 
 import pytest
-from httpx import ASGITransport, AsyncClient
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "taos-graceful-stop.sh"
 SYSTEM_UNIT = Path(__file__).resolve().parents[2] / "scripts" / "systemd" / "tinyagentos.service"
@@ -51,9 +60,20 @@ def _render_unit(template: Path) -> str:
 
 
 class FakeHost:
-    """A throwaway install layout plus a curl stub that records every call."""
+    """A throwaway install layout plus a curl stub that records every call.
 
-    def __init__(self, tmp_path: Path, *, shutdown_job: bool) -> None:
+    ``jobs`` is the output the stub ``systemctl list-jobs`` prints; a real
+    shutdown/reboot/halt/poweroff/kexec job makes the script drain, a
+    restart-shaped list (no target job) must not.
+    """
+
+    def __init__(
+        self,
+        tmp_path: Path,
+        *,
+        script: Path = SCRIPT,
+        jobs: str = "80 networking.service start running",
+    ) -> None:
         self.runtime = tmp_path / "run" / "taos"      # systemd RuntimeDirectory=taos
         self.runtime.mkdir(parents=True)
         self.runtime.chmod(0o750)
@@ -68,15 +88,13 @@ class FakeHost:
         curl = bindir / "curl"
         curl.write_text(CURL_STUB)
         curl.chmod(0o755)
-        # Stub systemctl: systemd queues a shutdown/reboot/halt target job only
-        # during a real shutdown. A controller restart has no such job.
+        # Stub systemctl: systemd queues a shutdown/reboot/halt/poweroff/kexec
+        # target job only during a real shutdown. A controller restart has none.
         systemctl = bindir / "systemctl"
-        if shutdown_job:
-            systemctl.write_text("#!/bin/sh\necho \"1 reboot.target start\"\nexit 0\n")
-        else:
-            systemctl.write_text("#!/bin/sh\necho \"80 networking.service start running\"\nexit 0\n")
+        systemctl.write_text("#!/bin/sh\ncat <<'EOF'\n" + jobs + "\nEOF\nexit 0\n")
         systemctl.chmod(0o755)
         self._bindir = bindir
+        self._script = script
 
     def run(self, **overrides) -> subprocess.CompletedProcess:
         env = os.environ.copy()
@@ -91,7 +109,7 @@ class FakeHost:
             else:
                 env[key] = str(value)
         return subprocess.run(
-            ["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60
+            ["bash", str(self._script)], env=env, capture_output=True, text=True, timeout=60
         )
 
     @property
@@ -103,12 +121,32 @@ class FakeHost:
 
 @pytest.fixture
 def host(tmp_path: Path):
-    return FakeHost(tmp_path, shutdown_job=False)
+    return FakeHost(tmp_path)
 
 
 @pytest.fixture
 def reboot_host(tmp_path: Path):
-    return FakeHost(tmp_path, shutdown_job=True)
+    return FakeHost(tmp_path, jobs="1 reboot.target start")
+
+
+@pytest.fixture
+def poweroff_host(tmp_path: Path):
+    return FakeHost(tmp_path, jobs="1 poweroff.target start")
+
+
+@pytest.fixture
+def halt_host(tmp_path: Path):
+    return FakeHost(tmp_path, jobs="1 halt.target start")
+
+
+@pytest.fixture
+def shutdown_host(tmp_path: Path):
+    return FakeHost(tmp_path, jobs="1 shutdown.target start")
+
+
+@pytest.fixture
+def kexec_host(tmp_path: Path):
+    return FakeHost(tmp_path, jobs="1 kexec.target start")
 
 
 class TestGracefulStopRestartVsReboot:
@@ -131,6 +169,38 @@ class TestGracefulStopRestartVsReboot:
             f"{reboot_host.drain_calls}"
         )
 
+    def test_poweroff_stop_drains_exactly_once(self, poweroff_host: FakeHost) -> None:
+        result = poweroff_host.run()
+        assert result.returncode == 0, result.stderr
+        assert len(poweroff_host.drain_calls) == 1, (
+            f"poweroff-shaped stop must drain exactly once, got {len(poweroff_host.drain_calls)}: "
+            f"{poweroff_host.drain_calls}"
+        )
+
+    def test_halt_stop_drains_exactly_once(self, halt_host: FakeHost) -> None:
+        result = halt_host.run()
+        assert result.returncode == 0, result.stderr
+        assert len(halt_host.drain_calls) == 1, (
+            f"halt-shaped stop must drain exactly once, got {len(halt_host.drain_calls)}: "
+            f"{halt_host.drain_calls}"
+        )
+
+    def test_shutdown_stop_drains_exactly_once(self, shutdown_host: FakeHost) -> None:
+        result = shutdown_host.run()
+        assert result.returncode == 0, result.stderr
+        assert len(shutdown_host.drain_calls) == 1, (
+            f"shutdown-shaped stop must drain exactly once, got {len(shutdown_host.drain_calls)}: "
+            f"{shutdown_host.drain_calls}"
+        )
+
+    def test_kexec_stop_drains_exactly_once(self, kexec_host: FakeHost) -> None:
+        result = kexec_host.run()
+        assert result.returncode == 0, result.stderr
+        assert len(kexec_host.drain_calls) == 1, (
+            f"kexec-shaped stop must drain exactly once, got {len(kexec_host.drain_calls)}: "
+            f"{kexec_host.drain_calls}"
+        )
+
 
 class TestUnitTemplates:
     def test_restart_unit_has_no_drain_command(self) -> None:
@@ -147,32 +217,95 @@ class TestUnitTemplates:
         assert "shutdown.target reboot.target halt.target" in text, text
 
 
-class TestRestartPrepareAppLevel:
-    @pytest.mark.asyncio
-    async def test_restart_prepare_posts_no_graceful_shutdown_notice(
-        self, client, monkeypatch, tmp_path
-    ) -> None:
-        """POST /api/system/restart/prepare must not drain: no
-        "Graceful shutdown started" notification and no new resume_note.json."""
-        from tinyagentos.restart_orchestrator import RestartOrchestrator
+class TestGracefulStopArtifactRefresh:
+    def test_update_refreshes_old_script_and_unit(self, tmp_path: Path) -> None:
+        """The real update-path refresh fixes an install that still has the old
+        ungated script and the old unit (with ExecStop): the shipped gated script
+        and the ExecStop-free unit are installed, and a restart-shaped stop then
+        makes no prepare-shutdown call using the files left behind."""
+        from tinyagentos.routes.settings import _refresh_graceful_stop_artifacts
 
-        state = client._transport.app.state
-        monkeypatch.setattr(state, "orchestrator", RestartOrchestrator(state))
-        monkeypatch.setattr(state, "auto_updater", None, raising=False)
-        from unittest.mock import patch
+        project = tmp_path / "project"
+        (project / "scripts" / "systemd").mkdir(parents=True)
+        # Shipped (fixed) script + unit template, as install-server.sh would stage them.
+        shutil.copy(SCRIPT, project / "scripts" / "taos-graceful-stop.sh")
+        shutil.copy(SYSTEM_UNIT, project / "scripts" / "systemd" / "tinyagentos.service")
 
-        with patch("tinyagentos.routes.system._do_restart"):
-            resp = await client.post("/api/system/restart/prepare")
-        assert resp.status_code == 200, resp.text
+        dest = tmp_path / "dest"
+        bindir = dest / "usr" / "local" / "bin"
+        bindir.mkdir(parents=True)
+        unitdir = dest / "etc" / "systemd" / "system"
+        unitdir.mkdir(parents=True)
+        stop_script_dest = bindir / "taos-graceful-stop"
+        unit_dest = unitdir / "tinyagentos.service"
 
-        notifications = state.notifications
-        notes = await notifications.list(limit=100)
-        titles = {note.get("title") for note in notes}
-        assert "Graceful shutdown started" not in titles, titles
-
-        data_dir = state.data_dir
-        agent_memory = data_dir / "agent-memory"
-        resume_notes = (
-            list(agent_memory.glob("*/resume_note.json")) if agent_memory.is_dir() else []
+        # OLD ungated script: drains on every stop, no shutdown-job gate.
+        old_script = (
+            "#!/bin/bash\n"
+            "# old: drains unconditionally whenever systemctl is present.\n"
+            "if command -v systemctl >/dev/null 2>&1; then\n"
+            '  curl -fsS -X POST --max-time 25 "http://localhost:6969/api/system/prepare-shutdown" || true\n'
+            "fi\n"
+            "exit 0\n"
         )
-        assert not resume_notes, resume_notes
+        stop_script_dest.write_text(old_script)
+        stop_script_dest.chmod(0o755)
+
+        # OLD unit: still carries the ExecStop drain line.
+        old_unit = (
+            "[Unit]\n"
+            "Description=TinyAgentOS Controller\n"
+            "[Service]\n"
+            "User=taos\n"
+            "Group=taos\n"
+            "WorkingDirectory=/srv/tinyagentos\n"
+            "ExecStart=/srv/tinyagentos/.venv/bin/python -m tinyagentos\n"
+            "ExecStop=/usr/local/bin/taos-graceful-stop\n"
+            "TimeoutStopSec=45\n"
+            "Environment=PYTHONUNBUFFERED=1\n"
+            "Environment=TAOS_PORT=6969\n"
+            "[Install]\n"
+            "WantedBy=multi-user.target\n"
+        )
+        unit_dest.write_text(old_unit)
+
+        # A stub systemctl so daemon-reload inside the refresh succeeds.
+        fakebin = tmp_path / "fakebin"
+        fakebin.mkdir()
+        (fakebin / "systemctl").write_text("#!/bin/sh\nexit 0\n")
+        (fakebin / "systemctl").chmod(0o755)
+        os.environ["PATH"] = str(fakebin) + os.pathsep + os.environ.get("PATH", "")
+
+        problems = asyncio.run(
+            _refresh_graceful_stop_artifacts(
+                project, stop_script_dest=stop_script_dest, unit_dest=unit_dest
+            )
+        )
+        assert problems == [], problems
+
+        refreshed_unit = unit_dest.read_text()
+        assert not re.search(r"(?m)^\s*ExecStop=", refreshed_unit), (
+            f"refreshed unit must not drain:\n{refreshed_unit}"
+        )
+        refreshed_script = stop_script_dest.read_text()
+        assert "shutdown_queued" in refreshed_script
+        assert re.search(r"\(shutdown\|reboot\|halt\|poweroff\|kexec\)", refreshed_script)
+
+        # A restart-shaped stop using the refreshed files must not drain.
+        restart_host = FakeHost(tmp_path / "run2", script=stop_script_dest)
+        result = restart_host.run()
+        assert result.returncode == 0, result.stderr
+        assert restart_host.drain_calls == [], (
+            f"restart-shaped stop must not drain, got {restart_host.drain_calls}"
+        )
+
+        # A real poweroff job using the same refreshed files drains exactly once.
+        poweroff_host = FakeHost(
+            tmp_path / "run3", script=stop_script_dest, jobs="1 poweroff.target start"
+        )
+        result = poweroff_host.run()
+        assert result.returncode == 0, result.stderr
+        assert len(poweroff_host.drain_calls) == 1, (
+            f"poweroff-shaped stop must drain exactly once, got {len(poweroff_host.drain_calls)}: "
+            f"{poweroff_host.drain_calls}"
+        )

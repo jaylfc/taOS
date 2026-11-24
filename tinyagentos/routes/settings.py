@@ -6,6 +6,7 @@ import io
 import ipaddress
 import logging
 import os
+import re
 import shutil
 import tarfile
 import tempfile
@@ -1174,6 +1175,208 @@ async def _update_local_taosmd(request: Request) -> dict:
     }
 
 
+def _env_value(unit_text: str, key: str) -> str | None:
+    """Return the value of an ``Environment=KEY=value`` line from unit text."""
+    m = re.search(rf"(?m)^Environment={re.escape(key)}=(\S+)\s*$", unit_text)
+    return m.group(1) if m else None
+
+
+def _graceful_stop_install_scope() -> str | None:
+    """Return ``"system"`` or ``"user"`` when a tinyagentos unit is installed,
+    else ``None`` (a fresh install already ships the fixed files)."""
+    if Path("/etc/systemd/system/tinyagentos.service").exists():
+        return "system"
+    if (Path.home() / ".config" / "systemd" / "user" / "tinyagentos.service").exists():
+        return "user"
+    return None
+
+
+def _render_tinyagentos_unit(
+    project_dir: Path,
+    *,
+    taos_user: str,
+    taos_group: str,
+    taos_port: str,
+    taos_browser_proxy_port: str,
+    taos_spa_dir: str,
+    stop_script: str | Path,
+    taos_prefetch: str = "0",
+    user_scope: bool = False,
+) -> str:
+    """Render scripts/systemd/tinyagentos.service the way install-server.sh does.
+
+    The template substitutions plus the Environment block injection install-server.sh
+    appends after the template, so an up-to-date installed unit renders identically
+    and a stale one (e.g. still carrying an ExecStop drain line) differs.
+    """
+    text = (project_dir / "scripts" / "systemd" / "tinyagentos.service").read_text()
+    subs = [
+        ("TAOS_USER", taos_user),
+        ("TAOS_GROUP", taos_group),
+        ("TAOS_INSTALL_DIR", str(project_dir)),
+        ("TAOS_PYTHON", str(project_dir / ".venv" / "bin" / "python")),
+        ("TAOS_PORT", taos_port),
+        ("TAOS_STOP_SCRIPT", str(stop_script)),
+        ("__TAOS_PREFETCH_VALUE__", taos_prefetch),
+    ]
+    for old, new in subs:
+        text = text.replace(old, new)
+    env_block = (
+        "Environment=TAOS_HOST=0.0.0.0\n"
+        f"Environment=TAOS_PORT={taos_port}\n"
+        f"Environment=TAOS_BROWSER_PROXY_PORT={taos_browser_proxy_port}\n"
+        f"Environment=TAOS_SPA_DIR={taos_spa_dir}\n"
+    )
+    text = text.replace("Environment=PYTHONUNBUFFERED=1",
+                        "Environment=PYTHONUNBUFFERED=1\n" + env_block, 1)
+    if user_scope:
+        # Drop the root-only directives, mirroring install-server.sh's user-unit seds.
+        kept: list[str] = []
+        in_exec_start_pre = False
+        for line in text.splitlines(keepends=True):
+            if in_exec_start_pre:
+                if line.rstrip("\n").endswith("|| true'"):
+                    in_exec_start_pre = False
+                continue
+            if line.startswith("User=") or line.startswith("Group="):
+                continue
+            if line.startswith("ExecStartPre="):
+                in_exec_start_pre = True
+                continue
+            kept.append(line)
+        text = "".join(kept)
+        text = text.replace("WantedBy=multi-user.target", "WantedBy=default.target")
+    return text
+
+
+async def _refresh_graceful_stop_artifacts(
+    project_dir: Path,
+    *,
+    stop_script_dest: Path | None = None,
+    unit_dest: Path | None = None,
+    taos_port: str | None = None,
+    taos_browser_proxy_port: str | None = None,
+    taos_prefetch: str | None = None,
+    user_scope: bool = False,
+) -> list[str]:
+    """Refresh the installed graceful-stop script and unit for existing installs.
+
+    Copies scripts/taos-graceful-stop.sh over the installed stop script and
+    rewrites the installed tinyagentos.service from the shipped template when
+    either differs from what is on disk (an old unit still carries an ExecStop
+    that drains agents on every controller/update restart). Runs daemon-reload
+    for the unit's scope. Never restarts any service.
+
+    Returns a list of human-readable problem messages (empty on full success).
+    Callers surface these in the update result instead of silently leaving the
+    old drain in place when the system paths are not writable.
+    """
+    problems: list[str] = []
+    project_dir = Path(project_dir)
+    shipped_script = project_dir / "scripts" / "taos-graceful-stop.sh"
+
+    if stop_script_dest is None or unit_dest is None:
+        scope = _graceful_stop_install_scope()
+        if scope is None:
+            return []  # nothing installed yet; a fresh install already ships the fix
+        user_scope = scope == "user"
+        if scope == "system":
+            stop_script_dest = stop_script_dest or Path("/usr/local/bin/taos-graceful-stop")
+            unit_dest = unit_dest or Path("/etc/systemd/system/tinyagentos.service")
+        else:
+            stop_script_dest = stop_script_dest or (Path.home() / ".local" / "bin" / "taos-graceful-stop")
+            unit_dest = unit_dest or (Path.home() / ".config" / "systemd" / "user" / "tinyagentos.service")
+
+    # Preserve the running port values already on disk so the rewrite does not
+    # retarget a custom-port install at a hardcoded port.
+    installed_unit = ""
+    if unit_dest.exists():
+        try:
+            installed_unit = unit_dest.read_text()
+        except OSError:
+            installed_unit = ""
+    if taos_port is None:
+        taos_port = _env_value(installed_unit, "TAOS_PORT") or "6969"
+    if taos_browser_proxy_port is None:
+        taos_browser_proxy_port = _env_value(installed_unit, "TAOS_BROWSER_PROXY_PORT") or "6970"
+    if taos_prefetch is None:
+        taos_prefetch = _env_value(installed_unit, "TAOS_PREFETCH_BASE_IMAGE") or "0"
+    taos_spa_dir = str(project_dir / "static" / "desktop")
+    if user_scope:
+        import getpass
+        taos_user = getpass.getuser()
+        try:
+            import grp
+            taos_group = grp.getgrgid(os.getgid()).gr_name
+        except Exception:
+            taos_group = taos_user
+    else:
+        taos_user = "taos"
+        taos_group = "taos"
+
+    # --- stop script ----------------------------------------------------
+    try:
+        shipped = shipped_script.read_bytes()
+    except OSError as exc:
+        problems.append(f"cannot read shipped stop script {shipped_script}: {exc}")
+        shipped = None
+    if shipped is not None:
+        current = None
+        try:
+            current = stop_script_dest.read_bytes()
+        except OSError:
+            current = None
+        if current != shipped:
+            try:
+                stop_script_dest.parent.mkdir(parents=True, exist_ok=True)
+                stop_script_dest.write_bytes(shipped)
+                os.chmod(stop_script_dest, 0o755)
+            except OSError as exc:
+                problems.append(f"cannot write stop script {stop_script_dest}: {exc}")
+
+    # --- unit -----------------------------------------------------------
+    rendered_unit = _render_tinyagentos_unit(
+        project_dir,
+        taos_user=taos_user,
+        taos_group=taos_group,
+        taos_port=taos_port,
+        taos_browser_proxy_port=taos_browser_proxy_port,
+        taos_spa_dir=taos_spa_dir,
+        stop_script=stop_script_dest,
+        taos_prefetch=taos_prefetch,
+        user_scope=user_scope,
+    )
+    try:
+        current_unit = unit_dest.read_text() if unit_dest.exists() else ""
+    except OSError:
+        current_unit = ""
+    if current_unit != rendered_unit:
+        try:
+            unit_dest.parent.mkdir(parents=True, exist_ok=True)
+            unit_dest.write_text(rendered_unit)
+        except OSError as exc:
+            problems.append(f"cannot write unit {unit_dest}: {exc}")
+
+    # --- daemon-reload (never a restart) --------------------------------
+    try:
+        cmd = ["systemctl"] + (["--user"] if user_scope else []) + ["daemon-reload"]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(proc.wait(), timeout=20.0)
+        if proc.returncode != 0:
+            problems.append(
+                f"systemctl daemon-reload ({'user' if user_scope else 'system'}) "
+                f"exited {proc.returncode}"
+            )
+    except asyncio.TimeoutError:
+        problems.append(f"systemctl daemon-reload ({'user' if user_scope else 'system'}) timed out")
+    except Exception as exc:  # noqa: BLE001
+        problems.append(f"systemctl daemon-reload ({'user' if user_scope else 'system'}) failed: {exc}")
+
+    return problems
+
+
 @router.post("/api/settings/update")
 async def apply_update(request: Request):
     """Pull latest TinyAgentOS code from GitHub."""
@@ -1349,6 +1552,19 @@ async def apply_update(request: Request):
                 status_code=500,
             )
 
+    # Refresh the installed graceful-stop script and unit so existing installs
+    # pick up the no-drain-on-restart fix (the shipped unit no longer carries an
+    # ExecStop and the script only drains for a real shutdown/reboot/halt/
+    # poweroff/kexec job). Best-effort: if the system paths are not writable we
+    # say so in the result instead of silently leaving the old drain in place.
+    refresh_problems = await _refresh_graceful_stop_artifacts(
+        project_dir,
+        taos_port=str(request.app.state.config.server.get("port", 6969)),
+    )
+    refresh_note = ""
+    if refresh_problems:
+        refresh_note = " Graceful-stop artifact refresh: " + " | ".join(refresh_problems)
+
     # Always restart after a successful update.
     import asyncio as _asyncio
     from tinyagentos.routes.system import _do_restart
@@ -1370,6 +1586,7 @@ async def apply_update(request: Request):
                 else ""
             )
             + (f"{launchd_warning} " if launchd_warning else "")
+            + refresh_note
             + "Restarting now…"
         ),
     }
@@ -1479,6 +1696,18 @@ async def set_update_channel(request: Request, body: UpdateChannel):
             status_code=500,
         )
 
+    # Refresh the installed graceful-stop script and unit for existing installs
+    # before the restart, same as /api/settings/update.
+    refresh_problems = await _refresh_graceful_stop_artifacts(
+        project_dir,
+        taos_port=str(request.app.state.config.server.get("port", 6969)),
+    )
+    switch_message = result.message
+    if refresh_problems:
+        switch_message += " Graceful-stop artifact refresh: " + " | ".join(refresh_problems)
+    if launchd_warning:
+        switch_message += f" {launchd_warning}"
+
     import asyncio as _asyncio
     from tinyagentos.routes.system import _do_restart
     # Hold a reference so the task isn't garbage-collected before it runs
@@ -1491,7 +1720,7 @@ async def set_update_channel(request: Request, body: UpdateChannel):
         "branch": branch,
         "snapshot": str(snapshot_path) if snapshot_path else None,
         "recovery_tag": result.recovery_tag,
-        "message": result.message + (f" {launchd_warning}" if launchd_warning else ""),
+        "message": switch_message,
     }
 
 

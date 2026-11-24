@@ -81,19 +81,19 @@ do
     fi
 done
 
-# Only drain on a real system shutdown/reboot/halt. systemd queues a
-# shutdown.target/reboot.target/halt.target job while one is in progress, so a
-# controller restart (`systemctl restart`, the in-app Restart button, an update
-# restart) which has no such job must NOT drain: agents keep their work across
-# an update. taos-pre-shutdown.service remains the single drain entry point for
-# real reboots (see systemd/taos-pre-shutdown.service). When systemd is
-# unavailable or the query fails we drain anyway, preserving the pre-fix
-# behaviour for no-systemd installs and never silently suppressing the drain.
+# Only drain on a real system shutdown/reboot/halt/poweroff/kexec. systemd
+# queues a shutdown.target/reboot.target/halt.target/poweroff.target/kexec.target
+# job while one is in progress, so a controller restart (`systemctl restart`,
+# the in-app Restart button, an update restart) which has no such job must NOT
+# drain: agents keep their work across an update. taos-pre-shutdown.service
+# remains the single drain entry point for real reboots (see systemd/taos-pre-shutdown.service).
+# When systemd is unavailable or the query fails we drain anyway, preserving the
+# pre-fix behaviour for no-systemd installs and never silently suppressing the drain.
 shutdown_queued() {
     local jobs
     command -v systemctl >/dev/null 2>&1 || return 0
     jobs=$(systemctl list-jobs --no-pager --no-legend 2>/dev/null) || return 0
-    printf '%s\n' "$jobs" | grep -qE '\b(shutdown|reboot|halt)\.target\b'
+    printf '%s\n' "$jobs" | grep -qE '\b(shutdown|reboot|halt|poweroff|kexec)\.target\b'
 }
 
 if ! shutdown_queued; then
