@@ -1671,11 +1671,11 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         logger.info("startup complete — accepting requests")
 
         yield
-        # NOTE: controller restart/shutdown does NOT touch agent containers --
-        # agents keep running independently across a controller restart, so
-        # there's nothing to gracefully drain here. Only true system halt
-        # (system-shutdown) and explicit agent pause/stop go through the
-        # orchestrator.
+        # NOTE: controller restart (systemctl restart, in-app Restart button,
+        # update restart) does NOT drain agents -- the unit has no ExecStop.
+        # Real shutdown/reboot/halt drains agents exactly once via
+        # taos-pre-shutdown.service (oneshot, Before=shutdown.target reboot.target halt.target).
+        # Explicit agent pause/stop go through the orchestrator.
 
         # Cancel supervised background tasks (fire-and-forget loops etc.) plus
         # the local-heartbeat loop under ONE bounded budget. An unbounded gather

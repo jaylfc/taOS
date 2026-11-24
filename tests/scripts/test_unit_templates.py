@@ -109,15 +109,11 @@ def test_install_script_still_installs_graceful_stop() -> None:
 
 
 def test_install_script_no_longer_substitutes_execstop_in_main_unit() -> None:
-    """install-server.sh should not substitute TAOS_STOP_SCRIPT into the main
-    unit template (the placeholder was removed). The sed line is now a no-op
-    but should not cause an ExecStop to appear."""
-    # This test documents the current state: the sed line exists but the
-    # template no longer has the placeholder, so no ExecStop is injected.
-    # If the placeholder is ever re-added, this test will catch it.
+    """install-server.sh must not substitute TAOS_STOP_SCRIPT into the main
+    unit template (the placeholder and sed line were both removed)."""
     content = INSTALL_SCRIPT.read_text()
-    # The sed line for TAOS_STOP_SCRIPT exists in the script
-    assert "TAOS_STOP_SCRIPT" in content
-    # But the template doesn't have the placeholder
+    # The sed line for TAOS_STOP_SCRIPT must not exist in the script
+    assert "TAOS_STOP_SCRIPT" not in content
+    # The template doesn't have the placeholder
     assert "TAOS_STOP_SCRIPT" not in SYSTEM_TEMPLATE.read_text()
     assert "TAOS_STOP_SCRIPT" not in USER_TEMPLATE.read_text()

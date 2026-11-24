@@ -38,9 +38,8 @@ Restart=always
 RestartSec=3
 # Slow boot on low-end ARM SBCs (Pi ~58s) sits too close to systemd's 90s default.
 TimeoutStartSec=180
-# Bounded so a hung graceful-stop hook can never strand the service in
-# `deactivating` (which also breaks the in-app Update). Paired with the short
-# --max-time in taos-graceful-stop.sh.
+# No ExecStop: update restarts and manual restarts must not drain agents.
+# Real reboots/shutdowns drain via taos-pre-shutdown.service (oneshot, Before=shutdown.target).
 TimeoutStopSec=45
 # Private scratch dir for taos-graceful-stop's dedupe stamp: /run/taos for this
 # system unit, $XDG_RUNTIME_DIR/taos for the user-unit fallback, owned by the
