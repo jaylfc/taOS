@@ -64,6 +64,7 @@ _ALLOWED_DEP_NAMES = {
     "require_admin",
     "require_owner_or_admin",
     "require_agent_owner_or_admin",
+    "require_session_user",
     "_require_admin_or_local_token",
     "_require_admin_or_loopback",
     "_require_admin",

@@ -1,6 +1,12 @@
-import pytest
 from unittest.mock import AsyncMock, patch
+
+import pytest
+import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+
+from tinyagentos.app import create_app
+from tinyagentos.broker.clients.keenable import public_fallback_enabled
+from tinyagentos.routes.broker import _get_keenable_user_id
 
 
 async def _request_grant(client, provider_id="exa", agent="agent-x", **kw):
@@ -407,3 +413,111 @@ async def test_approve_denied_grant_400(client):
         f"/api/broker/grants/{gid}/approve", json={"window_seconds": 3600}
     )
     assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Per-person broker preferences: resolve the signed-in caller, never "user".
+#
+# These tests exercise _get_keenable_user_id directly (the keenable routes are
+# agent-bound, so a session caller is simulated with a request object) and then
+# confirm public_fallback_enabled reads the resolved caller's own preference.
+# ---------------------------------------------------------------------------
+
+
+def _add_member(app, username: str) -> str:
+    """Inject a non-admin member into the auth store and return their user_id."""
+    auth = app.state.auth
+    invite_code = auth.add_user_invite(username, invited_by_username="admin")
+    auth.complete_invite(
+        username=username,
+        invite_code=invite_code,
+        full_name=username.title(),
+        email=f"{username}@test.local",
+        password=f"{username}pass1",
+    )
+    return auth.find_user(username)["id"]
+
+
+class _FakeState:
+    """Minimal request.state stand-in for unit-testing _get_keenable_user_id."""
+
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+class _FakeRequest:
+    """Minimal request stand-in carrying app state and request.state."""
+
+    def __init__(self, app, *, user_id=None, agent_name=None, via=None):
+        self.app = app
+        self.state = _FakeState(user_id=user_id, agent_name=agent_name, via=via)
+
+
+@pytest_asyncio.fixture
+async def broker_app(tmp_path):
+    """App with desktop_settings initialised, an admin, and members alice/bob."""
+    app = create_app(data_dir=tmp_path / "data", catalog_dir=tmp_path / "catalog")
+    await app.state.desktop_settings.init()
+    if not app.state.auth.is_configured():
+        app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
+    _add_member(app, "alice")
+    _add_member(app, "bob")
+    app.state._startup_complete = True
+    yield app
+    await app.state.desktop_settings.close()
+
+
+@pytest.mark.asyncio
+class TestKeeenablePerPersonUserId:
+    """_get_keenable_user_id must resolve the signed-in caller, never "user"."""
+
+    async def _pref(self, app, user_id: str, value: bool) -> None:
+        await app.state.desktop_settings.save_preference(
+            user_id, "broker", {"keenable_public_fallback": value}
+        )
+
+    async def test_session_caller_reads_own_preference(self, broker_app):
+        """Two members with different broker preferences each read their own."""
+        app = broker_app
+        alice_uid = app.state.auth.find_user("alice")["id"]
+        bob_uid = app.state.auth.find_user("bob")["id"]
+        await self._pref(app, alice_uid, True)
+        await self._pref(app, bob_uid, False)
+
+        req_alice = _FakeRequest(app, user_id=alice_uid, via="session")
+        req_bob = _FakeRequest(app, user_id=bob_uid, via="session")
+        assert await _get_keenable_user_id(req_alice) == alice_uid
+        assert await _get_keenable_user_id(req_bob) == bob_uid
+        # Each request reads ITS caller's preference, never a shared scope.
+        assert await public_fallback_enabled(
+            app.state.desktop_settings, await _get_keenable_user_id(req_alice)
+        ) is True
+        assert await public_fallback_enabled(
+            app.state.desktop_settings, await _get_keenable_user_id(req_bob)
+        ) is False
+
+    async def test_agent_caller_reads_owner_preference(self, broker_app):
+        """An agent's request reads its owner's preference."""
+        app = broker_app
+        owner_uid = app.state.auth.find_user("admin")["id"]
+        await self._pref(app, owner_uid, True)
+        with patch(
+            "tinyagentos.routes.broker.resolve_agent_owner",
+            AsyncMock(return_value=owner_uid),
+        ):
+            req = _FakeRequest(app, agent_name="helper-1", via="local_token")
+            assert await _get_keenable_user_id(req) == owner_uid
+            assert await public_fallback_enabled(
+                app.state.desktop_settings, owner_uid
+            ) is True
+
+    async def test_unknown_caller_gets_system_default(self, broker_app):
+        """An unknown caller reads the shipped system default (primary owner)."""
+        app = broker_app
+        primary_uid = app.state.auth.get_primary_user()["id"]
+        await self._pref(app, primary_uid, True)
+        req = _FakeRequest(app)  # no session user, no agent bound
+        assert await _get_keenable_user_id(req) == primary_uid
+        assert await public_fallback_enabled(
+            app.state.desktop_settings, primary_uid
+        ) is True

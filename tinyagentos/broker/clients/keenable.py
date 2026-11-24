@@ -64,15 +64,16 @@ async def keenable_fetch(
     return resp.json()
 
 
-async def public_fallback_enabled(desktop_settings) -> bool:
+async def public_fallback_enabled(desktop_settings, user_id: str) -> bool:
     """Return whether Keenable keyless public fallback is enabled.
 
     Reads the ``keenable_public_fallback`` boolean from the ``broker``
-    namespace in the user preferences store. Missing or non-dict preferences
-    return ``False``. Only the boolean ``True`` enables the fallback.
+    namespace in the system preferences store for the given user (typically
+    the primary admin). Missing or non-dict preferences return ``False``.
+    Only the boolean ``True`` enables the fallback.
     """
     try:
-        pref = await desktop_settings.get_preference("user", "broker")
+        pref = await desktop_settings.get_preference(user_id, "broker")
         if isinstance(pref, dict):
             return pref.get("keenable_public_fallback") is True
     except Exception:
