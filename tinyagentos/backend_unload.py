@@ -26,10 +26,14 @@ Registered backends:
 llama-cpp and vllm are single-model servers and stay not unload-capable;
 hailo-ollama is a deliberate follow-up, not silently included.
 
-Caller contract: a model with a request in flight is never unloaded. That
-rule lives in one place — the arbiter's eviction path, which only selects
-candidates with no active ops (never-evict-active is structural, plan
-section 2); this module is a primitive and has no in-flight signal.
+Caller contract: a model with a request in flight must never be
+unloaded, and this module cannot check that — it is a primitive with no
+in-flight signal. The rule lives in one place: the caller (the arbiter's
+eviction path, per the plan) must only select candidates with no active
+ops (``active_ops == 0``; never-evict-active is structural, plan
+section 2). No production caller exists in this tree yet, so until that
+wiring lands nothing enforces the rule; it is stated here so the caller
+is built against it.
 """
 from __future__ import annotations
 
@@ -81,6 +85,9 @@ def unload_capable(backend_type: str) -> bool:
 async def unload_model(client: httpx.AsyncClient, *, backend_type: str,
                        base_url: str, model: str, timeout: float = 15.0) -> bool:
     """Ask the backend to unload *model* now. Returns True on 2xx.
+
+    The caller must guarantee *model* has no request in flight (see the
+    module docstring's caller contract); this function does not check.
 
     Never raises: an unsupported type logs that it is not unload-capable
     and returns False without a request (so "cannot unload" is
