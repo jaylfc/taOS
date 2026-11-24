@@ -22,16 +22,17 @@ here=$(cd "$(dirname "$0")" && pwd)
 sway=/opt/taos/compositor/bin/sway
 restart=0
 reload=0
-pass=""
+pass_args=""
+add() { for a in "$@"; do pass_args="$pass_args '$(printf %s "$a" | sed "s/'/'\\''/g")'"; done; }
 root=""
 while [ $# -gt 0 ]; do
     case $1 in
         --sway) sway=${2:?}; shift 2 ;;
-        --root) root=${2:?}; pass="$pass --root $2"; shift 2 ;;
+        --root) root=${2:?}; add --root "$2"; shift 2 ;;
         --restart-pieces) restart=1; shift ;;
         --reload) reload=1; shift ;;
-        --shell-build|--apps-build|--validate-with) pass="$pass $1 ${2:?}"; shift 2 ;;
-        --check-only) pass="$pass --check-only"; shift ;;
+        --shell-build|--apps-build|--validate-with) add "$1" "${2:?}"; shift 2 ;;
+        --check-only) add --check-only; shift ;;
         -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
         *) echo "install-update: unknown option $1" >&2; exit 2 ;;
     esac
@@ -39,8 +40,8 @@ done
 [ "$reload" -eq 0 ] || [ "$restart" -eq 1 ] || { echo "install-update: --reload goes with --restart-pieces" >&2; exit 2; }
 [ -z "$root" ] || { [ "$restart" -eq 0 ] || { echo "install-update: --restart-pieces does not combine with --root (a dry run)" >&2; exit 2; }; }
 
-# shellcheck disable=SC2086
-sh "$here/install-desktop.sh" --sway "$sway" $pass
+eval "set -- $pass_args"
+sh "$here/install-desktop.sh" --sway "$sway" "$@"
 
 if [ "$restart" -eq 1 ]; then
     user=${SUDO_USER:-}

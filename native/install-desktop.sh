@@ -154,9 +154,20 @@ cp "$stage"/sway.d/*.conf "$vroot/sway.d/"
 # the config's absolute includes point into the temp copy; the person's own ~/.config is not read
 sed -e "s|/etc/taos/sway.d|$vroot/sway.d|g" -e "s|~/.config/taos|$vroot/home/.config/taos|g" \
     -e "s|\$HOME/.config/taos|$vroot/home/.config/taos|g" "$stage/sway-config" >"$vroot/config"
+# The GPU render node the headless validation start uses: TAOS_VALIDATE_RENDER_NODE, else the first one present.
+vnode=${TAOS_VALIDATE_RENDER_NODE:-}
+if [ -z "$vnode" ]; then
+    for n in /dev/dri/renderD*; do [ -c "$n" ] && { vnode=$n; break; }; done
+fi
+if [ -z "$vnode" ] || [ ! -c "$vnode" ]; then
+    echo "install-desktop: no GPU render node (/dev/dri/renderD*) found${TAOS_VALIDATE_RENDER_NODE:+, and TAOS_VALIDATE_RENDER_NODE=$TAOS_VALIDATE_RENDER_NODE is not a device}." >&2
+    echo "  The compositor config is checked by starting the compositor headless, which needs a render node." >&2
+    echo "  Set TAOS_VALIDATE_RENDER_NODE to one, or run on a machine with a GPU driver loaded." >&2
+    exit 1
+fi
 validate_with() { # <sway binary>: sets vout, vrc, vread (1 when the compositor got as far as reading the config)
     vout=$(env -i PATH="$PATH" HOME="$vroot/home" XDG_RUNTIME_DIR="$vroot/run" WLR_BACKENDS=headless \
-               WLR_RENDER_DRM_DEVICE=${TAOS_VALIDATE_RENDER_NODE:-$(ls /dev/dri/renderD* 2>/dev/null | head -n 1)} __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json WLR_LIBINPUT_NO_DEVICES=1 ${LD_LIBRARY_PATH:+LD_LIBRARY_PATH="$LD_LIBRARY_PATH"} \
+               WLR_RENDER_DRM_DEVICE=$vnode __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json WLR_LIBINPUT_NO_DEVICES=1 ${LD_LIBRARY_PATH:+LD_LIBRARY_PATH="$LD_LIBRARY_PATH"} \
                "$1" -C -d -c "$vroot/config" 2>&1) && vrc=0 || vrc=$?
     if printf '%s\n' "$vout" | grep -q -E 'Config command|Loading config|Read line'; then vread=1; else vread=0; fi
 }

@@ -35,7 +35,7 @@ SingleInstance::SingleInstance(const QString &appId, QObject *parent) : QObject(
     // Per user: the uid keeps two users on one host from activating each other.
     const QString name = u"taos-%1-%2"_s.arg(appId).arg(quint32(::getuid()));
     // The socket lives in the user's private runtime directory, never in the shared /tmp. Without one (no login session)
-    // the plain name falls back to Qt's temp directory.
+    // there is no single-instance socket at all: the app runs, just not single (m_name stays empty, acquire says so once).
     const QString rt = qEnvironmentVariable("XDG_RUNTIME_DIR");
     if (!rt.isEmpty()) {
         const QString dir = rt + u"/taos"_s;
@@ -45,8 +45,6 @@ SingleInstance::SingleInstance(const QString &appId, QObject *parent) : QObject(
         // a unix socket path holds about 107 bytes: a long runtime directory or app id gets a short, stable file name
         if (QFile::encodeName(m_name).size() > 100)
             m_name = dir + u"/s-"_s + QString::fromLatin1(QCryptographicHash::hash(name.toUtf8(), QCryptographicHash::Sha1).toHex().left(16)) + u".sock"_s;
-    } else {
-        m_name = name;
     }
 }
 
@@ -58,6 +56,10 @@ SingleInstance::~SingleInstance()
 
 bool SingleInstance::acquire(const QStringList &args)
 {
+    if (m_name.isEmpty()) {
+        qWarning("taosqt: no XDG_RUNTIME_DIR: running without single-instance (no socket is made in a shared directory)");
+        return true;
+    }
     {
         QLocalSocket probe;
         probe.connectToServer(m_name);

@@ -60,9 +60,22 @@ case ${1:-apply} in
         # leaves when its compositor socket is gone, so stopping and starting the session never piles them up.
         lock=${XDG_RUNTIME_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}}/taos-window-session-hook.lock
         mkdir -p "${lock%/*}" 2>/dev/null
-        if command -v flock >/dev/null 2>&1; then
+        if [ -z "${TAOS_HOOK_NO_FLOCK:-}" ] && command -v flock >/dev/null 2>&1; then
             exec 9>"$lock" || exit 1
             flock -w 5 9 || exit 0
+        else
+            # No flock: a lock directory holding our pid. mkdir is atomic; a lock whose pid is gone is stale and is taken over.
+            ld="$lock.d"
+            i=0
+            until mkdir "$ld" 2>/dev/null; do
+                old=$(cat "$ld/pid" 2>/dev/null)
+                if [ -n "$old" ] && ! kill -0 "$old" 2>/dev/null; then rm -rf "$ld"; continue; fi
+                i=$((i + 1)); [ "$i" -ge 10 ] && exit 0
+                sleep 0.5
+            done
+            echo $$ >"$ld/pid"
+            trap 'rm -rf "$ld"' EXIT
+            trap 'exit 0' INT TERM HUP
         fi
         file=${TAOS_APPEARANCE:-${XDG_CONFIG_HOME:-$HOME/.config}/taos/appearance.json}
         last=""

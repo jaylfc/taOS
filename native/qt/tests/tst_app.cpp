@@ -63,6 +63,19 @@ private Q_SLOTS:
         qunsetenv("XDG_RUNTIME_DIR");
     }
 
+    void withoutARuntimeDirThereIsNoSocketAndTheAppRunsAnyway()
+    {
+        qunsetenv("XDG_RUNTIME_DIR");
+        const QString id = u"my.taos.noruntime-%1"_s.arg(QCoreApplication::applicationPid());
+        SingleInstance a(id);
+        SingleInstance b(id);
+        QVERIFY(a.acquire());
+        QVERIFY(b.acquire());                                   // not single, but not refused either
+        QVERIFY(a.serverName().isEmpty());
+        QVERIFY(!QFile::exists(QDir::tempPath() + u"/"_s + u"taos-%1-%2"_s.arg(id).arg(quint32(::getuid()))));
+        QVERIFY(!QFile::exists(u"/tmp/taos-%1-%2"_s.arg(id).arg(quint32(::getuid()))));
+    }
+
     void desktopTemplateCarriesTheAppIdAsStartupWMClass()
     {
         QFile f(QStringLiteral(TAOS_TEST_SRC_DIR "/../app/app.desktop.in"));
