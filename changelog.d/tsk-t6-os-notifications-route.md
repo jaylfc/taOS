@@ -1,0 +1,3 @@
+### Added
+
+- New `POST /api/notifications/os` route: the desktop session's notification daemon posts every freedesktop notification it accepts here, and it lands in the person's own Notifications list (source `os:<app>`, so it can be told apart from mirrored and agent rows) and on their live event stream. It takes a client-chosen id so a retry stores the row once, an optional replaced id (updated in place), urgency, icon reference, actions and the time the app raised it. Loopback callers only, always as the signed-in person; bodies over 16 KiB are refused, and each person is limited to 120 posts a minute.

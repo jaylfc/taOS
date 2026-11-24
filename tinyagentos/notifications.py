@@ -15,6 +15,10 @@ VALID_LEVELS = frozenset({"info", "success", "warning", "error"})
 
 logger = logging.getLogger(__name__)
 
+
+class OsIdConflict(Exception):
+    """An OS notification id was reused with different content (a replay must be identical)."""
+
 # Sources that should be pinned at the top of the notifications feed.
 # These are grant/consent requests that must stay visible until acted upon.
 PINNED_SOURCES = ("auth_requests", "agent_scope_requests")
@@ -43,6 +47,13 @@ CREATE TABLE IF NOT EXISTS notification_user_state (
     read_at INTEGER,
     archived_at INTEGER,
     PRIMARY KEY (notification_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS os_notification_ids (
+    user_id TEXT NOT NULL,
+    client_id TEXT NOT NULL,
+    notification_id INTEGER NOT NULL,
+    digest TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (user_id, client_id)
 );
 """
 
@@ -84,6 +95,7 @@ class NotificationStore(BaseStore):
         self._event_emitter = None  # async callable: (row: dict) -> None
         self._push_sender = None  # async callable: (row: dict) -> None
         self._push_tasks: set = set()  # strong refs so fire-and-forget tasks aren't GC'd
+        self._os_lock = asyncio.Lock()  # serialises add_os (idempotency check + insert)
 
     def set_webhook_notifier(self, notifier) -> None:
         """Attach a WebhookNotifier to fire on every notification."""
@@ -186,8 +198,13 @@ class NotificationStore(BaseStore):
         data: dict | None = None,
         user_id: str | None = None,
         webhook: bool = True,
-    ) -> None:
+        timestamp: int | None = None,
+        os_client_id: str | None = None,
+        os_digest: str = "",
+    ) -> int | None:
         """Create a notification row and fan out to emitters + push.
+
+        Returns the new row id, or None when the source is muted.
 
         Args:
             user_id: Scope the notification to a specific user. When None
@@ -198,15 +215,26 @@ class NotificationStore(BaseStore):
             webhook: Also post to the configured webhooks (default). A caller
                 writing one event as several per-user rows passes False on all
                 but one row, so a webhook sees the event once.
+            timestamp: Row time (epoch seconds); defaults to now. A buffered
+                OS notification that reaches the controller late keeps the time
+                the person actually saw it raised.
+            os_client_id: The client-chosen id of an OS notification. It is
+                recorded for ``user_id`` in the SAME transaction as the row, so
+                a crash can never leave a row without its idempotency record.
         """
         if await self._is_event_muted(source):
-            return
-        ts = int(time.time())
+            return None
+        ts = int(time.time()) if timestamp is None else int(timestamp)
         data_json = json.dumps(data) if data is not None else None
         cursor = await self._db.execute(
             "INSERT INTO notifications (timestamp, level, title, message, source, data, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (ts, level, title, message, source, data_json, user_id),
         )
+        if os_client_id is not None:
+            await self._db.execute(
+                "INSERT INTO os_notification_ids (user_id, client_id, notification_id, digest) VALUES (?, ?, ?, ?)",
+                (user_id or "", os_client_id, cursor.lastrowid, os_digest),
+            )
         await self._db.commit()
         # Fire webhook notifications in the background
         if webhook and self._webhook_notifier:
@@ -226,6 +254,11 @@ class NotificationStore(BaseStore):
             "data": data,
             "user_id": user_id,
         }
+        await self._publish(row)
+        return cursor.lastrowid
+
+    async def _publish(self, row: dict) -> None:
+        """Fan a stored row out to the SSE emitter and web-push. Best-effort."""
         if self._event_emitter:
             try:
                 await self._event_emitter(row)
@@ -243,6 +276,95 @@ class NotificationStore(BaseStore):
                 task.add_done_callback(self._push_tasks.discard)
             except Exception:
                 logger.warning("NotificationStore: could not schedule web-push", exc_info=True)
+
+    async def add_os(
+        self,
+        *,
+        user_id: str,
+        client_id: str,
+        title: str,
+        message: str,
+        level: str,
+        source: str,
+        data: dict,
+        timestamp: int | None = None,
+        replaces: str | None = None,
+        digest: str = "",
+    ) -> tuple[int | None, bool]:
+        """Store one OS-originated (freedesktop) notification for ``user_id``.
+
+        Idempotent on ``(user_id, client_id)``: a retry of the same id returns
+        the row the first call made and creates nothing (even if the person has
+        since read or dismissed it). Ids are per person, so two people can use
+        the same id. When ``replaces`` names an earlier client id of the same
+        person the row is updated in place (and made unread again) instead of
+        a new one being created. Webhooks never see OS rows.
+
+        Raises ``OsIdConflict`` when ``client_id`` was used before with a different
+        ``digest`` (the fields that matter); a true retry is byte-equivalent.
+        Returns ``(row id, created)``; ``(None, False)`` when the source is muted.
+
+        The id records live exactly as long as their rows: ``cleanup()`` prunes
+        them together. The daemon stamps ``timestamp`` with the time the app raised
+        the notification and the route clamps it to the last 30 days, which is the
+        retention window, so a retry can only outlive its record after 30 days of
+        failed delivery; it then yields one fresh row that ages out again.
+        """
+        async with self._os_lock:
+            async with self._db.execute(
+                "SELECT notification_id, digest FROM os_notification_ids WHERE user_id = ? AND client_id = ?",
+                (user_id, client_id),
+            ) as cur:
+                found = await cur.fetchone()
+            if found:
+                if found[1] != digest:
+                    raise OsIdConflict(client_id)
+                return found[0], False
+            if await self._is_event_muted(source):
+                return None, False
+            if replaces:
+                async with self._db.execute(
+                    "SELECT notification_id FROM os_notification_ids WHERE user_id = ? AND client_id = ?",
+                    (user_id, replaces),
+                ) as cur:
+                    target = await cur.fetchone()
+                if target:
+                    ts = int(time.time()) if timestamp is None else int(timestamp)
+                    upd = await self._db.execute(
+                        "UPDATE notifications SET timestamp = ?, level = ?, title = ?, message = ?, "
+                        "source = ?, data = ?, read = 0, archived = 0 WHERE id = ? AND user_id = ?",
+                        (ts, level, title, message, source, json.dumps(data), target[0], user_id),
+                    )
+                    if upd.rowcount == 0:
+                        # The row was removed (retention): the replacement must not be lost.
+                        # Store it as a new row and point the old id at it.
+                        rid = await self.add(
+                            title, message, level=level, source=source, data=data, user_id=user_id,
+                            webhook=False, timestamp=timestamp, os_client_id=client_id, os_digest=digest,
+                        )
+                        if rid is not None:
+                            await self._db.execute(
+                                "UPDATE os_notification_ids SET notification_id = ? WHERE user_id = ? AND client_id = ?",
+                                (rid, user_id, replaces),
+                            )
+                            await self._db.commit()
+                        return rid, rid is not None
+                    await self._db.execute(
+                        "INSERT INTO os_notification_ids (user_id, client_id, notification_id, digest) VALUES (?, ?, ?, ?)",
+                        (user_id, client_id, target[0], digest),
+                    )
+                    await self._db.commit()
+                    await self._publish({
+                        "id": target[0], "timestamp": ts, "level": level, "title": title,
+                        "message": message, "read": False, "source": source, "data": data,
+                        "user_id": user_id,
+                    })
+                    return target[0], False
+            rid = await self.add(
+                title, message, level=level, source=source, data=data, user_id=user_id,
+                webhook=False, timestamp=timestamp, os_client_id=client_id, os_digest=digest,
+            )
+            return rid, rid is not None
 
     async def list(
         self,
@@ -522,6 +644,10 @@ class NotificationStore(BaseStore):
         cutoff = int(time.time()) - (max_age_days * 86400)
         cursor = await self._db.execute(
             "DELETE FROM notifications WHERE timestamp < ? AND archived = 0", (cutoff,)
+        )
+        # Drop the OS-notification id records of rows that are gone, with the rows.
+        await self._db.execute(
+            "DELETE FROM os_notification_ids WHERE notification_id NOT IN (SELECT id FROM notifications)"
         )
         await self._db.commit()
         return cursor.rowcount
