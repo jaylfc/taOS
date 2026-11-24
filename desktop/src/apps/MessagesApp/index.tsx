@@ -52,6 +52,7 @@ import { useChatNotifications } from "../chat/useChatNotifications";
 import { MessageInput } from "../chat/MessageInput";
 import { describeChannelParty } from "../chat/channel-party";
 import { MessageList, type MessageListHandle } from "../chat/MessageList";
+import { AttachmentGallery } from "../chat/AttachmentGallery";
 import {
   pinMessage, unpinMessage, listPins,
   editMessage as apiEditMessage, deleteMessage as apiDeleteMessage,
@@ -210,11 +211,48 @@ export interface DecisionContentBlock {
   decision_id: string;
 }
 
+export interface CodeContentBlock {
+  kind: "code";
+  code: string;
+  language?: string;
+}
+
+export interface DiffContentBlock {
+  kind: "diff";
+  /** Unified-diff text (---/+++ and @@ headers included when available). */
+  diff: string;
+  filename?: string;
+}
+
+export interface TableContentBlock {
+  kind: "table";
+  caption?: string;
+  headers?: string[];
+  rows: string[][];
+}
+
+export interface ImageContentBlock {
+  kind: "image";
+  url: string;
+  filename?: string;
+  mime_type?: string;
+  size?: number;
+}
+
+export interface FileContentBlock {
+  kind: "file";
+  url: string;
+  filename?: string;
+  mime_type?: string;
+  size?: number;
+}
+
 /**
 * Structured message content for taOStalk session turns.
-* Known kinds are handled by dedicated block components (separate cards);
-* any unrecognized kind falls through to the unknown-block fallback in
-* renderContent, which is the slice-2 seam for the renderer registry.
+* Each known kind is rendered by the renderer registered for it in the
+* content-block renderer registry below (taOStalk slice 2); any
+* unrecognized kind falls through to the unknown-block fallback in
+* renderContentBlock.
 */
 export type ContentBlock =
   | TextContentBlock
@@ -223,6 +261,11 @@ export type ContentBlock =
   | StatusContentBlock
   | QuestionContentBlock
   | DecisionContentBlock
+  | CodeContentBlock
+  | DiffContentBlock
+  | TableContentBlock
+  | ImageContentBlock
+  | FileContentBlock
   | { kind: string; [key: string]: unknown };
 
 interface Message {
@@ -275,45 +318,60 @@ export function relativeTime(ts: number | string, nowMs: number = Date.now()): s
   return new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
 
+/* ------------------------------------------------------------------ */
+/*  Content-block renderer registry (taOStalk slice 2)                 */
+/* ------------------------------------------------------------------ */
+
 /**
-* Dispatch a single content block to its renderer. All four slice-1 kinds now
-* have dedicated components: text and thinking (cards 3+4), tool call and
-* status/question (cards 5+6). Any unrecognised kind still falls through to
-* the unknown-block fallback -- the slice-2 seam for the renderer registry.
+* A content-block renderer: given a block and its position within the
+* message, return the node to render. Renderers are registered per block
+* `kind` in the registry below -- the pluggable set of renderers the
+* taOStalk design spec calls for ("one per block type ... Adding a new
+* presentable type = adding a renderer + a mapper entry"). The built-in
+* registrations live beside the block components further down this file.
+*/
+export type ContentBlockRenderer = (
+  block: ContentBlock,
+  index: number,
+) => React.ReactNode;
+
+const contentBlockRenderers = new Map<string, ContentBlockRenderer>();
+
+/** Register (or replace) the renderer for a content-block kind. */
+export function registerContentBlockRenderer(
+  kind: string,
+  renderer: ContentBlockRenderer,
+): void {
+  contentBlockRenderers.set(kind, renderer);
+}
+
+/** The renderer registered for a kind, or undefined if none is. */
+export function getContentBlockRenderer(
+  kind: string,
+): ContentBlockRenderer | undefined {
+  return contentBlockRenderers.get(kind);
+}
+
+/**
+* Dispatch a single content block through the renderer registry. Any kind
+* without a registered renderer falls through to the unknown-block
+* fallback, so an unrecognised block degrades to a muted label instead of
+* breaking the message render.
 */
 function renderContentBlock(block: ContentBlock, index: number): React.ReactElement {
-  switch (block.kind) {
-    case "text": {
-      const textBlock = block as TextContentBlock;
-      return <TextBlock block={textBlock} index={index} key={`block-${index}`} />;
-    }
-    case "thinking": {
-      const thinkingBlock = block as ThinkingContentBlock;
-      return <ThinkingBlock block={thinkingBlock} index={index} key={`block-${index}`} />;
-    }
-    case "tool_call":
-      return (
-        <ToolCallBlock block={block as ToolCallContentBlock} key={`block-${index}`} />
-      );
-    case "status":
-      return (
-        <StatusBlock block={block as StatusContentBlock} key={`block-${index}`} />
-      );
-    case "question":
-      return (
-        <StatusBlock block={block as QuestionContentBlock} key={`block-${index}`} />
-      );
-    case "decision":
-      return (
-        <DecisionBlock block={block as DecisionContentBlock} key={`block-${index}`} />
-      );
-    default:
-      return (
-        <div key={`block-${index}`} className="text-shell-text-tertiary text-[12px]">
-          unsupported block: {block.kind}
-        </div>
-      );
+  const renderer = contentBlockRenderers.get(block.kind);
+  if (renderer) {
+    return (
+      <React.Fragment key={`block-${index}`}>
+        {renderer(block, index)}
+      </React.Fragment>
+    );
   }
+  return (
+    <div key={`block-${index}`} className="text-shell-text-tertiary text-[12px]">
+      unsupported block: {block.kind}
+    </div>
+  );
 }
 
 export function renderContent(text: string, content_blocks?: ContentBlock[]) {
@@ -808,6 +866,188 @@ export function DecisionBlock({ block }: { block: DecisionContentBlock }): React
     </div>
   );
 }
+
+/**
+* DiffBlock -- renders a {kind:"diff"} content block (a unified diff, e.g.
+* a file edit streamed from a coding session) as a small viewer: a header
+* with the filename and the added/removed line counts, then the diff lines
+* classified and tinted per line (additions green, deletions red, hunk
+* headers dimmed). Header lines (---/+++) are classified before the +/-
+* prefixes so they never pollute the counts.
+*/
+type DiffLineKind = "add" | "del" | "hunk" | "header" | "meta" | "context";
+
+function classifyDiffLine(line: string): DiffLineKind {
+  if (line.startsWith("@@")) return "hunk";
+  if (line.startsWith("+++") || line.startsWith("---")) return "header";
+  if (line.startsWith("+")) return "add";
+  if (line.startsWith("-")) return "del";
+  if (line.startsWith("\\")) return "meta";
+  return "context";
+}
+
+const diffLineClasses: Record<DiffLineKind, string> = {
+  add: "bg-emerald-400/10 text-emerald-200",
+  del: "bg-red-400/10 text-red-200",
+  hunk: "bg-shell-surface text-shell-text-tertiary",
+  header: "text-shell-text-secondary font-semibold",
+  meta: "text-shell-text-tertiary italic",
+  context: "text-shell-text-secondary",
+};
+
+export function DiffBlock({ block }: { block: DiffContentBlock }): React.ReactElement {
+  const rawLines = block.diff.split("\n");
+  // A trailing newline leaves a phantom empty final line; drop it.
+  if (rawLines.length > 0 && rawLines[rawLines.length - 1] === "") rawLines.pop();
+  const lines = rawLines.map((line) => ({ line, kind: classifyDiffLine(line) }));
+  const adds = lines.filter((l) => l.kind === "add").length;
+  const dels = lines.filter((l) => l.kind === "del").length;
+  return (
+    <div
+      data-diff-block="true"
+      className="rounded-xl border border-shell-border bg-shell-bg-deep overflow-hidden"
+    >
+      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-shell-border text-[12px]">
+        <span className="font-mono font-semibold text-shell-text-secondary truncate">
+          {block.filename ?? "diff"}
+        </span>
+        <span className="ml-auto shrink-0 font-mono text-[11px]">
+          <span className="text-emerald-300">+{adds}</span>{" "}
+          <span className="text-red-300">-{dels}</span>
+        </span>
+      </div>
+      <div className="overflow-x-auto py-1 font-mono text-[12px] leading-relaxed">
+        {lines.length === 0 ? (
+          <div className="px-3 py-1 text-shell-text-tertiary">(no changes)</div>
+        ) : (
+          lines.map(({ line, kind }, i) => (
+            <div
+              key={i}
+              data-diff-line={kind}
+              className={`px-3 whitespace-pre ${diffLineClasses[kind]}`}
+            >
+              {line === "" ? " " : line}
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+* TableBlock -- renders a {kind:"table"} content block (structured
+* headers + rows, e.g. a results table streamed from a session) with the
+* same table styling the markdown renderer applies to GFM tables, so a
+* table block and a markdown table read identically.
+*/
+export function TableBlock({ block }: { block: TableContentBlock }): React.ReactElement {
+  return (
+    <div data-table-block="true" className="my-2">
+      {block.caption && (
+        <p className="mb-1 text-[12px] font-semibold text-shell-text-secondary">
+          {block.caption}
+        </p>
+      )}
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-left text-[13px]">
+          {block.headers && block.headers.length > 0 && (
+            <thead>
+              <tr>
+                {block.headers.map((h, i) => (
+                  <th key={i} className="border-b border-shell-border px-2 py-1 font-semibold">
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+          )}
+          <tbody>
+            {block.rows.map((row, ri) => (
+              <tr key={ri}>
+                {row.map((cell, ci) => (
+                  <td key={ci} className="border-b border-shell-border px-2 py-1 align-top">
+                    {cell}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/**
+* MediaBlock -- renders a {kind:"image"} or {kind:"file"} content block by
+* adapting it to an AttachmentRecord and reusing the message attachment
+* gallery (the same component that renders message-level attachments), so
+* block-shaped media gets the inline-image / file-chip treatment --
+* including the lightbox -- instead of a second media implementation.
+* Message-level attachments (Message.attachments) are unaffected.
+*/
+function mediaBlockToAttachment(block: ImageContentBlock | FileContentBlock): AttachmentRecord {
+  const filename =
+    block.filename ??
+    block.url.split("/").pop() ??
+    (block.kind === "image" ? "image" : "file");
+  return {
+    filename,
+    mime_type:
+      block.mime_type ??
+      (block.kind === "image" ? "image/png" : "application/octet-stream"),
+    size: block.size ?? 0,
+    url: block.url,
+    source: "agent-workspace",
+  };
+}
+
+export function MediaBlock({
+  block,
+}: {
+  block: ImageContentBlock | FileContentBlock;
+}): React.ReactElement {
+  return <AttachmentGallery attachments={[mediaBlockToAttachment(block)]} />;
+}
+
+/* Built-in renderer registrations: one per known block kind. The six
+* slice-1 kinds keep exactly the components the old dispatch switch used;
+* code/diff/table/image/file are the slice-2 additions. */
+registerContentBlockRenderer("text", (block, index) => (
+  <TextBlock block={block as TextContentBlock} index={index} />
+));
+registerContentBlockRenderer("thinking", (block, index) => (
+  <ThinkingBlock block={block as ThinkingContentBlock} index={index} />
+));
+registerContentBlockRenderer("tool_call", (block) => (
+  <ToolCallBlock block={block as ToolCallContentBlock} />
+));
+registerContentBlockRenderer("status", (block) => (
+  <StatusBlock block={block as StatusContentBlock} />
+));
+registerContentBlockRenderer("question", (block) => (
+  <StatusBlock block={block as QuestionContentBlock} />
+));
+registerContentBlockRenderer("decision", (block) => (
+  <DecisionBlock block={block as DecisionContentBlock} />
+));
+registerContentBlockRenderer("code", (block) => {
+  const codeBlock = block as CodeContentBlock;
+  return <CodeBlock code={codeBlock.code} language={codeBlock.language} />;
+});
+registerContentBlockRenderer("diff", (block) => (
+  <DiffBlock block={block as DiffContentBlock} />
+));
+registerContentBlockRenderer("table", (block) => (
+  <TableBlock block={block as TableContentBlock} />
+));
+registerContentBlockRenderer("image", (block) => (
+  <MediaBlock block={block as ImageContentBlock} />
+));
+registerContentBlockRenderer("file", (block) => (
+  <MediaBlock block={block as FileContentBlock} />
+));
 
 // Best-effort per-channel draft storage. Drafts are user input that may
 // contain sensitive material; they are kept in localStorage (the same
