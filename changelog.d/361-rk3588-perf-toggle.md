@@ -1,0 +1,3 @@
+### Added
+
+- **RK3588 Performance mode toggle in Settings (#361)** — Settings gains a Performance section, shown only when hardware detection reports an RK3588 deployment, with a toggle over the `taos-rk3588-perf.service` unit (installed and enabled by default on Rockchip boards). `GET`/`PUT /api/settings/rk3588-performance` report board support, unit presence and the unit's enabled/active state; flipping the switch runs `systemctl enable --now` / `disable --now`, so the devfreq governors change immediately and the choice persists across boots. The rk-llama.cpp unit written by `scripts/install-rk-llama-cpp.sh` now also carries the issue's tuned defaults: `Environment=HYBRID_PATTERN=INT8_STANDARD` and `llama-server` pinned to the big A76 cores via `taskset -c 4-7`.
