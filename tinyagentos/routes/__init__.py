@@ -382,6 +382,9 @@ def register_all_routers(app):
     from tinyagentos.routes.disk_quota import router as disk_quota_router
     app.include_router(disk_quota_router, dependencies=_csrf)
 
+    from tinyagentos.routes.storage import router as storage_router
+    app.include_router(storage_router, dependencies=_csrf)
+
     from tinyagentos.routes.cast_discovery import router as cast_discovery_router
     app.include_router(cast_discovery_router, dependencies=_csrf)
 

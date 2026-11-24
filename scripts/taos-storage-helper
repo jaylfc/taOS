@@ -1,0 +1,347 @@
+#!/usr/bin/env python3
+"""taOS Storage Helper: privileged operations for storage engine.
+
+This script runs via passwordless sudo from the taOS controller.
+Allowed commands are strictly allowlisted to prevent arbitrary command execution.
+
+Commands:
+  partition-disk <by-id-path>          - Create GPT with single partition on disk
+  luks-format <part-path> <name> <key> - Format partition as LUKS2 with key file
+  luks-open <part-path> <name> <key>   - Open LUKS device
+  luks-close <name>                    - Close LUKS device
+  make-fs <device> <label>             - Create ext4 filesystem with label
+  mount-fs <mountpoint>                - Mount filesystem at mountpoint
+  unmount-fs <mountpoint>              - Unmount filesystem
+  write-crypttab <name> <dev> <key>    - Write /etc/crypttab entry
+  write-mount-unit <name> <dev> <mp> <encrypted> - Write systemd mount unit
+  remove-mount-unit <name>             - Remove systemd mount unit
+  get-mount-info <mountpoint>          - Get mount info
+"""
+from __future__ import annotations
+
+import argparse
+import logging
+import os
+import secrets
+import subprocess
+import sys
+from pathlib import Path
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="[taos-storage-helper] %(levelname)s %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+ALLOWED_COMMANDS = {
+    "partition-disk",
+    "luks-format",
+    "luks-open",
+    "luks-close",
+    "make-fs",
+    "mount-fs",
+    "unmount-fs",
+    "write-crypttab",
+    "write-fstab",
+    "write-mount-unit",
+    "remove-mount-unit",
+    "get-mount-info",
+}
+
+
+def run_cmd(cmd: list[str], check: bool = True, capture: bool = True) -> subprocess.CompletedProcess:
+    """Run a command and return result."""
+    logger.info("Running: %s", " ".join(cmd))
+    result = subprocess.run(cmd, capture_output=capture, text=True)
+    if result.stdout:
+        logger.debug("stdout: %s", result.stdout.strip())
+    if result.stderr:
+        logger.debug("stderr: %s", result.stderr.strip())
+    if check and result.returncode != 0:
+        raise subprocess.CalledProcessError(result.returncode, cmd, result.stdout, result.stderr)
+    return result
+
+
+def cmd_partition_disk(disk_path: str) -> int:
+    """Create GPT partition table with single partition covering whole disk."""
+    # Wipe any existing partition table
+    run_cmd(["wipefs", "-a", disk_path], check=False)
+
+    # Create GPT with single partition
+    run_cmd(["parted", "-s", disk_path, "mklabel", "gpt"])
+    run_cmd(["parted", "-s", disk_path, "mkpart", "primary", "0%", "100%"])
+    run_cmd(["parted", "-s", disk_path, "set", "1", "legacy_boot", "on"])
+
+    # Trigger udev to create partition symlinks
+    run_cmd(["udevadm", "settle"], check=False)
+    run_cmd(["partprobe", disk_path], check=False)
+    run_cmd(["udevadm", "settle"], check=False)
+
+    return 0
+
+
+def cmd_luks_format(part_path: str, name: str, key_file: str) -> int:
+    """Format partition as LUKS2 with random key file."""
+    # Generate random key
+    key = secrets.token_bytes(64)
+    key_b64 = secrets.token_urlsafe(64)  # Actually just use raw bytes
+
+    # Write key file (root-only, 0400)
+    key_dir = Path(key_file).parent
+    key_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    Path(key_file).write_bytes(key)
+    os.chmod(key_file, 0o400)
+
+    # Format LUKS2 with key file
+    run_cmd([
+        "cryptsetup", "luksFormat", "--type", "luks2",
+        "--key-file", "-", part_path
+    ], capture=False, check=True, input=key)
+
+    # Add key to LUKS (it's already the primary key)
+    logger.info("LUKS2 formatted: %s", part_path)
+    return 0
+
+
+def cmd_luks_open(part_path: str, name: str, key_file: str) -> int:
+    """Open LUKS device using key file."""
+    run_cmd([
+        "cryptsetup", "open", "--key-file", key_file,
+        part_path, name
+    ], capture=False)
+    logger.info("LUKS opened: %s -> /dev/mapper/%s", part_path, name)
+    return 0
+
+
+def cmd_luks_close(name: str) -> int:
+    """Close LUKS device."""
+    run_cmd(["cryptsetup", "close", name], capture=False, check=False)
+    logger.info("LUKS closed: %s", name)
+    return 0
+
+
+def cmd_make_fs(device: str, label: str) -> int:
+    """Create ext4 filesystem with label."""
+    run_cmd(["mkfs.ext4", "-F", "-L", label, device], capture=False)
+    logger.info("ext4 created on %s with label %s", device, label)
+    return 0
+
+
+def cmd_mount_fs(mountpoint: str) -> int:
+    """Mount filesystem at mountpoint."""
+    Path(mountpoint).mkdir(parents=True, exist_ok=True)
+    run_cmd(["mount", mountpoint], capture=False)
+    logger.info("Mounted: %s", mountpoint)
+    return 0
+
+
+def cmd_unmount_fs(mountpoint: str) -> int:
+    """Unmount filesystem."""
+    run_cmd(["umount", mountpoint], capture=False, check=False)
+    logger.info("Unmounted: %s", mountpoint)
+    return 0
+
+
+def cmd_write_crypttab(name: str, device: str, key_file: str) -> int:
+    """Write /etc/crypttab entry with key file and nofail."""
+    # Resolve device to stable by-id path
+    device_real = os.path.realpath(device)
+    by_id = None
+    by_id_dir = Path("/dev/disk/by-id")
+    if by_id_dir.exists():
+        for link in by_id_dir.iterdir():
+            try:
+                if os.path.realpath(link) == device_real:
+                    by_id = str(link)
+                    break
+            except OSError:
+                continue
+
+    use_device = by_id or device_real
+
+    entry = f"{name} {use_device} {key_file} luks,nofail\n"
+    crypttab = Path("/etc/crypttab")
+    content = crypttab.read_text() if crypttab.exists() else ""
+
+    # Remove any existing entry for this name
+    lines = [l for l in content.splitlines() if not l.strip().startswith(f"{name} ")]
+    lines.append(entry.strip())
+    crypttab.write_text("\n".join(lines) + "\n")
+    logger.info("Updated /etc/crypttab for %s", name)
+    return 0
+
+
+def cmd_write_mount_unit(name: str, device: str, mountpoint: str, encrypted: bool) -> int:
+    """Write systemd mount unit with nofail."""
+    # Resolve device to stable by-id or /dev/mapper path
+    if encrypted:
+        use_device = f"/dev/mapper/{name}"
+    else:
+        device_real = os.path.realpath(device)
+        by_id = None
+        by_id_dir = Path("/dev/disk/by-id")
+        if by_id_dir.exists():
+            for link in by_id_dir.iterdir():
+                try:
+                    if os.path.realpath(link) == device_real:
+                        by_id = str(link)
+                        break
+                except OSError:
+                    pass
+        use_device = by_id or device_real
+
+    unit_name = f"srv-taos-storage-{name.replace('-', '\\x2d')}.mount"
+    unit_path = Path(f"/etc/systemd/system/{unit_name}")
+
+    # Escape mountpoint for systemd
+    mp_escaped = mountpoint.replace("/", "\\x2f")
+
+    content = f"""[Unit]
+Description=taOS storage area {name}
+After=systemd-udev-settle.service
+{'After=' + f'srv-taos-storage-{name.replace("-", "\\x2d")}.mount' if False else ''}
+Requires=systemd-cryptsetup@{name}.service
+After=systemd-cryptsetup@{name}.service
+
+[Mount]
+What={use_device}
+Where={mountpoint}
+Type=ext4
+Options=defaults,nofail,x-systemd.requires=systemd-cryptsetup@{name}.service
+
+[Install]
+WantedBy=multi-user.target
+"""
+    if not encrypted:
+        content = content.replace(
+            "Requires=systemd-cryptsetup@{name}.service\nAfter=systemd-cryptsetup@{name}.service\n",
+            ""
+        ).replace(
+            ",x-systemd.requires=systemd-cryptsetup@{name}.service",
+            ""
+        )
+
+    unit_path.write_text(content)
+    run_cmd(["systemctl", "daemon-reload"], check=False)
+    run_cmd(["systemctl", "enable", unit_name], check=False)
+    logger.info("Created mount unit: %s", unit_path)
+    return 0
+
+
+def cmd_remove_mount_unit(name: str) -> int:
+    """Remove systemd mount unit."""
+    unit_name = f"srv-taos-storage-{name.replace('-', '\\x2d')}.mount"
+    unit_path = Path(f"/etc/systemd/system/{unit_name}")
+    if unit_path.exists():
+        run_cmd(["systemctl", "disable", unit_name], check=False)
+        unit_path.unlink()
+        run_cmd(["systemctl", "daemon-reload"], check=False)
+        logger.info("Removed mount unit: %s", unit_name)
+    return 0
+
+
+def cmd_get_mount_info(mountpoint: str) -> int:
+    """Get mount info as JSON."""
+    import json
+    result = run_cmd(["findmnt", "-J", "-o", "TARGET,SOURCE,FSTYPE,SIZE,AVAIL,USED", mountpoint])
+    if result.returncode == 0:
+        print(result.stdout)
+    else:
+        print(json.dumps({"error": "not mounted"}))
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="taOS Storage Helper")
+    parser.add_argument("command", choices=sorted(ALLOWED_COMMANDS))
+    parser.add_argument("args", nargs=argparse.REMAINDER)
+    args = parser.parse_args()
+
+    if args.command not in ALLOWED_COMMANDS:
+        logger.error("Command not allowed: %s", args.command)
+        return 1
+
+    try:
+        if args.command == "partition-disk":
+            if len(args.args) != 1:
+                logger.error("partition-disk requires <disk-path>")
+                return 1
+            return cmd_partition_disk(args.args[0])
+
+        elif args.command == "luks-format":
+            if len(args.args) != 3:
+                logger.error("luks-format requires <part-path> <name> <key-file>")
+                return 1
+            return cmd_luks_format(args.args[0], args.args[1], args.args[2])
+
+        elif args.command == "luks-open":
+            if len(args.args) != 3:
+                logger.error("luks-open requires <part-path> <name> <key-file>")
+                return 1
+            return cmd_luks_open(args.args[0], args.args[1], args.args[2])
+
+        elif args.command == "luks-close":
+            if len(args.args) != 1:
+                logger.error("luks-close requires <name>")
+                return 1
+            return cmd_luks_close(args.args[0])
+
+        elif args.command == "make-fs":
+            if len(args.args) != 2:
+                logger.error("make-fs requires <device> <label>")
+                return 1
+            return cmd_make_fs(args.args[0], args.args[1])
+
+        elif args.command == "mount-fs":
+            if len(args.args) != 1:
+                logger.error("mount-fs requires <mountpoint>")
+                return 1
+            return cmd_mount_fs(args.args[0])
+
+        elif args.command == "unmount-fs":
+            if len(args.args) != 1:
+                logger.error("unmount-fs requires <mountpoint>")
+                return 1
+            return cmd_unmount_fs(args.args[0])
+
+        elif args.command == "write-crypttab":
+            if len(args.args) != 3:
+                logger.error("write-crypttab requires <name> <device> <key-file>")
+                return 1
+            return cmd_write_crypttab(args.args[0], args.args[1], args.args[2])
+
+        elif args.command == "write-mount-unit":
+            if len(args.args) != 4:
+                logger.error("write-mount-unit requires <name> <device> <mountpoint> <encrypted>")
+                return 1
+            encrypted = args.args[3].lower() == "true"
+            return cmd_write_mount_unit(args.args[0], args.args[1], args.args[2], encrypted)
+
+        elif args.command == "remove-mount-unit":
+            if len(args.args) != 1:
+                logger.error("remove-mount-unit requires <name>")
+                return 1
+            return cmd_remove_mount_unit(args.args[0])
+
+        elif args.command == "get-mount-info":
+            if len(args.args) != 1:
+                logger.error("get-mount-info requires <mountpoint>")
+                return 1
+            return cmd_get_mount_info(args.args[0])
+
+    except subprocess.CalledProcessError as exc:
+        logger.error("Command failed: %s", exc)
+        if exc.stdout:
+            logger.error("stdout: %s", exc.stdout)
+        if exc.stderr:
+            logger.error("stderr: %s", exc.stderr)
+        return exc.returncode
+    except Exception as exc:
+        logger.exception("Unexpected error: %s", exc)
+        return 1
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
