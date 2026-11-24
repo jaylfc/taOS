@@ -1,0 +1,381 @@
+{
+  "id": 1,
+  "type": "root",
+  "orientation": "horizontal",
+  "percent": null,
+  "urgent": false,
+  "marks": [],
+  "focused": false,
+  "layout": "splith",
+  "border": "none",
+  "current_border_width": 0,
+  "rect": {
+    "x": 0,
+    "y": 0,
+    "width": 1280,
+    "height": 720
+  },
+  "deco_rect": {
+    "x": 0,
+    "y": 0,
+    "width": 0,
+    "height": 0
+  },
+  "window_rect": {
+    "x": 0,
+    "y": 0,
+    "width": 0,
+    "height": 0
+  },
+  "geometry": {
+    "x": 0,
+    "y": 0,
+    "width": 0,
+    "height": 0
+  },
+  "name": "root",
+  "window": null,
+  "nodes": [
+    {
+      "id": 2147483647,
+      "type": "output",
+      "orientation": "horizontal",
+      "percent": null,
+      "urgent": false,
+      "marks": [],
+      "focused": false,
+      "layout": "output",
+      "border": "none",
+      "current_border_width": 0,
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 720
+      },
+      "deco_rect": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "window_rect": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "geometry": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "name": "__i3",
+      "window": null,
+      "nodes": [
+        {
+          "id": 2147483646,
+          "type": "workspace",
+          "orientation": "horizontal",
+          "percent": null,
+          "urgent": false,
+          "marks": [],
+          "focused": false,
+          "layout": "splith",
+          "border": "none",
+          "current_border_width": 0,
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "width": 1280,
+            "height": 720
+          },
+          "deco_rect": {
+            "x": 0,
+            "y": 0,
+            "width": 0,
+            "height": 0
+          },
+          "window_rect": {
+            "x": 0,
+            "y": 0,
+            "width": 0,
+            "height": 0
+          },
+          "geometry": {
+            "x": 0,
+            "y": 0,
+            "width": 0,
+            "height": 0
+          },
+          "name": "__i3_scratch",
+          "window": null,
+          "nodes": [],
+          "floating_nodes": [],
+          "focus": [
+            6
+          ],
+          "fullscreen_mode": 1,
+          "sticky": false,
+          "floating": null,
+          "scratchpad_state": null
+        }
+      ],
+      "floating_nodes": [],
+      "focus": [
+        2147483646
+      ],
+      "fullscreen_mode": 0,
+      "sticky": false,
+      "floating": null,
+      "scratchpad_state": null
+    },
+    {
+      "id": 3,
+      "type": "output",
+      "orientation": "none",
+      "percent": 1.0,
+      "urgent": false,
+      "marks": [],
+      "focused": false,
+      "layout": "output",
+      "border": "none",
+      "current_border_width": 0,
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 720
+      },
+      "deco_rect": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "window_rect": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "geometry": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "name": "HEADLESS-1",
+      "window": null,
+      "nodes": [
+        {
+          "id": 11,
+          "type": "workspace",
+          "orientation": "horizontal",
+          "percent": null,
+          "urgent": false,
+          "marks": [],
+          "focused": false,
+          "layout": "splith",
+          "border": "none",
+          "current_border_width": 0,
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "width": 1280,
+            "height": 720
+          },
+          "deco_rect": {
+            "x": 0,
+            "y": 0,
+            "width": 0,
+            "height": 0
+          },
+          "window_rect": {
+            "x": 0,
+            "y": 0,
+            "width": 0,
+            "height": 0
+          },
+          "geometry": {
+            "x": 0,
+            "y": 0,
+            "width": 0,
+            "height": 0
+          },
+          "name": "1",
+          "window": null,
+          "nodes": [
+            {
+              "id": 5,
+              "type": "con",
+              "orientation": "none",
+              "percent": 1.0,
+              "urgent": false,
+              "marks": [
+                "taos_min_5"
+              ],
+              "focused": false,
+              "layout": "none",
+              "border": "pixel",
+              "current_border_width": 1,
+              "rect": {
+                "x": 0,
+                "y": 0,
+                "width": 1280,
+                "height": 720
+              },
+              "deco_rect": {
+                "x": 0,
+                "y": 0,
+                "width": 0,
+                "height": 0
+              },
+              "window_rect": {
+                "x": 1,
+                "y": 1,
+                "width": 1278,
+                "height": 718
+              },
+              "geometry": {
+                "x": 0,
+                "y": 0,
+                "width": 300,
+                "height": 200
+              },
+              "name": "One",
+              "window": null,
+              "nodes": [],
+              "floating_nodes": [],
+              "focus": [],
+              "fullscreen_mode": 0,
+              "sticky": false,
+              "floating": "auto_off",
+              "scratchpad_state": "none",
+              "pid": 1823034,
+              "app_id": "app.one",
+              "visible": true,
+              "max_render_time": 0,
+              "allow_tearing": false,
+              "shell": "xdg_shell",
+              "inhibit_idle": false,
+              "idle_inhibitors": {
+                "user": "none",
+                "application": "none"
+              }
+            }
+          ],
+          "floating_nodes": [
+            {
+              "id": 6,
+              "type": "floating_con",
+              "orientation": "none",
+              "percent": 0.13020833333333334,
+              "urgent": false,
+              "marks": [
+                "taos_min_6"
+              ],
+              "focused": true,
+              "layout": "none",
+              "border": "pixel",
+              "current_border_width": 1,
+              "rect": {
+                "x": 200,
+                "y": 150,
+                "width": 400,
+                "height": 300
+              },
+              "deco_rect": {
+                "x": 0,
+                "y": 0,
+                "width": 0,
+                "height": 0
+              },
+              "window_rect": {
+                "x": 1,
+                "y": 1,
+                "width": 398,
+                "height": 298
+              },
+              "geometry": {
+                "x": 0,
+                "y": 0,
+                "width": 300,
+                "height": 200
+              },
+              "name": "Two",
+              "window": null,
+              "nodes": [],
+              "floating_nodes": [],
+              "focus": [],
+              "fullscreen_mode": 0,
+              "sticky": false,
+              "floating": "user_on",
+              "scratchpad_state": "fresh",
+              "pid": 1823163,
+              "app_id": "app.two",
+              "visible": true,
+              "max_render_time": 0,
+              "allow_tearing": false,
+              "shell": "xdg_shell",
+              "inhibit_idle": false,
+              "idle_inhibitors": {
+                "user": "none",
+                "application": "none"
+              }
+            }
+          ],
+          "focus": [
+            6,
+            5
+          ],
+          "fullscreen_mode": 1,
+          "sticky": false,
+          "floating": null,
+          "scratchpad_state": null,
+          "num": 1,
+          "output": "HEADLESS-1",
+          "representation": "H[app.one]"
+        }
+      ],
+      "floating_nodes": [],
+      "focus": [
+        11
+      ],
+      "fullscreen_mode": 0,
+      "sticky": false,
+      "floating": null,
+      "scratchpad_state": null,
+      "primary": false,
+      "make": "Unknown",
+      "model": "Unknown",
+      "serial": "Unknown",
+      "modes": [],
+      "non_desktop": false,
+      "active": true,
+      "dpms": true,
+      "power": true,
+      "scale": 1.0,
+      "scale_filter": "nearest",
+      "transform": "normal",
+      "adaptive_sync_status": "disabled",
+      "current_workspace": "1",
+      "current_mode": {
+        "width": 1280,
+        "height": 720,
+        "refresh": 0
+      },
+      "max_render_time": 0,
+      "allow_tearing": false
+    }
+  ],
+  "floating_nodes": [],
+  "focus": [
+    3
+  ],
+  "fullscreen_mode": 0,
+  "sticky": false,
+  "floating": null,
+  "scratchpad_state": null
+}

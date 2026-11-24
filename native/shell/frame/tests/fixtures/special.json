@@ -1,0 +1,330 @@
+{
+ "id": 1,
+ "type": "root",
+ "name": "root",
+ "nodes": [
+  {
+   "id": 50,
+   "type": "output",
+   "name": "__i3",
+   "rect": {
+    "x": 0,
+    "y": 0,
+    "width": 1280,
+    "height": 720
+   },
+   "nodes": [
+    {
+     "id": 867,
+     "type": "workspace",
+     "name": "__i3_scratch",
+     "output": "__i3",
+     "rect": {
+      "x": 0,
+      "y": 0,
+      "width": 0,
+      "height": 0
+     },
+     "nodes": [],
+     "floating_nodes": [
+      {
+       "id": 40,
+       "type": "floating_con",
+       "name": "Parked",
+       "app_id": "chrome-parked.example__-Default",
+       "pid": 1040,
+       "shell": "xdg_shell",
+       "focused": false,
+       "visible": false,
+       "border": "normal",
+       "rect": {
+        "x": 100,
+        "y": 100,
+        "width": 500,
+        "height": 300
+       },
+       "deco_rect": {
+        "x": 100,
+        "y": 68,
+        "width": 500,
+        "height": 32
+       },
+       "fullscreen_mode": 0,
+       "marks": [
+        "taos_min_40"
+       ],
+       "scratchpad_state": "fresh",
+       "nodes": [],
+       "floating_nodes": [],
+       "floating": "user_on"
+      }
+     ]
+    }
+   ],
+   "floating_nodes": []
+  },
+  {
+   "id": 50,
+   "type": "output",
+   "name": "HEADLESS-1",
+   "rect": {
+    "x": 0,
+    "y": 0,
+    "width": 1280,
+    "height": 720
+   },
+   "nodes": [
+    {
+     "id": 716,
+     "type": "workspace",
+     "name": "1",
+     "output": "HEADLESS-1",
+     "rect": {
+      "x": 0,
+      "y": 0,
+      "width": 0,
+      "height": 0
+     },
+     "nodes": [
+      {
+       "id": 30,
+       "type": "con",
+       "name": "Full",
+       "app_id": "chrome-full.example__-Default",
+       "pid": 1030,
+       "shell": "xdg_shell",
+       "focused": true,
+       "visible": true,
+       "border": "normal",
+       "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 720
+       },
+       "deco_rect": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+       },
+       "fullscreen_mode": 1,
+       "marks": [],
+       "scratchpad_state": "none",
+       "nodes": [],
+       "floating_nodes": [],
+       "floating": "auto_off"
+      }
+     ],
+     "floating_nodes": []
+    },
+    {
+     "id": 918,
+     "type": "workspace",
+     "name": "2",
+     "output": "HEADLESS-1",
+     "rect": {
+      "x": 0,
+      "y": 0,
+      "width": 0,
+      "height": 0
+     },
+     "nodes": [
+      {
+       "id": 31,
+       "type": "con",
+       "name": "Other workspace",
+       "app_id": "chrome-other-ws.example__-Default",
+       "pid": 1031,
+       "shell": "xdg_shell",
+       "focused": false,
+       "visible": false,
+       "border": "normal",
+       "rect": {
+        "x": 0,
+        "y": 32,
+        "width": 1280,
+        "height": 688
+       },
+       "deco_rect": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 32
+       },
+       "fullscreen_mode": 0,
+       "marks": [],
+       "scratchpad_state": "none",
+       "nodes": [],
+       "floating_nodes": [],
+       "floating": "auto_off"
+      }
+     ],
+     "floating_nodes": []
+    },
+    {
+     "id": 551,
+     "type": "workspace",
+     "name": "3",
+     "output": "HEADLESS-1",
+     "rect": {
+      "x": 0,
+      "y": 0,
+      "width": 0,
+      "height": 0
+     },
+     "nodes": [
+      {
+       "id": 32,
+       "type": "con",
+       "name": "No bar yet",
+       "app_id": "chrome-nobar.example__-Default",
+       "pid": 1032,
+       "shell": "xdg_shell",
+       "focused": false,
+       "visible": true,
+       "border": "pixel",
+       "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 720
+       },
+       "deco_rect": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+       },
+       "fullscreen_mode": 0,
+       "marks": [],
+       "scratchpad_state": "none",
+       "nodes": [],
+       "floating_nodes": [],
+       "floating": "auto_off"
+      }
+     ],
+     "floating_nodes": []
+    }
+   ],
+   "floating_nodes": []
+  },
+  {
+   "id": 50,
+   "type": "output",
+   "name": "HEADLESS-2",
+   "rect": {
+    "x": 1280,
+    "y": 0,
+    "width": 1920,
+    "height": 1080
+   },
+   "nodes": [
+    {
+     "id": 623,
+     "type": "workspace",
+     "name": "4",
+     "output": "HEADLESS-2",
+     "rect": {
+      "x": 0,
+      "y": 0,
+      "width": 0,
+      "height": 0
+     },
+     "nodes": [
+      {
+       "id": 50,
+       "type": "con",
+       "name": "On the second output",
+       "app_id": "chrome-second.example__-Default",
+       "pid": 1050,
+       "shell": "xdg_shell",
+       "focused": false,
+       "visible": true,
+       "border": "normal",
+       "rect": {
+        "x": 1280,
+        "y": 32,
+        "width": 960,
+        "height": 1048
+       },
+       "deco_rect": {
+        "x": 1280,
+        "y": 0,
+        "width": 960,
+        "height": 32
+       },
+       "fullscreen_mode": 0,
+       "marks": [],
+       "scratchpad_state": "none",
+       "nodes": [],
+       "floating_nodes": [],
+       "floating": "auto_off"
+      },
+      {
+       "id": 51,
+       "type": "con",
+       "name": "Dashboard",
+       "app_id": "my.taos.dashboard",
+       "pid": 1051,
+       "shell": "xdg_shell",
+       "focused": false,
+       "visible": true,
+       "border": "pixel",
+       "rect": {
+        "x": 2240,
+        "y": 1,
+        "width": 960,
+        "height": 1079
+       },
+       "deco_rect": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+       },
+       "fullscreen_mode": 0,
+       "marks": [],
+       "scratchpad_state": "none",
+       "nodes": [],
+       "floating_nodes": [],
+       "floating": "auto_off"
+      },
+      {
+       "id": 52,
+       "type": "con",
+       "name": "Normal browser",
+       "app_id": "chromium",
+       "pid": 1052,
+       "shell": "xdg_shell",
+       "focused": false,
+       "visible": true,
+       "border": "csd",
+       "rect": {
+        "x": 2240,
+        "y": 1,
+        "width": 960,
+        "height": 1079
+       },
+       "deco_rect": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+       },
+       "fullscreen_mode": 0,
+       "marks": [],
+       "scratchpad_state": "none",
+       "nodes": [],
+       "floating_nodes": [],
+       "floating": "auto_off"
+      }
+     ],
+     "floating_nodes": []
+    }
+   ],
+   "floating_nodes": []
+  }
+ ],
+ "floating_nodes": []
+}

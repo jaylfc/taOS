@@ -1,0 +1,95 @@
+{
+ "id": 1,
+ "type": "root",
+ "name": "root",
+ "nodes": [
+  {
+   "id": 50,
+   "type": "output",
+   "name": "HEADLESS-1",
+   "rect": {
+    "x": 0,
+    "y": 0,
+    "width": 1280,
+    "height": 720
+   },
+   "nodes": [
+    {
+     "id": 716,
+     "type": "workspace",
+     "name": "1",
+     "output": "HEADLESS-1",
+     "rect": {
+      "x": 0,
+      "y": 0,
+      "width": 0,
+      "height": 0
+     },
+     "nodes": [],
+     "floating_nodes": [
+      {
+       "id": 20,
+       "type": "floating_con",
+       "name": "Music",
+       "app_id": "chrome-music.example__-Default",
+       "pid": 1020,
+       "shell": "xdg_shell",
+       "focused": false,
+       "visible": true,
+       "border": "normal",
+       "rect": {
+        "x": 100,
+        "y": 132,
+        "width": 500,
+        "height": 300
+       },
+       "deco_rect": {
+        "x": 100,
+        "y": 100,
+        "width": 500,
+        "height": 32
+       },
+       "fullscreen_mode": 0,
+       "marks": [],
+       "scratchpad_state": "none",
+       "nodes": [],
+       "floating_nodes": [],
+       "floating": "user_on"
+      },
+      {
+       "id": 21,
+       "type": "floating_con",
+       "name": "Mail",
+       "app_id": "chrome-mail.example__-Default",
+       "pid": 1021,
+       "shell": "xdg_shell",
+       "focused": true,
+       "visible": true,
+       "border": "normal",
+       "rect": {
+        "x": 400,
+        "y": 100,
+        "width": 500,
+        "height": 300
+       },
+       "deco_rect": {
+        "x": 400,
+        "y": 68,
+        "width": 500,
+        "height": 32
+       },
+       "fullscreen_mode": 0,
+       "marks": [],
+       "scratchpad_state": "none",
+       "nodes": [],
+       "floating_nodes": [],
+       "floating": "user_on"
+      }
+     ]
+    }
+   ],
+   "floating_nodes": []
+  }
+ ],
+ "floating_nodes": []
+}

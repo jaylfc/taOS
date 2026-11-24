@@ -1,0 +1,69 @@
+#!/bin/sh
+# Session hook for apps that draw their own window buttons (GTK, foot): keeps them on the same side as the taOS
+# title bar and in the theme's colours.
+#   taos-window-session-hook apply   once
+#   taos-window-session-hook watch   apply now and again whenever appearance.json changes (what the session runs)
+# Needs `taos-theme` on PATH. Writes ~/.config/foot/taos-csd.ini and sets GTK's button-layout with gsettings.
+# It also publishes the taOS appearance to other toolkits: org.gnome.desktop.interface color-scheme (prefer-dark or
+# prefer-light) and gtk-theme (Adwaita-dark or Adwaita). "auto" resolves to what is shown now and is re-checked every
+# minute, so it flips when auto flips. This is the single place that writes gsettings. Without gsettings it does nothing.
+# The user's own foot.ini is never edited: it is created with an include only when there is none.
+set -u
+
+last_scheme=""
+# The mode in effect (the theme engine resolves auto against the clock) -> color-scheme and gtk-theme.
+publish_scheme() {
+    command -v gsettings >/dev/null 2>&1 || return 0
+    variant=$(taos-theme get --json 2>/dev/null | sed -n 's/.*"variant": *"\([a-z]*\)".*/\1/p' | head -n 1)
+    case $variant in
+        dark) scheme=prefer-dark; gtk=Adwaita-dark ;;
+        light) scheme=prefer-light; gtk=Adwaita ;;
+        *) return 0 ;;
+    esac
+    [ "$scheme" = "$last_scheme" ] && return 0
+    gsettings set org.gnome.desktop.interface color-scheme "$scheme" 2>/dev/null || true
+    gsettings set org.gnome.desktop.interface gtk-theme "$gtk" 2>/dev/null || true
+    last_scheme=$scheme
+}
+
+apply() {
+    publish_scheme
+    layout=$(taos-theme export button-layout 2>/dev/null) || return 1
+    if command -v gsettings >/dev/null 2>&1; then
+        gsettings set org.gnome.desktop.wm.preferences button-layout "$layout" 2>/dev/null || true
+    fi
+    dir=${XDG_CONFIG_HOME:-$HOME/.config}/foot
+    mkdir -p "$dir" || return 0
+    if taos-theme export foot >"$dir/.taos-csd.ini.$$" 2>/dev/null; then
+        if ! cmp -s "$dir/.taos-csd.ini.$$" "$dir/taos-csd.ini" 2>/dev/null; then
+            mv -f "$dir/.taos-csd.ini.$$" "$dir/taos-csd.ini"
+        else
+            rm -f "$dir/.taos-csd.ini.$$"
+        fi
+    else
+        rm -f "$dir/.taos-csd.ini.$$"
+    fi
+    if [ ! -e "$dir/foot.ini" ]; then
+        printf 'include=%s/taos-csd.ini\n' "$dir" >"$dir/foot.ini"
+    elif ! grep -q 'taos-csd.ini' "$dir/foot.ini" 2>/dev/null; then
+        echo "taos-window-session-hook: add 'include=$dir/taos-csd.ini' to $dir/foot.ini for foot's taOS window buttons" >&2
+    fi
+}
+
+case ${1:-apply} in
+    apply) apply ;;
+    scheme) publish_scheme ;;
+    watch)
+        file=${TAOS_APPEARANCE:-${XDG_CONFIG_HOME:-$HOME/.config}/taos/appearance.json}
+        last=""
+        ticks=0
+        while :; do
+            now=$(stat -c %Y-%s "$file" 2>/dev/null || echo none)
+            if [ "$now" != "$last" ]; then apply; last=$now; ticks=0
+            elif [ "$ticks" -ge 30 ]; then publish_scheme; ticks=0   # auto flips with the clock, not with the file
+            fi
+            ticks=$((ticks + 1))
+            sleep 2
+        done ;;
+    *) echo "usage: taos-window-session-hook apply|watch" >&2; exit 2 ;;
+esac

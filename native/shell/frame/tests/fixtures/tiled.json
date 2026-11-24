@@ -1,0 +1,95 @@
+{
+ "id": 1,
+ "type": "root",
+ "name": "root",
+ "nodes": [
+  {
+   "id": 50,
+   "type": "output",
+   "name": "HEADLESS-1",
+   "rect": {
+    "x": 0,
+    "y": 0,
+    "width": 1280,
+    "height": 720
+   },
+   "nodes": [
+    {
+     "id": 716,
+     "type": "workspace",
+     "name": "1",
+     "output": "HEADLESS-1",
+     "rect": {
+      "x": 0,
+      "y": 0,
+      "width": 0,
+      "height": 0
+     },
+     "nodes": [
+      {
+       "id": 10,
+       "type": "con",
+       "name": "YouTube",
+       "app_id": "chrome-www.youtube.com__-Default",
+       "pid": 1010,
+       "shell": "xdg_shell",
+       "focused": true,
+       "visible": true,
+       "border": "normal",
+       "rect": {
+        "x": 0,
+        "y": 32,
+        "width": 640,
+        "height": 688
+       },
+       "deco_rect": {
+        "x": 0,
+        "y": 0,
+        "width": 640,
+        "height": 32
+       },
+       "fullscreen_mode": 0,
+       "marks": [],
+       "scratchpad_state": "none",
+       "nodes": [],
+       "floating_nodes": [],
+       "floating": "auto_off"
+      },
+      {
+       "id": 11,
+       "type": "con",
+       "name": "alex@host: ~",
+       "app_id": "foot",
+       "pid": 1011,
+       "shell": "xdg_shell",
+       "focused": false,
+       "visible": true,
+       "border": "pixel",
+       "rect": {
+        "x": 640,
+        "y": 1,
+        "width": 640,
+        "height": 718
+       },
+       "deco_rect": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+       },
+       "fullscreen_mode": 0,
+       "marks": [],
+       "scratchpad_state": "none",
+       "nodes": [],
+       "floating_nodes": [],
+       "floating": "auto_off"
+      }
+     ],
+     "floating_nodes": []
+    }
+   ],
+   "floating_nodes": []
+  }
+ ],
+ "floating_nodes": []
+}

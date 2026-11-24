@@ -1,0 +1,59 @@
+{
+ "type": "root",
+ "nodes": [
+  {
+   "type": "output",
+   "name": "O",
+   "rect": {
+    "x": 0,
+    "y": 0,
+    "width": 800,
+    "height": 600
+   },
+   "nodes": [
+    {
+     "type": "workspace",
+     "name": "1",
+     "nodes": [
+      {
+       "type": "con",
+       "layout": "tabbed",
+       "nodes": [
+        {
+         "id": 7,
+         "type": "con",
+         "shell": "xdg_shell",
+         "app_id": "chrome-a__-D",
+         "name": "A",
+         "visible": true,
+         "border": "normal",
+         "rect": {
+          "x": 0,
+          "y": 60,
+          "width": 800,
+          "height": 540
+         },
+         "deco_rect": {
+          "x": 0,
+          "y": 0,
+          "width": 400,
+          "height": 30
+         },
+         "fullscreen_mode": 0,
+         "marks": [],
+         "scratchpad_state": "none",
+         "nodes": [],
+         "floating_nodes": []
+        }
+       ],
+       "floating_nodes": []
+      }
+     ],
+     "floating_nodes": []
+    }
+   ],
+   "floating_nodes": []
+  }
+ ],
+ "floating_nodes": []
+}
