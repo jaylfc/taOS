@@ -872,14 +872,20 @@ export function DecisionBlock({ block }: { block: DecisionContentBlock }): React
 * a file edit streamed from a coding session) as a small viewer: a header
 * with the filename and the added/removed line counts, then the diff lines
 * classified and tinted per line (additions green, deletions red, hunk
-* headers dimmed). Header lines (---/+++) are classified before the +/-
-* prefixes so they never pollute the counts.
+* headers dimmed). Classification is positional: the ---/+++ file headers
+* count as headers only outside a hunk, so they never pollute the counts,
+* while hunk-body lines that merely start with ---/+++ stay additions /
+* deletions.
 */
 type DiffLineKind = "add" | "del" | "hunk" | "header" | "meta" | "context";
 
-function classifyDiffLine(line: string): DiffLineKind {
+function classifyDiffLine(line: string, inHunk: boolean): DiffLineKind {
   if (line.startsWith("@@")) return "hunk";
-  if (line.startsWith("+++") || line.startsWith("---")) return "header";
+  // The ---/+++ file headers appear only before the first hunk (or after a
+  // new file's "diff --git" boundary resets inHunk). Inside a hunk the
+  // first character is the indicator, so a hunk-body line like "---old"
+  // (a deleted line whose content was "--old") is a deletion, not a header.
+  if (!inHunk && (line.startsWith("+++") || line.startsWith("---"))) return "header";
   if (line.startsWith("+")) return "add";
   if (line.startsWith("-")) return "del";
   if (line.startsWith("\\")) return "meta";
@@ -899,7 +905,16 @@ export function DiffBlock({ block }: { block: DiffContentBlock }): React.ReactEl
   const rawLines = block.diff.split("\n");
   // A trailing newline leaves a phantom empty final line; drop it.
   if (rawLines.length > 0 && rawLines[rawLines.length - 1] === "") rawLines.pop();
-  const lines = rawLines.map((line) => ({ line, kind: classifyDiffLine(line) }));
+  let inHunk = false;
+  const lines = rawLines.map((line) => {
+    if (line.startsWith("diff --git ") || line.startsWith("diff --combined ")) {
+      inHunk = false;
+      return { line, kind: "meta" as DiffLineKind };
+    }
+    const kind = classifyDiffLine(line, inHunk);
+    if (kind === "hunk") inHunk = true;
+    return { line, kind };
+  });
   const adds = lines.filter((l) => l.kind === "add").length;
   const dels = lines.filter((l) => l.kind === "del").length;
   return (
@@ -988,10 +1003,12 @@ export function TableBlock({ block }: { block: TableContentBlock }): React.React
 * Message-level attachments (Message.attachments) are unaffected.
 */
 function mediaBlockToAttachment(block: ImageContentBlock | FileContentBlock): AttachmentRecord {
+  // A trailing-slash URL derives an empty basename; treat it as absent so
+  // the gallery never receives an empty filename (nameless image button /
+  // textless file chip).
+  const basename = block.url.split("/").pop() || undefined;
   const filename =
-    block.filename ??
-    block.url.split("/").pop() ??
-    (block.kind === "image" ? "image" : "file");
+    block.filename ?? basename ?? (block.kind === "image" ? "image" : "file");
   return {
     filename,
     mime_type:

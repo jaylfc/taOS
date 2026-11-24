@@ -206,6 +206,27 @@ describe("DiffBlock", () => {
     const { container } = render(<DiffBlock block={{ kind: "diff", diff: "" }} />);
     expect(container.textContent).toContain("no changes");
   });
+
+  it("classifies hunk-body lines that look like file headers as add/del", () => {
+    // Replacing the line "--old" with "++new" produces hunk-body lines
+    // "---old" / "+++new": inside a hunk the first character is the
+    // indicator, so these are a deletion and an addition, not headers.
+    const tricky = [
+      "--- a/app.ts",
+      "+++ b/app.ts",
+      "@@ -1,1 +1,1 @@",
+      "---old",
+      "+++new",
+    ].join("\n");
+    const { container } = render(
+      <DiffBlock block={{ kind: "diff", filename: "app.ts", diff: tricky }} />,
+    );
+    expect(container.querySelectorAll('[data-diff-line="header"]')).toHaveLength(2);
+    expect(container.querySelector('[data-diff-line="del"]')?.textContent).toBe("---old");
+    expect(container.querySelector('[data-diff-line="add"]')?.textContent).toBe("+++new");
+    expect(container.textContent).toContain("+1");
+    expect(container.textContent).toContain("-1");
+  });
 });
 
 describe("TableBlock", () => {
@@ -254,6 +275,21 @@ describe("code and media blocks through renderContent", () => {
     const img = container.querySelector("img");
     expect(img?.getAttribute("src")).toBe("https://x.test/pic.png");
     expect(img?.getAttribute("alt")).toBe("pic.png");
+  });
+
+  it("falls back to a kind name when the URL basename is empty", () => {
+    const { container } = render(
+      <div>
+        {renderContent("", [
+          { kind: "file", url: "https://x.test/dir/" },
+          { kind: "image", url: "https://x.test/" },
+        ])}
+      </div>,
+    );
+    const link = container.querySelector("a");
+    expect(link?.textContent).toContain("file");
+    const img = container.querySelector("img");
+    expect(img?.getAttribute("alt")).toBe("image");
   });
 
   it("renders a file block as a download link", () => {
