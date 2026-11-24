@@ -22,6 +22,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from tinyagentos.atomic_io import atomic_write_text
+
 ROLLBACK_FILE = ".taos-rollback"
 
 # A recorded commit is a FULL git object name and nothing else: the writer
@@ -85,12 +87,13 @@ def record_pre_update(project_dir, *, branch: str, sha: str, ts: int) -> Path:
     if "\n" in str(branch) or "\r" in str(branch):
         raise ValueError(f"rollback branch contains a newline: {branch!r}")
     path = Path(project_dir) / ROLLBACK_FILE
-    path.write_text(
+    atomic_write_text(
+        path,
         "# taOS rollback target -- the branch + commit the last update left.\n"
         "# Data only: scripts/rollback.sh parses these lines, it never sources them.\n"
         f"prev_branch={_shq(branch)}\n"
         f"prev_sha={_shq(sha)}\n"
-        f"prev_ts={_shq(ts)}\n"
+        f"prev_ts={_shq(ts)}\n",
     )
     return path
 

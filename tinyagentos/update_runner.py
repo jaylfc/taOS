@@ -36,19 +36,64 @@ class UpdateResult:
     ok: bool = True  # False when a step failed and no (or partial) switch happened
 
 
-def _record_rollback_target(project_dir, branch: str, sha: str, ts: int) -> None:
+def record_rollback_target(project_dir, branch: str, sha: str, ts: int) -> bool:
     """Persist the pre-update branch + commit for `taos rollback` (best effort).
 
     Always called before an update mutates the tree, so even a clean
-    fast-forward (no recovery tag) leaves a restore point.
+    fast-forward (no recovery tag) leaves a restore point. Returns True when a
+    record was written.
     """
     if not branch or not sha:
-        return
+        return False
     try:
         from tinyagentos.rollback import record_pre_update
+
         record_pre_update(project_dir, branch=branch, sha=sha, ts=ts)
+        return True
     except Exception:  # noqa: BLE001
         logger.warning("update_runner: failed to record rollback target", exc_info=True)
+        return False
+
+
+def _record_rollback_target(project_dir, branch: str, sha: str, ts: int) -> None:
+    """Backward-compatible wrapper for existing callers."""
+    record_rollback_target(project_dir, branch, sha, ts)
+
+
+async def record_current_rollback_target(project_dir: Path) -> bool:
+    """Read current git branch/SHA and record them as the rollback target.
+
+    Runs git calls and the atomic write off the event loop. Best effort: any
+    failure logs a warning and returns False without raising.
+    """
+    try:
+        import subprocess
+
+        def _probe_and_record() -> bool:
+            branch_proc = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=str(project_dir),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            sha_proc = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=str(project_dir),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            branch = (branch_proc.stdout or "").strip()
+            sha = (sha_proc.stdout or "").strip()
+            if branch_proc.returncode != 0 or sha_proc.returncode != 0 or not branch or not sha:
+                return False
+            return record_rollback_target(project_dir, branch, sha, int(time.time()))
+
+        return await asyncio.to_thread(_probe_and_record)
+    except Exception:  # noqa: BLE001
+        logger.warning("update_runner: failed to probe rollback target", exc_info=True)
+        return False
 
 
 async def _run(args: list[str], cwd: Path, timeout: float = 30) -> tuple[int, str]:

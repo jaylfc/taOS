@@ -1201,6 +1201,13 @@ async def apply_update(request: Request):
             status_code=409,
         )
 
+    # Record the pre-update branch + commit before mutating the working tree so
+    # `taos rollback` can restore both after the most common update path.
+    # Best effort: a failed write must not block the update.
+    from tinyagentos.update_runner import record_current_rollback_target
+
+    await record_current_rollback_target(project_dir)
+
     # The desktop rebuild leaves the tree dirty in two ways, and a dirty
     # tracked file makes the next git pull --ff-only refuse to overwrite the
     # local and the Install Update button 500s:

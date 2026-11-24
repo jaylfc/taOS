@@ -548,6 +548,167 @@ class TestMemoryUrlSettings:
         assert resp.status_code == 422
 
 
+class TestApplyUpdateRollback:
+    """In-app Install update must record a rollback target before mutating the tree."""
+
+    @staticmethod
+    def _git(repo, *args):
+        import subprocess
+
+        return subprocess.check_output(
+            ["git", "-C", str(repo), *args], text=True
+        ).strip()
+
+    @classmethod
+    def _make_repo_with_origin(cls, tmp_path, *, detached=False):
+        import subprocess
+
+        origin = tmp_path / "origin.git"
+        subprocess.check_call(
+            ["git", "init", "--bare", "-q", "-b", "main", str(origin)]
+        )
+
+        work = tmp_path / "work"
+        subprocess.check_call(["git", "init", "-q", "-b", "main", str(work)])
+        cls._git(work, "config", "user.name", "taos test")
+        cls._git(work, "config", "user.email", "test@example.invalid")
+        (work / "VERSION").write_text("old\n")
+        cls._git(work, "add", "VERSION")
+        cls._git(work, "commit", "-qm", "old version")
+        cls._git(work, "remote", "add", "origin", str(origin))
+        cls._git(work, "push", "-q", "-u", "origin", "main")
+
+        (work / "VERSION").write_text("new\n")
+        cls._git(work, "commit", "-qam", "new version")
+        cls._git(work, "push", "-q", "origin", "main")
+
+        cls._git(work, "reset", "--hard", "HEAD~1")
+        cls._git(work, "branch", "--set-upstream-to=origin/main", "main")
+        old_sha = cls._git(work, "rev-parse", "HEAD")
+        if detached:
+            cls._git(work, "checkout", "--detach", old_sha)
+        return work, old_sha
+
+    @pytest.mark.asyncio
+    async def test_apply_update_records_rollback_target(self, client, tmp_path, monkeypatch):
+        import tinyagentos.routes.settings as settings_mod
+        from tinyagentos.rollback import read_rollback_target
+
+        repo, old_sha = self._make_repo_with_origin(tmp_path)
+        fake_settings = repo / "tinyagentos" / "routes" / "settings.py"
+        fake_settings.parent.mkdir(parents=True, exist_ok=True)
+        fake_settings.write_text("# test shim\n")
+        monkeypatch.setattr(settings_mod, "__file__", str(fake_settings))
+
+        async def fake_restart(_app_state):
+            return None
+
+        with (
+            patch("tinyagentos.update_preflight.check_preflight", return_value=[]),
+            patch("tinyagentos.routes.settings.resolve_tracked_branch", new=AsyncMock(return_value="main")),
+            patch("tinyagentos.routes.settings._run_capture", new=AsyncMock(return_value=(0, "ok"))),
+            patch("tinyagentos.routes.settings._stash_local_source_changes", new=AsyncMock(return_value=False)),
+            patch("tinyagentos.routes.settings._update_local_taosmd", new=AsyncMock(return_value={"skipped": "test"})),
+            patch("tinyagentos.routes.settings._pip_rebuild_restart", new=AsyncMock(return_value=(0, "ok", None))),
+            patch("tinyagentos.routes.system._do_restart", new=fake_restart),
+            patch("tinyagentos.routes.settings.write_pending_restart"),
+        ):
+            resp = await client.post("/api/settings/update")
+
+        assert resp.status_code == 200, resp.text
+        target = read_rollback_target(repo)
+        assert target is not None
+        assert target["sha"] == old_sha
+        assert target["branch"] == "main"
+
+    @pytest.mark.asyncio
+    async def test_preflight_refused_update_leaves_existing_record(self, client, tmp_path, monkeypatch):
+        import tinyagentos.routes.settings as settings_mod
+        from tinyagentos.rollback import read_rollback_target, record_pre_update
+
+        repo, _old_sha = self._make_repo_with_origin(tmp_path)
+        fake_settings = repo / "tinyagentos" / "routes" / "settings.py"
+        fake_settings.parent.mkdir(parents=True, exist_ok=True)
+        fake_settings.write_text("# test shim\n")
+        monkeypatch.setattr(settings_mod, "__file__", str(fake_settings))
+
+        sentinel_sha = "0" * 40
+        record_pre_update(repo, branch="keep-me", sha=sentinel_sha, ts=123)
+
+        with patch("tinyagentos.update_preflight.check_preflight", return_value=["dirty tree"]):
+            resp = await client.post("/api/settings/update")
+
+        assert resp.status_code == 409, resp.text
+        assert read_rollback_target(repo) == {"branch": "keep-me", "sha": sentinel_sha, "ts": "123"}
+
+    @pytest.mark.asyncio
+    async def test_apply_update_records_detached_head_as_head(self, client, tmp_path, monkeypatch):
+        import tinyagentos.routes.settings as settings_mod
+        from tinyagentos.rollback import read_rollback_target
+
+        repo, old_sha = self._make_repo_with_origin(tmp_path, detached=True)
+        fake_settings = repo / "tinyagentos" / "routes" / "settings.py"
+        fake_settings.parent.mkdir(parents=True, exist_ok=True)
+        fake_settings.write_text("# test shim\n")
+        monkeypatch.setattr(settings_mod, "__file__", str(fake_settings))
+
+        async def fake_restart(_app_state):
+            return None
+
+        with (
+            patch("tinyagentos.update_preflight.check_preflight", return_value=[]),
+            patch("tinyagentos.routes.settings.resolve_tracked_branch", new=AsyncMock(return_value="main")),
+            patch("tinyagentos.routes.settings._run_capture", new=AsyncMock(return_value=(0, "ok"))),
+            patch("tinyagentos.routes.settings._stash_local_source_changes", new=AsyncMock(return_value=False)),
+            patch("tinyagentos.routes.settings._update_local_taosmd", new=AsyncMock(return_value={"skipped": "test"})),
+            patch("tinyagentos.routes.settings._pip_rebuild_restart", new=AsyncMock(return_value=(0, "ok", None))),
+            patch("tinyagentos.routes.system._do_restart", new=fake_restart),
+            patch("tinyagentos.routes.settings.write_pending_restart"),
+        ):
+            resp = await client.post("/api/settings/update")
+
+        assert resp.status_code == 200, resp.text
+        target = read_rollback_target(repo)
+        assert target is not None
+        assert target["sha"] == old_sha
+        assert target["branch"] == "HEAD"
+
+    @pytest.mark.asyncio
+    async def test_apply_update_continues_when_rollback_record_write_fails(
+        self, client, tmp_path, monkeypatch
+    ):
+        import tinyagentos.routes.settings as settings_mod
+        from tinyagentos.rollback import read_rollback_target
+
+        repo, _old_sha = self._make_repo_with_origin(tmp_path)
+        fake_settings = repo / "tinyagentos" / "routes" / "settings.py"
+        fake_settings.parent.mkdir(parents=True, exist_ok=True)
+        fake_settings.write_text("# test shim\n")
+        monkeypatch.setattr(settings_mod, "__file__", str(fake_settings))
+
+        async def fake_restart(_app_state):
+            return None
+
+        def boom(*args, **kwargs):
+            raise OSError("disk full")
+
+        with (
+            patch("tinyagentos.update_preflight.check_preflight", return_value=[]),
+            patch("tinyagentos.rollback.record_pre_update", side_effect=boom),
+            patch("tinyagentos.routes.settings.resolve_tracked_branch", new=AsyncMock(return_value="main")),
+            patch("tinyagentos.routes.settings._run_capture", new=AsyncMock(return_value=(0, "ok"))),
+            patch("tinyagentos.routes.settings._stash_local_source_changes", new=AsyncMock(return_value=False)),
+            patch("tinyagentos.routes.settings._update_local_taosmd", new=AsyncMock(return_value={"skipped": "test"})),
+            patch("tinyagentos.routes.settings._pip_rebuild_restart", new=AsyncMock(return_value=(0, "ok", None))),
+            patch("tinyagentos.routes.system._do_restart", new=fake_restart),
+            patch("tinyagentos.routes.settings.write_pending_restart"),
+        ):
+            resp = await client.post("/api/settings/update")
+
+        assert resp.status_code == 200, resp.text
+        assert read_rollback_target(repo) is None
+
+
 class TestLaunchdMigrationWarning:
     """Migration warnings must reach the user exactly once, no substring sniffing."""
 
