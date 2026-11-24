@@ -12,6 +12,7 @@ import json
 import logging
 import mimetypes
 import posixpath
+import re
 import time
 from pathlib import Path
 from urllib.parse import unquote

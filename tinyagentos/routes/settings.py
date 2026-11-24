@@ -1261,8 +1261,8 @@ async def apply_update(request: Request):
     # HEAD already contains that record's sha as an ancestor and no new commits
     # are being applied, so the earlier record is the one `taos rollback` must
     # restore. Best effort: a failed write must not block the update.
-    from tinyagentos.update_runner import record_current_rollback_target
     from tinyagentos.rollback import read_rollback_target
+    from tinyagentos.update_runner import record_current_rollback_target
 
     existing = read_rollback_target(project_dir)
     tip_proc = await asyncio.create_subprocess_exec(

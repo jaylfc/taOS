@@ -202,6 +202,7 @@ async def fetch(
         video_id: str = info.get("id", "")
         title: str = info.get("title", "")
         channel: str = info.get("channel") or info.get("uploader") or ""
+        description: str = info.get("description") or ""
         view_count: int | None = info.get("view_count")
         like_count: int | None = info.get("like_count")
         duration: float | None = info.get("duration")
