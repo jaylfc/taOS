@@ -107,6 +107,21 @@ jobs:
         working-directory: native
         run: cargo test --locked --workspace
 
+  input-e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Headless sway and a terminal for the input engine tests
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends sway foot xkb-data libxkbcommon0 nodejs
+      - name: Rust stable
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: taos-input and taos-cast end to end (private headless sway)
+        working-directory: native
+        env:
+          TAOS_E2E: "1"
+        run: cargo test --locked -p taos-input -p taos-cast -- --test-threads=2
+
   shell:
     needs: toolchain
     runs-on: ubuntu-24.04

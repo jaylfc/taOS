@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0B0B0C">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="taOS Controller">
+<title>taOS Controller</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<link rel="stylesheet" href="/tokens.css">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div id="app" data-view="pair">
+
+  <section id="pair" class="screen" aria-labelledby="pair-title">
+    <div class="pair-card">
+      <div class="mark" aria-hidden="true"></div>
+      <h1 id="pair-title">Pair this phone</h1>
+      <p class="sub">Enter the code shown on your TV or desktop. You only do this once.</p>
+      <form id="pair-form" autocomplete="off">
+        <label class="field">
+          <span>Pairing code</span>
+          <input id="code" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" maxlength="6" placeholder="000000" aria-describedby="pair-msg">
+        </label>
+        <label class="field">
+          <span>This phone is called</span>
+          <input id="devname" maxlength="40" autocomplete="off" autocapitalize="words">
+        </label>
+        <p id="pair-msg" class="msg" role="alert" hidden></p>
+        <button id="pair-go" class="primary" type="submit">Pair</button>
+      </form>
+    </div>
+  </section>
+
+  <section id="control" class="screen" aria-label="Controller">
+    <header class="bar">
+      <div id="status" class="status" role="status" aria-live="polite" data-state="connecting">
+        <span class="dot" aria-hidden="true"></span><span id="status-text">Connecting</span>
+      </div>
+      <button id="open-settings" class="icon-btn" aria-label="Settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 0 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 0 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 0 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 0 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+      </button>
+    </header>
+
+    <main class="stage">
+      <div id="pad" class="pad" role="application" aria-label="Trackpad. One finger moves the pointer, tap to click, two fingers scroll, three fingers swipe to change workspace." tabindex="0">
+        <div id="hint" class="hint" aria-hidden="true">
+          <div class="hint-row"><b>Move</b><span>one finger</span></div>
+          <div class="hint-row"><b>Click</b><span>tap</span></div>
+          <div class="hint-row"><b>Right click</b><span>two finger tap</span></div>
+          <div class="hint-row"><b>Scroll</b><span>two fingers</span></div>
+          <div class="hint-row"><b>Drag</b><span>touch and hold</span></div>
+          <div class="hint-row"><b>Workspace</b><span>three finger swipe</span></div>
+        </div>
+        <div id="touches" aria-hidden="true"></div>
+        <div id="banner" class="banner" role="status" hidden></div>
+      </div>
+
+      <div class="keys" id="keys">
+        <div class="row mods" role="group" aria-label="Modifier keys">
+          <button class="key mod" data-mod="ctrl" aria-pressed="false">Ctrl</button>
+          <button class="key mod" data-mod="alt" aria-pressed="false">Alt</button>
+          <button class="key mod" data-mod="shift" aria-pressed="false">Shift</button>
+          <button class="key mod super" data-mod="super" aria-pressed="false" aria-label="Super. Tap to arm for the next key, double tap to hold. Hold to send Super alone.">Super</button>
+        </div>
+        <div class="row specials" role="group" aria-label="Special keys">
+          <button class="key" data-key="Escape">Esc</button>
+          <button class="key" data-key="Tab">Tab</button>
+          <button class="key repeat" data-key="Backspace" aria-label="Backspace">&#9003;</button>
+          <button class="key" data-key="Enter" aria-label="Enter">&#9166;</button>
+          <button class="key repeat" data-key="ArrowLeft" aria-label="Left">&#8592;</button>
+          <button class="key repeat" data-key="ArrowUp" aria-label="Up">&#8593;</button>
+          <button class="key repeat" data-key="ArrowDown" aria-label="Down">&#8595;</button>
+          <button class="key repeat" data-key="ArrowRight" aria-label="Right">&#8594;</button>
+        </div>
+        <div class="row actions">
+          <button id="kbd-btn" class="key wide" aria-pressed="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="6" width="19" height="12" rx="2.5"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/></svg>
+            Keyboard
+          </button>
+        </div>
+      </div>
+    </main>
+
+    <input id="kbd" type="text" inputmode="text" enterkeyhint="send" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" aria-label="Type to the desktop" tabindex="-1">
+  </section>
+
+  <div id="sheet" class="sheet" hidden>
+    <div class="sheet-card" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+      <h2 id="sheet-title">Settings</h2>
+      <label class="field">
+        <span>Pointer speed <output id="sens-out"></output></span>
+        <input id="sens" type="range" min="0.5" max="4" step="0.1">
+      </label>
+      <label class="switch-row">
+        <span>Natural scrolling</span>
+        <input id="natural" type="checkbox" role="switch">
+      </label>
+      <label class="switch-row">
+        <span>Vibration</span>
+        <input id="haptics" type="checkbox" role="switch">
+      </label>
+      <p class="sub" id="rtt-line">Connection: not measured yet.</p>
+      <div class="sheet-actions">
+        <button id="forget" class="danger">Forget this phone</button>
+        <button id="close-settings" class="primary">Done</button>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="/vendor/noble.js"></script>
+<script src="/crypto.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

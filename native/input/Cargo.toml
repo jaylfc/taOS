@@ -1,0 +1,39 @@
+[package]
+name = "taos-input"
+version = "0.1.0"
+description = "taOS input engine: injects pointer and keyboard events into the desktop compositor for a paired phone on the home network"
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "taos-input"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+hkdf = "0.12"
+hmac = "0.12"
+aes-gcm = "0.10"
+p256 = { version = "0.13", features = ["ecdsa", "ecdh"] }
+curve25519-dalek = "4"
+tungstenite = { version = "0.26", default-features = false, features = ["handshake"] }
+signal-hook = "0.3"
+wayland-client = "0.31"
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
+
+[dev-dependencies]
+socket2 = "0.5"
+wayland-protocols = { version = "0.32", features = ["client"] }

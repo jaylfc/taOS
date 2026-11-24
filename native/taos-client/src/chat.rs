@@ -402,11 +402,7 @@ impl Client {
 
 impl Chat {
     /// `GET /api/chat/channels[?archived=true][&project_id=..]`.
-    pub async fn channels(
-        &self,
-        archived: bool,
-        project_id: Option<&str>,
-    ) -> Result<Vec<Channel>> {
+    pub async fn channels(&self, archived: bool, project_id: Option<&str>) -> Result<Vec<Channel>> {
         let mut req = Req::get("/api/chat/channels");
         if archived {
             req = req.query("archived", "true");
@@ -484,8 +480,8 @@ impl Chat {
                 system_message: sys.map(Box::new),
             });
         }
-        let m: ChatMessage = serde_json::from_value(v)
-            .map_err(|e| Error::Protocol(format!("sent message: {e}")))?;
+        let m: ChatMessage =
+            serde_json::from_value(v).map_err(|e| Error::Protocol(format!("sent message: {e}")))?;
         Ok(SendOutcome::Sent(Box::new(m)))
     }
 
@@ -1265,7 +1261,9 @@ mod tests {
             check_handshake("nonsense", "k"),
             Err(Error::Protocol(_))
         ));
-        assert!(fatal(&Error::Unauthenticated { message: "x".into() }));
+        assert!(fatal(&Error::Unauthenticated {
+            message: "x".into()
+        }));
         assert!(!fatal(&Error::Disconnected));
     }
 
@@ -1352,8 +1350,9 @@ mod tests {
 
     #[test]
     fn frame_round_trips_through_the_stream_shape() {
-        let ev = ChatEvent::parse(r#"{"type":"message_delta","message_id":"m1","delta":"hi","seq":9}"#)
-            .unwrap();
+        let ev =
+            ChatEvent::parse(r#"{"type":"message_delta","message_id":"m1","delta":"hi","seq":9}"#)
+                .unwrap();
         let s = serde_json::to_string(&ev).unwrap();
         let v: Value = serde_json::from_str(&s).unwrap();
         assert_eq!(v["type"], "message_delta");
@@ -1438,7 +1437,10 @@ mod tests {
             .and(path("/auth/login"))
             .respond_with(
                 ResponseTemplate::new(200)
-                    .set_body_raw(r#"{"user":{"id":"u1","username":"alex"}}"#, "application/json")
+                    .set_body_raw(
+                        r#"{"user":{"id":"u1","username":"alex"}}"#,
+                        "application/json",
+                    )
                     .append_header("set-cookie", "taos_session=SESSTOK; Path=/")
                     .append_header("set-cookie", "csrf_token=csrfx; Path=/"),
             )
@@ -1476,18 +1478,25 @@ mod tests {
             r#"{"channel_id":"c1","type":"join"}"#
         );
         // A frame, a garbage frame (dropped), then a second frame.
-        s.write_all(&server_text(r#"{"type":"message_delta","message_id":"m","delta":"a"}"#))
-            .await
-            .unwrap();
+        s.write_all(&server_text(
+            r#"{"type":"message_delta","message_id":"m","delta":"a"}"#,
+        ))
+        .await
+        .unwrap();
         s.write_all(&server_text("{{{")).await.unwrap();
-        s.write_all(&server_text(r#"{"type":"message_state","message_id":"m","state":"complete"}"#))
-            .await
-            .unwrap();
+        s.write_all(&server_text(
+            r#"{"type":"message_state","message_id":"m","state":"complete"}"#,
+        ))
+        .await
+        .unwrap();
         let a = stream.next().await.unwrap().unwrap();
         let b = stream.next().await.unwrap().unwrap();
         assert_eq!(a.event.as_deref(), Some(CHAT_EVENT));
         assert!(a.data.contains("message_delta"));
-        assert!(b.data.contains("message_state"), "the bad frame was dropped");
+        assert!(
+            b.data.contains("message_state"),
+            "the bad frame was dropped"
+        );
         // Switching channels leaves the old one and joins the new one.
         client.chat().set_joined(["c2".to_string()]);
         let mut got = vec![
